@@ -30,5 +30,8 @@ test('a reply block\'s first and last lines hang inside their markup', () => {
   assert.match(hang('  - last reply line</div></div>'), /^<span class="pk-hang" style="--h:4ch">  - last reply line<\/span><\/div><\/div>$/);
 });
 test('the peek pipeline applies it last', () => {
-  assert.match(app, /return _hangIndent\(wrapBoxBlocks\(/);
+  // The pipelines are lists now (PEEK_PIPELINES); every full pipeline is built
+  // from _PEEK_FULL, which must end with scroll-box-blocks then hang-indent.
+  assert.match(app, /const _PEEK_FULL = \[[^\]]*'scroll-box-blocks', 'hang-indent'\];/);
+  assert.match(app, /const _PEEK_FULL_NO_CALLS = _PEEK_FULL\.filter\(/);
 });

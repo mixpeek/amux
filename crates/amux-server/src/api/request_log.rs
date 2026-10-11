@@ -2747,6 +2747,13 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/typing",
         methods: &["GET", "POST"],
     },
+    // -- Messages: channels, direct messages, worker threads (api/conversations.rs)
+    RouteEntry { path: "/api/conversations", methods: &["GET"] },
+    RouteEntry { path: "/api/conversations/search", methods: &["GET"] },
+    RouteEntry { path: "/api/conversations/mentions", methods: &["GET"] },
+    RouteEntry { path: "/api/conversations/{conv}/posts", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/conversations/{conv}/read", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/{conv}/typing", methods: &["POST"] },
     // -- saved messages / habits / token-baseline reset (AMUX-2871)
     RouteEntry {
         path: "/api/saved-messages",
@@ -3079,6 +3086,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // census reported it unrouted while it answered fine (AMUX-2871 class).
     RouteEntry {
         path: "/api/ollama/models",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/peek/steps",
         methods: &["GET"],
     },
     RouteEntry {

@@ -123,6 +123,7 @@ pub mod speedtest;
 pub mod sql;
 pub mod sse;
 pub mod typing;
+pub mod conversations;
 pub mod static_files;
 pub mod stats;
 pub mod sync;
@@ -199,6 +200,7 @@ pub fn router_with_connector_transport(
             axum::routing::get(workers::ollama_models),
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
+        .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
         .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
@@ -269,6 +271,7 @@ pub fn router_with_connector_transport(
         // guard moved into the module's dispatch.
         .merge(session_verbs::routes())
         .merge(typing::routes())
+        .merge(conversations::routes())
         // Identity is config-introspection over server.env + ~/.claude.json
         // this server already reads — NATIVE, not a fleet capability
         // (AMUX-2597 addendum: the SPA's _initIdentity boot call 404'd here).

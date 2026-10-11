@@ -1227,6 +1227,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("skill_usage", "ts", false), // transcript timestamps, stored as unix seconds (AMUX-5340)
     ("trace_archive", "archived_at", false), // measured 2026-09-27: 1790517771..1790535244 over 5405 rows
     ("waitlist", "ts", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("conversation_posts", "ts", true), // conversations.rs writes now_ms(); 0117 says "unix millis"
 ];
 
 /// Does each declared timestamp column actually hold what readers assume?

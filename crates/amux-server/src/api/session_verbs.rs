@@ -18775,6 +18775,50 @@ fn parse_pane_geometry(raw: &str) -> Option<(i64, i64)> {
     Some((cols, rows))
 }
 
+/// THE PEEK'S SERVER-SIDE STEPS, in one list (Ethan, 2026-10-11: "make the
+/// list of peek transformations consolidated/easy to understand/audit").
+/// Every peek response carries `render: {path, steps}` naming the source it
+/// read and the steps below that it applied, in order. The dashboard shows it
+/// under the peek's Rendering steps, beside its own client steps, and
+/// `docs/peek-rendering.md` is checked against this list by
+/// `tests/peek-render-registry.test.mjs`, so a step cannot be added here
+/// without being written down there.
+pub(crate) const PEEK_SERVER_STEPS: &[(&str, &str)] = &[
+    ("tmux-capture", "Read the pane with `tmux capture-pane -p -e` (colours kept), the last `lines` rows"),
+    ("tmux-scrollback", "Read tmux's own scrollback above the screen as history and the screen as live (normal-screen Claude, the thin pass-through)"),
+    ("strip-scroll-pill", "Remove Claude Code's \"Jump to bottom\" overlay, which is not output"),
+    ("clean-gemini-frame", "Gemini only: drop its repainted chrome from the captured frame"),
+    ("claude-transcript", "Rebuild history from the Claude conversation record, with tables laid out for the reader's width (`cols`)"),
+    ("codex-rollout", "Rebuild history from the Codex/Ollama rollout; tmux supplies only the current screen"),
+    ("strip-launch-noise", "Drop the CLI's launch banner lines from the live screen"),
+    ("trim-live-overlap", "Remove the start of the live screen that repeats the end of history, so nothing shows twice"),
+    ("collapse-blank-runs", "Squeeze runs of blank lines to one"),
+    ("save-session-log", "Save a long normal-screen capture as the session log for later reads"),
+    ("session-log", "Use the saved session log as history and append the live screen if it is not already its tail"),
+    ("transcript-for-torn-log", "The saved log was garbled by cursor repaints, so the transcript is rendered instead"),
+];
+
+/// `GET /api/peek/steps`: the server half of the peek's Rendering steps view.
+pub(crate) async fn peek_steps() -> Response {
+    let steps: Vec<Value> = PEEK_SERVER_STEPS
+        .iter()
+        .map(|(id, what)| json!({ "id": id, "what": what }))
+        .collect();
+    j200(json!({ "measured": true, "n_considered": steps.len(), "steps": steps }))
+}
+
+/// Stamp a peek response with the path it took and the steps that ran.
+fn peek_render(mut resp: Value, path: &str, steps: &[&str]) -> Value {
+    debug_assert!(
+        steps.iter().all(|s| PEEK_SERVER_STEPS.iter().any(|(id, _)| id == s)),
+        "unregistered peek step in {steps:?}"
+    );
+    if let Some(obj) = resp.as_object_mut() {
+        obj.insert("render".into(), json!({ "path": path, "steps": steps }));
+    }
+    resp
+}
+
 async fn peek_response_at(
     name: &str,
     lines: i64,
@@ -18792,11 +18836,13 @@ async fn peek_response_at(
         };
         // The live=1 trim needs the transcript the CLIENT is displaying; the
         // rust origin re-renders it (bounded) instead of a process cache.
+        let mut trimmed = false;
         let live = if !live.is_empty() && !no_trim && provider == "claude" {
             let tr = render_session_transcript(name, 120_000);
             if tr.is_empty() {
                 live
             } else {
+                trimmed = true;
                 trim_live_overlap(&tr, &live)
             }
         } else {
@@ -18807,7 +18853,16 @@ async fn peek_response_at(
         } else {
             collapse_blank_runs(&live)
         };
-        return json!({"name": name, "live_only": true, "live": lv, "output": lv});
+        let mut steps = vec!["tmux-capture", "strip-scroll-pill", "strip-launch-noise"];
+        if trimmed {
+            steps.push("trim-live-overlap");
+        }
+        steps.push("collapse-blank-runs");
+        return peek_render(
+            json!({"name": name, "live_only": true, "live": lv, "output": lv}),
+            "tmux-live",
+            &steps,
+        );
     }
     let mut output = strip_scroll_pill(&tmux_capture(name, lines).await);
     if provider == "gemini" {
@@ -18864,7 +18919,8 @@ async fn peek_response_at(
         } else {
             strip_launch_noise(output.trim())
         };
-        if !transcript.is_empty() && !live.is_empty() {
+        let trimmed = !transcript.is_empty() && !live.is_empty();
+        if trimmed {
             live = trim_live_overlap(&transcript, &live);
         }
         let live_out = if !live.is_empty() {
@@ -18928,18 +18984,36 @@ async fn peek_response_at(
                  ({hl} lines) for what it was actually doing."
             ));
         }
-        return resp;
+        let (path, mut steps) = if has_codex_history {
+            ("codex-rollout", vec!["tmux-capture", "strip-scroll-pill", "codex-rollout"])
+        } else if provider != "claude" {
+            ("gemini-frame", vec!["tmux-capture", "clean-gemini-frame"])
+        } else {
+            ("claude-transcript", vec!["tmux-capture", "strip-scroll-pill", "claude-transcript"])
+        };
+        steps.push("strip-launch-noise");
+        if trimmed {
+            steps.push("trim-live-overlap");
+        }
+        steps.push("collapse-blank-runs");
+        return peek_render(resp, path, &steps);
     }
     // Normal screen (py:75117).
     if !output.is_empty() && tmux_lines >= 30 {
         save_session_log(name, &output);
-        return json!({"name": name, "output": collapse_blank_runs(&strip_launch_noise(&output))});
+        return peek_render(
+            json!({"name": name, "output": collapse_blank_runs(&strip_launch_noise(&output))}),
+            "tmux-capture",
+            &["tmux-capture", "strip-scroll-pill", "save-session-log", "strip-launch-noise", "collapse-blank-runs"],
+        );
     }
     let mut saved = load_session_log(name, 65_536);
+    let mut torn = false;
     if !saved.is_empty() && log_looks_torn(&saved) {
         let clean = render_session_transcript(name, 120_000);
         if !clean.is_empty() {
             saved = clean;
+            torn = true;
         }
     }
     if !saved.is_empty() {
@@ -18953,14 +19027,27 @@ async fn peek_response_at(
         } else {
             saved
         };
-        return json!({"name": name, "output": collapse_blank_runs(&combined), "saved": true});
+        let mut steps = vec!["tmux-capture", "strip-scroll-pill", "session-log"];
+        if torn {
+            steps.push("transcript-for-torn-log");
+        }
+        steps.extend(["strip-launch-noise", "collapse-blank-runs"]);
+        return peek_render(
+            json!({"name": name, "output": collapse_blank_runs(&combined), "saved": true}),
+            "session-log",
+            &steps,
+        );
     }
     let fallback = if output.is_empty() {
         "(no output)".to_string()
     } else {
         output
     };
-    json!({"name": name, "output": collapse_blank_runs(&fallback)})
+    peek_render(
+        json!({"name": name, "output": collapse_blank_runs(&fallback)}),
+        "tmux-capture",
+        &["tmux-capture", "strip-scroll-pill", "collapse-blank-runs"],
+    )
 }
 
 /// The peek for a normal-screen pane, straight from tmux: `history` is the
@@ -18980,7 +19067,8 @@ async fn tmux_scrollback_peek(name: &str) -> Option<Value> {
     let ol = live.lines().count();
     tracing::debug!(session = name, history_lines = hl, measured = true, n_considered = hl + ol,
         verdict = "peek_tmux_scrollback", "peek served from tmux scrollback (normal screen)");
-    Some(json!({
+    Some(peek_render(
+        json!({
         "name": name,
         "history": history,
         "live": if live.is_empty() { "(no output)".to_string() } else { live.clone() },
@@ -18989,7 +19077,10 @@ async fn tmux_scrollback_peek(name: &str) -> Option<Value> {
         "history_lines": hl,
         "history_source": "tmux-scrollback",
         "output_is_viewport_only": true,
-    }))
+    }),
+        "tmux-scrollback",
+        &["tmux-scrollback"],
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -27427,7 +27518,7 @@ async fn send_post_detached(
     }
 }
 
-async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
+pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
     if let Some(refusal) = probe_refusal(state, name, headers, &body_str(body, "text")).await {
         return refusal;
     }
@@ -29352,7 +29443,9 @@ pub(crate) async fn peek_verb(state: &AppState, name: &str, qs: &[(String, Strin
     let adapter = crate::api::worker_exec::adapter_for_session(name);
     if let crate::api::worker_exec::Dispatch::Handled(v) = adapter.peek(state, name, lines).await {
         crate::api::worker_exec::note_dispatch(name, "peek", adapter.worker_type());
-        return j200(v);
+        // A worker type with its own adapter renders its own peek; none of
+        // PEEK_SERVER_STEPS ran, and the path says whose output this is.
+        return j200(peek_render(v, &format!("worker-adapter:{}", adapter.worker_type()), &[]));
     }
     let live_only = qs_flag(qs, "live");
     let no_trim = qs_flag(qs, "notrim");
@@ -41334,6 +41427,17 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert_eq!(parse_pane_geometry("0x50"), None);
         assert_eq!(parse_pane_geometry("220x0"), None);
         assert_eq!(parse_pane_geometry("-1x50"), None);
+    }
+
+    #[test]
+    fn peek_render_names_its_path_and_only_registered_steps() {
+        let ids: std::collections::HashSet<&str> = PEEK_SERVER_STEPS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids.len(), PEEK_SERVER_STEPS.len(), "duplicate step id");
+        assert!(PEEK_SERVER_STEPS.iter().all(|(_, what)| !what.is_empty()));
+        let v = peek_render(json!({"name": "w"}), "claude-transcript", &["tmux-capture", "trim-live-overlap"]);
+        assert_eq!(v["render"]["path"], "claude-transcript");
+        assert_eq!(v["render"]["steps"], json!(["tmux-capture", "trim-live-overlap"]));
+        assert_eq!(v["name"], "w", "the stamp adds a key and changes nothing else");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2582,
+  "n_considered": 2620,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -850,6 +850,54 @@
     },
     "_createAndLaunchPin": {
       "kind": "command._createAndLaunchPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvEnter": {
+      "kind": "command._cvEnter",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvMarkRead": {
+      "kind": "command._cvMarkRead",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvOnInput": {
+      "kind": "command._cvOnInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvOnKey": {
+      "kind": "command._cvOnKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvPoll": {
+      "kind": "command._cvPoll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSearch": {
+      "kind": "command._cvSearch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSelect": {
+      "kind": "command._cvSelect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSend": {
+      "kind": "command._cvSend",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2168,12 +2216,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_peekHtml": {
-      "kind": "command._peekHtml",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_peekIdentityDiscard": {
       "kind": "command._peekIdentityDiscard",
       "feedback_required": true,
@@ -2200,12 +2242,6 @@
     },
     "_peekKickFast": {
       "kind": "command._peekKickFast",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_peekLiveHtml": {
-      "kind": "command._peekLiveHtml",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

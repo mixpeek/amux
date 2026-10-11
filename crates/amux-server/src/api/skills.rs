@@ -142,18 +142,48 @@ async fn list_skills(State(state): State<AppState>) -> Response {
     };
     // Tolerate the table being absent (a fresh Rust-only AMUX_HOME): an
     // empty list is the truthful answer, not a 500.
-    let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT name, content FROM skills ORDER BY name") {
-        if let Ok(rows) =
-            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        {
-            for (name, content) in rows.flatten() {
-                let (description, hint) = frontmatter_fields(&content);
-                out.push(json!({ "name": name, "description": description, "hint": hint }));
+    let rows = table_skill_rows(&conn);
+    // Release the reader before the per-skill file stats below.
+    drop(conn);
+    let out: Vec<Value> = rows
+        .into_iter()
+        .map(|(name, content, created)| {
+            let (description, hint) = frontmatter_fields(&content);
+            let mut times = command_file_times(&name);
+            // The table knows when the skill was first saved; the file does
+            // not (temp + rename resets its birth time on every save).
+            if created > 0 {
+                times.insert("created_at".into(), json!(created));
+            } else {
+                times.remove("created_at");
             }
-        }
-    }
+            with_times(json!({ "name": name, "description": description, "hint": hint }), times)
+        })
+        .collect();
     Json(serde_json::Value::Array(out)).into_response()
+}
+
+/// The Skills tab's Save: an upsert whose `created` is set on the first save
+/// only, so an edit keeps the skill's creation time.
+const SAVE_SKILL_SQL: &str = "INSERT INTO skills (name, content, created) VALUES (?1, ?2, CAST(strftime('%s','now') AS INTEGER)) \
+     ON CONFLICT(name) DO UPDATE SET content=excluded.content";
+
+/// (name, content, created) for every table skill. `created` is 0 when the
+/// skill predates the column, or on a table without it.
+fn table_skill_rows(conn: &rusqlite::Connection) -> Vec<(String, String, i64)> {
+    let with = conn.prepare("SELECT name, content, created FROM skills ORDER BY name").and_then(|mut s| {
+        s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    });
+    if let Ok(rows) = with {
+        return rows;
+    }
+    conn.prepare("SELECT name, content FROM skills ORDER BY name")
+        .and_then(|mut s| {
+            s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, 0i64)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default()
 }
 
 async fn get_skill(State(state): State<AppState>, Path(name): Path<String>) -> Response {
@@ -247,6 +277,45 @@ fn claude_config_dir() -> std::path::PathBuf {
     }
 }
 
+/// When the skill's command file was created and last edited (unix seconds),
+/// for the Skills tab's "Recently created/edited" sorts. Creation time is the
+/// filesystem's birth time where it records one; otherwise only `modified_at`
+/// is known and `created_at` is absent rather than guessed.
+fn file_times(path: &std::path::Path) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+    };
+    if let Ok(md) = std::fs::metadata(path) {
+        if let Some(c) = secs(md.created()) {
+            out.insert("created_at".into(), json!(c));
+        }
+        if let Some(m) = secs(md.modified()) {
+            out.insert("modified_at".into(), json!(m));
+        }
+    }
+    out
+}
+
+fn command_file_times(name: &str) -> serde_json::Map<String, Value> {
+    command_dirs()
+        .into_iter()
+        .map(|d| d.join(format!("{name}.md")))
+        .find(|p| p.exists())
+        .map(|p| file_times(&p))
+        .unwrap_or_default()
+}
+
+/// Merge extra keys into a JSON object row.
+fn with_times(mut row: Value, times: serde_json::Map<String, Value>) -> Value {
+    if let Some(obj) = row.as_object_mut() {
+        obj.extend(times);
+    }
+    row
+}
+
 pub(super) fn command_dirs() -> Vec<std::path::PathBuf> {
     vec![
         claude_config_dir().join("commands"),
@@ -331,7 +400,8 @@ async fn list_slash_commands(State(state): State<AppState>) -> Response {
             .collect();
         for (cmd, desc) in table_skill_commands(&conn) {
             if seen.insert(cmd.clone()) {
-                cmds.push(json!({ "cmd": cmd, "desc": desc }));
+                let times = command_file_times(cmd.trim_start_matches('/'));
+                cmds.push(with_times(json!({ "cmd": cmd, "desc": desc }), times));
             }
         }
     }
@@ -373,7 +443,7 @@ fn file_slash_commands() -> Vec<serde_json::Value> {
                 .ok()
                 .map(|t| frontmatter_fields(&t).0)
                 .unwrap_or_default();
-            cmds.push(json!({ "cmd": name, "desc": desc }));
+            cmds.push(with_times(json!({ "cmd": name, "desc": desc }), file_times(&f)));
         }
     }
     cmds
@@ -502,14 +572,11 @@ async fn save_skill(
         .store
         .write_async(move |conn| {
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, content TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, content TEXT NOT NULL, \
+                 updated INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT 0)",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO skills (name, content) VALUES (?1, ?2) \
-                 ON CONFLICT(name) DO UPDATE SET content=excluded.content",
-                rusqlite::params![n2, content],
-            )?;
+            conn.execute(SAVE_SKILL_SQL, rusqlite::params![n2, content])?;
             Ok(crate::db::WriteOutcome {
                 applied: true,
                 events: vec![],
@@ -623,6 +690,40 @@ mod write_tests {
         assert_eq!(std::fs::read_to_string(dir.join("kept.md")).unwrap(), "edited outside amux");
         assert!(!dir.join("../x.md").exists());
         assert_eq!(materialize_missing(&conn, &dir), (0, 3), "idempotent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_table_skill_keeps_its_first_save_time_across_edits() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE skills (name TEXT PRIMARY KEY, content TEXT NOT NULL, updated INTEGER NOT NULL DEFAULT 0)", []).unwrap();
+        conn.execute_batch(include_str!("../../migrations/0117_skills_created.sql")).unwrap();
+        let save = |c: &str| conn.execute(SAVE_SKILL_SQL, rusqlite::params!["s", c]).unwrap();
+        save("v1");
+        let first = table_skill_rows(&conn)[0].2;
+        assert!(first > 0, "the first save records when");
+        conn.execute("UPDATE skills SET created = created - 1000", []).unwrap();
+        save("v2");
+        let row = &table_skill_rows(&conn)[0];
+        assert_eq!((row.1.as_str(), row.2), ("v2", first - 1000), "an edit keeps the creation time");
+        let old = table(&[("x", "y")]);
+        assert_eq!(table_skill_rows(&old)[0].2, 0, "a table without the column reads 0, never fails");
+    }
+
+    #[test]
+    fn a_command_file_reports_when_it_was_edited() {
+        let dir = std::env::temp_dir().join(format!("amux-skill-times-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("t.md");
+        std::fs::write(&f, "x").unwrap();
+        let t = file_times(&f);
+        let now = chrono::Utc::now().timestamp();
+        let m = t["modified_at"].as_i64().unwrap();
+        assert!((now - m).abs() < 60, "modified_at {m} vs now {now}");
+        if let Some(c) = t.get("created_at") {
+            assert!(c.as_i64().unwrap() <= m);
+        }
+        assert!(file_times(&dir.join("missing.md")).is_empty(), "no file, no invented times");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

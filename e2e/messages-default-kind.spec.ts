@@ -5,6 +5,9 @@ test('Messages tab opens with the human pill selected', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function', { timeout: 20000 });
   await page.evaluate(() => (window as any).switchView('messages'));
+  // The message log is the "All messages" entry of the Messages sidebar since
+  // channels arrived (api/conversations.rs); its default kind is still Human.
+  await page.click('#cv-all-item');
   await page.waitForSelector('#msgs-kind-filter .msg-kind-chip', { timeout: 15000 });
   await page.waitForTimeout(1200);
   const chips = await page.evaluate(() => Array.from(

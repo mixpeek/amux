@@ -99,9 +99,21 @@ t('(g) absolute path still linked without a session cwd',
 // THE WIRING, which is the half that was actually broken before: a perfect
 // linkifier that no render path calls is what shipped for months. Assert the
 // peek pipeline actually runs it.
-t('(f) _peekHtml exists and calls _linkifyPaths',
-  /function _peekHtml\([\s\S]{0,200}?_linkifyPaths\(/.test(src),
-  'the peek pipeline does not call _linkifyPaths');
+// The peek renders through one list of named steps (PEEK_STEPS, run by
+// _peekRun in the order PEEK_PIPELINES gives), so assert the list: the
+// link-paths step calls _linkifyPaths, and every pipeline that renders
+// messages includes it.
+t('(f) _peekHtml renders through the step pipeline',
+  /function _peekHtml\([\s\S]{0,200}?_peekRun\(/.test(src),
+  '_peekHtml no longer runs the registered pipeline');
+t('(f) the link-paths step calls _linkifyPaths',
+  /'link-paths':\s*\{[^}]*_linkifyPaths\(/.test(src),
+  'PEEK_STEPS link-paths does not call _linkifyPaths');
+t('(f) every message pipeline links paths',
+  /const _PEEK_FULL = \[[^\]]*'link-paths'/.test(src)
+    && /thin: \[[^\]]*'link-paths'/.test(src)
+    && /'thin-composer': \[[^\]]*'link-paths'/.test(src),
+  'a peek pipeline skips link-paths');
 t('(f) no peek call site bypasses the shared pipeline',
   !/highlightPrompts\(ansiToHtml\(/.test(src),
   'a render site still spells the chain out and so skips path linkification');

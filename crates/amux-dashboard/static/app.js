@@ -7159,6 +7159,9 @@ function _renderPeekWorkerActions(s) {
     + '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
     + '<span class="mi">&#x25B4;</span>Focus mode</div>'
+    + '<div class="peek-more-item" id="peek-render-steps-btn" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();_peekShowRenderSteps()">'
+    + '<span class="mi">&#x2699;</span>Rendering steps</div>'
     + _peekChatMenuItem(s);
   const previous = _peekActionTemplates.get(menu);
   if (previous === html && menu.firstChild) {
@@ -14069,7 +14072,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1322';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1328';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16703,9 +16706,179 @@ let _peekModePainted = null;
 // .peek-prompt element, so every filter and the up/down message keys report
 // "No matching ... messages" over a pane full of them. The tag is the one
 // change peek may make; the text inside stays exactly as drawn.
+// ── PEEK RENDER STEPS: the one list (Ethan, 2026-10-11: "make the list of
+// peek transformations consolidated/easy to understand/audit") ──
+//
+// Every change the dashboard makes to a worker's terminal text is a named step
+// here, and the pipelines below are the ONLY order they run in: _peekHtml and
+// _peekLiveHtml call _peekRun, never the functions directly. Each frame
+// records which steps ran, how much text each changed and how long it took
+// (_peekTrace), and the peek's ⋮ menu → Rendering steps shows that next to the
+// server's own steps (`render` on the peek response, PEEK_SERVER_STEPS).
+// docs/peek-rendering.md is checked against both lists by
+// tests/peek-render-registry.test.mjs, so a step cannot be added without
+// being written down.
+const PEEK_STEPS = {
+  'ansi-to-html': { what: 'Escape the text as HTML; terminal colours become styled spans; URLs and terminal hyperlinks become links', fn: s => ansiToHtml(s) },
+  'link-paths': { what: 'File and folder paths become links that open in the viewer, resolved against the worker folder', fn: s => _linkifyPaths(s) },
+  'tag-prompts': { what: 'Wrap each prompt as a navigable message labelled with who sent it (Human, Harness, a peer), for the filters and up/down keys. Prompt marker per provider: Claude ❯, Codex ›, Gemini >; the Codex composer (workspace/sandbox/model line) is recognised here', fn: s => highlightPrompts(s) },
+  'tag-prompts-thin': { what: 'Thin mode: label each prompt with its sender, leaving the text exactly as the terminal drew it', fn: s => highlightPrompts(s, { thin: true }) },
+  'collapse-tool-calls': { what: 'Claude Code: each tool call (⏺ Bash(…), ⏺ Read(…)) becomes a collapsed accordion; replies stay open', fn: s => _wrapToolCalls(s) },
+  'fit-rules': { what: 'Horizontal rules (the input box border) are resized to the width instead of scrolling', fn: s => _fitRules(s) },
+  'scroll-box-blocks': { what: 'Tables and framed boxes get their own horizontal scroller so their columns stay aligned', fn: s => wrapBoxBlocks(s) },
+  'hang-indent': { what: 'A wrapped list or indented line continues under its own text, as the terminal draws it', fn: s => _hangIndent(s) },
+};
+// PER PROVIDER (Ethan, 2026-10-11: "they should of course be model specific
+// too since for example claude code spits out different shit than codex").
+// Each CLI draws its own terminal: Claude Code marks tool calls with ⏺ and
+// frames its input box with rules over a ⏵/shift+tab footer; Codex marks
+// prompts with › and has no ⏺ calls; Gemini uses >. A provider without its
+// own entry uses `default`, which is the full set (what every provider ran
+// before this list existed). `composer` names how the live screen's input box
+// is found: 'claude' (❯ between rules, then the footer) or 'none' (the
+// provider's composer is recognised inside tag-prompts, or it has none).
+const _PEEK_FULL = ['ansi-to-html', 'link-paths', 'tag-prompts', 'collapse-tool-calls', 'fit-rules', 'scroll-box-blocks', 'hang-indent'];
+const _PEEK_FULL_NO_CALLS = _PEEK_FULL.filter(id => id !== 'collapse-tool-calls');
+const _PEEK_COMMON = { thin: ['ansi-to-html', 'link-paths', 'fit-rules', 'tag-prompts-thin'], 'thin-composer': ['ansi-to-html', 'link-paths', 'fit-rules'], footer: ['ansi-to-html'] };
+const PEEK_PIPELINES = {
+  claude: Object.assign({ full: _PEEK_FULL, composer: 'claude' }, _PEEK_COMMON),
+  codex: Object.assign({ full: _PEEK_FULL_NO_CALLS, composer: 'none' }, _PEEK_COMMON),
+  gemini: Object.assign({ full: _PEEK_FULL_NO_CALLS, composer: 'none' }, _PEEK_COMMON),
+  default: Object.assign({ full: _PEEK_FULL, composer: 'claude' }, _PEEK_COMMON),
+};
+function _peekProviderNow() {
+  const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
+  return s ? sessionProvider(s) : 'claude';
+}
+function _peekPipelines(provider) { return PEEK_PIPELINES[provider] || PEEK_PIPELINES.default; }
+// Decisions about the whole frame rather than passes over its text.
+const PEEK_FRAME_STEPS = {
+  'wrap-at-pane-width': 'Wrap text at the worker terminal width (pane_cols), not the browser window, so its own line breaks survive',
+  'trim-live-overlap': 'Drop the start of the live screen that repeats the end of the history already shown',
+  'split-composer': 'Separate the input box at the bottom of the screen from the messages above it',
+  'show-draft': 'Show text typed in the input box but not yet sent',
+  'hide-steering-echo': 'Hide input-box text that is a queued Steering message, or the "Press up to edit queued messages" hint',
+  'skip-unchanged': 'Nothing changed since the last frame, so nothing was re-rendered',
+  'hold-while-reading': 'New output is kept off screen while you are scrolled up, searching or pressing, and painted when you return',
+  'chat-owns-body': 'The Chat tab is showing, so the terminal frame was updated in the background and not painted',
+  'painted': 'The frame was painted',
+};
+(function _peekStepsSelfCheck() {
+  // A pipeline naming a step that does not exist would throw on the first
+  // frame; say which one at load instead.
+  for (const [provider, modes] of Object.entries(PEEK_PIPELINES)) {
+    for (const [mode, ids] of Object.entries(modes)) {
+      if (!Array.isArray(ids)) continue;
+      for (const id of ids) if (!PEEK_STEPS[id]) console.error('[peek] ' + provider + ' pipeline ' + mode + ' names unregistered step ' + id);
+    }
+  }
+})();
+
+// What the CURRENT frame did, and the last finished one (shown by Rendering steps).
+// _peekTrace is the latest poll, which is usually "skip-unchanged"; the text
+// passes shown are each region's most recent actual render (_peekLastRegion).
+let _peekTraceCur = null, _peekTrace = null, _peekTraceRegion = 'history';
+let _peekLastRegion = {};
+// The server's stamp for the last FULL fetch (where history came from) and the
+// last live poll (always tmux-live), kept apart: live polls arrive every
+// half-second, and showing only the latest would hide the history's source.
+let _peekServerFull = null, _peekServerLive = null;
+function _peekTraceBegin(meta) {
+  if (_peekTrace && meta && meta.name !== _peekTrace.name) { _peekLastRegion = {}; _peekServerFull = null; _peekServerLive = null; }
+  if (meta && meta.server) {
+    const stamp = Object.assign({ at: Date.now() }, meta.server);
+    if (meta.live_only) _peekServerLive = stamp; else _peekServerFull = stamp;
+  }
+  const provider = _peekProviderNow();
+  _peekTraceCur = Object.assign({ at: Date.now(), provider, pipeline: PEEK_PIPELINES[provider] ? provider : 'default', regions: {}, frame: [] }, meta);
+}
+function _peekTraceFrame(id, note) {
+  if (_peekTraceCur) _peekTraceCur.frame.push({ id, note: note || '' });
+}
+function _peekTraceEnd(outcome, note) {
+  if (!_peekTraceCur) return;
+  _peekTraceFrame(outcome, note);
+  for (const [region, runs] of Object.entries(_peekTraceCur.regions)) _peekLastRegion[region] = { at: _peekTraceCur.at, runs };
+  _peekTrace = _peekTraceCur;
+  _peekTraceCur = null;
+}
+function _peekRun(mode, raw) {
+  let out = String(raw);
+  const steps = [];
+  for (const id of _peekPipelines(_peekProviderNow())[mode]) {
+    const t0 = performance.now(), before = out.length;
+    out = PEEK_STEPS[id].fn(out);
+    steps.push({ id, chars_in: before, chars_out: out.length, ms: Math.round((performance.now() - t0) * 100) / 100 });
+  }
+  if (_peekTraceCur) (_peekTraceCur.regions[_peekTraceRegion] = _peekTraceCur.regions[_peekTraceRegion] || []).push({ mode, steps });
+  return out;
+}
+
 function _peekHtml(raw) {
-  if (_peekThin) return highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(raw))), {thin: true});
-  return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
+  return _peekRun(_peekThin ? 'thin' : 'full', raw);
+}
+
+// ⋮ → Rendering steps: what the server and the dashboard did to the frame on
+// screen, in order, beside every registered step that did not run.
+let _peekServerSteps = null;
+async function _peekShowRenderSteps() {
+  if (!_peekServerSteps) {
+    try {
+      const r = await fetch(API + '/api/peek/steps');
+      const d = r.ok ? await r.json() : null;
+      _peekServerSteps = d && Array.isArray(d.steps) ? d.steps : [];
+    } catch (e) { _peekServerSteps = []; }
+  }
+  const t = _peekTrace;
+  const row = (on, name, what, note) =>
+    '<tr style="' + (on ? '' : 'opacity:0.45;') + '"><td style="padding:2px 8px 2px 0;white-space:nowrap;">' + (on ? '&#x2713;' : '&middot;')
+    + ' <code>' + esc(name) + '</code></td><td style="padding:2px 0;">' + esc(what) + (note ? '<div style="color:var(--dim);font-size:0.75rem;">' + esc(note) + '</div>' : '') + '</td></tr>';
+  const table = rows => '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;margin:4px 0 10px;">' + rows.join('') + '</table>';
+  const h = text => '<div style="font-weight:700;margin-top:8px;">' + esc(text) + '</div>';
+  const folded = (label, inner) => '<details style="margin:0 0 10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;min-height:32px;">' + esc(label) + '</summary>' + inner + '</details>';
+  let html = '<div style="font-weight:700;font-size:0.95rem;margin-bottom:6px;">Rendering steps</div>';
+  if (!t) {
+    html += '<div style="color:var(--dim);font-size:0.85rem;">No frame has been rendered in this peek yet.</div>';
+  } else {
+    html += '<div style="color:var(--dim);font-size:0.8rem;">' + esc(t.name || '') + ' &middot; ' + esc(t.provider) + ' (pipeline: ' + esc(t.pipeline) + ') &middot; '
+      + (t.thin ? 'thin pass-through' : 'full') + ' &middot; ' + (t.live_only ? 'live poll' : 'full fetch') + ' &middot; ' + esc(new Date(t.at).toLocaleTimeString()) + '</div>';
+    const full = _peekServerFull, live = _peekServerLive;
+    const when = x => x ? ' (' + new Date(x.at).toLocaleTimeString() + ')' : '';
+    html += h('1. Server: history from ' + (full ? full.path : 'not fetched yet') + when(full)
+      + (live ? '; live screen from ' + live.path + when(live) : ''));
+    const ran = new Set([...((full && full.steps) || []), ...((live && live.steps) || [])]);
+    if (!full && !live) html += '<div style="color:var(--dim);font-size:0.8rem;">This server did not report its steps (older server).</div>';
+    // What ran, in order, first; the rest folded so a phone is not a scroll
+    // through greyed rows to find what happened.
+    const ranRows = _peekServerSteps.filter(st => ran.has(st.id)).map(st => row(true, st.id, st.what,
+      [full && full.steps.includes(st.id) ? 'history' : '', live && live.steps.includes(st.id) ? 'live' : ''].filter(Boolean).join(' + ')));
+    const notRun = _peekServerSteps.filter(st => !ran.has(st.id));
+    html += table(ranRows);
+    if (notRun.length) html += folded('Not run on the server (' + notRun.length + ')', table(notRun.map(st => row(false, st.id, st.what))));
+    html += h('2. Dashboard: text passes');
+    for (const region of ['history', 'live']) {
+      const last = _peekLastRegion[region];
+      for (const run of (last ? last.runs : [])) {
+        html += '<div style="font-size:0.8rem;margin-top:4px;">' + esc(region) + ' &middot; ' + esc(run.mode) + ' &middot; rendered ' + esc(new Date(last.at).toLocaleTimeString()) + '</div>';
+        html += table(run.steps.map(st => row(true, st.id, PEEK_STEPS[st.id].what, st.chars_in + ' \u2192 ' + st.chars_out + ' chars, ' + st.ms + ' ms')));
+      }
+    }
+    const usedText = new Set(Object.values(_peekLastRegion).flatMap(r => r.runs).flatMap(run => run.steps.map(st => st.id)));
+    const idle = Object.keys(PEEK_STEPS).filter(id => !usedText.has(id));
+    if (idle.length) html += folded('Not in this pipeline (' + idle.length + ')', table(idle.map(id => row(false, id, PEEK_STEPS[id].what))));
+    html += h('3. Dashboard: frame decisions (latest poll)');
+    const seen = new Map(t.frame.map(f => [f.id, f.note]));
+    const fids = Object.keys(PEEK_FRAME_STEPS);
+    html += table(fids.filter(id => seen.has(id)).map(id => row(true, id, PEEK_FRAME_STEPS[id], seen.get(id) || '')));
+    const fIdle = fids.filter(id => !seen.has(id));
+    if (fIdle.length) html += folded('Did not apply (' + fIdle.length + ')', table(fIdle.map(id => row(false, id, PEEK_FRAME_STEPS[id]))));
+  }
+  return new Promise(resolve => {
+    _modalResolve = resolve;
+    document.getElementById('modal-msg').innerHTML = '<div style="max-height:70vh;overflow:auto;text-align:left;">' + html + '</div>';
+    document.getElementById('modal-btns').innerHTML = '<button class="btn primary" onclick="_modalClose(true)">Close</button>';
+    document.getElementById('modal-backdrop').classList.add('open');
+  });
 }
 
 const _peekToolCollapsed = {};
@@ -16838,10 +17011,14 @@ function _peekLiveHtml(raw) {
     for (let i = plain.length - 1; i > 0; i--) {
       if (/^\s*❯(?:\s|$)/.test(plain[i]) && rule(plain[i - 1])) { cut = i - 1; break; }
     }
-    const head = cut > 0 ? highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(lines.slice(0, cut).join('\n')))), {thin: true}) : '';
-    const tail = cut < lines.length ? _fitRules(_linkifyPaths(ansiToHtml(lines.slice(cut).join('\n')))) : '';
+    if (cut < lines.length) _peekTraceFrame('split-composer', 'input box kept as terminal UI, not a message');
+    const head = cut > 0 ? _peekRun('thin', lines.slice(0, cut).join('\n')) : '';
+    const tail = cut < lines.length ? _peekRun('thin-composer', lines.slice(cut).join('\n')) : '';
     return head + (head && tail ? '\n' : '') + tail;
   }
+  // Claude Code's input box: ❯ between two rules, then its ⏵/shift+tab footer.
+  // Other providers' composers are recognised inside tag-prompts.
+  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw);
   for (let i = plain.length - 1; i > 0; i--) {
     if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
     const end = plain.findIndex((line, n) => n > i && rule(line));
@@ -16854,9 +17031,12 @@ function _peekLiveHtml(raw) {
     // A genuinely typed-but-unsent draft (nothing matching in the queue) still
     // shows, so the terminal never hides what only it knows.
     const showDraft = input && !_draftEchoesSteering(input);
+    _peekTraceFrame('split-composer', 'input box and footer separated from the messages');
+    if (showDraft) _peekTraceFrame('show-draft', input.length + ' characters typed, not sent');
+    else if (input) _peekTraceFrame('hide-steering-echo', 'matches a queued Steering message');
     const draft = showDraft ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
     return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
-      + '<div class="peek-worker-footer">' + ansiToHtml(lines.slice(end + 1).join('\n')) + '</div>';
+      + '<div class="peek-worker-footer">' + _peekRun('footer', lines.slice(end + 1).join('\n')) + '</div>';
   }
   return _peekHtml(raw);
 }
@@ -17827,9 +18007,11 @@ async function _refreshPeekFrame(liveOnly, request) {
       _peekStaleReported = true;
       _peekPollBeacon('stale-live-suppressed', name, { verdict: 'newer_frame_retained', measured: true, n_considered: 1 });
     }
+    _peekTraceBegin({ name, live_only: !!liveOnly, server: data.render || null });
     if (!staleLive && data.pane_cols > 0) {
       const b = document.getElementById('peek-body');
       if (b) b.style.setProperty('--peek-cols', data.pane_cols);
+      _peekTraceFrame('wrap-at-pane-width', data.pane_cols + ' columns');
     }
     const rawOutput = (data.live != null) ? data.live : (data.output || '(no output)');
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
@@ -17841,6 +18023,8 @@ async function _refreshPeekFrame(liveOnly, request) {
     // newer live frame. Trim against the history actually displayed here;
     // live requests skip the server's expensive transcript read entirely.
     const output = _peekThin ? (staleLive ? _lastPeekRaw : rawOutput) : _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
+    if (_peekTraceCur) _peekTraceCur.thin = _peekThin;
+    if (!_peekThin && !staleLive && output.length < rawOutput.length) _peekTraceFrame('trim-live-overlap', (rawOutput.length - output.length) + ' characters already in history');
     const acceptFrame = () => {
       if (!_peekFrameSequence) {
         _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
@@ -17859,12 +18043,15 @@ async function _refreshPeekFrame(liveOnly, request) {
     // the current match every tick (the "force-scroll back to result" bug on idle sessions).
     if (!modeChanged && output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       acceptFrame();
+      _peekTraceEnd('skip-unchanged');
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     // Prepare both regions before committing the raw-frame dedupe keys. A
     // failed conversion must remain retryable just like a failed body read.
+    _peekTraceRegion = 'live';
     const newHTML = _peekLiveHtml(output);
+    _peekTraceRegion = 'history';
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
@@ -17896,7 +18083,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Chat tab owns #peek-body: keep the terminal data fresh, touch no DOM
     // and no scroll position (the chat was being replaced by terminal output).
     const chatOwnsBody = body.classList.contains('peek-chat');
-    if (chatOwnsBody) _peekChatPaintSkips++;
+    if (chatOwnsBody) { _peekChatPaintSkips++; _peekTraceEnd('chat-owns-body'); }
     else {
     if (_peekScrollLocked || hasSearch || _peekPressHold) _peekBufferedOutput = true;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
@@ -17940,6 +18127,9 @@ async function _refreshPeekFrame(liveOnly, request) {
         _hideScrollLockBadge(body);
       });
     }
+    if (_peekPressHold || (_peekBufferedOutput && (_peekScrollLocked || hasSearch))) {
+      _peekTraceEnd('hold-while-reading', _peekPressHold ? 'pressing in the peek' : hasSearch ? 'a search is active' : 'scrolled up');
+    } else _peekTraceEnd('painted', histChanged ? 'history and live' : 'live only');
     }   // !chatOwnsBody
     if (performance.now() > _peekGeoHold) statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     acceptFrame();
@@ -32398,7 +32588,7 @@ function switchView(view) {
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
-  if (view === 'messages') _messagesLoad(true, '');
+  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); }
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
@@ -42624,7 +42814,7 @@ let _skillsData = { db: [], file: [], builtin: [], usage: {}, daily: [], windowD
 // skill first here and one tap away in every worker's composer.
 function _skillsPref(k, d) { try { return localStorage.getItem('skills_' + k) || d; } catch(e) { return d; } }
 function _skillsPrefSet(k, v) { try { localStorage.setItem('skills_' + k, v); } catch(e) {} }
-function _skillsSort() { const s = _skillsPref('sort', 'used'); return s === 'name' || s === 'recent' ? s : 'used'; }
+function _skillsSort() { const s = _skillsPref('sort', 'used'); return ['name', 'recent', 'created', 'edited'].includes(s) ? s : 'used'; }
 function _skillsQ() { return ((document.getElementById('skills-search') || {}).value || '').toLowerCase(); }
 function _skillsRerender() { _skillsRender(_skillsQ(), document.getElementById('skills-count'), document.getElementById('skills-tab-sections')); }
 function _skillsSortSet(v) { _skillsPrefSet('sort', v); _skillsRerender(); }
@@ -42743,8 +42933,8 @@ function _skillsRender(q, countEl, container) {
   const isPinned = cmd => pinned.has(_skillKey(cmd));
   const wf = _skillsFilters.worker === '__unattributed__' ? '' : _skillsFilters.worker;
   const all = [
-    ..._skillsData.db.map(s => ({ cmd: '/' + s.name, desc: s.description || '', hint: s.hint || '', type: 'custom', editable: true, key: 'db:' + s.name })),
-    ..._skillsData.file.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: c.hint || '', type: 'project', editable: false, key: 'file:' + c.cmd.replace(/^\//, '') })),
+    ..._skillsData.db.map(s => ({ cmd: '/' + s.name, desc: s.description || '', hint: s.hint || '', type: 'custom', editable: true, key: 'db:' + s.name, created_at: s.created_at || 0, modified_at: s.modified_at || 0 })),
+    ..._skillsData.file.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: c.hint || '', type: 'project', editable: false, key: 'file:' + c.cmd.replace(/^\//, ''), created_at: c.created_at || 0, modified_at: c.modified_at || 0 })),
     ..._skillsData.builtin.map(c => ({ cmd: c.cmd, desc: c.desc || '', hint: '', type: 'builtin', editable: false, key: '' })),
   ];
   const keep = it => {
@@ -42769,6 +42959,8 @@ function _skillsRender(q, countEl, container) {
   shown.sort((a, b) => {
     if (sort === 'used') return score(b) - score(a) || ((use(b.cmd) || {}).n || 0) - ((use(a.cmd) || {}).n || 0) || a.cmd.localeCompare(b.cmd);
     if (sort === 'recent') return ((use(b.cmd) || {}).last_ts || 0) - ((use(a.cmd) || {}).last_ts || 0) || a.cmd.localeCompare(b.cmd);
+    if (sort === 'created') return (b.created_at || 0) - (a.created_at || 0) || a.cmd.localeCompare(b.cmd);
+    if (sort === 'edited') return (b.modified_at || 0) - (a.modified_at || 0) || a.cmd.localeCompare(b.cmd);
     return a.cmd.localeCompare(b.cmd);
   });
   const nonBuiltin = all.filter(i => i.type !== 'builtin').length;
@@ -42786,12 +42978,14 @@ function _skillsRender(q, countEl, container) {
 
   const row = it => {
     const id = 'sc-' + it.cmd.replace(/[^a-z0-9]/gi, '_');
-    const safeCmd = it.cmd.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // escJs, not a bare backslash pass: these go inside onclick="...", so a
+    // name with " or a transcript-derived key with ' must not break out.
+    const safeCmd = escJs(it.cmd);
     const u = use(it.cmd);
     const pin = isPinned(it.cmd);
     const n = u ? (wf && _skillsFilters.worker ? (u.workers || {})[wf] || 0 : u.recent || 0) : 0;
     const usesTitle = u ? (u.recent || 0) + ' in the last ' + _skillsData.windowDays + ' days, ' + u.n + ' all time (model ' + u.model + ', typed ' + u.user + ')' : 'No recorded use';
-    const fk = esc(it.key || '');
+    const fk = escJs(it.key || '');
     return '<div class="skill-card sk-row sk-' + it.type + (pin ? ' is-pinned' : '') + '" id="' + id + '">' +
       '<div class="sk-row-main" onclick="_skillToggle(\'' + id + '\',\'' + fk + '\')">' +
         '<button class="sk-pin' + (pin ? ' active' : '') + '" aria-pressed="' + pin + '" aria-label="' + (pin ? 'Unpin ' : 'Pin ') + esc(it.cmd) + '" title="' + (pin ? 'Unpin' : 'Pin to the quick bar') + '" onclick="event.stopPropagation();_skillPinToggle(\'' + safeCmd + '\')">\u{1F4CC}</button>' +
@@ -42807,7 +43001,7 @@ function _skillsRender(q, countEl, container) {
           '<span class="sk-menu-wrap"><button class="btn sk-more" aria-haspopup="menu" aria-label="More actions for ' + esc(it.cmd) + '" onclick="_skillsMenu(this)">⋯</button>' +
             '<span class="sk-menu" role="menu">' +
               '<button role="menuitem" onclick="_skillsMenuClose();_skillPinToggle(\'' + safeCmd + '\')">' + (pin ? 'Unpin' : 'Pin to quick bar') + '</button>' +
-              '<button role="menuitem" onclick="_skillsMenuClose();_skillCopy(\'' + safeCmd + '\',\'' + esc(it.hint.replace(/\\/g, '\\\\').replace(/'/g, "\\'")) + '\')">Copy command</button>' +
+              '<button role="menuitem" onclick="_skillsMenuClose();_skillCopy(\'' + safeCmd + '\',\'' + escJs(it.hint) + '\')">Copy command</button>' +
               '<button role="menuitem" onclick="_skillsMenuClose();_skillToggle(\'' + id + '\',\'' + fk + '\')">Details and examples</button>' +
               (it.editable ? '<button role="menuitem" onclick="_skillsMenuClose();editSkill(\'' + esc(it.cmd.replace(/^\//, '')) + '\')">Edit</button>' : '') +
             '</span></span>' +
@@ -42891,7 +43085,7 @@ function _skillsRenderSide(all, pinned) {
     const ranked = Object.entries(_skillsData.usage).map(([k, u]) => [k, u.recent || 0]).filter(x => x[1] > 0)
       .sort((a, b) => b[1] - a[1]).slice(0, 5);
     top.innerHTML = ranked.length ? ranked.map(([k, n], i) =>
-      '<li><button class="sk-top-item" onclick="_skillsJump(\'/' + esc(k) + '\')"><span class="sk-rank">' + (i + 1) + '</span><span class="sk-top-name">/' + esc(k) + '</span><span class="sk-top-n">' + n.toLocaleString() + ' ×</span></button></li>').join('')
+      '<li><button class="sk-top-item" onclick="_skillsJump(\'/' + escJs(k) + '\')"><span class="sk-rank">' + (i + 1) + '</span><span class="sk-top-name">/' + esc(k) + '</span><span class="sk-top-n">' + n.toLocaleString() + ' ×</span></button></li>').join('')
       : '<li class="sk-empty">No skill used in the last ' + days + ' days</li>';
   }
   const grp = document.getElementById('skills-groups');
@@ -54035,3 +54229,301 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); e.stopPropagation(); _xlsxSave();
   }
 }, true);
+
+// ── Messages: conversations (server: api/conversations.rs) ──────────────────
+// Channels are groups; People are direct messages; Workers are each worker's
+// shared thread. "All messages" is the original message log, unchanged.
+const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null,
+  listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
+function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
+function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
+function _cvColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'hsl(' + (h % 360) + ',55%,45%)'; }
+function _cvAvatar(name, worker) {
+  if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
+  return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
+}
+function _cvMeKey() { return _cv.list && _cv.list.me ? _cv.list.me.key : ''; }
+function _cvFindName(conv) {
+  const L = _cv.list || {};
+  const c = (L.channels || []).find(x => x.conv === conv); if (c) return '#' + c.name;
+  const p = (L.people || []).find(x => x.conv === conv); if (p) return p.name;
+  const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
+  if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
+  if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  return conv || '';
+}
+async function _cvLoadList() {
+  try {
+    const r = await fetch(API + '/api/conversations');
+    if (!r.ok) return;
+    _cv.list = await r.json();
+  } catch (e) { return; }
+  _cvRenderBadge();
+  if (_cvViewOn()) _cvRenderSide();
+}
+function _cvRenderBadge() {
+  const tab = document.getElementById('tab-messages'); if (!tab || !_cv.list) return;
+  let b = document.getElementById('tab-messages-badge');
+  if (!b) { b = document.createElement('span'); b.id = 'tab-messages-badge'; b.className = 'cv-badge cv-badge-red'; b.style.marginLeft = '4px'; tab.appendChild(b); }
+  const t = _cv.list.totals || {};
+  b.textContent = t.mentions ? String(t.mentions) : (t.unread ? '•' : '');
+  b.title = (t.mentions || 0) + ' mention(s), ' + (t.unread || 0) + ' unread';
+}
+function _cvItem(conv, ico, label, u, m, extra) {
+  const cls = 'cv-item' + (_cv.sel === conv ? ' active' : '') + (u ? ' unread' : '');
+  return '<button class="' + cls + '" data-cv="' + esc(conv) + '" onclick="_cvSelect(this.dataset.cv)">' + ico +
+    '<span class="cv-lbl">' + esc(label) + '</span>' + (extra || '') +
+    (m ? '<span class="cv-badge cv-badge-red">' + m + '</span>' : (u ? '<span class="cv-badge">' + u + '</span>' : '')) + '</button>';
+}
+function _cvRenderSide() {
+  const L = _cv.list; if (!L) return;
+  const t = L.totals || {};
+  document.getElementById('cv-mentions-n').textContent = t.mentions || '';
+  document.getElementById('cv-unread-n').textContent = t.unread || '';
+  document.querySelectorAll('#cv-side .cv-nav > .cv-item[data-cv^="@"]').forEach(b => b.classList.toggle('active', b.dataset.cv === _cv.sel));
+  const allItem = document.getElementById('cv-all-item');
+  if (allItem) allItem.style.display = L.me && L.me.scope_level && L.me.scope_level !== 'global' ? 'none' : '';
+  document.getElementById('cv-channels').innerHTML = (L.channels || []).map(c =>
+    _cvItem(c.conv, '<span class="cv-ico">#</span>', c.name, c.unread, c.mentions)).join('') || '<div class="cv-empty">No channels yet</div>';
+  const ppl = (L.people || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+    ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
+    : _cvItem(p.conv, _cvAvatar(p.name), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+  const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
+  document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
+    const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
+    return _cvItem(w.conv, _cvAvatar(w.name, true), w.name, w.unread, w.mentions, '<span class="cv-dot' + (act ? ' on' : '') + '" title="' + (act ? 'working' : 'idle') + '"></span>');
+  }).join('') || '<div class="cv-empty">No workers you can reach</div>';
+}
+function _cvShowPane(which) {
+  document.getElementById('cv-pane').style.display = which === 'conv' ? 'flex' : 'none';
+  document.getElementById('msgs-log-pane').style.display = which === 'log' ? 'flex' : 'none';
+}
+function _cvEnter() {
+  if (!document.getElementById('cv-pane')) return;
+  const lp = document.getElementById('msgs-log-pane');
+  if (lp && !lp.querySelector('.cv-back')) {
+    const b = document.createElement('button'); b.className = 'btn cv-back'; b.innerHTML = '&#x2039; Conversations';
+    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack; lp.prepend(b);
+  }
+  _cvLoadList().then(() => {
+    if (_cvMobile()) { document.getElementById('messages-view').classList.remove('cv-open'); _cvRenderSide(); return; }
+    let sel = _cv.sel || localStorage.getItem('amux_cv_sel') || '';
+    const L = _cv.list || {}; const known = c => [...(L.channels || []), ...(L.people || []), ...(L.workers || [])].some(x => x.conv === c);
+    if (!sel || (sel[0] !== '@' && !known(sel)) || (sel === '@all' && L.me && L.me.scope_level !== 'global')) {
+      const first = (L.channels || []).find(c => c.unread) || (L.channels || [])[0];
+      sel = first ? first.conv : '@mentions';
+    }
+    _cvSelect(sel, true);
+  });
+  clearInterval(_cv.listT); _cv.listT = setInterval(() => { if (_cvViewOn()) _cvLoadList(); }, 5000);
+}
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvSelect(sel, auto) {
+  _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
+  if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
+  clearInterval(_cv.pollT); _cv.pollT = null;
+  _cvRenderSide();
+  if (sel === '@all') { _cvShowPane('log'); return; }
+  _cvShowPane('conv');
+  _cvFit();
+  const compose = document.getElementById('cv-compose'), hint = document.getElementById('cv-hint');
+  const isConv = sel[0] !== '@';
+  compose.style.display = isConv ? '' : 'none'; hint.style.display = isConv ? '' : 'none';
+  document.getElementById('cv-typing').textContent = '';
+  document.getElementById('cv-head-people').innerHTML = '';
+  if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
+  if (sel === '@unread') return _cvRenderUnread();
+  if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
+  _cv.posts = []; _cv.lastId = 0; _cv.info = null;
+  document.getElementById('cv-title').textContent = _cvFindName(sel);
+  document.getElementById('cv-meta').textContent = '';
+  document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
+  const inp = document.getElementById('cv-input');
+  inp.placeholder = 'Message ' + _cvFindName(sel) + (sel[0] === 'p' || _cvMobile() ? '' : ' (use @ to mention a person or worker)');
+  _cvPoll(true);
+  _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
+  if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
+}
+function _cvFit() {
+  const pane = document.getElementById('cv-pane'); if (!pane) return;
+  requestAnimationFrame(() => { const top = Math.max(0, pane.getBoundingClientRect().top + window.scrollY); pane.style.setProperty('--cv-top', top + 'px'); });
+}
+window.addEventListener('resize', () => { if (_cvViewOn() && _cv.sel) _cvFit(); });
+function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+async function _cvPoll(full) {
+  const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+  let d;
+  try {
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts' + (full ? '' : '?after=' + _cv.lastId));
+    d = await r.json();
+    if (!r.ok) { document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+  } catch (e) { return; }
+  if (sel !== _cv.sel) return;
+  _cv.info = d;
+  if (full) _cv.posts = d.posts || [];
+  else if ((d.posts || []).length) _cv.posts = _cv.posts.concat(d.posts);
+  // Deliveries are written back after a post lands: refresh recent ones that are still pending.
+  const pending = _cv.posts.filter(p => (p.mentions || []).some(m => m.indexOf('worker:') === 0) && !(p.deliveries || []).length && Date.now() - p.ts < 120000);
+  if (!full && pending.length) { try { const r2 = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?after=' + (pending[0].id - 1) + '&limit=200'); const d2 = await r2.json(); (d2.posts || []).forEach(np => { const i = _cv.posts.findIndex(p => p.id === np.id); if (i >= 0) _cv.posts[i] = np; }); } catch (e) {} }
+  const grew = _cv.posts.length && _cv.posts[_cv.posts.length - 1].id !== _cv.lastId;
+  if (_cv.posts.length) _cv.lastId = _cv.posts[_cv.posts.length - 1].id;
+  _cvRenderHead(sel, d);
+  if (full || grew || pending.length) _cvRenderPosts(full || grew);
+  document.getElementById('cv-typing').innerHTML = (d.typing || []).length
+    ? '<span class="cv-dot on" style="display:inline-block;margin-right:6px"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
+  if (grew || full) _cvMarkRead();
+}
+function _cvRenderHead(sel, d) {
+  const meta = document.getElementById('cv-meta');
+  const ppl = d.people || [], wk = d.workers || [];
+  const on = ppl.filter(p => p.online).length;
+  if (sel.indexOf('g:') === 0) {
+    const g = sel.slice(2);
+    meta.textContent = ppl.length + (ppl.length === 1 ? ' person' : ' people') + ' · ' + wk.length + (wk.length === 1 ? ' worker' : ' workers') + ' · ' +
+      (g === 'general' ? 'Everyone with workspace access' : 'Everything in the ' + g + ' group');
+  } else if (sel.indexOf('w:') === 0) {
+    meta.textContent = 'Messages here go to ' + sel.slice(2) + '. It replies here. ' + ppl.length + ' people can read this.';
+  } else {
+    meta.textContent = 'Direct message';
+  }
+  document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:8px"><span class="cv-dot on" style="display:inline-block;margin-right:4px"></span>' + on + ' online</span>' : '') +
+    ppl.slice(0, 4).map(p => _cvAvatar(p.name)).join('');
+}
+function _cvBodyHtml(p) {
+  let h = esc(p.body || '');
+  const me = _cvMeKey();
+  const names = {};
+  (p.mentions || []).forEach(k => { const n = k.replace(/^(person|worker):/, ''); names[n.split('@')[0].toLowerCase()] = k; });
+  ((_cv.info && _cv.info.people) || []).forEach(pp => { if ((p.mentions || []).includes(pp.key)) names[pp.name.toLowerCase()] = pp.key; });
+  h = h.replace(/(^|[^\w.])@([\w.\-]+)/g, (m, pre, tok) => {
+    const k = names[tok.replace(/\.$/, '').toLowerCase()];
+    return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
+  });
+  h = h.replace(/(^|\s)(\/[\w.\-\/]+\.[A-Za-z0-9]{1,6})(?=$|[\s,;:)])/g, (m, pre, path) =>
+    pre + '<span class="cv-file" role="button" tabindex="0" data-path="' + path + '" onclick="openFilePreview(this.dataset.path)" title="Open ' + path + '">&#x1F4C4; ' + path + '</span>');
+  return h;
+}
+function _cvDelivHtml(p) {
+  const want = (p.mentions || []).filter(m => m.indexOf('worker:') === 0).map(m => m.slice(7));
+  if (!want.length) return '';
+  const got = p.deliveries || [];
+  const chips = want.map(w => {
+    const d = got.find(x => x.worker === w);
+    if (!d) return '<span>sending to ' + esc(w) + '…</span>';
+    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + '</span>';
+    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + '</span>'
+      : '<span class="bad" title="' + esc(d.detail || '') + '">&#x2715; not delivered to ' + esc(w) + (d.detail ? ': ' + esc(String(d.detail).slice(0, 60)) : '') + '</span>';
+  });
+  return '<div class="cv-deliv">' + chips.join('') + '</div>';
+}
+function _cvPostHtml(p, showConv) {
+  const worker = p.author_key.indexOf('worker:') === 0;
+  const t = new Date(p.ts);
+  return '<div class="cv-post" data-id="' + p.id + '">' + _cvAvatar(p.author_name, worker) + '<div class="cv-post-main"><div class="cv-post-head">' +
+    '<span class="cv-post-who">' + esc(p.author_name) + (p.author_key === _cvMeKey() ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
+    '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
+    (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
+    '</div><div class="cv-post-body">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
+}
+function _cvDayLabel(ts) {
+  const d = new Date(ts), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  const s = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return same(d, today) ? 'Today · ' + s : same(d, y) ? 'Yesterday · ' + s : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+function _cvRenderPosts(scroll) {
+  const box = document.getElementById('cv-posts');
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (!_cv.posts.length) {
+    const sel = _cv.sel || '';
+    box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
+      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+    return;
+  }
+  let html = '', day = '';
+  for (const p of _cv.posts) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  box.innerHTML = html;
+  if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+}
+async function _cvMarkRead() {
+  if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
+  try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: _cv.lastId }) }); } catch (e) {}
+  _cvLoadList();
+}
+async function _cvLoadFeed(url, title, meta) {
+  document.getElementById('cv-title').textContent = title;
+  document.getElementById('cv-meta').textContent = meta;
+  const box = document.getElementById('cv-posts'); box.innerHTML = '<div class="cv-empty">Loading…</div>';
+  try {
+    const r = await fetch(API + url); const d = await r.json();
+    const posts = (d.posts || []);
+    box.innerHTML = posts.length ? posts.map(p => _cvPostHtml(p, true)).join('') : '<div class="cv-empty">Nothing here.</div>';
+  } catch (e) { box.innerHTML = '<div class="cv-empty">Could not load: ' + esc(e.message) + '</div>'; }
+}
+function _cvRenderUnread() {
+  document.getElementById('cv-title').textContent = 'Unread';
+  document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
+  const L = _cv.list || {};
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+    .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
+  document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
+    : '<div class="cv-empty">You are all caught up.</div>';
+}
+// Composer: Enter sends, Shift+Enter is a new line, @ opens the picker.
+function _cvAcCandidates(q) {
+  const d = _cv.info || {}; const me = _cvMeKey(); q = q.toLowerCase();
+  const ppl = (d.people || []).filter(p => p.key !== me).map(p => ({ handle: p.name.replace(/\s+/g, ''), label: p.name, kind: 'person' }));
+  const wks = (d.mentionable_workers || []).map(w => ({ handle: w, label: w, kind: 'worker' }));
+  return [...ppl, ...wks].filter(c => c.handle.toLowerCase().startsWith(q) || c.label.toLowerCase().includes(q)).slice(0, 8);
+}
+function _cvOnInput(el) {
+  el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  const upto = el.value.slice(0, el.selectionStart); const m = upto.match(/(^|\s)@([\w.\-]*)$/);
+  const ac = document.getElementById('cv-ac');
+  if (m) {
+    _cv.ac.items = _cvAcCandidates(m[2]); _cv.ac.i = 0; _cv.ac.open = _cv.ac.items.length > 0;
+    ac.innerHTML = _cv.ac.items.map((c, i) => '<button type="button" class="' + (i === 0 ? 'sel' : '') + '" onmousedown="event.preventDefault();_cvAcPick(' + i + ')">' +
+      _cvAvatar(c.label, c.kind === 'worker') + '<span>' + esc(c.label) + '</span><small>' + (c.kind === 'worker' ? 'worker' : 'person') + '</small></button>').join('');
+    ac.classList.toggle('open', _cv.ac.open);
+  } else { _cv.ac.open = false; ac.classList.remove('open'); }
+  if (el.value.trim() && Date.now() - _cv.typingAt > 3000 && _cv.sel && _cv.sel[0] !== '@') {
+    _cv.typingAt = Date.now();
+    fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/typing', { method: 'POST' }).catch(() => {});
+  }
+}
+function _cvAcPick(i) {
+  const c = _cv.ac.items[i]; if (!c) return;
+  const el = document.getElementById('cv-input'); const pos = el.selectionStart;
+  const before = el.value.slice(0, pos).replace(/@([\w.\-]*)$/, '@' + c.handle + ' ');
+  el.value = before + el.value.slice(pos); el.selectionStart = el.selectionEnd = before.length;
+  _cv.ac.open = false; document.getElementById('cv-ac').classList.remove('open'); el.focus();
+}
+function _cvOnKey(e) {
+  if (_cv.ac.open) {
+    const btns = document.querySelectorAll('#cv-ac button');
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); _cv.ac.i = (_cv.ac.i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length; btns.forEach((b, i) => b.classList.toggle('sel', i === _cv.ac.i)); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); _cvAcPick(_cv.ac.i); return; }
+    if (e.key === 'Escape') { _cv.ac.open = false; document.getElementById('cv-ac').classList.remove('open'); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _cvSend(); }
+}
+async function _cvSend() {
+  const el = document.getElementById('cv-input'), btn = document.getElementById('cv-send');
+  const body = el.value.trim(); const sel = _cv.sel;
+  if (!body || !sel || sel[0] === '@' || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { if (typeof showToast === 'function') showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
+    el.value = ''; el.style.height = ''; _cv.typingAt = 0;
+    await _cvPoll(false);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Not sent: ' + e.message, 'error');
+  } finally { btn.disabled = false; el.focus(); }
+}
+// The tab badge stays current in every view, not only while Messages is open.
+setInterval(() => { if (!document.hidden && !_cvViewOn()) _cvLoadList(); }, 20000);
+setTimeout(_cvLoadList, 3000);

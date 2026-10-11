@@ -8364,3 +8364,93 @@ body.light #fc-container { color-scheme: light; }
 .map-me-pulse { position: absolute; left: -9px; top: -9px; width: 40px; height: 40px; border-radius: 50%; background: rgba(26,115,232,0.35); animation: map-me-pulse 2s ease-out infinite; }
 @keyframes map-me-pulse { 0% { transform: scale(0.4); opacity: 0.9; } 100% { transform: scale(1.4); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .map-me-pulse { animation: none; opacity: 0.35; } }
+
+/* ── Messages: conversations (channels, people, workers) ───────────────── */
+#cv-side { width:248px; flex:0 0 248px; display:flex; flex-direction:column; min-height:0;
+  overflow-y:auto; border-right:1px solid var(--border); background:var(--card);
+  padding:12px 8px calc(12px + env(safe-area-inset-bottom)); gap:2px; }
+.cv-side-head { display:flex; align-items:center; padding:2px 8px 8px; }
+.cv-side-title { font-weight:700; font-size:1.05rem; }
+.cv-search { padding:0 4px 8px; }
+.cv-search .input { width:100%; box-sizing:border-box; }
+.cv-nav { display:flex; flex-direction:column; gap:1px; }
+.cv-sec { font-size:0.68rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--dim); padding:12px 10px 4px; }
+.cv-item { display:flex; align-items:center; gap:8px; width:100%; min-height:36px; padding:6px 10px;
+  border:none; background:none; color:var(--text); font-size:0.86rem; text-align:left;
+  border-radius:6px; cursor:pointer; }
+.cv-item:hover { background:var(--hover, rgba(127,127,127,.12)); }
+.cv-item.active { background:var(--accent); color:var(--on-accent, #fff); }
+.cv-item.unread .cv-lbl { font-weight:700; }
+.cv-ico { width:20px; flex:0 0 20px; text-align:center; opacity:0.85; }
+.cv-lbl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cv-badge { font-size:0.68rem; font-weight:700; min-width:18px; padding:1px 6px; border-radius:9px;
+  text-align:center; background:var(--border); color:var(--text); }
+.cv-badge:empty { display:none; }
+.cv-badge-red { background:var(--red, #e5534b); color:#fff; }
+.cv-dot { width:8px; height:8px; border-radius:50%; flex:0 0 8px; background:var(--border); }
+.cv-dot.on { background:var(--green, #3fb950); }
+.cv-av { width:22px; height:22px; flex:0 0 22px; border-radius:50%; display:inline-flex;
+  align-items:center; justify-content:center; font-size:0.7rem; font-weight:700; color:#fff; }
+#cv-pane { flex:1; min-width:0; min-height:0; flex-direction:column; }
+.cv-head { display:flex; align-items:center; gap:10px; padding:10px 16px;
+  border-bottom:1px solid var(--border); flex-shrink:0; }
+.cv-back { display:none; min-width:44px; min-height:44px; font-size:1.3rem; }
+.cv-head-main { flex:1; min-width:0; }
+.cv-head-title { font-weight:700; font-size:1.05rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cv-head-meta { font-size:0.75rem; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cv-head-people { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }
+.cv-head-people .cv-av { margin-left:-6px; border:2px solid var(--bg); }
+.cv-posts { flex:1; min-height:0; overflow-y:auto; padding:8px 16px; -webkit-overflow-scrolling:touch; }
+.cv-day { text-align:center; font-size:0.72rem; color:var(--dim); margin:12px 0 6px; }
+.cv-post { display:flex; gap:10px; padding:6px 0; }
+.cv-post .cv-av { width:34px; height:34px; flex-basis:34px; font-size:0.85rem; }
+.cv-post-main { flex:1; min-width:0; }
+.cv-post-head { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.cv-post-who { font-weight:700; font-size:0.88rem; }
+.cv-post-ts { font-size:0.7rem; color:var(--dim); }
+.cv-post-conv { font-size:0.7rem; color:var(--accent); cursor:pointer; }
+.cv-post-body { font-size:0.88rem; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+.cv-mention { background:rgba(88,166,255,0.16); color:var(--accent); border-radius:4px; padding:0 3px; }
+.cv-mention.me { background:rgba(210,153,34,0.22); color:inherit; font-weight:600; }
+.cv-file { display:inline-flex; align-items:center; gap:6px; margin:4px 0 0; padding:6px 10px;
+  border:1px solid var(--border); border-radius:8px; background:var(--card); font-size:0.8rem;
+  cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cv-deliv { display:flex; gap:6px; flex-wrap:wrap; margin-top:3px; }
+.cv-deliv span { font-size:0.68rem; padding:1px 7px; border-radius:9px; border:1px solid var(--border); color:var(--dim); }
+.cv-deliv span.ok { color:var(--green, #3fb950); border-color:rgba(63,185,80,.45); }
+.cv-deliv span.bad { color:var(--red, #e5534b); border-color:rgba(229,83,75,.45); }
+.cv-typing { min-height:18px; padding:0 16px; font-size:0.74rem; color:var(--dim); }
+.cv-compose { position:relative; display:flex; gap:8px; align-items:flex-end; padding:6px 16px 4px; flex-shrink:0; }
+.cv-compose textarea { flex:1; resize:none; font-family:inherit; max-height:160px; min-height:44px; box-sizing:border-box;
+  font-size:0.9rem; line-height:1.4; }
+.cv-send { min-width:44px; min-height:44px; }
+.cv-hint { display:flex; gap:16px; padding:0 16px calc(8px + env(safe-area-inset-bottom));
+  font-size:0.68rem; color:var(--dim); flex-wrap:wrap; }
+.cv-ac { display:none; position:absolute; left:16px; bottom:100%; z-index:50; min-width:220px; max-width:calc(100% - 32px);
+  max-height:240px; overflow-y:auto; background:var(--card); border:1px solid var(--border);
+  border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.3); padding:4px; }
+.cv-ac.open { display:block; }
+.cv-ac button { display:flex; align-items:center; gap:8px; width:100%; min-height:40px; padding:6px 10px;
+  border:none; background:none; color:var(--text); text-align:left; border-radius:6px; cursor:pointer; font-size:0.85rem; }
+.cv-ac button.sel, .cv-ac button:hover { background:var(--hover, rgba(127,127,127,.14)); }
+.cv-ac small { color:var(--dim); margin-left:auto; }
+.cv-empty { color:var(--dim); font-size:0.85rem; padding:24px 8px; text-align:center; }
+#msgs-log-pane { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; padding:12px 16px; }
+@media (max-width: 600px) {
+  #cv-side { width:100%; flex:1 1 auto; border-right:none; }
+  #messages-view.cv-open #cv-side { display:none; }
+  #messages-view:not(.cv-open) #cv-pane, #messages-view:not(.cv-open) #msgs-log-pane { display:none !important; }
+  .cv-back { display:inline-flex; align-items:center; justify-content:center; }
+  .cv-item { min-height:44px; }
+  .cv-head { padding:6px 10px; }
+  .cv-posts { padding:8px 10px; }
+  .cv-compose { padding:6px 10px 4px; }
+  .cv-hint { display:none; }
+  .cv-head-people { display:none; }
+  #msgs-log-pane { padding:8px 10px; }
+  /* The page around the view does not bound its height on phones, so the
+     conversation is sized to the screen below its own top edge (set by
+     _cvFit) and the composer stays at the bottom. */
+  #messages-view.cv-open #cv-pane { height:calc(100dvh - var(--cv-top, 200px)); }
+}

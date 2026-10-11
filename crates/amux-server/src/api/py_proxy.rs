@@ -178,6 +178,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/mcp", "MCP registry — list/import/remove (AMUX-2871)"),
     ("/api/sql", "SQL browser — schema/rows/query, read-only unless write:true"),
     ("/api/skills", "skills list + save/delete"),
+    ("/api/peek", "peek rendering steps (PEEK_SERVER_STEPS)"),
     ("/api/slash-commands", "slash commands"),
     ("/api/map", "map + geocoding"),
     ("/api/graph", "Map tab graph mode: mind-map store + Obsidian vault import + fleet org-chart projection (api/graph.rs, AMUX-2886)"),
