@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1309';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1312';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39887,13 +39887,39 @@ async function _gcalSource(info, success, failure) {
     if (Array.isArray(d.calendars)) _gcalCalendars = d.calendars;
     _gcalAccounts = Array.isArray(d.accounts) ? d.accounts : null;
     const byKey = new Map(_gcalCalendars.map(c => [_gcalKey(c), c]));
-    const out = [];
+    // ONE ENTRY PER EVENT. The same invite sits in several connected inboxes
+    // and a shared calendar (Partiful) is subscribed from three accounts, so
+    // the raw read listed Stone Street Oktoberfest three times. Merged on
+    // Google's event id + start AFTER hidden calendars are dropped, keeping
+    // the copy from the account's own primary calendar when there is one.
+    const rank = e => (e.calendar_id === e.account_id ? 0 : (byKey.get(e.account_id + '|' + e.calendar_id) || {}).primary ? 1 : 2);
+    const best = new Map();
     for (const e of (d.events || [])) {
       const cal = byKey.get(e.account_id + '|' + e.calendar_id);
       if (cal && !_gcalCalOn(cal)) continue;
-      out.push(_gcalEventToFc(e));
+      const k = (e.event_id || e.id) + '|' + (e.start_time || '');
+      const prev = best.get(k);
+      if (!prev || rank(e) < rank(prev)) best.set(k, e);
     }
-    success(out);
+    // Copies of one event saved separately into two calendars carry DIFFERENT
+    // ids (Boo at the Zoo sat in two calendars, twice on screen): the same
+    // title, start and end is the same event to the reader.
+    // amux's own events come back AS Google events: the "amux" calendar in
+    // the owner's Google account subscribes to /api/calendar.ics, so every
+    // local event was drawn twice. The local event is the source; its Google
+    // copy is dropped when the title and start match.
+    const evKey = (title, start, allDay) => String(title || '').trim().toLowerCase() + '|'
+      + (allDay || /^\d{4}-\d{2}-\d{2}$/.test(String(start || '')) ? String(start || '').slice(0, 10) : String(new Date(start).getTime()));
+    const localKeys = new Set();
+    if (_calShowEvents) for (const le of (calEvents || [])) if (!le.deleted) localKeys.add(evKey(le.title, le.start, le.all_day));
+    for (const [k, e] of [...best]) if (localKeys.has(evKey(e.title, e.start_time, e.all_day))) best.delete(k);
+    const seen = new Map();
+    for (const e of best.values()) {
+      const k = String(e.title || '').trim().toLowerCase() + '|' + (e.start_time || '') + '|' + (e.end_time || '');
+      const prev = seen.get(k);
+      if (!prev || rank(e) < rank(prev)) seen.set(k, e);
+    }
+    success([...seen.values()].map(_gcalEventToFc));
     _calPanelRefresh();
   } catch (err) { failure(err); }
 }
@@ -40034,13 +40060,19 @@ function _fcInit() {
     footerToolbar: isMobile ? { left: 'calendars', center: 'timeGridDay,timeGrid3Day,listWeek,dayGridMonth', right: 'addEvent' } : false,
     buttonText: isMobile ? { listWeek: 'Agenda', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' }
       : { dayGridMonth: 'Month', timeGridWeek: 'Week', timeGridDay: 'Day', today: 'Today' },
-    views: { timeGrid3Day: { type: 'timeGrid', duration: { days: 3 }, buttonText: '3 day' } },
+    views: {
+      timeGrid3Day: { type: 'timeGrid', duration: { days: 3 }, buttonText: isMobile ? '3d' : '3 day' },
+      // A single day has the width for Google's side-by-side overlaps.
+      timeGridDay: { eventMaxStack: isMobile ? 4 : 10 },
+    },
+    dayMaxEventRows: 3,
     customButtons: {
       addEvent: {
-        text: '+ Event',
+        text: isMobile ? '+' : '+ Event',
+        hint: 'New event',
         click: () => openEventModal(null),
       },
-      calendars: { text: 'Calendars', click: _calPanelToggle },
+      calendars: { text: isMobile ? '\u2630' : 'Calendars', hint: 'Calendars', click: _calPanelToggle },
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
