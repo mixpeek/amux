@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1313';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1318';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14658,6 +14658,15 @@ function _chatLinkify(html) {
   return _linkifyPaths(html);
 }
 
+// Markdown file links need the worker's cwd just like plain output paths.
+// The shared renderer and delegated handler preserve labels, sanitize HTML,
+// and leave external URLs and heading anchors with their usual behavior.
+function _chatMarkdown(text) {
+  const dir = typeof peekSessionDir === 'string' ? peekSessionDir : '';
+  const base = dir ? dir.replace(/\/$/, '') + '/.amux-chat.md' : '';
+  return _chatLinkify(renderMarkdown(text, base));
+}
+
 // COPY LIKE OPENAI'S CHAT (Ethan, 2026-10-08): a finished reply copies its raw
 // text from the meta line, and every code block in it has its own Copy.
 function _chatCodeCopy(html) {
@@ -14771,14 +14780,14 @@ function _chatMessageHtml(m) {
       ? '<button type="button" class="btn chat-retry-btn" onclick="_chatRetryTurn(\'' + escJs(_chat.name) + '\',\'' + escJs(original) + '\')">Retry</button>'
       : '';
     return _chatBubble('assistant', head + _chatLimitHtml(m.limit) + '<span class="chat-error">' + esc(m.error) + '</span>'
-      + (m.text ? _chatLinkify(renderMarkdown(m.text)) : '') + retryBtn, 'failed · ' + _chatTime(m.ts), 'is-error');
+      + (m.text ? _chatMarkdown(m.text) : '') + retryBtn, 'failed · ' + _chatTime(m.ts), 'is-error');
   }
   const bits = [_chatTime(m.ts)];
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
   const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
-  return _chatBubble('assistant', head + _chatCodeCopy(_chatLinkify(renderMarkdown(m.text || ''))), esc(bits.filter(Boolean).join(' · ')) + copy,
+  return _chatBubble('assistant', head + _chatCodeCopy(_chatMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
 
@@ -14787,6 +14796,7 @@ function _chatMessageHtml(m) {
 function _chatRender(errorText) {
   const body = document.getElementById('peek-body');
   if (!body || !_chatShowing()) return;
+  _bindMdFileLinks(body);
   const s = sessions.find(x => x.name === _chat.name) || {};
   const chatOf = _chatCompanionOf(_chat.name);
   let html = '';
@@ -14966,7 +14976,7 @@ function _chatPaintLive() {
   for (const raw of split.settled) {
     const div = document.createElement('div');
     div.className = 'md-blk';
-    div.innerHTML = _chatLinkify(renderMarkdown(raw));
+    div.innerHTML = _chatMarkdown(raw);
     L.md.appendChild(div);   // fades in via CSS: this path runs per block, Motion is kept for per-turn entrances
   }
   if (split.used) L.settledLen += split.used;
@@ -14974,7 +14984,7 @@ function _chatPaintLive() {
   // remend closes an unfinished fence, link or emphasis for this frame only
   // (Streamdown's healing step), so raw markup never flashes.
   const healed = _chatHoldPartialTable((typeof remend === 'function') ? remend(tailRaw) : tailRaw);
-  if (L.tailRaw !== tailRaw) { L.tail.innerHTML = healed ? _chatLinkify(renderMarkdown(healed)) : ''; L.tailRaw = tailRaw; }
+  if (L.tailRaw !== tailRaw) { L.tail.innerHTML = healed ? _chatMarkdown(healed) : ''; L.tailRaw = tailRaw; }
   L.typing.hidden = !!st.text || (st.phase === 'tool');
   L.root.classList.toggle('has-text', !!st.text);
   const phase = st.interrupted ? 'stopping…' : st.phase === 'thinking' ? 'thinking…' : st.phase === 'tool' ? 'running a tool…' : 'responding…';
@@ -35376,6 +35386,9 @@ function _bindMdFileLinks(container) {
     if (!a || !container.contains(a) || !a.dataset.file) return;
     e.preventDefault();
     e.stopPropagation();
+    if (container.classList.contains('peek-chat')) {
+      _peekPollBeacon('chat-markdown-file-open', _chat.name, { measured: true, n: 1 });
+    }
     if (a.dataset.dir && typeof openExplore === 'function') {
       // Directory link -> the file explorer at that path (carry the session
       // scope if we have one, so cwd-relative reads keep working).
