@@ -114,6 +114,7 @@ pub mod sessions_git;
 pub mod sessions_legacy;
 pub mod settings;
 pub mod simple;
+pub mod skill_examples;
 pub mod skills;
 pub mod signals;
 pub mod standing_approvals;

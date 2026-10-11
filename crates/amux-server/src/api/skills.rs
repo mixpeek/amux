@@ -24,13 +24,13 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/", get(list_skills)).route("/usage", get(skill_usage)).route(
         "/{name}",
         get(get_skill).post(save_skill).delete(delete_skill),
-    )
+    ).route("/{name}/examples", get(super::skill_examples::get_examples))
 }
 
 /// Shared name rule — one predicate, three handlers. `get_skill` had it
 /// inline; a second copy in each writer is how the read and the write start
 /// disagreeing about what a valid name is.
-fn bad_name(name: &str) -> bool {
+pub(super) fn bad_name(name: &str) -> bool {
     name.is_empty() || name.contains('/') || name.contains("..")
 }
 
@@ -208,7 +208,7 @@ fn claude_config_dir() -> std::path::PathBuf {
     }
 }
 
-fn command_dirs() -> Vec<std::path::PathBuf> {
+pub(super) fn command_dirs() -> Vec<std::path::PathBuf> {
     vec![
         claude_config_dir().join("commands"),
         std::path::PathBuf::from(".")
@@ -447,6 +447,7 @@ async fn save_skill(
             // The table row is what the Skills tab edits; the command file is
             // what Claude Code runs and what the composer's `/` list reads.
             // Report both, so a skill that saved but cannot run says so.
+            super::skill_examples::prewarm(name.clone(), file_content.clone());
             match write_command_file(&user_commands_dir(), &name, &file_content) {
                 Ok(path) => Json(json!({ "ok": true, "name": name,
                     "command_file": path.display().to_string() }))

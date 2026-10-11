@@ -3158,6 +3158,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "POST", "DELETE"],
     },
     RouteEntry {
+        path: "/api/skills/{name}/examples",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/slash-commands",
         methods: &["GET"],
     },

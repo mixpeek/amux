@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1314';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1318';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -20226,6 +20226,52 @@ function _loadSlashCommands() {
 }
 _loadSlashCommands();
 
+// EXAMPLES IN THE `/` DROPDOWN (Ethan, 2026-10-10: "the example should also be
+// in the dropdown when i type it"). Once the typed text names one command,
+// that skill's example invocations (the same ones its expanded Skills card
+// shows, from /api/skills/<name>/examples) are listed under it, filtered by
+// what has been typed so far; picking one fills the whole invocation.
+const _skillExamplesCache = {};   // name -> [{invocation, purpose}], [] for none
+// The LATEST keystroke's re-render, not the first: the request usually starts
+// mid-word, and that keystroke's closure no longer matches the input when the
+// answer lands, so calling it would drop the examples until the next key.
+const _skillExamplesWaiter = {};
+function _skillExamplesFor(name, rerender) {
+  if (rerender) _skillExamplesWaiter[name] = rerender;
+  if (name in _skillExamplesCache) return _skillExamplesCache[name];
+  _skillExamplesCache[name] = null;   // in flight
+  fetch(API + '/api/skills/' + encodeURIComponent(name) + '/examples')
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(d => {
+      const rows = [];
+      for (const inv of (d && d.written) || []) rows.push({ invocation: inv, purpose: 'Written in the skill file' });
+      for (const ex of (d && d.inferred) || []) if (!rows.some(r => r.invocation === ex.invocation)) rows.push(ex);
+      // A refused or unmeasured answer is not remembered, so a later `/` retries.
+      if (d && d.measured === false && !rows.length) delete _skillExamplesCache[name];
+      else _skillExamplesCache[name] = rows;
+      const again = _skillExamplesWaiter[name];
+      delete _skillExamplesWaiter[name];
+      if (rows.length && again) again();
+    });
+  return null;
+}
+function _slashAcMatches(q, rerender) {
+  let items = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  const head = q.split(/\s/)[0];
+  const target = SLASH_COMMANDS.find(c => c.cmd === head) || (items.length === 1 ? items[0] : null);
+  if (target && !_isBuiltinCmd(target.cmd)) {
+    const ex = _skillExamplesFor(target.cmd.slice(1), rerender) || [];
+    const more = ex.filter(e => e.invocation.toLowerCase().startsWith(q) && e.invocation.toLowerCase() !== q)
+      .map(e => ({ cmd: e.invocation, desc: e.purpose || '', example: true }));
+    items = items.concat(more);
+  }
+  return items;
+}
+function _slashAcRow(c) {
+  return (c.example ? '<span class="ac-eg">e.g.</span>' : '') + esc(c.cmd) + '<span class="ac-desc">' + esc(c.desc) + '</span>';
+}
+
 // ── Customizable chip bar ──
 // Each chip: { id, label, action, value, danger? }
 // action: 'send' (text), 'keys' (keystroke), 'slash' (populate input), 'special' (named fn)
@@ -21662,11 +21708,11 @@ function slashAcUpdate() {
   if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   if (_slashCmdsLoading) { const v = val; _slashCmdsLoading.then(() => { if (inp.value === v) slashAcUpdate(); }); }
   const q = val.toLowerCase();
-  slashAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  slashAcItems = _slashAcMatches(q, () => { if (inp.value === val) slashAcUpdate(); });
   slashAcSelected = -1;
   if (!slashAcItems.length) { el.classList.remove('open'); return; }
   el.innerHTML = slashAcItems.map((c, i) =>
-    `<div class="ac-item" onmousedown="slashAcPick(${i})">${esc(c.cmd)}<span class="ac-desc">${esc(c.desc)}</span></div>`
+    `<div class="ac-item${c.example ? ' ac-example' : ''}" onmousedown="slashAcPick(${i})">${_slashAcRow(c)}</div>`
   ).join('') + '<button class="ac-close" onmousedown="event.preventDefault();slashAcDismiss()" title="Close">&times;</button>';
   el.classList.add('open');
 }
@@ -23859,11 +23905,11 @@ function cardSlashAcUpdate(name) {
   if (!val.startsWith('/')) { el.classList.remove('open'); _cardAcItems = []; return; }
   if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   const q = val.toLowerCase();
-  _cardAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  _cardAcItems = _slashAcMatches(q, () => { if (inp.value === val && _cardAcName === name) cardSlashAcUpdate(name); });
   _cardAcSelected = -1;
   if (!_cardAcItems.length) { el.classList.remove('open'); return; }
   el.innerHTML = _cardAcItems.map((c, i) =>
-    `<div class="ac-item" onmousedown="cardSlashAcPick('${esc(name)}',${i})">${esc(c.cmd)}<span class="ac-desc">${esc(c.desc)}</span></div>`
+    `<div class="ac-item${c.example ? ' ac-example' : ''}" onmousedown="cardSlashAcPick('${esc(name)}',${i})">${_slashAcRow(c)}</div>`
   ).join('');
   el.classList.add('open');
 }
@@ -42581,7 +42627,7 @@ async function _skillToggle(cardId, fetchKey) {
   }
   body.style.display = 'block';
   if (btn) btn.textContent = '▴';
-  if (_skillContentCache[fetchKey]) { body.innerHTML = _skillContentCache[fetchKey]; return; }
+  if (_skillContentCache[fetchKey]) { body.innerHTML = _skillContentCache[fetchKey]; _skillLoadExamples(body, fetchKey); return; }
   if (!fetchKey) { body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">No details available for built-in commands.</span>'; return; }
   body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">Loading...</span>';
   try {
@@ -42592,9 +42638,50 @@ async function _skillToggle(cardId, fetchKey) {
     const html = _skillRenderContent(content);
     _skillContentCache[fetchKey] = html;
     body.innerHTML = html;
+    _skillLoadExamples(body, fetchKey);
   } catch(e) {
     body.innerHTML = '<span style="color:var(--red);font-size:0.8rem;">Failed to load</span>';
   }
+}
+
+// Example invocations for an expanded skill: lines the skill file already
+// writes as `/name ...`, plus examples the meta-task model inferred from the
+// file (cached server-side per version of the file, so this is one model call
+// per edit, not per expand).
+async function _skillLoadExamples(body, fetchKey) {
+  const [type, name] = fetchKey.split(':', 2);
+  if (!name) return;
+  const box = document.createElement('div');
+  box.className = 'skill-examples';
+  box.style.cssText = 'margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;';
+  box.innerHTML = '<div style="font-size:0.75rem;color:var(--dim);margin-bottom:4px;">Examples</div>'
+    + '<div class="skill-ex-status" style="color:var(--dim);font-size:0.8rem;">Finding examples\u2026</div>';
+  body.prepend(box);
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/skills/' + encodeURIComponent(name) + '/examples?source=' + (type === 'db' ? 'db' : 'file'));
+    d = r.ok ? await r.json() : null;
+  } catch (e) { d = null; }
+  if (!box.isConnected) return;
+  const rows = [];
+  for (const inv of (d && d.written) || []) rows.push({ invocation: inv, purpose: 'Written in the skill file' });
+  for (const ex of (d && d.inferred) || []) if (!rows.some(r => r.invocation === ex.invocation)) rows.push(ex);
+  const status = box.querySelector('.skill-ex-status');
+  if (!rows.length) {
+    status.textContent = 'No examples yet' + (d && d.why_unmeasured ? ': ' + d.why_unmeasured : (d ? '' : ': could not reach the server'));
+    return;
+  }
+  status.remove();
+  box.insertAdjacentHTML('beforeend', rows.map(ex =>
+    '<div class="skill-example" style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;">'
+    + '<div style="flex:1;min-width:0;"><code class="skill-example-inv" style="font-size:0.8rem;word-break:break-word;">' + esc(ex.invocation) + '</code>'
+    + (ex.purpose ? '<div style="font-size:0.75rem;color:var(--dim);margin-top:2px;">' + esc(ex.purpose) + '</div>' : '') + '</div>'
+    + '<button class="btn" style="font-size:0.65rem;padding:2px 8px;flex-shrink:0;" data-inv="' + esc(ex.invocation) + '" onclick="event.stopPropagation();_skillCopyExample(this)">Copy</button>'
+    + '</div>').join(''));
+}
+function _skillCopyExample(btn) {
+  const inv = btn.getAttribute('data-inv') || '';
+  try { navigator.clipboard.writeText(inv); showToast('Copied ' + inv); } catch (e) { showToast('Copy failed'); }
 }
 
 function _skillRenderContent(raw) {
