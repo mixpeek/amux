@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -103,7 +104,7 @@ test('Test refreshes saved health, survives reopen/reload, and preserves a switc
     writeFileSync(info.outputPath('receipt.json'), JSON.stringify({ result: 'PASS', before, after, checks, calls, events, preserved_switched_drawer: true, unconfigured_refusals: 3, limit: 'Private real API/provider; custom measured transitions and built-in unconfigured refusals, not new live vendor grants' }, null, 2));
   } finally {
     release?.();
-    await new Promise<void>(resolve => provider.close(() => resolve()));
-    for (const cid of [id, keep]) await request.delete('/api/connectors/' + cid, { headers: auth });
+    await cleanup('close fixture provider', () => new Promise<void>(resolve => provider.close(() => resolve())), info);
+    for (const cid of [id, keep]) await cleanup('delete fixture connector ' + cid, () => request.delete('/api/connectors/' + cid, { headers: auth }), info);
   }
 });
