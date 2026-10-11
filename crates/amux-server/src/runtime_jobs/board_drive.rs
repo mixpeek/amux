@@ -9194,8 +9194,10 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
         };
         match pickup {
             Pickup::Claim { card, prompt } => {
+                // No per-task mark here: the worker leased this card itself,
+                // mid-conversation, and a lease never passes through
+                // at_dispatch, so a mark would recycle some later dispatch.
                 if claim_card(state, lane, &card).await {
-                    crate::api::contract_fresh::maybe_mark_per_task(lane, &card);
                     return LeaseNext {
                         verdict: "leased",
                         card: Some(card),
@@ -9210,7 +9212,6 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
                 if claim_card_from_outcome(state, lane, &card, "backlog").await
                     == ClaimCardOutcome::Claimed
                 {
-                    crate::api::contract_fresh::maybe_mark_per_task(lane, &card);
                     return LeaseNext {
                         verdict: "leased",
                         card: Some(card),

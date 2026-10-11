@@ -168,6 +168,27 @@ pub fn per_task_brief(next: Option<&IssueRow>, recent: &[IssueRow]) -> String {
     b
 }
 
+/// Cards in doing on `lane` other than the one being dispatched.
+async fn other_doing_count(state: &AppState, lane: &str, next: Option<&IssueRow>) -> usize {
+    let lane_s = lane.to_string();
+    let rows: Vec<IssueRow> = state
+        .store
+        .read_async(move |c| Ok(bs::list_issues(c, &["doing".into()], &[lane_s], bs::ArchivedFilter::ActiveOnly)?))
+        .await
+        .unwrap_or_default();
+    rows.iter().filter(|r| Some(&r.id) != next.map(|n| &n.id)).count()
+}
+
+/// Per-task fresh decision: recycle only for the claim that was marked (the
+/// dispatch names that card), with the same guards as rule 7. A mark left by
+/// an earlier claim that never dispatched must not recycle a later card.
+pub fn decide_per_task(marked_card: &str, age_s: Option<f64>, dispatch_text: &str, running: bool, other_doing: usize) -> Decision {
+    if marked_card.is_empty() || !dispatch_text.contains(marked_card) {
+        return Decision::Skip("mark_for_another_card");
+    }
+    decide(age_s, running, other_doing)
+}
+
 /// Fetch the lane's doing/done/verified rows and split into (next_card, recent_outcomes).
 async fn lane_context(state: &AppState, lane: &str, text: &str) -> (Option<IssueRow>, Vec<IssueRow>) {
     let lane_s = lane.to_string();
@@ -203,17 +224,21 @@ pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
     // --- per-task fresh (GH-271) ---
     if let Some(pt) = meta.get(PER_TASK_PENDING).cloned() {
         let card = pt.get("card").and_then(Value::as_str).unwrap_or("-").to_string();
+        let age = crate::config::now_f64() - pt.get("at").and_then(Value::as_f64).unwrap_or(0.0);
         let running = sv::is_running(lane).await;
-        if !running {
-            clear_per_task(lane);
-            tracing::info!(lane, card = %card, reason = "not_running", measured = true,
-                n_considered = 1, verdict = "per_task_fresh_skipped",
-                "per-task fresh: lane not running, skipped recycle");
+        let (next, recent) = lane_context(state, lane, text).await;
+        let other_doing = other_doing_count(state, lane, next.as_ref()).await;
+        // The mark is consumed either way: it names one claim, never a later one.
+        clear_per_task(lane);
+        if let Decision::Skip(reason) = decide_per_task(&card, Some(age), text, running, other_doing) {
+            tracing::info!(lane, card = %card, reason, measured = true, n_considered = 1,
+                verdict = "per_task_fresh_skipped", "per-task fresh: skipped recycle");
         } else {
             let resp = sv::config_patch(state, lane, &json!({"new_conversation": true, "restart": true})).await;
-            clear_per_task(lane);
             if resp.status().is_success() {
-                let (next, recent) = lane_context(state, lane, text).await;
+                // This recycle is also the card boundary rule 7 waits for;
+                // without clearing it the next dispatch recycles again.
+                clear_pending(lane);
                 tracing::info!(lane, card = %card,
                     next = next.as_ref().map(|n| n.id.as_str()).unwrap_or("-"),
                     measured = true, n_considered = 1, verdict = "per_task_fresh_session",
@@ -237,22 +262,7 @@ pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
     let prev = pending.get("card").and_then(Value::as_str).unwrap_or("the last card").to_string();
     let age = crate::config::now_f64() - pending.get("at").and_then(Value::as_f64).unwrap_or(0.0);
     let (next, recent) = lane_context(state, lane, text).await;
-    let other_doing = {
-        let lane_s = lane.to_string();
-        let rows: Vec<IssueRow> = state
-            .store
-            .read_async(move |c| {
-                Ok(bs::list_issues(
-                    c,
-                    &["doing".into()],
-                    &[lane_s],
-                    bs::ArchivedFilter::ActiveOnly,
-                )?)
-            })
-            .await
-            .unwrap_or_default();
-        rows.iter().filter(|r| Some(&r.id) != next.as_ref().map(|n| &n.id)).count()
-    };
+    let other_doing = other_doing_count(state, lane, next.as_ref()).await;
     let running = sv::is_running(lane).await;
     match decide(Some(age), running, other_doing) {
         Decision::Skip(reason) => {
@@ -372,6 +382,16 @@ mod tests {
         assert!(b.contains("PT-3 (done): t3 | ev3"), "three outcomes");
         assert!(!b.contains("PT-4"), "capped at three");
         assert!(!b.contains("contract"), "no contract mention");
+    }
+
+    #[test]
+    fn per_task_recycles_only_the_marked_claim_and_never_mid_card() {
+        let txt = "Work card PT-7: add caching";
+        assert_eq!(decide_per_task("PT-7", Some(5.0), txt, true, 0), Decision::Fresh);
+        assert_eq!(decide_per_task("PT-6", Some(5.0), txt, true, 0), Decision::Skip("mark_for_another_card"));
+        assert_eq!(decide_per_task("PT-7", Some(5.0), txt, true, 1), Decision::Skip("card_in_doing"));
+        assert_eq!(decide_per_task("PT-7", Some(5.0), txt, false, 0), Decision::Skip("not_running"));
+        assert_eq!(decide_per_task("PT-7", Some(PENDING_MAX_S + 1.0), txt, true, 0), Decision::Skip("expired"));
     }
 
     #[test]
