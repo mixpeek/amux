@@ -58,3 +58,43 @@ paths keep their permissions.
 This protects acknowledged local state against process termination; it does
 not provide off-host disaster recovery or an atomic transaction with the
 remote OAuth provider. Provider revocation still requires reauthorization.
+
+## Idle connection upkeep
+
+The registered `connector-maintenance` server job runs immediately at startup
+and every 300 seconds, independently of the board/autofix job. It refreshes saved
+Google, rotating Slack and declared OAuth grants with at most ten minutes of
+access-token lifetime remaining, through the same account lease and atomic
+commit as worker token minting. Gmail-only legacy grants with unknown expiry get
+a bounded daily idle refresh; successful minting now records their access-token
+expiry. Long-lived keys and nonrenewable sessions are canaried, not replaced.
+
+Maintenance preserves definitions, credentials not being rotated, account
+identities, scope pins and owner metadata. It cannot reconnect a disconnected
+account, select another account as a fallback, expand consent, or perform an
+outbound business action. Configured API-key canaries feed the existing Test
+status; token/account canaries use the consolidated account-health view.
+`AMUX_CONNECTOR_MAINTENANCE_SECS=0` and the existing global isolated-server
+switches explicitly disable the job and leave its disabled registry row visible.
+
+`GET /api/connectors/maintenance` reports a private, atomically saved receipt:
+`measured`, `n_considered`, `checked_at`, age/staleness, grant verdicts and canary
+statuses. Provider response details and token values are excluded. Live Test
+receipts now use a stable lock plus atomic private publication, retaining corrupt
+previous state instead of overwriting it. Canary snapshots are also published
+atomically. Failures log `connector_maintenance_failed`,
+`connector_maintenance_report_not_durable` or `connector_test_record_not_durable`;
+completed passes log `connector_maintenance_pass` with measurement and failure
+counts. No saved-connection deletion or account substitution is a recovery action.
+
+No OAuth client can promise access forever. Google can revoke refresh grants,
+expire unused refresh tokens, or impose a seven-day lifetime for external users
+of a Testing app. Slack rotating access tokens expire and require renewable
+credentials. Keep the OAuth app in an appropriate production/internal state;
+maintenance cannot change provider policy or bypass owner consent. See
+[Google OAuth lifetime rules](https://developers.google.com/identity/protocols/oauth2#expiration)
+and [Slack rotation](https://docs.slack.dev/authentication/using-token-rotation/).
+Browser cookie syncing is separate and still needs live account/site validation.
+Atomic local persistence is not off-host disaster recovery: the current narrow
+credential-backup script does not back up the whole connector vault. Do not treat
+a stale backup of a rotated refresh token as guaranteed recoverable authentication.

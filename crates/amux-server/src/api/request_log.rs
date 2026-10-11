@@ -2969,6 +2969,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/connectors/maintenance",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/connectors/{id}/credentials",
         methods: &["POST"],
     },
