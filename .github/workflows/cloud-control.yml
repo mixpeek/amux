@@ -1,0 +1,57 @@
+name: cloud-control
+
+# amux Cloud control plane, door, fleet agent and bootstrap's Caddy config
+# (docs/design/cloud-self-service.md). Every step here must be able to fail: a
+# check that cannot run exits non-zero instead of passing quietly.
+on:
+  pull_request:
+    paths:
+      - "cloud/control/**"
+      - "cloud/desktop/**"
+      - "site/cloud/**"
+      - ".github/workflows/cloud-control.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloud/control/**"
+      - "cloud/desktop/**"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Control-plane unit tests (lifecycle, accounts, provisioning, releases, prices)
+        run: pip install pyjwt cryptography && python -m unittest discover -s cloud/control -p 'test_*.py' -v
+      - name: Fleet agent release install with real signatures
+        run: python -m unittest cloud/desktop/test_fleet_agent.py -v
+      - name: Caddy forwards the door's member token and drops a forged one
+        run: |
+          V=$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest | python -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')
+          curl -fsSL "https://github.com/caddyserver/caddy/releases/download/$V/caddy_${V#v}_linux_amd64.tar.gz" | tar -xz -C "$RUNNER_TEMP" caddy
+          CADDY_BIN="$RUNNER_TEMP/caddy" cloud/desktop/test_caddy_member_header.sh
+      - name: bootstrap.sh parses
+        run: bash -n cloud/desktop/bootstrap.sh
+
+  journey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - name: Fake-mode journey (checkout, provisioning, heartbeat, door hand-off, redirects, replays, kill switch)
+        run: cloud/control/run_e2e.sh

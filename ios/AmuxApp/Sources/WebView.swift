@@ -228,7 +228,8 @@ struct WebView: UIViewRepresentable {
             let host = challenge.protectionSpace.host
             // Trust self-signed certs for: Tailscale (.ts.net), local networks,
             // private IPs, and any non-cloud.amux.io host (user-configured servers)
-            let isPublicAmux = host.hasSuffix("amux.io")
+            // amux Cloud servers sit behind Cloudflare with real certificates: verify them normally.
+            let isPublicAmux = host.hasSuffix("amux.io") || host.hasSuffix("amux.cloud")
             if !isPublicAmux {
                 completionHandler(.useCredential, URLCredential(trust: serverTrust))
             } else {

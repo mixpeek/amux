@@ -43,13 +43,50 @@
     <h1>amux Cloud</h1>
     <p class="subtitle">One paid feature. Everything else is free.</p>
 
-    <div class="cta-box">
-      <h3>Get set up with us</h3>
-      <p>Pick a time and we will walk you through installing amux, connecting your
-         first workers, and turning on the tunnel.</p>
-      <a class="btn btn-primary" href="https://calendly.com/mixpeek"
-         target="_blank" rel="noopener">Schedule onboarding</a>
+    <div class="cta-box" id="notify">
+      <h3>Coming soon: your own amux server, running 24/7</h3>
+      <p>A dedicated server with amux on it, kept updated and backed up for you.
+         Bring your own Claude, ChatGPT or Gemini sign-in, or an API key, and move
+         your local setup over in one command. Leave your email and we will tell
+         you when it opens.</p>
+      <form id="cloud-notify-form" class="notify-form" novalidate>
+        <label for="cloud-notify-email" class="visually-hidden">Email</label>
+        <input id="cloud-notify-email" type="email" name="email" required
+               autocomplete="email" placeholder="you@example.com">
+        <button class="btn btn-primary" type="submit">Get notified</button>
+      </form>
+      <p id="cloud-notify-status" class="notify-status" role="status" aria-live="polite"></p>
     </div>
+    <script>
+      // Step 0 of docs/design/cloud-self-service.md: count real interest before
+      // building. Success is shown only when the event was handed to a loaded
+      // PostHog client; a blocked client says so instead of faking a thank-you.
+      (function () {
+        var form = document.getElementById('cloud-notify-form');
+        var input = document.getElementById('cloud-notify-email');
+        var status = document.getElementById('cloud-notify-status');
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+          var email = (input.value || '').trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            status.textContent = 'Please enter a valid email address.';
+            input.focus();
+            return;
+          }
+          var ph = window.posthog;
+          if (!ph || !ph.__loaded || typeof ph.capture !== 'function') {
+            status.innerHTML = 'Your browser blocked our signup form. Email ' +
+              '<a href="mailto:hello@amux.io?subject=amux%20Cloud%20waitlist">hello@amux.io</a> ' +
+              'and we will add you.';
+            return;
+          }
+          var src = new URLSearchParams(location.search).get('source') || 'site:cloud';
+          ph.capture('cloud.notify_signup', { email: email, source: src, $set: { email: email } });
+          form.hidden = true;
+          status.textContent = 'Thanks. We will email ' + email + ' when your server can be ordered.';
+        });
+      })();
+    </script>
 
     <p><strong>Quick answer:</strong> amux Cloud costs $20/month and adds exactly one thing to the free open-source version: a <a href="/features/tunnel/">tunnel relay</a> that gives your local dashboard a stable public HTTPS URL. No data leaves your machine. Your agents run locally.</p>
 

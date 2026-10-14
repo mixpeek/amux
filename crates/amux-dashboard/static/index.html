@@ -130,15 +130,30 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
     <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#ccc;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
     <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Get started</div>
-    <div style="font-size:0.85rem;color:#ccc;margin-bottom:20px;line-height:1.5;">
-      Choose how to authenticate with Claude:
+    <div style="font-size:0.85rem;color:#ccc;margin-bottom:16px;line-height:1.5;">
+      Sign in with the plan you already pay for. Your sign-in stays on this server.
     </div>
-    <button id="apikey-login-btn" onclick="apikeySetupLogin()"
-      style="width:100%;padding:12px;border-radius:7px;border:1px solid #6366f1;background:#312e81;color:#e0e7ff;font-size:0.95rem;font-weight:600;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l2.5-2.5M8 7L5.5 4.5M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Log in with Claude account
-    </button>
-    <div style="font-size:0.78rem;color:#b0b0b0;text-align:center;margin-bottom:16px;">Recommended — uses your Claude.ai account (Pro, Max, or Team)</div>
+    <div id="model-login-choices" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+      <button class="btn primary" id="model-login-claude" onclick="modelLogin('claude')" style="min-height:44px;justify-content:center;">Sign in with Claude</button>
+      <button class="btn" id="model-login-codex" onclick="modelLogin('codex')" style="min-height:44px;justify-content:center;">Sign in with ChatGPT</button>
+      <button class="btn" id="model-login-gemini" onclick="modelLogin('gemini')" style="min-height:44px;justify-content:center;">Sign in with Google (Gemini)</button>
+    </div>
+    <div id="model-login-panel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #333;border-radius:8px;" aria-live="polite">
+      <div id="model-login-status" style="font-size:0.85rem;color:#e8e8e8;margin-bottom:10px;"></div>
+      <a id="model-login-link" class="btn primary" target="_blank" rel="noopener" style="display:none;min-height:44px;justify-content:center;margin-bottom:10px;">Open the sign-in page</a>
+      <div id="model-login-code-wrap" style="display:none;margin-bottom:10px;">
+        <div style="font-size:0.78rem;color:#b0b0b0;">Enter this code on that page:</div>
+        <div id="model-login-code" style="font:600 1.4rem monospace;letter-spacing:2px;user-select:all;"></div>
+      </div>
+      <div id="model-login-paste-wrap" style="display:none;gap:8px;">
+        <input id="model-login-paste" type="text" autocomplete="off" spellcheck="false" placeholder="Paste the code from the sign-in page"
+          style="flex:1;min-width:0;box-sizing:border-box;min-height:44px;padding:0 12px;border-radius:7px;border:1px solid #555;background:#111;color:#e8e8e8;font-family:monospace;"
+          onkeydown="if(event.key==='Enter')modelLoginSubmitCode()">
+        <button class="btn" id="model-login-paste-btn" onclick="modelLoginSubmitCode()" style="min-height:44px;">Continue</button>
+      </div>
+      <div id="model-login-err" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-top:6px;"></div>
+      <button class="btn" onclick="modelLoginCancel()" style="min-height:44px;margin-top:6px;">Choose another way</button>
+    </div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
       <div style="flex:1;height:1px;background:#333;"></div>
       <span style="font-size:0.75rem;color:#9ca3af;">or use an API key</span>
@@ -479,6 +494,22 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </div>
           </div>
         </div>
+        <div class="settings-sep"></div>
+        <section class="settings-section" id="tailnet-join">
+          <details class="settings-fold" ontoggle="if(this.open)tailnetJoinRefresh()"><summary class="settings-section-label">Your tailnet</summary>
+          <p>Add this server to your own Tailscale tailnet so you and your devices reach it privately. Nothing about your tailnet passes through amux Cloud.</p>
+          <p id="tailnet-join-status" role="status">Open to check.</p>
+          <a id="tailnet-join-link" class="btn primary" target="_blank" rel="noopener" style="display:none;min-height:44px;">Approve this server in Tailscale</a>
+          <button class="btn primary" id="tailnet-join-btn" onclick="tailnetJoin()" style="min-height:44px;">Add to my tailnet</button>
+          <details><summary>Use an auth key instead</summary>
+            <label class="connection-control">Auth key
+              <input id="tailnet-join-key" type="password" autocomplete="off" spellcheck="false" class="search-input" placeholder="tskey-auth-…" onkeydown="if(event.key==='Enter')tailnetJoin()">
+            </label>
+          </details>
+          <button class="btn" id="tailnet-leave-btn" onclick="tailnetLeave()" style="display:none;min-height:44px;">Remove from my tailnet</button>
+          <p id="tailnet-join-error" role="status" class="connection-help"></p>
+          </details>
+        </section>
         <div class="settings-sep"></div>
         <section class="settings-section" id="connection-security">
           <details class="settings-fold"><summary class="settings-section-label">Connection &amp; security</summary>

@@ -41,6 +41,21 @@ class ServerManager: ObservableObject {
         logger.info("Switched to server: \(urlString)")
     }
 
+    /// amux Cloud: load the one-minute door link now, but remember only the server's own
+    /// address, so a relaunch never reuses an expired link (CloudSignInSection, AmuxApp).
+    func openCloudServer(base: String, entry: URL) {
+        serverURL = entry
+        hasServer = true
+        AmuxStore.defaults.set(base, forKey: AmuxStore.serverURLKey)
+        logger.info("Opened cloud server \(base)")
+    }
+
+    var savedCloudServer: String? {
+        guard let s = AmuxStore.defaults.string(forKey: AmuxStore.serverURLKey),
+              let host = URL(string: s)?.host, host.hasSuffix(".amux.cloud") else { return nil }
+        return s
+    }
+
     func addServer(name: String, urlString: String) -> Bool {
         guard let _ = URL(string: urlString), urlString.hasPrefix("http") else { return false }
         let normalized = urlString.hasSuffix("/") ? String(urlString.dropLast()) : urlString

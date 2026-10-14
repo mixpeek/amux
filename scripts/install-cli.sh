@@ -15,6 +15,9 @@ destinations=("$destination")
 if [[ "$(basename "$source_cli")" == amux ]]; then
   source_files+=("$(dirname "$source_cli")/scripts/amux-grid.sh")
   destinations+=("$bin_dir/scripts/amux-grid.sh")
+  # `amux export`, `import` and `cloud` (docs/design/cloud-self-service.md 7.1) run this beside the CLI.
+  source_files+=("$(dirname "$source_cli")/scripts/amux_portable.py")
+  destinations+=("$bin_dir/scripts/amux_portable.py")
 fi
 stage=preflight
 
@@ -65,11 +68,17 @@ for ((i=0; i<${#source_files[@]}; i++)); do
   # and copying. Explicit markers also catch otherwise valid quoted/heredoc text.
   stage=validation
   IFS= read -r shebang < "$candidate" || refuse missing_shebang
-  case "$shebang" in '#!/usr/bin/env bash'|'#!/bin/bash') ;; *) refuse not_a_bash_script ;; esac
+  if [[ "$source_cli" == *.py ]]; then
+    case "$shebang" in '#!/usr/bin/env python3') ;; *) refuse not_a_python_script ;; esac
+  else
+    case "$shebang" in '#!/usr/bin/env bash'|'#!/bin/bash') ;; *) refuse not_a_bash_script ;; esac
+  fi
   marker_result=0
   LC_ALL=C grep -aEq '^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)( |$)' "$candidate" || marker_result=$?
   case "$marker_result" in 0) refuse conflict_markers ;; 1) ;; *) refuse marker_check_failed ;; esac
-  if ! bash -n "$candidate"; then
+  if [[ "$source_cli" == *.py ]]; then
+    python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$candidate" || refuse python_syntax
+  elif ! bash -n "$candidate"; then
     refuse bash_syntax
   fi
   chmod 0755 "$candidate"

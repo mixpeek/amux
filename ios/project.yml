@@ -93,6 +93,10 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.EthanSteininger.nextup
+        # Sign in with Apple (docs/design/cloud-self-service.md 8.3). The App ID must
+        # have the capability enabled in the developer portal (launch prerequisite P3).
+        com.apple.developer.applesignin:
+          - Default
 
   # Unit tests (AMUX-4981). Hostless logic tests: they exercise pure parsing,
   # so they need no app to launch and run in seconds.

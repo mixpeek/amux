@@ -1,0 +1,50 @@
+# The amux Cloud Operator (docs/design/cloud-self-service.md section 5): one worker on
+# its own amux server, applied with `amux cloud apply cloud/operator/amux.yaml`.
+# Collection is shell (no model, no cost per run); the worker reads digests and acts
+# within its levels. Critical paths never depend on it (plan section 1). The owner's
+# weekly report is mailed by the control plane itself, so it arrives with the Operator stopped.
+version: 1
+cloud:
+  server: amux-business
+  plan: solo
+groups: [amux-business]
+workers:
+  - name: amux-business
+    model: claude
+    dir: ~/business
+    groups: [amux-business]
+    desc: >-
+      Runs amux Cloud as a business. Every 4 hours: read ~/business/data and the MDAI
+      digests, then act within your levels and record what you did on your board.
+      L1 alone: lifecycle email wording, docs and site fixes through PRs under site/ and
+      docs/, re-running a failed provisioning step. L2 within caps: merges under site/
+      and docs/ when CI passes, deterministic site improvements (plan 10.1). Never:
+      prices, deleting data, abuse deletions, third-party data requests, budget
+      increases, anything under cloud/ or the product (those are PRs for review).
+      Your inference cap is $50 plus 5% of last month's contribution, at most $250.
+      Write plainly, no em dashes.
+    start: true
+schedules:
+  - { title: collect control plane, worker: amux-business, expr: "every 15m", kind: shell,
+      command: "python3 ~/business/collect/control.py" }
+  - { title: collect stripe, worker: amux-business, expr: "every 15m", kind: shell,
+      command: "python3 ~/business/collect/stripe.py" }
+  - { title: collect posthog, worker: amux-business, expr: "every 1h", kind: shell,
+      command: "python3 ~/business/collect/posthog.py" }
+  - { title: collect hetzner, worker: amux-business, expr: "every 1h", kind: shell,
+      command: "python3 ~/business/collect/hetzner.py" }
+  - { title: collect github, worker: amux-business, expr: "daily at 06:00", kind: shell,
+      command: "python3 ~/business/collect/github.py" }
+  - { title: support queue, worker: amux-business, expr: "every 5m", kind: shell,
+      command: "python3 ~/business/collect/support.py" }
+  - { title: review the business, worker: amux-business, expr: "0 */4 * * *", kind: tmux,
+      command: "Read the MDAI digests in ~/business/mdai and the files in ~/business/data. Act within your levels on the single highest-scoring opportunity (plan 10.2 formula), then record what you did and why on your board." }
+files:
+  - { from: ./collect, to: ~/business/collect }
+  - { from: ./mdai, to: ~/business/mdai }
+env:
+  CONTROL_ADMIN_TOKEN: { from: prompt }
+  STRIPE_RESTRICTED_READ_KEY: { from: prompt }
+  POSTHOG_PERSONAL_API_KEY: { from: prompt }
+  HCLOUD_READ_TOKEN: { from: prompt }
+  ANTHROPIC_API_KEY: { from: prompt }

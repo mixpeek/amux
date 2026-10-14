@@ -1,0 +1,14 @@
+---
+sources:
+  - ../data/control.json
+  - ../data/stripe.json
+  - ../data/posthog.json
+  - ../data/hetzner.json
+  - ../data/github.json
+model: haiku
+---
+# amux Cloud: the business this week
+
+From the collected files, state in under 200 words: cash collected and refunded, new and lapsed customers,
+waitlist and pricing-page viewers, provisioning health, backups, and anything a file marks as not measured.
+Name the one number that moved most against last week. Do not guess a number a file does not contain.

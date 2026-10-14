@@ -1,0 +1,10 @@
+---
+sources:
+  - amux:messages?days=30
+  - ../../docs/design/cloud-self-service.md
+model: haiku
+---
+# Decisions already made
+
+List the owner's decisions about amux Cloud (prices, payment provider, what to build, what not to do) with
+the date and the reason, so the Operator never re-litigates one.

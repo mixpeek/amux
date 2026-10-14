@@ -6877,6 +6877,41 @@ cmd_grid() {
   "$sh" "$@"
 }
 
+# `amux export`, `amux import` and `amux cloud ...`: move an amux setup between this
+# machine and amux Cloud through the public API (docs/design/cloud-self-service.md 7.1).
+# The work lives in scripts/amux_portable.py, installed beside this CLI.
+cmd_portable() {
+  local src="${BASH_SOURCE[0]}" dir
+  while [ -L "$src" ]; do
+    local target; target="$(readlink "$src")"
+    case "$target" in
+      /*) src="$target" ;;
+      *)  src="$(dirname -- "$src")/$target" ;;
+    esac
+  done
+  dir="$(cd -- "$(dirname -- "$src")" && pwd)"
+  local py="$dir/scripts/amux_portable.py"
+  [ -f "$py" ] || { echo "amux: missing $py (reinstall with make install-cli)" >&2; return 1; }
+  AMUX_API="${AMUX_API:-https://localhost:8824}" python3 "$py" "$@"
+}
+
+cmd_cloud() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    login)  cmd_portable cloud-login "$@" ;;
+    move)   cmd_portable cloud-move "$@" ;;
+    pull)   cmd_portable cloud-pull "$@" ;;
+    apply)  cmd_portable cloud-apply "$@" ;;
+    *) cat <<'EOF'
+amux cloud move [--plan solo] [--files DIR ...]   move this machine's amux to your own Cloud server
+amux cloud login                                    sign this CLI in to amux Cloud (device code)
+amux cloud pull <server> [--files DIR ...]          copy a Cloud server's setup back to this machine
+amux cloud apply amux.yaml [--confirm-billing]      create or update a Cloud server from a YAML file
+EOF
+       [[ -z "$sub" || "$sub" == help || "$sub" == -h ]] || return 1 ;;
+  esac
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -9295,6 +9330,9 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     alert)            shift; cmd_alert "$@" ;;
     approvals)        shift; cmd_approvals "$@" ;;
     iac)              shift; cmd_config "$@" ;;
+    export)           shift; if [[ -n "${1:-}" && "${1:-}" != --* ]]; then cmd_portable export --out "$@"; else cmd_portable export "$@"; fi ;;
+    import)           shift; cmd_portable import "$@" ;;
+    cloud)            shift; cmd_cloud "$@" ;;
     whoami)           cmd_whoami ;;
     fresh)            shift; cmd_fresh "$@" ;;
     url)              shift; cmd_url "$@" ;;

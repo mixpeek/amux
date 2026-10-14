@@ -1,0 +1,5 @@
+[<u[?25lPlease visit the following URL to authorize the application:
+
+https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fcodeassist.google.com%2Fauthcode&access_type=offline&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile&code_challenge_method=S256&code_challenge=REDACTED&state=REDACTED&response_type=code&client_id=REDACTED
+
+Enter the authorization code: 

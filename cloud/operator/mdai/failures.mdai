@@ -1,0 +1,10 @@
+---
+sources:
+  - ../data/control.json
+  - amux:messages?days=7
+model: haiku
+---
+# Recurring problems
+
+List problems that happened more than once this week (provisioning failures, failed backups or drills,
+rollbacks, alerts, support themes), each with how many times and whether a mechanism already handles it.

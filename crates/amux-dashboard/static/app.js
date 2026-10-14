@@ -1660,6 +1660,193 @@ async function apikeySetupLogin() {
   }
 }
 
+// ---- Add this server to the owner's tailnet (docs/design/cloud-self-service.md 8.5) ----
+let _tailnetPoll = null;
+
+function _tailnetRender(st) {
+  const el = (id) => document.getElementById(id);
+  if (!el('tailnet-join-status')) return;
+  const link = el('tailnet-join-link'), join = el('tailnet-join-btn'), leave = el('tailnet-leave-btn');
+  if (!st || st.measured === false) {
+    el('tailnet-join-status').textContent = 'Tailscale is not available on this server' + (st && st.why_unmeasured ? ': ' + st.why_unmeasured : '.');
+    link.style.display = 'none'; leave.style.display = 'none'; join.style.display = '';
+    return;
+  }
+  if (st.joined) {
+    el('tailnet-join-status').innerHTML = 'On your tailnet' + (st.tailnet ? ' (' + escHtml(st.tailnet) + ')' : '') +
+      (st.url ? ': <a href="' + escHtml(st.url) + '" target="_blank" rel="noopener">' + escHtml(st.url) + '</a>' : '.');
+    link.style.display = 'none'; join.style.display = 'none'; leave.style.display = '';
+  } else if (st.auth_url) {
+    el('tailnet-join-status').textContent = 'Approve this server in your tailnet to finish.';
+    link.href = st.auth_url; link.style.display = 'inline-flex'; join.style.display = 'none'; leave.style.display = 'none';
+  } else {
+    el('tailnet-join-status').textContent = 'Not on a tailnet.';
+    link.style.display = 'none'; join.style.display = ''; leave.style.display = 'none';
+  }
+}
+
+async function tailnetJoinRefresh() {
+  try { _tailnetRender(await (await fetch(API + '/api/tailnet/status')).json()); }
+  catch (e) { _tailnetRender({ measured: false, why_unmeasured: e.message }); }
+}
+
+async function tailnetJoin() {
+  const err = document.getElementById('tailnet-join-error');
+  const key = (document.getElementById('tailnet-join-key')?.value || '').trim();
+  err.textContent = '';
+  document.getElementById('tailnet-join-status').textContent = 'Asking Tailscale…';
+  try {
+    const r = await fetch(API + '/api/tailnet/join', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(key ? { auth_key: key } : {}) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = (d.error || ('HTTP ' + r.status)) + (d.fix ? ' Fix: ' + d.fix : ''); await tailnetJoinRefresh(); return; }
+    _tailnetRender(d);
+    if (!d.joined) {
+      clearInterval(_tailnetPoll);
+      let n = 0;
+      _tailnetPoll = setInterval(async () => {
+        if (++n > 100) { clearInterval(_tailnetPoll); return; }     // about 5 minutes
+        const st = await (await fetch(API + '/api/tailnet/status')).json().catch(() => null);
+        if (st && st.joined) { clearInterval(_tailnetPoll); await fetch(API + '/api/tailnet/join', { method: 'POST' }); tailnetJoinRefresh(); showToast('This server is on your tailnet'); }
+        else if (st) _tailnetRender(st);
+      }, 3000);
+    }
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function tailnetLeave() {
+  const err = document.getElementById('tailnet-join-error');
+  try {
+    const r = await fetch(API + '/api/tailnet/leave', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || ('HTTP ' + r.status); return; }
+    _tailnetRender(d);
+    showToast('Removed from your tailnet');
+  } catch (e) { err.textContent = e.message; }
+}
+
+// ---- Model sign-in through the coding CLIs (docs/design/cloud-self-service.md 8.4) ----
+// Runs the CLI's own login in a server terminal and shows the link, device code or
+// code box it asks for. Success is read back from /api/identity's model_auth, never
+// assumed from the terminal. Parsing lives in state/cli-login.mjs (tested on fixtures).
+let _modelLogin = null;
+
+function _mlEl(id) { return document.getElementById(id); }
+
+function _mlShow(state) {
+  const panel = _mlEl('model-login-panel'), choices = _mlEl('model-login-choices');
+  if (!panel) return;
+  panel.style.display = state ? '' : 'none';
+  if (choices) choices.style.display = state ? 'none' : 'flex';
+  if (!state) return;
+  _mlEl('model-login-status').textContent = state.status || '';
+  const link = _mlEl('model-login-link');
+  link.style.display = state.url ? 'flex' : 'none';
+  if (state.url) link.href = state.url;
+  _mlEl('model-login-code-wrap').style.display = state.code ? '' : 'none';
+  _mlEl('model-login-code').textContent = state.code || '';
+  _mlEl('model-login-paste-wrap').style.display = state.needsCode ? 'flex' : 'none';
+  _mlEl('model-login-err').textContent = state.error || '';
+}
+
+async function modelLogin(provider) {
+  const kit = window.AmuxState && window.AmuxState.cliLogin;
+  const a = kit && kit.CLI_LOGINS[provider];
+  if (!a) { showToast('Sign-in is not available in this build'); return; }
+  modelLoginCancel(true);
+  const run = _modelLogin = { provider, raw: '', id: null, done: false };
+  _mlShow({ status: 'Starting ' + a.label + ' sign-in…' });
+  try {
+    const r = await fetch(API + '/api/terminal/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols: 400, rows: 40 }) });          // wide, so links are not wrapped
+    const d = await r.json();
+    if (!r.ok || d.error || !d.id) throw new Error(d.error || 'could not open a terminal on this server');
+    run.id = d.id;
+    await _mlInput(run, a.command + '\r');
+  } catch (e) {
+    _mlShow({ status: a.label + ' sign-in could not start.', error: e.message });
+    return;
+  }
+  _mlPollOutput(run);
+  _mlPollIdentity(run);
+}
+
+async function _mlInput(run, text) {
+  const r = await fetch(API + '/api/terminal/' + run.id + '/input', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: btoa(unescape(encodeURIComponent(text))) }) });
+  if (!r.ok) throw new Error('the terminal did not accept input (HTTP ' + r.status + ')');
+}
+
+async function _mlPollOutput(run) {
+  const kit = window.AmuxState.cliLogin, a = kit.CLI_LOGINS[run.provider];
+  let savedToken = false;
+  while (_modelLogin === run && !run.done) {
+    try {
+      const r = await fetch(API + '/api/terminal/' + run.id + '/output?wait=25');
+      const d = await r.json();
+      if (d.data) run.raw += decodeURIComponent(escape(atob(d.data)));
+      const p = kit.parseLogin(run.provider, run.raw);
+      if (p.token && a.saveEnv && !savedToken) {
+        savedToken = true;
+        const body = {}; body[a.saveEnv] = p.token;
+        const s = await fetch('/api/settings/env', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!s.ok) { _mlShow({ status: 'Signed in, but saving the token failed.', error: 'HTTP ' + s.status }); return; }
+      }
+      if (_modelLogin !== run || run.done) return;
+      const status = p.code ? 'Open the page, sign in, and enter the code below.' :
+        p.needsCode ? 'Open the page, sign in, then paste the code it shows you.' :
+        p.url ? 'Open the page and sign in.' : 'Waiting for ' + a.label + '…';
+      _mlShow({ status, url: p.url, code: p.code, needsCode: p.needsCode });
+      if (d.alive === false && !run.done) {
+        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
+        return;
+      }
+    } catch (e) {
+      await new Promise(res => setTimeout(res, 1500));
+    }
+  }
+}
+
+async function _mlPollIdentity(run) {
+  const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
+  for (let i = 0; i < 200 && _modelLogin === run; i++) {         // about 10 minutes
+    await new Promise(res => setTimeout(res, 3000));
+    try {
+      const d = await (await fetch(API + '/api/identity')).json();
+      if (a.done(d.model_auth)) {
+        run.done = true;
+        _mlShow(null);
+        modelLoginCancel(true);
+        const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
+        const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
+        showToast(a.label + ' is connected. Your workers can use it now.');
+        return;
+      }
+    } catch (e) {}
+  }
+  if (_modelLogin === run) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+}
+
+async function modelLoginSubmitCode() {
+  const run = _modelLogin, inp = _mlEl('model-login-paste');
+  const code = (inp && inp.value || '').trim();
+  if (!run || !run.id) return;
+  if (!code) { _mlEl('model-login-err').textContent = 'Paste the code from the sign-in page.'; return; }
+  try {
+    await _mlInput(run, code + '\r');
+    inp.value = '';
+    _mlEl('model-login-err').textContent = '';
+    _mlEl('model-login-status').textContent = 'Checking…';
+  } catch (e) { _mlEl('model-login-err').textContent = e.message; }
+}
+
+function modelLoginCancel(silent) {
+  const run = _modelLogin;
+  _modelLogin = null;
+  if (run && run.id) fetch(API + '/api/terminal/' + run.id, { method: 'DELETE' }).catch(() => {});
+  if (!silent) _mlShow(null);
+}
+
 let _oauthPollTimer = null;
 function _pollForOAuth() {
   if (_oauthPollTimer) clearInterval(_oauthPollTimer);
@@ -14279,7 +14466,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1524';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1525';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

@@ -832,3 +832,14 @@ footer, .site-footer {
   .site-header nav { gap: 8px; }
   .site-header nav a.nav-cta { padding: 5px 8px; font-size: 11px; }
 }
+
+/* amux Cloud waitlist form (site/cloud, docs/design/cloud-self-service.md step 0) */
+.notify-form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.notify-form input[type="email"] {
+  flex: 1 1 220px; min-height: 44px; padding: 0 12px; font: inherit;
+  color: var(--fg); background: transparent; border: 1px solid var(--border); border-radius: 6px;
+}
+.notify-form input[type="email"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.notify-form .btn { min-height: 44px; }
+.notify-status { min-height: 1.2em; margin-top: 8px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

@@ -132,6 +132,7 @@ pub mod static_files;
 pub mod stats;
 pub mod sync;
 pub mod telegram;
+pub mod tailnet_join;
 pub mod terminal;
 pub mod torrents;
 pub mod tts;
@@ -384,6 +385,7 @@ pub fn router_with_connector_transport(
         // Workspace tab web-terminal panes: local-shell PTY over base64 I/O +
         // long-poll output (AMUX-2885 — every keystroke 404'd since cutover).
         .nest("/api/terminal", terminal::routes())
+        .nest("/api/tailnet", tailnet_join::routes())
         // Metrics tab report cards: CRUD + registry + ops-server refresh
         // (AMUX-2884 — the table kept its rows, the routes never mounted).
         .nest("/api/reports", reports::routes())
@@ -1104,6 +1106,9 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
     let mut has_key_in_env = false;
     let mut base = String::new();
     let mut tok = String::new();
+    let env_text_all = std::fs::read_to_string(home.join("server.env")).unwrap_or_default();
+    let user_home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let model_auth = model_auth_status(&env_text_all, &user_home);
     if let Ok(env_text) = std::fs::read_to_string(home.join("server.env")) {
         for l in env_text.lines() {
             let l = l.trim();
@@ -1148,12 +1153,77 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         "is_local_member": is_local_member,
         "access_scope": access_scope,
         "team": team,
-        "has_api_key": has_key_in_env || has_oauth || has_proxy,
+        "has_api_key": has_key_in_env || has_oauth || has_proxy
+            || model_auth["claude"]["subscription_token"].as_bool().unwrap_or(false),
         "has_oauth": has_oauth,
+        "model_auth": model_auth,
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
         "key_error": "",
     }))
+}
+
+/// Which model sign-ins this server holds, for the first-run "Connect a model"
+/// screen (docs/design/cloud-self-service.md 8.4). Each CLI keeps its own
+/// credential in its own store; this only reports presence, never a value.
+/// `claude.subscription_token` is `claude setup-token`'s one-year token saved
+/// as CLAUDE_CODE_OAUTH_TOKEN; `claude.oauth` is an interactive /login.
+pub(crate) fn model_auth_status(env_text: &str, user_home: &std::path::Path) -> serde_json::Value {
+    let set = |key: &str| {
+        env_text.lines().any(|l| {
+            l.trim()
+                .strip_prefix(key)
+                .and_then(|r| r.strip_prefix('='))
+                .map(|v| {
+                    let v = v.trim().trim_matches('"').trim_matches('\'').to_lowercase();
+                    !v.is_empty() && !PLACEHOLDER_API_KEYS.contains(&v.as_str())
+                })
+                .unwrap_or(false)
+        })
+    };
+    let nonempty = |p: std::path::PathBuf| std::fs::metadata(p).map(|m| m.len() > 2).unwrap_or(false);
+    let claude_oauth = std::fs::read_to_string(user_home.join(".claude.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|v| py_truthy(&v["oauthAccount"]))
+        .unwrap_or(false)
+        || nonempty(user_home.join(".claude").join(".credentials.json"));
+    serde_json::json!({
+        "claude": {
+            "api_key": set("ANTHROPIC_API_KEY"),
+            "subscription_token": set("CLAUDE_CODE_OAUTH_TOKEN"),
+            "oauth": claude_oauth,
+        },
+        "codex": {
+            "api_key": set("OPENAI_API_KEY"),
+            "signed_in": nonempty(user_home.join(".codex").join("auth.json")),
+        },
+        "gemini": {
+            "api_key": set("GEMINI_API_KEY") || set("GOOGLE_API_KEY"),
+            "signed_in": nonempty(user_home.join(".gemini").join("oauth_creds.json")),
+        },
+    })
+}
+
+#[cfg(test)]
+mod model_auth_tests {
+    use super::model_auth_status;
+
+    #[test]
+    fn reports_presence_per_provider_and_ignores_placeholders() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), r#"{"tokens":{"x":1}}"#).unwrap();
+        let env = "ANTHROPIC_API_KEY=changeme\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abc\nGEMINI_API_KEY=\n";
+        let v = model_auth_status(env, home.path());
+        assert_eq!(v["claude"]["api_key"], false, "placeholder key is not a key");
+        assert_eq!(v["claude"]["subscription_token"], true);
+        assert_eq!(v["claude"]["oauth"], false);
+        assert_eq!(v["codex"]["signed_in"], true);
+        assert_eq!(v["codex"]["api_key"], false);
+        assert_eq!(v["gemini"]["api_key"], false, "empty value is not a key");
+        assert_eq!(v["gemini"]["signed_in"], false);
+    }
 }
 
 // ---- /api/memory/global ----

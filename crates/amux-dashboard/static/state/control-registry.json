@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2976,
+  "n_considered": 2988,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2290,6 +2290,24 @@
     },
     "_metricsRunSpeedtest": {
       "kind": "command._metricsRunSpeedtest",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mlInput": {
+      "kind": "command._mlInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mlPollIdentity": {
+      "kind": "command._mlPollIdentity",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mlPollOutput": {
+      "kind": "command._mlPollOutput",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4994,6 +5012,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "modelLogin": {
+      "kind": "command.modelLogin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "modelLoginCancel": {
+      "kind": "command.modelLoginCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "modelLoginSubmitCode": {
+      "kind": "command.modelLoginSubmitCode",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "moveBoardItem": {
       "kind": "command.moveBoardItem",
       "feedback_required": true,
@@ -5584,6 +5620,18 @@
     },
     "switchView": {
       "kind": "command.switchView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "tailnetJoin": {
+      "kind": "command.tailnetJoin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "tailnetLeave": {
+      "kind": "command.tailnetLeave",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
