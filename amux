@@ -513,7 +513,7 @@ need_herdr() {
 # `amux start` for project workers whose server-side start was then refused,
 # and never used or removed).
 server_owns_start() { # <provider> <CC_PROJECT> <CC_EPHEMERAL>
-  case "$1" in codex|ollama|gemini|muse) return 0 ;; esac
+  case "$1" in codex|ollama|gemini|muse|opencode) return 0 ;; esac
   [[ -n "${2:-}" || "${3:-}" == "1" ]]
 }
 
