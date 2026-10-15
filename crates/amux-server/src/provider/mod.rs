@@ -373,6 +373,30 @@ mod tests {
         conformance(&static_providers::OpenCodeAdapter).await;
     }
 
+    /// Launch parity for a provider that is deliberately NOT in
+    /// `SESSION_PROVIDERS` yet (M0 is terminal-hosted via the CLI). The server's
+    /// binary map (`launch_base_binary`) and the adapter's interactive argv must
+    /// still agree, because the health invariant `provider_launch_check`
+    /// enforces exactly this for every provider that IS listed, and the D6 bug
+    /// class is a provider silently launching a DIFFERENT agent (see the `amux`
+    /// bash path's AMUX-3888 / muse comments). This pins the agreement now, so
+    /// adding opencode to SESSION_PROVIDERS later cannot introduce drift.
+    #[test]
+    fn opencode_launch_binary_matches_the_adapter() {
+        use crate::api::session_verbs::launch_base_binary;
+        let reg = default_registry();
+        let adapter = reg.resolve("opencode").expect("opencode must be registered");
+        assert_eq!(launch_base_binary("opencode"), "opencode");
+        assert_eq!(
+            adapter
+                .build_command(PromptMode::Interactive)
+                .first()
+                .map(String::as_str),
+            Some("opencode"),
+            "the server's binary map and the adapter's interactive argv must agree"
+        );
+    }
+
     #[test]
     fn conformance_claude_static() {
         conformance_static(&claude::ClaudeAdapter::new());

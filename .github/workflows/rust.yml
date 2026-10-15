@@ -112,6 +112,13 @@ jobs:
       # complements the static gate; it does not replace it.
       - name: runtime smoke -- CLI launch unbound-var (the AMUX-3145 scope shape shellcheck cannot see)
         run: bash scripts/test-cli-launch-unbound.sh
+      # M0 for the OpenCode provider. The bash start path builds an `opencode`
+      # command for CC_PROVIDER=opencode and rewrites amux's --yolo into
+      # opencode's --auto; before that branch existed the run fell through to
+      # `claude` (the D6 divergence the CLI's own comments warn about). Dry-run
+      # only, so no tmux/fleet is touched. Carries a claude positive control.
+      - name: runtime smoke -- OpenCode provider command build (M0)
+        run: bash scripts/test-cli-opencode-provider.sh
       # AF-120: the frustrations audit existed, detected its failure class
       # precisely (a headingless append folds into the previous entry and
       # vanishes from every census), and NOTHING RAN IT — six malformed
