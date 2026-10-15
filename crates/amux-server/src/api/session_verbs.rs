@@ -5985,6 +5985,9 @@ pub fn launch_base_binary(provider: &str) -> &'static str {
         "muse" => "muse",
         "gemini" => "gemini",
         "grok" => "grok",
+        // OpenCode CLI. Terminal-hosted in M0; the structured pump learns it
+        // in M1 (crates/amux-server/src/opencode/).
+        "opencode" => "opencode",
         // claude, iterm2, and anything unknown launch via build_claude_cmd,
         // whose default binary is `claude` (overridable by AMUX_CLAUDE_CMD).
         _ => "claude",
@@ -6489,6 +6492,7 @@ fn provider_label(provider: &str) -> &str {
         "ollama" => "Ollama",
         "grok" => "Grok",
         "muse" => "Muse Code",
+        "opencode" => "OpenCode",
         other => {
             if other.is_empty() {
                 "Claude Code"

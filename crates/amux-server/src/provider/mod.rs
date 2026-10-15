@@ -155,6 +155,7 @@ pub fn default_registry() -> ProviderRegistry {
     reg.register(Arc::new(static_providers::OllamaAdapter::default()));
     reg.register(Arc::new(static_providers::GrokAdapter));
     reg.register(Arc::new(static_providers::MuseAdapter));
+    reg.register(Arc::new(static_providers::OpenCodeAdapter));
     reg
 }
 
@@ -263,8 +264,16 @@ mod tests {
     #[test]
     fn default_registry_registers_all_known() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 6);
-        for id in ["claude-code", "gemini", "codex", "ollama", "grok", "muse"] {
+        assert_eq!(reg.len(), 7);
+        for id in [
+            "claude-code",
+            "gemini",
+            "codex",
+            "ollama",
+            "grok",
+            "muse",
+            "opencode",
+        ] {
             assert!(
                 reg.get(&ProviderId::new(id)).is_some(),
                 "default registry missing {id}"
@@ -298,7 +307,7 @@ mod tests {
 
         let mut reg = default_registry();
         reg.register(Arc::new(FutureAdapter));
-        assert_eq!(reg.len(), 7);
+        assert_eq!(reg.len(), 8);
         let got = reg.get(&ProviderId::new("a-provider-from-2031")).unwrap();
         assert_eq!(got.id().as_str(), "a-provider-from-2031");
     }
@@ -357,6 +366,11 @@ mod tests {
     #[tokio::test]
     async fn conformance_muse() {
         conformance(&static_providers::MuseAdapter).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_opencode() {
+        conformance(&static_providers::OpenCodeAdapter).await;
     }
 
     #[test]

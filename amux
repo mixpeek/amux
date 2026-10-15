@@ -1132,11 +1132,15 @@ cmd_start() {
     # Ollama daemon. The model comes from CC_MODEL (default qwen3.8:27b) — CC_FLAGS
     # can add extra codex flags (approval policy, add-dir, etc.) just like codex.
     cmd="codex --oss --local-provider ollama --model ${CC_MODEL:-qwen3.8:27b}"
+  elif [[ "$provider" == "opencode" ]]; then
+    # OpenCode: the interactive TUI. Model / auto-approve flags are appended
+    # below; no claude-specific default applies.
+    cmd="opencode"
   else
     cmd="${AMUX_CLAUDE_CMD:-claude}"
   fi
   # Apply global defaults from defaults.env (skip for codex/ollama — Claude flags don't apply)
-  if [[ "$provider" != "codex" && "$provider" != "ollama" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
+  if [[ "$provider" != "codex" && "$provider" != "ollama" && "$provider" != "opencode" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
     local q
     q=$(quote_flags "$CC_DEFAULT_FLAGS") || die "failed to quote CC_DEFAULT_FLAGS"
     [[ -n "$q" ]] && cmd="$cmd $q"
@@ -1176,6 +1180,15 @@ cmd_start() {
         cmd="$cmd --add-dir $(printf '%q' "$git_root")"
         [[ -d "$git_root/.git" ]] && cmd="$cmd --add-dir $(printf '%q' "$git_root/.git")"
       fi
+    fi
+  elif [[ "$provider" == "opencode" ]]; then
+    # OpenCode defaults. amux's `--yolo` is translated by parse_claude_flags
+    # into claude's `--dangerously-skip-permissions`; opencode's equivalent is
+    # the boolean `--auto`. Rewrite it rather than passing an unknown flag, and
+    # never invent a model — opencode wants `provider/model#variant`, which is
+    # the user's choice, not ours.
+    if [[ "$cmd" == *"--dangerously-skip-permissions"* ]]; then
+      cmd="${cmd//--dangerously-skip-permissions/--auto}"
     fi
   else
     [[ "$cmd" == *"--model"* ]] || cmd="$cmd --model sonnet"
@@ -1255,7 +1268,7 @@ cmd_start() {
   # to prevent auth conflict — BYO-key users don't have oauthAccount so they're
   # unaffected.
   local shell_setup=""
-  if [[ "$provider" != "codex" && "$provider" != "ollama" ]]; then
+  if [[ "$provider" != "codex" && "$provider" != "ollama" && "$provider" != "opencode" ]]; then
     shell_setup="unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
     if [[ -f "$HOME/.claude.json" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null; then
       shell_setup="${shell_setup}unset ANTHROPIC_API_KEY; "

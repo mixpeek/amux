@@ -635,6 +635,15 @@ fn shape_all_providers(
             "summary": "Grok Build exposes no usage API; consumption is unknown",
             "windows": [],
         }),
+        // OpenCode exposes no usage/quota API either (Invariant 20) — same
+        // usage_unknown shape as Muse and Grok: an absent number stays absent.
+        json!({
+            "id": "opencode", "label": "OpenCode", "available": true,
+            "measured": false, "n_considered": 0, "metered": true,
+            "local": false, "usage_unknown": true,
+            "summary": "OpenCode exposes no usage API; consumption is unknown",
+            "windows": [],
+        }),
     ];
     if let Some(obj) = body.as_object_mut() {
         let measured = providers
@@ -2070,7 +2079,7 @@ mod tests {
             },
         );
         let providers = body["providers"].as_array().unwrap();
-        assert_eq!(providers.len(), 6);
+        assert_eq!(providers.len(), 7);
         assert_eq!(
             providers.iter().filter(|p| p["available"] == false).count(),
             3

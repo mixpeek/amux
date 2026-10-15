@@ -392,6 +392,73 @@ impl ProviderAdapter for MuseAdapter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OpenCode
+// ---------------------------------------------------------------------------
+
+/// OpenCode CLI (`opencode`, measured against v2.0.28 on Linux).
+///
+/// **M0 is terminal-hosted.** The worker runs the interactive TUI in tmux and
+/// amux drives it through the terminal backend (send-keys / capture-pane).
+/// `structured_events` is honestly `false` until the structured path
+/// (`opencode run --format json`, a JSONL stream carrying a stable `sessionID`)
+/// is wired into [`super::super::opencode::structured::CliProvider`] — that is
+/// M1, tracked in the fork's `docs/opencode-provider-plan.md`. Until then the
+/// protocol pump returns `None` for this provider and the worker stays
+/// terminal-hosted, exactly like a provider whose structured shape is not
+/// captured yet.
+///
+/// No usage/quota API is read on this host, so `usage()` stays Unknown
+/// (Invariant 20) rather than inventing a number.
+pub struct OpenCodeAdapter;
+
+#[async_trait]
+impl ProviderAdapter for OpenCodeAdapter {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("opencode")
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            hot_model_switch: false,
+            // No usage surface read (terminal scrape only, like the others).
+            reports_usage: false,
+            // M0: terminal-hosted. Flip to `true` when the structured
+            // `CliProvider::OpenCode` + events translator land (M1).
+            structured_events: false,
+            // No hook surface wired for opencode yet.
+            hooks: false,
+        }
+    }
+
+    async fn usage(&self) -> ProviderUsage {
+        // No usage API to read; unknown is the only honest answer.
+        ProviderUsage::unknown(self.id())
+    }
+
+    async fn models(&self) -> Vec<String> {
+        // Models are account-specific (`opencode models`); enumerating them means
+        // spawning the CLI, which is not worth a launch-time probe. Empty is the
+        // honest answer, and the configured model is an open string either way.
+        Vec::new()
+    }
+
+    fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {
+        match prompt_mode {
+            // The interactive TUI, exactly as `opencode` launches it.
+            PromptMode::Interactive => vec!["opencode".into()],
+            // The real headless structured shape (consumed once M1 wires the
+            // protocol); the prompt itself is supplied by the protocol, not argv.
+            PromptMode::HeadlessStructured => vec![
+                "opencode".into(),
+                "run".into(),
+                "--format".into(),
+                "json".into(),
+            ],
+        }
+    }
+}
+
 /// Parse `ollama list` output: a header line, then one model per line with
 /// the name as the first whitespace-separated column, e.g.
 /// `llama3:latest    365c0bd3c000    4.7 GB    2 weeks ago`.
