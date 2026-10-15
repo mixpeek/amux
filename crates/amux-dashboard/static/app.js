@@ -6825,6 +6825,7 @@ function providerLabel(provider) {
   if (provider === 'muse') return 'Muse Code';
   if (provider === 'iterm2') return 'iTerm2';
   if (provider === 'grok') return 'Grok';
+  if (provider === 'opencode') return 'OpenCode';
   return 'Claude';
 }
 
@@ -6835,7 +6836,7 @@ function sessionProvider(s) {
   // muse lane would have shown a Claude badge, a Claude model and Claude's yolo
   // flag while running `muse`. Anything added to SESSION_PROVIDERS server-side
   // belongs here too.
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2' || p === 'opencode') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
@@ -6844,6 +6845,9 @@ function providerDefaultModel(provider) {
   if (provider === 'ollama') return 'qwen3.8:27b';
   if (provider === 'grok') return 'grok-4.6';
   if (provider === 'muse') return 'muse-spark-1.3-contributor';
+  // OpenCode has no single default model (`provider/model#variant`, from the
+  // worker's own config); empty is honest rather than showing a Claude default.
+  if (provider === 'opencode') return '';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
 
@@ -6858,6 +6862,8 @@ function providerYoloFlag(provider) {
   // --disable-approval/--disable-sandbox separately). Sending codex's
   // --dangerously-bypass-approvals-and-sandbox to muse is an unknown flag.
   if (provider === 'gemini' || provider === 'muse') return '--yolo';
+  // opencode's auto-approve is the boolean `--auto` (no skip-permissions flag).
+  if (provider === 'opencode') return '--auto';
   return '--dangerously-skip-permissions';
 }
 
@@ -6867,6 +6873,7 @@ function stripProviderYoloFlags(flags) {
     .replace(/--dangerously-bypass-approvals-and-sandbox/g, '')
     .replace(/--yolo/g, '')
     .replace(/--approval-mode(?:=|\s+)yolo/g, '')
+    .replace(/--auto\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -9886,7 +9893,8 @@ function editField(session, field, current, provider) {
       {v:'gemini',l:'Gemini'},
       {v:'grok',l:'Grok'},
       {v:'ollama',l:'Ollama (local)'},
-      {v:'muse',l:'Muse Code'}
+      {v:'muse',l:'Muse Code'},
+      {v:'opencode',l:'OpenCode'}
     ];
     sel.innerHTML = '';
     providers.forEach(p => { const o = document.createElement('option'); o.value = p.v; o.textContent = p.l; sel.appendChild(o); });
@@ -14279,7 +14287,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1526';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1527';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15337,7 +15345,7 @@ function _selectWorkerType(id) {
   const t = _workerTypeInfo(id);
   _renderCreateTypeRow();
   const allowed = p => !t.providers || !t.providers.length || t.providers.includes(p);
-  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse'].forEach(p => {
+  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse', 'opencode'].forEach(p => {
     const b = document.getElementById('create-provider-' + p);
     if (b) { b.disabled = !allowed(p); b.style.opacity = allowed(p) ? '' : '0.4'; }
   });
@@ -31237,6 +31245,8 @@ function _selectProvider(p) {
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
   if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
+  const _opencodeBtn = document.getElementById('create-provider-opencode');
+  if (_opencodeBtn) _opencodeBtn.classList.toggle('selected', p === 'opencode');
   const _typeHasWorktree = _workerTypeInfo(_createWorkerType).worktree !== 'unsupported';
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = _typeHasWorktree ? '' : 'none';
   document.getElementById('create-worktree-field').style.display = _createDirIsGit && _typeHasWorktree ? '' : 'none';
