@@ -85,6 +85,7 @@ pub enum CliProvider {
     ClaudeCode,
     GeminiCli,
     CodexCli,
+    OpenCode,
 }
 
 impl CliProvider {
@@ -94,6 +95,7 @@ impl CliProvider {
             CliProvider::ClaudeCode => "claude",
             CliProvider::GeminiCli => "gemini",
             CliProvider::CodexCli => "codex",
+            CliProvider::OpenCode => "opencode",
         }
     }
 
@@ -111,6 +113,9 @@ impl CliProvider {
             // they emit the same structured events as codex and are handled by
             // the same protocol pump.
             "codex" | "ollama" => Some(CliProvider::CodexCli),
+            // `opencode run --format json` (measured v2.0.28) speaks the
+            // structured protocol; see events::translate_opencode.
+            "opencode" => Some(CliProvider::OpenCode),
             _ => None,
         }
     }
@@ -125,6 +130,7 @@ impl CliProvider {
             CliProvider::ClaudeCode => "claude-code",
             CliProvider::GeminiCli => "gemini",
             CliProvider::CodexCli => "codex",
+            CliProvider::OpenCode => "opencode",
         }
     }
 
@@ -156,6 +162,18 @@ impl CliProvider {
                     return None;
                 }
                 "thread_id"
+            }
+            CliProvider::OpenCode => {
+                // `step_start` is OpenCode's init-shaped line (measured
+                // v2.0.28); every line carries the same top-level `sessionID`,
+                // but only the opener is treated as init so a later error line
+                // can never re-capture a ref (same rule as claude's bad-resume
+                // result, and it also means a dead `--session` target is never
+                // re-armed).
+                if ty != "step_start" {
+                    return None;
+                }
+                "sessionID"
             }
         };
         v.get(key)
@@ -217,17 +235,52 @@ impl CliProvider {
                     prompt.into(),
                 ],
             },
-        };
-        // claude + gemini share the flag spelling; codex handled above.
-        if !matches!(self, CliProvider::CodexCli) {
-            if let Some(r) = resume {
-                argv.push("--resume".into());
-                argv.push(r.into());
+            // `opencode run [flags] <message...>`. Assembled COMPLETELY here
+            // (resume spelling is `--session`, the prompt is positional last),
+            // so the shared tail below skips OpenCode.
+            //
+            // `--auto` is required for an unattended run: it auto-approves the
+            // permissions that are not explicitly denied, so a write tool does
+            // not hang waiting for a human (the same reason the gemini arm sets
+            // `--approval-mode auto_edit`).
+            //
+            // Continuity: `--session <id>` continues that session, or CREATES it
+            // if it does not exist (measured), so a stale ref starts a fresh
+            // conversation under the same id rather than failing forever.
+            CliProvider::OpenCode => {
+                let mut argv = vec![
+                    "run".into(),
+                    "--format".into(),
+                    "json".into(),
+                    "--auto".into(),
+                ];
+                if let Some(r) = resume {
+                    argv.push("--session".into());
+                    argv.push(r.into());
+                }
+                if let Some(m) = model {
+                    argv.push("--model".into());
+                    argv.push(m.into());
+                }
+                argv.push(prompt.into());
+                argv
             }
-        }
-        if let Some(m) = model {
-            argv.push("--model".into());
-            argv.push(m.into());
+        };
+        // OpenCode is fully assembled in its own arm (its resume spelling is
+        // `--session` and its prompt is positional), so the shared tail skips
+        // it entirely.
+        if !matches!(self, CliProvider::OpenCode) {
+            // claude + gemini share the flag spelling; codex handled above.
+            if !matches!(self, CliProvider::CodexCli) {
+                if let Some(r) = resume {
+                    argv.push("--resume".into());
+                    argv.push(r.into());
+                }
+            }
+            if let Some(m) = model {
+                argv.push("--model".into());
+                argv.push(m.into());
+            }
         }
         argv
     }
@@ -248,6 +301,7 @@ impl CliProvider {
             CliProvider::ClaudeCode => events::translate_claude(line, turn),
             CliProvider::GeminiCli => events::translate_gemini(line, turn),
             CliProvider::CodexCli => events::translate_codex(line, turn),
+            CliProvider::OpenCode => events::translate_opencode(line, turn),
         }
     }
 }
@@ -984,6 +1038,7 @@ mod tests {
             CliProvider::ClaudeCode,
             CliProvider::GeminiCli,
             CliProvider::CodexCli,
+            CliProvider::OpenCode,
         ] {
             let with = provider.args("hi", Some("haiku"), None);
             assert!(
@@ -1030,6 +1085,25 @@ mod tests {
         );
         let fresh = CliProvider::CodexCli.args("hi", None, None);
         assert_eq!(fresh, vec!["exec", "--json", "--skip-git-repo-check", "hi"]);
+        // opencode: continuation is `--session <id>` and the prompt is
+        // positional last; `--auto` keeps an unattended run from hanging.
+        let with = CliProvider::OpenCode.args("hi", Some("opencode-go/deepseek-v4.1-flash"), Some("ses_abc"));
+        assert_eq!(
+            with,
+            vec![
+                "run",
+                "--format",
+                "json",
+                "--auto",
+                "--session",
+                "ses_abc",
+                "--model",
+                "opencode-go/deepseek-v4.1-flash",
+                "hi"
+            ]
+        );
+        let fresh = CliProvider::OpenCode.args("hi", None, None);
+        assert_eq!(fresh, vec!["run", "--format", "json", "--auto", "hi"]);
     }
 
     #[test]
@@ -1046,6 +1120,16 @@ mod tests {
         assert_eq!(
             CliProvider::GeminiCli.conversation_ref(events::tests::GEMINI_INIT),
             Some("d1f03c4d-470b-4894-a540-3fd31e12be65".to_string())
+        );
+        // OpenCode: the `step_start` opener carries `sessionID`; a later line
+        // with the same id is NOT init-shaped and must not re-capture a ref.
+        assert_eq!(
+            CliProvider::OpenCode.conversation_ref(events::tests::OPENCODE_STEP_START),
+            Some("ses_ec340a338ffeqYv0Ij0TkzlBuv".to_string())
+        );
+        assert_eq!(
+            CliProvider::OpenCode.conversation_ref(events::tests::OPENCODE_TEXT),
+            None
         );
         // The bad-resume error result ALSO carries a session_id (the dead
         // one — measured live); it must NOT be captured, or the dead ref
@@ -1087,6 +1171,11 @@ mod tests {
         assert_eq!(
             CliProvider::from_provider_id("ollama"),
             Some(CliProvider::CodexCli)
+        );
+        // opencode speaks the structured protocol (run --format json).
+        assert_eq!(
+            CliProvider::from_provider_id("opencode"),
+            Some(CliProvider::OpenCode)
         );
         // A genuinely unknown provider still returns None.
         assert_eq!(CliProvider::from_provider_id("iterm2"), None);
@@ -1177,6 +1266,47 @@ mod tests {
             "{evs:?}"
         );
         assert_eq!(trace_count(&evs), 4, "prompt plus every provider line");
+    }
+
+    #[tokio::test]
+    async fn opencode_shaped_stream_full_lifecycle() {
+        // step_start -> Started; text -> Progress (the reader inserts
+        // TurnStarted before the first in-turn event); stream end (exit 0) with
+        // no result line -> TurnCompleted.
+        let dir = tempfile::tempdir().unwrap();
+        let script = fixture_script(
+            dir.path(),
+            "fake-opencode",
+            &[
+                events::tests::OPENCODE_STEP_START,
+                events::tests::OPENCODE_TEXT,
+            ],
+            0,
+        );
+        let proto = StructuredCliProtocol::new();
+        let w = worker_id("00005");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script),
+                model: None,
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("k1")).await.unwrap();
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(10)).await;
+        assert_eq!(
+            lifecycle_kinds(&evs),
+            vec!["started", "turn_started", "progress", "turn_completed"],
+            "{evs:?}"
+        );
+        assert_eq!(trace_count(&evs), 3, "prompt plus both provider lines");
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle);
     }
 
     #[tokio::test]

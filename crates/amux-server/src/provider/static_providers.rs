@@ -398,15 +398,12 @@ impl ProviderAdapter for MuseAdapter {
 
 /// OpenCode CLI (`opencode`, measured against v2.0.28 on Linux).
 ///
-/// **M0 is terminal-hosted.** The worker runs the interactive TUI in tmux and
-/// amux drives it through the terminal backend (send-keys / capture-pane).
-/// `structured_events` is honestly `false` until the structured path
-/// (`opencode run --format json`, a JSONL stream carrying a stable `sessionID`)
-/// is wired into [`super::super::opencode::structured::CliProvider`] — that is
-/// M1, tracked in the fork's `docs/opencode-provider-plan.md`. Until then the
-/// protocol pump returns `None` for this provider and the worker stays
-/// terminal-hosted, exactly like a provider whose structured shape is not
-/// captured yet.
+/// Runs the interactive TUI in tmux (M0) and speaks the structured protocol for
+/// headless runs: `opencode run --format json` emits one JSON object per line
+/// carrying a stable `sessionID` (`ses_…`). The structured path is wired
+/// through [`super::super::opencode::structured::CliProvider::OpenCode`] and
+/// `events::translate_opencode` (M1). See the fork's
+/// `docs/opencode-provider-plan.md`.
 ///
 /// No usage/quota API is read on this host, so `usage()` stays Unknown
 /// (Invariant 20) rather than inventing a number.
@@ -423,9 +420,8 @@ impl ProviderAdapter for OpenCodeAdapter {
             hot_model_switch: false,
             // No usage surface read (terminal scrape only, like the others).
             reports_usage: false,
-            // M0: terminal-hosted. Flip to `true` when the structured
-            // `CliProvider::OpenCode` + events translator land (M1).
-            structured_events: false,
+            // `opencode run --format json` emits JSONL lifecycle events.
+            structured_events: true,
             // No hook surface wired for opencode yet.
             hooks: false,
         }

@@ -455,6 +455,76 @@ pub fn translate_gemini(line: &str, turn: &TurnId) -> Vec<WorkerEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// OpenCode: `opencode run --format json`
+// ---------------------------------------------------------------------------
+
+/// Translate one line of OpenCode's `run --format json` stream.
+///
+/// Shapes measured live on 2026-10-14 (opencode v2.0.28, Linux): every line is
+/// a JSON object with a top-level `type` and a stable `sessionID` (`ses_…`).
+/// Observed types: `step_start`, `text` (assistant text under `part.text`), and
+/// `error` — a quota failure arrives as
+/// `{"type":"error","error":{"type":"provider.quota","status":429,…}}`.
+///
+/// Unknown types translate to NO events (forward-compatibility, Invariant 8)
+/// and a malformed line never panics. There is no explicit turn-end line yet,
+/// so the reader closes the turn on process exit (the shared behavior for a
+/// stream that ends without a result event).
+pub fn translate_opencode(line: &str, _turn: &TurnId) -> Vec<WorkerEvent> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Vec::new();
+    };
+    match v.get("type").and_then(Value::as_str) {
+        Some("step_start") => vec![WorkerEvent::Started],
+        Some("text") => {
+            let text = v
+                .pointer("/part/text")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if text.trim().is_empty() {
+                return Vec::new();
+            }
+            vec![WorkerEvent::Progress(ProgressReport {
+                summary: summarize(text),
+                tokens_used: None,
+            })]
+        }
+        Some("error") => {
+            let err = v.get("error");
+            let msg = err
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            let status = err.and_then(|e| e.get("status")).and_then(Value::as_i64);
+            let etype = err
+                .and_then(|e| e.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if status == Some(429)
+                || etype.contains("quota")
+                || etype.contains("rate")
+                || is_rate_limit_message(msg)
+            {
+                // The window/kind is not machine-readable here; `Unknown` is
+                // the honest cell and `raw` keeps the provider's message.
+                vec![WorkerEvent::RateLimited(RateLimit {
+                    kind: RateLimitKind::Unknown,
+                    reset_at: None,
+                    provider: ProviderId::new("opencode"),
+                    raw: Some(msg.to_string()),
+                })]
+            } else {
+                vec![WorkerEvent::Failed(Failure {
+                    reason: msg.to_string(),
+                    retryable: true,
+                })]
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Uniform TRANSCRIPT model (RR-0030 render path, AMUX-3201 slice 1).
 //
 // [`WorkerEvent`] above is TELEMETRY: one-line summaries capped at 120 chars,
@@ -1108,6 +1178,60 @@ pub(crate) mod tests {
         let evs = translate_gemini(line, &turn());
         assert!(matches!(&evs[0], WorkerEvent::Failed(_)));
         assert!(matches!(&evs[1], WorkerEvent::TurnCompleted(r) if r.outcome == "error"));
+    }
+
+    // -- OpenCode 2.0.28 (REAL captures, 2026-10-14) ------------------------
+
+    // REAL: `opencode run --format json --model opencode-go/deepseek-v4.1-flash "Reply with exactly one word: ready"`
+    pub(crate) const OPENCODE_STEP_START: &str = r#"{"type":"step_start","timestamp":1792020538172,"sessionID":"ses_ec340a338ffeqYv0Ij0TkzlBuv","part":{"id":"prt_13cbf633c001COCVxLpu1WOfMY","sessionID":"ses_ec340a338ffeqYv0Ij0TkzlBuv","messageID":"msg_13cbf5d46001SEqxY5t9QyR9qe","type":"step-start"}}"#;
+
+    // REAL, verbatim (the assistant's answer rides `part.text`).
+    pub(crate) const OPENCODE_TEXT: &str = r#"{"type":"text","timestamp":1792020538193,"sessionID":"ses_ec340a338ffeqYv0Ij0TkzlBuv","part":{"id":"prt_13cbf5d46001SEqxY5t9QyR9qe_text-0","sessionID":"ses_ec340a338ffeqYv0Ij0TkzlBuv","messageID":"msg_13cbf5d46001SEqxY5t9QyR9qe","type":"text","text":"ready","time":{"start":1792020536681,"end":1792020538193}}}"#;
+
+    // REAL shape; the provider message is shortened for readability (the real
+    // one is a multi-KB Google quota dump). The fields the translator reads
+    // (type/message/status) are verbatim.
+    pub(crate) const OPENCODE_ERROR_QUOTA: &str = r#"{"type":"error","timestamp":1792020525010,"sessionID":"ses_ec340d50effegUEUtkWwwquKzB","error":{"type":"provider.quota","message":"You exceeded your current quota, please check your plan and billing details.","status":429}}"#;
+
+    #[test]
+    fn opencode_step_start_is_started() {
+        assert_eq!(
+            translate_opencode(OPENCODE_STEP_START, &turn()),
+            vec![WorkerEvent::Started]
+        );
+    }
+
+    #[test]
+    fn opencode_text_is_progress() {
+        assert_eq!(
+            translate_opencode(OPENCODE_TEXT, &turn()),
+            vec![WorkerEvent::Progress(ProgressReport {
+                summary: "ready".into(),
+                tokens_used: None,
+            })]
+        );
+    }
+
+    #[test]
+    fn opencode_quota_error_is_rate_limited() {
+        let evs = translate_opencode(OPENCODE_ERROR_QUOTA, &turn());
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            WorkerEvent::RateLimited(r) => {
+                assert_eq!(r.provider.as_str(), "opencode");
+                assert_eq!(r.kind, RateLimitKind::Unknown);
+                assert!(r.raw.is_some());
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opencode_unknown_and_malformed_lines_are_silent() {
+        // A forward-compatible type the translator does not know yet.
+        assert!(translate_opencode(r#"{"type":"step_finish","sessionID":"ses_x"}"#, &turn()).is_empty());
+        assert!(translate_opencode("not json", &turn()).is_empty());
+        assert!(translate_opencode("", &turn()).is_empty());
     }
 
     // -- malformed input: no events, no panic (all providers) ---------------
