@@ -6,7 +6,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=$AMUX_HOME/server.env
+# Optional: a fresh install has no server.env yet (the server mints it on first
+# boot). Without the leading `-`, systemd treats a missing EnvironmentFile as
+# fatal ("Failed to load environment files: No such file or directory") and the
+# unit restart-loops instead of starting — so the server never gets to create
+# the file. Matches amux-builder.service.template.
+EnvironmentFile=-$AMUX_HOME/server.env
 Environment="AMUX_RS_PORT=$PORT"
 Environment="AMUX_HOME=$AMUX_HOME"
 Environment="CARGO_TARGET_DIR=$HOME/.amux/rust-build-target"

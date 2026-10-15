@@ -32,7 +32,7 @@
 #   AMUX_ALLOW_NO_TMUX=1  install anyway without tmux (dashboard-only)
 set -euo pipefail
 
-BOLD=$'\033[1m' GREEN=$'\033[32m' YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
+BOLD=$'\033[1m' DIM=$'\033[2m' GREEN=$'\033[32m' YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
 say()  { echo "${GREEN}✓${RESET} $*"; }
 warn() { echo "${YELLOW}!${RESET} $*"; }
 die()  { echo "${RED}✗${RESET} $*" >&2; exit 1; }
