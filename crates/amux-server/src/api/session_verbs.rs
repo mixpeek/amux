@@ -5369,12 +5369,17 @@ fn render_transcript_records(
 // contract).
 // ---------------------------------------------------------------------------
 
-pub const SESSION_PROVIDERS: [&str; 7] =
-    ["claude", "codex", "gemini", "iterm2", "ollama", "grok", "muse"];
-const PROVIDER_YOLO_FLAGS: [&str; 3] = [
+pub const SESSION_PROVIDERS: [&str; 8] = [
+    "claude", "codex", "gemini", "iterm2", "ollama", "grok", "muse", "opencode",
+];
+const PROVIDER_YOLO_FLAGS: [&str; 4] = [
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
     "--yolo",
+    // OpenCode's auto-approve is the boolean `--auto` (see provider_yolo_flag).
+    // It is in this list so yolo DETECTION (is_yolo_enabled, the dashboard
+    // badge) and STRIP (toggle-off) treat it like every other provider's flag.
+    "--auto",
 ];
 const VALID_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
@@ -5691,6 +5696,9 @@ fn provider_yolo_flag(provider: &str) -> &'static str {
     match provider {
         "codex" | "ollama" => "--dangerously-bypass-approvals-and-sandbox",
         "gemini" | "muse" => "--yolo",
+        // OpenCode has no skip-permissions flag; `--auto` auto-approves the
+        // permissions that are not explicitly denied.
+        "opencode" => "--auto",
         _ => "--dangerously-skip-permissions",
     }
 }
@@ -5825,6 +5833,10 @@ pub(crate) fn default_model_for_provider(provider: &str) -> String {
         "grok" => "grok-4.6".into(),
         // The catalog default (is_default/is_current) as of 1.0.3.
         "muse" => "muse-spark-1.3-contributor".into(),
+        // OpenCode has no single default model (`provider/model#variant`, from
+        // the worker's own config). Empty is honest; the launch arm never
+        // invents a model (ethos rule 8: the model choice is the user's).
+        "opencode" => String::new(),
         _ => get_default_model(),
     }
 }
@@ -6344,6 +6356,28 @@ mod grok_launch_tests {
         );
         assert!(!cmd.contains("--session-id"));
         assert!(!cmd.contains("should-not-appear"));
+    }
+}
+
+#[cfg(test)]
+mod opencode_provider_tests {
+    use super::{
+        default_model_for_provider, launch_base_binary, provider_yolo_flag, SESSION_PROVIDERS,
+    };
+
+    #[test]
+    fn opencode_is_a_session_provider_and_launches_opencode() {
+        assert!(SESSION_PROVIDERS.contains(&"opencode"));
+        assert_eq!(launch_base_binary("opencode"), "opencode");
+        assert_ne!(launch_base_binary("opencode"), "claude");
+    }
+
+    #[test]
+    fn opencode_yolo_is_auto_and_has_no_invented_model() {
+        assert_eq!(provider_yolo_flag("opencode"), "--auto");
+        // No provider default model: opencode wants provider/model#variant and
+        // the worker's own config supplies it (ethos rule 8).
+        assert_eq!(default_model_for_provider("opencode"), "");
     }
 }
 
@@ -15556,6 +15590,36 @@ pub(crate) async fn start_session(
             }
             format!("{base_bin}{opts}")
         }
+        "opencode" => {
+            // OpenCode (`opencode`). The interactive TUI launches in tmux; the
+            // structured headless path is CliProvider::OpenCode. Do NOT fall
+            // through to build_claude_cmd — that would launch `claude`.
+            //
+            // YOLO: opencode's auto-approve is the boolean `--auto`
+            // (provider_yolo_flag). Normalize any stale spelling to it, the way
+            // the muse arm does, so a provider swap cannot leave claude's flag
+            // in CC_FLAGS.
+            let mut oflags = flags.clone();
+            let oyolo = PROVIDER_YOLO_FLAGS.iter().any(|f| oflags.contains(f));
+            if oyolo {
+                oflags = strip_provider_yolo_flags(&oflags);
+            }
+            let mut opts = String::new();
+            if !oflags.is_empty() {
+                opts += &format!(" {}", shell_quote_flags(&oflags));
+            }
+            if !extra_flags.is_empty() {
+                opts += &format!(" {}", shell_quote_flags(extra_flags));
+            }
+            if oyolo && !opts.contains("--auto") {
+                opts += " --auto";
+            }
+            // No model default: opencode wants `provider/model#variant` and its
+            // own config supplies the default. A `--model` in CC_FLAGS is passed
+            // through verbatim above. Continuity is opencode's own (sessions
+            // persist per workspace): pass `--continue`/`--session` via CC_FLAGS.
+            format!("{base_bin}{opts}")
+        }
         _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts,
     };
 
@@ -15568,6 +15632,7 @@ pub(crate) async fn start_session(
         && provider != "ollama"
         && provider != "grok"
         && provider != "muse"
+        && provider != "opencode"
     {
         shell_rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
         if let Ok(t) = std::fs::read_to_string(
@@ -15646,6 +15711,7 @@ pub(crate) async fn start_session(
         && provider != "ollama"
         && provider != "grok"
         && provider != "muse"
+        && provider != "opencode"
         && has_oauth
     {
         shell_rc.push_str("unset ANTHROPIC_API_KEY; ");
