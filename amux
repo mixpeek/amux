@@ -754,20 +754,23 @@ cmd_register() {
   # of printing usage; a leading-dash name is a mistake, not an identifier. Same
   # guard the board verbs carry (see the `-*) die` case there).
   case "$name" in
-    ""|-h|--help|help) die "usage: amux register <name> [--model opus] [--yolo] [--dir /path] [--worktree] [--worktree-profile p[,p2]] [claude flags...]" ;;
+    ""|-h|--help|help) die "usage: amux register <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [--worktree] [--worktree-profile p[,p2]] [claude flags...]" ;;
     -*) die "amux register: '$name' looks like a flag, not a worker name. Put the name first: amux register <name> [flags]" ;;
   esac
   shift
 
   # Worktree flags are amux's, not claude's: take them out before the rest is
   # parsed as claude flags (AMUX-5341). --worktree-profile implies --worktree.
-  local wt="" wt_profile="" reg_args=()
+  local wt="" wt_profile="" prov="" reg_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --worktree) wt=1; shift ;;
       --worktree-profile) [[ -n "${2:-}" ]] || die "--worktree-profile needs a profile name (see: amux worktree <name> profiles)"
                           wt=1; wt_profile="$2"; shift 2 ;;
       --worktree-profile=*) wt=1; wt_profile="${1#*=}"; shift ;;
+      --provider) [[ -n "${2:-}" ]] || die "--provider needs a value (e.g. claude, codex, gemini, opencode)"
+                  prov="$2"; shift 2 ;;
+      --provider=*) prov="${1#*=}"; shift ;;
       *) reg_args+=("$1"); shift ;;
     esac
   done
@@ -775,6 +778,13 @@ cmd_register() {
     die "--worktree-profile '$wt_profile' is not a profile name (names joined by commas)"
   fi
   set -- ${reg_args[@]+"${reg_args[@]}"}
+
+  # A provider the local bash launcher does not know falls back to `claude`
+  # (the fixed else-branch), which is a SILENT wrong-agent launch. Warn rather
+  # than die: the set is open (Invariant 8) and the server may still know it.
+  if [[ -n "$prov" ]] && [[ " claude codex gemini iterm2 ollama grok muse opencode " != *" $prov "* ]]; then
+    echo "${YELLOW}warn:${RESET} unknown provider '$prov' — the server may know it; otherwise start falls back to claude" >&2
+  fi
 
   parse_claude_flags "$@"
 
@@ -803,6 +813,7 @@ cmd_register() {
     # A flag given now replaces the stored value rather than duplicating it.
     [[ -n "$wt" ]] && preserved=$(printf '%s\n' "$preserved" | grep -vE '^CC_WORKTREE=' || true)
     [[ -n "$wt_profile" ]] && preserved=$(printf '%s\n' "$preserved" | grep -vE '^CC_WORKTREE_PROFILE=' || true)
+    [[ -n "$prov" ]] && preserved=$(printf '%s\n' "$preserved" | grep -vE '^CC_PROVIDER=' || true)
   fi
   {
     echo "# amux session: $name"
@@ -819,6 +830,7 @@ cmd_register() {
     fi
     [[ -n "$wt" ]] && echo "CC_WORKTREE=\"1\""
     [[ -n "$wt_profile" ]] && echo "CC_WORKTREE_PROFILE=\"$wt_profile\""
+    [[ -n "$prov" ]] && echo "CC_PROVIDER=\"$prov\""
     [[ -n "$preserved" ]] && printf '%s\n' "$preserved"
   } > "$file"
 
@@ -1421,8 +1433,20 @@ sys.exit(0 if any(line.startswith("n/") and os.path.realpath(line[1:].strip().sp
 cmd_exec() {
   # Register + start in one step
   local name="${1:-}"
-  [[ -n "$name" ]] || die "usage: amux exec <name> [--model opus] [--yolo] [--dir /path] [claude flags...]"
+  [[ -n "$name" ]] || die "usage: amux exec <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [claude flags...]"
   shift
+
+  # amux owns --provider; strip it before the rest is parsed as claude flags.
+  local prov="" exec_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --provider) [[ -n "${2:-}" ]] || die "--provider needs a value (e.g. claude, codex, gemini, opencode)"
+                  prov="$2"; shift 2 ;;
+      --provider=*) prov="${1#*=}"; shift ;;
+      *) exec_args+=("$1"); shift ;;
+    esac
+  done
+  set -- ${exec_args[@]+"${exec_args[@]}"}
 
   parse_claude_flags "$@"
 
@@ -1441,6 +1465,7 @@ CC_NAME="$name"
 CC_DIR="$resolved_dir"
 CC_FLAGS="${CC_FLAGS_STR}"
 EOF
+  [[ -n "$prov" ]] && echo "CC_PROVIDER=\"$prov\"" >> "$file"
 
   # Start
   cmd_start "$name" "${CC_EXTRA_ARGS[@]+"${CC_EXTRA_ARGS[@]}"}"
@@ -6187,6 +6212,8 @@ ${BOLD}Claude Code flags (on register/exec):${RESET}
   --disallowedTools <tools>    Disallowed tools list
   --effort <level>             low, medium, high
   --dir <path>                 Working directory (default: cwd)
+  --provider <name>            Agent runtime: claude (default), codex, gemini,
+                               ollama, grok, muse, opencode
   --verbose                    Verbose mode
   --chrome / --no-chrome       Browser automation toggle
   ... and all other claude CLI flags pass through
@@ -6197,6 +6224,7 @@ ${BOLD}Worker names support fuzzy matching:${RESET}
 
 ${BOLD}Examples:${RESET}
   amux register api --model opus --yolo --dir ~/Dev/myapp
+  amux register oc --provider opencode --dir ~/Dev/myapp
   amux exec frontend --append-system-prompt "React + Tailwind"
   amux send api "fix the auth bug in login.ts"
   amux send api --keys 'C-c'

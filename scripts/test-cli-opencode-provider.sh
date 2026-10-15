@@ -51,6 +51,11 @@ write_env cl claude ""
 OUT="$(dry cl)"
 if printf '%s' "$OUT" | grep -q 'claude --model sonnet'; then ok "claude regression intact (claude --model sonnet)"; else bad "claude path changed" "$OUT"; fi
 
+# ── 4. register --provider writes CC_PROVIDER and start honours it ──────────
+timeout 20 env CC_HOME="$TMP" bash "$AMUX_BIN" register oc4 --provider opencode --dir "$WORK" >/dev/null 2>&1 || true
+OUT="$(dry oc4)"
+if printf '%s' "$OUT" | grep -Eq '^[[:space:]]*opencode[[:space:]]*$'; then ok "register --provider opencode -> opencode"; else bad "register --provider not honoured" "$OUT"; fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
