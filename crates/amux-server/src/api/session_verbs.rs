@@ -1816,6 +1816,16 @@ fn agent_ui_visible(clean_output: &str) -> bool {
         if ls.contains("voice input") || ls.contains("muse-spark") {
             return true;
         }
+        // OpenCode's TUI composer footer (measured v2.0.29): two hints unique
+        // to it and printed by no shell. NOTE: this is terminal-scrape
+        // recognition — the documented FALLBACK (amux README: "terminal
+        // scraping is the fallback, not the plan"). M2 (opencode over its
+        // structured protocol: `run --format json` / `serve`) makes the
+        // interactive composer unnecessary, at which point this matcher (and
+        // opencode_composer_state below) can be deleted with their call sites.
+        if ls.contains("shift+tab agents") || ls.contains("ctrl+p commands") {
+            return true;
+        }
     }
     for l in &lines[n.saturating_sub(12)..] {
         let s = l.trim();
@@ -10483,6 +10493,57 @@ pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
     }
 }
 
+/// OpenCode's TUI composer (`opencode` v2.0.29), recognized from stripped lines.
+///
+/// OpenCode draws its input as a bordered box — `┃` (U+2503) verticals and a
+/// `╹▀▀…` bottom border — with a footer carrying two hints no other provider
+/// and no shell prints: `shift+tab agents` and `ctrl+p commands`. The box holds
+/// the empty hint (`Ask anything… "…"`) and a mode row (`Build · <model> ·
+/// <effort>`); real typed text sits in the box above the mode row.
+///
+/// NOTE: terminal-scrape recognition — the documented FALLBACK. When M2 drives
+/// opencode over its structured protocol, the interactive composer (and this
+/// matcher, plus `agent_ui_visible`'s opencode markers) become unnecessary and
+/// can be deleted together.
+fn opencode_composer_state(stripped: &[String]) -> Option<ComposerState> {
+    // The composer footer: two hints unique to opencode's TUI.
+    let footer = stripped
+        .iter()
+        .rposition(|l| l.contains("shift+tab agents") && l.contains("ctrl+p commands"))?;
+    // The bottom border sits directly above the footer.
+    let border = footer.checked_sub(1)?;
+    if !stripped[border].trim_start().starts_with('\u{2579}') {
+        return None;
+    }
+    // The box body: the run of `┃`-prefixed lines above the border.
+    let mut top = border;
+    while top > 0 && stripped[top - 1].trim_start().starts_with('\u{2503}') {
+        top -= 1;
+    }
+    if top == border {
+        return None; // footer without a drawn box: prose, not the composer
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for l in &stripped[top..border] {
+        let t = l.trim_start().trim_start_matches('\u{2503}').trim();
+        if t.is_empty() {
+            continue;
+        }
+        // Chrome, never content: the empty hint and the mode row.
+        if t.starts_with("Ask anything") {
+            continue;
+        }
+        if t.starts_with("Build ") && t.contains('\u{00b7}') {
+            continue;
+        }
+        parts.extend(t.split_whitespace().map(str::to_string));
+    }
+    if parts.is_empty() {
+        return Some(ComposerState::Placeholder("Askanything".into()));
+    }
+    Some(ComposerState::Typed(parts.concat()))
+}
+
 pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     let clean = strip_ansi(raw_frame);
     // The manager view owns the keyboard: its own status bar says so. Positive
@@ -10529,6 +10590,14 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     // therefore spun its twelve no-ui looks and reported `Unverified` while the
     // message sat delivered in the lane.
     if let Some(state) = gemini_composer_state(&raw_lines, &stripped) {
+        return state;
+    }
+    // OpenCode draws its composer too, and — like gemini — with NO ❯/› prompt
+    // glyph, so the scan below returns NotVisible for a plainly drawn composer
+    // and `read_frame` maps that to NoUi, which `final_frame_confirms` refuses
+    // by design: every send would report `Unverified` while the message sat in
+    // the box. Same shape, same fix as AMUX-3889 one provider over.
+    if let Some(state) = opencode_composer_state(&stripped) {
         return state;
     }
     let Some(idx) = stripped
@@ -40657,6 +40726,20 @@ mod tests {
                      gpt-5.6-sol default \u{b7} ~/w";
         assert!(agent_ui_visible(codex), "codex composer not recognised");
 
+        // OpenCode v2.0.29: a ┃-bordered box with a ╹▀ bottom border and a
+        // footer carrying two hints unique to it ("shift+tab agents",
+        // "ctrl+p commands"). No ❯/› glyph, like gemini's box.
+        let opencode = "\u{2503}\n\
+                        \u{2503}  Ask anything\u{2026} \"What is the tech stack of this project?\"\n\
+                        \u{2503}\n\
+                        \u{2503}  Build \u{b7} DeepSeek V4.1 Flash OpenCode Go \u{b7} max\n\
+                        \u{2579}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\
+                        \u{2026}/w    shift+tab agents  ctrl+p commands";
+        assert!(
+            agent_ui_visible(opencode),
+            "opencode composer not recognised:\n{opencode}"
+        );
+
         let claude =
             "\u{23f5}\u{23f5} auto mode on (shift+tab to cycle) \u{b7} \u{2190} for agents";
         assert!(agent_ui_visible(claude), "claude composer not recognised");
@@ -47683,6 +47766,42 @@ mod composer_state_tests {
                 ComposerState::NotVisible
             );
         }
+    }
+
+    #[test]
+    fn an_opencode_composer_is_read_rather_than_reported_as_no_ui() {
+        // The bug, one provider over from AMUX-3889: opencode's box draws no
+        // ❯/› glyph, so the generic scan returned NotVisible → NoUi → every
+        // send reported Unverified while the text sat in the box. Measured live
+        // 2026-10-15 on worker `test` (opencode 2.0.29).
+        const EMPTY: &str = "\u{2503}\n\
+             \u{2503}  Ask anything\u{2026} \"What is the tech stack of this project?\"\n\
+             \u{2503}\n\
+             \u{2503}  Build \u{b7} DeepSeek V4.1 Flash OpenCode Go \u{b7} max\n\
+             \u{2579}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\
+             \u{2026}/projetos/amux:feat/opencode-provider    shift+tab agents  ctrl+p commands";
+        assert_ne!(
+            composer_state(EMPTY),
+            ComposerState::NotVisible,
+            "opencode's box is a drawn composer; NotVisible routes the send to NoUi \
+             and a delivered message is reported as failed"
+        );
+        assert_eq!(composer_state(EMPTY).typed(), None);
+        assert_eq!(read_frame(EMPTY, "somemessagetail"), FrameRead::Cleared);
+        assert!(final_frame_confirms(read_frame(EMPTY, "somemessagetail")));
+        // The provider-UI marker that clears the boot gate.
+        assert!(agent_ui_visible(EMPTY));
+
+        // Control: real typed text must read as typed, never Cleared.
+        const TYPED: &str = "\u{2503}\n\
+             \u{2503}  hello world\n\
+             \u{2503}\n\
+             \u{2503}  Build \u{b7} DeepSeek V4.1 Flash OpenCode Go \u{b7} max\n\
+             \u{2579}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\
+             \u{2026}/w    shift+tab agents  ctrl+p commands";
+        assert_eq!(composer_state(TYPED).typed(), Some("helloworld"));
+        assert_eq!(read_frame(TYPED, "world"), FrameRead::StillThereIdle);
+        assert!(!final_frame_confirms(read_frame(TYPED, "world")));
     }
 
     #[test]
