@@ -3015,6 +3015,17 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     if gemini_composer_state(&raw_lines, &stripped).is_some() {
         return "idle".into();
     }
+    // OpenCode draws its composer too, and — like gemini — with NO ❯/› glyph,
+    // so without this the function falls to the empty-string return and
+    // `pane_is_at_boundary` reads an idle opencode lane as NOT at boundary:
+    // the boot gate never clears (every send queues "waiting for fresh boot
+    // readiness" forever) and the steer sweep refuses the queued row with
+    // `boundary_refused_unknown_state` (agent_state unknown, authority
+    // inferred). Measured live 2026-10-16 on a server-started worker,
+    // opencode 2.0.30.
+    if opencode_composer_state(&stripped).is_some() {
+        return "idle".into();
+    }
     if clean.contains('\u{276f}') {
         // About to settle on idle: if a generating-shaped line sits in frame
         // unclassified, that is the next AMUX-3426 — make it self-announce.
@@ -3069,11 +3080,18 @@ fn idle_hook_frame(raw: &str) -> IdleHookFrame {
 pub(crate) fn pane_bar_says_generating(raw_output: &str) -> bool {
     let clean = strip_ansi(raw_output);
     let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
+    // `esc interrupt` (no "to") is opencode's in-flight footer; measured
+    // 2026-10-16 on 2.0.29/2.0.30. Claude/codex print `esc to interrupt`
+    // (which does not contain this string) and gemini `esc to cancel`, so the
+    // opencode spelling is a safe positive marker rather than a loose one.
     let has_esc = nonblank
         .iter()
         .rev()
         .take(3)
-        .any(|l| l.to_lowercase().contains("esc to interrupt"));
+        .any(|l| {
+            let ll = l.to_lowercase();
+            ll.contains("esc to interrupt") || ll.contains("esc interrupt")
+        });
     // AN EMPTY COMPOSER DOES NOT MAKE IT IDLE. A peer's in-flight edit added a
     // `prompt_visible` exception on the theory that "empty ❯ + esc to interrupt
     // = idle with background agents". Measured against a lane provably mid-turn
@@ -10493,23 +10511,33 @@ pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
     }
 }
 
-/// OpenCode's TUI composer (`opencode` v2.0.29), recognized from stripped lines.
+/// OpenCode's TUI composer (`opencode` v2.0.29/2.0.30), recognized from
+/// stripped lines.
 ///
 /// OpenCode draws its input as a bordered box — `┃` (U+2503) verticals and a
-/// `╹▀▀…` bottom border — with a footer carrying two hints no other provider
-/// and no shell prints: `shift+tab agents` and `ctrl+p commands`. The box holds
-/// the empty hint (`Ask anything… "…"`) and a mode row (`Build · <model> ·
-/// <effort>`); real typed text sits in the box above the mode row.
+/// `╹▀▀…` bottom border — with a footer carrying `ctrl+p commands` and one
+/// rotating hint. The box holds the empty hint (`Ask anything… "…"`) and a
+/// mode row (`Build · <model> · <effort>`); real typed text sits in the box
+/// above the mode row.
+///
+/// The footer's LEFT segment rotates with state (measured live 2026-10-16,
+/// 2.0.29 and 2.0.30): `shift+tab agents` on a fresh TUI, usage/cost
+/// (`8.7K (1%) · $0.00`) after a turn, and `esc interrupt` while a turn runs.
+/// Only the last of those is NOT an idle composer, so the matcher keys on the
+/// stable `ctrl+p commands` and excludes the in-flight spelling.
 ///
 /// NOTE: terminal-scrape recognition — the documented FALLBACK. When M2 drives
 /// opencode over its structured protocol, the interactive composer (and this
 /// matcher, plus `agent_ui_visible`'s opencode markers) become unnecessary and
 /// can be deleted together.
 fn opencode_composer_state(stripped: &[String]) -> Option<ComposerState> {
-    // The composer footer: two hints unique to opencode's TUI.
-    let footer = stripped
-        .iter()
-        .rposition(|l| l.contains("shift+tab agents") && l.contains("ctrl+p commands"))?;
+    // The composer footer. `ctrl+p commands` is the stable marker; requiring
+    // both hints here (the pre-2.0.30 matcher) made a post-turn idle frame
+    // read as NotVisible, and accepting every `ctrl+p` frame would read a
+    // mid-turn frame as an empty composer. Neither is the composer.
+    let footer = stripped.iter().rposition(|l| {
+        l.contains("ctrl+p commands") && !l.to_lowercase().contains("esc interrupt")
+    })?;
     // The bottom border sits directly above the footer.
     let border = footer.checked_sub(1)?;
     if !stripped[border].trim_start().starts_with('\u{2579}') {
@@ -47802,6 +47830,39 @@ mod composer_state_tests {
         assert_eq!(composer_state(TYPED).typed(), Some("helloworld"));
         assert_eq!(read_frame(TYPED, "world"), FrameRead::StillThereIdle);
         assert!(!final_frame_confirms(read_frame(TYPED, "world")));
+
+        // 2.0.30, post-turn idle: the hint row swaps `shift+tab agents` for
+        // usage/cost. Still the composer — and the boundary the boot gate and
+        // the steer sweep need. Measured live 2026-10-16; before this, an
+        // idle opencode lane read as NOT at boundary (detect_claude_status
+        // returned ""), so every send queued "waiting for fresh boot
+        // readiness" forever and the steer sweep refused the row with
+        // `boundary_refused_unknown_state`.
+        const IDLE_USED: &str = "\u{2503}\n\
+             \u{2503}\n\
+             \u{2503}\n\
+             \u{2503}  Build auto \u{b7} DeepSeek V4.1 Flash OpenCode Go \u{b7} high\n\
+             \u{2579}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\
+             \u{2026}/projetos/django-k8s:main   9.1K (1%) \u{b7} $0.00  ctrl+p commands";
+        assert_ne!(composer_state(IDLE_USED), ComposerState::NotVisible);
+        assert_eq!(composer_state(IDLE_USED).typed(), None);
+        assert!(agent_ui_visible(IDLE_USED));
+        assert!(pane_is_at_boundary(IDLE_USED));
+        assert_eq!(detect_claude_status(IDLE_USED), "idle");
+
+        // Mid-turn (2.0.30): the footer keeps `ctrl+p commands` and swaps the
+        // idle hints for `esc interrupt`. A turn in flight is NOT a boundary
+        // and must not read as an empty composer.
+        const RUNNING: &str = "\u{2503}\n\
+             \u{2503}\n\
+             \u{2503}\n\
+             \u{2503}  Build auto \u{b7} DeepSeek V4.1 Flash OpenCode Go \u{b7} high\n\
+             \u{2579}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\u{2580}\n\
+             \u{2026}/projetos/django-k8s:main   \u{25a0}\u{25a0}\u{2b1d}\u{2b1d}\u{2b1d}\u{2b1d}\u{2b1d}\u{2b1d} esc interrupt   \u{2193} 1 shell \u{b7} 9.1K (1%) \u{b7} $0.00  ctrl+p commands";
+        assert_eq!(composer_state(RUNNING), ComposerState::NotVisible);
+        assert!(pane_bar_says_generating(RUNNING));
+        assert!(!pane_is_at_boundary(RUNNING));
+        assert_ne!(detect_claude_status(RUNNING), "idle");
     }
 
     #[test]
