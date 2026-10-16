@@ -6131,6 +6131,42 @@ pub(crate) fn grok_new_session_id() -> String {
     )
 }
 
+/// OpenCode's interactive launch opts. Pure, so the launch contract is
+/// testable without a tmux pane (muse_launch_command's precedent).
+///
+/// - `--standalone` ALWAYS: without it the TUI connects to the shared
+///   background service (`opencode serve --service`), which loaded its config
+///   — and therefore any per-worker OPENCODE_CONFIG_CONTENT instructions —
+///   before this worker existed, so the composed scoped-context file never
+///   reached the model. A private server reads the worker's own env, and
+///   lanes stop sharing one service (session state included). Measured live
+///   2026-10-16: the env pair was on the process but the marker was absent
+///   from the model until --standalone was added.
+/// - yolo normalizes to `--auto`; stale spellings never leak.
+/// - No model default: opencode wants `provider/model#variant` and its own
+///   config supplies the default. A `--model` in CC_FLAGS passes through.
+pub(crate) fn opencode_launch_opts(flags: &str, extra_flags: &str) -> String {
+    let mut oflags = flags.to_string();
+    let oyolo = PROVIDER_YOLO_FLAGS.iter().any(|f| oflags.contains(f));
+    if oyolo {
+        oflags = strip_provider_yolo_flags(&oflags);
+    }
+    let mut opts = String::new();
+    if !oflags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(&oflags));
+    }
+    if !extra_flags.is_empty() {
+        opts += &format!(" {}", shell_quote_flags(extra_flags));
+    }
+    if oyolo && !opts.contains("--auto") {
+        opts += " --auto";
+    }
+    if !opts.contains("--standalone") {
+        opts += " --standalone";
+    }
+    opts
+}
+
 /// Muse Code (`muse`) is the one provider whose session id amux CANNOT mint.
 ///
 /// grok takes `--session-id <uuid>` on a new conversation, so the id is chosen
@@ -6422,7 +6458,8 @@ mod grok_launch_tests {
 #[cfg(test)]
 mod opencode_provider_tests {
     use super::{
-        default_model_for_provider, launch_base_binary, provider_yolo_flag, SESSION_PROVIDERS,
+        default_model_for_provider, launch_base_binary, opencode_launch_opts,
+        provider_yolo_flag, SESSION_PROVIDERS,
     };
 
     #[test]
@@ -6438,6 +6475,34 @@ mod opencode_provider_tests {
         // No provider default model: opencode wants provider/model#variant and
         // the worker's own config supplies it (ethos rule 8).
         assert_eq!(default_model_for_provider("opencode"), "");
+    }
+
+    #[test]
+    fn opencode_launch_is_standalone_and_normalizes_yolo() {
+        // `--standalone` is load-bearing: without a private server the TUI
+        // reads config from the shared background service, which never saw the
+        // worker's OPENCODE_CONFIG_CONTENT (measured live 2026-10-16).
+        let opts = opencode_launch_opts("--dangerously-skip-permissions", "");
+        assert!(opts.contains("--standalone"), "private server is the scoped-context channel: {opts}");
+        assert!(opts.contains("--auto"), "{opts}");
+        assert!(
+            !opts.contains("--dangerously-skip-permissions"),
+            "claude's yolo spelling must not leak: {opts}"
+        );
+
+        // A user-supplied --standalone is not duplicated.
+        let opts = opencode_launch_opts("--standalone", "");
+        assert_eq!(opts.matches("--standalone").count(), 1, "{opts}");
+
+        // Model flags pass through verbatim; no model is invented.
+        let opts = opencode_launch_opts("--model opencode-go/deepseek-v4.1-flash", "");
+        assert!(opts.contains("--model"), "{opts}");
+        assert!(opts.contains("opencode-go/deepseek-v4.1-flash"), "{opts}");
+        assert!(!opts.contains("sonnet"), "{opts}");
+
+        // Even with nothing configured, the private server rides along.
+        let opts = opencode_launch_opts("", "");
+        assert_eq!(opts.trim(), "--standalone");
     }
 }
 
@@ -15931,30 +15996,11 @@ pub(crate) async fn start_session(
             // structured headless path is CliProvider::OpenCode. Do NOT fall
             // through to build_claude_cmd — that would launch `claude`.
             //
-            // YOLO: opencode's auto-approve is the boolean `--auto`
-            // (provider_yolo_flag). Normalize any stale spelling to it, the way
-            // the muse arm does, so a provider swap cannot leave claude's flag
-            // in CC_FLAGS.
-            let mut oflags = flags.clone();
-            let oyolo = PROVIDER_YOLO_FLAGS.iter().any(|f| oflags.contains(f));
-            if oyolo {
-                oflags = strip_provider_yolo_flags(&oflags);
-            }
-            let mut opts = String::new();
-            if !oflags.is_empty() {
-                opts += &format!(" {}", shell_quote_flags(&oflags));
-            }
-            if !extra_flags.is_empty() {
-                opts += &format!(" {}", shell_quote_flags(extra_flags));
-            }
-            if oyolo && !opts.contains("--auto") {
-                opts += " --auto";
-            }
-            // No model default: opencode wants `provider/model#variant` and its
-            // own config supplies the default. A `--model` in CC_FLAGS is passed
-            // through verbatim above. Continuity is opencode's own (sessions
-            // persist per workspace): pass `--continue`/`--session` via CC_FLAGS.
-            format!("{base_bin}{opts}")
+            // The opts are pure (opencode_launch_opts): yolo normalizes to
+            // `--auto`, no model is invented, and `--standalone` always rides
+            // so the worker runs its own server with its own env (the
+            // scoped-context channel + lane isolation; see the helper's doc).
+            format!("{base_bin}{}", opencode_launch_opts(&flags, extra_flags))
         }
         _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts,
     };
@@ -16094,6 +16140,14 @@ pub(crate) async fn start_session(
             "worker CLI and hooks use the launching server home and endpoint");
     }
     let mut env_args: Vec<String> = Vec::new();
+    // SCOPED CONTEXT, ENV CHANNEL (opencode). `worker_rules_args` above already
+    // composed and wrote ~/.amux/rules/<name>.md for this launch; opencode
+    // loads that file as ambient instructions through its merged inline
+    // config. Every other provider carries its context in argv instead.
+    for (key, value) in worker_rules_env(name, &provider, isolated) {
+        env_args.push("-e".into());
+        env_args.push(format!("{key}={value}"));
+    }
     // SECRET VALUES NEVER GO IN ARGV (AMUX-4803). Process arguments are
     // world-readable on macOS, and a tmux SERVER keeps the argv of the
     // new-session that created it for its whole lifetime — measured at 3d22h,
@@ -29867,9 +29921,12 @@ pub fn worker_rules_file(name: &str) -> PathBuf {
 ///
 /// - claude: `--append-system-prompt-file <~/.amux/rules/<name>.md>`
 /// - codex: `-c developer_instructions=<toml string>`
+/// - opencode: NO argv (returns empty), but the file above IS written; its
+///   channel is the env pair from [`worker_rules_env`] (opencode merges
+///   `OPENCODE_CONFIG_CONTENT` and loads its `instructions` paths at start).
 /// - an isolated worker gets nothing (no injected prompts, CLAUDE.md
-///   "Isolated workers"); other providers have no channel yet. Both are logged
-///   when rules exist, so a rule that cannot reach its worker says so.
+///   "Isolated workers"); providers without a channel are logged when rules
+///   exist, so a rule that cannot reach its worker says so.
 ///
 /// Every launch logs verdict=rules_delivered|rules_not_delivered.
 pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<String> {
@@ -29889,12 +29946,12 @@ pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<Stri
         let _ = std::fs::remove_file(&file);
         return refuse("isolated workers receive no injected prompts");
     }
-    if !matches!(provider, "claude" | "" | "codex") {
+    if !matches!(provider, "claude" | "" | "codex" | "opencode") {
         return refuse("this provider has no rules channel");
     }
-    // Written for codex too: the composed block names this file as the place
-    // a changed scope is re-read from (`SCOPED_CONTEXT_MARKER`), so it must
-    // exist for every provider that receives that pointer.
+    // Written for codex and opencode too: the composed block names this file
+    // as the place a changed scope is re-read from (`SCOPED_CONTEXT_MARKER`),
+    // so it must exist for every provider that receives that pointer.
     if !write_worker_context_file(name, &block) {
         return refuse("could not write the rules file");
     }
@@ -29903,6 +29960,10 @@ pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<Stri
             "-c".to_string(),
             format!("developer_instructions={}", serde_json::to_string(&block).unwrap_or_default()),
         ],
+        // OpenCode's channel is the launch env, not argv (worker_rules_env):
+        // the composed file written above is what its `instructions` config
+        // will load.
+        "opencode" => Vec::new(),
         _ => vec!["--append-system-prompt-file".to_string(), file.to_string_lossy().into_owned()],
     };
     if block.len() > SCOPED_CONTEXT_WARN_BYTES {
@@ -29913,6 +29974,29 @@ pub fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<Stri
     tracing::info!(session = name, provider, layers, bytes = block.len(), measured = true,
         n_considered = layers, verdict = "rules_delivered", "binding rules composed into this launch");
     args
+}
+
+/// The launch ENV that gives `name` its scoped context on providers whose
+/// channel is not a CLI flag. OpenCode is the case: its config sources MERGE
+/// and the inline `OPENCODE_CONFIG_CONTENT` is a runtime override (highest
+/// precedence except managed configs), and every path in its `instructions`
+/// array is loaded as ambient instructions at startup. The pair points at the
+/// same composed `worker_rules_file` claude/codex receive — written by
+/// [`worker_rules_args`], which every launch calls before its spawn.
+///
+/// Empty for every other provider and for isolated workers. Measured live
+/// 2026-10-16 (opencode 2.0.30); before this, every opencode launch logged
+/// `rules_not_delivered` "this provider has no rules channel".
+pub fn worker_rules_env(name: &str, provider: &str, isolated: bool) -> Vec<(String, String)> {
+    if provider != "opencode" || isolated {
+        return Vec::new();
+    }
+    let file = worker_rules_file(name);
+    if !file.is_file() {
+        return Vec::new();
+    }
+    let content = serde_json::json!({ "instructions": [file.to_string_lossy()] }).to_string();
+    vec![("OPENCODE_CONFIG_CONTENT".to_string(), content)]
 }
 
 /// What a memory or rules write promises, returned beside the write.
@@ -52215,6 +52299,54 @@ mod commit_shape_tests {
         let defaults = read(&super::worker_rules_args("ruled", "claude", false));
         assert!(!defaults.contains("GLOBALRULE") && !defaults.contains("GROUPRULE") && !defaults.contains("WORKERRULE"));
         assert!(defaults.contains("amux browser route advance"));
+    }
+
+    /// OpenCode has no argv channel for ambient instructions; its composed
+    /// scoped context reaches the launch through `OPENCODE_CONFIG_CONTENT`
+    /// (config sources merge; the inline form is a runtime override) whose
+    /// `instructions` array points at the same `~/.amux/rules/<name>.md`
+    /// claude/codex get. Measured live 2026-10-16 (opencode 2.0.30) — before
+    /// this every opencode launch logged `rules_not_delivered` "this provider
+    /// has no rules channel" and no scoped memory reached a worker.
+    #[tokio::test]
+    async fn opencode_gets_its_scoped_context_through_the_config_env() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("memory/tags")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/oc.env"), "CC_TAGS=\"alpha\"\n").unwrap();
+        std::fs::write(h.join("memory/_rules.md"), "GLOBALRULE").unwrap();
+        std::fs::write(h.join("memory/oc.rules.md"), "WORKERRULE").unwrap();
+        std::fs::write(h.join("memory/oc.md"), "OCMEMORY").unwrap();
+
+        // No argv for opencode…
+        let args = super::worker_rules_args("oc", "opencode", false);
+        assert!(args.is_empty(), "opencode's channel is env, not argv: {args:?}");
+        // …but the file every other provider's pointer names IS written.
+        let file = super::worker_rules_file("oc");
+        let body = std::fs::read_to_string(&file).unwrap();
+        for needle in ["GLOBALRULE", "WORKERRULE", "OCMEMORY", "Keeping this scoped context current"] {
+            assert!(body.contains(needle), "{needle} missing from the composed context: {body}");
+        }
+
+        // The env pair points opencode's `instructions` at that exact file.
+        let env = super::worker_rules_env("oc", "opencode", false);
+        assert_eq!(env.len(), 1, "{env:?}");
+        assert_eq!(env[0].0, "OPENCODE_CONFIG_CONTENT");
+        let v: serde_json::Value = serde_json::from_str(&env[0].1).unwrap();
+        assert_eq!(
+            v["instructions"][0].as_str().unwrap(),
+            file.to_string_lossy(),
+            "the pair must name the composed file: {}",
+            env[0].1
+        );
+
+        // Other providers keep their own channels; isolated workers get nothing.
+        assert!(super::worker_rules_env("oc", "claude", false).is_empty());
+        assert!(super::worker_rules_env("oc", "codex", false).is_empty());
+        assert!(super::worker_rules_env("oc", "gemini", false).is_empty());
+        assert!(super::worker_rules_env("oc", "opencode", true).is_empty());
     }
 }
 
