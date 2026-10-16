@@ -46,6 +46,7 @@ Do not replace the owner's original toolbar symbols with a different icon family
 | Confirmation | `showConfirm` / `showAlert` / `showPrompt` | Use the established helpers; surface the outcome and preserve an unsent draft on cancellation. |
 | Standard dialog | `.modal-overlay > .modal` | Heading and Close, scrollable `.modal-body`, reachable `.modal-footer`. |
 | Menu | Existing menu/trigger pair | Anchor to the trigger, fit the viewport, and remain dismissible. |
+| Folder listing | `_feCrumbsHtml`, `_feBuildRow`, `_feParentRow`, `_feEmptyRow`, `_feStatusText`; `.fe-breadcrumb`, `.fe-scroll`, `.fe-col-headers`, `.fe-status` | Every folder view (Files, the Split file panel, MDAI) renders through these, so rows, icons, sort, parent row and status match. Pass `openDir`/`openFile` to `_feBuildRow` for view-specific opening; never build a second table. |
 
 Terminal output, source editors, maps, and media have specialized content layouts.
 Their surrounding buttons, labels, menus and dialogs follow this contract. Terminal

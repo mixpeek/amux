@@ -44,6 +44,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Shell schedule runs still running that started within the last $1 seconds,
+# as comma-joined schedule ids (empty when none, or when the server cannot
+# be read: an unreadable scheduler must not hold deploys).
+shell_runs_in_flight() {
+  local window="$1"
+  curl -sk --max-time 5 "${AMUX_RS_RUNS_URL:-$(server_api_base)/api/schedules/runs?limit=200}" 2>/dev/null \
+    | python3 -c '
+import json,sys,time
+try: rows=json.load(sys.stdin)
+except Exception: raise SystemExit
+w=float(sys.argv[1]); now=time.time()
+# A cron-fired run carries delivery=null until it finishes; only a manual run
+# is stamped "shell" up front. Matching "shell" alone saw no scheduled run at
+# all: SCHED-465 was killed by the 03:19 deploy on 2026-10-16 with zero holds.
+ids=[r.get("schedule_id","?") for r in rows if isinstance(r,dict) and r.get("status")=="running"
+     and r.get("delivery") in ("shell", None) and now-(r.get("ran_at") or 0) < w]
+print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
+}
+
 # THE BASH CLI SHIPS WITH THE SERVER IT TALKS TO. This builder installs only
 # amux-server; the bash `amux` in ~/.local/bin and /usr/local/bin was copied
 # once by install.sh and then went stale. Measured 2026-09-27: the server
@@ -77,6 +96,29 @@ sync_bash_cli() {
     fi
   done
   rm -f "$tmp"
+}
+
+# THE LAUNCHER SHIPS THROUGH THE SAME GATE. launchd runs a COPY of
+# scripts/rust-auto-build-authority.sh that only install.sh wrote, so a change
+# to how commits are elected (the CI gate, 2026-10-15) never reached the timer.
+# Replace an existing regular-file copy by rename when the elected bytes differ;
+# the running launcher finishes on the inode it started with.
+sync_authority_launcher() {
+  local sha="$1" dest tmp
+  dest="${AMUX_AUTHORITY_INSTALL:-$HOME/.amux/bin/amux-build-authority}"
+  [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$(dirname "$dest")" ] || return 0
+  tmp="$(mktemp "$(dirname "$dest")/.authority.XXXXXX")" || return 0
+  if ! git -C "$REPO" show "${sha}:scripts/rust-auto-build-authority.sh" > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null; then
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNC SKIPPED sha=$sha verdict=authority_launcher_invalid" >> "$LOG"
+    rm -f "$tmp"; return 0
+  fi
+  if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return 0; fi
+  if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNCED sha=$sha dest=$dest verdict=authority_launcher_synced" >> "$LOG"
+  else
+    rm -f "$tmp"
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNC FAILED sha=$sha verdict=authority_launcher_sync_failed" >> "$LOG"
+  fi
 }
 
 # Existing worker helpers also ship on authorized ticks without a Rust rebuild.
@@ -260,6 +302,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
     exit 0
   fi
   sync_bash_cli "$built_sha"
+  sync_authority_launcher "$built_sha"
   sync_observed_edits_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of
@@ -278,6 +321,30 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
       echo "== $(date '+%F %T') COOLDOWN $built_sha — last adoption ${elapsed}s ago, waiting ${remaining}s more (cooldown=${COOLDOWN_S}s)" >> "$LOG"
       exit 0
     fi
+  fi
+  # A DEPLOY WAITS FOR AN IN-FLIGHT SHELL SCHEDULE (RCA self 20261015-182512).
+  # A restart closes a shell run's output pipes, and the scheduler records it
+  # as "server restarted before the shell result was recorded": 4 of
+  # SCHED-465's 25 runs in 24h died that way while deploys landed inside its
+  # up-to-10-minute window. Hold the rebuild while a shell run started in the
+  # last AMUX_RS_SHELL_DEFER_MAX_S is still running, for at most that long, so
+  # a busy scheduler can delay a deploy but never block it.
+  if [ "$head" != "$last" ]; then
+    SHELL_DEFER_MAX_S="${AMUX_RS_SHELL_DEFER_MAX_S:-900}"
+    SHELL_DEFER_FILE="${STAMP}.shell_defer_since"
+    in_flight=$(shell_runs_in_flight "$SHELL_DEFER_MAX_S")
+    if [ -n "$in_flight" ] && [ "$SHELL_DEFER_MAX_S" -gt 0 ] 2>/dev/null; then
+      now_epoch=$(date +%s)
+      since=$(cat "$SHELL_DEFER_FILE" 2>/dev/null || echo "$now_epoch")
+      [ -f "$SHELL_DEFER_FILE" ] || echo "$now_epoch" > "$SHELL_DEFER_FILE"
+      held=$(( now_epoch - since ))
+      if [ "$held" -lt "$SHELL_DEFER_MAX_S" ]; then
+        echo "== $(date '+%F %T') SHELL-RUN DEFER $built_sha — shell schedule run(s) in flight: $in_flight; held ${held}s of ${SHELL_DEFER_MAX_S}s verdict=activation_deferred_shell_run" >> "$LOG"
+        exit 0
+      fi
+      echo "== $(date '+%F %T') SHELL-RUN DEFER EXPIRED $built_sha — still in flight after ${held}s: $in_flight; deploying verdict=activation_shell_defer_expired" >> "$LOG"
+    fi
+    rm -f "$SHELL_DEFER_FILE"
   fi
   if [ "$head" = "$last" ]; then
     if ! measure_live_identity; then

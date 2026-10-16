@@ -54,8 +54,11 @@ check "a filling-up disk has no ETA"                       "-"    "$(mkhist 13 -
 check "garbage input is unmeasured, not a crash"           "- -"  "$(echo 'not json' | burn_from_history 1 | awk '{print $1, $2}')"
 
 echo "2. classification"
-DISK_FLOOR_GB=150; HOURS_TO_FULL=24; SWAP_FREE_FLOOR_MB=512; CPU_SHARE=0.9; SWAP_FREE_CRITICAL_PCT=0.10
+DISK_FLOOR_GB=150; HOURS_TO_FULL=24; SWAP_FREE_FLOOR_MB=512; CPU_SHARE=0.9; CPU_IDLE_MAX_PCT=25; SWAP_FREE_CRITICAL_PCT=0.10
 check "a healthy machine is not constrained"          ""   "$(classify_constraints 600 - - 1 2000 10 28 0 20000)"
+check "high load on a busy CPU is a cpu constraint"    "cpu" "$(classify_constraints 600 - - 1 2000 40 28 0 20000 5 | awk '{print $1}')"
+check "high load with the CPU 65% idle is not cpu"     ""    "$(classify_constraints 600 - - 1 2000 40 28 0 20000 65)"
+check "high load with idle unmeasured keeps the rule"  "cpu" "$(classify_constraints 600 - - 1 2000 40 28 0 20000 -1 | awk '{print $1}')"
 check "under the disk floor"                          "disk" "$(classify_constraints 100 - - 1 2000 10 28 0 20000 | awk '{print $1}')"
 check "above the floor but full within the window"   "yes" "$(has "$(classify_constraints 300 20 15 1 2000 10 28 0 20000)" 'disk burning 20.0G/h, full in 15.0h')"
 check "full outside the window is fine"              ""    "$(classify_constraints 300 5 60 1 2000 10 28 0 20000)"

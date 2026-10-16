@@ -186,7 +186,7 @@ pub(super) async fn complete(
     if let Err(error) = write_store_file(&path, &store) {
         return storage_error(error);
     }
-    ROLLUP_CACHE.lock().expect("rollup cache").remove(&ctx.home);
+    invalidate_rollup(&ctx.home);
     tracing::info!(connector=%d.id,account,verdict="declared_oauth_committed", "declared connector grant durably saved; account label is owner supplied");
     cb_page(
         StatusCode::OK,
@@ -303,7 +303,7 @@ pub(super) async fn forget_grants(home: &FsPath, id: &str) -> std::io::Result<()
         let path = oauth_store::family_path(home, id, &account)?;
         write_store_file(&path, &json!({"disconnected":true}))?;
     }
-    ROLLUP_CACHE.lock().expect("rollup cache").remove(home);
+    invalidate_rollup(home);
     Ok(())
 }
 
@@ -337,7 +337,7 @@ pub(super) async fn disconnect(
     if let Err(error) = write_store_file(&path, &json!({"disconnected":true})) {
         return storage_error(error);
     }
-    ROLLUP_CACHE.lock().expect("rollup cache").remove(&ctx.home);
+    invalidate_rollup(&ctx.home);
     tracing::info!(
         connector = id,
         account,

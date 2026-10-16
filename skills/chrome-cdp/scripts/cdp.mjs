@@ -19,7 +19,7 @@ import { homedir } from 'os';
 import { resolve } from 'path';
 import { spawn, execFileSync } from 'child_process';
 import net from 'net';
-import { syncSite, siteOf, fingerprint, profilesIndex, coveringProfile, log as syncLog } from './profile-sync.mjs';
+import { syncSite, siteOf, fingerprint, profilesIndex, coveringProfile, isSessionBound, log as syncLog } from './profile-sync.mjs';
 
 const TIMEOUT = 15000;
 const NAVIGATION_TIMEOUT = 30000;
@@ -643,6 +643,7 @@ async function runDaemon(targetId) {
   const AUTO_SYNC = process.env.CDP_PROFILE_SYNC !== '0' && !process.env.CDP_PORT && !process.env.AMUX_PROFILE;
   const baselines = new Map();
   const lastSync = new Map();
+  const boundNoted = new Set(), revokedNoted = new Set();
   let profCache = null, profCacheAt = 0, syncNote = '';
   let syncChain = Promise.resolve();
   async function autoSync(tag) {
@@ -657,9 +658,26 @@ async function runDaemon(targetId) {
       if (!/^https?:$/.test(url.protocol)) return;
       const site = siteOf(url.hostname);
       if (!site) return;
+      if (isSessionBound(site)) {
+        if (!boundNoted.has(site)) {
+          boundNoted.add(site);
+          syncLog({ site, skipped: 'session_bound', verdict: 'cdp_sync_session_bound_skipped', tag, target: targetId });
+        }
+        return;
+      }
       const { cookies } = await cdp.send('Storage.getCookies', {});
       const fp = fingerprint(cookies, site);
-      if (!fp) return; // nothing login-shaped on this site
+      if (!fp) {
+        // A site we copied a login from has lost its login cookies: the site
+        // signed this browser out. Say so, so a sync that kills the session it
+        // copies announces itself instead of reading as a random logout.
+        if (lastSync.has(site) && !revokedNoted.has(site)) {
+          revokedNoted.add(site);
+          syncLog({ site, verdict: 'session_revoked_after_sync', synced_at: new Date(lastSync.get(site)).toISOString(), tag, target: targetId });
+          process.stderr.write(`[amux] WARN ${site} signed this browser out after its login was saved to an amux profile (verdict=session_revoked_after_sync)\n`);
+        }
+        return; // nothing login-shaped on this site
+      }
       if (!baselines.has(site)) baselines.set(site, fp);
       if (Date.now() - (lastSync.get(site) || 0) < 60_000) return;
       if (!profCache || Date.now() - profCacheAt > 300_000) { profCache = profilesIndex(); profCacheAt = Date.now(); }

@@ -43,6 +43,19 @@ export function siteOf(host) {
   return p.slice(-2).join('.');
 }
 
+// Sites whose login must never be copied into a second browser. Google revokes
+// a session whose cookies show up in another client (Chrome binds Google
+// sessions to the device), so copying the login signs the owner out of every
+// Google account: three times on 2026-10-14/15, each right after a google.com
+// sync into the amux 'ethan' profile (this log: syncs every 1-2 min from
+// 03:02Z, and 11:49Z, two minutes after a 07:47 sign-in). YouTube shares the
+// session. Same list as the server's SESSION_BOUND_SITES (browser_login_sync.rs).
+export const SESSION_BOUND_SITES = ['google.com', 'youtube.com'];
+export const isSessionBound = (site) => {
+  const s = String(site || '').toLowerCase().replace(/^\./, '');
+  return SESSION_BOUND_SITES.some(b => s === b || s.endsWith('.' + b));
+};
+
 export const onSite = (c, site) => {
   const d = String(c.domain || '').replace(/^\./, '');
   return d === site || d.endsWith('.' + site);

@@ -21,9 +21,13 @@ export default class EvidenceReporter {
     const tests = suite.allTests().map(test => ({
       id: test.id, title: test.titlePath(), project: test.parent.project()?.name,
     }));
-    this.write('manifest.json', { schema: 1, shard: config.shard, tests });
+    // A planned shard (scripts/e2e-plan.mjs) is not a Playwright --shard, so
+    // config.shard is null there; the plan's identity is what the verdict checks.
+    const planned = /^(\d+)\/(\d+)$/.exec(process.env.AMUX_E2E_SHARD || '');
+    const shard = planned ? { current: Number(planned[1]), total: Number(planned[2]) } : config.shard;
+    this.write('manifest.json', { schema: 1, shard, tests });
     console.log(JSON.stringify({ event: 'e2e_evidence_started', measured: true,
-      n_considered: tests.length, shard: config.shard, directory: this.dir }));
+      n_considered: tests.length, shard, directory: this.dir }));
   }
   onTestBegin(test, result) {
     this.event({ event: 'started', id: test.id, retry: result.retry });

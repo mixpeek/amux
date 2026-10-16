@@ -21,7 +21,11 @@ PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 export PATH
 
 LAST=${AMUX_CLEANUP_LAST:-$HOME/.amux/logs/mac-cleanup-tick.last}
-STALE_MIN=${AMUX_CLEANUP_FALLBACK_STALE_MIN:-45}
+# Longer than the schedule's own gap. SCHED-465 is hourly and writes this file
+# when a run ends, so between two healthy runs it is ~50-55 minutes old; at the
+# old 45 the fallback ran a duplicate tick before most scheduled fires (6 times
+# on 2026-10-15, 05:00-10:00). 80 = the 60-minute interval plus a whole tick.
+STALE_MIN=${AMUX_CLEANUP_FALLBACK_STALE_MIN:-80}
 REPO=${AMUX_REPO_DIR:-$HOME/Dev/amux}
 # Seam: the test replaces the tick with a stub so this script's decision can be
 # observed without a real multi-minute cleanup run.

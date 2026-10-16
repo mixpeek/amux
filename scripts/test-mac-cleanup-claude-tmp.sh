@@ -159,11 +159,14 @@ CLAUDE_TMP_QUOTA_KB=$(( 2 * 1024 )); CLAUDE_TMP_ENTRY_IDLE_H=6
 saved_b=$CLAUDE_TMP_BUDGET_S saved_q=$CLAUDE_TMP_QUOTA_BUDGET_S
 # Budgets are compared with whole-second `date +%s`, so a 1s budget expires at the
 # next second boundary, after anywhere from 0 to 1s (flaky in CI, 2 of 5 local runs).
-# 3s leaves the quota pass at least 2 real seconds; the session share stays 1s, so
-# the 2s sleep below still exhausts it.
-CLAUDE_TMP_BUDGET_S=4; CLAUDE_TMP_QUOTA_BUDGET_S=3
+# 3s still flaked on a loaded CI runner (077b3ef1f, 2026-10-16: the quota pass's
+# walk outlasted the 2-3 real seconds it got). Now the session share is 5s and the
+# stub below sleeps 6s, so it is exhausted; the quota pass gets its own 6s (5+ real
+# seconds for a sub-second walk). Were the quota pass on the session's clock it
+# would have no time left and miss old-big, which is what this cell must catch.
+CLAUDE_TMP_BUDGET_S=11; CLAUDE_TMP_QUOTA_BUDGET_S=6
 eval "real_$(declare -f any_recent)"
-any_recent() { if [ "$1" = 48 ]; then sleep 2; fi; real_any_recent "$@"; }   # the session pass uses up the whole shared clock
+any_recent() { if [ "$1" = 48 ]; then sleep 6; fi; real_any_recent "$@"; }   # the session pass outlasts its share and the quota budget
 out=$(reap_claude_tmp "$R" 48 0)
 eval "$(declare -f real_any_recent | sed 's/^real_any_recent/any_recent/')"
 CLAUDE_TMP_BUDGET_S=$saved_b; CLAUDE_TMP_QUOTA_BUDGET_S=$saved_q

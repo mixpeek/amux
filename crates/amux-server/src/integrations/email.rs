@@ -480,9 +480,15 @@ pub struct ReplyPlan {
 /// because the plan always set cc from the thread alone). Order kept, no
 /// duplicates (case-insensitive), and nobody already in To is copied again.
 pub fn merge_reply_cc(computed: &str, extra: &str, to: &str) -> String {
-    let to_lc: Vec<String> = parse_addresses(to).iter().map(|a| a.to_lowercase()).collect();
+    let to_lc: Vec<String> = parse_addresses(to)
+        .iter()
+        .map(|a| a.to_lowercase())
+        .collect();
     let mut out: Vec<String> = Vec::new();
-    for a in parse_addresses(computed).into_iter().chain(parse_addresses(extra)) {
+    for a in parse_addresses(computed)
+        .into_iter()
+        .chain(parse_addresses(extra))
+    {
         let al = a.to_lowercase();
         if to_lc.contains(&al) || out.iter().any(|o| o.to_lowercase() == al) {
             continue;
@@ -1367,7 +1373,11 @@ impl GmailClient {
             .trim_start_matches('<')
             .trim_end_matches('>');
         let list = self
-            .list_ids(account, &format!("rfc822msgid:{rid}"), 1, None)
+            // in:anywhere: a Gmail search leaves out Spam and Trash unless asked,
+            // so an id that /search returned from spam answered "not found" here
+            // (2026-10-16: every Claude sign-in link filed as spam was unreadable,
+            // and account rotation stalled the fleet for 80 minutes).
+            .list_ids(account, &format!("rfc822msgid:{rid} in:anywhere"), 1, None)
             .await
             .ok()?;
         let mid = list
@@ -1704,7 +1714,8 @@ impl GmailClient {
         reply_all: bool,
         allow_self: bool,
     ) -> Result<(String, String, String), String> {
-        self.resolve_reply_recipients_cc(account, rfc822_message_id, reply_all, allow_self, "").await
+        self.resolve_reply_recipients_cc(account, rfc822_message_id, reply_all, allow_self, "")
+            .await
     }
 
     /// `resolve_reply_recipients` with the caller's own cc merged in, so the
@@ -1764,7 +1775,17 @@ impl GmailClient {
         allow_self: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
-        self.reply_send_cc(account, rfc822_message_id, body, include_signature, reply_all, allow_self, attachments, "").await
+        self.reply_send_cc(
+            account,
+            rfc822_message_id,
+            body,
+            include_signature,
+            reply_all,
+            allow_self,
+            attachments,
+            "",
+        )
+        .await
     }
 
     /// `reply_send` with the caller's own cc merged into the thread's.
@@ -3631,9 +3652,20 @@ mod tests {
 
     #[test]
     fn a_callers_reply_cc_is_merged_not_dropped() {
-        assert_eq!(merge_reply_cc("", "ethan@mixpeek.com", "p@customer.com"), "ethan@mixpeek.com");
-        assert_eq!(merge_reply_cc("a@x.com", "b@y.com, A@x.com", "p@customer.com"), "a@x.com, b@y.com", "no duplicates");
-        assert_eq!(merge_reply_cc("", "p@customer.com", "p@customer.com"), "", "nobody in To is copied again");
+        assert_eq!(
+            merge_reply_cc("", "ethan@mixpeek.com", "p@customer.com"),
+            "ethan@mixpeek.com"
+        );
+        assert_eq!(
+            merge_reply_cc("a@x.com", "b@y.com, A@x.com", "p@customer.com"),
+            "a@x.com, b@y.com",
+            "no duplicates"
+        );
+        assert_eq!(
+            merge_reply_cc("", "p@customer.com", "p@customer.com"),
+            "",
+            "nobody in To is copied again"
+        );
     }
 
     #[tokio::test]
@@ -3649,20 +3681,69 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "q=rfc822msgid", 200, json!({ "messages": [{ "id": "g1" }] })),
+            (
+                "GET",
+                "q=rfc822msgid",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
             ("GET", "/messages/g1", 200, orig),
-            ("POST", "/messages/send", 200, json!({ "id": "m3", "threadId": "T1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m3", "threadId": "T1" }),
+            ),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
         let res = client
-            .reply_send_cc("acct@example.com", "<orig@ext>", "thanks!", false, false, false, &[], "ethan@mixpeek.com")
+            .reply_send_cc(
+                "acct@example.com",
+                "<orig@ext>",
+                "thanks!",
+                false,
+                false,
+                false,
+                &[],
+                "ethan@mixpeek.com",
+            )
             .await
             .unwrap();
         assert_eq!(res["cc"], json!("ethan@mixpeek.com"));
         let calls = http.calls.lock().unwrap();
-        let (_, _, body) = calls.iter().find(|(m, u, _)| m == "POST" && u.contains("/messages/send")).unwrap();
-        let decoded = String::from_utf8(base64url_decode(body.as_ref().unwrap()["raw"].as_str().unwrap()).unwrap()).unwrap();
+        let (_, _, body) = calls
+            .iter()
+            .find(|(m, u, _)| m == "POST" && u.contains("/messages/send"))
+            .unwrap();
+        let decoded = String::from_utf8(
+            base64url_decode(body.as_ref().unwrap()["raw"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert!(decoded.contains("Cc: ethan@mixpeek.com\r\n"), "{decoded}");
+    }
+
+    #[tokio::test]
+    async fn rfc822_lookup_reaches_spam_and_trash() {
+        let home = temp_home_with_token("acct@example.com", true);
+        let http = MockHttp::new(vec![(
+            "GET",
+            "q=rfc822msgid",
+            200,
+            json!({ "messages": [] }),
+        )]);
+        let client = GmailClient::new(http.clone(), home.path().to_path_buf());
+        let _ = client
+            .find_message_by_rfc822("acct@example.com", "<x@host>")
+            .await;
+        let calls = http.calls.lock().unwrap();
+        let (_, url, _) = calls
+            .iter()
+            .find(|(_, u, _)| u.contains("q=rfc822msgid"))
+            .unwrap();
+        assert!(
+            url.contains(&urlencode("rfc822msgid:x@host in:anywhere")),
+            "{url}"
+        );
     }
 
     #[tokio::test]

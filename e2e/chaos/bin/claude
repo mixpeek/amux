@@ -79,13 +79,49 @@ def submit():
         said.append(text)
         seq += 1
         with open(LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"seq": seq, "text": text, "pid": os.getpid(), "t": time.time()}) + "\n")
+            rec = {"seq": seq, "text": text, "pid": os.getpid(), "t": time.time()}
+            hashes = env_hashes()
+            if hashes is not None:
+                rec["env_sha256"] = hashes
+            f.write(json.dumps(rec) + "\n")
             f.flush()
             os.fsync(f.fileno())
         if BUSY_S:
             busy_until = time.time() + BUSY_S
 
+def env_hashes():
+    """sha256 of each $FAKE_CLAUDE_ENV_KEYS variable (None when unset), so a
+    test proves a secret arrived without any log holding the secret."""
+    keys = [k for k in (os.environ.get("FAKE_CLAUDE_ENV_KEYS") or "").split(",") if k]
+    if not keys:
+        return None
+    return {k: (hashlib.sha256(os.environ[k].encode()).hexdigest() if k in os.environ else None) for k in keys}
+
+def headless():
+    """`claude -p` with the prompt on stdin (Chat turns, delegates): log one
+    record with the env hashes, print a reply, exit 0."""
+    prompt = sys.stdin.read()
+    rec = {"event": "headless", "bin": os.path.basename(sys.argv[0]), "cwd": os.getcwd(),
+           "pid": os.getpid(), "argv": sys.argv[1:], "t": time.time(),
+           "session": os.environ.get("AMUX_SESSION", ""), "prompt_len": len(prompt)}
+    hashes = env_hashes()
+    if hashes is not None:
+        rec["env_sha256"] = hashes
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass  # a read-only sandbox (delegates): the reply below still carries the hashes
+    reply = "fake reply env_sha256=" + json.dumps(hashes or {}, sort_keys=True)
+    if "stream-json" in " ".join(sys.argv):
+        print(json.dumps({"type": "result", "subtype": "success", "result": reply, "is_error": False}))
+    else:
+        print(reply)
+    sys.exit(0)
+
 def main():
+    if not sys.stdin.isatty():
+        headless()
     with open(LOG, "a", encoding="utf-8") as f:
         rec = {"event": "launch", "bin": os.path.basename(sys.argv[0]),
                "cwd": os.getcwd(), "pid": os.getpid(),
@@ -94,10 +130,9 @@ def main():
             rec["child_translated"] = subprocess.check_output(
                 ["/bin/sh", "-c", "/usr/sbin/sysctl -n sysctl.proc_translated"],
                 text=True).strip()
-        keys = [k for k in (os.environ.get("FAKE_CLAUDE_ENV_KEYS") or "").split(",") if k]
-        if keys:
-            rec["env_sha256"] = {k: (hashlib.sha256(os.environ[k].encode()).hexdigest()
-                                     if k in os.environ else None) for k in keys}
+        hashes = env_hashes()
+        if hashes is not None:
+            rec["env_sha256"] = hashes
         f.write(json.dumps(rec) + "\n")
         if os.environ.get("FAKE_CLAUDE_SPAWN_BACKGROUND") == "1":
             child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL,

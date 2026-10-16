@@ -22,8 +22,12 @@ const check = (name, ok, detail) => checks.push({ name, ok: !!ok, detail });
 const KEYS = 'VT_TOKEN,VT_GROUP,VT_GLOBAL';
 const amux = await startAmux({ binary: process.env.AMUX_CHAOS_BINARY,
   env: { AMUX_VAULT_KEYSTORE: 'file', FAKE_CLAUDE_ENV_KEYS: KEYS } });
-const W = name => ({ 'X-Amux-Session': name });
-const call = async (m, p, b, h) => { const r = await amux.req(m, p, b, 60000, h); return { ...r, raw: JSON.stringify(r.body ?? '') }; };
+// The owner is the request that presents the owner bearer (what the dashboard
+// sends). A worker origin carries the bearer too here, to prove the worker
+// header alone is what gets it refused.
+const OWNER = { Authorization: 'Bearer ' + fs.readFileSync(path.join(amux.home, 'auth_token'), 'utf8').trim() };
+const W = name => ({ ...OWNER, 'X-Amux-Session': name });
+const call = async (m, p, b, h = OWNER) => { const r = await amux.req(m, p, b, 60000, h); return { ...r, raw: JSON.stringify(r.body ?? '') }; };
 const launches = cwd => amux.fakeLog().filter(r => r.event === 'launch' && r.cwd && fs.realpathSync(r.cwd) === fs.realpathSync(cwd));
 async function launchOf(name, dir, n) {
   await waitFor(`${name} launch #${n}`, () => launches(dir).length >= n, 60000);
@@ -54,6 +58,8 @@ try {
   const wr = await call('PUT', `/api/vault/secrets/${id('VT_GLOBAL')}`, { value: 'x' }, W('vw1'));
   const wd = await call('DELETE', `/api/vault/secrets/${id('VT_GLOBAL')}`, undefined, W('vw1'));
   check('a worker cannot add, replace or delete', [wc, wr, wd].every(r => r.status === 403), [wc.status, wr.status, wd.status]);
+  const nb = await call('POST', '/api/vault/secrets', { key: 'VT_NOBEARER', scope: 'global', value: 'x1234' }, {});
+  check('a request without the owner bearer cannot write', nb.status === 403, nb.body);
   const l2 = await call('GET', '/api/vault/secrets', undefined, W('vw2'));
   const seen = (l2.body.items || []).map(i => `${i.key}@${i.scope}`).sort();
   check('vw2 sees only items that apply to it (global)', JSON.stringify(seen) === JSON.stringify(['VT_GLOBAL@global', 'VT_TOKEN@global']), seen);
@@ -91,34 +97,33 @@ try {
   check('import stores the value and names the file it came from', imp.status === 201 && imp.body.still_in === amuxEnv && !imp.raw.includes(V.imported), imp.body);
   check('import does not touch the plaintext file', fs.readFileSync(amuxEnv, 'utf8') === before);
 
-  // The owner edits in Settings -> Vault, at phone width, and never sees a value.
+  // The owner adds one on the Vault page, at phone width, and never sees a value.
   {
     const br = await chromium.launch();
     const pg = await (await br.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 } })).newPage();
     await pg.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
     await pg.goto(amux.base + '/', { waitUntil: 'domcontentloaded' });
-    await pg.waitForFunction(() => typeof _vaultSecretsLoad === 'function');
-    await pg.evaluate(() => { document.getElementById('settings-menu')?.classList.add('open'); _settingsTab('integrations'); });
-    await pg.locator('.vault-secret').first().waitFor({ timeout: 10000 });
-    const listed = await pg.locator('#vault-secrets').innerText();
-    check('Settings lists keys and scopes', /VT_TOKEN/.test(listed) && /Worker vw1/.test(listed) && /Global/.test(listed), listed.slice(0, 300));
-    await pg.fill('#vault-secret-key', 'VT_UI');
-    await pg.selectOption('#vault-secret-scope', 'worker');
-    await pg.locator('#vault-secret-target option[value="vw2"]').waitFor({ state: 'attached', timeout: 10000 });
-    await pg.selectOption('#vault-secret-target', 'vw2');
-    await pg.fill('#vault-secret-value', V.ui);
-    await pg.getByRole('button', { name: 'Add secret' }).click();
-    await pg.locator('.vault-secret', { hasText: 'VT_UI' }).waitFor({ timeout: 10000 });
-    const after = await pg.evaluate(() => ({ value: document.getElementById('vault-secret-value').value, text: document.getElementById('settings-menu').innerText,
-      html: document.getElementById('settings-menu').innerHTML }));
-    check('the form clears the value after saving', after.value === '');
-    check('no value appears anywhere in Settings', !Object.values(V).some(v => after.text.includes(v) || after.html.includes(v)));
-    const btn = await pg.getByRole('button', { name: 'Add secret' }).boundingBox();
-    check('the add button is a 44px touch target on a phone', btn && btn.height >= 44, btn);
-    await pg.screenshot({ path: path.join(amux.root, 'vault-secrets-settings.png'), fullPage: false });
+    await pg.waitForFunction(() => typeof openVault === 'function');
+    await pg.evaluate(() => openVault('secrets'));
+    await pg.locator('.vault-row').first().waitFor({ timeout: 10000 });
+    const listed = await pg.locator('#vault-secrets-table').innerText();
+    check('the Vault page lists keys and scopes', /VT_TOKEN/.test(listed) && /vw1/.test(listed) && /Global/.test(listed), listed.slice(0, 300));
+    await pg.locator('#vault-add-btn').click();
+    await pg.fill('#vault-e-key', 'VT_UI');
+    await pg.check('input[name="vault-e-scope"][value="worker"]');
+    await pg.selectOption('#vault-e-worker', 'vw2');
+    await pg.fill('#vault-e-value', V.ui);
+    const btn = await pg.locator('#vault-e-save').boundingBox();
+    await pg.locator('#vault-e-save').click();
+    await pg.locator('.vault-row', { hasText: 'VT_UI' }).waitFor({ timeout: 10000 });
+    const after = await pg.evaluate(() => ({ dialog: !!document.getElementById('vault-edit'), text: document.body.innerText, html: document.body.innerHTML }));
+    check('the dialog closes (and its value with it) after saving', !after.dialog);
+    check('no value appears anywhere on the page', !Object.values(V).some(v => after.text.includes(v) || after.html.includes(v)));
+    check('the save button is a 44px touch target on a phone', btn && btn.height >= 44, btn);
+    await pg.screenshot({ path: path.join(amux.root, 'vault-secrets-page.png'), fullPage: false });
     await br.close();
     const ui = (await call('GET', '/api/vault/secrets?worker=vw2')).body.resolved || [];
-    check('the item added in Settings resolves for vw2', ui.some(x => x.key === 'VT_UI' && x.scope === 'worker'), ui);
+    check('the item added on the Vault page resolves for vw2', ui.some(x => x.key === 'VT_UI' && x.scope === 'worker'), ui);
   }
 
   // Leak sweep: nowhere a value could land.

@@ -271,18 +271,38 @@ fn apply(
     }
     super::sessions_legacy::invalidate_sessions_runtime_cache();
     tracing::debug!(session=name, verdict="native_status_applied", event=?event["event"], sequence=?event["sequence"], "applied provider lifecycle observation");
+    let (mutation, payload) = session_event(
+        prev["state"].as_str().unwrap_or(""),
+        event["state"].as_str().unwrap_or(""),
+        report,
+    );
     Ok(WriteOutcome {
         applied: true,
         events: vec![PendingEvent {
             entity_type: amux_core::revision::EntityType::Session,
             entity_id: name.to_owned(),
-            mutation: amux_core::revision::MutationKind::StatusChanged {
-                from: prev["state"].as_str().unwrap_or("").into(),
-                to: event["state"].as_str().unwrap_or("").into(),
-            },
-            payload: Some(report),
+            mutation,
+            payload,
         }],
     })
+}
+
+/// The state event for one lifecycle observation. A real transition carries
+/// the report; an observation that leaves the state unchanged is a bare
+/// `Updated` (the sessions refresh still fires, since SSE invalidates on any
+/// Session event). amux.db, 2026-10-15: 87K of the newest 200K state events
+/// were "status_changed active -> active" with a ~5 KB report each, the bulk
+/// of `_amux_state_events`' 6.7 GB, and the dashboard reads no payload of a
+/// `state` message.
+fn session_event(from: &str, to: &str, report: Value) -> (amux_core::revision::MutationKind, Option<Value>) {
+    if from == to {
+        (amux_core::revision::MutationKind::Updated, None)
+    } else {
+        (
+            amux_core::revision::MutationKind::StatusChanged { from: from.into(), to: to.into() },
+            Some(report),
+        )
+    }
 }
 
 pub(crate) fn history(conn: &rusqlite::Connection, name: &str) -> Vec<Value> {
@@ -421,6 +441,19 @@ fn replay_run(state: &AppState, name: &str, dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// An unchanged state is recorded as a bare update; only a real transition
+    /// carries the report.
+    #[test]
+    fn an_unchanged_state_records_no_transition_and_no_report() {
+        let report = serde_json::json!({"state":"active","detail":"x".repeat(5000)});
+        let (m, p) = super::session_event("active", "active", report.clone());
+        assert!(matches!(m, amux_core::revision::MutationKind::Updated));
+        assert!(p.is_none());
+        let (m, p) = super::session_event("active", "idle", report);
+        assert!(matches!(m, amux_core::revision::MutationKind::StatusChanged { ref from, ref to } if from == "active" && to == "idle"));
+        assert!(p.is_some());
+    }
+
     use super::*;
 
     #[test]

@@ -24,54 +24,40 @@ jobs:
       - name: Browser evidence and lifecycle cleanup controls (AF-768, AF-773)
         run: |
           npm ci --ignore-scripts
-          node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs
+          node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs tests/e2e-plan.test.mjs
           npm run test:project-setup
           npm run test:outbox
           npm run test:offline
           npm run test:state
+      # rust.yml lets a PR reuse main's compiled server and tests when this key
+      # matches. A key that missed a compile input would hand a PR a stale
+      # binary and a false green, so its input classes are pinned here.
+      - name: Rust-input cache key (scripts/ci-rust-key.mjs)
+        run: node --test tests/ci-rust-key.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only
       # its own workspace; a tunnel answer only from its own org). The real
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.
       - name: Cloud gateway ChatGPT front door (tenant rules)
         run: python3 cloud/tests/test_chatgpt_front.py
-      # AF-148 / AMUX-3524 follow-up: a client JS change that ships WITHOUT a
-      # version bump reaches no browser holding the cached script, and nothing
-      # said so. dashboard_assets.rs pins that APP_VER and CACHE AGREE — but
-      # 25ba8ea changed app.js and bumped NEITHER, so they still agreed and the
-      # test stayed green. The silent shape is worse than a mismatch: the
-      # author's find-and-replace bump no-opped (a peer had already moved the
-      # version), the functional edits in the same pass succeeded, and the
-      # script printed success. Diffing is the only way to see it.
-      - name: Client JS changes carry a version bump (CLAUDE.md, enforced)
+      # The dashboard version is DERIVED (amux-dashboard build.rs hashes
+      # static/ and the server stamps it into app.js and sw.js at serve time).
+      # This replaced a "both version lines moved" diff guard (AF-148): the
+      # hand-bumped literal made every pair of dashboard PRs conflict on the
+      # same line, and a peer's bump could still no-op an author's. A literal
+      # coming back would silently pin the version again, so this fails on it.
+      # That the placeholder is SUBSTITUTED when served is pinned by
+      # crates/amux-server/tests/dashboard_assets.rs, which runs in rust.yml.
+      - name: Dashboard version is derived, not hand-bumped
         run: |
           set -uo pipefail
-          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
-             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "no reachable base ($BASE) — first push or force-push; guard SKIPPED, honestly"
-            exit 0
-          fi
-          CHANGED=$(git diff --name-only "$BASE" HEAD -- \
-            crates/amux-dashboard/static/app.js crates/amux-dashboard/static/sw.js)
-          [ -n "$CHANGED" ] || { echo "no client JS in this range — nothing to check"; exit 0; }
-          echo "client JS changed:"; echo "$CHANGED" | sed 's/^/  /'
-          # The VERSION LINES specifically, not the files: a file can change
-          # while its version does not, which is exactly the defect.
-          APP_MOVED=$(git diff "$BASE" HEAD -- crates/amux-dashboard/static/app.js \
-            | grep -c '^[+-].*APP_VER *=' || true)
-          SW_MOVED=$(git diff "$BASE" HEAD -- crates/amux-dashboard/static/sw.js \
-            | grep -c '^[+-].*CACHE *=' || true)
-          if [ "$APP_MOVED" -eq 0 ] || [ "$SW_MOVED" -eq 0 ]; then
-            echo
-            echo "FAIL: client JS shipped without bumping both versions."
-            echo "  APP_VER line changed: $([ "$APP_MOVED" -gt 0 ] && echo yes || echo NO)"
-            echo "  sw.js CACHE changed:  $([ "$SW_MOVED" -gt 0 ] && echo yes || echo NO)"
-            echo "A browser holding the cached script never fetches this change."
-            echo "Bump BOTH (read-then-increment; a literal find-and-replace can"
-            echo "silently no-op when a peer moved the version first - AF-148)."
-            exit 1
-          fi
-          echo "both version lines moved — cached clients will refetch"
+          S=crates/amux-dashboard/static
+          fail=0
+          grep -qE "^const APP_VER = '__AMUX_ASSET_VER__';" "$S/app.js" \
+            || { echo "FAIL: app.js must declare const APP_VER = '__AMUX_ASSET_VER__';"; fail=1; }
+          grep -qE "^const CACHE = 'amux-v__AMUX_ASSET_VER__';" "$S/sw.js" \
+            || { echo "FAIL: sw.js must declare const CACHE = 'amux-v__AMUX_ASSET_VER__';"; fail=1; }
+          [ "$fail" = 0 ] || { echo "Do not hand-bump a version: the server derives it from the static/ contents."; exit 1; }
+          echo "app.js APP_VER and sw.js CACHE both carry the derived-version placeholder"
       - name: Secret scan (the pre-commit hook, in CI)
         run: |
           set -euo pipefail
@@ -420,6 +406,18 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-health.sh
+      - name: the cleanup tick keeps inside one deadline and reaches its verdicts when out of time
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-cleanup-deadline.sh
+      - name: the cleanup tick checks its own run history and escalates when it is failing
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-cleanup-self.sh
+      - name: the agent scratch volume reports each opt-out from what it can read
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-agent-volume.sh
       # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
       # than wiring them blind, because that decision belongs to each one's
       # owner (ethos rule 8). This is that decision, made for 28 of the 31:
@@ -770,6 +768,11 @@ jobs:
           python3 scripts/test-cargo-budget.py
           ./scripts/test-build-activation-authority.sh
           ./scripts/test-build-activation-launcher.sh
+          ./scripts/test-authority-launcher-sync.sh
+          ./scripts/test-build-shell-run-defer.sh
+          python3 scripts/test-claude-rotate.py
+          ./scripts/test-main-ci-watch.sh
+          ./scripts/test-board-refusal-why.sh
           # A replacement is complete and signed before its one visible rename;
           # persistent listener loss makes the external watchdog reload only the
           # exact configured launch agent.

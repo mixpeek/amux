@@ -325,6 +325,17 @@ async function showDrawings(page: Page) {
 async function clickRow(page: Page, sel: string) {
   await showDrawings(page);
   await page.locator(sel).scrollIntoViewIfNeeded();
+  // Tap once the list has stopped moving, as a person does. On iOS WebKit a
+  // tap that lands while the library is still settling from a scroll only
+  // stops the scroll and fires no click (draw-tab.spec.ts:356, iOS: the trace
+  // shows the tap on Beta with the list at scrollTop 303 and no handler run).
+  await page.waitForFunction(() => new Promise(done => {
+    const body = document.getElementById('draw-lib-body');
+    if (!body) return done(true);
+    let last = body.scrollTop, still = 0;
+    const tick = () => { const now = body.scrollTop; still = now === last ? still + 1 : 0; last = now; if (still >= 6) done(true); else requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }));
   await page.locator(sel).click();
   if (isPhone(page)) await expect(page.locator('#draw-lib')).not.toBeInViewport();
 }
@@ -367,18 +378,20 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await page.evaluate(p => (window as any)._drawOpen(p), a);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-rect']);
     await addEl(page, 'alpha-new');
+    // The status already read "saved" from opening, so wait on the file itself.
+    await expect.poll(() => diskIds(a), { timeout: 15_000 }).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await saved();
-    expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     await page.evaluate(p => (window as any)._drawOpen(p), b);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond']);
     await addEl(page, 'beta-new');
+    await expect.poll(() => diskIds(b), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
     await saved();
     const aBytes = await readFile(a, 'utf8');
     let bBytes = await readFile(b, 'utf8');
 
     // Recent drawings: click Alpha.
     await showDrawings(page);
-    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await clickRow(page, `.draw-recent[data-path="${a}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     expect(await page.evaluate(() => (window as unknown as Win)._draw.path)).toBe(a);
     await expect(page.locator('#draw-title')).toHaveValue('Alpha');
@@ -387,7 +400,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     expect(await readFile(a, 'utf8'), 'opening Alpha did not rewrite it').toBe(aBytes);
 
     // In this folder: click Beta.
-    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await clickRow(page, `.draw-pop-file[data-path="${b}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
     expect(await readFile(a, 'utf8'), 'opening Beta left Alpha untouched').toBe(aBytes);
 
@@ -399,7 +412,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await openDraw(page);
     await expect.poll(() => sceneIds(page)).toEqual(['beta-diamond', 'beta-new']);
     await showDrawings(page);
-    await clickRow(page, '.draw-recent[data-path$="/Alpha.excalidraw"]');
+    await clickRow(page, `.draw-recent[data-path="${a}"]`);
     await expect.poll(() => sceneIds(page)).toEqual(['alpha-ell', 'alpha-new', 'alpha-rect']);
     expect(await readFile(b, 'utf8')).toBe(bBytes);
 
@@ -415,7 +428,7 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'saving', { timeout: 5_000 });
     await addEl(page, 'alpha-pending', 'ellipse');
     bBytes = await readFile(b, 'utf8');
-    await clickRow(page, '.draw-pop-file[data-path$="/Beta.excalidraw"]');
+    await clickRow(page, `.draw-pop-file[data-path="${b}"]`);
     await expect.poll(() => sceneIds(page), { timeout: 15_000 }).toEqual(['beta-diamond', 'beta-new']);
     expect(await diskIds(a)).toEqual(['alpha-ell', 'alpha-inflight', 'alpha-new', 'alpha-pending', 'alpha-rect']);
     expect(await readFile(b, 'utf8')).toBe(bBytes);
@@ -506,6 +519,22 @@ test('Draw: live mode is zen mode inside the amux shell, and every exit restores
     await page.screenshot({ path: join(process.env.DRAW_SHOTS_DIR || info.outputPath(), 'live-' + info.project.name + '.png') });
     await page.locator('#draw-penbar [aria-label="Exit live mode"]').click();
     await assertNormal('pen bar close');
+
+    // The autosave that follows a Live mode press is the page's own write. It
+    // used to be bound to that press and disable the button while it ran, so
+    // the next tap on WebKit hit a disabled button and live mode never started.
+    await page.evaluate(() => {
+      const b = document.getElementById('draw-live-btn') as HTMLButtonElement;
+      (window as any).__liveLocks = 0;
+      new MutationObserver(() => { if (b.disabled || b.dataset.pressLocked) (window as any).__liveLocks++; })
+        .observe(b, { attributes: true, attributeFilter: ['disabled', 'data-press-locked'] });
+    });
+    const saved = page.waitForResponse(r => r.request().method() === 'PUT' && r.url().endsWith('/api/file')
+      && String(JSON.parse(r.request().postData() || '{}').path || '').endsWith('Live.excalidraw'));
+    await page.evaluate(() => { const api = (window as unknown as Win)._draw.api; const els = api.getSceneElements();
+      api.updateScene({ elements: [...els, { ...els[0], id: 'live-dirty', x: 300, version: 2, versionNonce: 7 }] }); });
+    expect((await saved).ok()).toBe(true);
+    expect(await page.evaluate(() => (window as any).__liveLocks), 'autosave locked the Live mode button').toBe(0);
 
     // Exit 2: Excalidraw's own "Exit zen mode". Its phone layout has no such
     // button (zen exits there through the pen bar or Esc).
@@ -741,3 +770,52 @@ for (const zoom of ['130', '80']) {
     expect(await page.evaluate(() => document.documentElement.style.zoom), 'the UI zoom comes back on leaving Draw').toBe(String(Number(zoom) / 100));
   });
 }
+
+// Every tab and device writes one recents file. A tab used to write only its
+// own list, so a drawing another tab had opened vanished from Recent (the
+// draw-realtime clients erased this file's Alpha entry in CI).
+test('Draw: saving recents keeps entries another tab wrote', async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-recents-', async dir => {
+    const mine = join(dir, 'Mine.excalidraw');
+    await writeFile(mine, sceneOf([{ id: 'mine-rect', type: 'rectangle', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(p => (window as any)._drawOpen(p), mine);
+    await expect.poll(() => sceneIds(page)).toEqual(['mine-rect']);
+    await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
+    // Another tab's write lands on disk after this tab loaded its list.
+    const other = join(dir, 'OtherTab.excalidraw');
+    await page.evaluate(async o => {
+      const path = (window as any)._drawRecentsPath();
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
+      cur.recents.unshift({ path: o, title: 'OtherTab', ts: Date.now() + 1 });
+      await fetch('/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content: JSON.stringify(cur) }) });
+    }, other);
+    await page.evaluate(() => (window as any)._drawRememberRecent(true));
+    await page.waitForFunction(() => !(window as unknown as Win)._draw.recentsTimer, null, { timeout: 10_000 });
+    await expect.poll(() => page.evaluate(async () => {
+      const path = (window as any)._drawRecentsPath();
+      const res = await fetch('/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' }); const raw = res.ok ? await res.text() : ''; const cur = raw ? JSON.parse(raw) : { recents: [] };
+      return cur.recents.map((x: any) => x.path);
+    })).toEqual(expect.arrayContaining([mine, other]));
+    await page.evaluate(() => (window as any)._drawLibRender());
+    await showDrawings(page);
+    await expect(page.locator(`.draw-recent[data-path="${other}"]`)).toHaveCount(1);
+    // A re-render keeps the library where the user scrolled it: a scrolled
+    // list used to jump back to the top under a tap (draw-tab.spec.ts:356, iOS).
+    const kept = await page.evaluate(async () => {
+      const body = document.getElementById('draw-lib-body')!;
+      body.style.maxHeight = '120px';                 // force a scrollable list
+      body.scrollTop = 40;
+      const before = body.scrollTop;
+      (window as any)._draw.recents.push({ path: '/tmp/force-rerender-' + Date.now() + '.excalidraw', title: 'z', ts: 1 });
+      await (window as any)._drawLibRender();
+      const after = body.scrollTop;
+      body.style.maxHeight = '';
+      return { before, after };
+    });
+    expect(kept.before, 'the list scrolled at all').toBeGreaterThan(0);
+    expect(kept.after, 'scroll kept across a re-render').toBe(kept.before);
+  });
+});

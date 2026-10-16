@@ -110,28 +110,53 @@ pub fn tick_secs() -> u64 {
 /// would be wiped by each adoption and re-record every lane's unchanged status
 /// as a change — turning a deploy into a fleet-wide burst of false transitions,
 /// which is the D1 lesson learned the expensive way on the report table.
+///
+/// The DB stays the source of truth: the cache below is rebuilt from it on the
+/// first tick of each process image, then reads only rows past the highest id it
+/// has seen (Mac hog RCA 20261014-112244, AMUX-5999: the GROUP BY over every
+/// status_decided row took 9.5s per tick on the live DB).
+type LastSeen = (i64, std::collections::HashMap<String, (String, String)>);
+static LAST_RECORDED: std::sync::Mutex<Option<(String, LastSeen)>> = std::sync::Mutex::new(None);
+
 fn last_recorded(conn: &Connection) -> std::collections::HashMap<String, (String, String)> {
-    let mut out = std::collections::HashMap::new();
-    let sql = format!(
-        "SELECT e.session, e.data FROM session_events e \
-         JOIN (SELECT session, MAX(id) AS mid FROM session_events \
-               WHERE type='{EVENT}' GROUP BY session) m ON e.id = m.mid"
-    );
-    if let Ok(mut st) = conn.prepare(&sql) {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        {
-            for (s, d) in rows.flatten() {
-                let v: serde_json::Value = serde_json::from_str(&d).unwrap_or(json!({}));
-                out.insert(
-                    s,
-                    (
-                        v["status"].as_str().unwrap_or("").to_string(),
-                        v["decided_by"].as_str().unwrap_or("").to_string(),
-                    ),
-                );
-            }
+    let db = conn.path().unwrap_or("").to_string();
+    let Ok(max_id) = conn.query_row("SELECT coalesce(max(id),0) FROM session_events", [], |r| r.get::<_, i64>(0)) else {
+        return Default::default();
+    };
+    let (since, mut out) = {
+        let g = LAST_RECORDED.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some((path, (seen, m))) if !db.is_empty() && *path == db && *seen <= max_id => (*seen, m.clone()),
+            _ => (0, Default::default()),
         }
+    };
+    let started = std::time::Instant::now();
+    let Ok(mut st) = conn.prepare(
+        "SELECT session, data FROM session_events WHERE type=?1 AND id > ?2 AND id <= ?3 ORDER BY id",
+    ) else {
+        return out;
+    };
+    let Ok(rows) = st.query_map(rusqlite::params![EVENT, since, max_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }) else {
+        return out;
+    };
+    for (s, d) in rows.flatten() {
+        let v: serde_json::Value = serde_json::from_str(&d).unwrap_or(json!({}));
+        out.insert(
+            s,
+            (
+                v["status"].as_str().unwrap_or("").to_string(),
+                v["decided_by"].as_str().unwrap_or("").to_string(),
+            ),
+        );
     }
+    let ms = started.elapsed().as_millis() as u64;
+    if ms > 2000 {
+        tracing::warn!(verdict = "status_history_last_recorded_slow", elapsed_ms = ms, rows_from = since,
+            measured = true, n_considered = out.len(), "last-recorded status read was slow");
+    }
+    *LAST_RECORDED.lock().unwrap_or_else(|e| e.into_inner()) = Some((db, (max_id, out.clone())));
     out
 }
 
@@ -321,6 +346,24 @@ mod tests {
 
     /// The prune finds expired rows off the writer and deletes them by id in
     /// chunks; it removes only expired status rows, across chunk boundaries.
+    #[test]
+    fn last_recorded_reads_new_rows_and_keeps_the_latest_per_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Connection::open(dir.path().join("h.db")).unwrap();
+        c.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT);").unwrap();
+        let add = |lane: &str, status: &str| {
+            c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(1,?1,?2,?3)",
+                rusqlite::params![lane, EVENT, json!({"status":status,"decided_by":"hook"}).to_string()]).unwrap();
+        };
+        add("a", "idle");
+        add("b", "working");
+        assert_eq!(last_recorded(&c)["a"].0, "idle");
+        add("a", "working");
+        let m = last_recorded(&c);
+        assert_eq!(m["a"].0, "working", "a newer row replaces the cached one");
+        assert_eq!(m["b"].0, "working", "a lane with no new rows keeps its last decision");
+    }
+
     #[test]
     fn the_prune_deletes_only_expired_status_rows_in_chunks() {
         let dir = tempfile::tempdir().unwrap();

@@ -55,27 +55,103 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # WHAT THIS RUN HAS TO DO (owner decision, 2026-10-15). On a pull request
+  # every job below runs only what the change can affect; on a push to main
+  # every job runs the full suite exactly as before, so whatever a PR selection
+  # misses is caught at the next main run. scripts/ci-affected.mjs decides and
+  # prints its reasons; the job summary and the `affected-verdict` artifact
+  # carry them.
+  #
+  # FAIL-OPEN TO MORE WORK, FAIL-CLOSED ON THE VERDICT. If this job fails, its
+  # outputs are empty: every downstream `if` below compares against a value
+  # that means "skip" ('none', 'false', 'targeted'), so an empty output runs
+  # the work, and every matrix falls back to its full width. The `test` and
+  # `e2e` verdicts still go red, because a failed classification cannot vouch
+  # for anything it did not run.
+  affected:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      rust_filter: ${{ steps.classify.outputs.rust_filter }}
+      rust_shards: ${{ steps.classify.outputs.rust_shards }}
+      e2e: ${{ steps.classify.outputs.e2e }}
+      full_e2e: ${{ steps.classify.outputs.full_e2e }}
+      e2e_specs: ${{ steps.classify.outputs.e2e_specs }}
+      ios_specs: ${{ steps.classify.outputs.ios_specs }}
+      e2e_shards: ${{ steps.classify.outputs.e2e_shards }}
+      e2e_shard_total: ${{ steps.classify.outputs.e2e_shard_total }}
+      spa: ${{ steps.classify.outputs.spa }}
+      none: ${{ steps.classify.outputs.none }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR diff is origin/<base>...HEAD, so the base branch must be here.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      # espree parses app.js to find the functions a hunk changed.
+      - run: npm ci --ignore-scripts
+      - name: Classify the change (scripts/ci-affected.mjs)
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            node scripts/ci-affected.mjs --event pull_request --base "origin/$BASE_REF" --head HEAD > affected.json
+          else
+            node scripts/ci-affected.mjs --event "$EVENT" > affected.json
+          fi
+          # The script also appends a readable summary to $GITHUB_STEP_SUMMARY.
+          cat affected.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: affected-verdict
+          path: affected.json
+          if-no-files-found: error
+          retention-days: 7
+
   # check/clippy, doctests and the CLI smokes. The workspace test suite used
   # to run here too, serially after clippy: 7 min to compile the test
   # binaries, then 10 min running amux-server's 3300 lib tests on one 4-core
   # runner (run 36323581857). It now runs in `test-build` + `test-shards`,
   # in parallel with this job.
+  #
+  # On a PR with no Rust compile input changed (rust != full), the cargo steps
+  # are skipped and say so; the CLI smokes and audits below always run.
   check:
+    needs: affected
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RUST_SCOPE: ${{ needs.affected.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
+      - name: Rust compile gates skipped (not affected)
+        if: needs.affected.outputs.rust == 'targeted' || needs.affected.outputs.rust == 'none'
+        run: |
+          echo "skipped: not affected. No Rust compile input changed (rust=$RUST_SCOPE, scripts/ci-affected.mjs); cargo check, clippy and doctests run on every push to main."
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
       - name: cargo check (workspace)
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
         run: cargo check --workspace --all-targets
       - name: clippy (deny warnings)
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
         run: cargo clippy --workspace --all-targets -- -D warnings
       # nextest (the `test` shards below) cannot run doctests, so they run
       # here, beside check and clippy, rather than on the test critical path.
       - name: cargo test --doc (workspace)
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
         run: cargo test --doc --workspace
       # AF-74. The `amux` bash CLI is a shipped client with no compiler behind
       # it, and `bash -n` (the pre-commit gate) proves the file PARSES, not that
@@ -184,9 +260,23 @@ jobs:
 
   # Compile every test binary ONCE and hand the shards a nextest archive, so
   # no shard pays the ~7 min compile. The env below applies to this job only.
+  # Skipped on a PR that changes nothing Rust compiles or reads (rust=none).
+  #
+  # MAIN'S ARCHIVE FOR A rust=targeted PR. Every push to main saves its archive
+  # under `nextest-archive-<rust_key>` (scripts/ci-rust-key.mjs). A targeted PR
+  # (it changed only files Rust tests READ, such as the dashboard's static/)
+  # restores that exact key and runs its filter from main's compiled tests,
+  # with AMUX_DASHBOARD_DIR pointing at the PR's static/ so a test that serves
+  # dashboard assets serves the PR's. On a miss it compiles and runs inline as
+  # before. `archive` and `key` say which happened; `test` repeats them.
   test-build:
+    needs: affected
+    if: ${{ !cancelled() && needs.affected.outputs.rust != 'none' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      archive: ${{ steps.which.outputs.archive }}
+      key: ${{ steps.key.outputs.key }}
     env:
       # Debuginfo is most of the link time and archive size for binaries this
       # large. Panic messages keep file:line without it (core::panic::Location).
@@ -195,21 +285,101 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Rust-input key (scripts/ci-rust-key.mjs)
+        id: key
+        run: |
+          set -uo pipefail
+          # Exit 2 = an include the key cannot see: no key, so no restore and no save.
+          if key=$(node scripts/ci-rust-key.mjs); then
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+            echo "rust_key=$key"
+          else
+            echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); compiling, and not caching"
+          fi
+      - name: Restore main's nextest archive (rust=targeted PR)
+        id: restore
+        if: ${{ github.event_name == 'pull_request' && needs.affected.outputs.rust == 'targeted' && steps.key.outputs.key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nextest.tar.zst
+          # Exact key only: a prefix match would run tests compiled from other sources.
+          key: nextest-archive-${{ steps.key.outputs.key }}
       - uses: rui314/setup-mold@v1
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
       # Optimise DEPENDENCIES only (workspace crates stay debug, with
       # debug_assertions). The long pole was one request_log test inserting
       # 260k rows through an -O0 bundled SQLite: 163s of a 174s shard. In
       # $CARGO_HOME so it cannot touch the checkout; `key` below keeps the
       # cache from restoring -O0 deps under the same key and never re-saving.
       - name: Optimise dependencies for the test build
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         run: printf '[profile.dev.package."*"]\nopt-level = 2\n' >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"
       - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         with:
           key: deps-opt2
       - uses: taiki-e/install-action@nextest
       - name: Build all workspace test binaries into a nextest archive
+        if: ${{ needs.affected.outputs.rust != 'targeted' }}
         run: cargo nextest archive --workspace --archive-file ${{ runner.temp }}/nextest.tar.zst
+      - name: Save the archive for PRs (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nextest.tar.zst
+          key: nextest-archive-${{ steps.key.outputs.key }}
+      # rust=targeted runs its few filtered tests HERE. Measured on #322
+      # (2026-10-15): archiving, uploading, queueing for a runner (2.4 min)
+      # and downloading the archive to run one filtered shard took the PR from
+      # ~7 to 12.2 min. Same tree-residue guard and exit-code rule as the shards.
+      - name: Targeted tests (run in place, no shard hop) — tree-residue guarded
+        if: ${{ needs.affected.outputs.rust == 'targeted' }}
+        env:
+          AMUX_REQUIRE_TMUX: '1'
+          RUST_FILTER: ${{ needs.affected.outputs.rust_filter }}
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
+          bash scripts/test-tree-clean.sh --self-test || exit 1
+          echo "targeted: running only the tests that read the changed files: $RUST_FILTER"
+          if [ "$HIT" = true ]; then
+            # Main's compiled tests, this checkout's files. Same extraction as
+            # the shards, so env!("CARGO_BIN_EXE_*") paths resolve. The tests
+            # read static/ at run time and the dashboard crate serves
+            # AMUX_DASHBOARD_DIR, so the PR's dashboard is what they see.
+            echo "targeted: from cached archive nextest-archive-$KEY (compiled by a push to main with identical Rust inputs); not compiled"
+            export AMUX_DASHBOARD_DIR="$GITHUB_WORKSPACE/crates/amux-dashboard/static"
+            bash scripts/test-tree-clean.sh cargo nextest run \
+              --archive-file "$RUNNER_TEMP/nextest.tar.zst" \
+              --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
+              --no-fail-fast -E "$RUST_FILTER"
+          else
+            echo "targeted: compiling in this run (cache key ${KEY:+nextest-archive-$KEY}${KEY:-none}, no hit)"
+            bash scripts/test-tree-clean.sh cargo nextest run --workspace --no-fail-fast -E "$RUST_FILTER"
+          fi
+          rc=$?
+          if [ "$rc" = "3" ]; then
+            echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
+            exit 0
+          fi
+          exit $rc
+      - name: Where the tests came from
+        id: which
+        if: ${{ always() }}
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          RUST_SCOPE: ${{ needs.affected.outputs.rust }}
+        run: |
+          if [ "$HIT" = true ]; then a=cache
+          elif [ "$RUST_SCOPE" = targeted ]; then a=compiled-inline
+          else a=compiled-archive
+          fi
+          echo "archive=$a" >> "$GITHUB_OUTPUT"
+          echo "test binaries: $a"
       - uses: actions/upload-artifact@v4
+        if: ${{ needs.affected.outputs.rust != 'targeted' }}
         with:
           name: nextest-archive
           path: ${{ runner.temp }}/nextest.tar.zst
@@ -219,14 +389,20 @@ jobs:
   # The workspace suite, split across runners by nextest partition. Every
   # test in the archive runs in exactly one shard; `test` below refuses a
   # green unless every shard succeeded.
+  #
+  # rust=targeted (a PR that changed only files Rust tests READ, such as the
+  # dashboard's static assets) runs ONE shard with a nextest filterset naming
+  # the tests that read them. rust=full, every push and a failed
+  # classification run all 8.
   test-shards:
-    needs: test-build
+    needs: [affected, test-build]
+    if: ${{ !cancelled() && needs.test-build.result == 'success' && needs.affected.outputs.rust != 'targeted' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: ${{ fromJSON(needs.affected.outputs.rust_shards || '[1, 2, 3, 4, 5, 6, 7, 8]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@nextest
@@ -259,9 +435,10 @@ jobs:
       # fails the job. Flip to blocking (delete the `if`) once it has been
       # quiet for a few days; leaving it advisory forever would make it
       # decoration.
-      - name: cargo nextest (shard ${{ matrix.shard }}/8) — tree-residue guarded
+      - name: cargo nextest (shard ${{ matrix.shard }}/${{ strategy.job-total }}) — tree-residue guarded
         env:
           AMUX_REQUIRE_TMUX: '1'
+          RUST_FILTER: ${{ needs.affected.outputs.rust_filter }}
         run: |
           set -uo pipefail
           command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
@@ -269,10 +446,15 @@ jobs:
           # path env!("CARGO_BIN_EXE_*") baked in at compile time (target/ is
           # gitignored, so the residue guard does not see it). --no-fail-fast
           # matches cargo test: report every failure, not the first.
+          filter=()
+          if [ -n "$RUST_FILTER" ]; then
+            echo "targeted: running only the tests that read the changed files: $RUST_FILTER"
+            filter=(-E "$RUST_FILTER")
+          fi
           bash scripts/test-tree-clean.sh cargo nextest run \
             --archive-file "$RUNNER_TEMP/nextest.tar.zst" \
             --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
-            --partition count:${{ matrix.shard }}/8 --no-fail-fast
+            --partition count:${{ matrix.shard }}/${{ strategy.job-total }} --no-fail-fast "${filter[@]}"
           rc=$?
           if [ "$rc" = "3" ]; then
             echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
@@ -280,17 +462,163 @@ jobs:
           fi
           exit $rc
 
-  # One check name for the whole suite; a green subset cannot satisfy it.
+  # One check name for the whole suite; a green subset cannot satisfy it
+  # silently: a PR verdict names its scope (full, targeted with the filter, or
+  # skipped: not affected) on its own line.
   test:
-    needs: test-shards
+    needs: [affected, test-build, test-shards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every test shard to succeed
         env:
+          AFFECTED: ${{ needs.affected.result }}
+          RUST: ${{ needs.affected.outputs.rust }}
+          FILTER: ${{ needs.affected.outputs.rust_filter }}
           SHARDS: ${{ needs.test-shards.result }}
-        run: test "$SHARDS" = success
+          BUILD: ${{ needs.test-build.result }}
+          ARCHIVE: ${{ needs.test-build.outputs.archive }}
+          KEY: ${{ needs.test-build.outputs.key }}
+        run: |
+          if [ "$AFFECTED" != success ]; then
+            echo "::error::the affected classification did not succeed ($AFFECTED), so nothing it skipped can be vouched for"
+            exit 1
+          fi
+          case "$RUST" in
+            none)
+              echo "skipped: not affected. No Rust compile input and no file a Rust test reads changed (scripts/ci-affected.mjs). The full suite runs on every push to main."
+              exit 0 ;;
+            targeted)
+              if [ "$ARCHIVE" = cache ]; then
+                from="main's compiled tests from cache key nextest-archive-$KEY, run against this PR's files"
+              else
+                from="compiled in this run (${ARCHIVE:-unknown}; cache key ${KEY:+nextest-archive-$KEY}${KEY:-none} not hit)"
+              fi
+              echo "targeted: NOT the full suite. Ran only: $FILTER (in test-build, $from). The full suite runs on every push to main."
+              test "$BUILD" = success; exit $? ;;
+            full) echo "full suite" ;;
+            *) echo "::error::unknown rust scope '$RUST'"; exit 1 ;;
+          esac
+          test "$SHARDS" = success
+
+  # Build the server ONCE and give every e2e shard the binary (seven shards
+  # each compiled it, ~6 min apiece, before running a single test). Built on
+  # ubuntu-latest (24.04), the same glibc as the noble Playwright image the
+  # shards run in. Built only when e2e will run.
+  #
+  # MAIN'S BINARY FOR A PR THAT CHANGED NO RUST INPUT. Every push to main saves
+  # the binary it built under `server-bin-<rust_key>` (scripts/ci-rust-key.mjs:
+  # a hash of every compile input except the dashboard's static/, plus rustc
+  # -V). A PR with rust=targeted|none restores that EXACT key, no prefix
+  # fallback, and skips the ~2.5 min compile; the e2e shards then serve the
+  # PR's static/ through AMUX_DASHBOARD_DIR, so the dashboard under test is the
+  # PR's even though the binary is main's. On a miss, or rust=full, or a failed
+  # classification, it builds exactly as before. `source` says which happened.
+  server-bin:
+    needs: affected
+    if: ${{ !cancelled() && needs.affected.outputs.e2e != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      source: ${{ steps.which.outputs.source }}
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust-input key (scripts/ci-rust-key.mjs)
+        id: key
+        run: |
+          set -uo pipefail
+          # Exit 2 = an include the key cannot see: no key, so no restore and no save.
+          if key=$(node scripts/ci-rust-key.mjs); then
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+            echo "rust_key=$key"
+          else
+            echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); building, and not caching"
+          fi
+      - name: Restore main's server binary (PR with no Rust compile input changed)
+        id: restore
+        if: ${{ github.event_name == 'pull_request' && (needs.affected.outputs.rust == 'targeted' || needs.affected.outputs.rust == 'none') && steps.key.outputs.key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: target/debug/amux-server
+          # Exact key only. A prefix match would hand back a binary built from
+          # different Rust sources.
+          key: server-bin-${{ steps.key.outputs.key }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+        with:
+          shared-key: server-bin
+      - name: Build the server the e2e shards boot
+        if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+        run: cargo build -p amux-server
+      - name: Which binary this run uses
+        id: which
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          KEY: ${{ steps.key.outputs.key }}
+          RUST_SCOPE: ${{ needs.affected.outputs.rust }}
+        run: |
+          set -euo pipefail
+          test -x target/debug/amux-server
+          if [ "$HIT" = true ]; then
+            echo "source=cache" >> "$GITHUB_OUTPUT"
+            echo "server-bin: RESTORED from cache key server-bin-$KEY (built by a push to main with identical Rust inputs); not compiled. rust=$RUST_SCOPE"
+          else
+            echo "source=built" >> "$GITHUB_OUTPUT"
+            echo "server-bin: COMPILED in this run (event=$GITHUB_EVENT_NAME, rust=$RUST_SCOPE, cache key ${KEY:+server-bin-$KEY}${KEY:-none}${HIT:+, restore missed})"
+          fi
+      - name: Save the binary for PRs (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: target/debug/amux-server
+          key: server-bin-${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amux-server-bin
+          path: target/debug/amux-server
+          if-no-files-found: error
+          retention-days: 3
+
+  # The SPA static gates and client unit tests ran in EVERY e2e shard, seven
+  # times per run; they need no browser and no server, so they run once here.
+  # Runs whenever the dashboard, e2e, the node tests or anything e2e runs for
+  # changed; skipped only when none of them did.
+  spa-gates:
+    needs: affected
+    if: ${{ !cancelled() && needs.affected.outputs.spa != 'false' }}
+    runs-on: ubuntu-latest
+    # Several e2e/*.test.mjs suites launch a real browser, so this runs in the
+    # same pinned Playwright image as the shards.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+      options: --init --ipc=host
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          npm ci --ignore-scripts
+      - name: SPA static gate (no-undef kills the silent-dead-handler class)
+        # Two silent-dead-handler bugs shipped in one week (schedule delete,
+        # worker delete 2026-08-09): an undefined name in an async handler makes
+        # the click do nothing. This gate fails the build on that class.
+        run: bash scripts/spa-lint.sh
+      - name: Dashboard outage recovery contracts
+        run: node --test tests/dashboard-outage-recovery.mjs
+      - name: No assignment to an undeclared client-side global (AF-940)
+        run: node --test tests/spa-no-undeclared-global-assignment.test.mjs
+      - name: Dashboard client unit tests (e2e/*.test.mjs)
+        # These node:test suites used to ride inside Playwright, which loaded
+        # them and counted none of their results (AMUX-5373).
+        run: node --test e2e/*.test.mjs
 
   e2e-shards:
     # PR Full Gate tier (plan §CI tiers): the golden scenarios in a real
@@ -305,15 +633,26 @@ jobs:
     defaults:
       run:
         shell: bash
+    needs: [affected, server-bin]
+    if: ${{ !cancelled() && needs.server-bin.result == 'success' }}
     timeout-minutes: 30
+    # On a PR the matrix is sized from the selected specs' measured seconds
+    # (scripts/ci-affected.mjs, ~240 planned seconds per shard); 16 otherwise.
+    # The selection reaches the planner's --list and Playwright through the
+    # same two variables, so the plan can only contain selected specs.
+    env:
+      AMUX_E2E_SPECS: ${{ needs.affected.outputs.e2e_specs }}
+      AMUX_E2E_IOS_SPECS: ${{ needs.affected.outputs.ios_specs }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: ${{ fromJSON(needs.affected.outputs.e2e_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]') }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: amux-server-bin
+          path: ${{ runner.temp }}/server-bin
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       # AF-932. The `check` job installs tmux (above); this job never did.
@@ -328,7 +667,7 @@ jobs:
         # or the private HTTPS/tmux fixture tools. Install this smaller set.
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential pkg-config python3 tmux openssl lsof procps
+          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Install locked packages and verify preinstalled browsers
@@ -353,33 +692,33 @@ jobs:
             await instance.close();
           }
           JS
-      - name: SPA static gate (no-undef kills the silent-dead-handler class)
-        # Two silent-dead-handler bugs shipped in one week (schedule delete,
-        # worker delete 2026-08-09): an undefined name in an async handler makes
-        # the click do nothing. This gate fails the build on that class.
-        run: bash scripts/spa-lint.sh
-      - name: Dashboard outage recovery contracts
-        run: node --test tests/dashboard-outage-recovery.mjs
-      - name: No assignment to an undeclared client-side global (AF-940)
-        run: node --test tests/spa-no-undeclared-global-assignment.test.mjs
-      - name: Dashboard client unit tests (e2e/*.test.mjs)
-        # These node:test suites used to ride inside Playwright, which loaded
-        # them and counted none of their results (AMUX-5373).
-        run: node --test e2e/*.test.mjs
-      # The CI checkout IS committed HEAD, so serve-head's worktree hop is
-      # pure duplicate work here — and worse: without these env vars the
-      # prebuild below went to ./target while serve-head defaulted to
-      # ~/.amux/rust-build-target, so CI paid a SECOND, uncached cold build
-      # inside the webServer boot on every run (the old step comment claimed
-      # the profile was "shared with webServer"; it stopped being true the
-      # day serve-head started setting CARGO_TARGET_DIR — AMUX-2961).
-      - name: Build server (the exact debug profile the webServer boots)
-        run: cargo build -p amux-server
+      - name: Use the server built once for this run
         env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          SERVER_SOURCE: ${{ needs.server-bin.outputs.source }}
+          SERVER_KEY: ${{ needs.server-bin.outputs.key }}
+        run: |
+          chmod +x "$RUNNER_TEMP/server-bin/amux-server"
+          echo "AMUX_E2E_SERVER_BIN=$RUNNER_TEMP/server-bin/amux-server" >> "$GITHUB_ENV"
+          # A binary restored from main's cache embeds MAIN's dashboard. Serve
+          # this checkout's static/ instead (serve-head.sh lets the variable
+          # through its scrub and checks the directory). $GITHUB_WORKSPACE, not
+          # the github.workspace expression: inside a container job only the
+          # variable holds the container path.
+          if [ "$SERVER_SOURCE" = cache ]; then
+            echo "AMUX_DASHBOARD_DIR=$GITHUB_WORKSPACE/crates/amux-dashboard/static" >> "$GITHUB_ENV"
+            echo "server: main's binary from cache key server-bin-$SERVER_KEY; dashboard served from this checkout via AMUX_DASHBOARD_DIR"
+          else
+            echo "server: compiled in this run (server-bin source=${SERVER_SOURCE:-unknown}); dashboard embedded"
+          fi
+      - name: Plan this shard by measured duration (scripts/e2e-plan.mjs)
+        run: |
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/e2e-list.json" npx playwright test --config e2e/playwright.config.ts --list --reporter=json > /dev/null
+          node scripts/e2e-plan.mjs ${{ matrix.shard }} ${{ strategy.job-total }} "$RUNNER_TEMP/e2e-list.json" > "$RUNNER_TEMP/e2e-plan.json"
+          echo "AMUX_E2E_PLAN=$RUNNER_TEMP/e2e-plan.json" >> "$GITHUB_ENV"
       - name: Golden scenarios (desktop + mobile + ios-safari)
-        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --shard=${{ matrix.shard }}/7 --global-timeout=1200000
+        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --global-timeout=1200000
         env:
+          AMUX_E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           AMUX_E2E_EVIDENCE_DIR: ci-results/shard-${{ matrix.shard }}
           AMUX_E2E_WORKING_TREE: '1'
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -405,27 +744,64 @@ jobs:
           retention-days: 7
 
   # Preserve the e2e check name; a green subset cannot satisfy it.
+  #
+  # On a PR the expected population is the SAME selection the shards ran
+  # (AMUX_E2E_SPECS / AMUX_E2E_IOS_SPECS from the affected job), and the
+  # verdict also lists the unfiltered suite so it reports, per project, how
+  # many tests were NOT run. A PR that affects no e2e reports
+  # "skipped: not affected" and writes that as its verdict.
   e2e:
-    needs: e2e-shards
+    needs: [affected, server-bin, e2e-shards, spa-gates]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      AMUX_E2E_SPECS: ${{ needs.affected.outputs.e2e_specs }}
+      AMUX_E2E_IOS_SPECS: ${{ needs.affected.outputs.ios_specs }}
+      E2E: ${{ needs.affected.outputs.e2e }}
+      SPA: ${{ needs.affected.outputs.spa }}
+      SHARD_TOTAL: ${{ needs.affected.outputs.e2e_shard_total || '16' }}
     steps:
+      - name: Did this run have to run e2e?
+        id: scope
+        env:
+          AFFECTED: ${{ needs.affected.result }}
+        run: |
+          if [ "$AFFECTED" != success ]; then
+            echo "::error::the affected classification did not succeed ($AFFECTED), so nothing it skipped can be vouched for"
+            exit 1
+          fi
+          if [ "$E2E" = false ]; then
+            echo "skipped: not affected. No change reaches the server, the dashboard or an e2e spec (scripts/ci-affected.mjs). The full suite runs on every push to main."
+            printf '%s\n' '{"event":"e2e_evidence_verdict","measured":false,"why_unmeasured":"skipped: not affected","n_considered":0,"passed":true}' > e2e-verdict.json
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.scope.outputs.skip != 'true'
       - uses: actions/setup-node@v4
+        if: steps.scope.outputs.skip != 'true'
         with: { node-version: '22' }
       - run: npm ci --ignore-scripts
-      - name: Collect the full unchanged population (no execution claim)
+        if: steps.scope.outputs.skip != 'true'
+      - name: Collect the expected population, the same selection the shards ran (no execution claim)
+        if: steps.scope.outputs.skip != 'true'
         run: npx playwright test --config e2e/playwright.config.ts --list
         env:
           AMUX_E2E_EVIDENCE_DIR: ci-full
+      - name: Collect the unfiltered population, to report what was not run
+        if: steps.scope.outputs.skip != 'true'
+        run: npx playwright test --config e2e/playwright.config.ts --list
+        env:
+          AMUX_E2E_EVIDENCE_DIR: ci-universe
+          AMUX_E2E_SPECS: ''
+          AMUX_E2E_IOS_SPECS: ''
       - uses: actions/download-artifact@v4
-        if: always()
+        if: always() && steps.scope.outputs.skip != 'true'
         with:
           pattern: e2e-evidence-*
           path: ci-raw
       - name: Keep the newest attempt of each shard
-        if: always()
+        if: always() && steps.scope.outputs.skip != 'true'
         run: |
           set -euo pipefail
           mkdir -p ci-results
@@ -438,15 +814,30 @@ jobs:
           done | sort -k1,1n -k2,2n | awk '{newest[$1]=$3} END {for (s in newest) print newest[s]}' | sort |
           while read -r d; do echo "== shard evidence from $(basename "$d")"; cp -R "$d"/. ci-results/; done
       - name: Require all shards and account for every test
-        if: always()
+        if: always() && steps.scope.outputs.skip != 'true'
         run: |
           set -o pipefail
-          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json 7 | tee e2e-verdict.json
+          node scripts/check-e2e-evidence.mjs ci-results ci-full/manifest.json "$SHARD_TOTAL" ci-universe/manifest.json | tee e2e-verdict.json
+          node -e 'const v=require("./e2e-verdict.json"); if (v.selection) console.log(v.selection.scope === "full" ? "full suite" : "SELECTED: " + v.selection.note + " " + JSON.stringify(v.selection.per_project))'
       - name: Require successful setup and test jobs too
         if: always()
         env:
           SHARD_RESULT: ${{ needs.e2e-shards.result }}
-        run: test "$SHARD_RESULT" = success
+          GATES_RESULT: ${{ needs.spa-gates.result }}
+          SERVER_SOURCE: ${{ needs.server-bin.outputs.source }}
+          SERVER_KEY: ${{ needs.server-bin.outputs.key }}
+        run: |
+          if [ "$SERVER_SOURCE" = cache ]; then
+            echo "server binary: main's, restored from cache key server-bin-$SERVER_KEY (identical Rust inputs); dashboard served from this checkout via AMUX_DASHBOARD_DIR"
+          elif [ -n "$SERVER_SOURCE" ]; then
+            echo "server binary: compiled in this run (cache key ${SERVER_KEY:+server-bin-$SERVER_KEY}${SERVER_KEY:-none})"
+          fi
+          if [ "$E2E" = false ]; then
+            # Nothing e2e ran; the SPA gates still had to pass if they were due.
+            [ "$SPA" = false ] || test "$GATES_RESULT" = success
+            exit
+          fi
+          test "$SHARD_RESULT" = success && test "$GATES_RESULT" = success
       - uses: actions/upload-artifact@v4
         if: always()
         with:

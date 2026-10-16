@@ -123,7 +123,8 @@ test(`Read aloud sits beside Copy and speaks one reply at a time (${variant.name
   }
   expect(await page.locator('#peek-body').evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   for(let i=0;i<3;i++){await expect(read.nth(i)).toBeVisible();const right=await read.nth(i).evaluate(el=>{const r=el.getBoundingClientRect();return r.x+r.width;});expect(right).toBeLessThanOrEqual(vw+1);}
-  await page.locator('.chat-log').screenshot({path:info.outputPath('chat-read-aloud.png')});
+  // Evidence only. A page shot: the chat log can re-render between frames, and an element shot then fails as detached.
+  await page.screenshot({path:info.outputPath('chat-read-aloud.png')});
  }finally{await cleanup('stop playback',()=>page.evaluate(()=>{try{eval('_ttsCancel()');}catch{}}),info);}
 });
 }

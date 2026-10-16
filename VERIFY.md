@@ -80,12 +80,15 @@ Commit the regenerated `static/state/control-registry.json` and `kernel.js`
 when handlers change. `spa-lint.sh` checks their freshness before ESLint; a
 targeted Playwright configuration can skip that preflight and pass against a
 stale interaction bundle. When testing candidate assets against a running
-server, set `AMUX_E2E_STATE_KERNEL` alongside the candidate app/HTML/CSS paths.
+server, set `AMUX_E2E_STATE_KERNEL` (and `AMUX_E2E_CONTROL_REGISTRY` when
+handlers changed) alongside the candidate app/HTML/CSS paths.
 
-Then bump `APP_VER` (`app.js`) and `CACHE` (`sw.js`) **together**. A change to
-one without the other ships code nobody's browser will fetch.
+No version bump: `APP_VER` (`app.js`) and `CACHE` (`sw.js`) hold the
+`__AMUX_ASSET_VER__` placeholder, and the server stamps a content hash of
+`static/` into both when serving them.
 
-Pass: `node --check` silent, and both constants moved in the same commit.
+Pass: `node --check` silent, and `curl -sk "$(amux url)/app.js" | grep -m1 'const APP_VER'`
+shows a 12-hex-digit hash after the server adopts the commit.
 
 ## Anything with a UI
 

@@ -26,7 +26,7 @@ ticks() { [ -f "$FIX/ticks" ] && grep -c x "$FIX/ticks" | tr -d ' ' || echo 0; }
 echo "1. a fresh tick output means the scheduler is alive: do nothing"
 printf "mac-cleanup: measured=true\nmac-cleanup: done elapsed=100s\n" > "$FIX/last"
 out=$(run)
-check "it says nothing to do"                 "yes" "$(has "$out" 'scheduler ran within 45m, nothing to do')"
+check "it says nothing to do"                 "yes" "$(has "$out" 'scheduler ran within 80m, nothing to do')"
 check "and runs no tick"                      "0"   "$(ticks)"
 check "and files no card"                     "no"  "$([ -f "$FIX/cards.log" ] && echo yes || echo no)"
 
@@ -75,6 +75,18 @@ echo "5. the staleness window is a knob"
 printf "mac-cleanup: done elapsed=1s\n" > "$FIX/last"; touch -t 202001010000 "$FIX/last"
 out=$(AMUX_CLEANUP_FALLBACK_STALE_MIN=99999999 run)
 check "a window longer than the file's age does nothing" "6" "$(ticks)"
+
+echo "6. the window outlasts the hourly gap (2026-10-15)"
+# At the old 45m window an hourly schedule's finished output was ~53m old by the
+# next fire, so the fallback ran a duplicate tick before most fires, and the
+# scheduled fire then found it holding the lock and did nothing.
+printf "mac-cleanup: done elapsed=1s\n" > "$FIX/last"; perl -e 'my $t = time - 3600; utime $t, $t, shift' "$FIX/last"
+out=$(run)
+check "an hour-old finished output is the normal gap: nothing to do" "yes" "$(has "$out" 'scheduler ran within 80m, nothing to do')"
+check "and no duplicate tick runs"            "6"   "$(ticks)"
+printf "mac-cleanup: done elapsed=1s\n" > "$FIX/last"; perl -e 'my $t = time - 5400; utime $t, $t, shift' "$FIX/last"
+out=$(run)
+check "a 90-minute-old output is a missed fire: the fallback runs" "7" "$(ticks)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-fallback — all checks passed"; exit 0; fi

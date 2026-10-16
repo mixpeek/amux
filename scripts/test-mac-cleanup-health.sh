@@ -19,6 +19,8 @@ has() { printf '%s' "$1" | grep -q -- "$2" && echo yes || echo no; }
 alive() { kill -0 "$1" 2>/dev/null && echo alive || echo gone; }
 AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK"
 STATE_DIR="$FIX/state"; HEALTH_PROBES=on
+AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no"   # never the live diskutil from a test
+SELF_DB="$FIX/no-self.db"   # the self-check must not read the live run history (scripts/test-mac-cleanup-self.sh tests it)
 ME=$(id -u)
 # A long-lived real child. Its name and args in each cell come from the fixture
 # ps listing, so a plain sleep serves (macOS kills a copied /bin/sleep at exec).
@@ -150,6 +152,8 @@ if [ "$(uname)" = Darwin ]; then
   out=$(AMUX_CLEANUP_HEALTH_PS_CMD=true AMUX_CLEANUP_ORPHAN_PS_CMD=true AMUX_CLEANUP_LAUNCHD_LIST_CMD=true \
         AMUX_CLEANUP_NET_CMD=true AMUX_CLEANUP_THERMAL_CMD=true AMUX_CLEANUP_CRASH_DIR="$FIX/none" \
         AMUX_CLEANUP_LIMITS_CMD="echo 10 1000 10 100 5 300 $$ 300" \
+        AMUX_CLEANUP_SELF_DB="$FIX/no-self.db" \
+        AMUX_CLEANUP_AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no" \
         AMUX_CLEANUP_STATE_DIR="$FIX/tick" AMUX_CLEANUP_TARGET_ROOTS="$FIX/none" AMUX_CLEANUP_PURGE_CMD=true \
         AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/none" AMUX_CLEANUP_USER_TMP="$FIX/none" \
         AMUX_CLEANUP_CHURN_ROOTS="$FIX/none" AMUX_CLEANUP_VM_LIST_CMD=true AMUX_CLEANUP_SESSIONS_CMD=false \
@@ -161,6 +165,17 @@ if [ "$(uname)" = Darwin ]; then
 else
   echo "  skip macOS-only cell (the tick's other probes are macOS commands): not run on $(uname)"
 fi
+
+echo "8. the agent volume's state is reported beside the other readings"
+printf '#!/bin/sh\necho "agent-volume: TestVol exists=yes mounted=yes fseventsd=on"\necho "next (owner): do it"\n' > "$FIX/agentvol"; chmod +x "$FIX/agentvol"
+AGENT_VOLUME_CMD="$FIX/agentvol"; out=$(check_agent_volume)
+check "the status line is carried"                    yes   "$(has "$out" 'mac-cleanup: agent volume: TestVol exists=yes mounted=yes fseventsd=on')"
+check "and so is the next step"                       yes   "$(has "$out" 'mac-cleanup:   agent volume next (owner): do it')"
+out=$(system_health 0 2>&1)
+check "system_health runs it"                         yes   "$(has "$out" 'mac-cleanup: agent volume: TestVol exists=yes')"
+AGENT_VOLUME_CMD=false; out=$(check_agent_volume)
+check "no answer reads unmeasured, not fine"          yes   "$(has "$out" 'agent volume: unmeasured')"
+AGENT_VOLUME_CMD="echo agent-volume: TestVol exists=no"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-health — all checks passed"; exit 0; fi

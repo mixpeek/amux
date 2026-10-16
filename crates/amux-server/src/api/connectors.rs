@@ -3111,6 +3111,20 @@ static ROLLUP_CACHE: Mutex<std::collections::BTreeMap<PathBuf, (Instant, Value)>
     Mutex::new(std::collections::BTreeMap::new());
 const ROLLUP_TTL_S: u64 = 300;
 
+/// Bumped by every invalidation. A rollup records it before probing and only
+/// caches its result if no invalidation landed meanwhile: a rollup started
+/// before an account connected used to finish after the callback's
+/// invalidation and cache the stale list for the full TTL (the flaky
+/// `declared_oauth_connector_lifecycle_survives_sigkill`, 1 account of 2).
+static ROLLUP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Drop the cached rollup for `home` and stop any rollup already in flight
+/// from caching what it computed before this change.
+fn invalidate_rollup(home: &std::path::Path) {
+    ROLLUP_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    ROLLUP_CACHE.lock().expect("rollup cache").remove(home);
+}
+
 /// Canary targets: the cheapest real call per Google service, gated on the
 /// grant actually covering it (a gmail-only grant must read `not_granted` for
 /// calendar, never red — the inverse of the "connected but useless" lie).
@@ -3154,6 +3168,7 @@ pub(crate) async fn accounts_rollup(
             }
         }
     }
+    let gen_at_start = ROLLUP_GEN.load(std::sync::atomic::Ordering::SeqCst);
     let mut rows: std::collections::BTreeMap<String, Map<String, Value>> = Default::default();
     // Per-account canary legs (AMUX-3430): the CONTINUES-working proof, one
     // cheap real API call per granted service on every cache refresh.
@@ -3306,10 +3321,15 @@ pub(crate) async fn accounts_rollup(
         "needs_reauth": needs_reauth,
         "note": "One row per account; one approval repairs every family listed as needs_reauth (a Google grant covers gmail + calendar + drive/docs at once and every worker shares it). canary = one real API call per granted service on every refresh (~5min): ok / api_error / not_granted / unreachable, with checked_at.",
     });
-    ROLLUP_CACHE
-        .lock()
-        .expect("rollup cache")
-        .insert(home.to_path_buf(), (Instant::now(), out.clone()));
+    {
+        let mut cache = ROLLUP_CACHE.lock().expect("rollup cache");
+        if ROLLUP_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen_at_start {
+            cache.insert(home.to_path_buf(), (Instant::now(), out.clone()));
+        } else {
+            tracing::info!(verdict = "connector_rollup_not_cached_stale", measured = true, n_considered = 1,
+                "connector rollup computed across a credential change; served once, not cached");
+        }
+    }
     out
 }
 

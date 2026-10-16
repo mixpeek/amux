@@ -249,12 +249,39 @@ pub(crate) fn workspace_workdirs(
 
 /// Native events have already passed launch nonce, provider and sequence checks.
 /// Keep contradictory claims as None so a cwd fallback cannot override them.
+///
+/// Incremental (Mac hog RCA 20261014-112244, AMUX-5999): the full scan ran
+/// json_extract over every native_status row (384k on the live DB, over 200s)
+/// on each ledger pass. Pairs already seen are cached per database with the
+/// highest id read, and each pass reads only newer rows.
+type OwnerPairs = (i64, std::collections::BTreeSet<(String, String)>);
+static NATIVE_OWNER_CACHE: std::sync::Mutex<Option<(String, OwnerPairs)>> = std::sync::Mutex::new(None);
+
 fn native_owners(c: &rusqlite::Connection) -> rusqlite::Result<HashMap<String, Option<String>>> {
-    let mut q = c.prepare("SELECT DISTINCT session,json_extract(data,'$.session_id') FROM session_events WHERE type='session.native_status' AND json_valid(data) AND json_extract(data,'$.provider')='codex' AND json_extract(data,'$.event')='SessionStart' AND json_extract(data,'$.session_id')<>''")?;
-    let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    let mut owners = HashMap::<String, Option<String>>::new();
+    let db = c.path().unwrap_or("").to_string();
+    let max_id: i64 = c.query_row("SELECT coalesce(max(id),0) FROM session_events", [], |r| r.get(0))?;
+    let (mut since, mut pairs) = {
+        let g = NATIVE_OWNER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some((path, (seen, p))) if !db.is_empty() && *path == db && *seen <= max_id => (*seen, p.clone()),
+            _ => (0, Default::default()),
+        }
+    };
+    let started = std::time::Instant::now();
+    let mut q = c.prepare("SELECT DISTINCT session,json_extract(data,'$.session_id') FROM session_events WHERE id > ?1 AND id <= ?2 AND type='session.native_status' AND json_valid(data) AND json_extract(data,'$.provider')='codex' AND json_extract(data,'$.event')='SessionStart' AND json_extract(data,'$.session_id')<>''")?;
+    let rows = q.query_map([since, max_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
-        let (worker, id) = row?;
+        pairs.insert(row?);
+    }
+    let ms = started.elapsed().as_millis() as u64;
+    if ms > 2000 {
+        tracing::warn!(target: "codex_ledger", verdict = "native_owners_slow", elapsed_ms = ms, rows_from = since,
+            measured = true, n_considered = pairs.len(), "native owner scan was slow");
+    }
+    since = max_id;
+    *NATIVE_OWNER_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((db, (since, pairs.clone())));
+    let mut owners = HashMap::<String, Option<String>>::new();
+    for (worker, id) in pairs {
         owners
             .entry(id)
             .and_modify(|prior| {
@@ -663,6 +690,24 @@ mod tests {
             .unwrap();
         assert_eq!(session, "", "unowned, not dropped and not guessed");
         assert_eq!(input, 500);
+    }
+    #[test]
+    fn native_owners_reads_only_new_rows_and_keeps_earlier_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = rusqlite::Connection::open(dir.path().join("o.db")).unwrap();
+        c.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT, source TEXT);").unwrap();
+        let add = |w: &str, sid: &str| {
+            c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(1,?1,'session.native_status',?2)",
+                rusqlite::params![w, serde_json::json!({"provider":"codex","event":"SessionStart","session_id":sid}).to_string()]).unwrap();
+        };
+        add("a", "s1");
+        assert_eq!(native_owners(&c).unwrap().get("s1"), Some(&Some("a".to_string())));
+        add("b", "s2");
+        let o = native_owners(&c).unwrap();
+        assert_eq!(o.get("s1"), Some(&Some("a".to_string())), "earlier claim survives the incremental pass");
+        assert_eq!(o.get("s2"), Some(&Some("b".to_string())), "new claim is read");
+        add("c", "s1");
+        assert_eq!(native_owners(&c).unwrap().get("s1"), Some(&None), "a contradiction still reads as unowned");
     }
     #[tokio::test]
     async fn shared_checkout_usage_uses_native_identity_and_recovers_unowned_rows() {

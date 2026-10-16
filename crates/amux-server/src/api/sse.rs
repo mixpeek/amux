@@ -205,7 +205,7 @@ pub async fn events(
 
     Sse::new(stream).keep_alive(
         // The keep-alive IS the ping contract: 10s cadence, real data event.
-        // `v` = the APP_VER of the app.js THIS binary embeds (Python parity,
+        // `v` = the asset version stamped into the app.js THIS binary serves (Python parity,
         // amux-server.py:65292): the SPA's ping handler self-reloads on
         // mismatch (rate-limited, SW-nudged), which is how clients adopt a
         // new build without a human clicking anything — the server restarts
@@ -228,28 +228,15 @@ pub async fn events(
     )
 }
 
-/// `{"type":"ping","v":"<APP_VER>"}` with the version parsed ONCE from the
-/// embedded app.js — the same file this server serves, so client and ping can
-/// never disagree about what "current" means. Falls back to a bare ping if
-/// the constant ever moves (a missing `v` disables self-reload, it does not
-/// break liveness).
+/// `{"type":"ping","v":"<asset version>"}`. The version is the content hash
+/// `amux-dashboard`'s build.rs computes over `static/` (or, under an
+/// `AMUX_DASHBOARD_DIR` override, the same hash of that directory), and the static handler
+/// stamps the same value into the served app.js as `APP_VER`, so a page loaded
+/// from this binary and this ping always agree, and a page loaded from any
+/// other build disagrees and self-reloads.
 fn ping_payload() -> &'static str {
     static PAYLOAD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PAYLOAD.get_or_init(|| {
-        let ver = amux_dashboard::DashboardAssets::get("app.js")
-            .and_then(|f| {
-                let s = String::from_utf8_lossy(&f.data).into_owned();
-                s.split("const APP_VER = '")
-                    .nth(1)
-                    .and_then(|rest| rest.split('\'').next().map(String::from))
-            })
-            .unwrap_or_default();
-        if ver.is_empty() {
-            "{\"type\":\"ping\"}".to_string()
-        } else {
-            format!("{{\"type\":\"ping\",\"v\":\"{ver}\"}}")
-        }
-    })
+    PAYLOAD.get_or_init(|| format!("{{\"type\":\"ping\",\"v\":\"{}\"}}", amux_dashboard::asset_version()))
 }
 
 /// The invalidate signal (AMUX-3503) — the entire replacement for the legacy
@@ -388,15 +375,17 @@ mod ping_tests {
     #[test]
     fn ping_carries_the_embedded_app_ver() {
         let p = super::ping_payload();
-        // The version must be the one inside the EMBEDDED app.js — not a
-        // hardcoded copy that drifts on the next client bump.
-        let f = amux_dashboard::DashboardAssets::get("app.js").unwrap();
-        let s = String::from_utf8_lossy(&f.data).into_owned();
+        // The version must be the one stamped into the SERVED app.js, read
+        // back through the same accessor the static handler uses, not a copy.
+        let served = amux_dashboard::asset("app.js").unwrap();
+        let s = String::from_utf8_lossy(&served).into_owned();
         let ver = s
             .split("const APP_VER = '")
             .nth(1)
             .and_then(|r| r.split('\'').next())
-            .expect("APP_VER present in embedded app.js");
+            .expect("APP_VER present in served app.js");
+        assert_eq!(ver, amux_dashboard::asset_version());
+        assert_ne!(ver, amux_dashboard::ASSET_VER_PLACEHOLDER);
         assert_eq!(p, &format!("{{\"type\":\"ping\",\"v\":\"{ver}\"}}"));
     }
 }

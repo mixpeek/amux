@@ -3,7 +3,7 @@ import {test,expect} from './fixtures';
 test('production component guide previews both themes and restores focus and theme',async({page},info)=>{
  await page.addInitScript(()=>localStorage.setItem('amux_walkthrough_done','1'));
  await page.goto('/');await page.evaluate(()=>document.body.classList.remove('light'));
- await page.locator('#settings-btn').click();await page.locator('#style-guide-btn').click();
+ await page.locator('#settings-btn').click();await page.locator('.settings-tab-btn[data-stab="device"]').click();await page.locator('#style-guide-btn').click();
  const guide=page.locator('#ui-guide-overlay');await expect(guide).toBeVisible();
  await expect(guide.getByRole('dialog')).toHaveAttribute('aria-modal','true');
  const first=guide.getByRole('button',{name:'Close style guide'}),last=guide.locator('.modal-footer button');
@@ -33,7 +33,7 @@ test('production component guide previews both themes and restores focus and the
  await guide.locator('.modal-body').evaluate(e=>{e.scrollTop=e.scrollHeight;});
  await last.click();await expect(guide).toHaveCount(0);await expect(page.locator('#settings-btn')).toBeFocused();
  expect(await page.evaluate(()=>document.body.classList.contains('light'))).toBe(false);
- await page.locator('#settings-btn').click();await page.locator('#style-guide-btn').click();await page.keyboard.press('Escape');await expect(guide).toHaveCount(0);await expect(page.locator('#settings-btn')).toBeFocused();
+ await page.locator('#settings-btn').click();await page.locator('.settings-tab-btn[data-stab="device"]').click();await page.locator('#style-guide-btn').click();await page.keyboard.press('Escape');await expect(guide).toHaveCount(0);await expect(page.locator('#settings-btn')).toBeFocused();
 });
 
 test('a broken primary color produces a measured component drift beacon',async({page})=>{

@@ -1843,9 +1843,33 @@ impl LiveDeliverer {
         // was most recently active: SCHED-550 (amux-helper's) sent 55 messages
         // stamped amux, canvas-app-use-cases, amux-app and gainz (2026-10-04).
         let owner = sched.str_field("session").trim().to_string();
+        // The owner's vault secrets (AMUX-5375), resolved at every run so a
+        // rotation applies to the next fire. They go into the child's
+        // environment, never argv, and are masked out of every byte of output
+        // amux stores, so a command that echoes one does not write it into
+        // the run log or the run row. An unowned schedule gets none: it is no
+        // worker's, so no worker's grant covers it.
+        let vault_vals: std::sync::Arc<Vec<(String, String)>> = std::sync::Arc::new(if owner.is_empty() {
+            Vec::new()
+        } else {
+            match crate::api::vault_secrets::deliver(
+                &crate::config::amux_home(),
+                &owner,
+                crate::api::vault_secrets::DeliveryPath::ShellSchedule,
+            ) {
+                Ok(d) => d.values,
+                Err(error) => {
+                    tracing::warn!(schedule = %sched_id, session = %owner, %error, measured = false, n_considered = 0,
+                        verdict = "vault_delivery_failed",
+                        "vault: a shell schedule runs without its owner's secrets (AMUX-5375)");
+                    Vec::new()
+                }
+            }
+        });
         let run_once = |cmd: String| {
             let sid = sched_id.clone();
             let owner = owner.clone();
+            let vault_vals = vault_vals.clone();
             async move {
                 let path = shell_run_log_path(&sid);
                 let fut = async {
@@ -1853,6 +1877,9 @@ impl LiveDeliverer {
                     let mut command = tokio::process::Command::new("/bin/bash");
                     // A check piped into tail must report the check's failure.
                     command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+                    for (k, v) in vault_vals.iter() {
+                        command.env(k, v);
+                    }
                     if owner.is_empty() {
                         command.env_remove("AMUX_SESSION");
                     } else {
@@ -1877,7 +1904,7 @@ impl LiveDeliverer {
                     // Both streams in ARRIVAL order, bounded, for the run row's
                     // tail (AMUX-5241). (bytes kept, bytes dropped off the front)
                     let combined = std::sync::Arc::new(std::sync::Mutex::new((Vec::<u8>::new(), 0usize)));
-                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>, combined: std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>| async move {
+                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>, combined: std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>, vv: std::sync::Arc<Vec<(String, String)>>| async move {
                         let mut all = Vec::new();
                         let mut buf = [0u8; 8192];
                         loop {
@@ -1888,7 +1915,9 @@ impl LiveDeliverer {
                                     if all.len() > SHELL_COMBINED_KEEP {
                                         all.drain(..all.len() - SHELL_COMBINED_KEEP);
                                     }
-                                    if let Ok(mut l) = log.lock() { l.write(&buf[..n]); }
+                                    if let Ok(mut l) = log.lock() {
+                                        if vv.is_empty() { l.write(&buf[..n]); } else { l.write(&crate::api::vault_secrets::redact_bytes(&buf[..n], &vv)); }
+                                    }
                                     if let Ok(mut c) = combined.lock() {
                                         c.0.extend_from_slice(&buf[..n]);
                                         if c.0.len() > SHELL_COMBINED_KEEP {
@@ -1906,8 +1935,8 @@ impl LiveDeliverer {
                     let err = child.stderr.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
                     let drains = async {
                         tokio::join!(
-                            async { match out { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
-                            async { match err { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
+                            async { match out { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
+                            async { match err { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
                         )
                     };
                     tokio::pin!(drains);
@@ -1944,7 +1973,20 @@ impl LiveDeliverer {
                         .lock()
                         .map(|c| shell_output_tail(&c.0, c.1, SHELL_OUTPUT_TAIL_BYTES))
                         .unwrap_or_default();
-                    Ok::<_, String>((code, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned(), tail))
+                    if !vault_vals.is_empty() {
+                        // A value split across two reads escaped the per-chunk
+                        // mask; one pass over the whole file catches it.
+                        if let Some(p) = &path {
+                            if let Ok(bytes) = std::fs::read(p) {
+                                let clean = crate::api::vault_secrets::redact_bytes(&bytes, &vault_vals);
+                                if clean != bytes {
+                                    let _ = std::fs::write(p, clean);
+                                }
+                            }
+                        }
+                    }
+                    let r = |b: &[u8]| crate::api::vault_secrets::redact(&String::from_utf8_lossy(b), &vault_vals);
+                    Ok::<_, String>((code, r(&o), r(&e), crate::api::vault_secrets::redact(&tail, &vault_vals)))
                 };
                 match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
                     Ok(r) => r,

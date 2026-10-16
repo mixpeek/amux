@@ -345,6 +345,14 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR
+    // fails at startup instead of on the first page load, and say which
+    // bytes this process serves. Production never sets it (embedded).
+    if let Some(o) = amux_dashboard::dir_override() {
+        tracing::info!(verdict = "dashboard_assets_from_dir", dir = %o.dir.display(),
+            version = %o.version, embedded_version = amux_dashboard::ASSET_VER, measured = true,
+            n_considered = 1, "dashboard assets served from AMUX_DASHBOARD_DIR, not the embedded copy");
+    }
     let home = cfg.amux_home.canonicalize().unwrap_or(cfg.amux_home.clone());
     let temp = std::env::temp_dir()
         .canonicalize()
@@ -627,6 +635,8 @@ async fn async_main() {
     // exists. If every worker in the fleet is dead, the cards still get filed
     // and wait. Noticing is infrastructure; fixing is work.
     drop(runtime_jobs::autofix::spawn(state.clone()));
+    // MDAI runs cut off by the restart that started this process resume here.
+    crate::api::mdai::resume_interrupted(state.store.clone());
     // AMUX-3579: enrol /api/board/commit-mentions, which had zero consumers.
     drop(runtime_jobs::commit_mention_notes::spawn(state.clone()));
     // AMUX-5238: close auto-captured intake cards on cited evidence and tag
@@ -654,6 +664,7 @@ async fn async_main() {
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
+    drop(runtime_jobs::task_titles::spawn(state.clone()));
     // Record tab transcripts (AMUX-4624): the folder is the work list, so a
     // restart or a late model install resolves on the next tick.
     drop(runtime_jobs::recordings_transcribe::spawn(state.clone()));
@@ -698,6 +709,19 @@ async fn async_main() {
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // Contract rule 5 (AH-380): the server-owned land queue.
     drop(runtime_jobs::land_queue::spawn(state.clone()));
+    // Install the passive status observer BEFORE the listener binds, so a
+    // healthy /health implies the hook script is on disk. It used to arrive
+    // only on status_history's first tick (a spawn_blocking task), which can
+    // lose the race to /health: a server killed right after turning healthy
+    // left no native-status.py, and a provider hook firing while it was down
+    // had nothing to run (restart_persistence CI runs 38917609108,
+    // 38845948860: "python3: can't open file .../native-status.py"). The tick
+    // still repairs drift later; this makes the first install unconditional,
+    // including on servers where that job is disabled.
+    if let Err(error) = api::native_status::ensure_observer(&config::amux_home()) {
+        tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
+            "passive observer could not be installed at startup; status_history's tick will retry");
+    }
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));

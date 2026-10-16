@@ -63,7 +63,10 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
     const out = fs.openSync(serverLog, 'a');
     proc = spawn(binary, [], { env, stdio: ['ignore', out, out], detached: true });
     let exited = false; proc.on('exit', () => { exited = true; });
-    for (let i = 0; i < 240; i++) {
+    // 60s by default; AMUX_CHAOS_BOOT_S raises it on a loaded box, where a
+    // debug build can take longer than that just to finish migrations.
+    const tries = Math.max(1, Number(process.env.AMUX_CHAOS_BOOT_S || 60)) * 4;
+    for (let i = 0; i < tries; i++) {
       if (exited) throw new Error('server exited during boot; see ' + serverLog);
       try { if ((await request(base, 'GET', '/health', undefined, 2000)).status === 200) return; } catch {}
       await new Promise(r => setTimeout(r, 250));

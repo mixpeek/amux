@@ -347,13 +347,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Workers may message only workers in a shared group. Owner input remains permitted.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
-            <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
+            <span style="font-size:0.85rem;">Refill To Do from Backlog, all workers</span>
             <label class="theme-toggle">
               <input type="checkbox" id="board-drain-default-checkbox" onchange="toggleBoardDrainDefault(this.checked)" checked>
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Default ON: when To Do is empty, promote the oldest eligible Backlog card and keep driving it. Human-owned, triggered, epic, watch, and tripwire cards remain parked; a group or worker configuration can opt out.</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">The fleet-wide default for each worker’s “Refill To Do from Backlog” switch: when To Do is empty, the oldest Backlog card the worker can do moves into To Do. It only takes effect on workers whose “Board steers this worker” and “Start To Do cards when idle” are on. Human-owned, triggered, epic, watch and tripwire cards are never moved.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
@@ -509,19 +509,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div id="settings-moved-out" hidden>
         <section class="settings-section" id="settings-vault-section">
           <div class="settings-section-label">Vault</div>
-          <p class="connection-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner.</p>
-          <div id="vault-items">Loading…</div>
-          <div class="settings-section-label vault-sub-label">Secrets</div>
-          <p class="connection-help ui-help" id="vault-secrets-help">Values workers receive as environment variables when they start, encrypted on this machine. The most specific scope wins: worker, then group, then global. A saved value is never shown again; replace it to change it.</p>
-          <div id="vault-secrets">Loading…</div>
-          <form id="vault-secret-form" class="vault-secret-form" onsubmit="event.preventDefault();_vaultSecretAdd()">
-            <label class="ui-field">Key <input id="vault-secret-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="GITHUB_TOKEN" aria-describedby="vault-secret-error"></label>
-            <label class="ui-field">Scope <select id="vault-secret-scope" class="input" onchange="_vaultSecretScopeChanged()"><option value="global">Global (every worker)</option><option value="group">A group</option><option value="worker">One worker</option></select></label>
-            <label class="ui-field" id="vault-secret-target-row" hidden>Which <select id="vault-secret-target" class="input"></select></label>
-            <label class="ui-field">Value <input id="vault-secret-value" class="input" type="password" autocomplete="new-password" spellcheck="false"></label>
-            <p id="vault-secret-error" class="ui-error" role="status"></p>
-            <button class="btn primary" type="submit" id="vault-secret-add-btn">Add secret</button>
-          </form>
+          <p class="connection-help ui-help">Secrets workers receive as environment variables, scoped to everyone, a group or one worker, and the cards workers use without seeing. Encrypted on this machine; values never appear in logs.</p>
+          <button class="btn primary" id="vault-open-btn" onclick="event.stopPropagation();openVault('secrets')">Open Vault</button>
         </section>
         <div class="settings-sep"></div>
         <section class="settings-section" id="settings-chatgpt-section">
@@ -685,6 +674,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
+  <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
   <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
   <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
@@ -803,7 +793,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <h2>Scheduler</h2>
       <span id="sched-stats" class="sx-summary"></span>
     </div>
-    <button class="btn primary sx-new" onclick="openSchedModal()">+ New schedule</button>
+    <button class="btn primary sx-new" onclick="openSchedModal()" aria-label="New schedule">+<span class="sx-new-text"> New schedule</span></button>
   </div>
   <!-- Segmented filter: one pill per group, with counts. Rendered by
        _sxRenderPills so the counts come from the same predicate the groups use. -->
@@ -1085,9 +1075,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
        header staying aligned, instead of those columns being hidden. -->
   <div id="fe-scroll" class="fe-scroll">
     <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
-      <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
-      <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
-      <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-name" data-sort-col="name" onclick="_filesSetSort('name')">Name</div>
+      <div class="fe-col-hdr" id="fe-hdr-size" data-sort-col="size" onclick="_filesSetSort('size')">Size</div>
+      <div class="fe-col-hdr" id="fe-hdr-modified" data-sort-col="modified" onclick="_filesSetSort('modified')">Modified</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="files-body"></div>
@@ -1118,49 +1108,40 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- MDAI view: global list of every .mdai computed node (global-only: a top-bar
      tab in ALL_TABS/switchView, never in the per-worker peek overlay). -->
 <div id="mdai-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <!-- List page: the MDAI folder as a directory (same view as Files and Scratchpad) -->
-  <div id="mdai-list-page" style="display:flex;flex-direction:column;flex:1;min-height:0;">
-    <div class="fe-toolbar">
-      <div class="fe-breadcrumb sp-dir" id="mdai-dir" title=""></div>
-      <span id="mdai-count" class="mdai-dim" style="white-space:nowrap;"></span>
-      <button class="fe-tb-btn" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })" title="Create a new .mdai node in this folder">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 6.6 7 7.9 8.3 8.4 7 8.9 6.5 10.2 6 8.9 4.7 8.4 6 7.9Z" fill="currentColor"/></svg>
-        <span>New .mdai</span>
-      </button>
-      <button class="fe-tb-btn" onclick="_mdaiNewFolder()" title="Create a subfolder">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
-        <span>New Folder</span>
-      </button>
-      <button class="fe-tb-btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        <span>Refresh</span>
-      </button>
+  <!-- List page: every .mdai node under the MDAI folder, with its last run -->
+  <div id="mdai-list-page" class="mdai-page-wrap" style="display:flex">
+    <div class="mdai-list-head">
+      <div class="mdai-list-titles"><h2 class="mdai-h">MDAI</h2><span id="mdai-count" class="mdai-dim"></span></div>
+      <input class="input mdai-search" id="mdai-search" type="search" placeholder="Search nodes" aria-label="Search MDAI nodes" oninput="_mdaiListSearch(this.value)" autocomplete="off">
+      <button class="btn" onclick="_mdaiListData=null;_mdaiTabLoad()" title="Refresh" aria-label="Refresh">&#8635;<span class="mdai-btn-lbl"> Refresh</span></button>
+      <button class="btn primary" id="mdai-new-btn" onclick="_mdaiCreatePage()">+ New MDAI</button>
     </div>
-    <div class="fe-col-headers" id="mdai-col-headers" style="display:none;">
-      <div class="fe-cell-name fe-col-hdr" onclick="_mdaiDirSortBy('name')">Name <span id="mdai-sort-name"></span></div>
-      <div class="fe-cell-size fe-col-hdr" onclick="_mdaiDirSortBy('size')">Size <span id="mdai-sort-size"></span></div>
-      <div class="fe-cell-date fe-col-hdr" onclick="_mdaiDirSortBy('modified')">Modified <span id="mdai-sort-modified"></span></div>
-      <div class="fe-cell-actions"></div>
-    </div>
-    <div id="mdai-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
-    <div id="mdai-list" class="fe-body" style="flex:1;overflow-y:auto;min-height:0;"></div>
+    <div id="mdai-list" class="mdai-list-body"></div>
   </div>
-  <!-- Create page -->
+  <!-- Create page: every field of a node, as controls -->
   <div id="mdai-create-page" class="mdai-page-wrap" style="display:none">
     <div class="mdai-create">
-      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New .mdai</h2></div>
-      <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
-        onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
-      <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)"></span></label>
+      <div class="mdai-list-head"><button class="btn" onclick="_mdaiCreateCancel()">&#8249; All nodes</button><h2 class="mdai-h">New MDAI</h2></div>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Name<input class="input" id="mdai-new-name" placeholder="Workstreams" autocomplete="off"
+          onkeydown="if(event.key==='Enter')_mdaiCreateSubmit(false)"><span class="mdai-hint">Saved as <b>&lt;name&gt;.mdai</b></span></label>
+        <label class="mdai-lbl">Folder<span class="mdai-folder"><span id="mdai-new-root" class="mdai-dim"></span><input class="input" id="mdai-new-folder" placeholder="(top level)" autocomplete="off"></span></label>
+      </div>
+      <label class="mdai-lbl">Title <span class="mdai-hint">optional, shown in the list</span><input class="input" id="mdai-new-title" maxlength="200" autocomplete="off"></label>
       <fieldset class="mdai-fs"><legend>Sources</legend>
-        <label class="mdai-check"><input type="checkbox" id="mdai-new-msgs" checked> Amux messages
-          <select class="input" id="mdai-new-days" aria-label="How far back"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
-        <label class="mdai-lbl">Files or folders <span class="mdai-dim">(one per line, relative to the node's folder)</span><textarea class="input" id="mdai-new-paths" rows="2" placeholder="notes/&#10;docs/plan.md"></textarea></label>
-        <label class="mdai-lbl" id="mdai-new-upstream-row">Other .mdai nodes <span class="mdai-dim">(their output becomes a source)</span><select class="input" id="mdai-new-upstream" multiple></select></label>
+        <div class="mdai-hint">What the model reads on every run: your amux message history, files and folders, or other MDAI nodes' output.</div>
+        <div id="new-sources" class="mdai-src-list"></div>
       </fieldset>
-      <label class="mdai-lbl">Model<select class="input" id="mdai-new-model"><option value="">Default</option><option value="haiku">haiku</option><option value="sonnet">sonnet</option><option value="opus">opus</option></select></label>
-      <label class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
-        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="false" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea></label>
+      <div class="mdai-form-row">
+        <label class="mdai-lbl">Model<select class="input" id="mdai-new-model" onchange="_mdaiModelPick(this,'mdai-new-model-custom')"></select>
+          <input class="input" id="mdai-new-model-custom" placeholder="model id, e.g. claude-sonnet-4-6" style="display:none" autocomplete="off"></label>
+        <label class="mdai-lbl">Timeout per model call (s)<input class="input" type="number" min="30" max="3600" inputmode="numeric" id="mdai-new-timeout" placeholder="900"></label>
+      </div>
+      <label class="mdai-check"><input type="checkbox" id="mdai-new-refresh"> Run when its page is opened <span class="mdai-hint">Off by default: runs only when you press Run.</span></label>
+      <div class="mdai-lbl">Instruction<span class="mdai-hint">What the model should write from the sources. Markdown.</span>
+        <div class="mdai-seg" role="group" aria-label="Instruction view"><button type="button" data-mode="write" class="active" aria-pressed="true" onclick="_mdaiNewBodyMode('write')">Write</button><button type="button" data-mode="preview" aria-pressed="false" onclick="_mdaiNewBodyMode('preview')">Preview</button></div>
+        <textarea class="input mdai-code" id="mdai-new-body" rows="14" spellcheck="true" aria-label="Instruction" placeholder="# Weekly brief&#10;&#10;Summarize what changed this week and what needs attention next."></textarea>
+        <div id="mdai-new-preview" class="mdai-output md-content" style="display:none"></div></div>
       <div id="mdai-new-error" class="mdai-bad" role="alert"></div>
       <div class="mdai-row-end"><button class="btn" onclick="_mdaiCreateCancel()">Cancel</button>
         <button class="btn mdai-create-go" onclick="_mdaiCreateSubmit(false)">Create</button>
@@ -1208,12 +1189,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <div id="email-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div style="padding:12px 16px;">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div class="email-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <div style="font-size:1.05rem;font-weight:700;">Email</div>
       <button class="btn" onclick="_emailLoad()">Refresh</button>
       <button class="btn" onclick="_emailThemesRefresh(this)" title="Re-infer what matters to you from your recent messages to amux">Re-learn priorities</button>
+      <button class="btn email-about-btn" onclick="document.getElementById('email-view').classList.toggle('email-about-open')" aria-label="How this inbox is ranked" title="How this inbox is ranked">&#9432;</button>
     </div>
-    <div style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
+    <div class="email-about" style="font-size:0.75rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;">
       Ranked by what amux infers you care about, learned from the messages you send it and
       recomputed periodically with the <b>Meta-task model</b> from Settings. Scoring itself is
       arithmetic over those themes, so opening this costs nothing.
@@ -1227,6 +1209,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="email-list"></div>
   </div>
 </div>
+<div id="vault-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;"></div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div class="cx-page">
     <div class="cx-top">
@@ -1236,11 +1219,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="cx-titlebar">
       <div>
         <div class="cx-h1">Your connections</div>
-        <div class="cx-dim">Manage your integrations and add new ones. Every worker shares these grants.</div>
+        <div class="cx-dim cx-intro">Manage your integrations and add new ones. Every worker shares these grants.</div>
       </div>
       <div class="cx-actions">
         <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
-        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
+        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()" aria-label="Add connector">＋ Add<span class="cx-add-noun"> connector</span></button>
       </div>
     </div>
     <!-- AMUX-3993: declare a connector without a rebuild. The registry is a const
@@ -3701,7 +3684,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div id="mdai-badges" class="mdai-badges"></div>
     </div>
     <div class="mdai-actions">
-      <span class="mdai-split"><button id="mdai-run-btn" class="btn" onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
+      <span class="mdai-split"><button id="mdai-run-btn" class="btn" data-repeatable onclick="_mdaiRun({show:true})" title="Run this node and everything it reads">&#9655; Run</button><button class="btn mdai-split-more" onclick="event.stopPropagation();_mdaiRunMenu(this)" aria-label="Run options">&#9662;</button></span>
       <button id="mdai-menu-btn" class="btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
       <button id="mdai-save-btn" class="btn" onclick="_mdaiSave()">Saved</button>
     </div>

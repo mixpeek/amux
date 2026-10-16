@@ -368,13 +368,23 @@ test('late directory and file responses cannot replace the worker current file',
     await writeFile(oldFile,'OLD_FILE_MUST_NOT_REPLACE_CURRENT');await writeFile(currentFile,longText);
     await page.goto('/?peekEmbed=file-bottom-worker');await page.setViewportSize(sizes[0]);
     await page.evaluate(()=>(window as any)._peekSplitOpen('files'));
-    for(const [matcher,start] of [
-      [/\/api\/ls\?path=/,() => page.evaluate(p=>{void (window as any)._psfLoad(p);},dir)],
-      [/\/api\/file\?path=.*old\.md/,() => page.evaluate(p=>{void (window as any)._psfViewFile(p);},oldFile)],
+    // HOLD EXACTLY ONE REQUEST: the one start() issues. The matcher used to
+    // hold every request it matched, so any other /api/ls read during the
+    // iteration also entered route.fetch(). One still in flight when the test
+    // ended rejected with "route.fetch: Test ended" after this test had passed,
+    // and Playwright charged it to the next test in the worker ("capped PDF",
+    // desktop run 38917609108 and mobile run 38821710436; both errors name
+    // /api/ls?path=<this test's dir>). Every other request falls through
+    // untouched, which needs no network call of its own.
+    for(const [matcher,key,start] of [
+      [/\/api\/ls\?path=/,'/api/ls?path='+encodeURIComponent(dir),() => page.evaluate(p=>{void (window as any)._psfLoad(p);},dir)],
+      [/\/api\/file\?path=.*old\.md/,'/api/file?path='+encodeURIComponent(oldFile),() => page.evaluate(p=>{void (window as any)._psfViewFile(p);},oldFile)],
     ] as const){
-      let release!:()=>void, arrived!:()=>void, completed!:()=>void;
+      let release!:()=>void, arrived!:()=>void, completed!:()=>void, taken=false;
       const held=new Promise<void>(r=>release=r), seen=new Promise<void>(r=>arrived=r), done=new Promise<void>(r=>completed=r);
       await page.route(matcher,async route=>{
+        if(taken||!route.request().url().includes(key)) return route.fallback();
+        taken=true;
         const response=await route.fetch();arrived();await held;
         await route.fulfill({response});completed();
       });

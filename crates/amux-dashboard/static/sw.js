@@ -1,5 +1,5 @@
-const CACHE = 'amux-v0.9.1527';
-const SHELL_URLS = ['/', '/state/kernel.js', '/vendor/md.js', '/state/feedback.css', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
+const CACHE = 'amux-v__AMUX_ASSET_VER__';   // same derived hash as APP_VER, stamped at serve time
+const SHELL_URLS = ['/', '/state/kernel.js', '/state/control-registry.json', '/vendor/md.js', '/state/feedback.css', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Every CDN library and stylesheet index.html loads. Pre-cached one by one at
 // install so the WHOLE app works offline, including features not opened yet
@@ -156,7 +156,7 @@ self.addEventListener('fetch', e => {
     // produced a "Loading amux..." wait on a local app.
     //
     // Cached shell is served IMMEDIATELY and the update is fetched in the
-    // background. Staleness is bounded: CACHE is versioned with APP_VER, so a
+    // background. Staleness is bounded: CACHE carries the derived APP_VER, so a
     // real deploy installs a new SW, whose activate wipes the old cache and
     // whose install re-fetches '/' fresh, then controllerchange reloads. The
     // worst case is being one load behind within a single version.

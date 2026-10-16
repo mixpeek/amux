@@ -1491,6 +1491,18 @@ async fn execute(
         ),
         None => super::session_verbs::headless_turn_prelude(name, provider, &work_dir),
     };
+    // Vault secrets: a Chat tab runs with its worker's, resolved at every turn
+    // (so a rotation applies to the next turn), staged in the process env and
+    // moved to their real names after the prelude has sourced the scope files.
+    let vault_owner = companion_parent(name).unwrap_or(name);
+    let vault = super::vault_secrets::deliver(&crate::config::amux_home(), vault_owner, super::vault_secrets::DeliveryPath::ChatTurn)
+        .unwrap_or_else(|error| {
+            tracing::warn!(session = %name, %error, measured = false, n_considered = 0,
+                verdict = "vault_delivery_failed", "vault: a chat turn runs without its worker's secrets (AMUX-5375)");
+            super::vault_secrets::Delivery { values: Vec::new(), manifest: Default::default() }
+        });
+    let (vault_env, vault_line) = super::vault_secrets::staged_env(&vault.values);
+    let prelude = format!("{prelude}{vault_line}");
     // The companion context is computed before the spawn: the prompt reaches
     // the provider through the turn's stdin file.
     let companion_of = cfg.get_or("CC_COMPANION_OF", "").trim().to_string();
@@ -1500,7 +1512,7 @@ async fn execute(
         companion_prompt(state, &companion_of, fresh, text).await
     };
     let files = TurnFiles::new(turn_id, u32::from(force_fresh));
-    let pgid = match spawn_detached(&files, &prelude, provider, &args, &work_dir, &text).await {
+    let pgid = match spawn_detached(&files, &prelude, provider, &args, &work_dir, &text, &vault_env).await {
         Ok(p) => p,
         Err(why) => {
             files.remove();
@@ -1597,6 +1609,7 @@ async fn spawn_detached(
     args: &[String],
     work_dir: &str,
     prompt: &str,
+    env: &[(String, String)],
 ) -> Result<u32, String> {
     std::fs::create_dir_all(turns_dir()).map_err(|e| format!("could not start {provider}: {e}"))?;
     std::fs::write(files.path("in"), prompt).map_err(|e| format!("could not start {provider}: {e}"))?;
@@ -1626,6 +1639,9 @@ async fn spawn_detached(
         .process_group(0)
         // The LAUNCHER is owned and short-lived; the turn it starts is not.
         .kill_on_drop(true);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     let child = cmd.spawn().map_err(|e| format!("could not start {provider}: {e}"))?;
     let pgid = child.id().unwrap_or(0);
     let done = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())

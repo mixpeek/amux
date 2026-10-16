@@ -178,9 +178,8 @@ test('board: a delayed pre-clear poll cannot resurrect an archived card after re
   await page.evaluate(async () => { await (window as any).fetchBoard(); });
   await expect(page.locator('#board-view')).toContainText(title);
   let release!: () => void;
-  let observed!: () => void;
   const gate = new Promise<void>(r => { release = r; });
-  const captured = new Promise<void>(r => { observed = r; });
+  let captured = false;
   let armed = true;
   await page.route('**/api/board?*', async route => {
     if (armed && route.request().url().includes('archived=0')) {
@@ -192,13 +191,23 @@ test('board: a delayed pre-clear poll cannot resurrect an archived card after re
       const older = await route.fetch({headers});
       expect(older.status()).toBe(200);
       expect((await older.json()).some((card: any) => card.id === id)).toBe(true);
-      observed();
+      captured = true;
       await gate;
       await route.fulfill({response:older});
     } else await route.continue();
   });
+  // fetchBoard shares one in-flight read per query key (_stateQuery is a
+  // TanStack fetchQuery). A background poll that left just before the route
+  // was armed therefore absorbed a single fetchBoard() call, no request ever
+  // reached the gate, and the test waited out its whole budget (ios-safari,
+  // run 38809617752: the poll left 9 ms before the call). Ask again until a
+  // read is held, then join the held read so the awaited promise is the one
+  // that will deliver the stale body.
+  await expect.poll(async () => {
+    if (!captured) await page.evaluate(() => { void (window as any).fetchBoard(); });
+    return captured;
+  }, { message: 'a board read reaches the held route', timeout: 15_000 }).toBe(true);
   await page.evaluate(() => { (window as any).__delayedBoardRead = (window as any).fetchBoard(); });
-  await captured;
   const cleared = page.waitForResponse(r => r.url().endsWith('/api/board/clear-done') && r.request().method() === 'POST');
   await clickSnapped(page.locator('#board-view button', {hasText:'Clear done'}).first(), 'Clear done');
   expect((await cleared).status()).toBe(200);

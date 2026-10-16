@@ -147,6 +147,28 @@ pub struct ProfileSyncReport {
     /// not be either, and only a sign-in in Chrome fixes it.
     pub not_signed_in: Vec<String>,
     pub skipped: Option<String>,
+    /// Listed sites NOT copied because their sessions are bound to the
+    /// browser that holds them (see [`SESSION_BOUND_SITES`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub session_bound_skipped: Vec<String>,
+}
+
+/// Sites whose login must never be copied into a second browser.
+///
+/// Google revokes a session when its cookies show up in another client: Chrome
+/// binds Google sessions to the device (DBSC), and the copy reads as a stolen
+/// session. Measured 2026-10-14/15 (long-form-videos, Ethan): every Google
+/// account in Ethan's real Chrome went "Signed out" three times, each right
+/// after google.com cookies were copied into the amux `ethan` profile (CDP
+/// sync log: syncs every 1-2 min 03:02-03:32Z, and 11:49Z, two minutes after
+/// his 07:47 sign-in); with the copy off, his next sign-in held. Copying the
+/// login kills the very session it copies, for the owner and every lane.
+/// YouTube shares Google's session. Matched as the site or any subdomain.
+pub const SESSION_BOUND_SITES: &[&str] = &["google.com", "youtube.com"];
+
+pub fn is_session_bound(site: &str) -> bool {
+    let s = site.trim().trim_start_matches('.').to_ascii_lowercase();
+    SESSION_BOUND_SITES.iter().any(|b| s == *b || s.ends_with(&format!(".{b}")))
 }
 
 /// Mirror `sites` from the source cookie DB into the target cookie DB.
@@ -263,7 +285,19 @@ pub fn mirror_sites(source_db: &Path, target_db: &Path, sites: &[String], now: i
 /// One profile, end to end. `running` says whether its browser is up.
 pub fn sync_profile(home: &Path, chrome_dir: &Path, spec: &SyncSpec, running: bool, now: i64) -> ProfileSyncReport {
     let mut rep = ProfileSyncReport { profile: spec.profile.clone(), ..Default::default() };
-    if spec.sites.is_empty() {
+    let (bound, sites): (Vec<String>, Vec<String>) = spec.sites.iter().cloned().partition(|s| is_session_bound(s));
+    if !bound.is_empty() {
+        if crate::log_dedupe::first_this_bucket(
+            &format!("login-sync-session-bound:{}", spec.profile),
+            crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+        ) {
+            tracing::warn!(profile = %spec.profile, sites = ?bound, measured = true, n_considered = spec.sites.len(),
+                verdict = "login_sync_session_bound_skipped",
+                "login sync skipped session-bound sites: copying their cookies into a second browser makes the site revoke the owner's own session");
+        }
+        rep.session_bound_skipped = bound;
+    }
+    if sites.is_empty() {
         rep.skipped = Some("no sites listed: nothing is copied without a named site".into());
         return rep;
     }
@@ -307,7 +341,7 @@ pub fn sync_profile(home: &Path, chrome_dir: &Path, spec: &SyncSpec, running: bo
             return rep;
         }
     };
-    match mirror_sites(&snap, &target_dir.join("Cookies"), &spec.sites, now) {
+    match mirror_sites(&snap, &target_dir.join("Cookies"), &sites, now) {
         Ok((c, r, p)) => {
             rep.copied = c;
             rep.removed = r;
@@ -319,7 +353,7 @@ pub fn sync_profile(home: &Path, chrome_dir: &Path, spec: &SyncSpec, running: bo
         }
     }
     let jar = bl::read_rows(&snap).map(|r| bl::summarize(&r, now)).unwrap_or_default();
-    for s in &spec.sites {
+    for s in &sites {
         if jar.login_for(s).is_some() {
             rep.signed_in.push(s.clone());
         } else {
@@ -331,6 +365,16 @@ pub fn sync_profile(home: &Path, chrome_dir: &Path, spec: &SyncSpec, running: bo
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn google_and_youtube_logins_are_never_mirrored() {
+        assert!(super::is_session_bound("google.com"));
+        assert!(super::is_session_bound("accounts.google.com"));
+        assert!(super::is_session_bound(".youtube.com"));
+        assert!(!super::is_session_bound("github.com"));
+        assert!(!super::is_session_bound("notgoogle.com"), "a lookalike domain is not Google");
+    }
+
     use super::*;
 
     fn jar(path: &Path, rows: &[(&str, &str, i64, i64)]) {

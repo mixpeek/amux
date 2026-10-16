@@ -26,6 +26,8 @@ for(const [name,node] of functions) {
     const method=options?.type==='ObjectExpression' && options.properties.find(p=>p.key?.name==='method')?.value?.value;
     if(['fetch','apiCall','_directInteractionFetch','_origFetch','_uploadRequest'].includes(callee) && /^(POST|PUT|PATCH|DELETE)$/i.test(method || '')) mutations.add(name);
     if(callee==='_interactionAccept' || callee==='_queueOp') mutations.add(name);
+    // _mdaiJson(path, method, body): the method is the second argument.
+    if(callee==='_mdaiJson' && /^(POST|PUT|PATCH|DELETE)$/i.test(child.arguments[1]?.value || '')) mutations.add(name);
   });
   graph.set(name,calls);
 }
@@ -35,7 +37,13 @@ while(changed) {
   for(const [name,calls] of graph) if(!mutations.has(name) && [...calls].some(call=>mutations.has(call))) { mutations.add(name);changed=true; }
 }
 const controls=Object.fromEntries([...mutations].sort().map(name=>[name,{kind:'command.'+name,feedback_required:true,target:'control-or-request',queue_policy:'transport-declared'}]));
-const registry={measured:true,n_considered:functions.size,command_handlers:controls,
+// The committed file holds only what changes when a command handler does: one
+// sorted block per handler. Population counts (functions considered, handlers
+// declared) move on almost any app.js edit, so they are printed below instead
+// of committed; committing them made every pair of dashboard PRs conflict on
+// line 3. state/feedback.mjs fetches this file at runtime, so the kernel bundle
+// does not embed it either.
+const registry={command_handlers:controls,
   coverage_scope:'Static call graph of named functions. Dynamic event listeners and computed dispatch require browser observation.'};
 const json=JSON.stringify(registry,null,2)+'\n';
 if(process.argv.includes('--check')) {

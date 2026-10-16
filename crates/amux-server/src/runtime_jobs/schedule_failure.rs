@@ -47,7 +47,8 @@
 //!
 //! Every decision is logged with a stable verdict:
 //! `schedule_failure_notified`, `schedule_failure_routed_owner`,
-//! `schedule_failure_suppressed_dupe`, `schedule_failure_streak_reset`.
+//! `schedule_failure_suppressed_dupe`, `schedule_failure_streak_reset`,
+//! `schedule_paused_owner_gone` (see [`should_pause_orphan`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -57,6 +58,20 @@ use crate::db::{PendingEvent, SharedStore, WriteOutcome};
 
 /// Same-signature failures after the last notice before telling again.
 pub const ESCALATE_AFTER: i64 = 3;
+/// Consecutive failures after which a schedule whose worker is gone is paused.
+pub const PAUSE_ORPHAN_AFTER: i64 = 3;
+
+/// THE HARNESS FIXES WHAT NOBODY ELSE CAN (Ethan, 2026-10-15: "if a scheduler
+/// fails, amux harness should try to fix"). A schedule whose worker is
+/// archived or no longer registered has no one left to repair it, and it kept
+/// firing: SCHED-640 failed 572 times in a row against a deleted VM, SCHED-583
+/// 286 times, SCHED-586 192, each failure re-raising the owner's card. After
+/// [`PAUSE_ORPHAN_AFTER`] consecutive failures the harness pauses it
+/// (reversible: re-enable it, ideally after moving it to a live worker) and
+/// says so on the schedule and its card, instead of asking the owner again.
+pub fn should_pause_orphan(cause: &str, streak: i64) -> bool {
+    matches!(cause, "archived" | "unregistered") && streak >= PAUSE_ORPHAN_AFTER
+}
 /// The sender stamped on the queued notice: a system origin, not a worker.
 pub const SENDER: &str = "harness:scheduler";
 /// Lines of output carried in the notice.
@@ -475,6 +490,22 @@ async fn handle(
     let Some((streak, action, notice)) = slot.lock().expect("failure slot").take() else {
         return Ok(());
     };
+    // Before the dedupe below: a repeat of the same error is suppressed as a
+    // notice, but it still counts toward pausing an orphaned schedule.
+    if let (Verdict::Fail(f), Some(Route::Owner { cause })) = (&verdict, &route) {
+        if should_pause_orphan(cause, streak) {
+            let card = pause_orphan(store, &id, &worker, cause, streak, &f.error_line, now).await?;
+            tracing::warn!(schedule = %id, worker = %worker, cause = %cause, streak, card = %card,
+                verdict = "schedule_paused_owner_gone", measured = true, n_considered = 1,
+                "schedule kept failing and its worker is gone; the harness paused it");
+            if let Some(mut n) = notice {
+                n.route = "paused".into();
+                n.delivery = Some(if card.is_empty() { "paused".into() } else { card });
+                store_notice(store, &id, &n).await?;
+            }
+            return Ok(());
+        }
+    }
     let f = match (&verdict, action) {
         (_, Action::Reset) => {
             tracing::info!(schedule = %id, worker = %worker, verdict = "schedule_failure_streak_reset",
@@ -519,6 +550,68 @@ async fn handle(
         "schedule failed and its worker cannot be told; routed to the owner");
     notice.delivery = Some(card);
     store_notice(store, &id, &notice).await
+}
+
+/// Disable the schedule and close the harness's own open card for it with the
+/// reason. Returns that card's id, or "" when there was none.
+async fn pause_orphan(
+    store: &SharedStore,
+    id: &str,
+    worker: &str,
+    cause: &str,
+    streak: i64,
+    error_line: &str,
+    now: i64,
+) -> anyhow::Result<String> {
+    let note = format!(
+        "\n\n---\n{} Paused by the harness: {id} failed {streak} times in a row and its worker {worker} {}, \
+         so nobody can repair it. Last error: {}. Re-enable it in Scheduler once it has a live worker.",
+        fmt_ts(now),
+        cause_sentence(cause),
+        truncate(error_line, 200)
+    );
+    let (id_w, source_ref) = (id.to_string(), owner_card_ref(id));
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let slot_w = slot.clone();
+    store
+        .write_async(move |conn| {
+            use rusqlite::OptionalExtension;
+            conn.execute("UPDATE schedules SET enabled=0, updated=?2 WHERE id=?1", rusqlite::params![id_w, now])?;
+            let open: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM issues WHERE source_ref=?1 AND COALESCE(archived,0)=0 \
+                     AND status NOT IN ('done','verified','discarded') ORDER BY rowid DESC LIMIT 1",
+                    [&source_ref],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let mut events = vec![PendingEvent {
+                entity_type: amux_core::revision::EntityType::Schedule,
+                entity_id: id_w.clone(),
+                mutation: amux_core::revision::MutationKind::Updated,
+                payload: None,
+            }];
+            if let Some(card) = open {
+                // The card asked "fix it, move it, or disable it?"; the harness
+                // disabled it, so the question is answered.
+                conn.execute(
+                    "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
+                     rev = COALESCE(rev,0) + 1 WHERE id=?3",
+                    rusqlite::params![note, now, card],
+                )?;
+                events.push(PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Task,
+                    entity_id: card.clone(),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
+                });
+                *slot_w.lock().expect("card slot") = card;
+            }
+            Ok(WriteOutcome { applied: true, events })
+        })
+        .await?;
+    let card = slot.lock().expect("card slot").clone();
+    Ok(card)
 }
 
 async fn store_notice(store: &SharedStore, id: &str, n: &Notice) -> anyhow::Result<()> {
@@ -919,6 +1012,37 @@ mod tests {
         );
         let env = std::fs::read_to_string(crate::config::amux_home().join("sessions/mixpeek-funnel.env")).unwrap();
         assert!(env.contains("CC_ARCHIVED=1"), "the worker stays archived");
+    }
+
+    /// A schedule whose worker is archived is paused by the harness on its
+    /// third consecutive failure, and the owner card it raised is closed with
+    /// the reason (SCHED-640 had failed 572 times, 2026-10-15).
+    #[tokio::test]
+    async fn the_harness_pauses_a_schedule_whose_worker_is_gone() {
+        let (fx, _g) = fixture(&[("gs12-compute", "CC_ARCHIVED=1\n")]);
+        let store = fx.store.clone();
+        add(&store, sched("SCHED-640", "gs12-compute")).await;
+        let fail = exit(1, "ERROR: instance gs12-proof-2 was not found");
+        for _ in 0..2 {
+            on_run_outcome_with(&store, &sched("SCHED-640", "gs12-compute"), &fail, "cron-rs", &Up(false)).await;
+        }
+        let enabled = |store: SharedStore| async move {
+            store.read().unwrap().query_row("SELECT enabled FROM schedules WHERE id='SCHED-640'", [], |r| r.get::<_, i64>(0)).unwrap()
+        };
+        assert_eq!(enabled(store.clone()).await, 1, "two failures: still enabled, the owner card is open");
+        assert_eq!(owner_cards(&store, "SCHED-640").await.len(), 1);
+        on_run_outcome_with(&store, &sched("SCHED-640", "gs12-compute"), &fail, "cron-rs", &Up(false)).await;
+        assert_eq!(enabled(store.clone()).await, 0, "third failure: the harness paused it");
+        let cards = owner_cards(&store, "SCHED-640").await;
+        assert_eq!(cards.len(), 1, "no new card is raised");
+        assert_eq!(cards[0].1, "done", "the one owner card is closed");
+        let (status, desc): (String, String) = store.read().unwrap()
+            .query_row("SELECT status, \"desc\" FROM issues WHERE source_ref='sched-failure:SCHED-640'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(status, "done");
+        assert!(desc.contains("Paused by the harness") && desc.contains("instance gs12-proof-2 was not found"), "{desc}");
+        assert!(!should_pause_orphan("stopped", 50), "a stopped worker can come back; it is not paused");
+        assert!(!should_pause_orphan("isolated", 50));
     }
 
     /// The notice is system input about the worker's own schedule, so the

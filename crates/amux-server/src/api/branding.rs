@@ -331,8 +331,8 @@ pub async fn serve_asset(AxumPath(fname): AxumPath<String>) -> Response {
 // ---- GET /manifest.json (PUBLIC) --------------------------------------------
 
 pub async fn manifest(State(state): State<AppState>) -> Response {
-    let base = amux_dashboard::DashboardAssets::get("manifest.json")
-        .map(|f| f.data.into_owned())
+    let base = amux_dashboard::asset("manifest.json")
+        .map(|data| data.into_owned())
         .unwrap_or_else(|| b"{}".to_vec());
     let mut manifest: Value = serde_json::from_slice(&base).unwrap_or_else(|_| json!({}));
     // Best-effort override, like Python's try/except: a prefs read failure

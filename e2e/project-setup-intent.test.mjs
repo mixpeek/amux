@@ -83,7 +83,7 @@ test('directory viewer ignores older network and offline cache responses after n
  // offline path reads it again after a failure. Reads are matched by path, so
  // the test does not depend on how many reads a load makes.
  const nodes=new Map(),pending=[],renders=[],cache=[];
- const ctx=vm.createContext({document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:''});return nodes.get(id)}},history:{replaceState:()=>{}},location:{pathname:'/'},_encodeHashPath:s=>s,_updateFilesCwdBtn:()=>{},_filesToolbarCheck:()=>{},esc:s=>s,API:'',_filesShowHidden:false,_renderFilesEntries:(_body,path,data)=>renders.push({path,data}),_autoCacheDirFiles:()=>{},_idb:{setFile:()=>{},getFile:p=>new Promise(resolve=>cache.push({p,resolve}))},AbortSignal:{timeout:()=>undefined},fetch:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))});
+ const ctx=vm.createContext({document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:''});return nodes.get(id)}},history:{replaceState:()=>{}},location:{pathname:'/'},_encodeHashPath:s=>s,_updateFilesCwdBtn:()=>{},_filesToolbarCheck:()=>{},_feCrumbsHtml:()=>'',esc:s=>s,API:'',_filesShowHidden:false,_renderFilesEntries:(_body,path,data)=>renders.push({path,data}),_autoCacheDirFiles:()=>{},_idb:{setFile:()=>{},getFile:p=>new Promise(resolve=>cache.push({p,resolve}))},AbortSignal:{timeout:()=>undefined},fetch:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))});
  vm.runInContext(source.slice(source.indexOf('let _filesLoadGeneration ='),source.indexOf('function _feHighlight(')),ctx);
  const settle=()=>new Promise(resolve=>setImmediate(resolve));
  const answerCache=(p,value)=>{for(const c of cache)if(c.p===p)c.resolve(value)};

@@ -5962,3 +5962,24 @@ CARD: none (see above)
 SYMPTOM: I left the ethan browser at zapier.com/sign-up for Ethan to complete from the needsyou resume link; amux closed it after 6 min with no activity (window 5 min).
 COST: The owner's handoff window disappears before they open it, and the resume link points at nothing.
 FIX: Exempt a browser named by an open needsyou card's resume link from the activity reaper until the card leaves needsyou.
+
+## Semantic intake folds UNRELATED creates into the caller's newest open card
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-15
+SESSION: amux
+CARD: AMUX-4776
+SYMPTOM: Three creates in 20 minutes, each about different work (a Mac disk RCA, a
+  deploy CI gate, a PWA IndexedDB fix), all came back 200 with id AMUX-6047, a
+  backlog card about schedule-failure auto-fix. Intake appended or "updated" their
+  text into 6047's desc. AMUX-4776's entry above calls the 2026-09-17 folds
+  defensible (same work); these were not. The only open card the caller had was
+  6047, and every create was judged to be it.
+COST: About 12 tool calls: three wrong writes onto my own card, two desc_shrink_ack
+  cleanups, and reading board_intake.rs to learn that any STRUCTURED_KEYS field
+  (tags worked) forces a create. A caller that reads only `id` would have reported
+  three cards that never existed.
+FIX: When the caller has exactly one open candidate, require the comparison to name
+  shared work, not shared lane, before folding; and document `tags` (or a real
+  `create` opt-out) in the CLAUDE.md board recipe beside the 201/200 check.

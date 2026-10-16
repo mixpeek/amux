@@ -465,6 +465,9 @@ const OWNER_PRESENCE_TERMS: &[&str] = &[
     "withpersona.com", "passkey", "two-factor", "2fa", "one-time code",
     "your password", "his password", "owner's password", "biometric",
     "face id", "touch id", "in person",
+    // A sign-in is the owner typing credentials; no approval can do it. MC-1464
+    // (a GitHub sign-in ask) was refused as covered by SA-18, 2026-10-16.
+    "sign in", "sign-in", "sign back in", "signed back in", "log in again", "re-authenticate",
 ];
 
 /// Phrases that mean the ask reports a live INCIDENT. An incident page is the
@@ -540,28 +543,47 @@ pub fn match_ask(
     }
     let mut best: Option<(&StandingApproval, Vec<String>)> = None;
     let mut near: Vec<String> = Vec::new();
+    // MONEY IS ITS OWN CATEGORY, whatever the ask declared (mixpeek-cicd,
+    // 2026-10-16): MC-2176, "raise the compute ceiling from $13,345 to
+    // $13,609/month", was declared a decision and matched SA-9 ("switch landing
+    // to fast checks with revert-on-red"), a decision approval, on red/fast/
+    // check, and the reply told the lane "do not escalate this again". An ask
+    // that reads as a spend is answered only by a budget approval, whose
+    // max_amount_usd cap then applies.
+    let money = cats.contains("budget");
     for a in active {
-        let cat_ok = declared.as_deref() == Some(a.category.as_str())
-            || cats.contains(a.category.as_str());
+        let cat_ok = if money {
+            a.category == "budget"
+        } else {
+            declared.as_deref() == Some(a.category.as_str()) || cats.contains(a.category.as_str())
+        };
         if !cat_ok {
+            if money && a.category != "budget" {
+                near.push(format!("{}: the ask is a spend and this approval is not a budget approval", a.label()));
+            }
             continue;
         }
         if !a.require_terms.is_empty() {
             // Whole words only (AH-280): the prefix rule made the bare "chat"
             // in a sender name `<lane>@chat` satisfy SA-6's "chatgpt". A
             // precondition is a specific claim; a prefix of it is not one.
-            let req_ok = a.require_terms.iter().any(|r| {
+            // A LEARNED approval (source "card:<id>") is the owner's answer to
+            // ONE question, so its precondition must be in the ask itself, and
+            // ALL of its terms: they are three words lifted from that question
+            // and any one of them is often common ("red", "check", "mixpeek"),
+            // which is how SA-9 and SA-18 answered unrelated asks (2026-10-16).
+            // A written rule may find its terms in the card's context (SA-2's
+            // "prior state preserved" lives in the escalation's desc), any one.
+            let learned = a.source.starts_with("card:");
+            let has = |r: &String| {
                 let r = stem(r.trim());
-                // A LEARNED approval (source "card:<id>") is the owner's answer to
-                // ONE question, so its precondition must be in the ask itself; a
-                // written rule may find it in the card's context (SA-2's "prior
-                // state preserved" lives in the escalation's desc).
-                if a.source.starts_with("card:") {
-                    core_toks.contains(&r)
-                } else {
-                    ask_toks.contains(&r)
-                }
-            });
+                if learned { core_toks.contains(&r) } else { ask_toks.contains(&r) }
+            };
+            let req_ok = if learned {
+                a.require_terms.iter().all(has)
+            } else {
+                a.require_terms.iter().any(has)
+            };
             if !req_ok {
                 near.push(format!("{}: precondition not stated", a.label()));
                 continue;
@@ -1760,7 +1782,9 @@ mod learn_tests {
         let ask = "Decide the production shard change for the cloud front door, reported from lane@chat";
         let v = match_ask(&[sa6()], ask, Some("decision"), "x", &[], 1_790_000_100, &|_| 0);
         assert!(matches!(v, MatchVerdict::NoMatch { .. }), "\"chat\" is not \"chatgpt\": {}", v.verdict());
-        let ask2 = "Decide: should the ChatGPT directory listing go ahead for the cloud front door?";
+        // A learned approval needs all its terms (2026-10-16), so the real ask
+        // restates the owner's question in full: directory listing vs developer mode.
+        let ask2 = "Decide: should the ChatGPT directory listing go ahead for the cloud front door, or stay a developer-mode app?";
         let v2 = match_ask(&[sa6()], ask2, Some("decision"), "x", &[], 1_790_000_100, &|_| 0);
         assert!(matches!(v2, MatchVerdict::Applied { .. }), "the real ask still matches: {}", v2.verdict());
     }
@@ -1806,7 +1830,7 @@ mod learn_tests {
             scope: l.scope, granted_by: "owner".into(), granted_at: now, source: l.source,
             expires_at: Some(l.expires_at), revoked: false, revoked_at: None, revoked_by: None,
         };
-        let v = match_ask(std::slice::from_ref(&a), "Can you mint the Ethan Personal org API key again and store GTM_MIXPEEK_API_KEY?",
+        let v = match_ask(std::slice::from_ref(&a), "Can you mint the Ethan Personal org API key in Studio again and store it as GTM_MIXPEEK_API_KEY?",
             Some("credential"), "gtm-engine", &[], now, &|_| 0);
         assert!(matches!(v, MatchVerdict::Applied { .. }), "{v:?}");
         let v = match_ask(std::slice::from_ref(&a), "Can you rotate the NPM_TOKEN in the org's GitHub secrets?",
@@ -1875,6 +1899,51 @@ pub(crate) mod tests {
 
     fn m(text: &str, cat: Option<&str>, session: &str, used: i64) -> MatchVerdict {
         match_ask(&seeded(), text, cat, session, &[], 1000, &|_| used)
+    }
+
+    fn learned(id: i64, title: &str, cat: &str, terms: &[&str]) -> StandingApproval {
+        StandingApproval {
+            id,
+            title: title.into(),
+            allowed: title.into(),
+            category: cat.into(),
+            limits: String::new(),
+            max_per_day: None,
+            max_amount_usd: None,
+            require_terms: terms.iter().map(|t| t.to_string()).collect(),
+            scope: "global".into(),
+            granted_by: "ethan".into(),
+            granted_at: 0,
+            source: format!("card:X-{id}"),
+            expires_at: None,
+            revoked: false,
+            revoked_at: None,
+            revoked_by: None,
+        }
+    }
+
+    /// mixpeek-cicd, 2026-10-16: a spend declared as a decision, and a GitHub
+    /// sign-in, were each refused as already approved by an unrelated learned
+    /// approval that shared common words.
+    #[test]
+    fn a_spend_or_sign_in_is_never_answered_by_an_unrelated_learned_approval() {
+        let approvals = vec![
+            learned(9, "Want me to switch landing to fast checks with revert-on-red?", "decision", &["revert", "switch", "check"]),
+            learned(18, "May mixpeek-homepage-claude proceed with this: a promote of the production MVS server?", "decision", &["homepage", "mixpeek", "promote"]),
+        ];
+        let mm = |text: &str, cat: Option<&str>| match_ask(&approvals, text, cat, "mixpeek-cicd", &[], 1000, &|_| 0);
+        // MC-2176: money, declared a decision, sharing red/fast/check with SA-9.
+        let spend = "Raise the compute ceiling from $13,345 to at least $13,609/month so fast checks stay green when red runs revert, or switch ci-zero-ondemand back to max 1?";
+        assert!(matches!(mm(spend, Some("decision")), MatchVerdict::NoMatch { .. }), "a spend needs a budget approval");
+        // MC-1464: a sign-in ask that mentions mixpeek.
+        let sign_in = "Will you sign in to GitHub for the mixpeek org so I can promote the homepage deploy key?";
+        assert!(matches!(mm(sign_in, Some("decision")), MatchVerdict::NoMatch { .. }), "no approval performs a sign-in");
+        // One learned term is not the owner's question: all three must be stated.
+        let one_term = "May I promote the staging retriever config to production for mixpeek?";
+        assert!(matches!(mm(one_term, Some("decision")), MatchVerdict::NoMatch { .. }), "one common term of three is not a match");
+        // The question it was learned from still matches.
+        let same = "Want me to switch landing to fast checks with revert-on-red, so a red check reverts?";
+        assert!(matches!(mm(same, Some("decision")), MatchVerdict::Applied { .. } | MatchVerdict::CapReached { .. }), "{:?}", mm(same, Some("decision")));
     }
 
     #[test]
@@ -2184,7 +2253,8 @@ mod context_mark_tests {
         let with_ctx = format!("{ask}{CONTEXT_MARK}Worth your attention specifically: a production Anthropic key leaked; test suite red on main.");
         let v = match_ask(std::slice::from_ref(&sa5), &with_ctx, Some("decision"), "gs12-model", &[], 1_800_000_000, &|_| 0);
         assert!(v.applied().is_none(), "require_terms only in the context must not apply SA-5: {v:?}");
-        let stated = format!("{ask} Worth your attention specifically.{CONTEXT_MARK}");
+        // All three of a learned approval's terms, stated in the ask itself.
+        let stated = format!("{ask} Worth your attention specifically: the Anthropic key.{CONTEXT_MARK}");
         let v2 = match_ask(&[sa5], &stated, Some("decision"), "gs12-model", &[], 1_800_000_000, &|_| 0);
         assert!(!matches!(v2, MatchVerdict::NoMatch { ref reason } if reason.contains("precondition")), "stated in the ask, the precondition holds: {v2:?}");
     }

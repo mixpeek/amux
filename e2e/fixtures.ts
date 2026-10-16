@@ -51,6 +51,9 @@ const dashboardAssets = [
   ['AMUX_E2E_DASHBOARD_CSS', '**/app.css', 'text/css'],
   ['AMUX_E2E_DASHBOARD_HTML', '**/', 'text/html'],
   ['AMUX_E2E_STATE_KERNEL', '**/state/kernel.js', 'text/javascript'],
+  // The kernel fetches the command registry at runtime; pin a candidate one
+  // alongside a candidate kernel when the handlers changed.
+  ['AMUX_E2E_CONTROL_REGISTRY', '**/state/control-registry.json', 'application/json'],
 ].flatMap(([env, route, contentType]) => {
   const source = process.env[env];
   if (!source) return [];
@@ -62,6 +65,32 @@ const dashboardAssets = [
 
 export { expect };
 export type { Page };
+
+// THIRD-PARTY CDN ASSETS GATE THE PAGE "load" EVENT. index.html pulls about
+// twenty stylesheets and scripts from jsdelivr, unpkg and cdnjs, and
+// page.goto('/') waits for "load", which waits for every one of them. When one
+// CDN request stalls, the dashboard renders and works but "load" never fires,
+// so the test dies in page.goto at its own timeout with nothing pointing at the
+// network. Measured on main: run 38936517715 (settings.spec.ts:560, ios-safari)
+// has a trace whose only unfinished request is cdnjs's github-dark.min.css, and
+// run 38848402875 (peek-split-view-memory.spec.ts:170, desktop) shows the same
+// page.goto "waiting until load" timeout over a fully rendered dashboard.
+//
+// So each Playwright worker fetches a CDN URL once and serves later requests
+// from memory, which removes most of the live CDN traffic a shard makes, and a
+// fetch that has no answer after CDN_FETCH_TIMEOUT_MS is aborted with a
+// `[e2e] cdn-stall` line naming the URL. The abort lets "load" fire; a test
+// that genuinely needs the stalled library then fails on that, next to a log
+// line that says why, rather than as an unexplained navigation timeout.
+const CDN_URL = /^https:\/\/(?:cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com)\//;
+const CDN_FETCH_TIMEOUT_MS = 10_000;
+type CdnEntry = { status: number; headers: Record<string, string>; body: Buffer };
+const cdnCache = new Map<string, CdnEntry>();
+const cdnStats = { fetched: 0, served_from_cache: 0, stalled: 0 };
+process.on('exit', () => {
+  if (cdnStats.fetched + cdnStats.served_from_cache + cdnStats.stalled === 0) return;
+  console.log('[e2e] cdn cache: ' + JSON.stringify(cdnStats));
+});
 
 type Stub = { pattern: string; hits: number };
 type RouteOwner = Page;
@@ -155,6 +184,33 @@ export const test = base.extend({
         try { if (!localStorage.getItem('amux_walkthrough_done')) localStorage.setItem('amux_walkthrough_done', '1'); } catch (_) {}
       });
     }
+    await context.route(CDN_URL, async route => {
+      const url = route.request().url();
+      const hit = cdnCache.get(url);
+      if (hit) {
+        cdnStats.served_from_cache++;
+        return route.fulfill(hit);
+      }
+      const started = Date.now();
+      let response;
+      try {
+        response = await route.fetch({ timeout: CDN_FETCH_TIMEOUT_MS });
+      } catch (e) {
+        cdnStats.stalled++;
+        console.log(`[e2e] cdn-stall: ${url} gave no response in ${Date.now() - started}ms `
+          + `(${String(e).split('\n')[0]}); aborting it so the page "load" event still fires `
+          + `(test: ${testInfo.titlePath.join(' > ')})`);
+        return route.abort('timedout').catch(() => {});
+      }
+      cdnStats.fetched++;
+      // The fetched body is already decoded; drop the transfer headers that
+      // describe the encoded bytes.
+      const headers = { ...response.headers() };
+      for (const h of ['content-encoding', 'content-length', 'transfer-encoding']) delete headers[h];
+      const entry = { status: response.status(), headers, body: await response.body() };
+      if (response.ok()) cdnCache.set(url, entry);
+      return route.fulfill(entry);
+    });
     // A second tab must run the same candidate asset as the first. Page-only
     // overrides silently mixed the candidate outbox with the installed one.
     for (const asset of dashboardAssets) {

@@ -747,16 +747,23 @@ parse_claude_flags() {
 
 # ── Commands ─────────────────────────────────────────────────────────────────
 
+# A flag in the name slot is never a worker name (AMUX-3116). `amux register
+# --help` used to register a worker literally named "--help" in the cwd instead
+# of printing usage; a leading-dash name is a mistake, not an identifier. Same
+# guard the board verbs carry (see the `-*) die` case there). `amux exec`
+# lacked it until 2026-10-15, when `amux exec --help` registered and STARTED a
+# worker named "--help": every verb that creates a worker calls this.
+require_worker_name() {
+  local verb="$1" name="$2" usage="$3"
+  case "$name" in
+    ""|-h|--help|help) die "usage: $usage" ;;
+    -*) die "amux $verb: '$name' looks like a flag, not a worker name. Put the name first: amux $verb <name> [flags]" ;;
+  esac
+}
+
 cmd_register() {
   local name="${1:-}"
-  # A flag in the name slot is never a worker name (AMUX-3116). `amux register
-  # --help` used to register a worker literally named "--help" in the cwd instead
-  # of printing usage; a leading-dash name is a mistake, not an identifier. Same
-  # guard the board verbs carry (see the `-*) die` case there).
-  case "$name" in
-    ""|-h|--help|help) die "usage: amux register <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [--worktree] [--worktree-profile p[,p2]] [claude flags...]" ;;
-    -*) die "amux register: '$name' looks like a flag, not a worker name. Put the name first: amux register <name> [flags]" ;;
-  esac
+  require_worker_name register "$name" "amux register <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [--worktree] [--worktree-profile p[,p2]] [claude flags...]"
   shift
 
   # Worktree flags are amux's, not claude's: take them out before the rest is
@@ -1433,7 +1440,7 @@ sys.exit(0 if any(line.startswith("n/") and os.path.realpath(line[1:].strip().sp
 cmd_exec() {
   # Register + start in one step
   local name="${1:-}"
-  [[ -n "$name" ]] || die "usage: amux exec <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [claude flags...]"
+  require_worker_name exec "$name" "amux exec <name> [--model opus] [--yolo] [--dir /path] [--provider opencode] [claude flags...]"
   shift
 
   # amux owns --provider; strip it before the rest is parsed as claude flags.
@@ -3256,6 +3263,13 @@ except Exception:
     d = {}
 why = (d.get("error") or d.get("why") or "see the response above") if isinstance(d, dict) else "see the response above"
 code = d.get("code") if isinstance(d, dict) else None
+# The server says HOW to satisfy the gate in `why`; print it before the
+# one-line verdict, which stays last for `| tail -1`. Without it the evidence
+# gate read "requires evidence of what was run" and gave no form, and 70 closes
+# in one triage were refused for want of backticks (amux, 2026-10-16).
+how = d.get("why") if isinstance(d, dict) else None
+if how and how != why:
+    sys.stderr.write("amux board: why: %s\n" % str(how)[:400])
 sys.stderr.write("amux board: %s was NOT moved to %s: %s%s\n" % (os.environ["ID"], os.environ["W"], str(why)[:240], " [" + str(code) + "]" if code else ""))
 ' || true
     return "$rc"

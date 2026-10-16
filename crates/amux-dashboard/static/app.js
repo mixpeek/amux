@@ -1,39 +1,53 @@
-// ── localStorage write guard (disk RCA 2026-10-14) ──────────────────────────
+// ── localStorage write guard (disk RCA 2026-10-14, 2026-10-15) ──────────────
 // WebKit keeps localStorage in SQLite and appends every write to its WAL, which
 // it does not shrink while the app runs. The dashboard rewrote its caches on
 // every poll (sessions ~880KB, schedules ~850KB, message history ~780KB, board
 // ~360KB, the page itself ~310KB), and the macOS app's localStorage WAL reached
 // 13.7G, with an older install's at 57.9G. So: an identical value is never
-// rewritten, and a cache key (`*_cache`, `amux_app_html`) is written at most
-// once per 30s, its latest value flushed when the page hides. Counts are
-// beaconed as kind=localstorage-writes.
+// rewritten, and a cache key (`*_cache`, `amux_app_html`) or ANY value over
+// 16KB is written at most once per 5 min, its latest value flushed when the
+// page hides and returned by getItem meanwhile. The first version throttled
+// only by key name at 30s: on 2026-10-15 the app still wrote 172M chars per 10
+// min (amux_cmd_history 1.1MB, amux_interactions_v2 290KB rewritten whole on
+// every change) and its WAL reached 11G in 26h. Counts and the top keys by
+// bytes are beaconed as kind=localstorage-writes.
 (function () {
   try {
-    const ls = window.localStorage, P = Storage.prototype, set = P.setItem;
-    const st = window._lsWrites = { written: 0, written_bytes: 0, skipped_identical: 0, deferred: 0 };
+    const ls = window.localStorage, P = Storage.prototype, set = P.setItem, get = P.getItem;
+    const st = window._lsWrites = { written: 0, written_bytes: 0, skipped_identical: 0, deferred: 0, by_key: {} };
     const last = {}, pending = {};
-    const throttled = k => /_cache$/.test(k) || k === 'amux_app_html';
-    function flush() { for (const k in pending) { const v = pending[k]; delete pending[k]; last[k] = Date.now(); try { set.call(ls, k, v); st.written++; st.written_bytes += v.length; } catch (e) {} } }
+    const THROTTLE_MS = 300000, BIG = 16384;
+    const throttled = (k, v) => /_cache$/.test(k) || k === 'amux_app_html' || v.length > BIG;
+    const count = (k, v) => { st.written++; st.written_bytes += v.length; st.by_key[k] = (st.by_key[k] || 0) + v.length; };
+    function flush() { for (const k in pending) { const v = pending[k]; delete pending[k]; last[k] = Date.now(); try { set.call(ls, k, v); count(k, v); } catch (e) {} } }
+    P.getItem = function (k) {
+      if (this === ls && String(k) in pending) return pending[String(k)];
+      return get.call(this, k);
+    };
+    const remove = P.removeItem;
+    P.removeItem = function (k) { if (this === ls) delete pending[String(k)]; return remove.call(this, k); };
     P.setItem = function (k, v) {
       if (this !== ls) return set.call(this, k, v);
       k = String(k); v = String(v);
-      if (throttled(k)) {
+      if (throttled(k, v)) {
         const now = Date.now();
-        if (last[k] && now - last[k] < 30000) { if (!(k in pending)) st.deferred++; pending[k] = v; return; }
+        if (last[k] && now - last[k] < THROTTLE_MS) { if (!(k in pending)) st.deferred++; pending[k] = v; return; }
         last[k] = now; delete pending[k];
       }
-      try { if (ls.getItem(k) === v) { st.skipped_identical++; return; } } catch (e) {}
-      st.written++; st.written_bytes += v.length;
+      try { if (get.call(ls, k) === v) { st.skipped_identical++; return; } } catch (e) {}
+      count(k, v);
       return set.call(this, k, v);
     };
-    setInterval(flush, 30000);
+    setInterval(flush, THROTTLE_MS);
     addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
     setInterval(() => {
       if (!st.written && !st.skipped_identical && !st.deferred) return;
+      const top = Object.entries(st.by_key).sort((a, b) => b[1] - a[1]).slice(0, 5);
       try { fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-        body: JSON.stringify(Object.assign({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600 }, st)) }).catch(() => {}); } catch (e) {}
-      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0;
+        body: JSON.stringify({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600,
+          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top }) }).catch(() => {}); } catch (e) {}
+      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0; st.by_key = {};
     }, 600000);
   } catch (e) {}
 })();
@@ -7335,6 +7349,39 @@ function _reportWorkerActionParity(s) {
   } catch (e) {}
 }
 
+// A PRESS ON A WORKER CARD OUTLIVES THE RENDER THAT LANDS DURING IT.
+// render() rewrites the whole card list. When that lands between pointerdown
+// and pointerup, the press goes down on one node and comes up on its
+// replacement, the browser fires no click, and the tap on the card or its
+// menu button does nothing (ios-safari CI, run 38917609108: the menu button
+// press opened nothing, no card-menu-geo beacon, and the pressed button was
+// gone from the next DOM snapshot). The list now waits for the press to end
+// and renders once afterwards, on a timer so the click is dispatched first.
+// The 3s bound covers a pointerup the page never sees.
+let _cardsPressAt = 0, _cardsRenderDeferred = false, _cardsRenderDeferredN = 0;
+function _cardsPressActive() { return _cardsPressAt && performance.now() - _cardsPressAt < 3000; }
+document.addEventListener('pointerdown', e => {
+  if (e.target && e.target.closest && e.target.closest('#cards')) _cardsPressAt = performance.now();
+}, true);
+function _cardsPressEnd() {
+  if (!_cardsPressAt) return;
+  _cardsPressAt = 0;
+  if (!_cardsRenderDeferred) return;
+  _cardsRenderDeferred = false;
+  setTimeout(render, 0);
+}
+document.addEventListener('pointerup', _cardsPressEnd, true);
+document.addEventListener('pointercancel', _cardsPressEnd, true);
+function _cardsRenderDefer() {
+  _cardsRenderDeferred = true;
+  _cardsRenderDeferredN++;
+  if (_cardsRenderDeferredN === 1 || _cardsRenderDeferredN % 50 === 0) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'cards-render', verdict: 'deferred_during_press', measured: true,
+        n_considered: _cardsRenderDeferredN, ver: APP_VER }) }).catch(() => {});
+  }
+}
+
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -7360,6 +7407,7 @@ function render() {
   // Skip the CARD LIST render if a menu or edit overlay is open, to prevent
   // DOM clobbering.
   if (openMenu || editState || document.getElementById('edit-overlay').classList.contains('active')) return;
+  if (_cardsPressActive()) { _cardsRenderDefer(); return; }
   const el = document.getElementById('cards');
   // Skip re-render while user has focus inside any card input/textarea — prevents cursor reset and value loss
   const _active = document.activeElement;
@@ -11583,21 +11631,56 @@ async function _scopeEditSave() {
   }
 }
 
-// Board automation is configuration, so expose the runtime's actual switches
-// beside gates/status availability instead of scattering one in a card menu
-// and hiding the other two as environment-variable trivia. Each switch writes
-// the worker layer; Inherit removes that override and immediately re-resolves
-// global -> group -> worker precedence on the server.
-const _WORKER_BOARD_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Backlog → To Do', note: 'Pull the oldest eligible backlog card when To Do is empty. On by default; parked and human-owned cards stay put.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'To Do → In Progress', note: 'Claim the next eligible To Do card when the worker is idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal work', note: 'Re-check actionable blocked work instead of stopping early.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for To Do pickup and non-terminal continuation.' },
+// What each switch really does, audited against the server 2026-10-15. The
+// board can only type into a worker when "Board steers this worker" (force
+// adherence) is on, and the drive skips a worker entirely when pickup is off,
+// so Continue and Backlog refill are children of both. The old separate
+// "Pickup / continue master" (CC_STANDING_ORDERS) is no longer shown: turning
+// a child on turns it on server-side. `value` is the worker's own setting;
+// `active` says whether it takes effect, and a row that is set but blocked by
+// its parent says so instead of looking like it works.
+const _BOARD_SWITCHES = [
+  { field: 'board_decompose', value: 'board_decompose', own: null, group: 'Your messages',
+    label: 'Plan my messages onto the board',
+    note: 'Each message you send this worker is also turned into board cards in the background. The message itself still reaches the worker right away.' },
+  { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
+    label: 'Board steers this worker',
+    note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board only keeps records.' },
+  { field: 'board_auto_pickup', value: 'auto_pickup_raw', active: 'auto_pickup', own: 'auto_pickup_own', parents: ['board_force_adherence'],
+    label: 'Start To Do cards when idle',
+    note: 'When the worker goes idle it claims its next To Do card and starts on it.' },
+  { field: 'board_auto_continue', value: 'auto_continue_raw', active: 'auto_continue', own: 'auto_continue_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Keep going on unfinished cards',
+    note: 'When nothing is ready to start, an idle worker is nudged to finish its blocked or in-progress cards.' },
+  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own', parents: ['board_force_adherence', 'board_auto_pickup'],
+    label: 'Refill To Do from Backlog',
+    note: 'When To Do is empty, the oldest Backlog card this worker can do moves into To Do, so it is started next.' },
 ];
+
+// Own setting, effective state and the reason a set switch is not in effect,
+// computed once for every surface that shows these switches.
+function _boardSwitchStates(s, pending) {
+  pending = pending || {};
+  const iso = !!(s && s.isolated);
+  const own = (c) => c.field in pending ? pending[c.field]
+    : (s[c.value] === undefined && c.active ? s[c.active] === true : s[c.value] === true);
+  const out = {};
+  for (const c of _BOARD_SWITCHES) {
+    const parentsOn = (c.parents || []).every(p => out[p] && out[p].effective);
+    const selfOn = own(c) && (!c.active || c.field in pending || s[c.active] === true || s[c.active] === undefined);
+    out[c.field] = { own: own(c), effective: !iso && selfOn && parentsOn };
+  }
+  const labelOf = (f) => (_BOARD_SWITCHES.find(x => x.field === f) || {}).label || f;
+  for (const c of _BOARD_SWITCHES) {
+    const st = out[c.field];
+    const blockedBy = (c.parents || []).find(p => !out[p].effective);
+    st.why = (st.own && !iso && !st.effective)
+      ? (blockedBy ? 'Not active until \u201c' + labelOf(blockedBy) + '\u201d is on.' : 'Not active: turn it off and on again to enable it.')
+      : '';
+  }
+  return out;
+}
+const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
@@ -11776,14 +11859,17 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
+  const states = _boardSwitchStates(s);
   const rows = _WORKER_BOARD_CONFIGS.map(c => {
-    const on = s[c.value] !== false;
-    const own = !!s[c.own];
+    const on = states[c.field].own;
+    const own = !!(c.own && s[c.own]);
     return '<div class="worker-config-row">'
       + '<div class="worker-config-copy"><div class="worker-config-label">'
       + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
                               : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
-      + '</div><div class="worker-config-note">' + esc(c.note) + '</div></div><div class="worker-config-actions">'
+      + '</div><div class="worker-config-note">' + esc(c.note)
+      + (states[c.field].why ? '<span class="pbc-why" style="display:block;">' + esc(states[c.field].why) + '</span>' : '')
+      + '</div></div><div class="worker-config-actions">'
       + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
       + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
       + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
@@ -11794,7 +11880,7 @@ function _workerBoardConfigurationsHTML(name) {
       + '</div></div>';
   }).join('');
   return '<div class="worker-config-grid worker-config-grid-board">'
-    + _workerConfigurationSection('task-lifecycle', 'Task lifecycle', 'Controls automatic backlog → To Do → In Progress and continuation until terminal. Status availability and Board gates below define transition requirements.', [rows])
+    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'The same switches as the worker\u2019s Board tab. A switch that is on but held back by the one above it says so. Status availability and Board gates below define transition requirements.', [rows])
     + '</div>';
 }
 
@@ -11824,7 +11910,28 @@ async function _scopeLoad(scope, targetId) {
   // three in sequence and comparing; either one alone looks fine.
   if (!el || !sc || (sc.level !== 'global' && !sc.name)) return;
   const w = sc.name, lvl = sc.level;
-  el.textContent = 'Loading\u2026';
+  // ONE RENDER PER TARGET, NEWEST WINS. Several paths load the same panel
+  // close together (the restored Configurations tab, the tab click, a setting
+  // saved then refetched), and each used to blank it to "Loading" and write it
+  // again whenever its own fetches finished. An older load could land after a
+  // newer one and show the setting as it was before the save, and a control
+  // the owner was reaching for was replaced under the pointer (CI: "Element is
+  // not attached to the DOM" on the isolated switch, run 38821710436). A load
+  // that is no longer the newest for its panel now writes nothing, and a
+  // reload of the scope already shown keeps its rows until new markup differs.
+  const scopeKey = lvl + ':' + (w || '');
+  const gen = el._scopeGen = (el._scopeGen || 0) + 1;
+  const stale = () => {
+    if (el._scopeGen === gen) return false;
+    _scopeLoadSuperseded++;
+    if (_scopeLoadSuperseded === 1 || _scopeLoadSuperseded % 50 === 0) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'scope-render', verdict: 'superseded_load_discarded', measured: true,
+          n_considered: _scopeLoadSuperseded, ver: APP_VER }) }).catch(() => {});
+    }
+    return true;
+  };
+  if (el.dataset.scopeKey !== scopeKey) { el.textContent = 'Loading\u2026'; el._scopeHtml = ''; el.dataset.scopeKey = scopeKey; }
   try {
     const r = await fetch(API + '/api/scope?level=' + encodeURIComponent(lvl)
                           + (lvl === 'global' ? '' : '&name=' + encodeURIComponent(w)),
@@ -12004,18 +12111,24 @@ async function _scopeLoad(scope, targetId) {
     h += '<div class="scope-bp" id="' + _bpId + '" data-level="' + esc(lvl) + '" data-name="' + esc(w || '') + '"></div>';
     const _vaultId = 'scope-vault-' + lvl + '-' + String(w || 'global').replace(/[^A-Za-z0-9_-]/g, '_');
     h += '<div class="scope-vault" id="' + _vaultId + '"></div>';
-    const dst = document.getElementById(targetId || 'peek-scope-body') || el;
-    dst.innerHTML = h;
+    if (stale()) return;
+    // Identical markup keeps the live nodes rather than replacing them with
+    // copies of themselves. The browser-profile and vault sections own their
+    // own reads and divs, so they refresh either way.
+    if (el._scopeHtml !== h) { el.innerHTML = h; el._scopeHtml = h; }
     _scopeBpLoad(lvl, w || '', _bpId);
     _scopeVaultLoad(lvl, w || '', _vaultId);
   } catch (e) {
-    const dst = document.getElementById(targetId || 'peek-scope-body') || el;
-    dst.textContent = 'Could not load configurations: ' + e.message;
+    if (stale()) return;
+    el.textContent = 'Could not load configurations: ' + e.message;
+    el._scopeHtml = '';
+    el.dataset.scopeKey = '';
   }
 }
+let _scopeLoadSuperseded = 0;
 
 // ── Vault secrets in the Scope tab (AMUX-5375): names and where they come
-// from, never values. Editing lives in Settings -> Vault, one place for it.
+// from, never values. Editing lives on the Vault page, one place for it.
 async function _scopeVaultLoad(lvl, name, id) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -12026,19 +12139,19 @@ async function _scopeVaultLoad(lvl, name, id) {
     if (!r.ok) throw new Error(d.why_unmeasured || d.error || r.status);
     const rows = lvl === 'worker'
       ? (d.resolved || []).map(x => '<li><code>' + esc(x.key) + '</code> · from ' + esc(_vaultScopeLabel(x))
+          + ' · v' + esc(String(x.version || 1)) + ' ' + _vaultStateBadge(x.state)
           + (x.shadows?.length ? ' <span class="ui-help">(overrides ' + x.shadows.map(s => esc(_vaultScopeLabel(s))).join(', ') + ')</span>' : '') + '</li>')
       : (d.items || []).filter(i => i.scope === lvl && (lvl === 'global' || i.target === String(name).toLowerCase() || i.target === name))
           .map(i => '<li><code>' + esc(i.key) + '</code></li>');
     el.innerHTML = '<div class="settings-section-label">Vault secrets</div>'
       + (rows.length ? '<ul class="scope-vault-list">' + rows.join('') + '</ul>'
         : '<p class="ui-help">' + (lvl === 'worker' ? 'This worker receives no vault secrets.' : 'None set at this scope.') + '</p>')
-      + '<button class="btn" onclick="event.stopPropagation();_scopeVaultManage()">Manage in Settings \u2197</button>';
+      + ((d.revoked_held || []).length ? '<p class="ui-help vault-warn">Deleted or moved, still in the running process until restart: ' + d.revoked_held.map(esc).join(', ') + '</p>' : '')
+      + '<button class="btn" onclick="event.stopPropagation();_scopeVaultManage(\'' + escJs(lvl) + '\',\'' + escJs(name) + '\')">Manage in Vault \u2197</button>';
   } catch (e) { el.innerHTML = '<p class="ui-help">Vault secrets unavailable: ' + esc(e.message || String(e)) + '</p>'; }
 }
-function _scopeVaultManage() {
-  document.getElementById('settings-menu')?.classList.add('open');
-  _settingsTab('integrations');
-  setTimeout(() => document.getElementById('vault-secrets')?.scrollIntoView({ block: 'start' }), 60);
+function _scopeVaultManage(lvl, name) {
+  openVault('secrets', lvl === 'worker' ? { worker: name } : lvl === 'group' ? { group: name } : null);
 }
 
 // ── Browser profile access editor (AMUX-5307) ────────────────────────────
@@ -12604,11 +12717,11 @@ function _steeringRender() {
   const row = m => {
     const ago = timeAgo(m.queued_at);
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
-    const hasDelay = m.delay_after_idle_s > 0 && !m.system;
-    const delayTag = hasDelay ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Click to remove delay">DELAYED ${_formatDelay(m.delay_after_idle_s)} idle ✕</span>` : '';
+    const hasDelay = m.deliver_at > Date.now() / 1000 && !m.system;
+    const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border:0;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
     const pendTag = m.pending ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${m.error ? 'Needs review' : online ? 'Awaiting server' : 'Saved offline'}</span>` : '';
     const dis = m.pending ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
-    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery until idle">⏱</button>` : '';
+    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
     return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
         ${(sysTag || delayTag || pendTag) ? `<div style="margin-bottom:4px;">${sysTag}${delayTag}${pendTag}</div>` : ''}
@@ -12684,24 +12797,31 @@ function _steeringUpdateBadge() {
   else { badge.textContent = ''; badge.classList.remove('has-count'); }
 }
 
+// "Delivers 6:15 PM", with the day when it is not today.
+function _steerDeliverLabel(at) {
+  const d = new Date(at * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  if (d.toDateString() === now.toDateString()) return 'Delivers ' + time;
+  return 'Delivers ' + d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'}) + ' ' + time;
+}
+// Schedule (delaySecs > 0) or clear (0) a queued message's delivery time. The
+// row is updated in place from the server's answer, so the tag appears now
+// rather than at the next session poll.
 async function _steeringSetDelay(msgId, delaySecs) {
   if (!peekSession) return;
+  const forSess = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(forSess) + '/steer', {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: msgId, delay_after_idle_s: delaySecs})
+      body: JSON.stringify({id: msgId, delay_s: delaySecs})
     });
-    if (r.ok) {
-      const sess = sessions.find(s => s.name === peekSession);
-      if (sess && sess._steerQueue) {
-        const row = sess._steerQueue.find(m => m.id === msgId);
-        if (row) row.delay_after_idle_s = delaySecs;
-      }
-      _steeringRender();
-      if (delaySecs > 0) showToast('Delay set: delivers after ' + _formatDelay(delaySecs) + ' idle');
-      else showToast('Delay removed');
-    }
-  } catch(e) {}
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(r.status === 404 ? 'Already delivered' : 'Could not change the delay: ' + (d.error || r.status)); fetchSessions(); return; }
+    const row = (sessions.find(s => s.name === forSess)?.steering || []).find(m => m.id === msgId);
+    if (row) row.deliver_at = d.deliver_at || null;
+    if (peekSession === forSess) _steeringRender();
+    showToast(d.deliver_at ? _steerDeliverLabel(d.deliver_at) + ', at the worker\'s next pause after that' : 'Delay removed: delivers at the next pause');
+  } catch(e) { showToast('Could not change the delay'); }
 }
 function _steeringDelayPrompt(msgId) {
   const bg = document.createElement('div');
@@ -12709,35 +12829,34 @@ function _steeringDelayPrompt(msgId) {
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;display:flex;align-items:center;justify-content:center;';
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:340px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.4);';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-label', 'Delay delivery');
   box.innerHTML = `<div style="font-weight:600;margin-bottom:12px;">Delay delivery</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:0.85rem;">
-      <label style="color:var(--dim);white-space:nowrap;">Deliver after idle for</label>
-      <input id="steer-dp-val" type="number" min="1" value="2" style="width:56px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:0.85rem;text-align:center;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85rem;">
+      <label for="steer-dp-val" style="color:var(--dim);white-space:nowrap;">Deliver in</label>
+      <input id="steer-dp-val" type="number" min="1" step="1" inputmode="numeric" value="2" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:16px;text-align:center;">
       <select id="steer-dp-unit" style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:0.85rem;">
         <option value="60">min</option>
         <option value="3600" selected>hours</option>
       </select>
     </div>
+    <div id="steer-dp-when" style="font-size:0.78rem;color:var(--dim);margin-bottom:16px;"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" id="steer-dp-cancel" style="font-size:0.82rem;">Cancel</button>
       <button class="btn primary" id="steer-dp-set" style="font-size:0.82rem;">Set delay</button>
     </div>`;
   bg.appendChild(box);
   document.body.appendChild(bg);
+  const val = box.querySelector('#steer-dp-val'), unit = box.querySelector('#steer-dp-unit');
+  const secs = () => Math.max(1, Math.round(Number(val.value) || 0)) * (parseInt(unit.value) || 3600);
+  // Say the clock time before it is set, so "2 hours" is never a guess.
+  const preview = () => { box.querySelector('#steer-dp-when').textContent = _steerDeliverLabel(Date.now() / 1000 + secs()) + ', then at the worker\'s next pause.'; };
+  val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
-  box.querySelector('#steer-dp-set').onclick = () => {
-    const v = parseInt(box.querySelector('#steer-dp-val').value) || 1;
-    const u = parseInt(box.querySelector('#steer-dp-unit').value) || 3600;
-    bg.remove();
-    _steeringSetDelay(msgId, v * u);
-  };
+  box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
-}
-
-function _formatDelay(s) {
-  if (s >= 3600) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return m ? h+'h '+m+'m' : h+'h'; }
-  if (s >= 60) return Math.floor(s/60) + 'm';
-  return s + 's';
 }
 
 async function _steeringSendNow(msgId) {
@@ -13464,25 +13583,17 @@ function renderPeekIssues() {
 // configurations should be toggles on the worker details board tab contents").
 // Renders both the message-routing policy (decompose, force adherence) and the
 // task lifecycle automation (_WORKER_BOARD_CONFIGS) as toggle rows.
-const _PEEK_BOARD_ALL_CONFIGS = [
-  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
-    label: 'Auto-drain backlog', note: 'Pull the oldest eligible backlog card when To Do is empty.' },
-  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
-    label: 'Auto-pickup', note: 'Claim the next To Do card when idle.' },
-  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
-    label: 'Continue non-terminal', note: 'Re-check actionable blocked work.' },
-  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
-    label: 'Pickup / continue master', note: 'Master switch for pickup and continuation.' },
-  { field: 'board_decompose', value: 'board_decompose', own: null,
-    label: 'Decompose onto board', note: 'Messages are planned onto the board in the background.' },
-  { field: 'board_force_adherence', value: 'board_force_adherence', own: null,
-    label: 'Force board adherence', note: 'Board drives this worker; messages become cards.' },
-];
+const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // A toggle being saved keeps the value the owner just set. Every board refresh
 // re-ran this render from `sessions`, which still held the OLD value until the
 // save and the session refetch came back, so an unchecked box flipped back
 // (Ethan, 2026-10-04: "when I uncheck these they revert back").
 const _pbcPending = {};
+// The switches sit in the shared settings-fold accordion, collapsed by default
+// (Ethan, 2026-10-16: "make this an accordion collapsed by default"). Open/closed
+// is remembered per worker so a board refresh, which rebuilds the panel, does
+// not snap it shut under the owner's cursor.
+const _pbcFoldOpen = {};
 function _peekBoardPolicySync() {
   const el = document.getElementById('peek-board-config');
   if (!el) return;
@@ -13496,23 +13607,33 @@ function _peekBoardPolicySync() {
   if (iso) {
     h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
+  // The DOM is the truth for open/closed: `toggle` fires a task after the click,
+  // so a rebuild landing in between would otherwise read the old value and snap
+  // the panel shut (CI caught it on dd7d2b635). Only this worker's fold counts.
+  const curFold = el.querySelector('details.pbc-fold');
+  if (curFold && curFold.dataset.session === peekSession) _pbcFoldOpen[peekSession] = curFold.open;
+  const states = _boardSwitchStates(s, _pbcPending);
+  const nOn = iso ? 0 : _PEEK_BOARD_ALL_CONFIGS.filter(c => states[c.field].own).length;
+  h += '<details class="settings-fold pbc-fold" data-session="' + esc(peekSession) + '"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
+    + ' ontoggle="_pbcFoldOpen[\'' + q + '\']=this.open"><summary><span class="pbc-fold-title">Board settings</span>'
+    + '<span class="ui-help">' + nOn + ' of ' + _PEEK_BOARD_ALL_CONFIGS.length + ' on</span></summary>';
+  let group = '';
   for (const c of _PEEK_BOARD_ALL_CONFIGS) {
-    const on = !iso && (c.field in _pbcPending ? _pbcPending[c.field] : s[c.value] !== false);
-    const own = c.own ? !!s[c.own] : false;
+    if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
+    const on = !iso && states[c.field].own;
+    const isOwn = c.own ? !!s[c.own] : false;
     const dis = iso ? ' disabled' : '';
-    // Checkbox FIRST, beside its own label (Ethan, 2026-10-04: "when I
-    // uncheck these they revert back"). It sat at the far right of its half
-    // of the two-column panel, which on a wide screen is directly left of the
-    // NEXT row's label: the box beside "Auto-pickup" was Auto-drain's, so the
-    // click changed a different setting and the one he meant never moved.
-    h += '<label class="pbc-row' + (iso ? ' pbc-disabled' : '') + '" data-field="' + esc(c.field) + '">'
+    const why = states[c.field].why;
+    h += '<label class="pbc-row' + (c.parents ? ' pbc-child' : '') + (iso ? ' pbc-disabled' : '') + (why ? ' pbc-blocked' : '') + '" data-field="' + esc(c.field) + '">'
       + '<input type="checkbox"' + (on ? ' checked' : '') + dis
       + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
-      + '<span class="pbc-label">' + esc(c.label)
-      + (own ? ' <span class="pbc-own">override</span>' : '')
-      + '</span>'
-      + '</label>';
+      + '<span class="pbc-text"><span class="pbc-label">' + esc(c.label)
+      + (isOwn ? ' <span class="pbc-own" title="Set on this worker, overriding its group or global setting">override</span>' : '')
+      + '</span><span class="pbc-help">' + esc(c.note) + '</span>'
+      + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
+      + '</span></label>';
   }
+  h += '</details>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).
@@ -13535,7 +13656,7 @@ async function togglePeekBoardPolicy(field, on) {
       // still overwrites this with the server's effective value.
       const c = _PEEK_BOARD_ALL_CONFIGS.find(x => x.field === field);
       const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
-      if (c && s) { s[c.value] = !!on; if (c.own) s[c.own] = true; }
+      if (c && s) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
     }
     await fetchSessions().catch(() => {});
   } finally {
@@ -14287,7 +14408,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1527';   // bump together with the sw.js CACHE version
+const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16126,34 +16247,12 @@ function _psfRenderEntries(dirPath, data) {
   const hdrs = document.getElementById('psf-col-headers');
   if (hdrs) hdrs.style.display = '';
   body.innerHTML = '';
-  if (data.parent && data.parent !== data.path) {
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
-    back.onclick = () => _psfLoad(data.parent);
-    body.appendChild(back);
-  }
+  if (data.parent && data.parent !== data.path) body.appendChild(_feParentRow(() => _psfLoad(data.parent)));
   const sorted = _psfSortEntries(data.entries);
-  for (const entry of sorted) {
-    const entryPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
-    const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
-    const icon = _fileTypeIcon(entry.name, entry.type);
-    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    const ep = entryPath.replace(/'/g, "\\'");
-    row.innerHTML =
-      `<div class="fe-cell-name">${icon}<span>${esc(entry.name)}${slash}</span></div>` +
-      `<div class="fe-cell-size">${sizeStr}</div>` +
-      `<div class="fe-cell-date">${dateStr}</div>` +
-      `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">&#x22EF;</button></div>`;
-    row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
-    body.appendChild(row);
-  }
-  if (!data.entries.length) {
-    body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
-  }
+  const psfOpts = { openDir: _psfLoad, openFile: _psfViewFile, singleClickOpens: true };
+  for (const entry of sorted) body.appendChild(_feBuildRow(entry, dirPath, 0, '', psfOpts));
+  if (!data.entries.length) body.appendChild(_feEmptyRow('Empty folder'));
+  _fselApply();
 }
 
 async function _psfLoad(dirPath) {
@@ -18798,7 +18897,7 @@ function _closePeekMore() {
 let _peekMsgIndex = -1;
 let _peekMsgNavKind = 'all';
 let _peekMsgNavContent = 'any';
-const _PEEK_SOURCE_LABELS = {all:'Everyone', human:'Human', session:'Workers', schedule:'Scheduled', amux:'Harness', unstamped:'Unstamped', unknown:'Unclassified'};
+const _PEEK_SOURCE_LABELS = {all:'Everyone', human:'Human', chat:'Chat', session:'Workers', schedule:'Scheduled', amux:'Harness', unstamped:'Unstamped', unknown:'Unclassified'};
 const _PEEK_CONTENT_LABELS = {any:'Any message', board:'Board references', files:'Files', links:'Links'};
 function _peekFiltersActive() { return _peekMsgNavKind !== 'all' || _peekMsgNavContent !== 'any'; }
 // True when the visible count depends on prompt KIND, which is the only part
@@ -20469,7 +20568,7 @@ async function steerSession(name, text, identity = {}, opts = {}) {
   identity.msg_id = crypto.randomUUID();
   try {
     const payload = {text, record_history:true, msg_id:identity.msg_id};
-    if (opts.delay_after_idle_s > 0) payload.delay_after_idle_s = opts.delay_after_idle_s;
+    if (opts.delay_s > 0) payload.delay_s = opts.delay_s;
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)
@@ -23301,6 +23400,7 @@ function _msgKind(e) {
   const t = (typeof e === 'string' ? '' : (e.type || '')).toLowerCase();
   if (t === 'session') return 'session';
   if (t === 'schedule') return 'schedule';
+  if (t === 'chat') return 'chat';
   if (t === 'system') return 'amux';   // amux's own nudges, not a person
   // A send that went in via raw tmux while the server was unreachable, and was
   // reconciled into the trail afterwards by the CLI (AMUX-2670). It MUST NOT
@@ -23450,6 +23550,9 @@ function _fmtDur(ms) {
 }
 const _MSG_KIND = {
   human:    { label: 'Human',     color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
+  // Typed into a worker's Chat tab (stored type "chat"), kept apart from the
+  // terminal so the Messages tab can show and filter it (Ethan, 2026-10-14).
+  chat:     { label: 'Chat',      color: '#db61a2', bg: 'rgba(219,97,162,0.14)' },
   session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
   schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
   amux:     { label: 'amux',      color: '#8b949e', bg: 'rgba(139,148,158,0.14)' },
@@ -23467,7 +23570,7 @@ const _MSG_KIND = {
   // nothing on screen.
   unknown:  { label: 'Unclassified', color: '#d29922', bg: 'rgba(210,153,34,0.14)' },
 };
-const _MSG_KIND_ORDER = ['human', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
+const _MSG_KIND_ORDER = ['human', 'chat', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
 // Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
 // calling it gets the canonical kind.
 function _msgOrigin(e) { return _msgKind(e); }
@@ -26263,6 +26366,7 @@ const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'she
 const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
 const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
 let _univerLoading = null;
+const _UNIVER_LOAD_BUDGET_MS = 30000;
 let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
 
 function _loadScriptOnce(src) {
@@ -26297,7 +26401,11 @@ function _univerShimReact() {
 function _loadUniver() {
   if (_univerLoading) return _univerLoading;
   const U = 'https://unpkg.com/';
-  const v = p => (p === 'themes' || p === 'protocol') ? '' : '@' + _UNIVER_V;
+  // Every package at the same release. themes and protocol were unversioned,
+  // so they resolved through a redirect to whatever is latest (1.0.4 on
+  // 2026-10-16) while core@1.0.3 declares both at exactly 1.0.3.
+  const pending = new Set();
+  const track = src => { pending.add(src); return _loadScriptOnce(src).then(() => { pending.delete(src); }); };
   _univerLoading = (async () => {
     for (const p of _UNIVER_CSS) {
       const href = U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/index.css';
@@ -26306,17 +26414,31 @@ function _loadUniver() {
         document.head.appendChild(l);
       }
     }
-    await _loadScriptOnce(U + 'react@18.3.1/umd/react.production.min.js');
-    await _loadScriptOnce(U + 'react-dom@18.3.1/umd/react-dom.production.min.js');
-    _univerShimReact();
-    const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
-      U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
-      ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + v(p) + '/lib/umd/index.js'),
-      ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
-      ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
-      U + 'exceljs@4.4.0/dist/exceljs.min.js'];
-    // Ordered, but fetched in parallel: async=false keeps execution order.
-    await Promise.all(rest.map(_loadScriptOnce));
+    // NEVER WAIT FOREVER. A script whose load event never fires used to leave
+    // "Loading spreadsheet editor…" on screen with no fallback and no signal
+    // (ios-safari CI run 38777481347: every editor script was fetched with a
+    // 200, the raw workbook was never requested, the body never changed for
+    // 45 s). A stall now rejects, which shows the read-only viewer and posts
+    // the existing xlsx-editor fallback beacon naming the scripts that never
+    // reported loaded.
+    let stallTimer = null;
+    const stall = new Promise((_, reject) => {
+      stallTimer = setTimeout(() => reject(new Error('spreadsheet editor scripts did not load within '
+        + (_UNIVER_LOAD_BUDGET_MS / 1000) + 's: ' + [...pending].map(x => x.replace(U, '')).join(', '))), _UNIVER_LOAD_BUDGET_MS);
+    });
+    try {
+      await Promise.race([track(U + 'react@18.3.1/umd/react.production.min.js'), stall]);
+      await Promise.race([track(U + 'react-dom@18.3.1/umd/react-dom.production.min.js'), stall]);
+      _univerShimReact();
+      const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
+        U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
+        ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/index.js'),
+        ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
+        ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
+        U + 'exceljs@4.4.0/dist/exceljs.min.js'];
+      // Ordered, but fetched in parallel: async=false keeps execution order.
+      await Promise.race([Promise.all(rest.map(track)), stall]);
+    } finally { clearTimeout(stallTimer); }
     if (!window.UniverCore || !window.ExcelJS) throw new Error('spreadsheet editor did not initialise');
   })();
   _univerLoading.catch(() => { _univerLoading = null; });
@@ -27145,13 +27267,14 @@ function _filesSetSort(col) {
     const { path, data, cacheTs } = _filesLastData;
     _renderFilesEntries(document.getElementById('files-body'), path, data, cacheTs);
   }
+  // The MDAI tab lists folders through the same view and sort.
+  if (typeof activeView !== 'undefined' && activeView === 'mdai' && document.getElementById('mdai-fe-body')) _mdaiRenderList();
 }
 
 function _filesUpdateSortHeaders() {
   const arrow = _filesSort.dir === 1 ? '↑' : '↓';
-  ['name','size','modified'].forEach(col => {
-    const el = document.getElementById('fe-hdr-' + col);
-    if (!el) return;
+  document.querySelectorAll('#fe-col-headers [data-sort-col], #mdai-view [data-sort-col]').forEach(el => {
+    const col = el.dataset.sortCol;
     const sorted = _filesSort.col === col;
     el.classList.toggle('sorted', sorted);
     const existing = el.querySelector('.fe-sort-arrow');
@@ -27708,15 +27831,7 @@ async function loadFiles(path) {
   const srch = document.getElementById('files-search'); if (srch) srch.value = '';
   _updateFilesCwdBtn();
   // Breadcrumb
-  const parts = path.split('/').filter(Boolean);
-  let crumbHtml = '<span class="fe-crumb" onclick="loadFiles(\'/\')">/</span>';
-  let cum = '';
-  for (const part of parts) {
-    cum += '/' + part;
-    const cp = cum;
-    crumbHtml += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="loadFiles(\'' + cp.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
-  }
-  document.getElementById('files-breadcrumb').innerHTML = crumbHtml;
+  document.getElementById('files-breadcrumb').innerHTML = _feCrumbsHtml(path, 'loadFiles');
   _filesToolbarCheck();
   // CACHE FIRST (Ethan, 2026-10-04, offline on a phone: "this should load
   // offline cached locally"). The saved listing was only read after the
@@ -27755,14 +27870,67 @@ function _feHighlight(name, q) {
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
   return esc(name).replace(re, m => `<mark style="background:rgba(99,102,241,0.25);color:inherit;border-radius:2px;">${m}</mark>`);
 }
+// The parts of a directory listing every file view shares: the Files tab, the
+// Split view's file panel and the MDAI tab all render a folder through these
+// and _feBuildRow, so a folder looks and behaves the same wherever it appears
+// (Ethan, 2026-10-16: "this should be the same file directory / file view as
+// any other file view"). Add a hook here rather than a parallel listing.
+//
+// Breadcrumb: "/ > a > b", each segment calling window[fnName](absPath).
+function _feCrumbsHtml(path, fnName) {
+  const go = p => fnName + '(' + JSON.stringify(p).replace(/"/g, '&quot;') + ')';
+  let html = '<span class="fe-crumb" onclick="' + go('/') + '">/</span>';
+  let cum = '';
+  for (const part of String(path || '/').split('/').filter(Boolean)) {
+    cum += '/' + part;
+    html += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="' + go(cum) + '">' + esc(part) + '</span>';
+  }
+  return html;
+}
+// The ".. (parent)" row.
+function _feParentRow(onOpen) {
+  const back = document.createElement('div');
+  back.className = 'fe-back-row';
+  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
+  back.onclick = onOpen;
+  return back;
+}
+// The empty-folder / no-match line.
+function _feEmptyRow(text) {
+  const msg = document.createElement('div');
+  msg.className = 'fe-empty';
+  msg.style.cssText = 'padding:20px;color:var(--dim);font-size:0.83rem;text-align:center;';
+  msg.textContent = text;
+  return msg;
+}
+// The status bar text: "2 folders, 5 files", or the search result count.
+function _feStatusText(entries, q) {
+  if (q) return `${entries.length} result${entries.length !== 1 ? 's' : ''} for "${q}"`;
+  const dirs = entries.filter(e => e.type === 'dir').length;
+  const files = entries.length - dirs;
+  const parts = [];
+  if (dirs) parts.push(dirs + (dirs === 1 ? ' folder' : ' folders'));
+  if (files) parts.push(files + (files === 1 ? ' file' : ' files'));
+  return parts.join(', ') || 'Empty folder';
+}
 // Build one file-explorer row. Dirs get an expand chevron (inline accordion) AND
 // still navigate on row click; `depth` indents nested rows.
-function _feBuildRow(entry, parentPath, depth, q) {
+// One row builder for every file list (the Files tab and the Split view's
+// file panel; Explore stamps the same data-path/data-type on its rows), so the
+// shared multi-select below works the same everywhere. `opts.openDir` and
+// `opts.openFile` say what opening means in the hosting view.
+function _feBuildRow(entry, parentPath, depth, q, opts) {
+  opts = opts || {};
+  const openDir = opts.openDir || loadFiles;
+  const openFile = opts.openFile || openFilePreview;
   const entryPath = parentPath.replace(/\/$/, '') + '/' + entry.name;
   const row = document.createElement('div');
   row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
   row.dataset.depth = depth;
   row.dataset.path = entryPath;
+  row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+  row._feOpts = opts;
+  if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
   const nameHtml = _feHighlight(entry.name, q);
   const icon = _fileTypeIcon(entry.name, entry.type);
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
@@ -27780,17 +27948,23 @@ function _feBuildRow(entry, parentPath, depth, q) {
     `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
   if (entry.type === 'dir') {
     // Folders open on a single click on every device (fast, and mobile-friendly).
-    row.onclick = () => loadFiles(entryPath);
+    row.onclick = () => openDir(entryPath);
   } else if (_feTouchDevice()) {
     // Touch: a single tap opens the file. Mobile-first, no hover or double-tap.
-    row.onclick = () => openFilePreview(entryPath);
+    row.onclick = () => openFile(entryPath);
   } else {
     // Desktop pointer: single click selects the row, double-click opens it in the
-    // existing viewer, matching a familiar OS file manager. openFilePreview is
-    // unchanged; this only changes what gesture triggers it.
-    row.title = 'Double-click to open';
-    row.onclick = () => _feSelectRow(row);
-    row.ondblclick = () => openFilePreview(entryPath);
+    // existing viewer, matching a familiar OS file manager.
+    // A host can keep single-click-to-open (the Split view's narrow preview
+    // panel always worked that way); selection there is Cmd/Ctrl/Shift-click
+    // and long-press, which the capture listener below handles for every list.
+    if (opts.singleClickOpens) {
+      row.onclick = () => openFile(entryPath);
+    } else {
+      row.title = 'Double-click to open';
+      row.onclick = (ev) => _fselClick(row, ev || {});
+      row.ondblclick = () => openFile(entryPath);
+    }
   }
   return row;
 }
@@ -27801,11 +27975,189 @@ function _feTouchDevice() {
 }
 // Single-selection highlight for the file list (desktop). Clears any prior
 // selection so exactly one row is highlighted, like a desktop file manager.
-function _feSelectRow(row) {
-  const body = document.getElementById('files-body');
-  if (body) body.querySelectorAll('.fe-row.fe-selected').forEach(r => r.classList.remove('fe-selected'));
-  row.classList.add('fe-selected');
+function _feSelectRow(row) { _fselClick(row, {}); }
+
+// ── Multi-select for file lists (Ethan, 2026-10-15: "make it so I can select
+// multiple files/dirs and have commands for applying across multiple ...
+// familiar to users"). Finder and Google Drive gestures: click selects one,
+// Cmd/Ctrl-click toggles, Shift-click selects a range, Cmd/Ctrl+A selects all,
+// Esc clears; on touch, long-press enters selection and taps then toggle. One
+// selection at a time, in whichever list it was made. A bar at the bottom
+// carries the commands: Copy paths, Download, Move to..., Delete.
+const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body';
+const _fsel = { root: null, paths: new Set(), anchor: null, mode: false, suppressClick: false };
+function _fselRowsIn(root) { return root ? [...root.querySelectorAll('[data-path][data-type]')] : []; }
+function _fselClick(row, ev) {
+  const root = row.closest(_FSEL_ROOTS);
+  if (!root) return;
+  if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); _fsel.anchor = null; }
+  const path = row.dataset.path;
+  if (ev.shiftKey && _fsel.anchor) {
+    const rows = _fselRowsIn(root).map(r => r.dataset.path);
+    const a = rows.indexOf(_fsel.anchor), b = rows.indexOf(path);
+    if (a >= 0 && b >= 0) {
+      if (!(ev.metaKey || ev.ctrlKey)) _fsel.paths.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) _fsel.paths.add(rows[i]);
+    }
+  } else if (ev.metaKey || ev.ctrlKey || _fsel.mode) {
+    _fsel.paths.has(path) ? _fsel.paths.delete(path) : _fsel.paths.add(path);
+    _fsel.anchor = path;
+  } else {
+    _fsel.paths.clear(); _fsel.paths.add(path); _fsel.anchor = path;
+  }
+  if (!_fsel.paths.size) _fsel.mode = false;
+  _fselApply();
 }
+function _fselClear() {
+  _fsel.paths.clear(); _fsel.anchor = null; _fsel.mode = false;
+  _fselApply();
+}
+function _fselSelectAll(root) {
+  _fsel.root = root; _fsel.paths = new Set(_fselRowsIn(root).map(r => r.dataset.path));
+  _fselApply();
+}
+// Re-applied after any list re-render, so a selection survives a refresh of
+// the rows that are still there and drops the ones that are gone.
+function _fselApply() {
+  document.querySelectorAll('.fsel-selected').forEach(r => r.classList.remove('fsel-selected'));
+  const root = _fsel.root && document.contains(_fsel.root) ? _fsel.root : null;
+  if (!root) { _fsel.paths.clear(); _fsel.mode = false; }
+  const present = new Set();
+  _fselRowsIn(root).forEach(r => { if (_fsel.paths.has(r.dataset.path)) { r.classList.add('fsel-selected'); present.add(r.dataset.path); } });
+  _fsel.paths = present;
+  document.querySelectorAll(_FSEL_ROOTS).forEach(el => el.classList.toggle('fsel-mode', el === root && (_fsel.mode || present.size > 1)));
+  _fselRenderBar();
+}
+function _fselSelected() {
+  const root = _fsel.root;
+  return _fselRowsIn(root).filter(r => _fsel.paths.has(r.dataset.path)).map(r => ({ path: r.dataset.path, type: r.dataset.type }));
+}
+function _fselRefreshView() {
+  const id = _fsel.root && _fsel.root.id;
+  if (id === 'files-body') _fileViewRefresh();
+  else if (id === 'psf-body') _psfLoad(_peekSplitPath || '/');
+  else if (id === 'explore-body') loadExplore(_explorePath);
+}
+function _fselRenderBar() {
+  let bar = document.getElementById('fsel-bar');
+  const n = _fsel.paths.size;
+  // One selected row is ordinary single selection: the bar appears from two,
+  // or as soon as touch selection mode is on.
+  if (!n || (n < 2 && !_fsel.mode)) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'fsel-bar'; bar.className = 'fsel-bar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Selected files');
+    document.body.appendChild(bar);
+  }
+  const files = _fselSelected().filter(e => e.type === 'file').length;
+  bar.innerHTML = '<span class="fsel-count">' + n + ' selected</span>'
+    + '<button class="btn" onclick="_fselCopyPaths()">Copy paths</button>'
+    + '<button class="btn" onclick="_fselDownload()"' + (files ? '' : ' disabled title="Folders cannot be downloaded"') + '>Download' + (files && files < n ? ' ' + files : '') + '</button>'
+    + '<button class="btn" onclick="_fselMove()">Move to\u2026</button>'
+    + '<button class="btn fsel-danger" onclick="_fselDelete()">Delete</button>'
+    + '<button class="btn fsel-close" onclick="_fselClear()" title="Clear selection (Esc)" aria-label="Clear selection">\u2715</button>';
+}
+function _fselBeacon(action, ok, failed) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'file-bulk-action', action, ok, failed, view: (_fsel.root && _fsel.root.id) || '', measured: true, n_considered: ok + failed, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+}
+// Run one request per item and report what actually happened, never a bare
+// "done": a partial failure names the items that failed and why.
+async function _fselEach(items, fn) {
+  const failed = [];
+  let ok = 0;
+  for (const it of items) {
+    try { const why = await fn(it); if (why) failed.push(it.path.split('/').pop() + ' (' + why + ')'); else ok++; }
+    catch (e) { failed.push(it.path.split('/').pop() + ' (' + e.message + ')'); }
+  }
+  return { ok, failed };
+}
+function _fselReport(verb, items, res) {
+  _fselBeacon(verb, res.ok, res.failed.length);
+  if (!res.failed.length) showToast(verb + ' ' + res.ok + ' item' + (res.ok === 1 ? '' : 's'));
+  else showToast(verb + ' ' + res.ok + ' of ' + items.length + '. Failed: ' + res.failed.slice(0, 3).join(', ') + (res.failed.length > 3 ? ' and ' + (res.failed.length - 3) + ' more' : ''));
+}
+async function _fselCopyPaths() {
+  const paths = _fselSelected().map(e => e.path);
+  try { await navigator.clipboard.writeText(paths.join('\n')); showToast('Copied ' + paths.length + ' paths'); _fselBeacon('copy_paths', paths.length, 0); }
+  catch (e) { showToast('Copy failed: ' + e.message); }
+}
+async function _fselDownload() {
+  const items = _fselSelected().filter(e => e.type === 'file');
+  const res = await _fselEach(items, async it => { await _downloadFileBytes(API + '/api/file/raw?path=' + encodeURIComponent(it.path), it.path.split('/').pop()); });
+  _fselReport('Downloaded', items, res);
+}
+async function _fselMove() {
+  const items = _fselSelected();
+  const here = items.length ? items[0].path.slice(0, items[0].path.lastIndexOf('/')) || '/' : '/';
+  const dest = (prompt('Move ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' to folder:', here) || '').trim();
+  if (!dest || dest === here) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: it.path, new_name: it.path.split('/').pop(), dest_dir: dest }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok && d.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Moved', items, res);
+  _fselClear(); _fselRefreshView();
+}
+async function _fselDelete() {
+  const items = _fselSelected();
+  const names = items.slice(0, 5).map(e => e.path.split('/').pop() + (e.type === 'dir' ? '/' : '')).join('\n');
+  if (!confirm('Delete ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '? This cannot be undone.\n\n' + names + (items.length > 5 ? '\n\u2026and ' + (items.length - 5) + ' more' : ''))) return;
+  const res = await _fselEach(items, async it => {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: it.path }) });
+    const d = await r.json().catch(() => ({}));
+    return r.ok ? '' : (d.error || ('HTTP ' + r.status));
+  });
+  _fselReport('Deleted', items, res);
+  _fselClear(); _fselRefreshView();
+}
+// Modifier clicks and touch selection mode reach every list, including the ones
+// whose rows open on a plain click (Split view, Explore): caught in capture so
+// the row's own open never runs for a selection gesture.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+  if (!row || e.target.closest('button, a, input')) return;
+  if (_fsel.suppressClick) { _fsel.suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
+  const inMode = _fsel.mode && _fsel.root === row.closest(_FSEL_ROOTS);
+  if (!(e.metaKey || e.ctrlKey || e.shiftKey || inMode)) return;
+  e.preventDefault(); e.stopPropagation();
+  _fselClick(row, e);
+}, true);
+// Touch: a long-press starts selection mode with that row selected.
+(function () {
+  let timer = null, startX = 0, startY = 0;
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+    if (!row || e.target.closest('button, a, input')) return;
+    startX = e.clientX; startY = e.clientY;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      const root = row.closest(_FSEL_ROOTS);
+      if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); }
+      _fsel.mode = true; _fsel.paths.add(row.dataset.path); _fsel.anchor = row.dataset.path;
+      _fsel.suppressClick = true;
+      try { navigator.vibrate && navigator.vibrate(10); } catch (err) {}
+      _fselApply();
+    }, 500);
+  }, true);
+  const cancel = (e) => { if (timer && (e.type !== 'pointermove' || Math.hypot(e.clientX - startX, e.clientY - startY) > 10)) { clearTimeout(timer); timer = null; } };
+  ['pointerup', 'pointercancel', 'pointermove'].forEach(t => document.addEventListener(t, cancel, true));
+})();
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const root = _fsel.root && document.contains(_fsel.root) && _fsel.root.offsetParent ? _fsel.root : null;
+  // Esc with a selection only clears it, as in Finder: it used to reach the
+  // worker view's own Esc handler too and close the whole view.
+  if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
+  if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
+}, true);
 // Navigate to the parent of the current Files-tab folder (the "Up" action).
 function _filesUp() {
   const p = (_filesPath || '/').replace(/\/+$/, '');
@@ -27843,7 +28195,8 @@ async function _feToggleExpand(btn) {
   const list = q ? (data.entries || []).filter(e => e.name.toLowerCase().includes(q)) : (data.entries || []);
   const entries = _filesSortEntries(list);
   let anchor = row;
-  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q); anchor.after(child); anchor = child; }
+  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q, row._feOpts); anchor.after(child); anchor = child; }
+  _fselApply();
   row.classList.add('fe-expanded'); btn.classList.add('open');
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
@@ -27871,29 +28224,13 @@ function _renderFilesEntries(body, path, data, cacheTs) {
 
   // Status bar
   const statusEl = document.getElementById('fe-status');
-  if (statusEl) {
-    const dirs = entries.filter(e => e.type === 'dir').length;
-    const files = entries.filter(e => e.type !== 'dir').length;
-    const parts = [];
-    if (dirs) parts.push(dirs + (dirs === 1 ? ' folder' : ' folders'));
-    if (files) parts.push(files + (files === 1 ? ' file' : ' files'));
-    statusEl.textContent = q ? `${entries.length} result${entries.length !== 1 ? 's' : ''} for "${q}"` : (parts.join(', ') || 'Empty folder');
-  }
+  if (statusEl) statusEl.textContent = _feStatusText(entries, q);
 
   // ".. up" row
-  if (!q && data.parent && data.parent !== data.path) {
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
-    back.onclick = () => loadFiles(data.parent);
-    body.appendChild(back);
-  }
+  if (!q && data.parent && data.parent !== data.path) body.appendChild(_feParentRow(() => loadFiles(data.parent)));
 
   if (!entries.length) {
-    const msg = document.createElement('div');
-    msg.style.cssText = 'padding:20px;color:var(--dim);font-size:0.83rem;text-align:center;';
-    msg.textContent = q ? `No results for "${q}"` : 'Empty folder';
-    body.appendChild(msg);
+    body.appendChild(_feEmptyRow(q ? `No results for "${q}"` : 'Empty folder'));
     return;
   }
 
@@ -27906,6 +28243,7 @@ function _renderFilesEntries(body, path, data, cacheTs) {
   body.ondragleave = () => body.classList.remove('files-drop-active');
   body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleFilesUpload(e.dataTransfer.files); };
   _feMarkDownloaded();   // async: flag rows whose file is downloaded on this device
+  _fselApply();
 }
 
 // Add a green ⤓ badge to each file row that is DOWNLOADED (cached) on this
@@ -28439,104 +28777,6 @@ function _mdaiRelPath(absFile, baseDir) {
   for (let k = i; k < a.length; k++) parts.push(a[k]);
   return parts.join('/') || '.';
 }
-// A YAML double-quoted scalar: always valid, so arbitrary prompt/path text
-// (colons, quotes, newlines) round-trips safely without a YAML library.
-function _mdaiYq(s) {
-  return '"' + String(s == null ? '' : s)
-    .replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    .replace(/\r/g, '').replace(/\n/g, '\\n').replace(/\t/g, '\\t') + '"';
-}
-// Unquote a simple YAML scalar (plain, single- or double-quoted). Handles the
-// escapes _mdaiYq emits; a value it cannot confidently read is returned verbatim.
-function _mdaiUnq(v) {
-  v = String(v == null ? '' : v).trim();
-  if (!v) return '';
-  if (v.length >= 2 && v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') {
-    return v.slice(1, -1).replace(/\\(["\\ntr])/g, (m, c) => c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '' : c);
-  }
-  if (v.length >= 2 && v.charAt(0) === "'" && v.charAt(v.length - 1) === "'") {
-    return v.slice(1, -1).replace(/''/g, "'");
-  }
-  return v;
-}
-// Split leading `---`-delimited frontmatter from the body, mirroring the Rust
-// parser: an opening `---` with no close is treated as no frontmatter.
-function _mdaiSplitFront(text) {
-  text = String(text == null ? '' : text).replace(/^\uFEFF/, '');
-  const lines = text.split('\n');
-  if ((lines[0] || '').trim() !== '---') return { front: null, body: text };
-  const fm = []; let i = 1, closed = false;
-  for (; i < lines.length; i++) {
-    const t = lines[i].replace(/\s+$/, '');
-    if (t === '---' || t === '...') { closed = true; i++; break; }
-    fm.push(lines[i]);
-  }
-  if (!closed) return { front: null, body: text };
-  return { front: fm, body: lines.slice(i).join('\n') };
-}
-// Parse a .mdai document into {ok, model, sources, body}. `ok` is false when the
-// frontmatter carries a shape this lightweight parser will not safely rewrite
-// (flow sequences, block scalars, unknown top-level keys). The node view then
-// shows edges read-only and routes edits to the raw file editor.
-function _mdaiParse(text) {
-  const { front, body } = _mdaiSplitFront(text);
-  if (front === null) return { ok: true, model: null, sources: [], body: body };
-  let model = null, ok = true;
-  const sources = [];
-  let i = 0;
-  while (i < front.length) {
-    const line = front[i];
-    const t = line.trim();
-    if (t === '' || t.charAt(0) === '#') { i++; continue; }
-    const mm = line.match(/^model\s*:\s*(.*)$/);
-    if (mm) { model = _mdaiUnq(mm[1]) || null; i++; continue; }
-    const sm = line.match(/^sources\s*:\s*(.*)$/);
-    if (sm) {
-      const rest = sm[1].trim();
-      if (rest === '[]') { i++; continue; }
-      if (rest !== '') { ok = false; i++; continue; }   // flow sequence, bail
-      i++;
-      while (i < front.length) {
-        const l = front[i];
-        if (l.trim() !== '' && /^\S/.test(l) && !/^\s*-/.test(l)) break; // next top-level key
-        const dash = l.match(/^(\s*)-\s?(.*)$/);
-        if (dash) {
-          const after = dash[2];
-          if (after === '') { sources.push({ path: '', prompt: '' }); }
-          else {
-            const kv = after.match(/^([A-Za-z0-9_]+)\s*:\s*(.*)$/);
-            if (kv) { const e = { path: '', prompt: '' }; e[kv[1]] = _mdaiUnq(kv[2]); sources.push(e); }
-            else { sources.push({ path: _mdaiUnq(after), prompt: '' }); }  // bare string
-          }
-        } else if (/^\s+\S/.test(l)) {
-          const kv = l.trim().match(/^([A-Za-z0-9_]+)\s*:\s*(.*)$/);
-          if (kv && sources.length) sources[sources.length - 1][kv[1]] = _mdaiUnq(kv[2]);
-          else ok = false;
-        } else if (l.trim() !== '') { ok = false; }
-        i++;
-      }
-      continue;
-    }
-    if (/^\S/.test(line)) ok = false;   // an unknown top-level key we would clobber
-    i++;
-  }
-  for (const s of sources) { if (s.path == null) s.path = ''; if (s.prompt == null) s.prompt = ''; }
-  return { ok, model, sources, body };
-}
-// Re-emit a full .mdai document from parsed state, canonical and always valid.
-function _mdaiSerialize(cur) {
-  let fm = '---\n';
-  if (cur.model && String(cur.model).trim()) fm += 'model: ' + _mdaiYq(cur.model) + '\n';
-  if (!cur.sources || !cur.sources.length) fm += 'sources: []\n';
-  else {
-    fm += 'sources:\n';
-    for (const s of cur.sources) fm += '- path: ' + _mdaiYq(s.path) + '\n  prompt: ' + _mdaiYq(s.prompt || '') + '\n';
-  }
-  fm += '---\n';
-  const body = cur.body || '';
-  return fm + body + (body.endsWith('\n') ? '' : '\n');
-}
-
 // ── The MDAI tab (global list of every .mdai node) ──
 let _mdaiRootPath;   // cached mdai_root pref (the local.amux folder), '' if unset
 // ===== Connectors (integrations) tab =====
@@ -29584,211 +29824,338 @@ function _mdaiAmuxLabel(p) {
   const m = String(p).match(/^amux:([a-z_]+)(?:\?(.*))?$/);
   if (!m) return p;
   const q = new URLSearchParams(m[2] || '');
-  const days = q.get('days');
-  return days ? (/^(all|none|0)$/.test(days) ? 'All time' : 'Last ' + days + ' days') : 'Last 14 days';
+  const days = q.get('days'), lim = q.get('limit') || q.get('count'), off = q.get('offset'), kb = q.get('kb');
+  const win = days ? (/^(all|none|0)$/.test(days) ? 'All time' : 'Last ' + days + ' days') : (lim || off ? 'All time' : 'Last 14 days');
+  return win + (lim ? ' · newest ' + lim : '') + (off && off !== '0' ? ' · skip ' + off : '') + (kb ? ' · ' + kb + ' KB' : '');
 }
 // Run ids are global across nodes; people count a node's own runs.
 function _mdaiRunNo(run) {
   const i = _mdaiHist.indexOf(run);
   return i < 0 ? '' : String(Math.max(1, (_mdaiCur && _mdaiCur.runsTotal || _mdaiHist.length) - i));
 }
-function _mdaiStatusOf(run) {
-  if (!run) return { cls: 'none', label: 'Not run yet' };
-  if (run.status === 'error') return { cls: 'bad', label: 'Failed' };
-  if (run.cached) return { cls: 'ok', label: 'Completed (cached)' };
-  return { cls: 'ok', label: 'Completed' };
+
+// ---- Shared helpers -----------------------------------------------------------
+// The server owns the .mdai format (GET/PUT /api/files/mdai/doc): it parses with
+// the engine's own parser and writes one canonical layout, keeping keys this
+// page does not know. So every field below is a form control, and nothing here
+// parses YAML.
+let _mdaiListFilter = '';
+let _mdaiActive = null;        // GET /active snapshot for the open node
+let _mdaiPollT = null;
+let _mdaiStarting = false;     // a Run click is in flight (double-click guard)
+let _mdaiEditMode = 'write';   // Edit tab: write | preview | raw
+let _mdaiBodyDraft = null;     // unsaved instruction text, or null when clean
+let _mdaiSrcEd = {};           // source editor state per form prefix
+let _mdaiFormErr = null;       // {field, msg} from the last refused save
+let _mdaiPendingDoc = null;    // the doc a refused save tried to write: the form keeps showing it
+let _mdaiPendingName = null;   // the file name a refused save tried to rename to
+
+function _mdaiStatusInfo(status, cached, err) {
+  if (status === 'running') return { cls: 'run', label: 'Running' };
+  if (status === 'timeout') return { cls: 'bad', label: 'Timed out' };
+  if (status === 'cancelled') return { cls: 'warn', label: 'Cancelled' };
+  if (status === 'error') return { cls: 'bad', label: 'Failed' };
+  if (status === 'ok') return { cls: 'ok', label: cached ? 'Completed (cached)' : 'Completed' };
+  return { cls: 'none', label: 'Not run yet' };
+}
+function _mdaiElapsed(ms) {
+  if (ms == null) return '';
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+}
+function _mdaiModelOptions(cur) {
+  const known = ['haiku', 'sonnet', 'opus'];
+  const custom = cur && !known.includes(cur);
+  return '<option value=""' + (cur ? '' : ' selected') + '>Default</option>'
+    + known.map(k => '<option value="' + k + '"' + (cur === k ? ' selected' : '') + '>' + k + '</option>').join('')
+    + '<option value="__custom"' + (custom ? ' selected' : '') + '>Other model id…</option>';
+}
+function _mdaiModelPick(sel, inputId) {
+  const inp = document.getElementById(inputId);
+  if (inp) { inp.style.display = sel.value === '__custom' ? '' : 'none'; if (sel.value === '__custom') inp.focus(); }
+}
+function _mdaiModelRead(selId, inputId) {
+  const sel = document.getElementById(selId), inp = document.getElementById(inputId);
+  if (!sel) return null;
+  if (sel.value === '__custom') return (inp && inp.value.trim()) || null;
+  return sel.value || null;
+}
+function _mdaiFieldErr(field) {
+  return _mdaiFormErr && _mdaiFormErr.field === field ? '<div class="mdai-bad mdai-field-err" role="alert">' + esc(_mdaiFormErr.msg) + '</div>' : '';
+}
+async function _mdaiJson(url, method, body) {
+  const r = await fetch(API + url, { method, headers: _authHeaders({ 'Content-Type': 'application/json' }), body: body == null ? undefined : JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  return { r, d };
 }
 
-// ---- List page: the MDAI folder as a directory, like Files and Scratchpad ----
-let _mdaiDirPath = null;       // folder shown; null = the MDAI root
-let _mdaiDirData = null;       // last /api/ls payload for it
-let _mdaiDirGen = 0;
-let _mdaiDirSort = { col: 'modified', dir: -1 };
+// ---- Source editor (Create page and Sources tab) --------------------------------
+// One row per source. An amux message source is edited as its bounds (window,
+// limit, offset), never as a query string; a file, folder or node as a path.
+function _mdaiMsgParse(path) {
+  const m = String(path || '').match(/^amux:messages(?:\?(.*))?$/);
+  if (!m) return null;
+  const q = new URLSearchParams(m[1] || '');
+  const limit = q.get('limit') || q.get('count') || '', offset = q.get('offset') || '', kb = q.get('kb') || '';
+  let days = q.get('days');
+  if (days == null) days = (limit || offset) ? 'all' : '14';
+  if (/^(none|0)$/.test(days)) days = 'all';
+  return { days, limit, offset, kb };
+}
+function _mdaiMsgPath(b) {
+  const q = ['days=' + (b.days || '14')];
+  if (b.limit) q.push('limit=' + b.limit);
+  if (b.offset && String(b.offset) !== '0') q.push('offset=' + b.offset);
+  if (b.kb) q.push('kb=' + b.kb);
+  return 'amux:messages?' + q.join('&');
+}
+function _mdaiSrcKind(path) {
+  if (/^amux:/.test(path || '')) return 'messages';
+  if (/\.mdai$/i.test(path || '')) return 'mdai';
+  return 'path';
+}
+function _mdaiSrcInit(prefix, sources) {
+  _mdaiSrcEd[prefix] = (sources || []).map(s => ({ kind: _mdaiSrcKind(s.path), path: s.path || '', prompt: s.prompt || '' }));
+}
+function _mdaiSrcSync(prefix) {
+  const list = _mdaiSrcEd[prefix] || [];
+  list.forEach((s, i) => {
+    const g = id => document.getElementById(prefix + '-' + id + '-' + i);
+    if (!g('prompt')) return;
+    s.prompt = g('prompt').value;
+    if (s.kind === 'messages') {
+      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim() });
+    } else s.path = g('path').value.trim();
+  });
+  return list;
+}
+function _mdaiSrcAdd(prefix, kind) {
+  _mdaiSrcSync(prefix);
+  const s = { kind, path: kind === 'messages' ? 'amux:messages?days=30' : '', prompt: '' };
+  (_mdaiSrcEd[prefix] = _mdaiSrcEd[prefix] || []).push(s);
+  _mdaiSrcRender(prefix);
+  const i = _mdaiSrcEd[prefix].length - 1;
+  setTimeout(() => { const el = document.getElementById(prefix + '-' + (kind === 'messages' ? 'days' : 'path') + '-' + i); if (el) el.focus(); }, 0);
+}
+function _mdaiSrcRemove(prefix, i) {
+  _mdaiSrcSync(prefix);
+  (_mdaiSrcEd[prefix] || []).splice(i, 1);
+  _mdaiSrcRender(prefix);
+}
+function _mdaiSrcRender(prefix) {
+  const host = document.getElementById(prefix + '-sources');
+  if (host) host.innerHTML = _mdaiSrcHtml(prefix);
+}
+function _mdaiSrcHtml(prefix) {
+  const list = _mdaiSrcEd[prefix] || [];
+  const edges = prefix === 'src' ? ((_mdaiGraph && _mdaiGraph.sources) || []) : [];
+  const nodes = ((_mdaiListData && _mdaiListData.files) || []).filter(f => !_mdaiCur || _mdaiAbs(f.path) !== _mdaiCur.abs);
+  const dl = '<datalist id="' + prefix + '-mdai-list">' + nodes.map(f => '<option value="' + esc(f.path) + '">').join('') + '</datalist>';
+  const rows = list.map((s, i) => {
+    const id = n => prefix + '-' + n + '-' + i;
+    const e = edges[i] && edges[i].raw === s.path ? edges[i] : null;
+    const label = s.kind === 'messages' ? 'Amux message history' : s.kind === 'mdai' ? 'Another .mdai node' : 'File or folder';
+    let fields = '';
+    if (s.kind === 'messages') {
+      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '' };
+      const dayOpt = (v, t) => '<option value="' + v + '"' + (String(b.days) === v ? ' selected' : '') + '>' + t + '</option>';
+      const known = ['7', '14', '30', '90', 'all'];
+      fields = '<div class="mdai-msg-bounds">'
+        + '<label class="mdai-lbl">Window<select class="input" id="' + id('days') + '">' + dayOpt('7', 'Last 7 days') + dayOpt('14', 'Last 14 days') + dayOpt('30', 'Last 30 days') + dayOpt('90', 'Last 90 days') + dayOpt('all', 'All time')
+        + (known.includes(String(b.days)) ? '' : dayOpt(String(b.days), 'Last ' + esc(b.days) + ' days')) + '</select></label>'
+        + '<label class="mdai-lbl">Newest messages<input class="input" type="number" min="1" max="4000" inputmode="numeric" id="' + id('limit') + '" value="' + esc(b.limit) + '" placeholder="4000 (max)"></label>'
+        + '<label class="mdai-lbl">Skip newest<input class="input" type="number" min="0" max="20000" inputmode="numeric" id="' + id('offset') + '" value="' + esc(b.offset) + '" placeholder="0"></label>'
+        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label></div>'
+        + '<div class="mdai-hint">Your own messages across every worker, newest kept first. At most 4000 messages and the size above (default 120 KB, up to 600 KB) reach the model; anything older is cut and the prompt says so. Skip newest pages back through older history.</div>';
+    } else {
+      fields = '<label class="mdai-lbl">Path<input class="input" id="' + id('path') + '" value="' + esc(s.path) + '" placeholder="' + (s.kind === 'mdai' ? 'other.mdai' : 'notes/ or plan.md') + '"' + (s.kind === 'mdai' ? ' list="' + prefix + '-mdai-list"' : '') + ' autocomplete="off"></label>'
+        + '<div class="mdai-hint">Relative to this node\'s folder.' + (e && e.kind === 'missing' ? ' <span class="mdai-bad">Not found.</span>' : '') + '</div>';
+    }
+    return '<div class="mdai-src" data-kind="' + s.kind + '"><div class="mdai-src-h"><span class="mdai-src-ico">' + _mdaiSrcIcon(s.kind === 'messages' ? 'amux' : s.kind === 'mdai' ? 'mdai' : 'file') + '</span>'
+      + '<span class="mdai-src-kind">' + (i + 1) + '. ' + label + '</span>'
+      + (e && e.kind === 'mdai' ? '<button type="button" class="btn" onclick="openMdaiNode(' + _mdaiQ(e.path) + ')">Open</button>' : '')
+      + '<button type="button" class="btn" onclick="_mdaiSrcRemove(' + _mdaiQ(prefix) + ',' + i + ')" aria-label="Remove source ' + (i + 1) + '">Remove</button></div>'
+      + fields
+      + '<label class="mdai-lbl">Edge prompt<span class="mdai-hint">How the model should use this source. Empty uses the default.</span><textarea class="input" rows="2" id="' + id('prompt') + '">' + esc(s.prompt) + '</textarea></label></div>';
+  }).join('');
+  return (list.length ? rows : '<div class="mdai-src-none">No sources yet. The model will only see the instruction.</div>')
+    + '<div class="mdai-add-row">'
+    + '<button type="button" class="btn" onclick="_mdaiSrcAdd(' + _mdaiQ(prefix) + ',\'messages\')">+ Amux message history</button>'
+    + '<button type="button" class="btn" onclick="_mdaiSrcAdd(' + _mdaiQ(prefix) + ',\'path\')">+ File or folder</button>'
+    + '<button type="button" class="btn" onclick="_mdaiSrcAdd(' + _mdaiQ(prefix) + ',\'mdai\')">+ Another .mdai</button></div>' + dl;
+}
+
+// ---- List page --------------------------------------------------------------------
 function _mdaiRoot() { return (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '/').replace(/\/+$/, '') || '/'; }
 async function _mdaiTabLoad() {
   const body = document.getElementById('mdai-list');
   if (!body) return;
   _mdaiShowPage('list');
-  const root = _mdaiRoot();
-  if (!_mdaiDirPath || (_mdaiDirPath !== root && _mdaiDirPath.indexOf(root + '/') !== 0)) _mdaiDirPath = root;
-  const path = _mdaiDirPath, gen = ++_mdaiDirGen;
-  const dirEl = document.getElementById('mdai-dir');
-  if (dirEl) { dirEl.textContent = path; dirEl.title = path; }
-  const bc = document.getElementById('mdai-breadcrumb');
-  if (bc) {
-    if (path === root) { bc.style.display = 'none'; }
-    else {
-      let html = '<span class="fe-crumb" onclick="_mdaiNav(' + _mdaiQ(root) + ')">' + esc(root.split('/').pop() || '/') + '</span>', cum = root;
-      for (const part of path.slice(root.length + 1).split('/').filter(Boolean)) {
-        cum += '/' + part;
-        html += '<span class="fe-crumb-sep">\u203a</span><span class="fe-crumb" onclick="_mdaiNav(' + _mdaiQ(cum) + ')">' + esc(part) + '</span>';
-      }
-      bc.innerHTML = html; bc.style.display = '';
-    }
-  }
-  if (!_mdaiDirData || _mdaiDirData.path !== path) body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
-  // Node metadata (last run) rides beside the listing; the listing never waits for it.
-  fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { if (d && d.files) { _mdaiListData = d; if (gen === _mdaiDirGen && _mdaiDirData) _mdaiRenderDir(); } }).catch(() => {});
+  if (!_mdaiListData) body.innerHTML = '<div class="mdai-empty">Loading…</div>';
   try {
-    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
-    const data = await r.json();
-    if (gen !== _mdaiDirGen) return;
-    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
-    _mdaiDirData = { path, data };
-    _mdaiRenderDir();
+    const r = await fetch(API + '/api/files/mdai', { signal: AbortSignal.timeout(15000) });
+    const d = await r.json();
+    if (!r.ok || d.error) { body.innerHTML = '<div class="mdai-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
+    _mdaiListData = d;
+    _mdaiRenderList();
+    // A node running somewhere keeps the list live until it finishes.
+    clearTimeout(_mdaiListPollT);
+    if ((d.files || []).some(f => f.running) && activeView === 'mdai') _mdaiListPollT = setTimeout(() => { if (activeView === 'mdai' && !_mdaiCur) _mdaiTabLoad(); }, 4000);
   } catch (e) {
-    if (gen === _mdaiDirGen) body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load ' + esc(path) + '.</div>';
+    body.innerHTML = '<div class="mdai-empty">Could not load the MDAI list. <button class="btn" onclick="_mdaiTabLoad()">Retry</button></div>';
   }
 }
-function _mdaiNav(path) { _mdaiDirPath = path; _mdaiTabLoad(); }
+let _mdaiListPollT = null;
 function _mdaiShowPage(which) {
   const L = document.getElementById('mdai-list-page'), C = document.getElementById('mdai-create-page');
   if (L) L.style.display = which === 'list' ? 'flex' : 'none';
   if (C) C.style.display = which === 'create' ? '' : 'none';
 }
-function _mdaiDirSortBy(col) {
-  if (_mdaiDirSort.col === col) _mdaiDirSort.dir *= -1;
-  else { _mdaiDirSort.col = col; _mdaiDirSort.dir = col === 'name' ? 1 : -1; }
-  _mdaiRenderDir();
-}
-function _mdaiRenderDir() {
-  const body = document.getElementById('mdai-list');
-  if (!body || !_mdaiDirData) return;
-  const { path, data } = _mdaiDirData;
+function _mdaiListSearch(v) { _mdaiListFilter = v || ''; _mdaiRenderList(); }
+// The list is a directory view of the MDAI folder, the same rows and columns
+// as the Files tab (Ethan, 2026-10-15: "mdai list should just be file view like
+// other file viewers"). Only folders that hold a .mdai somewhere below them and
+// the .mdai files themselves are shown, since the folder also holds unrelated
+// files. Folders open in place; a .mdai opens its node page exactly as it does
+// from Files (openFilePreview routes .mdai to openMdaiNode).
+let _mdaiDir = '';             // folder shown, relative to the MDAI root ('' = root)
+let _mdaiDirGen = 0;
+function _mdaiOpenDir(rel) { _mdaiDir = (rel || '').replace(/^\/+|\/+$/g, ''); _mdaiRenderList(); }
+// A breadcrumb segment: inside the MDAI folder it stays in this view; above it,
+// the folder opens in the Files tab like any other path.
+function _mdaiCrumb(abs) {
   const root = _mdaiRoot();
-  ['name', 'size', 'modified'].forEach(c => { const el = document.getElementById('mdai-sort-' + c); if (el) el.textContent = _mdaiDirSort.col === c ? (_mdaiDirSort.dir > 0 ? '\u25b2' : '\u25bc') : ''; });
-  const hdrs = document.getElementById('mdai-col-headers');
-  if (hdrs) hdrs.style.display = 'grid';
-  const { col, dir } = _mdaiDirSort;
-  const entries = [...(data.entries || [])].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    return dir * ((a.modified || 0) - (b.modified || 0));
-  });
-  const nodes = {};
-  ((_mdaiListData && _mdaiListData.files) || []).forEach(f => { nodes[_mdaiAbs(f.path)] = f; });
+  if (abs === root || abs.startsWith(root + '/')) _mdaiOpenDir(abs.slice(root.length));
+  else openExplore(abs);
+}
+async function _mdaiRenderList() {
+  const body = document.getElementById('mdai-list');
+  if (!body || !_mdaiListData) return;
+  const gen = ++_mdaiDirGen;
+  const all = _mdaiListData.files || [];
   const cnt = document.getElementById('mdai-count');
-  if (cnt) { const n = entries.filter(e => /\.mdai$/i.test(e.name)).length; cnt.textContent = n + (n === 1 ? ' node here' : ' nodes here'); }
-  body.innerHTML = '';
-  if (path !== root) {
-    const back = document.createElement('div');
-    back.className = 'fe-back-row';
-    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
-    back.onclick = () => _mdaiNav(path.slice(0, path.lastIndexOf('/')) || root);
-    body.appendChild(back);
+  if (cnt) cnt.textContent = all.length + (all.length === 1 ? ' node' : ' nodes');
+  if (!all.length) {
+    body.innerHTML = '<div class="mdai-empty"><div class="mdai-empty-title">No MDAI nodes yet</div><div>An MDAI node reads sources (your amux message history, files, other nodes) and a model writes the document its instruction asks for.</div>'
+      + '<button class="btn primary" onclick="_mdaiCreatePage()">New MDAI</button></div>';
+    return;
   }
+  const root = _mdaiRoot(), rel = _mdaiDir, abs = rel ? root + '/' + rel : root;
+  // Folders worth showing: every directory prefix of a node path under `rel`.
+  const prefix = rel ? rel + '/' : '';
+  const dirsWithNodes = new Set(), nodeNames = new Set();
+  for (const f of all) {
+    if (!f.path.startsWith(prefix)) continue;
+    const rest = f.path.slice(prefix.length);
+    const i = rest.indexOf('/');
+    if (i < 0) nodeNames.add(rest); else dirsWithNodes.add(rest.slice(0, i));
+  }
+  let entries;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(abs), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    entries = (d.entries || []).filter(e => e.type === 'dir' ? dirsWithNodes.has(e.name) : nodeNames.has(e.name));
+  } catch (e) {
+    if (gen !== _mdaiDirGen) return;
+    // The listing failed: still show what the node scan knows, without sizes.
+    entries = [...dirsWithNodes].map(name => ({ name, type: 'dir' })).concat([...nodeNames].map(name => ({ name, type: 'file' })));
+  }
+  if (gen !== _mdaiDirGen) return;
+  const q = _mdaiListFilter.trim().toLowerCase();
+  if (q) entries = entries.filter(e => e.name.toLowerCase().includes(q));
+  entries = _filesSortEntries(entries);
+  // The Files tab's own pieces: breadcrumb, sortable headers, parent row, empty
+  // line and status bar (_feCrumbsHtml, _feParentRow, _feEmptyRow, _feStatusText).
+  const parts = rel ? rel.split('/') : [];
+  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_filesSetSort(\'' + col + '\')">' + label + '</div>';
+  body.innerHTML = '<div id="mdai-breadcrumb" class="fe-breadcrumb">' + _feCrumbsHtml(abs, '_mdaiCrumb') + '</div>'
+    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + '<div class="fe-col-hdr-actions"></div></div>'
+    + '<div id="mdai-fe-body"></div></div>'
+    + '<div id="mdai-fe-status" class="fe-status">' + esc(_feStatusText(entries, q)) + '</div>'
+    + (_mdaiListData.truncated ? '<div class="mdai-hint">The folder scan was cut short, so this list may be incomplete.</div>' : '');
+  _filesUpdateSortHeaders();
+  const list = document.getElementById('mdai-fe-body');
+  if (rel && !q) list.appendChild(_feParentRow(() => _mdaiOpenDir(parts.slice(0, -1).join('/'))));
   if (!entries.length) {
-    const msg = document.createElement('div');
-    msg.className = 'mdai-empty';
-    msg.innerHTML = '<div class="mdai-empty-title">No .mdai nodes here yet</div><div>A .mdai node reads sources (your amux messages, files, other nodes) and a model writes the report your instruction asks for.</div>'
-      + '<button class="btn primary" onclick="_mdaiCreatePage({ dir: _mdaiDirPath })">New .mdai</button>';
-    body.appendChild(msg);
+    list.appendChild(_feEmptyRow(q ? 'No node matches "' + q + '" in this folder.' : 'No MDAI nodes in this folder.'));
     return;
   }
   for (const entry of entries) {
-    const ep = path.replace(/\/$/, '') + '/' + entry.name;
-    const isNode = entry.type !== 'dir' && /\.mdai$/i.test(entry.name);
-    const node = isNode ? nodes[ep] : null;
-    const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '') + (isNode ? ' mdai-node-row' : '');
-    row.dataset.path = ep;
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    let meta = '';
-    if (node) {
-      const st = node.last_run ? (node.last_status === 'error' ? 'bad' : 'ok') : 'none';
-      meta = '<span class="mdai-row-run" title="' + (node.last_run ? 'Last run ' + timeAgo(node.last_run) + (node.last_status === 'error' ? ', failed' : '') : 'Not run yet') + '"><span class="mdai-dot ' + st + '"></span>'
-        + (node.last_run ? timeAgo(node.last_run) : 'not run') + (node.model ? ' \u00b7 ' + esc(node.model) : '') + '</span>';
+    const row = _feBuildRow(entry, abs, 0, q);
+    if (entry.type === 'dir') {
+      // Folders navigate inside the MDAI view; no inline expand here.
+      row.querySelector('.fe-expand')?.replaceWith(Object.assign(document.createElement('span'), { className: 'fe-expand-spacer' }));
+      const to = (rel ? rel + '/' : '') + entry.name;
+      row.onclick = () => _mdaiOpenDir(to);
     }
-    row.innerHTML = '<div class="fe-cell-name">' + _fileTypeIcon(entry.name, entry.type) + '<span>' + esc(entry.name) + slash + '</span>' + meta + '</div>'
-      + '<div class="fe-cell-size">' + (entry.type === 'dir' ? '' : _fmtSize(entry.size)) + '</div>'
-      + '<div class="fe-cell-date">' + (entry.modified ? timeAgo(entry.modified) : '') + '</div>'
-      + '<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(' + _mdaiQ(ep) + ',this,' + _mdaiQ(entry.type) + ')">\u22ef</button></div>';
-    row.onclick = entry.type === 'dir' ? () => _mdaiNav(ep) : isNode ? () => openMdaiNode(ep) : () => openFilePreview(ep);
-    body.appendChild(row);
+    list.appendChild(row);
   }
 }
-async function _mdaiNewFolder() {
-  const name = (prompt('New folder name:', '') || '').trim();
-  if (!name) return;
-  if (/[\/\0]/.test(name) || name === '.' || name === '..') { showToast('Invalid folder name'); return; }
-  try {
-    const r = await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiDirPath.replace(/\/$/, '') + '/' + name }) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.error) { showToast('Could not create folder: ' + (d.error || r.status)); return; }
-    _mdaiTabLoad();
-  } catch (e) { showToast('Could not create folder'); }
-}
-
-// ---- Create page --------------------------------------------------------------
+// ---- Create page ------------------------------------------------------------------
 function _mdaiCreatePage(opts) {
   opts = opts || {};
   if (typeof activeView !== 'undefined' && activeView !== 'mdai') switchView('mdai');
   _mdaiShowPage('create');
-  const root = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '').replace(/\/+$/, '');
+  const root = _mdaiRoot();
   const f = id => document.getElementById(id);
   f('mdai-new-name').value = opts.name || '';
-  const dir = opts.dir || _mdaiDirPath || '';
-  f('mdai-new-folder').value = dir && (dir === root || dir.indexOf(root + '/') === 0) ? dir.slice(root.length).replace(/^\/+/, '') : '';
-  f('mdai-new-root').textContent = (root || '~') + '/';
-  f('mdai-new-model').value = '';
-  f('mdai-new-msgs').checked = true;
-  f('mdai-new-days').value = '30';
-  f('mdai-new-paths').value = '';
+  const dir = opts.dir || '';
+  f('mdai-new-folder').value = dir && dir.indexOf(root + '/') === 0 ? dir.slice(root.length + 1) : '';
+  f('mdai-new-root').textContent = root + '/';
+  f('mdai-new-title').value = '';
+  f('mdai-new-model').innerHTML = _mdaiModelOptions('');
+  f('mdai-new-model-custom').value = ''; f('mdai-new-model-custom').style.display = 'none';
+  f('mdai-new-refresh').checked = false;
+  f('mdai-new-timeout').value = '';
   f('mdai-new-body').value = opts.body || '';
   f('mdai-new-error').textContent = '';
-  const sel = f('mdai-new-upstream');
-  const files = (_mdaiListData && _mdaiListData.files) || [];
-  sel.innerHTML = files.map(x => '<option value="' + esc(x.path) + '">' + esc(x.path) + '</option>').join('');
-  sel.size = Math.min(5, Math.max(2, files.length));
-  f('mdai-new-upstream-row').style.display = files.length ? '' : 'none';
+  _mdaiNewBodyMode('write');
+  _mdaiSrcInit('new', opts.sources || []);
+  _mdaiSrcRender('new');
   setTimeout(() => f('mdai-new-name').focus(), 30);
-  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; if (d.files && d.files.length) _mdaiCreatePage(Object.assign({}, opts, { name: f('mdai-new-name').value, body: f('mdai-new-body').value })); }).catch(() => {});
+  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; _mdaiSrcSync('new'); _mdaiSrcRender('new'); }).catch(() => {});
 }
-function _mdaiCreateCancel() { _mdaiShowPage('list'); }
-function _mdaiCreateDoc() {
-  const f = id => document.getElementById(id);
-  const sources = [];
-  if (f('mdai-new-msgs').checked) sources.push({ path: 'amux:messages?days=' + f('mdai-new-days').value, prompt: '' });
-  f('mdai-new-paths').value.split('\n').map(s => s.trim()).filter(Boolean).forEach(p => sources.push({ path: p, prompt: '' }));
-  return { model: f('mdai-new-model').value || null, sources, body: f('mdai-new-body').value };
+function _mdaiNewBodyMode(mode) {
+  const ta = document.getElementById('mdai-new-body'), pv = document.getElementById('mdai-new-preview');
+  document.querySelectorAll('#mdai-create-page .mdai-seg button').forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+  if (!ta || !pv) return;
+  ta.style.display = mode === 'write' ? '' : 'none';
+  pv.style.display = mode === 'preview' ? '' : 'none';
+  if (mode === 'preview') pv.innerHTML = ta.value.trim() ? renderMarkdown(ta.value, '') : '<div class="mdai-dim">Nothing written yet.</div>';
 }
+function _mdaiCreateCancel() { _mdaiShowPage('list'); _mdaiTabLoad(); }
 async function _mdaiCreateSubmit(run) {
   const f = id => document.getElementById(id), errEl = f('mdai-new-error'), btns = document.querySelectorAll('#mdai-create-page .mdai-create-go');
   errEl.textContent = '';
   let name = f('mdai-new-name').value.trim();
   if (!name) { errEl.textContent = 'Give the node a name.'; f('mdai-new-name').focus(); return; }
   if (!/\.mdai$/i.test(name)) name += '.mdai';
-  if (/[\/\0]/.test(name) || /^\.+mdai$/i.test(name)) { errEl.textContent = 'A name cannot contain "/".'; return; }
+  if (/[\/\0]/.test(name) || /^\./.test(name)) { errEl.textContent = 'A name cannot contain "/" or start with ".".'; return; }
   const folder = f('mdai-new-folder').value.trim().replace(/^\/+|\/+$/g, '');
   if (folder.split('/').some(s => s === '..')) { errEl.textContent = 'The folder must stay inside ' + f('mdai-new-root').textContent; return; }
-  const doc = _mdaiCreateDoc();
-  if (!doc.body.trim()) { errEl.textContent = 'Write the instruction: what should the model produce from the sources?'; f('mdai-new-body').focus(); return; }
-  // Upstream nodes are written relative to the new file's folder, which is how
-  // the engine resolves them.
-  const root = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '').replace(/\/+$/, '');
-  const abs = root + '/' + (folder ? folder + '/' : '') + name;
-  const dirAbs = abs.slice(0, abs.lastIndexOf('/'));
-  Array.from(f('mdai-new-upstream').selectedOptions || []).forEach(o => doc.sources.push({ path: _mdaiRelPath(_mdaiAbs(o.value), dirAbs), prompt: '' }));
-  const rel = _mdaiRootRel(abs);
-  if (rel === null) { errEl.textContent = 'Nodes live under your home folder; this location is outside it.'; return; }
+  const body = f('mdai-new-body').value;
+  if (!body.trim()) { errEl.textContent = 'Write the instruction: what should the model produce from the sources?'; _mdaiNewBodyMode('write'); f('mdai-new-body').focus(); return; }
+  const timeout = f('mdai-new-timeout').value.trim();
+  const doc = {
+    title: f('mdai-new-title').value.trim() || null,
+    model: _mdaiModelRead('mdai-new-model', 'mdai-new-model-custom'),
+    refresh: f('mdai-new-refresh').checked ? 'open' : 'manual',
+    timeout_s: timeout ? Number(timeout) : null,
+    sources: _mdaiSrcSync('new').map(s => ({ path: s.path, prompt: s.prompt })),
+    fetch: null, body,
+  };
+  const path = (folder ? folder + '/' : '') + name;
   btns.forEach(b => b.disabled = true);
   try {
-    // Never overwrite: an existing file of that name is somebody's node.
-    const ex = await fetch(API + '/api/file?path=' + encodeURIComponent(abs));
-    const exd = await ex.json().catch(() => ({}));
-    if (ex.ok && !exd.error && typeof exd.content === 'string') { errEl.textContent = name + ' already exists in that folder. Pick another name.'; return; }
-    const content = _mdaiSerialize(doc);
-    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
-      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: content });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.ok) { errEl.textContent = (d && d.error) || ('Could not create the node (HTTP ' + r.status + ').'); return; }
+    const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', { path, doc, create: true });
+    if (_isLocallyQueued(r)) { errEl.textContent = 'The server could not be reached, so the node was not created.'; return; }
+    if (!r.ok || d.error) { errEl.textContent = (d && d.error) || ('Could not create the node (HTTP ' + r.status + ').'); return; }
     showToast('Created ' + name);
     _mdaiListData = null;
-    _mdaiDirPath = dirAbs;
     _mdaiShowPage('list');
     _mdaiTabLoad();
-    await openMdaiNode(abs, { autorun: false, tab: run ? 'preview' : 'edit' });
+    await openMdaiNode(d.abs, { autorun: false, tab: run ? 'preview' : 'edit' });
     if (run) _mdaiRun({ show: true });
   } catch (e) {
     errEl.textContent = online ? ('Could not create the node: ' + (e.message || e)) : 'Offline: the node was not created.';
@@ -29801,30 +30168,29 @@ async function _mdaiNewFile(dirOrOpts) {
   if (typeof dirOrOpts === 'string') dir = dirOrOpts;
   else if (dirOrOpts) { dir = dirOrOpts.dir || null; silent = !!dirOrOpts.silent; noOpen = !!dirOrOpts.noOpen; }
   if (!noOpen) { _mdaiCreatePage({ dir: dir || ((activeView === 'files' && _filesPath && !_exploreSession) ? _filesPath : null) }); return null; }
-  if (!dir) dir = (window._AMUX_MDAI_ROOT || window._AMUX_HOME || '/');
+  if (!dir) dir = _mdaiRoot();
   const raw = prompt('New .mdai node name (e.g. weekly-brief.mdai):', 'node.mdai');
   if (!raw || !raw.trim()) return null;
   let fname = raw.trim();
   if (!/\.mdai$/i.test(fname)) fname += '.mdai';
   if (/[\/\0]/.test(fname)) { showToast('Invalid file name'); return null; }
-  const rel = _mdaiRootRel(dir.replace(/\/+$/, '') + '/' + fname);
-  if (rel === null) { showToast('Could not place the node under your home folder'); return null; }
   const base = fname.replace(/\.mdai$/i, '');
-  const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), { method: 'POST',
-    headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: '---\nsources: []\n---\n# ' + base + '\n\nDescribe what this node should synthesize from its connected sources.\n' }).catch(() => null);
-  const d = r ? await r.json().catch(() => ({})) : {};
-  if (!r || !d.ok) { showToast((d && d.error) || 'Could not create node'); return null; }
+  const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', { path: dir.replace(/\/+$/, '') + '/' + fname, create: true,
+    doc: { sources: [], refresh: 'manual', body: '# ' + base + '\n\nDescribe what this node should synthesize from its connected sources.\n' } }).catch(() => ({ r: null, d: {} }));
+  if (!r || !r.ok || d.error) { showToast((d && d.error) || 'Could not create node'); return null; }
   if (!silent) showToast('Created ' + fname);
-  return rel;
+  return d.path;
 }
 
-// ---- Details ----------------------------------------------------------------
+// ---- Details ------------------------------------------------------------------------
 async function openMdaiNode(path, opts) {
   opts = opts || {};
   const abs = _mdaiAbs(path);
-  _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, model: null, sources: [], body: '', content: '', parseOk: true };
+  _mdaiStopPoll();
+  _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
-  _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null;
+  _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null; _mdaiFormErr = null; _mdaiPendingDoc = null; _mdaiPendingName = null;
+  _mdaiEditMode = opts.raw ? 'raw' : 'write';
   _mdaiTab = opts.tab || 'preview';
   document.getElementById('mdai-title').textContent = abs.split('/').pop();
   const sub = document.getElementById('mdai-subpath');
@@ -29832,37 +30198,59 @@ async function openMdaiNode(path, opts) {
   document.getElementById('mdai-body').innerHTML = '<div class="mdai-empty">Loading node…</div>';
   document.getElementById('mdai-side').innerHTML = '';
   document.getElementById('mdai-overlay').classList.add('active');
-  try {
-    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(abs));
-    const d = await r.json();
-    if (!d.error && typeof d.content === 'string') _mdaiApplyContent(d.content);
-    else _mdaiRunError = d.error || 'Could not read the file';
-  } catch (e) { _mdaiRunError = 'Could not read the file'; }
-  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph()]);
-  if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status !== 'error') || _mdaiHist[0], true);
+  const node = _mdaiCur;
+  await _mdaiLoadDoc();
+  if (_mdaiCur !== node) return;
+  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
+  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive()]);
+  if (_mdaiCur !== node) return;
+  if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status === 'ok') || _mdaiHist[0], true);
   _mdaiRender();
-  // Opening shows the last result, then refreshes behind it (Ethan, 2026-08-22).
-  if (opts.autorun !== false && _mdaiCur && !_mdaiRunError) _mdaiRun();
+  if (_mdaiActive && _mdaiActive.running) { _mdaiPoll(node); return; }
+  // Opening shows the last result, then refreshes behind it (Ethan, 2026-08-22),
+  // unless the node says `refresh: manual`. The server runs one chain per node,
+  // so opening a node that is already running joins that run.
+  const doc = _mdaiCur.doc;
+  if (opts.autorun !== false && doc && doc.refresh !== 'manual' && !_mdaiRunError && !_mdaiCur.readOnly) _mdaiRun();
 }
-function _mdaiApplyContent(text) {
-  const p = _mdaiParse(text);
-  _mdaiCur.model = p.model; _mdaiCur.sources = p.sources; _mdaiCur.body = p.body;
-  _mdaiCur.parseOk = p.ok; _mdaiCur.content = text;
+async function _mdaiLoadDoc() {
+  const node = _mdaiCur;
+  try {
+    const r = await fetch(API + '/api/files/mdai/doc?path=' + encodeURIComponent(node.abs));
+    const d = await r.json().catch(() => ({}));
+    if (_mdaiCur !== node) return;
+    if (!r.ok || d.error) { _mdaiRunError = d.error || ('Could not read the node (HTTP ' + r.status + ')'); return; }
+    _mdaiApplyDoc(d);
+  } catch (e) { _mdaiRunError = 'Could not read the node'; }
 }
+function _mdaiApplyDoc(d) {
+  const c = _mdaiCur;
+  c.abs = d.abs || c.abs; c.rel = d.path || c.rel; c.mtime = d.mtime_ms; c.content = d.raw || '';
+  c.doc = d.doc || null; c.parseError = d.parse_error || null; c.parseOk = !!d.doc;
+  c.readOnly = d.read_only || null;
+  c.model = c.doc ? c.doc.model : null;
+  c.sources = c.doc ? c.doc.sources : [];
+  c.body = c.doc ? c.doc.body : '';
+  document.getElementById('mdai-title').textContent = c.abs.split('/').pop();
+  const sub = document.getElementById('mdai-subpath');
+  if (sub) { sub.textContent = c.abs.slice(0, c.abs.lastIndexOf('/')) || '/'; sub.title = c.abs; }
+  if (!c.doc && _mdaiEditMode !== 'raw') _mdaiEditMode = 'raw';
+}
+function _mdaiApplyContent(text) { if (_mdaiCur) _mdaiCur.content = text; }
 function closeMdaiNode() {
-  if (_mdaiDraft !== null && _mdaiDraft !== (_mdaiCur && _mdaiCur.content) && !confirm('Discard unsaved changes to this node?')) return;
+  if (_mdaiDirty() && !confirm('Discard unsaved changes to this node?')) return;
+  _mdaiStopPoll();
   document.getElementById('mdai-overlay').classList.remove('active');
-  _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null;
-  if (activeView === 'mdai') _mdaiTabLoad();
+  _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
+  if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
 }
 async function _mdaiLoadHistory() {
   if (!_mdaiCur) return;
   try {
-    const r = await fetch(API + '/api/files/mdai/history?lite=1&limit=50&path=' + encodeURIComponent(_mdaiCur.abs));
+    const r = await fetch(API + '/api/files/mdai/history?lite=1&limit=100&path=' + encodeURIComponent(_mdaiCur.abs));
     const d = await r.json();
     _mdaiHist = (d && d.runs) || [];
     _mdaiCur.runsTotal = (d && d.total) || _mdaiHist.length;
-    if (d && d.path) _mdaiCur.rel = d.path;
   } catch (e) { _mdaiHist = []; }
   _mdaiHistIdx = 0;
 }
@@ -29873,6 +30261,14 @@ async function _mdaiLoadGraph() {
     const d = await r.json();
     _mdaiGraph = r.ok && !d.error ? d : { error: d.error || ('HTTP ' + r.status) };
   } catch (e) { _mdaiGraph = { error: 'unreachable' }; }
+}
+async function _mdaiLoadActive() {
+  if (!_mdaiCur) return;
+  try {
+    const r = await fetch(API + '/api/files/mdai/active?path=' + encodeURIComponent(_mdaiCur.abs));
+    _mdaiActive = r.ok ? await r.json() : null;
+  } catch (e) { _mdaiActive = null; }
+  _mdaiRunning = !!(_mdaiActive && _mdaiActive.running);
 }
 // Load one run's output (history rows are listed without it).
 async function _mdaiShowRun(run, quiet) {
@@ -29889,91 +30285,176 @@ async function _mdaiShowRun(run, quiet) {
   _mdaiHistIdx = Math.max(0, _mdaiHist.indexOf(run));
   if (!quiet) { _mdaiTab = 'preview'; _mdaiRender(); }
 }
+// Start a run. The server runs it detached and one per node: this request
+// returns at once (wait:false), a second click or a second tab JOINS the same
+// run, and the page follows it through GET /active, so a reload mid-run finds
+// it again instead of losing it.
 async function _mdaiRun(opts) {
   opts = opts || {};
-  if (!_mdaiCur || _mdaiRunning) return;
-  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content && !(await _mdaiSave())) return;
-  // The node this run belongs to. A run that finishes after you opened a
-  // different node must not reload that node's history or switch its tab.
+  if (!_mdaiCur || _mdaiRunning || _mdaiStarting) return;
+  // Claimed BEFORE the save: a double-click used to reach here twice while the
+  // first click was still saving the draft, and both clicks then started a run.
+  _mdaiStarting = true;
+  const rb = document.getElementById('mdai-run-btn'); if (rb) rb.disabled = true;
+  if (_mdaiDirty() && !(await _mdaiSave())) { _mdaiStarting = false; _mdaiRenderRunState(); return; }
   const node = _mdaiCur;
   _mdaiRunning = true;
-  // Only a Run you asked for moves you to Preview, and it does so now, not when
-  // the run lands (which would pull you out of the editor mid-sentence).
   if (opts.show) _mdaiTab = 'preview';
+  _mdaiRunError = null; _mdaiRunCycle = null;
   _mdaiRender();
-  const t0 = Date.now();
   try {
-    // AF-141: this bounds the WHOLE RUN as a backstop against a hung server;
-    // the server bounds each node (MODEL_TIMEOUT_S) and answers first.
-    const _ctrl = new AbortController();
-    const _to = setTimeout(() => _ctrl.abort(), 600000);
-    let r;
-    try {
-      r = await fetch(API + '/api/files/mdai/run', {
-        method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ path: _mdaiCur.abs }), signal: _ctrl.signal });
-    } finally { clearTimeout(_to); }
+    const r = await fetch(API + '/api/files/mdai/run', {
+      method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: node.abs, wait: false }) });
     const d = await r.json().catch(() => ({}));
-    // A locally queued 202 is not a run (AF-371): say so instead of "done".
+    if (_mdaiCur !== node) return;
+    // A locally queued 202 is not a run (AF-371): say so instead of "running".
     if (_isLocallyQueued(r)) {
+      _mdaiRunning = false;
       _mdaiRunError = 'The server could not be reached, so this run was never sent. Nothing was queued: replaying a model chain later would spend it on a question you may no longer be asking. Retry when amux is back.';
-      _mdaiRunCycle = null;
     } else if (!r.ok || d.error) {
+      _mdaiRunning = false;
       _mdaiRunError = d.error || ('HTTP ' + r.status); _mdaiRunCycle = d.cycle || null;
     } else {
-      _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = d;
+      _mdaiActive = d.run || { running: true };
+      if (d.joined) showToast('Already running: following that run');
+      if (_mdaiCancelPending) {
+        _mdaiCancelPending = false;
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'mdai-cancel-deferred', verdict: 'sent_after_start', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+        _mdaiCancelSend();
+      }
+      _mdaiPoll(node);
     }
   } catch (e) {
-    _mdaiRunError = (e && e.name === 'AbortError')
-      ? 'No answer from the server for 10 minutes, so the run was stopped. Each step is bounded server-side and reports its own error, so this means the server stopped responding. Check that amux is up, then retry.'
-      : ((e && e.message) || 'run failed');
-    _mdaiRunCycle = null;
+    _mdaiRunning = false;
+    _mdaiRunError = (e && e.message) || 'run failed';
+  } finally { _mdaiStarting = false; _mdaiCancelPending = false; }
+  if (_mdaiCur === node) _mdaiRender();
+}
+function _mdaiStopPoll() { clearTimeout(_mdaiPollT); _mdaiPollT = null; }
+async function _mdaiPoll(node) {
+  _mdaiStopPoll();
+  if (!node || _mdaiCur !== node) return;
+  await _mdaiLoadActive();
+  if (_mdaiCur !== node) return;
+  if (_mdaiActive && _mdaiActive.running) {
+    _mdaiRenderRunState();
+    if (_mdaiTab === 'runs') _mdaiRender();
+    _mdaiPollT = setTimeout(() => _mdaiPoll(node), 1500);
+    return;
   }
+  // Finished: the outcome is the server's, whichever tab or client started it.
+  const last = _mdaiActive && _mdaiActive.last;
   _mdaiRunning = false;
-  if (_mdaiCur !== node) { if (activeView === 'mdai') _mdaiTabLoad(); return; }
+  // A cancel is not a failure: the run row says Cancelled, so no red banner.
+  _mdaiRunError = last && !last.ok && last.status !== 409 ? (last.error || 'The run failed (HTTP ' + last.status + ')') : null;
+  _mdaiRunCycle = last && last.cycle ? last.cycle : null;
   await _mdaiLoadHistory();
   if (_mdaiCur !== node) return;
-  if (!_mdaiRunError && _mdaiHist[0]) await _mdaiShowRun(_mdaiHist[0], true);
+  if (_mdaiHist[0]) await _mdaiShowRun(_mdaiHist[0], true);
   _mdaiRender();
-  if (activeView === 'mdai') _mdaiTabLoad();
-  try { window._clientDebug && window._clientDebug('mdai-run', { ms: Date.now() - t0, ok: !_mdaiRunError, measured: true }); } catch (e) {}
+  if (activeView === 'mdai') { _mdaiListData = null; }
+  try { window._clientDebug && window._clientDebug('mdai-run', { ok: !_mdaiRunError, measured: true }); } catch (e) {}
+}
+let _mdaiCancelPending = false;
+async function _mdaiCancel() {
+  if (!_mdaiCur || !_mdaiRunning) return;
+  if (!confirm('Stop this run? The model call in progress is stopped and the run is recorded as cancelled.')) return;
+  // Stop shows the moment Run is clicked, before the server has the run. A
+  // cancel sent then found "nothing is running" and the run went ahead, so
+  // it waits for the start to land and is sent from there.
+  if (_mdaiStarting) {
+    _mdaiCancelPending = true;
+    showToast('Stopping…');
+    return;
+  }
+  await _mdaiCancelSend();
+}
+async function _mdaiCancelSend() {
+  const { r, d } = await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => ({ r: null, d: {} }));
+  if (!r || !r.ok) { showToast((d && d.error) || 'Could not stop the run'); return; }
+  showToast('Stopping…');
+  if (_mdaiActive) _mdaiActive.cancel_requested = true;
+  _mdaiRenderRunState();
 }
 function _mdaiHistNav(delta) {
   if (!_mdaiHist.length) return;
   const n = Math.max(0, Math.min(_mdaiHist.length - 1, _mdaiHistIdx + delta));
   if (n !== _mdaiHistIdx) _mdaiShowRun(_mdaiHist[n]);
 }
-async function _mdaiWriteText(content) {
-  const rel = _mdaiRootRel(_mdaiCur.abs);
-  if (rel === null) { showToast('This node is outside your home folder and cannot be edited here'); return false; }
-  try {
-    const r = await fetch(API + '/api/files/upload?path=' + encodeURIComponent(rel), {
-      method: 'POST', headers: _authHeaders({ 'Content-Type': 'text/plain' }), body: content });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok && d && d.ok) { _mdaiApplyContent(content); _mdaiDraft = null; _mdaiLoadGraph().then(() => _mdaiRenderSide()); return true; }
-    showToast((d && d.error) || 'Could not save node');
-  } catch (e) { showToast('Could not save node'); }
-  return false;
+// Save a structured change. `patch` is merged over the current doc; the server
+// validates, writes the canonical file and answers with what it now holds.
+async function _mdaiSaveDoc(patch, extra) {
+  if (!_mdaiCur || !_mdaiCur.doc) { showToast('Fix the file in Edit → Raw file first; it does not parse'); return false; }
+  const doc = Object.assign({}, _mdaiCur.doc, patch || {});
+  const req = Object.assign({ path: _mdaiCur.abs, doc, base_mtime_ms: _mdaiCur.mtime }, extra || {});
+  // A refused save must not throw away what was typed: the form re-renders
+  // from this until a save lands or the tab changes.
+  _mdaiPendingDoc = doc; _mdaiPendingName = extra && extra.rename_to || null;
+  const ok = await _mdaiPutDoc(req);
+  if (ok) { _mdaiPendingDoc = null; _mdaiPendingName = null; }
+  return ok;
 }
-// Structured edits (Sources, Settings) rewrite the frontmatter from parsed state.
-async function _mdaiWriteFile() { return _mdaiWriteText(_mdaiSerialize(_mdaiCur)); }
+async function _mdaiPutDoc(req) {
+  _mdaiFormErr = null;
+  if (_mdaiKeptEdits.length) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify({ kind: 'mdai-render-kept-edit', verdict: 'owner_edit_kept', fields: [...new Set(_mdaiKeptEdits)].join(','), measured: true, n_considered: _mdaiKeptEdits.length, ver: APP_VER }) }).catch(() => {});
+    _mdaiKeptEdits = [];
+  }
+  if (_mdaiCur && _mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return false; }
+  try {
+    const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
+    if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
+    if (!r.ok || d.error) {
+      _mdaiFormErr = { field: d.field || 'doc', msg: d.error || ('HTTP ' + r.status) };
+      showToast(d.error || 'Could not save the node');
+      _mdaiRender();
+      return false;
+    }
+    _mdaiApplyDoc(d);
+    _mdaiDraft = null; _mdaiBodyDraft = null;
+    // The graph reload lands after the save's own render, possibly while the
+    // owner is typing the next change; _mdaiRender keeps that typing.
+    _mdaiLoadGraph().then(() => { if (_mdaiCur) _mdaiRender(); });
+    return true;
+  } catch (e) { showToast('Could not save the node'); return false; }
+}
+function _mdaiDirty() {
+  if (!_mdaiCur) return false;
+  return (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) || (_mdaiBodyDraft !== null && _mdaiBodyDraft !== _mdaiCur.body);
+}
 async function _mdaiSave() {
   if (!_mdaiCur) return false;
-  const text = _mdaiDraft !== null ? _mdaiDraft : _mdaiCur.content;
   const btn = document.getElementById('mdai-save-btn');
   if (btn) btn.disabled = true;
-  const ok = await _mdaiWriteText(text);
+  let ok = true;
+  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) ok = await _mdaiPutDoc({ path: _mdaiCur.abs, raw: _mdaiDraft, base_mtime_ms: _mdaiCur.mtime });
+  else if (_mdaiBodyDraft !== null && _mdaiBodyDraft !== _mdaiCur.body) ok = await _mdaiSaveDoc({ body: _mdaiBodyDraft });
   if (btn) btn.disabled = false;
   if (ok) showToast('Saved');
   _mdaiRender();
   return ok;
 }
-// Edit tab: the whole file, with line numbers. Kept as #mdai-body-ta (the e2e
-// raw-view test and the old body editor both address it by that id).
+// Edit tab. Write: the instruction. Preview: it rendered. Raw file: the whole
+// file with line numbers (kept as #mdai-body-ta; the raw-view e2e addresses it).
 function _mdaiEditInput(ta) {
   _mdaiDraft = ta.value;
   _mdaiGutter(ta);
   _mdaiSyncDirty();
+}
+function _mdaiBodyInput(ta) { _mdaiBodyDraft = ta.value; _mdaiSyncDirty(); }
+function _mdaiSetEditMode(m) {
+  _mdaiCaptureDrafts();
+  if (m === 'raw' && _mdaiBodyDraft !== null && _mdaiBodyDraft !== _mdaiCur.body) { showToast('Save the instruction first, then edit the raw file'); return; }
+  if (m !== 'raw' && _mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) { showToast('Save the raw file first'); return; }
+  if (m !== 'raw' && !_mdaiCur.doc) { showToast('This file does not parse; fix it in Raw file'); return; }
+  _mdaiEditMode = m; _mdaiRender();
+}
+function _mdaiCaptureDrafts() {
+  const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiDraft = ta.value;
+  const ib = document.getElementById('mdai-instr-ta'); if (ib) _mdaiBodyDraft = ib.value;
 }
 // The editor wraps long lines (the instruction is prose), so a line number has
 // to sit beside the first row of its line and leave the wrapped rows blank. A
@@ -29998,7 +30479,7 @@ function _mdaiGutter(ta) {
   g.scrollTop = ta.scrollTop;
 }
 function _mdaiSyncDirty() {
-  const dirty = _mdaiDraft !== null && _mdaiCur && _mdaiDraft !== _mdaiCur.content;
+  const dirty = _mdaiDirty();
   const btn = document.getElementById('mdai-save-btn');
   if (btn) { btn.textContent = dirty ? 'Save' : 'Saved'; btn.classList.toggle('primary', !!dirty); btn.classList.toggle('mdai-clean', !dirty); }
   const b = document.getElementById('mdai-dirty');
@@ -30009,68 +30490,96 @@ function _mdaiEditKey(e) {
   if (e.key === 'Tab' && !e.shiftKey) {
     e.preventDefault();
     const ta = e.target, s = ta.selectionStart;
-    ta.setRangeText('  ', s, ta.selectionEnd, 'end'); _mdaiEditInput(ta);
+    ta.setRangeText('  ', s, ta.selectionEnd, 'end');
+    if (ta.id === 'mdai-body-ta') _mdaiEditInput(ta); else _mdaiBodyInput(ta);
   }
 }
-// Sources tab
-async function _mdaiSavePrompt(idx) {
-  const ta = document.getElementById('mdai-prompt-' + idx);
-  if (!ta || !_mdaiCur || !_mdaiCur.sources[idx]) return;
-  const pathInp = document.getElementById('mdai-path-' + idx);
-  if (pathInp) _mdaiCur.sources[idx].path = pathInp.value.trim();
-  _mdaiCur.sources[idx].prompt = ta.value;
-  if (await _mdaiWriteFile()) { showToast('Source saved'); _mdaiRender(); }
+// Sources tab: every source, and the optional API call, edited as fields.
+function _mdaiFetchRead() {
+  const g = id => document.getElementById('mdai-fetch-' + id);
+  if (!g('url')) return _mdaiCur.doc ? _mdaiCur.doc.fetch : null;
+  const url = g('url').value.trim();
+  if (!url) return null;
+  const headers = {};
+  g('headers').value.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => {
+    const i = l.indexOf(':'); if (i > 0) headers[l.slice(0, i).trim()] = l.slice(i + 1).trim();
+  });
+  return { url, method: g('method').value, headers, body: g('body').value, connector: g('connector').value.trim(), select: g('select').value.trim() };
 }
-async function _mdaiRemoveSource(idx) {
-  if (!_mdaiCur || !_mdaiCur.sources[idx]) return;
-  if (!confirm('Disconnect "' + (_mdaiCur.sources[idx].path || 'source') + '" from this node?')) return;
-  _mdaiCur.sources.splice(idx, 1);
-  if (await _mdaiWriteFile()) { showToast('Source disconnected'); _mdaiRender(); }
-}
-async function _mdaiAddSource() {
+async function _mdaiSaveSources() {
   if (!_mdaiCur) return;
-  const kind = document.getElementById('mdai-add-kind').value;
-  let p = '';
-  if (kind === 'messages') p = 'amux:messages?days=' + document.getElementById('mdai-add-days').value;
-  else p = document.getElementById('mdai-add-path').value.trim();
-  if (!p) { showToast('Enter a path to add'); return; }
-  if (kind === 'mdai') p = _mdaiRelPath(_mdaiAbs(p), _mdaiCur.abs.slice(0, _mdaiCur.abs.lastIndexOf('/')));
-  _mdaiCur.sources.push({ path: p, prompt: '' });
-  if (await _mdaiWriteFile()) { showToast('Source added'); _mdaiRender(); }
+  const sources = _mdaiSrcSync('src').map(s => ({ path: s.path, prompt: s.prompt }));
+  const btn = document.getElementById('mdai-src-save');
+  if (btn) btn.disabled = true;
+  const ok = await _mdaiSaveDoc({ sources, fetch: _mdaiFetchRead() });
+  if (btn) btn.disabled = false;
+  if (ok) { showToast('Sources saved'); _mdaiSrcInit('src', _mdaiCur.sources); _mdaiRender(); }
 }
-// Settings tab
+// Settings tab: title, file name, model, refresh on open, timeout.
+async function _mdaiSaveSettings() {
+  if (!_mdaiCur) return;
+  const g = id => document.getElementById(id);
+  const t = g('mdai-set-timeout').value.trim();
+  const patch = {
+    title: g('mdai-set-title').value.trim() || null,
+    model: _mdaiModelRead('mdai-set-model', 'mdai-set-model-custom'),
+    refresh: g('mdai-set-refresh').checked ? 'open' : 'manual',
+    timeout_s: t ? Number(t) : null,
+  };
+  const cur = _mdaiCur.abs.split('/').pop();
+  let name = g('mdai-set-name').value.trim();
+  if (name && !/\.mdai$/i.test(name)) name += '.mdai';
+  const extra = name && name !== cur ? { rename_to: name } : null;
+  if (extra && _mdaiRunning) { showToast('Rename after the run finishes'); return; }
+  const btn = g('mdai-set-save');
+  if (btn) btn.disabled = true;
+  const ok = await _mdaiSaveDoc(patch, extra);
+  if (btn) btn.disabled = false;
+  if (ok) {
+    showToast(extra ? 'Saved and renamed to ' + name : 'Settings saved');
+    if (extra) { await _mdaiLoadHistory(); _mdaiListData = null; }
+    _mdaiRender();
+  }
+}
+// Kept for callers of the old one-control setter.
 async function _mdaiSetModel(v) {
   if (!_mdaiCur) return;
-  _mdaiCur.model = v || null;
-  if (await _mdaiWriteFile()) { showToast(v ? 'Model set to ' + v : 'Using the default model'); _mdaiRender(); }
+  if (await _mdaiSaveDoc({ model: v || null })) { showToast(v ? 'Model set to ' + v : 'Using the default model'); _mdaiRender(); }
 }
 async function _mdaiDelete() {
   if (!_mdaiCur) return;
   const name = _mdaiCur.abs.split('/').pop();
   const users = (_mdaiGraph && _mdaiGraph.used_by) || [];
-  if (!confirm('Delete ' + name + '?' + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.')) return;
+  if (!confirm('Delete ' + name + '?' + (_mdaiRunning ? ' Its run in progress is stopped first.' : '') + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.')) return;
   try {
+    if (_mdaiRunning) await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => null);
     const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiCur.abs }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { showToast('Delete failed: ' + (d.error || r.status)); return; }
     showToast('Deleted ' + name);
-    _mdaiDraft = null; _mdaiListData = null;
+    _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiListData = null;
     closeMdaiNode();
   } catch (e) { showToast('Delete failed: ' + e.message); }
 }
 function _mdaiSetTab(t) {
-  if (_mdaiTab === 'edit' && t !== 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiDraft = ta.value; }
+  if (_mdaiTab === 'edit') _mdaiCaptureDrafts();
+  if (_mdaiTab === 'sources' && t !== 'sources') _mdaiSrcSync('src');
+  if (t === 'sources' && _mdaiCur && (!_mdaiSrcEd.src || _mdaiSrcEd.srcFor !== _mdaiCur.abs + ':' + _mdaiCur.mtime)) {
+    _mdaiSrcInit('src', _mdaiCur.sources); _mdaiSrcEd.srcFor = _mdaiCur.abs + ':' + _mdaiCur.mtime;
+  }
+  _mdaiFormErr = null; _mdaiPendingDoc = null; _mdaiPendingName = null;
   _mdaiTab = t; _mdaiRender();
 }
 // The old bottom tabs were Diagram and List (the editor); callers and the
-// raw-view e2e still name them. 'list' is the editor, 'diagram' the preview.
-function _mdaiSetBottomTab(t) { _mdaiSetTab(t === 'list' ? 'edit' : 'preview'); }
+// raw-view e2e still name them. 'list' is the whole-file editor, 'diagram' the preview.
+function _mdaiSetBottomTab(t) { if (t === 'list') _mdaiEditMode = 'raw'; _mdaiSetTab(t === 'list' ? 'edit' : 'preview'); }
 function _mdaiRunMenu(btn) {
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
   popup.className = 'explore-menu-popup';
   const item = (label, fn) => { const b = document.createElement('button'); b.className = 'explore-menu-item'; b.textContent = label; b.onclick = () => { popup.remove(); fn(); }; popup.appendChild(b); };
-  item('Run now', () => _mdaiRun({ show: true }));
+  if (_mdaiRunning) item('Stop this run', _mdaiCancel);
+  else item('Run now', () => _mdaiRun({ show: true }));
   item('Show latest output', () => { if (_mdaiHist[0]) _mdaiShowRun(_mdaiHist[0]); else showToast('Not run yet'); });
   item('All runs', () => _mdaiSetTab('runs'));
   document.body.appendChild(popup);
@@ -30079,19 +30588,18 @@ function _mdaiRunMenu(btn) {
   popup.style.top = (r.bottom + 4) + 'px'; popup.style.right = Math.max(8, innerWidth / _uiZoomFactor() - r.right) + 'px';
   setTimeout(() => { const close = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('click', close); } }; document.addEventListener('click', close); }, 0);
 }
-
-function _mdaiRender() {
+// The header chips, the Run button and the running banner: cheap to redraw
+// every poll, so the elapsed time ticks without re-rendering a form mid-edit.
+function _mdaiRenderRunState() {
   if (!_mdaiCur) return;
-  const el = document.getElementById('mdai-body');
-  if (!el) return;
   const latest = _mdaiHist[0] || null;
-  // Header badges: last run state, model, and when.
   const badges = document.getElementById('mdai-badges');
+  const a = _mdaiActive && _mdaiActive.running ? _mdaiActive : null;
   if (badges) {
     const model = (_mdaiGraph && _mdaiGraph.model) || _mdaiCur.model || '';
     let h = '';
-    if (_mdaiRunning) h += '<span class="mdai-pill run">running…</span>';
-    else if (latest) h += latest.status === 'error' ? '<span class="mdai-pill bad">failed</span>' : (latest.cached ? '<span class="mdai-pill">cached</span>' : '<span class="mdai-pill ok">fresh</span>');
+    if (_mdaiRunning) h += '<span class="mdai-pill run">running…' + (a ? ' ' + _mdaiElapsed(a.elapsed_ms) : '') + '</span>';
+    else if (latest) { const st = _mdaiStatusInfo(latest.status, latest.cached); h += '<span class="mdai-pill ' + (st.cls === 'ok' ? (latest.cached ? '' : 'ok') : st.cls) + '">' + esc(latest.status === 'ok' ? (latest.cached ? 'cached' : 'fresh') : st.label.toLowerCase()) + '</span>'; }
     if (model) h += '<span class="mdai-pill model">' + esc(model) + '</span>';
     if (latest) h += '<span class="mdai-dim">' + timeAgo(latest.ts) + '</span>';
     h += '<span class="mdai-pill warn" id="mdai-dirty" style="display:none">unsaved</span>';
@@ -30099,95 +30607,167 @@ function _mdaiRender() {
   }
   const runBtn = document.getElementById('mdai-run-btn');
   if (runBtn) {
-    runBtn.disabled = _mdaiRunning;
+    runBtn.disabled = _mdaiRunning || _mdaiStarting;
     runBtn.innerHTML = _mdaiRunning ? '<span class="mdai-spin"></span><span class="mdai-run-lbl">Running…</span>' : '&#9655;<span class="mdai-run-lbl"> Run</span>';
     runBtn.setAttribute('aria-label', _mdaiRunning ? 'Running' : 'Run');
   }
+  const banner = document.getElementById('mdai-runbanner');
+  if (banner) banner.outerHTML = _mdaiBannerHtml();
+  _mdaiSyncDirty();
+}
+function _mdaiBannerHtml() {
+  if (!_mdaiRunning) return '<div id="mdai-runbanner" hidden></div>';
+  const a = _mdaiActive && _mdaiActive.running ? _mdaiActive : null;
+  const p = a && a.progress || {};
+  let what = 'Starting…';
+  if (p.node) what = (p.call_elapsed_ms ? 'Writing ' : 'Reading ') + esc(p.node) + (p.model && p.call_elapsed_ms ? ' on ' + esc(p.model) + ' (' + _mdaiElapsed(p.call_elapsed_ms) + ')' : '');
+  const done = p.nodes_done ? ' · ' + p.nodes_done + ' node' + (p.nodes_done === 1 ? '' : 's') + ' done' : '';
+  return '<div id="mdai-runbanner" class="mdai-runbanner" role="status"><span class="mdai-spin"></span><span class="mdai-rb-txt"><b>Running ' + (a ? _mdaiElapsed(a.elapsed_ms) : '') + '</b> · ' + what + done
+    + (a && a.cancel_requested ? ' · <b>stopping…</b>' : '') + '</span>'
+    // data-repeatable (here and on #mdai-run-btn): the run owns its own guard
+    // (server single-flight, Run disabled while running). The shared press
+    // lock kept Run "busy" on the 202 of a run that was then stopped, and on a
+    // slow iOS runner swallowed the next Run as a double press
+    // (press_double_suppressed; mdai-pages.spec.ts provider-failure step).
+    + '<button class="btn" id="mdai-stop-btn" data-repeatable onclick="_mdaiCancel()"' + (a && a.cancel_requested ? ' disabled' : '') + '>Stop</button></div>';
+}
+function _mdaiRender() {
+  if (!_mdaiCur) return;
+  const el = document.getElementById('mdai-body');
+  if (!el) return;
   document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
     const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
     if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
-    if (b.dataset.tab === 'sources') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.sources.length ? String(_mdaiCur.sources.length) : '';
+    if (b.dataset.tab === 'sources') { const n = (_mdaiCur.sources || []).length + (_mdaiCur.doc && _mdaiCur.doc.fetch ? 1 : 0); b.querySelector('.mdai-tab-n').textContent = n ? String(n) : ''; }
   });
-  let html = '';
-  if (_mdaiRunError) {
-    html += '<div class="mdai-err"><b>Run failed.</b> ' + esc(_mdaiRunError)
+  let html = _mdaiBannerHtml();
+  // On Preview the failed run itself is shown with its reason; one red box, not two.
+  const shownFail = _mdaiTab === 'preview' && _mdaiShown && _mdaiShown === _mdaiHist[0] && _mdaiShown.status !== 'ok';
+  if (_mdaiRunError && !shownFail) {
+    html += '<div class="mdai-err" role="alert"><b>Run failed.</b> ' + esc(_mdaiRunError)
       + (_mdaiRunCycle && _mdaiRunCycle.length ? '<div class="mdai-err-cycle">Cycle: ' + _mdaiRunCycle.map(esc).join(' → ') + '</div>' : '') + '</div>';
   }
+  if (_mdaiCur.readOnly) html += '<div class="mdai-note mdai-ro">' + esc(_mdaiCur.readOnly) + '</div>';
+  if (_mdaiCur.parseError && _mdaiTab !== 'edit') html += '<div class="mdai-err"><b>This file does not parse.</b> ' + esc(_mdaiCur.parseError) + ' Fix it in Edit → Raw file.</div>';
   if (_mdaiTab === 'edit') html += _mdaiEditHtml();
   else if (_mdaiTab === 'sources') html += _mdaiSourcesHtml();
   else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
   else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
   else html += _mdaiPreviewHtml();
+  const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
+  _mdaiRestoreTyped(el, kept);
   el.dataset.tab = _mdaiTab;
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
-  _mdaiSyncDirty();
+  _mdaiRenderRunState();
   _mdaiRenderSide();
 }
+// A render rebuilds the form from the saved node, and renders arrive from
+// saves, graph reloads and run polls at any moment. A field the owner has
+// changed since it was drawn keeps the change when the value it was drawn
+// from is unchanged; a field whose saved value moved shows the new one.
+function _mdaiFieldState(f) {
+  if (f.type === 'checkbox' || f.type === 'radio') return { cur: String(f.checked), base: String(f.defaultChecked) };
+  if (f.tagName === 'SELECT') {
+    const d = Array.from(f.options).find(o => o.defaultSelected) || f.options[0];
+    return { cur: f.value, base: d ? d.value : '' };
+  }
+  return { cur: f.value, base: f.defaultValue };
+}
+let _mdaiKeptEdits = [];   // field ids a render kept; reported with the next save
+function _mdaiTypedFields(root) {
+  const kept = [];
+  root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => {
+    const st = _mdaiFieldState(f);
+    if (st.cur !== st.base) kept.push({ id: f.id, cur: st.cur, base: st.base, focused: document.activeElement === f });
+  });
+  return kept;
+}
+function _mdaiRestoreTyped(root, kept) {
+  kept.forEach(k => {
+    const f = document.getElementById(k.id);
+    if (!f || !root.contains(f) || _mdaiFieldState(f).base !== k.base) return;
+    if (f.type === 'checkbox' || f.type === 'radio') f.checked = k.cur === 'true'; else f.value = k.cur;
+    // A model picker set to "Other model id…" shows its custom field.
+    const custom = f.tagName === 'SELECT' && document.getElementById(f.id + '-custom');
+    if (custom) custom.style.display = f.value === '__custom' ? '' : 'none';
+    if (k.focused) { try { f.focus({ preventScroll: true }); } catch (e) {} }
+    _mdaiKeptEdits.push(k.id);
+  });
+}
 function _mdaiEditHtml() {
-  const text = _mdaiDraft !== null ? _mdaiDraft : _mdaiCur.content;
-  return '<div class="mdai-editor"><div class="mdai-gutter" id="mdai-gutter" aria-hidden="true"></div>'
-    + '<textarea id="mdai-body-ta" class="mdai-code" spellcheck="false" aria-label="' + esc(_mdaiCur.abs.split('/').pop()) + ' source"'
-    + ' oninput="_mdaiEditInput(this)" onscroll="_mdaiGutter(this)" onkeydown="_mdaiEditKey(event)">' + esc(text) + '</textarea></div>'
-    + '<div class="mdai-hint">Frontmatter between <code>---</code> lines sets <code>model</code> and <code>sources</code>; everything below is the instruction. '
-    + (navigator.platform && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl') + '+S saves.</div>';
+  const seg = (m, label) => '<button type="button" data-mode="' + m + '" class="' + (_mdaiEditMode === m ? 'active' : '') + '" aria-pressed="' + (_mdaiEditMode === m) + '" onclick="_mdaiSetEditMode(\'' + m + '\')">' + label + '</button>';
+  let h = '<div class="mdai-seg" role="group" aria-label="Edit mode">' + seg('write', 'Write') + seg('preview', 'Preview') + seg('raw', 'Raw file') + '</div>';
+  const kb = (navigator.platform && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl') + '+S saves.';
+  if (_mdaiEditMode === 'raw') {
+    const text = _mdaiDraft !== null ? _mdaiDraft : _mdaiCur.content;
+    return h + '<div class="mdai-editor"><div class="mdai-gutter" id="mdai-gutter" aria-hidden="true"></div>'
+      + '<textarea id="mdai-body-ta" class="mdai-code" spellcheck="false" aria-label="' + esc(_mdaiCur.abs.split('/').pop()) + ' source"'
+      + ' oninput="_mdaiEditInput(this)" onscroll="_mdaiGutter(this)" onkeydown="_mdaiEditKey(event)">' + esc(text) + '</textarea></div>'
+      + _mdaiFieldErr('raw') + '<div class="mdai-hint">The whole file: frontmatter between <code>---</code> lines, then the instruction. The server checks it parses before saving. ' + kb + '</div>';
+  }
+  const body = _mdaiBodyDraft !== null ? _mdaiBodyDraft : (_mdaiCur.body || '');
+  if (_mdaiEditMode === 'preview') {
+    return h + '<div class="mdai-output md-content mdai-instr-preview">' + (body.trim() ? renderMarkdown(body, _mdaiCur.abs) : '<div class="mdai-dim">No instruction yet.</div>') + '</div>';
+  }
+  return h + '<div class="mdai-editor"><textarea id="mdai-instr-ta" class="mdai-code" spellcheck="true" aria-label="Instruction"'
+    + ' placeholder="What should the model write from the sources?" oninput="_mdaiBodyInput(this)" onkeydown="_mdaiEditKey(event)">' + esc(body) + '</textarea></div>'
+    + _mdaiFieldErr('body') + '<div class="mdai-hint">The instruction the model follows, in Markdown. Sources and settings have their own tabs. ' + kb + '</div>';
 }
 function _mdaiPreviewHtml() {
   const run = _mdaiShown;
-  if (_mdaiRunning && !run) return '<div class="mdai-empty"><span class="mdai-spin"></span>Running the chain…</div>';
+  if (_mdaiRunning && !run) return '<div class="mdai-empty">The first output appears here when the run finishes.</div>';
   if (!run) return '<div class="mdai-empty"><div class="mdai-empty-title">Not run yet</div><div>Run it to see what the model writes from these sources.</div>'
-    + '<button class="btn primary" onclick="_mdaiRun({show:true})">&#9655; Run</button></div>';
+    + '<button class="btn primary" onclick="_mdaiRun({show:true})"' + (_mdaiCur.doc ? '' : ' disabled') + '>&#9655; Run</button></div>';
   const i = _mdaiHist.indexOf(run);
-  const st = _mdaiStatusOf(run);
+  const st = _mdaiStatusInfo(run.status, run.cached);
   let h = '<div class="mdai-prev-head"><span class="mdai-dot ' + st.cls + '"></span><span>Run ' + _mdaiRunNo(run) + ' · ' + timeAgo(run.ts)
-    + (run.model ? ' · ' + esc(run.model) : '') + (run.dur_ms ? ' · ' + _mdaiDur(run.dur_ms) : '') + (run.cached ? ' · cached' : '') + '</span>'
+    + (run.model ? ' · ' + esc(run.model) : '') + (run.dur_ms ? ' · ' + _mdaiDur(run.dur_ms) : '') + (run.cached ? ' · cached' : '')
+    + (run.tokens_in != null ? ' · ' + _mdaiTok(run.tokens_in) + ' in / ' + _mdaiTok(run.tokens_out) + ' out' : '') + '</span>'
     + '<span class="mdai-prev-nav"><button class="btn" ' + (i >= _mdaiHist.length - 1 || i < 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(1)" aria-label="Older run">‹<span class="mdai-nav-lbl"> Older</span></button>'
     + '<button class="btn" ' + (i <= 0 ? 'disabled' : '') + ' onclick="_mdaiHistNav(-1)" aria-label="Newer run"><span class="mdai-nav-lbl">Newer </span>›</button></span></div>';
-  if (run.status === 'error') h += '<div class="mdai-err"><b>This run failed.</b> ' + esc(run.error || '') + '</div>';
+  if (run.status !== 'ok') h += '<div class="mdai-err"><b>' + esc(st.label) + '.</b> ' + esc(run.error || '') + '</div>';
   else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
   return h;
 }
 function _mdaiSrcIcon(kind) { return { amux: '&#128488;', mdai: '&#9672;', folder: '&#128193;', file: '&#128196;', url: '&#127760;', missing: '&#9888;' }[kind] || '&#128196;'; }
 function _mdaiSourcesHtml() {
-  const edges = (_mdaiGraph && _mdaiGraph.sources) || [];
-  const editable = _mdaiCur.parseOk;
-  let h = '<div class="mdai-sec-intro">Each source is read and handed to the model with its edge prompt. '
-    + (editable ? '' : '<b>This frontmatter has a shape the form cannot rewrite safely (e.g. a <code>fetch:</code> block); edit it in the Edit tab.</b>') + '</div>';
-  if (!_mdaiCur.sources.length) h += '<div class="mdai-empty">No sources. The model only sees the instruction.</div>';
-  h += _mdaiCur.sources.map((s, i) => {
-    const e = edges[i] || {};
-    const lbl = e.kind === 'amux' ? 'Amux messages · ' + _mdaiAmuxLabel(s.path) : e.kind === 'missing' ? 'Not found' : (e.kind || 'source');
-    return '<div class="mdai-src"><div class="mdai-src-h"><span class="mdai-src-ico">' + _mdaiSrcIcon(e.kind) + '</span><span class="mdai-src-kind">' + esc(lbl) + '</span>'
-      + (e.kind === 'mdai' ? '<button class="btn" onclick="openMdaiNode(' + _mdaiQ(e.path) + ')">Open</button>' : '')
-      + (editable ? '<button class="btn" onclick="_mdaiRemoveSource(' + i + ')" aria-label="Remove source">Remove</button>' : '') + '</div>'
-      + '<label class="mdai-lbl">Path<input class="input" id="mdai-path-' + i + '" value="' + esc(s.path) + '"' + (editable ? '' : ' disabled') + '></label>'
-      + '<label class="mdai-lbl">Edge prompt<textarea class="input" rows="2" id="mdai-prompt-' + i + '" placeholder="How the model should use this source"' + (editable ? '' : ' disabled') + '>' + esc(s.prompt || '') + '</textarea></label>'
-      + (editable ? '<div class="mdai-row-end"><button class="btn" onclick="_mdaiSavePrompt(' + i + ')">Save source</button></div>' : '') + '</div>';
-  }).join('');
-  if (editable) {
-    const others = ((_mdaiListData && _mdaiListData.files) || []).filter(f => _mdaiAbs(f.path) !== _mdaiCur.abs);
-    h += '<div class="mdai-src mdai-src-add"><div class="mdai-src-h"><span class="mdai-src-kind">Add a source</span></div>'
-      + '<div class="mdai-add-row"><select class="input" id="mdai-add-kind" onchange="document.getElementById(\'mdai-add-msg\').style.display=this.value===\'messages\'?\'\':\'none\';document.getElementById(\'mdai-add-path\').style.display=this.value===\'messages\'?\'none\':\'\';document.getElementById(\'mdai-add-path\').setAttribute(\'list\',this.value===\'mdai\'?\'mdai-add-list\':\'\')">'
-      + '<option value="messages">Amux messages</option><option value="path">File or folder</option><option value="mdai">Another .mdai</option></select>'
-      + '<span id="mdai-add-msg"><select class="input" id="mdai-add-days"><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></span>'
-      + '<input class="input" id="mdai-add-path" style="display:none" placeholder="notes/ or report.md or other.mdai">'
-      + '<datalist id="mdai-add-list">' + others.map(f => '<option value="' + esc(f.path) + '">').join('') + '</datalist>'
-      + '<button class="btn primary" id="mdai-add-btn" onclick="_mdaiAddSource()">Add</button></div></div>';
-  }
-  return h;
+  if (!_mdaiCur.doc) return '<div class="mdai-empty">Sources are editable once the file parses.</div>';
+  if (!_mdaiSrcEd.src || _mdaiSrcEd.srcFor !== _mdaiCur.abs + ':' + _mdaiCur.mtime) { _mdaiSrcInit('src', _mdaiCur.sources); _mdaiSrcEd.srcFor = _mdaiCur.abs + ':' + _mdaiCur.mtime; }
+  const f = (_mdaiPendingDoc || _mdaiCur.doc).fetch || {};
+  const hdrs = Object.entries(f.headers || {}).map(([k, v]) => k + ': ' + v).join('\n');
+  const meth = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].map(m => '<option' + ((f.method || 'GET') === m ? ' selected' : '') + '>' + m + '</option>').join('');
+  return '<div class="mdai-sec-intro">Each source is read on every run and handed to the model with its edge prompt.</div>'
+    + _mdaiFieldErr('sources')
+    + '<div id="src-sources" class="mdai-src-list">' + _mdaiSrcHtml('src') + '</div>'
+    + '<details class="mdai-src mdai-fetch"' + (f.url ? ' open' : '') + '><summary class="mdai-src-kind">' + _mdaiSrcIcon('url') + ' API call (fetch)' + (f.url ? '' : ' <span class="mdai-dim">optional</span>') + '</summary>'
+    + '<div class="mdai-hint">Calls an HTTP API on every run. With an instruction, the response joins the sources; with no instruction, the response is the output and no model is called.</div>'
+    + '<div class="mdai-fetch-grid"><label class="mdai-lbl">Method<select class="input" id="mdai-fetch-method">' + meth + '</select></label>'
+    + '<label class="mdai-lbl mdai-grow2">URL<input class="input" id="mdai-fetch-url" value="' + esc(f.url || '') + '" placeholder="https://api.example.com/items" autocomplete="off"></label></div>'
+    + _mdaiFieldErr('fetch.url') + _mdaiFieldErr('fetch.method')
+    + '<label class="mdai-lbl">Headers<span class="mdai-hint">One per line, <code>Name: value</code>. Credentials go in a connector, not here.</span><textarea class="input mdai-code" rows="2" id="mdai-fetch-headers">' + esc(hdrs) + '</textarea></label>'
+    + _mdaiFieldErr('fetch.headers')
+    + '<label class="mdai-lbl">Request body<textarea class="input mdai-code" rows="2" id="mdai-fetch-body">' + esc(f.body || '') + '</textarea></label>'
+    + '<div class="mdai-fetch-grid"><label class="mdai-lbl">Connector<input class="input" id="mdai-fetch-connector" value="' + esc(f.connector || '') + '" placeholder="e.g. linear" autocomplete="off"></label>'
+    + '<label class="mdai-lbl">Select (JSON path)<input class="input" id="mdai-fetch-select" value="' + esc(f.select || '') + '" placeholder="data.items" autocomplete="off"></label></div></details>'
+    + '<div class="mdai-row-end"><button class="btn primary" id="mdai-src-save" onclick="_mdaiSaveSources()">Save sources</button></div>';
 }
 function _mdaiRunsHtml() {
-  if (!_mdaiHist.length) return '<div class="mdai-empty">No runs yet.</div>';
+  const a = _mdaiRunning && _mdaiActive && _mdaiActive.running ? _mdaiActive : null;
+  if (!_mdaiHist.length && !a) return '<div class="mdai-empty">No runs yet.</div>';
   const more = (_mdaiCur.runsTotal || 0) > _mdaiHist.length ? '<div class="mdai-hint">Showing the latest ' + _mdaiHist.length + ' of ' + _mdaiCur.runsTotal + ' runs.</div>' : '';
+  const live = a ? '<div class="mdai-run mdai-run-live" role="row"><span>' + ((_mdaiCur.runsTotal || 0) + 1) + '</span><span data-l="When">now</span><span data-l="Status"><span class="mdai-dot run"></span>Running</span>'
+    + _mdaiCell('Model', esc((a.progress && a.progress.model) || _mdaiCur.model || '')) + _mdaiCell('Time', _mdaiElapsed(a.elapsed_ms)) + _mdaiCell('In', '—') + _mdaiCell('Out', '—') + _mdaiCell('Cost', '—') + '</div>' : '';
   return '<div class="mdai-runs" role="table"><div class="mdai-run mdai-run-h" role="row"><span>Run</span><span>When</span><span>Status</span><span>Model</span><span>Time</span><span>In</span><span>Out</span><span>Cost</span></div>'
-    + _mdaiHist.map((r, i) => {
-      const st = _mdaiStatusOf(r);
-      return '<div class="mdai-run' + (_mdaiShown === r ? ' sel' : '') + '" role="row" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])" onkeydown="if(event.key===\'Enter\')_mdaiShowRun(_mdaiHist[' + i + '])">'
+    + live + _mdaiHist.map((r, i) => {
+      const st = _mdaiStatusInfo(r.status, r.cached);
+      const why = r.status !== 'ok' && r.error ? ' title="' + esc(r.error) + '"' : '';
+      return '<div class="mdai-run' + (_mdaiShown === r ? ' sel' : '') + '" role="row" tabindex="0"' + why + ' onclick="_mdaiShowRun(_mdaiHist[' + i + '])" onkeydown="if(event.key===\'Enter\')_mdaiShowRun(_mdaiHist[' + i + '])">'
         + '<span>' + _mdaiRunNo(r) + '</span><span data-l="When">' + timeAgo(r.ts) + '</span><span data-l="Status"><span class="mdai-dot ' + st.cls + '"></span>' + st.label + '</span>'
         + _mdaiCell('Model', esc(r.model || '')) + _mdaiCell('Time', _mdaiDur(r.dur_ms) || '—')
         + _mdaiCell('In', _mdaiTok(r.tokens_in)) + _mdaiCell('Out', _mdaiTok(r.tokens_out)) + _mdaiCell('Cost', _mdaiCost(r.cost_usd)) + '</div>';
     }).join('') + '</div>' + more
-    + '<div class="mdai-hint">Tokens and cost are what the provider reported. The claude CLI reports both; the raw API reports tokens only, so cost shows —.</div>';
+    + '<div class="mdai-hint">Click a run to read its full output. Tokens and cost are what the provider reported; a call that was stopped (timed out or cancelled) reported none, so it shows —.</div>';
 }
 // A run-table cell; an empty value ('—' or nothing) is marked so a phone can
 // leave it out instead of spending a line on "Cost: —".
@@ -30196,16 +30776,24 @@ function _mdaiCell(label, html) {
   return '<span data-l="' + label + '"' + (empty ? ' class="mdai-v-empty"' : '') + '>' + (html || '—') + '</span>';
 }
 function _mdaiSettingsHtml() {
-  const m = _mdaiCur.model || '';
+  const d = _mdaiCur.doc ? (_mdaiPendingDoc || _mdaiCur.doc) : null;
+  if (!d) return '<div class="mdai-empty">Settings are editable once the file parses.</div>'
+    + '<div class="mdai-row-end"><button class="btn danger" onclick="_mdaiDelete()">Delete node</button></div>';
+  const m = d.model || '';
   const known = ['', 'haiku', 'sonnet', 'opus'];
   const resolved = (_mdaiGraph && _mdaiGraph.model) || '';
+  const extra = Object.keys(d.extra || {});
   return '<div class="mdai-settings">'
-    + '<label class="mdai-lbl">Model<select class="input" id="mdai-set-model" onchange="_mdaiSetModel(this.value)"' + (_mdaiCur.parseOk ? '' : ' disabled') + '>'
-    + '<option value=""' + (m ? '' : ' selected') + '>Default' + (resolved && !m ? ' (' + esc(resolved) + ')' : '') + '</option>'
-    + known.slice(1).map(k => '<option value="' + k + '"' + (m === k ? ' selected' : '') + '>' + k + '</option>').join('')
-    + (m && !known.includes(m) ? '<option value="' + esc(m) + '" selected>' + esc(m) + '</option>' : '') + '</select></label>'
+    + '<label class="mdai-lbl">Title<span class="mdai-hint">Shown in the list. Empty uses the instruction\'s first line.</span><input class="input" id="mdai-set-title" value="' + esc(d.title || '') + '" maxlength="200"></label>' + _mdaiFieldErr('title')
+    + '<label class="mdai-lbl">File name<input class="input" id="mdai-set-name" value="' + esc(_mdaiPendingName || _mdaiCur.abs.split('/').pop()) + '" autocomplete="off"></label>' + _mdaiFieldErr('name')
+    + '<label class="mdai-lbl">Model<select class="input" id="mdai-set-model" onchange="_mdaiModelPick(this,\'mdai-set-model-custom\')">' + _mdaiModelOptions(m).replace('>Default<', '>Default' + (resolved && !m ? ' (' + esc(resolved) + ')' : '') + '<') + '</select>'
+    + '<input class="input" id="mdai-set-model-custom" placeholder="model id, e.g. claude-sonnet-4-6" value="' + esc(known.includes(m) ? '' : m) + '"' + (known.includes(m) ? ' style="display:none"' : '') + ' autocomplete="off"></label>' + _mdaiFieldErr('model')
+    + '<label class="mdai-check"><input type="checkbox" id="mdai-set-refresh"' + (d.refresh === 'manual' ? '' : ' checked') + '> Run when its page is opened<span class="mdai-hint">Off: it runs only when you press Run. A node over a large source can cost dollars per run.</span></label>' + _mdaiFieldErr('refresh')
+    + '<label class="mdai-lbl">Timeout per model call (seconds)<span class="mdai-hint">Default 900. 30 to 3600. A call that runs longer is stopped and the run says it timed out.</span><input class="input" type="number" min="30" max="3600" inputmode="numeric" id="mdai-set-timeout" value="' + (d.timeout_s == null ? '' : d.timeout_s) + '" placeholder="900"></label>' + _mdaiFieldErr('timeout_s')
+    + '<div class="mdai-row-end"><button class="btn primary" id="mdai-set-save" onclick="_mdaiSaveSettings()">Save settings</button></div>'
     + '<div class="mdai-kv"><span>Location</span><code>' + esc(_mdaiCur.abs) + '</code></div>'
     + '<div class="mdai-kv"><span>Runs</span><span>' + (_mdaiCur.runsTotal || 0) + '</span></div>'
+    + (extra.length ? '<div class="mdai-kv"><span>Other keys</span><span>' + extra.map(k => '<code>' + esc(k) + '</code>').join(' ') + ' <span class="mdai-dim">(kept as they are; edit in Raw file)</span></span></div>' : '')
     + '<div class="mdai-row-end"><button class="btn" onclick="_mdaiOpenRaw()">Open raw .mdai file</button>'
     + '<button class="btn danger" onclick="_mdaiDelete()">Delete node</button></div></div>';
 }
@@ -30251,8 +30839,8 @@ function _mdaiRenderSide() {
   h += '<section class="mdai-card"><div class="mdai-card-h">Last run<button class="mdai-link" onclick="_mdaiSetTab(\'runs\')">View all runs →</button></div>';
   if (!last) h += '<div class="mdai-dim">Not run yet.</div>';
   else {
-    const st = _mdaiStatusOf(last);
-    h += '<div class="mdai-last ' + st.cls + '"><b>' + (last.status === 'error' ? 'Failed' : 'Completed successfully') + '</b>'
+    const st = _mdaiStatusInfo(last.status, last.cached);
+    h += '<div class="mdai-last ' + st.cls + '"><b>' + esc(st.label) + '</b>'
       + '<span>' + timeAgo(last.ts) + (last.dur_ms ? ' · ' + _mdaiDur(last.dur_ms) : '') + ' · ' + esc(last.model || '') + (last.cached ? ' · cached' : '') + '</span></div>'
       // Nothing reported (the raw API path): no row of three dashes.
       + (last.tokens_in == null && last.tokens_out == null && last.cost_usd == null ? ''
@@ -30265,7 +30853,7 @@ function _mdaiRenderSide() {
   h += '</section>';
   if (_mdaiHist.length) {
     h += '<section class="mdai-card"><div class="mdai-card-h">Recent runs<button class="mdai-link" onclick="_mdaiSetTab(\'runs\')">View all →</button></div>'
-      + _mdaiHist.slice(0, 5).map((r, i) => { const st = _mdaiStatusOf(r); return '<div class="mdai-rrow" role="button" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])"><span class="mdai-dot ' + st.cls + '"></span><span>' + timeAgo(r.ts) + '</span><span class="' + (r.status === 'error' ? 'mdai-bad' : '') + '">' + (r.status === 'error' ? 'Failed' : (r.cached ? 'Cached' : 'Completed')) + '</span><span>' + (_mdaiDur(r.dur_ms) || '') + '</span></div>'; }).join('')
+      + _mdaiHist.slice(0, 5).map((r, i) => { const st = _mdaiStatusInfo(r.status, r.cached); return '<div class="mdai-rrow" role="button" tabindex="0" onclick="_mdaiShowRun(_mdaiHist[' + i + '])"><span class="mdai-dot ' + st.cls + '"></span><span>' + timeAgo(r.ts) + '</span><span class="' + (st.cls === 'bad' ? 'mdai-bad' : '') + '">' + esc(st.label) + '</span><span>' + (_mdaiDur(r.dur_ms) || '') + '</span></div>'; }).join('')
       + '</section>';
   }
   side.innerHTML = h;
@@ -30987,6 +31575,9 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
     const row = document.createElement('div');
     row.className = 'explore-row';
+    row.dataset.path = entryPath;
+    row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+    if (_fsel.paths.has(entryPath)) row.classList.add('fsel-selected');
     const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
     const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this,'${entry.type}')">⋯</button>`;
@@ -31000,6 +31591,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     }
     body.appendChild(row);
   }
+  _fselApply();
 }
 function _exploreSearchFilter(q) {
   const body = document.getElementById('explore-body');
@@ -33832,7 +34424,7 @@ function switchView(view) {
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
-    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -33858,6 +34450,7 @@ function switchView(view) {
   // Draw: load the editor lazily on first open; leaving flushes a pending
   // save and stops the on-disk change poll.
   if (view === 'draw') _drawEnter(); else _drawLeave();
+  if (view === 'vault') _vaultEnter(); else if (typeof _vaultLeave === 'function') _vaultLeave();
   if (view === 'sql') _sqlInit();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
@@ -40591,7 +41184,22 @@ function openSchedModal(editId, opts) {
     const body = overlay.querySelector('.sx-create-body');
     if (body) body.scrollTop = 0;
   });
-  setTimeout(() => { if (_sxModalOpen) document.getElementById('sched-title').focus(); }, 50);
+  // Focus the name field once the sheet is up, unless the owner already moved
+  // into another field of this form. This timer used to focus the title
+  // unconditionally 50ms after open: typing that started sooner (a fast tap
+  // into Message, an autofill, the scheduler e2e on CI) had its focus pulled
+  // away mid-entry, so the text landed in Name and Message stayed empty
+  // (scheduler-redesign.spec.ts:357, desktop run 38814804812, mobile run
+  // 38867620848). The skip is reported so a new path into it is visible.
+  setTimeout(() => {
+    if (!_sxModalOpen || gen !== _sxModalGen) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && overlay.contains(a) && a.id !== 'sched-title') {
+      _sxModalBeacon('sched-form-focus-kept', { field: a.id || a.tagName });
+      return;
+    }
+    document.getElementById('sched-title').focus();
+  }, 50);
 }
 function duplicateSchedule(id) {
   const s = (schedules || []).find(x => x.id === id);
@@ -43981,16 +44589,32 @@ const _idb = (() => {
         d.createObjectStore('files', { keyPath: 'path' });
       }
     };
-    req.onsuccess = () => { db = req.result; db.onversionchange = () => { db.close(); db = null; }; resolve(db); };
+    req.onsuccess = () => { db = req.result; db.onversionchange = () => { db.close(); db = null; }; db.onclose = () => { db = null; }; resolve(db); };
     req.onerror = () => reject(req.error);
     req.onblocked = () => { if (db) { db.close(); db = null; } };
   });
-  const _txw = (store, fn) => open().then(d => new Promise((resolve, reject) => {
+  // A CLOSED CONNECTION IS REOPENED, NOT REUSED (2026-10-15). iOS closes a
+  // suspended PWA's IndexedDB connection; this kept handing out the dead
+  // handle, so every transaction() threw InvalidStateError "The database
+  // connection is closing" and the outbox showed "Sync failed" with a message
+  // stuck on "Saved on this device" until the app was killed. `onclose` clears
+  // it when the browser says so; a transaction that still throws
+  // InvalidStateError never started, so drop the handle, reopen and run it once
+  // more. Each reopen is beaconed as kind=idb-reopened.
+  const withDb = fn => open().then(d => fn(d)).catch(e => {
+    if (!e || e.name !== 'InvalidStateError') throw e;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reopened', error: String(e.message || e).slice(0, 160), measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return open().then(d => fn(d));
+  });
+  const _txw = (store, fn) => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(store, 'readwrite');
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     fn(tx.objectStore(store));
   })).catch(() => {});
-  const transaction = (store, write) => open().then(d => new Promise((resolve, reject) => {
+  const transaction = (store, write) => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(store, 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('Storage transaction aborted'));
@@ -44005,7 +44629,7 @@ const _idb = (() => {
     try { return await job(); }
     finally { const next = waitingSaves.shift(); if (next) next(); else activeSaves--; }
   };
-  const removeUpload = id => open().then(d => new Promise((resolve, reject) => {
+  const removeUpload = id => withDb(d => new Promise((resolve, reject) => {
     const tx = d.transaction(['uploads', 'uploadChunks'], 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('File removal aborted'));
@@ -44043,31 +44667,31 @@ const _idb = (() => {
       request.onsuccess = () => { if (request.result) os.put({...request.result, ...patch}); };
     }),
     deleteUpload: id => removeUpload(id),
-    uploadChunk: (id, index) => open().then(d => new Promise((resolve, reject) => {
+    uploadChunk: (id, index) => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('uploadChunks', 'readonly');
       const request = tx.objectStore('uploadChunks').get([id, index]);
       tx.oncomplete = () => request.result ? resolve(request.result.bytes) : reject(new Error('Saved file chunk is missing'));
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('File read aborted'));
     })),
-    getUploads: () => open().then(d => new Promise((resolve, reject) => {
+    getUploads: () => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('uploads', 'readonly');
       const request = tx.objectStore('uploads').getAll();
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => open().then(d => new Promise((resolve) => {
+    get: (key) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('kv', 'readonly');
       const req = tx.objectStore('kv').get(key);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
-    del: (key) => open().then(d => {
+    del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
     }).catch(() => {}),
     // Detail snapshots use the existing mirror and wait for the durable commit.
     putIssue: row => transaction('issues', os => os.put(row)),
-    getIssue: id => open().then(d => new Promise((resolve, reject) => {
+    getIssue: id => withDb(d => new Promise((resolve, reject) => {
       const tx = d.transaction('issues', 'readonly');
       const request = tx.objectStore('issues').get(id);
       tx.oncomplete = () => resolve(request.result || null);
@@ -44082,25 +44706,25 @@ const _idb = (() => {
       os.clear(); statuses.forEach((s, i) => os.put({ ...s, _pos: i }));
     }),
     // Read all items from a store
-    getAll: (store) => open().then(d => new Promise((resolve) => {
+    getAll: (store) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction(store, 'readonly');
       const req = tx.objectStore(store).getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => resolve([]);
     })).catch(() => []),
     // Files offline cache
-    setFile: (path, val) => open().then(d => {
+    setFile: (path, val) => withDb(d => {
       const tx = d.transaction('files', 'readwrite');
       tx.objectStore('files').put({ ...val, path, ts: Date.now() });
     }).catch(() => {}),
-    getFile: (path) => open().then(d => new Promise((resolve) => {
+    getFile: (path) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const req = tx.objectStore('files').get(path);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
     // Bump a cached file's ts to now (last-opened) without rewriting its blob.
-    touchFile: (path) => open().then(d => new Promise((resolve) => {
+    touchFile: (path) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const os = tx.objectStore('files');
       const g = os.get(path);
@@ -44108,7 +44732,7 @@ const _idb = (() => {
       g.onerror = () => resolve();
     })).catch(() => {}),
     // Evict cached files whose last-opened ts is older than maxAgeMs. Returns count.
-    pruneFiles: (maxAgeMs) => open().then(d => new Promise((resolve) => {
+    pruneFiles: (maxAgeMs) => withDb(d => new Promise((resolve) => {
       const cutoff = Date.now() - maxAgeMs;
       const tx = d.transaction('files', 'readwrite');
       const cur = tx.objectStore('files').openCursor();
@@ -44126,7 +44750,7 @@ const _idb = (() => {
     // survives a 30-day cutoff, and a phone can fill up long before anything
     // ages out. Eviction is oldest-LAST-OPENED first, so the files you actually
     // read on the phone are the ones that survive.
-    filesBytes: () => open().then(d => new Promise((resolve) => {
+    filesBytes: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       let total = 0;
@@ -44136,7 +44760,7 @@ const _idb = (() => {
       };
       cur.onerror = () => resolve(total);
     })).catch(() => 0),
-    trimFilesToBytes: (budget) => open().then(d => new Promise((resolve) => {
+    trimFilesToBytes: (budget) => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const req = tx.objectStore('files').getAll();
       req.onsuccess = () => {
@@ -44158,7 +44782,7 @@ const _idb = (() => {
     })).catch(() => ({ removed: 0, bytes: 0 })),
     // Paths of files (not dir listings) cached on THIS device — for the
     // "downloaded" indicator in the directory view.
-    cachedFilePaths: () => open().then(d => new Promise((resolve) => {
+    cachedFilePaths: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       const set = new Set();
@@ -44167,7 +44791,7 @@ const _idb = (() => {
       cur.onerror = () => resolve(set);
     })).catch(() => new Set()),
     // Count + byte size of downloaded file blobs (for the purge UI).
-    cacheStats: () => open().then(d => new Promise((resolve) => {
+    cacheStats: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readonly');
       const cur = tx.objectStore('files').openCursor();
       let count = 0, bytes = 0;
@@ -44179,7 +44803,7 @@ const _idb = (() => {
     })).catch(() => ({ count: 0, bytes: 0 })),
     deleteFile: (path) => _txw('files', os => os.delete(path)),
     // Purge only downloaded file blobs; keep dir listings (small, aid offline nav).
-    clearCachedFiles: () => open().then(d => new Promise((resolve) => {
+    clearCachedFiles: () => withDb(d => new Promise((resolve) => {
       const tx = d.transaction('files', 'readwrite');
       const cur = tx.objectStore('files').openCursor();
       let removed = 0;
@@ -45986,6 +46610,13 @@ function _offlineSettingsHTML() {
 // integrations/device). Switch the visible panel + active button, remember the
 // last tab, and reset the menu scroll so a new panel opens at the top.
 // ── Vault (vault.rs): cards workers use without reading, each with a limit ──
+// Every vault row shows its id and copies it on click (Ethan, 2026-10-16: "in vault
+// list make sure each has an id I can copy"). The id is what the API, `amux order`
+// and the audit log key on (sec_… for a secret, vlt_… for a payment method); the
+// env key name is not unique across scopes, so it cannot stand in for it.
+function _vaultIdBadge(id) {
+  return '<button type="button" class="vault-id" title="Id: click to copy" aria-label="Copy id ' + esc(id) + '" onclick="event.stopPropagation();_copyTextWithToast(\'' + escJs(id) + '\',\'' + escJs(id) + ' copied\')">' + esc(id) + '</button>';
+}
 async function _vaultLoad() {
   const el = document.getElementById('vault-items');
   if (!el) return;
@@ -45997,7 +46628,7 @@ async function _vaultLoad() {
     el.innerHTML = items.map(i => {
       const pending = i.status !== 'active';
       return '<div class="vault-item" data-id="' + esc(i.id) + '">'
-        + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
+        + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
         + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
         + '<label class="connection-control">Approval needed above $'
         + '<input type="number" min="0" step="1" class="search-input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
@@ -46076,96 +46707,568 @@ async function _chatgptPublish(btn) {
   if (!r.ok) showToast('Not published: ' + (d.error || r.status));
   _chatgptAppLoad();
 }
-// ── Vault secrets (vault_secrets.rs, AMUX-5375): encrypted env values ──────
-// No response carries a value, so nothing here can show one. Replace-only.
+// ── Vault (vault_secrets.rs + vault.rs, AMUX-5375) ─────────────────────────
+// One page for both vault kinds: Secrets (encrypted env values, scoped
+// global / group / worker) and Payment Methods (the cards `amux order` uses).
+// No list response carries a value. Reveal is the one call that does: owner
+// only, audited server-side, and masked again here after `remask_after_s`.
 function _vaultScopeLabel(i) {
   return i.scope === 'global' ? 'Global' : (i.scope === 'group' ? 'Group ' : 'Worker ') + i.target;
 }
+const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
+  worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
+const _VAULT_ICONS = {
+  key: '<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M13.5 9.5l2 2"/>',
+  card: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>',
+  shield: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
+  global: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/>',
+  group: '<circle cx="9" cy="9" r="3"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5"/><circle cx="17" cy="8" r="2.5"/><path d="M16 14c3 0 5 2 5 4.5"/>',
+  worker: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.6 0 3-.4 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  audit: '<path d="M8 3h8l4 4v14H4V3z"/><path d="M8 11h8M8 15h5"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+};
+function _vaultIcon(name) {
+  return '<svg class="vault-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + (_VAULT_ICONS[name] || '') + '</svg>';
+}
+function _vaultChip(scope) {
+  const label = scope === 'global' ? 'Global' : scope === 'group' ? 'Group' : 'Worker';
+  return '<span class="vault-chip vault-chip-' + esc(scope) + '">' + _vaultIcon(scope) + label + '</span>';
+}
+// Workers and their groups, from the session list the dashboard already has.
+function _vaultWorkerGroups() {
+  const out = {};
+  const list = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
+  for (const s of list) if (s && s.name) out[s.name] = (s.tags || []).map(t => String(t).toLowerCase());
+  for (const w of _vault.workers) if (!out[w]) out[w] = [];
+  return out;
+}
+function _vaultProvisionedTo(i) {
+  const n = i.effective_for ?? 0, o = i.overridden_for ?? 0;
+  const who = i.scope === 'global' ? 'All workers' : esc(i.target);
+  const count = '<span class="ui-help">' + n + ' worker' + (n === 1 ? '' : 's')
+    + (o ? ' · overridden for ' + o : '') + '</span>';
+  return '<div class="vault-prov"><span>' + who + '</span>' + count + '</div>';
+}
+// Vault is a top-level view (switchView('vault')), like Draw or Scheduler:
+// the page renders into #vault-view once and stays; leaving the tab masks
+// any revealed value and closes its sub-dialogs.
+function _vaultEnsurePage() {
+  const view = document.getElementById('vault-view');
+  if (!view) return null;
+  if (!view.firstElementChild) {
+    view.innerHTML = `<section class="vault-page" aria-labelledby="vault-title">
+      <header class="vault-head"><h2 id="vault-title">Vault</h2><p class="ui-help">Manage credentials and payment methods for your workers. Keep your secrets secure and scoped.</p></header>
+      <div class="vault-tabs" role="tablist" aria-label="Vault sections">
+        <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
+        <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods</button>
+        <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
+      </div>
+      <div class="vault-body">
+        <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
+          <div class="vault-banner" role="note">${_vaultIcon('shield')}<div><b>Secure by design</b><p>Secrets are encrypted and automatically injected as environment variables when workers launch. Values are never shown in logs.</p></div></div>
+          <div id="vault-keystore-note"></div>
+          <div class="vault-toolbar">
+            <label class="vault-search">${_vaultIcon('search')}<span class="sr-only">Search secrets</span><input id="vault-q" class="input" type="search" placeholder="Search secrets…" autocomplete="off" spellcheck="false" oninput="_vault.q=this.value;_vaultRender()"></label>
+            <select id="vault-f-scope" class="input" aria-label="Filter by scope" onchange="_vault.scope=this.value;_vaultRender()"><option value="">All Scopes</option><option value="global">Global</option><option value="group">Group</option><option value="worker">Worker</option></select>
+            <select id="vault-f-group" class="input" aria-label="Filter by group" onchange="_vault.group=this.value;_vaultRender()"></select>
+            <select id="vault-f-worker" class="input" aria-label="Filter by worker" onchange="_vaultPickWorker(this.value)"></select>
+            <select id="vault-sort" class="input" aria-label="Sort secrets" onchange="_vault.sort=this.value;_vaultRender()"><option value="name">Name (A–Z)</option><option value="name-desc">Name (Z–A)</option><option value="updated">Recently updated</option><option value="scope">Scope</option></select>
+          </div>
+          <div class="vault-actions-row">
+            <button class="btn" id="vault-audit-btn" onclick="_vaultAudit()">${_vaultIcon('audit')}View Audit Log</button>
+            <button class="btn primary" id="vault-add-btn" onclick="_vaultEdit()">${_vaultIcon('plus')}Add Secret</button>
+          </div>
+          <div id="vault-worker-panel"></div>
+          <div id="vault-secrets-table" aria-live="polite"></div>
+          <p id="vault-count" class="ui-help" role="status"></p>
+        </div>
+        <div id="vault-panel-payments" role="tabpanel" aria-labelledby="vault-tab-payments" hidden>
+          <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner. Workers stage new cards with <code>amux order</code>; you activate them here.</p>
+          <div id="vault-items">Loading…</div>
+        </div>
+        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden></div>
+      </div>
+    </section>`;
+    view.onkeydown = event => {
+      if (event.key === 'Escape' && document.querySelector('.vault-menu')) { _vaultMenuClose(); event.preventDefault(); event.stopPropagation(); }
+    };
+  }
+  return view;
+}
+// Called by switchView on entering the tab.
+function _vaultEnter() {
+  if (!_vaultEnsurePage()) return;
+  _vaultTab(_vault.tab || 'secrets');
+  _vaultSecretsLoad();
+}
+// Called by switchView on leaving it.
+function _vaultLeave() {
+  if (!document.getElementById('vault-view')?.firstElementChild) return;
+  _vaultMaskAll();
+  _vaultApiKeysHome();
+  document.querySelectorAll('.vault-sub').forEach(el => el.remove());
+}
+// Open the Vault tab on a given section, optionally filtered to a worker or
+// group (the Scope tab's "Manage in Vault" link uses this).
+function openVault(tab, filter) {
+  if (typeof closeSettings === 'function') closeSettings();
+  _vault.q = ''; _vault.scope = ''; _vault.group = ''; _vault.worker = ''; _vault.prov = null;
+  if (filter && filter.group) _vault.group = String(filter.group).toLowerCase();
+  if (filter && filter.worker) _vault.worker = filter.worker;
+  _vault.tab = ['payments', 'apikeys'].includes(tab) ? tab : 'secrets';
+  const q = document.getElementById('vault-q'); if (q) q.value = '';
+  if (activeView !== 'vault') switchView('vault');
+  else _vaultEnter();
+  document.getElementById('vault-tab-' + _vault.tab)?.focus();
+}
+// Keyboard focus stays inside an open vault sub-dialog (edit, access, audit).
+function _vaultTrapTab(event, root) {
+  if (event.key !== 'Tab') return;
+  const controls = [...root.querySelectorAll('button:not(:disabled),input,select,textarea,[tabindex="0"]')].filter(el => el.getBoundingClientRect().height);
+  if (!controls.length) return;
+  const first = controls[0], last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+// Kept for callers that "close" the vault: leave for the Workers tab.
+function closeVault() {
+  if (activeView === 'vault') switchView('sessions');
+  else _vaultLeave();
+}
+function _vaultTab(name) {
+  _vault.tab = name;
+  for (const t of ['secrets', 'payments', 'apikeys']) {
+    const on = t === name;
+    const b = document.getElementById('vault-tab-' + t);
+    if (b) { b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
+    const p = document.getElementById('vault-panel-' + t);
+    if (p) p.hidden = !on;
+  }
+  if (name === 'payments') _vaultLoad();
+  if (name === 'apikeys') {
+    // Settings no longer shows API Keys (b15e61d9); the section's markup and
+    // handlers stay in #settings-moved-out, and this tab borrows the node so
+    // every id its scripts look up keeps working.
+    const sec = document.getElementById('settings-apikeys-section');
+    const panel = document.getElementById('vault-panel-apikeys');
+    if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
+    loadApiKeys();
+  }
+}
+// Return the borrowed API Keys section before the overlay is removed, or the
+// next openVault would find nothing to borrow.
+function _vaultApiKeysHome() {
+  const sec = document.getElementById('settings-apikeys-section');
+  const home = document.getElementById('settings-moved-out');
+  if (sec && home && sec.parentElement !== home) home.appendChild(sec);
+}
 async function _vaultSecretsLoad() {
-  const el = document.getElementById('vault-secrets');
-  if (!el) return;
+  const table = document.getElementById('vault-secrets-table');
+  if (!table) return;
+  if (!_vault.items.length) table.innerHTML = '<p class="ui-help">Loading…</p>';
   try {
     const r = await fetch(API + '/api/vault/secrets', { headers: _authHeaders() });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.why_unmeasured || d.error || r.status);
-    const items = (d.items || []).slice().sort((a, b) => a.key.localeCompare(b.key) || a.scope.localeCompare(b.scope));
-    const help = document.getElementById('vault-secrets-help');
-    if (help) help.dataset.keystore = d.keystore || '';
-    el.innerHTML = (d.keystore === 'file'
-      ? '<p class="connection-help vault-pending">The encryption key is a file beside the store (no Keychain on this machine), so a copy of ~/.amux carries both.</p>' : '')
-      + (items.length ? items.map(i => '<div class="vault-item vault-secret" data-id="' + esc(i.id) + '">'
-        + '<div class="vault-item-head"><code>' + esc(i.key) + '</code> · ' + esc(_vaultScopeLabel(i))
-        + ' · <span class="ui-help">updated ' + esc(timeAgo(i.updated)) + '</span>'
-        + (i.source ? ' · <span class="ui-help">imported from ' + esc(i.source) + '</span>' : '') + '</div>'
-        + '<div class="vault-actions">'
-        + '<button class="btn" onclick="_vaultSecretReplace(\'' + escJs(i.id) + '\',\'' + escJs(i.key) + '\')">Replace value</button>'
-        + '<button class="btn danger" onclick="_vaultSecretRemove(\'' + escJs(i.id) + '\',\'' + escJs(i.key) + '\')">Delete</button>'
-        + '</div></div>').join('') : '<p class="connection-help">No secrets yet.</p>');
-  } catch (e) { el.textContent = 'Secrets unavailable: ' + (e.message || e); }
-}
-async function _vaultSecretScopeChanged() {
-  const scope = document.getElementById('vault-secret-scope').value;
-  const row = document.getElementById('vault-secret-target-row');
-  const sel = document.getElementById('vault-secret-target');
-  row.hidden = scope === 'global';
-  if (scope === 'global') return;
-  // Settings can open before the worker list has loaded; ask for it rather
-  // than offering an empty choice.
-  let list = (typeof sessions !== 'undefined' && sessions && sessions.length) ? sessions : null;
-  if (!list) {
-    try { list = await (await fetch(API + '/api/sessions', { headers: _authHeaders() })).json(); } catch (e) { list = []; }
-  }
-  const names = scope === 'group'
-    ? [...new Set((list || []).flatMap(s => (s.tags || []).map(t => String(t).toLowerCase())))].sort()
-    : (list || []).map(s => s.name).sort();
-  sel.innerHTML = names.length
-    ? names.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('')
-    : '<option value="" disabled selected>' + (scope === 'group' ? 'No groups yet' : 'No workers yet') + '</option>';
-}
-async function _vaultSecretAdd() {
-  const key = document.getElementById('vault-secret-key');
-  const value = document.getElementById('vault-secret-value');
-  const scope = document.getElementById('vault-secret-scope').value;
-  const target = scope === 'global' ? '' : document.getElementById('vault-secret-target').value;
-  const errEl = document.getElementById('vault-secret-error');
-  const btn = document.getElementById('vault-secret-add-btn');
-  errEl.textContent = ''; key.removeAttribute('aria-invalid');
-  btn.disabled = true; btn.setAttribute('aria-busy', 'true');
-  try {
-    const r = await fetch(API + '/api/vault/secrets', { method: 'POST',
-      headers: _authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ key: key.value.trim(), scope, target, value: value.value }) });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { errEl.textContent = d.error || ('Not saved (' + r.status + ')'); key.setAttribute('aria-invalid', 'true'); return; }
-    // The value leaves the page as soon as it is saved.
-    value.value = ''; key.value = '';
-    showToast('Saved ' + d.item.key + ' · workers get it at their next start');
-    _vaultSecretsLoad();
-  } finally { btn.disabled = false; btn.removeAttribute('aria-busy'); }
+    if (!r.ok) throw new Error(d.why_unmeasured || d.error || ('HTTP ' + r.status));
+    _vault.items = d.items || []; _vault.workers = d.workers || []; _vault.groups = d.all_groups || [];
+    _vault.keystore = d.keystore || ''; _vault.loadErr = '';
+  } catch (e) { _vault.loadErr = e.message || String(e); }
+  const note = document.getElementById('vault-keystore-note');
+  if (note) note.innerHTML = _vault.keystore === 'file'
+    ? '<p class="ui-help vault-warn">The encryption key is a 0600 file beside the store (no Keychain on this machine), so a copy of the amux home carries both.</p>' : '';
+  _vaultFillFilters();
+  if (_vault.worker) await _vaultPickWorker(_vault.worker, true); else _vaultRender();
 }
-async function _vaultSecretReplace(id, key) {
-  const ok = await showFormModal('Replace ' + key,
-    '<label class="ui-field">New value <input id="vault-secret-replace" class="input" type="password" autocomplete="new-password" spellcheck="false"'
-    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_modalClose(true)}"></label>'
-    + '<p class="ui-help">Workers pick it up at their next start.</p>', 'Replace');
-  const input = document.getElementById('vault-secret-replace');
-  const v = input ? input.value : '';
-  if (input) input.value = '';
-  if (!ok || !v) return;
-  const r = await fetch(API + '/api/vault/secrets/' + encodeURIComponent(id), { method: 'PUT',
-    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ value: v }) });
+function _vaultFillFilters() {
+  const g = document.getElementById('vault-f-group'), w = document.getElementById('vault-f-worker');
+  if (!g || !w) return;
+  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').map(i => i.target)])].sort();
+  const workers = [...new Set([..._vault.workers, ...Object.keys(_vaultWorkerGroups())])].sort();
+  g.innerHTML = '<option value="">All Groups</option>' + groups.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+  w.innerHTML = '<option value="">All Workers</option>' + workers.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+  g.value = _vault.group; w.value = _vault.worker;
+  const s = document.getElementById('vault-f-scope'); if (s) s.value = _vault.scope;
+  const o = document.getElementById('vault-sort'); if (o) o.value = _vault.sort;
+  const q = document.getElementById('vault-q'); if (q && q.value !== _vault.q) q.value = _vault.q;
+}
+// Per-worker view: what this worker is provisioned with, from where, and
+// whether its running process holds the current value.
+async function _vaultPickWorker(name, quiet) {
+  _vault.worker = name || ''; _vault.prov = null;
+  if (_vault.worker) {
+    try {
+      const r = await fetch(API + '/api/vault/secrets?worker=' + encodeURIComponent(_vault.worker), { headers: _authHeaders() });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) _vault.prov = d;
+      else if (!quiet) showToast('Could not load ' + _vault.worker + ': ' + (d.error || r.status));
+    } catch (e) { if (!quiet) showToast('Could not load ' + _vault.worker); }
+  }
+  _vaultRender();
+}
+const _VAULT_STATE = {
+  current: ['Current', 'ok', 'The running process holds this version.'],
+  stale: ['Needs restart', 'warn', 'Running with a previous value. Restart to apply.'],
+  not_in_process: ['Needs restart', 'warn', 'Added or moved after this worker started. Restart to apply.'],
+  next_launch: ['At next start', 'dim', 'Not running. It receives this when it starts.'],
+  unknown: ['Unknown', 'dim', 'Started before delivery was tracked. Restart to be sure.'],
+  overridden: ['Overridden', 'dim', 'A more specific secret with this name wins for this worker.'],
+};
+function _vaultStateBadge(state) {
+  const s = _VAULT_STATE[state] || [state, 'dim', ''];
+  return '<span class="vault-state vault-state-' + s[1] + '" title="' + esc(s[2]) + '">' + esc(s[0]) + '</span>';
+}
+function _vaultWorkerPanel() {
+  const el = document.getElementById('vault-worker-panel');
+  if (!el) return;
+  const p = _vault.prov;
+  if (!_vault.worker || !p) { el.innerHTML = ''; return; }
+  const res = p.resolved || [];
+  const needs = res.filter(x => x.state === 'stale' || x.state === 'not_in_process').length + (p.revoked_held || []).length;
+  el.innerHTML = '<div class="vault-worker-card">'
+    + '<div><b>' + esc(_vault.worker) + '</b> receives ' + res.length + ' secret' + (res.length === 1 ? '' : 's')
+    + ' · ' + (p.running ? 'running' : 'stopped') + (p.isolated ? ' · isolated' : '')
+    + ((p.groups || []).length ? ' · groups: ' + p.groups.map(esc).join(', ') : ' · no groups') + '</div>'
+    + (res.length ? '<ul class="vault-worker-list">' + res.map(x => '<li><code>' + esc(x.key) + '</code> from ' + esc(_vaultScopeLabel(x))
+      + ' · v' + esc(String(x.version || 1)) + ' ' + _vaultStateBadge(x.state)
+      + (x.shadows?.length ? ' <span class="ui-help">(overrides ' + x.shadows.map(s => esc(_vaultScopeLabel(s))).join(', ') + ')</span>' : '') + '</li>').join('') + '</ul>' : '')
+    + ((p.revoked_held || []).length ? '<p class="vault-warn">Deleted or moved, still in the running process until restart: ' + p.revoked_held.map(k => '<code>' + esc(k) + '</code>').join(', ') + '</p>' : '')
+    + (needs && p.running ? '<button class="btn" onclick="_vaultRestart([\'' + escJs(_vault.worker) + '\'])">Restart ' + esc(_vault.worker) + ' to apply</button>' : '')
+    + '</div>';
+}
+function _vaultVisible() {
+  const q = _vault.q.trim().toLowerCase();
+  let list = _vault.items.slice();
+  if (q) list = list.filter(i => (i.key + ' ' + (i.note || '') + ' ' + (i.target || '')).toLowerCase().includes(q));
+  if (_vault.scope) list = list.filter(i => i.scope === _vault.scope);
+  if (_vault.group) list = list.filter(i => i.scope === 'group' && i.target === _vault.group);
+  if (_vault.worker && _vault.prov) {
+    const ids = new Set();
+    for (const x of _vault.prov.resolved || []) { ids.add(x.id); for (const s of x.shadows || []) ids.add(s.id); }
+    list = list.filter(i => ids.has(i.id));
+  }
+  const rank = { worker: 0, group: 1, global: 2 };
+  const by = {
+    name: (a, b) => a.key.localeCompare(b.key) || rank[a.scope] - rank[b.scope],
+    'name-desc': (a, b) => b.key.localeCompare(a.key) || rank[a.scope] - rank[b.scope],
+    updated: (a, b) => (b.updated || 0) - (a.updated || 0),
+    scope: (a, b) => rank[a.scope] - rank[b.scope] || a.key.localeCompare(b.key),
+  }[_vault.sort] || ((a, b) => a.key.localeCompare(b.key));
+  return list.sort(by);
+}
+function _vaultRender() {
+  _vaultWorkerPanel();
+  const table = document.getElementById('vault-secrets-table');
+  if (!table) return;
+  if (_vault.loadErr) {
+    table.innerHTML = '<div class="vault-empty" role="alert"><b>Secrets unavailable</b><p>' + esc(_vault.loadErr) + '</p><button class="btn" onclick="_vaultSecretsLoad()">Try again</button></div>';
+    return;
+  }
+  const list = _vaultVisible();
+  const count = document.getElementById('vault-count');
+  if (count) count.textContent = _vault.items.length ? ('Showing ' + list.length + ' of ' + _vault.items.length + ' secret' + (_vault.items.length === 1 ? '' : 's')) : '';
+  if (!_vault.items.length) {
+    table.innerHTML = '<div class="vault-empty"><b>No secrets yet</b><p>Add an API key or token once and every worker you choose receives it as an environment variable at its next start.</p><button class="btn primary" onclick="_vaultEdit()">' + _vaultIcon('plus') + 'Add Secret</button></div>';
+    return;
+  }
+  if (!list.length) { table.innerHTML = '<div class="vault-empty"><b>No secrets match</b><p>Change the search or filters.</p></div>'; return; }
+  const effective = new Map((_vault.prov?.resolved || []).map(x => [x.id, x]));
+  table.innerHTML = '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
+    + list.map(i => {
+      const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
+      const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
+      return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="vault-val-' + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
+        + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
+        + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
+        + '<td data-label="Provisioned to">' + _vaultProvisionedTo(i) + forWorker + '</td>'
+        + '<td data-label="Updated"><span title="' + esc(new Date((i.updated || 0) * 1000).toLocaleString()) + '">' + esc(timeAgo(i.updated)) + '</span><span class="ui-help"> · v' + esc(String(i.version || 1)) + '</span></td>'
+        + '<td data-label="Actions" class="vault-actions-cell"><button class="vault-icon-btn vault-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(i.key) + '" onclick="_vaultMenu(event,\'' + escJs(i.id) + '\')">' + _vaultIcon('more') + '</button></td>'
+        + '</tr>';
+    }).join('') + '</tbody></table>';
+}
+function _vaultMenuClose() {
+  document.querySelectorAll('.vault-menu').forEach(m => m.remove());
+  document.querySelectorAll('.vault-more[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  document.removeEventListener('click', _vaultMenuOutside, true);
+}
+function _vaultMenuOutside(e) { if (!e.target.closest('.vault-menu') && !e.target.closest('.vault-more')) _vaultMenuClose(); }
+function _vaultMenu(event, id) {
+  event.stopPropagation();
+  const btn = event.currentTarget;
+  const open = btn.getAttribute('aria-expanded') === 'true';
+  _vaultMenuClose();
+  if (open) return;
+  const i = _vault.items.find(x => x.id === id);
+  if (!i) return;
+  const m = document.createElement('div');
+  m.className = 'vault-menu'; m.setAttribute('role', 'menu');
+  const item = (label, fn, cls) => '<button role="menuitem" class="vault-menu-item' + (cls ? ' ' + cls : '') + '" onclick="_vaultMenuClose();' + fn + '">' + label + '</button>';
+  m.innerHTML = item('Edit', "_vaultEdit('" + escJs(id) + "')") + item('Rotate value', "_vaultEdit('" + escJs(id) + "','rotate')")
+    + item('Who has access', "_vaultAccess('" + escJs(id) + "')") + item('Audit history', "_vaultAudit('" + escJs(i.key) + "')")
+    + item('Delete', "_vaultDelete('" + escJs(id) + "')", 'danger');
+  btn.parentElement.appendChild(m);
+  btn.setAttribute('aria-expanded', 'true');
+  m.onkeydown = e => {
+    const all = [...m.querySelectorAll('[role=menuitem]')], at = all.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); all[(at + 1) % all.length].focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); all[(at - 1 + all.length) % all.length].focus(); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _vaultMenuClose(); btn.focus(); }
+  };
+  m.querySelector('[role=menuitem]').focus();
+  setTimeout(() => document.addEventListener('click', _vaultMenuOutside, true), 0);
+}
+function _vaultMask(id) {
+  clearTimeout(_vault.timers[id]); delete _vault.timers[id];
+  delete _vault.revealed[id];
+}
+function _vaultMaskAll() { for (const id of Object.keys(_vault.revealed)) _vaultMask(id); }
+async function _vaultReveal(id) {
+  if (Object.prototype.hasOwnProperty.call(_vault.revealed, id)) { _vaultMask(id); _vaultRender(); return; }
+  const r = await fetch(API + '/api/vault/secrets/' + encodeURIComponent(id) + '/reveal', { method: 'POST', headers: _authHeaders(), cache: 'no-store' });
   const d = await r.json().catch(() => ({}));
-  showToast(r.ok ? 'Replaced ' + key : ('Not replaced: ' + (d.error || r.status)));
-  _vaultSecretsLoad();
+  if (!r.ok) { showToast('Not revealed: ' + (d.error || r.status)); return; }
+  _vault.revealed[id] = d.value;
+  const secs = Number(d.remask_after_s) || 20;
+  _vault.timers[id] = setTimeout(() => { _vaultMask(id); _vaultRender(); }, secs * 1000);
+  _vaultRender();
+  showToast('Revealed ' + d.key + ' for ' + secs + 's · recorded in the audit log');
 }
-async function _vaultSecretRemove(id, key) {
-  if (!await showConfirm('Delete ' + key + ' from the vault? Workers lose it at their next start.', 'Delete', true)) return;
+function _vaultSub(id, title, bodyHtml, footHtml, opts) {
+  document.getElementById(id)?.remove();
+  const o = document.createElement('div');
+  o.id = id; o.className = 'modal-overlay active vault-sub';
+  o.innerHTML = '<section class="modal ' + (opts?.wide ? 'vault-sub-wide' : 'vault-sub-narrow') + '" role="dialog" aria-modal="true" aria-labelledby="' + id + '-title">'
+    + '<header class="modal-header"><h3 id="' + id + '-title">' + esc(title) + '</h3><button class="modal-close" aria-label="Close" onclick="_vaultSubClose(\'' + id + '\')">×</button></header>'
+    + '<div class="modal-body">' + bodyHtml + '</div>' + (footHtml ? '<footer class="modal-footer vault-foot">' + footHtml + '</footer>' : '') + '</section>';
+  o.onclick = e => { if (e.target === o) _vaultSubClose(id); };
+  o.onkeydown = e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _vaultSubClose(id); return; }
+    _vaultTrapTab(e, o);
+  };
+  document.body.appendChild(o);
+  // Focus moves into the dialog, so Escape and Tab act on it (a caller that
+  // wants a field focused instead does that after this returns).
+  o.querySelector('.modal-close').focus();
+  return o;
+}
+function _vaultSubClose(id) {
+  const o = document.getElementById(id);
+  if (!o) return;
+  o.querySelectorAll('input[type=password],input[data-secret]').forEach(el => { el.value = ''; });
+  o.remove();
+  document.getElementById('vault-tab-' + (_vault.tab || 'secrets'))?.focus();
+}
+// Add, Edit and Rotate share one dialog. Edit never shows the stored value:
+// leaving Value blank keeps it, typing one rotates (version + 1).
+function _vaultEdit(id, mode) {
+  const it = id ? _vault.items.find(x => x.id === id) : null;
+  mode = it ? (mode || 'edit') : 'add';
+  const wg = _vaultWorkerGroups();
+  const groups = [...new Set([..._vault.groups, ...Object.values(wg).flat()])].sort();
+  const workers = Object.keys(wg).sort();
+  const scope = it ? it.scope : 'global';
+  const opt = (list, sel) => list.length ? list.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>').join('') : '<option value="" disabled selected>None yet</option>';
+  const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
+    + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
+  const rotate = mode === 'rotate';
+  const title = mode === 'add' ? 'Add Secret' : rotate ? 'Rotate ' + it.key : 'Edit Secret';
+  const body = '<form id="vault-edit-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
+    + (rotate ? '<p class="ui-help">Workers that start or restart after this get the new value. Running workers keep the previous one until they restart; you will be offered a restart.</p>' : (
+      '<label class="ui-field">Name<input id="vault-e-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="128" placeholder="OPENAI_API_KEY" value="' + esc(it ? it.key : '') + '" aria-describedby="vault-e-key-help vault-e-key-err" oninput="_vaultKeyInput(this)"><span class="ui-help" id="vault-e-key-help">Use uppercase letters, numbers, and underscores</span><span class="ui-error" id="vault-e-key-err" role="alert"></span></label>'
+      + '<label class="ui-field"><span>Description <span class="ui-help">(optional)</span></span><textarea id="vault-e-note" class="input" rows="2" maxlength="200" aria-describedby="vault-e-note-count" oninput="_vaultNoteCount()">' + esc(it ? it.note || '' : '') + '</textarea><span class="ui-help vault-counter" id="vault-e-note-count" aria-live="polite"></span></label>'))
+    + '<label class="ui-field">' + (rotate ? 'New value' : 'Value') + '<span class="vault-secret-input"><input id="vault-e-value" class="input" type="password" data-secret="1" autocomplete="new-password" spellcheck="false" placeholder="' + (mode === 'edit' ? 'Unchanged · type a new value to rotate' : '') + '" aria-describedby="vault-e-value-err">'
+    + '<button type="button" class="vault-icon-btn" id="vault-e-eye" aria-label="Show value" aria-pressed="false" onclick="_vaultEye()">' + _vaultIcon('eye') + '</button></span>'
+    + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'
+    + (rotate ? '' : '<fieldset class="vault-scope"><legend>Scope</legend><p class="ui-help">Control which workers can access this secret.</p>'
+      + radio('global', 'Global', 'Available to all workers')
+      + radio('group', 'Group', 'Available to workers in a specific group', '<select id="vault-e-group" class="input vault-target" aria-label="Group" onchange="_vaultEditScope()">' + opt(groups, scope === 'group' ? it.target : groups[0]) + '</select>')
+      + radio('worker', 'Worker', 'Available to a single worker', '<select id="vault-e-worker" class="input vault-target" aria-label="Worker" onchange="_vaultEditScope()">' + opt(workers, scope === 'worker' ? it.target : workers[0]) + '</select>')
+      + '<p class="ui-help" id="vault-e-reach" role="status"></p></fieldset>')
+    + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
+    + '<button type="submit" hidden></button></form>';
+  const foot = '<button class="btn" type="button" onclick="_vaultSubClose(\'vault-edit\')">Cancel</button>'
+    + '<button class="btn primary" type="submit" form="vault-edit-form" id="vault-e-save">' + (mode === 'add' ? 'Add Secret' : rotate ? 'Rotate' : 'Save Changes') + '</button>';
+  const o = _vaultSub('vault-edit', title, body, foot);
+  if (!rotate) { _vaultNoteCount(); _vaultEditScope(); }
+  (o.querySelector(rotate ? '#vault-e-value' : '#vault-e-key')).focus();
+}
+function _vaultKeyInput(el) {
+  const at = el.selectionStart;
+  const v = el.value.toUpperCase().replace(/[\s-]+/g, '_');
+  if (v !== el.value) { el.value = v; try { el.setSelectionRange(at, at); } catch (e) {} }
+  const err = document.getElementById('vault-e-key-err');
+  const bad = v && !/^[A-Z_][A-Z0-9_]*$/.test(v) ? 'Only A-Z, 0-9 and _, not starting with a digit.'
+    : (/^(CC_|AMUX_)/.test(v) || ['PATH', 'HOME', 'SHELL', 'USER', 'TMPDIR'].includes(v)) ? v + ' is a harness or shell variable and cannot be a secret.' : '';
+  err.textContent = bad; el.setAttribute('aria-invalid', String(!!bad));
+  _vaultEditScope();
+}
+function _vaultNoteCount() {
+  const n = document.getElementById('vault-e-note'), c = document.getElementById('vault-e-note-count');
+  if (n && c) c.textContent = n.value.length + '/200';
+}
+function _vaultEye() {
+  const input = document.getElementById('vault-e-value'), b = document.getElementById('vault-e-eye');
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  b.setAttribute('aria-pressed', String(show)); b.setAttribute('aria-label', show ? 'Hide value' : 'Show value');
+  b.innerHTML = _vaultIcon(show ? 'eyeOff' : 'eye');
+}
+function _vaultEditTarget() {
+  const scope = document.querySelector('input[name="vault-e-scope"]:checked')?.value || 'global';
+  const target = scope === 'group' ? (document.getElementById('vault-e-group')?.value || '') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
+  return { scope, target };
+}
+// Live reach preview: who gets this, and whether a more specific secret with
+// the same name overrides it for some of them.
+function _vaultEditScope() {
+  const reach = document.getElementById('vault-e-reach');
+  if (!reach) return;
+  const { scope, target } = _vaultEditTarget();
+  for (const [s, id] of [['group', 'vault-e-group'], ['worker', 'vault-e-worker']]) {
+    const el = document.getElementById(id); if (el) el.hidden = scope !== s;
+  }
+  const wg = _vaultWorkerGroups();
+  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && wg[w].includes(target)) || (scope === 'worker' && w === target)).sort();
+  const key = (document.getElementById('vault-e-key')?.value || '').trim();
+  const rank = { global: 0, group: 1, worker: 2 };
+  const over = key ? _vault.items.filter(i => i.key === key && rank[i.scope] > rank[scope]).map(_vaultScopeLabel) : [];
+  reach.textContent = (scope !== 'global' && !target) ? 'Pick a ' + scope + '.'
+    : 'Reaches ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + (names.length && names.length <= 6 ? ': ' + names.join(', ') : '')
+      + '. Precedence is worker, then group, then global.' + (over.length ? ' Overridden by ' + over.join(', ') + ' where those apply.' : '');
+}
+async function _vaultSecretSave(id, mode) {
+  const err = document.getElementById('vault-e-err'), save = document.getElementById('vault-e-save');
+  const valueEl = document.getElementById('vault-e-value');
+  const value = valueEl.value;
+  err.textContent = '';
+  document.getElementById('vault-e-value-err').textContent = '';
+  const body = {};
+  if (mode !== 'rotate') {
+    const keyEl = document.getElementById('vault-e-key');
+    const key = keyEl.value.trim();
+    if (!key || keyEl.getAttribute('aria-invalid') === 'true') {
+      document.getElementById('vault-e-key-err').textContent ||= 'A name is required.';
+      keyEl.setAttribute('aria-invalid', 'true'); keyEl.focus(); return;
+    }
+    const { scope, target } = _vaultEditTarget();
+    if (scope !== 'global' && !target) { err.textContent = 'Pick a ' + scope + ' for this secret.'; return; }
+    Object.assign(body, { key, scope, target, description: document.getElementById('vault-e-note').value });
+  }
+  if (mode !== 'edit' && !value) {
+    document.getElementById('vault-e-value-err').textContent = 'A value is required.';
+    valueEl.setAttribute('aria-invalid', 'true'); valueEl.focus(); return;
+  }
+  if (value) body.value = value;
+  const url = API + '/api/vault/secrets' + (id ? '/' + encodeURIComponent(id) : '');
+  const method = mode === 'add' ? 'POST' : mode === 'rotate' ? 'PUT' : 'PATCH';
+  save.disabled = true; save.setAttribute('aria-busy', 'true');
+  let r, d;
+  try {
+    r = await fetch(url, { method, headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { d = { error: e.message || String(e) }; }
+  finally { save.disabled = false; save.removeAttribute('aria-busy'); }
+  if (!r || !r.ok) {
+    const where = d.field === 'key' ? 'vault-e-key-err' : d.field === 'value' ? 'vault-e-value-err' : 'vault-e-err';
+    (document.getElementById(where) || err).textContent = d.error || ('Not saved (' + (r ? r.status : 'network') + ')');
+    return;
+  }
+  // The value leaves the page as soon as it is saved.
+  valueEl.value = '';
+  _vaultSubClose('vault-edit');
+  const key = d.item?.key || body.key;
+  const verb = mode === 'add' ? 'Added' : mode === 'rotate' ? 'Rotated' : ((d.changes || []).length ? 'Saved' : 'No changes to');
+  showToast(verb + ' ' + key + (mode === 'add' ? ' · workers get it at their next start' : ''));
+  await _vaultSecretsLoad();
+  if ((d.running_stale || []).length) _vaultOfferRestart(d.running_stale, key + ' changed.');
+}
+async function _vaultOfferRestart(names, what) {
+  const list = names.slice().sort();
+  const ok = await showConfirm(what + ' ' + list.length + ' running worker' + (list.length === 1 ? '' : 's') + ' (' + list.join(', ')
+    + ') still hold' + (list.length === 1 ? 's' : '') + ' the previous value. A running process keeps the environment it started with. Restart now to apply?', 'Restart now');
+  if (ok) _vaultRestart(list);
+}
+async function _vaultRestart(names) {
+  for (const n of names) {
+    try { await doRestart(n); } catch (e) { showToast('Restart failed for ' + n); }
+  }
+  setTimeout(() => { _vaultSecretsLoad(); if (document.getElementById('vault-access')) _vaultAccess(document.getElementById('vault-access').dataset.id); }, 4000);
+}
+async function _vaultDelete(id) {
+  const i = _vault.items.find(x => x.id === id);
+  if (!i) return;
+  const n = i.effective_for ?? 0;
+  const ok = await showConfirm('Delete ' + i.key + ' (' + _vaultScopeLabel(i) + ')? It currently reaches ' + n + ' worker' + (n === 1 ? '' : 's')
+    + '. No new start receives it; running workers keep it until they restart. This cannot be undone.', 'Delete', true);
+  if (!ok) return;
   const r = await fetch(API + '/api/vault/secrets/' + encodeURIComponent(id), { method: 'DELETE', headers: _authHeaders() });
-  showToast(r.ok ? 'Deleted ' + key : 'Delete failed');
-  _vaultSecretsLoad();
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast('Not deleted: ' + (d.error || r.status)); return; }
+  _vaultMask(id);
+  showToast('Deleted ' + i.key);
+  await _vaultSecretsLoad();
+  if ((d.still_held_by || []).length) _vaultOfferRestart(d.still_held_by, i.key + ' was deleted.');
+}
+// Effective access for one secret: every worker it reaches, why, and whether
+// the running process holds the current version.
+async function _vaultAccess(id) {
+  const i = _vault.items.find(x => x.id === id);
+  const o = _vaultSub('vault-access', 'Who has access' + (i ? ': ' + i.key : ''), '<p class="ui-help">Loading…</p>', '<button class="btn" onclick="_vaultSubClose(\'vault-access\')">Close</button>', { wide: true });
+  o.dataset.id = id;
+  const body = o.querySelector('.modal-body');
+  const r = await fetch(API + '/api/vault/secrets/' + encodeURIComponent(id) + '/access', { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { body.innerHTML = '<p class="ui-error" role="alert">' + esc(d.error || d.why_unmeasured || ('HTTP ' + r.status)) + '</p>'; return; }
+  const rows = d.workers || [];
+  const needs = rows.filter(w => w.state === 'stale' || w.state === 'not_in_process').map(w => w.worker);
+  const via = v => v === 'global' ? 'Global' : v === 'worker' ? 'This worker' : 'Group ' + v.slice(6);
+  body.innerHTML = '<p>' + _vaultChip(d.item.scope) + ' <code>' + esc(d.item.key) + '</code> · v' + esc(String(d.item.version)) + '</p>'
+    + '<p class="ui-help">Reaches ' + d.summary.effective + ' of ' + d.n_considered + ' workers'
+    + (d.summary.overridden ? ', overridden for ' + d.summary.overridden : '') + '. Precedence: ' + esc(d.precedence) + '.</p>'
+    + (rows.length ? '<table class="vault-table vault-access-table"><thead><tr><th scope="col">Worker</th><th scope="col">Via</th><th scope="col">Status</th></tr></thead><tbody>'
+      + rows.map(w => '<tr><td data-label="Worker"><b>' + esc(w.worker) + '</b>' + (w.isolated ? ' <span class="ui-help">isolated</span>' : '') + '<span class="ui-help"> · ' + (w.running ? 'running' : 'stopped') + '</span></td>'
+        + '<td data-label="Via">' + esc(via(w.via)) + '</td>'
+        + '<td data-label="Status">' + _vaultStateBadge(w.state) + (w.overridden_by ? ' <span class="ui-help">by ' + esc(_vaultScopeLabel(w.overridden_by)) + '</span>' : '') + '</td></tr>').join('')
+      + '</tbody></table>' : '<p class="ui-help">No worker receives this secret yet.</p>')
+    + (needs.length ? '<div class="vault-actions-row"><button class="btn primary" onclick="_vaultRestart(' + esc(JSON.stringify(needs)) + ')">Restart ' + needs.length + ' to apply</button></div>' : '');
+}
+const _VAULT_EVENTS = {
+  secret_added: 'Added', secret_updated: 'Edited', secret_replaced: 'Rotated', secret_revealed: 'Revealed',
+  secret_deleted: 'Deleted', secret_imported: 'Imported', secret_write_refused: 'Refused', secrets_delivered: 'Delivered',
+};
+async function _vaultAudit(key) {
+  const o = _vaultSub('vault-audit', 'Audit log', '<p class="ui-help">Loading…</p>', '<button class="btn" onclick="_vaultSubClose(\'vault-audit\')">Close</button>', { wide: true });
+  const body = o.querySelector('.modal-body');
+  const r = await fetch(API + '/api/vault/secrets/audit?limit=300' + (key ? '&key=' + encodeURIComponent(key) : ''), { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { body.innerHTML = '<p class="ui-error" role="alert">' + esc(d.error || d.why_unmeasured || ('HTTP ' + r.status)) + '</p>'; return; }
+  const e = d.entries || [];
+  const scope = x => x.scope ? _vaultScopeLabel(x) : '';
+  const line = x => {
+    if (x.event === 'secrets_delivered') {
+      const keys = (x.delivered || []).map(k => k.key + ' v' + (k.version || 1));
+      return 'to <b>' + esc(x.session || '') + '</b> via ' + esc(String(x.path || 'launch').replace('_', ' ')) + ': ' + (keys.length ? keys.map(esc).join(', ') : 'none')
+        + ((x.failed || []).length ? ' · <span class="vault-warn">failed ' + x.failed.map(k => esc(k.key)).join(', ') + '</span>' : '');
+    }
+    if (x.event === 'secret_write_refused') return esc(x.action || '') + ' by <b>' + esc(x.by || '') + '</b>';
+    return '<code>' + esc(x.key || '') + '</code> ' + esc(scope(x)) + (x.version ? ' · v' + esc(String(x.version)) : '')
+      + ((x.changes || []).length ? ' · ' + x.changes.map(esc).join(', ') : '')
+      + (x.running_stale ? ' · ' + x.running_stale + ' running need restart' : '') + (x.still_held_by ? ' · still held by ' + x.still_held_by : '')
+      + (x.by ? ' · by ' + esc(x.by) : '');
+  };
+  body.innerHTML = '<p class="ui-help">' + (key ? 'Events for <code>' + esc(key) + '</code>. ' : '') + 'Every add, edit, rotation, reveal, delete, refusal and delivery, newest first. No entry contains a value.'
+    + ' Showing ' + e.length + ' of ' + d.n_considered + '.</p>'
+    + (e.length ? '<ol class="vault-audit">' + e.map(x => '<li><span class="vault-audit-ev vault-audit-' + esc(x.event || '') + '">' + esc(_VAULT_EVENTS[x.event] || x.event || '') + '</span>'
+      + '<span class="vault-audit-what">' + line(x) + '</span><time class="ui-help" title="' + esc(new Date((x.ts || 0) * 1000).toLocaleString()) + '">' + esc(timeAgo(x.ts)) + '</time></li>').join('') + '</ol>'
+      : '<p class="ui-help">Nothing recorded yet.</p>');
 }
 function _settingsTab(name) {
-  if (name === 'integrations') setTimeout(() => { _vaultLoad(); _vaultSecretsLoad(); _vaultSecretScopeChanged(); _chatgptAppLoad(); }, 0);
+  if (name === 'integrations') setTimeout(() => { _chatgptAppLoad(); }, 0);
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>
@@ -46421,6 +47524,8 @@ async function loadUsage() {
         + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
         + (provider.plan ? '<span class="usage-provider-plan">' + esc(String(provider.plan).replace(/_/g, ' ')) + '</span>' : '')
+        // Whose quota this is: Claude logins rotate across subscriptions.
+        + (provider.account ? '<span class="usage-provider-account" title="' + esc(provider.account) + '">' + esc(provider.account) + '</span>' : '')
         + '<span class="usage-provider-status">' + esc(status) + '</span></summary>'
         + '<div class="usage-provider-detail">' + detail
         + (provider.observed_at || provider.stale || pending ? usageRecoveryNote(provider) : '')
@@ -58437,7 +59542,7 @@ function _drawLeave() {
   _drawStopPoll();
   _drawRtLeave();
   if (_draw.saveTimer) { clearTimeout(_draw.saveTimer); _draw.saveTimer = null; }
-  if (_draw.mounted && _drawDirty()) _drawSave();
+  if (_draw.mounted && _drawDirty()) _drawSave({ background: true });
   _drawCloseMenus();
 }
 
@@ -58495,7 +59600,20 @@ function _drawMount() {
   _drawRenderRoot();
   // The editor follows the amux theme.
   if (!d.themeObs) {
-    d.themeObs = new MutationObserver(() => { if (d.mounted) _drawRenderRoot(); _drawLibRender(); });
+    // Only a real light/dark switch re-renders. This watched EVERY body class
+    // change, and the shared press layer flips body classes on a press, so each
+    // tap re-rendered the library between pointerdown and click: when the new
+    // markup differed (a Recent "just now" ticking over, an entry merged from
+    // another tab) the row under the finger was replaced and no click fired
+    // (draw-tab.spec.ts "clicking a drawing", mobile and iOS, 2026-10-15).
+    d.themeDark = _drawIsDark();
+    d.themeObs = new MutationObserver(() => {
+      const dark = _drawIsDark();
+      if (dark === d.themeDark) return;
+      d.themeDark = dark;
+      if (d.mounted) _drawRenderRoot();
+      _drawLibRender();
+    });
     d.themeObs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
   }
   // Drop a drawing file to MERGE it into the canvas. Excalidraw's own drop
@@ -58520,7 +59638,7 @@ function _drawMount() {
     }
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave();
+    if (document.hidden && _draw && _draw.mounted && _drawDirty()) _drawSave({ background: true });
   });
 }
 
@@ -58597,7 +59715,7 @@ function _drawOnChange(elements, appState, files) {
 function _drawScheduleSave() {
   const d = _draw;
   if (d.saveTimer) clearTimeout(d.saveTimer);
-  d.saveTimer = setTimeout(() => { d.saveTimer = null; _drawSave(); }, _DRAW_SAVE_DEBOUNCE_MS);
+  d.saveTimer = setTimeout(() => { d.saveTimer = null; _drawSave({ background: true }); }, _DRAW_SAVE_DEBOUNCE_MS);
 }
 
 function _drawSetStatus(status, msg) {
@@ -58623,7 +59741,12 @@ function _drawSetStatus(status, msg) {
 // Write the open drawing. Honest about failure: a refused or failed write
 // leaves the state "error" (or "conflict") with the server's reason, and is
 // beaconed; only a 2xx with an ETag back is "saved".
-async function _drawSave() {
+// background: the debounced autosave is the page's own write. Without the
+// flag the press layer bound it to the last control pressed within 5s and
+// disabled that control while it ran, so a quick second press of Live mode
+// landed on a disabled button (draw-tab.spec.ts live mode, ios-safari).
+async function _drawSave(opts) {
+  const background = !!(opts && opts.background);
   const d = _draw;
   if (!d || !d.api || !d.path || d.conflict) return false;
   // While a drawing opens, d.path already names the file being opened but the
@@ -58660,7 +59783,7 @@ async function _drawSave() {
     // replayed later would overwrite whatever was saved in between, and the
     // outbox's synthetic 202 must never read as "saved".
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(20000), _skipOutbox: true });
+      body: JSON.stringify(body), signal: AbortSignal.timeout(20000), _skipOutbox: true, _background: background });
     const res = await r.json().catch(() => ({}));
     if (path !== d.path) return false;   // switched drawings mid-save
     if (r.status === 409 && res.code === 'file_changed') {
@@ -58855,6 +59978,7 @@ async function _drawRename(title) {
       const old = d.path;
       d.path = res.path || newPath;
       d.recents = d.recents.filter(x => x.path !== old);
+      (d.recentsDropped = d.recentsDropped || new Set()).add(old);
     } catch (e) {
       showToast('Rename failed: ' + (e.message || e));
       _drawRenderChrome();
@@ -59299,10 +60423,16 @@ function _drawLibRender() {
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
+// Replacing the content kept no scroll position, so every re-render of the
+// library (an autosave reorders Recent) jumped a scrolled list back to the
+// top, and a tap aimed at a row lower down landed on whatever moved under it
+// (draw-tab.spec.ts:356 on iOS, once Recent grew longer than the sheet).
 function _drawSetBody(body, html) {
   if (body._drawHtml === html) return false;
+  const top = body.scrollTop;
   body._drawHtml = html;
   body.innerHTML = html;
+  if (top) body.scrollTop = top;
   return true;
 }
 async function _drawLibThumb(item) {
@@ -59416,6 +60546,11 @@ async function _drawRememberRecent(force) {
   if (!d || !d.path || !d.api) return;
   const now = Date.now();
   let entry = d.recents.find(x => x.path === d.path);
+  // Already first in the list: a save only changes its picture and time, so
+  // the row is patched in place below. A full re-render on every autosave
+  // replaced the library under a pointer about to click a row (and reset its
+  // scroll), so a click on "In this folder" during autosave did nothing.
+  const wasFirst = !!entry && d.recents[0] === entry && entry.title === _drawTitleOf(d.path);
   if (!entry) { entry = { path: d.path }; d.recents.unshift(entry); }
   entry.title = _drawTitleOf(d.path);
   entry.ts = now;
@@ -59437,7 +60572,15 @@ async function _drawRememberRecent(force) {
       }
     } catch (e) {}
   }
-  if (d.libTab === 'drawings') _drawLibRender();
+  if (d.libTab === 'drawings') {
+    const row = wasFirst && document.querySelector('#draw-lib-body .draw-recent[data-path="' + CSS.escape(entry.path) + '"]');
+    if (row) {
+      const thumb = row.querySelector('.draw-recent-thumb');
+      if (thumb) thumb.innerHTML = entry.thumb ? '<img alt="" src="' + esc(entry.thumb) + '">' : '';
+      const when = row.querySelector('.draw-recent-when');
+      if (when) when.textContent = timeAgo(entry.ts / 1000);
+    } else _drawLibRender();
+  }
   if (d.recentsTimer) clearTimeout(d.recentsTimer);
   d.recentsTimer = setTimeout(_drawSaveRecents, 1500);
 }
@@ -59445,9 +60588,30 @@ async function _drawSaveRecents() {
   const d = _draw;
   d.recentsTimer = null;
   try {
+    // Merge with what is on disk: every tab and device writes this one file,
+    // and writing only this tab's list erased drawings another tab had
+    // opened. Newest entry per path wins; paths this tab renamed away stay out.
+    let disk = [];
+    try {
+      const g = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawRecentsPath()), { cache: 'no-store' });
+      if (g.ok) { const data = await g.json(); if (Array.isArray(data.recents)) disk = data.recents; }
+    } catch (e) {}
+    const dropped = d.recentsDropped || new Set();
+    const byPath = new Map();
+    for (const x of d.recents.concat(disk)) {
+      if (!x || !x.path || dropped.has(x.path)) continue;
+      const have = byPath.get(x.path);
+      if (!have || (x.ts || 0) > (have.ts || 0)) byPath.set(x.path, x);
+    }
+    const merged = [...byPath.values()].sort((p, q) => (q.ts || 0) - (p.ts || 0)).slice(0, _DRAW_RECENTS_MAX);
+    if (merged.length > d.recents.length) _drawBeacon('recents-merged', { measured: true, n_considered: disk.length, added: merged.length - d.recents.length });
+    d.recents = merged;
     const r = await fetch(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true });
+      body: JSON.stringify({ path: _drawRecentsPath(), content: JSON.stringify({ recents: d.recents }) }), _skipOutbox: true, _background: true });
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    // No re-render here: entries merged in from another tab would shift the
+    // list under a pointer that is about to click. They show on the next
+    // render the user causes.
   } catch (e) { _drawBeacon('recents-save-failed', { error: String(e && e.message || e) }); }
 }
 async function _drawRenderDrawings(body, q) {
@@ -59457,12 +60621,20 @@ async function _drawRenderDrawings(body, q) {
     + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
     + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
     + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
-  const prevList = document.getElementById('draw-folder-list');
-  const keep = prevList ? prevList.innerHTML : '<div class="draw-empty">Loading…</div>';
+  // The folder rows are restored from the last listing's own HTML and
+  // marked with it, so a listing that comes back unchanged is a no-op.
+  // Restoring a serialized copy left the mark off, and the unchanged listing
+  // then replaced every row a moment later: a tap whose press and release
+  // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
+  const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
+  const top = body.scrollTop;
   if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
     + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
-    document.getElementById('draw-folder-list').innerHTML = keep;
+    _drawSetBody(document.getElementById('draw-folder-list'), keep);
+    // The folder rows arrive after the body swap; restore the scroll again
+    // now that the list is full height (it was clamped while they were absent).
+    if (top) body.scrollTop = top;
   }
   const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
@@ -59475,6 +60647,7 @@ async function _drawRenderDrawings(body, q) {
       const p = dir.replace(/\/+$/, '') + '/' + e.name;
       return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
     }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
+    if (!q) d.folderHtml = html;
     _drawSetBody(list, html);
   } catch (e) {}
 }

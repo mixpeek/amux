@@ -4509,8 +4509,8 @@ pub fn detect_silent(
     // already surfaces suppressions and that is where somebody reading "why did
     // the detector find nothing" will actually look.
     let steer_stmt = conn.prepare(
-        "SELECT session, COUNT(*), MIN(queued_at), COALESCE(GROUP_CONCAT(DISTINCT sender),'') \
-         FROM steering_queue GROUP BY session",
+        "SELECT session, COUNT(*), MIN(MAX(queued_at, COALESCE(deliver_at,0))), COALESCE(GROUP_CONCAT(DISTINCT sender),'') \
+         FROM steering_queue WHERE COALESCE(deliver_at,0) <= (julianday('now') - 2440587.5) * 86400.0 GROUP BY session",
     );
     if let Err(e) = &steer_stmt {
         suppressed.push(sup(

@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs sandboxed.sh (Open Agent) — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with sandboxed.sh for self-hosted AI agent orchestration.">
-  <meta name="keywords" content="amux vs sandboxed, open agent alternative, self-hosted AI agents, agent orchestration">
+  <title>amux vs sandboxed.sh (Open Agent) — Self-Hosted AI Agent Orchestration Compared (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Compare amux and sandboxed.sh (Open Agent) for self-hosted AI agent orchestration. amux runs Claude Code on your own machine with a built-in dashboard, self-healing watchdog, and phone control. Updated October 2026.">
+  <meta name="keywords" content="amux vs sandboxed.sh, open agent alternative, self-hosted AI agents, agent orchestration comparison, sandboxed sh review 2026, amux open agent">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-sandboxed-sh/">
-  <meta property="og:title" content="amux vs sandboxed.sh (Open Agent) — amux">
-  <meta property="og:description" content="Compare amux with sandboxed.sh for self-hosted AI agent orchestration.">
+  <meta property="og:title" content="amux vs sandboxed.sh (Open Agent) — Self-Hosted AI Agent Orchestration Compared (2026)">
+  <meta property="og:description" content="Compare amux and sandboxed.sh for self-hosted AI agent orchestration. amux: direct machine access, Rust binary, phone dashboard, self-healing watchdog.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-sandboxed-sh/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs sandboxed.sh (Open Agent)","item":"https://amux.io/compare/amux-vs-sandboxed-sh/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs sandboxed.sh (Open Agent)","description":"Compare amux with sandboxed.sh for self-hosted AI agent orchestration.","url":"https://amux.io/compare/amux-vs-sandboxed-sh/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs sandboxed.sh (Open Agent) — Self-Hosted AI Agent Orchestration Compared","description":"Compare amux and sandboxed.sh for self-hosted AI agent orchestration. amux runs Claude Code directly on your machine with a phone dashboard, self-healing watchdog, and built-in kanban board.","url":"https://amux.io/compare/amux-vs-sandboxed-sh/","datePublished":"2026-06-01","dateModified":"2026-10-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and sandboxed.sh?","acceptedAnswer":{"@type":"Answer","text":"amux runs AI agents (Claude Code, Codex, Gemini CLI) as tmux sessions directly on your own machine, with a self-healing watchdog, phone dashboard, and built-in kanban board. sandboxed.sh (Open Agent) runs agents inside isolated Linux workspaces — more like a cloud environment provisioned on demand. amux is zero-infrastructure: one install command, one Rust binary, your existing API keys."}},{"@type":"Question","name":"Which is better for running agents overnight unattended?","acceptedAnswer":{"@type":"Answer","text":"amux is designed for overnight unattended runs. The watchdog automatically restarts hanging or crashed agents, amux rotates across a pool of verified Claude Code accounts when one hits its usage limit, and the iOS app shows live status so you can check progress from anywhere. sandboxed.sh has its own reliability story inside its sandboxed environment."}},{"@type":"Question","name":"Does amux have workspace isolation like sandboxed.sh?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux has opt-in workspace isolation (AMUX_WORKSPACE_ISOLATION=1) that gives each worker its own git worktree and temporary directory. This is lighter-weight than sandboxed.sh's full Linux workspace containers — workers share the host machine but get isolated file trees and scratch space."}},{"@type":"Question","name":"Can I use amux and sandboxed.sh for the same project?","acceptedAnswer":{"@type":"Answer","text":"In principle yes. They target different workflow shapes. sandboxed.sh is strong for tasks where you want strict execution isolation (untrusted code, security-sensitive workloads). amux is strong for running a team of trusted coding agents on your existing codebase with low overhead."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"The core amux server is MIT licensed and free forever. The only paid option is amux Cloud ($20/mo), which adds a stable public tunnel URL at https://id.t.amux.io/. Everything else is free and self-hosted."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -38,16 +39,126 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs sandboxed.sh (Open Agent)</span></div>
-    <h1>amux vs sandboxed.sh</h1>
-<p class="subtitle">Both self-hosted. Different isolation models.</p>
-<p><strong>sandboxed.sh</strong> (Open Agent) runs AI agents in isolated Linux workspaces with a web dashboard and iOS app. <strong>amux</strong> runs Claude Code in tmux sessions directly on your machine.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>sandboxed.sh</th></tr></thead><tbody><tr><td>Isolation</td><td>Direct machine access (tmux)</td><td>Linux workspace containers</td></tr><tr><td>Setup</td><td>Python 3 + tmux</td><td>Docker + infrastructure</td></tr><tr><td>Agent type</td><td>Claude Code CLI</td><td>Multi-provider agents</td></tr><tr><td>Self-healing</td><td>Built-in watchdog</td><td>Container restart</td></tr><tr><td>Mobile</td><td>PWA (works offline)</td><td>iOS native app</td></tr><tr><td>Task board</td><td>SQLite kanban built-in</td><td>Separate task management</td></tr></tbody></table>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs sandboxed.sh</span></div>
+
+    <!-- EXP-137: top-of-page CTA on amux-vs-sandboxed-sh, Oct 2026 full rewrite -->
+    <div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <span style="font-size:.9rem;color:var(--text)">Run an AI engineering team on your own machine. Zero infrastructure, single Rust binary, MIT licensed.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp137_sandboxed_topofpage_cta_click')" style="background:#10b981;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub &#9733;</a>
+    </div>
+
+    <h1>amux vs sandboxed.sh (Open Agent)</h1>
+    <p class="subtitle">Both self-hosted. Different isolation models. Updated October 2026.</p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
+      <strong>Quick answer:</strong> sandboxed.sh runs agents in isolated Linux workspaces, which gives strong execution isolation at the cost of more infrastructure. amux runs agents as tmux sessions directly on your machine: one Rust binary, no containers, self-healing watchdog, phone dashboard, and a full built-in kanban board. If you want to run your own trusted coding agents on an existing codebase with minimal setup, amux is the lower-friction choice.
+    </div>
+
+    <h2 id="what-is-each">What each tool is</h2>
+    <p><strong>sandboxed.sh</strong> (Open Agent) provisions isolated Linux workspace environments for running AI agents. Each agent run gets its own clean workspace, which provides strong isolation for untrusted or security-sensitive workloads. It has a web dashboard and mobile app for monitoring.</p>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team directly on your own machine. It launches Claude Code, OpenAI Codex CLI, or Gemini CLI as tmux sessions, monitors them with a self-healing watchdog, and exposes a web dashboard at <code>localhost:8824</code> and an iOS app. One Rust binary. No containers. No external dependencies.</p>
+
+    <h2 id="comparison">Feature comparison</h2>
+    <table>
+      <thead>
+        <tr><th>Feature</th><th>amux</th><th>sandboxed.sh</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Execution environment</td><td>tmux sessions on your machine</td><td>Isolated Linux workspaces</td></tr>
+        <tr><td>Setup time</td><td>Under 2 min (one git clone or brew install)</td><td>More infrastructure setup</td></tr>
+        <tr><td>Infrastructure required</td><td>None (single Rust binary)</td><td>Container runtime / workspace provisioner</td></tr>
+        <tr><td>AI runtimes</td><td>Claude Code, Codex CLI, Gemini CLI (any tmux process)</td><td>Multi-provider agents</td></tr>
+        <tr><td>Self-healing watchdog</td><td>&#10003; Built-in, automatic restart</td><td>Container restart policy</td></tr>
+        <tr><td>Account rotation on rate limits</td><td>&#10003; Automatic (Oct 2026)</td><td>&#10007;</td></tr>
+        <tr><td>Workspace isolation</td><td>&#10003; Opt-in (AMUX_WORKSPACE_ISOLATION=1) — git worktree per worker</td><td>&#10003; Full Linux workspace containers</td></tr>
+        <tr><td>Mobile dashboard</td><td>&#10003; iOS app + PWA</td><td>&#10003; iOS native app</td></tr>
+        <tr><td>Kanban board</td><td>&#10003; Built-in SQLite board</td><td>Separate task management</td></tr>
+        <tr><td>Scheduler</td><td>&#10003; Built-in (cron + shell/tmux kinds)</td><td>&#10007;</td></tr>
+        <tr><td>Secrets vault</td><td>&#10003; SOPS-encrypted vault per worker</td><td>&#10007;</td></tr>
+        <tr><td>Standing approvals</td><td>&#10003; Pre-approve actions by pattern</td><td>&#10007;</td></tr>
+        <tr><td>Browser automation</td><td>&#10003; Chrome CDP relay built-in</td><td>&#10007;</td></tr>
+        <tr><td>Scratchpad (fleet-shared notes)</td><td>&#10003; Persistent cross-session scratchpad tab</td><td>&#10007;</td></tr>
+        <tr><td>Open source</td><td>&#10003; MIT license</td><td>Open source (check their repo)</td></tr>
+        <tr><td>Cost</td><td>Free (core); $20/mo for Cloud tunnel</td><td>Check their pricing</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="isolation-model">Isolation model: containers vs worktrees</h2>
+    <p>The sharpest difference is how each tool handles agent isolation.</p>
+    <p>sandboxed.sh gives each agent run a full Linux workspace container. This is the right call when you need hard security boundaries: running untrusted code, red-teaming, or workflows where one agent must never see another's files. The trade-off is infrastructure overhead and slower startup.</p>
+    <p>amux takes a lighter approach. By default, all workers share the host filesystem in tmux sessions. With <code>AMUX_WORKSPACE_ISOLATION=1</code> per worker, amux creates a dedicated git worktree and isolated <code>TMPDIR</code> for that worker, so each agent has its own view of the codebase without touching others' in-progress changes. This is enough for most coding teams, costs no extra infrastructure, and starts in milliseconds.</p>
+    <p>The rule of thumb: if your agents run trusted code on your own codebase, amux worktree isolation is the right level. If you're running untrusted third-party code or need OS-level separation, sandboxed.sh's container model is stronger.</p>
+
+    <h2 id="overnight">Running agents overnight</h2>
+    <p>amux is purpose-built for long-running unattended workloads. Three features work together:</p>
+    <ul>
+      <li><strong>Self-healing watchdog.</strong> If an agent crashes, hangs, or exits unexpectedly, the watchdog restarts it within seconds. You configure the restart policy per worker.</li>
+      <li><strong>Account rotation.</strong> When a Claude Code session hits its API usage limit, amux automatically rotates to the next verified account in your pool. No manual intervention, no sessions sitting idle at a rate-limit prompt.</li>
+      <li><strong>Phone dashboard.</strong> The iOS app and mobile PWA show live session status, let you send prompts, and surface any alerts. You can check on an overnight run without opening a laptop.</li>
+    </ul>
+
+    <h2 id="choose">Which should you choose?</h2>
+    <p>Choose <strong>sandboxed.sh</strong> if:</p>
+    <ul>
+      <li>You need strong OS-level isolation between agent runs</li>
+      <li>You're running untrusted code or security-sensitive tasks</li>
+      <li>Container infrastructure is already part of your stack</li>
+    </ul>
+    <p>Choose <strong>amux</strong> if:</p>
+    <ul>
+      <li>You want to run a team of trusted coding agents on your own codebase</li>
+      <li>You want the lowest-overhead setup (one binary, no containers)</li>
+      <li>You need a full built-in control plane: kanban board, scheduler, secrets vault, browser automation, phone app</li>
+      <li>You're running agents overnight and need self-healing + account rotation</li>
+    </ul>
+
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details class="faq-item" open>
+      <summary>What is the main difference between amux and sandboxed.sh?</summary>
+      <p>amux runs AI agents (Claude Code, Codex, Gemini CLI) as tmux sessions directly on your own machine, with a self-healing watchdog, phone dashboard, and built-in kanban board. sandboxed.sh (Open Agent) runs agents inside isolated Linux workspaces. amux is zero-infrastructure: one install command, one Rust binary, your existing API keys.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Which is better for running agents overnight unattended?</summary>
+      <p>amux is designed for overnight unattended runs. The watchdog automatically restarts hanging or crashed agents, amux rotates across a pool of verified Claude Code accounts when one hits its usage limit, and the iOS app shows live status so you can check progress from anywhere.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Does amux have workspace isolation like sandboxed.sh?</summary>
+      <p>Yes. amux has opt-in workspace isolation (<code>AMUX_WORKSPACE_ISOLATION=1</code>) that gives each worker its own git worktree and temporary directory. This is lighter-weight than sandboxed.sh's full Linux workspace containers, but covers most coding-team use cases without any container infrastructure.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can I use amux and sandboxed.sh for the same project?</summary>
+      <p>In principle yes. sandboxed.sh is well-suited for tasks requiring strict execution isolation (untrusted code, security workloads). amux is strong for running a team of trusted coding agents on an existing codebase with low overhead. The two can complement each other if your workflow has both kinds of tasks.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Is amux free?</summary>
+      <p>The core amux server is MIT licensed and free forever. The only paid option is amux Cloud ($20/mo), which adds a stable public tunnel URL at <code>https://&lt;id&gt;.t.amux.io/</code>. Everything else including the dashboard, watchdog, board, scheduler, and secrets vault is free and self-hosted.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Open-source control plane for AI agent teams. Self-healing, phone-first, single Rust binary, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject
 amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+# open https://localhost:8824</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#9733; Star on GitHub</a>
+        <a class="btn" href="/compare/">All comparisons &rarr;</a>
+      </div>
+    </div>
+
+    <h2 id="related">Related comparisons</h2>
+    <ul>
+      <li><a href="/compare/amux-vs-devin/">amux vs Devin</a></li>
+      <li><a href="/compare/amux-vs-openai-agents-sdk/">amux vs OpenAI Agents SDK</a></li>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+      <li><a href="/compare/">All AI agent comparisons</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -94,7 +205,6 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='&#9733; '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

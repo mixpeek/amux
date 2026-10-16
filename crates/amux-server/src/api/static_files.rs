@@ -8,7 +8,6 @@
 //! the shell WITHOUT that bearer and continues through its revocable cookie.
 
 use super::AppState;
-use amux_dashboard::DashboardAssets;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -154,11 +153,15 @@ async fn serve_path(
         )
         .await;
     }
-    match DashboardAssets::get(path) {
+    // `asset`, not the raw embed: app.js and sw.js carry the
+    // `__AMUX_ASSET_VER__` placeholder, and the served bytes must hold the real
+    // content hash so the SW cache name moves on every deploy and the SSE
+    // ping's version (sse.rs) matches what this page will compare it with.
+    match amux_dashboard::asset(path) {
         Some(content) => {
             let mime = mime_for(path);
             let mut resp =
-                ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response();
+                ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response();
             if path == "sw.js" {
                 resp.headers_mut()
                     .insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
@@ -486,10 +489,10 @@ fn serve_index(
     } else {
         "index.html"
     };
-    let Some(index) = DashboardAssets::get(asset) else {
+    let Some(index) = amux_dashboard::asset(asset) else {
         return (StatusCode::NOT_FOUND, "dashboard not embedded").into_response();
     };
-    let html = String::from_utf8_lossy(&index.data).into_owned();
+    let html = String::from_utf8_lossy(&index).into_owned();
     let owner_access = owner_bootstrap_allowed(state, headers, uri, peer);
     let member_verified = super::org::is_verified_local_member(headers);
     let owner_session = owner_session_status(state, headers);
@@ -617,8 +620,8 @@ fn inject_bootstrap(
     );
     let with_bootstrap = format!("{}{}{}", &html[..b], block, &html[e..]);
     // Client update adoption is the SSE ping's job, exactly like Python
-    // (amux-server.py:65292): every ping carries `v` = the embedded APP_VER
-    // (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
+    // (amux-server.py:65292): every ping carries `v` = the derived asset
+    // version, amux_dashboard::asset_version() (see sse.rs::ping_payload) and the SPA self-reloads on mismatch,
     // rate-limited and SW-nudged. The earlier /health-polling banner is
     // deliberately GONE (Ethan 2026-08-09: "frontend clients should also
     // restart just like the python server") — a banner on backend-only

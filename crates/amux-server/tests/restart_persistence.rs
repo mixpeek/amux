@@ -185,7 +185,11 @@ impl Rig {
             // Bootstrap would try to give a created worker a real terminal.
             // Nothing here starts a worker; push it out of the way anyway.
             .env("AMUX_RS_BOOTSTRAP_SECS", "3600")
-            .env("RUST_LOG", "warn,amux_server::api::contract=info")
+            // Info, so the timeout dump in wait_healthy names the last startup
+            // milestone reached (store open, migrations, jobs, listener bound).
+            // At "warn" the nightly's three hung first boots (AMUX-6095,
+            // 2026-10-14..16) left one line each, which places nothing.
+            .env("RUST_LOG", "warn,amux_server=info")
             .stdout(out)
             .stderr(err)
             .spawn()

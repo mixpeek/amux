@@ -351,8 +351,9 @@ fn ev(id: &str, mutation: MutationKind) -> PendingEvent {
 
 // ---- kind derivation (_MSG_KINDS / _msg_kind / _msg_is_queued) -------------
 
-const MSG_KINDS: [&str; 6] = [
+const MSG_KINDS: [&str; 7] = [
     "human",
+    "chat",
     "session",
     "schedule",
     "amux",
@@ -428,6 +429,12 @@ pub(crate) fn msg_kind(mtype: &str) -> &'static str {
     match t.as_str() {
         "session" => "session",
         "schedule" => "schedule",
+        // A message typed into a worker's Chat tab (chat_worker::companion_route
+        // records it as type "chat"). Its own kind, so the Messages tab can
+        // show and filter Chat apart from the terminal; it read "Unclassified"
+        // until 2026-10-14 (Ethan: "make sure chat messages are captured and
+        // searchable in messages and they're classified as chat").
+        "chat" => "chat",
         // Machine-authored. `pickup` is board-drive's auto-pickup prompt.
         _ if AMUX_TYPES.contains(&t.as_str()) => "amux",
         _ if UNSTAMPED_TYPES.contains(&t.as_str()) => "unstamped",
@@ -465,6 +472,7 @@ pub(crate) fn sender_sql() -> String {
              WHEN COALESCE(type,'') IN ({amux}) THEN 'harness' \
              ELSE 'unknown' END \
            WHEN origin LIKE 'member:%' THEN substr(origin, 8) \
+           WHEN COALESCE(type,'')='chat' AND origin='chat-companion' THEN 'owner' \
            WHEN COALESCE(type,'')='schedule' AND origin LIKE '[SCHED-%]%' AND instr(origin, ']')>2 \
              THEN substr(origin, 2, instr(origin, ']')-2) \
            ELSE origin END)",
@@ -516,7 +524,7 @@ fn kind_predicate(raw: Option<&str>, params: &mut Vec<rusqlite::types::Value>) -
                     .iter()
                     .chain(AMUX_TYPES.iter())
                     .chain(UNSTAMPED_TYPES.iter())
-                    .chain(["session", "schedule"].iter())
+                    .chain(["session", "schedule", "chat"].iter())
                     .copied()
                     .collect();
                 ors.push(format!("NOT {}", inlist(&known, params)));
@@ -1925,6 +1933,7 @@ mod tests {
         // AMUX-2670's kind, made real. Not `human` (its delivery was never
         // verified) and not `amux` (a person probably did type it).
         assert_eq!(msg_kind("raw-tmux-fallback"), "unstamped");
+        assert_eq!(msg_kind("chat"), "chat", "a Chat tab message is its own kind, not Unclassified");
         // THE SPECIMEN: the type on MSG-33250, the row in Ethan's screenshot.
         assert_eq!(
             msg_kind("pickup"),

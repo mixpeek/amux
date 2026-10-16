@@ -45,7 +45,7 @@
     "description": "Startup founders use amux to run a 5–10 person AI engineering team without headcount. Launch parallel coding agents, manage from your phone, and ship overnight.",
     "url": "https://amux.io/for/startup-founders/",
     "datePublished": "2026-07-04",
-    "dateModified": "2026-09-27",
+    "dateModified": "2026-10-15",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -148,7 +148,7 @@
     </div>
 
     <h1>Run an AI Engineering Team Without Hiring</h1>
-    <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated September 2026.</p>
+    <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated October 2026.</p>
 
     <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is an open-source control plane for AI agent teams</strong>: it runs, monitors, and self-heals dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
 
@@ -333,8 +333,17 @@ amux serve  # → https://localhost:8824</code></pre>
       </div>
     </div>
 
+    <h2>What's New in October 2026</h2>
+    <p>amux ships updates continuously. Here are the biggest additions relevant to founders since the September 2026 update:</p>
+    <ul>
+      <li><strong>Account rotation</strong> — if your team has multiple Claude Max accounts, amux now pools their usage windows and rotates automatically. When one account hits its 5-hour ceiling mid-run, the session migrates to the next available account and continues without interruption. No more waking up to a fleet that stalled at midnight. Configure with <code>AMUX_ACCOUNT_ROTATION=1</code> and register each account via <code>amux accounts add</code>. See the <a href="/guides/claude-code-account-rotation/">account rotation guide</a>.</li>
+      <li><strong>Workspace isolation</strong> — each worker now optionally gets its own git worktree, a private <code>TMPDIR</code>, and an isolated push strategy. This eliminates the whole class of failure where two parallel agents clobber each other's uncommitted files or collide in <code>/tmp</code>. Enable per worker with <code>AMUX_WORKSPACE_ISOLATION=1</code> in the Scope tab.</li>
+      <li><strong>Claude CLI account rotation lifecycle docs</strong> — amux now records the full credential rotation lifecycle (OAuth token expiry, quota resets, re-verification requirements) so a rotating fleet can self-manage account health without human intervention.</li>
+    </ul>
+    <p>See the full <a href="/changelog/">amux changelog</a> for the complete release history.</p>
+
     <h2>What's New in September 2026</h2>
-    <p>amux ships updates continuously. Here are the biggest additions relevant to founders since the August 2026 update:</p>
+    <p>Key additions from September 2026 relevant to founders:</p>
     <ul>
       <li><strong>Standing approvals</strong> — instead of manually approving each agent action during overnight runs, you can now define a set of approval rules once in the dashboard. When an agent hits a covered request (running tests, creating a branch, reading a config file), amux answers it automatically with your pre-set answer. Uncovered requests still surface to you. This dramatically reduces the number of overnight hangs on permission prompts without giving agents unlimited authority. Configure in <strong>Settings &rsaquo; Approvals</strong>.</li>
       <li><strong>Goal keeper</strong> — set a goal for a worker session (for example, "all tests pass" or "the PR is open") and the harness automatically continues the session until that goal is met. If the agent stops early or marks itself done prematurely, the harness re-prompts it with the original goal. Useful for long-running tasks that should not exit until a verifiable outcome is reached.</li>
@@ -374,6 +383,9 @@ amux serve  # → https://localhost:8824</code></pre>
 
     <h3>Can my AI agents send emails with file attachments?</h3>
     <p>Yes. As of August 2026, amux's email integration supports file attachments on both send and reply endpoints. Agents can attach PDFs, spreadsheets, images, or any file to outgoing emails via the Gmail API — your domain, your signature, full threading. Attachments are sent as multipart/mixed and available via a download endpoint for retrieval. A typical use case: an agent generates a weekly metrics report, exports it as a PDF, and emails it to your investors automatically via a scheduled job.</p>
+
+    <h3>What happens when Claude Code hits its usage limit during an overnight run?</h3>
+    <p>The agent stalls. Claude Code's Max plan has a rolling 5-hour usage window, and heavy parallel usage exhausts it in a few hours. Without amux, your batch is down until the window resets and you notice. With amux's account rotation (October 2026), you register a pool of Max accounts, and when one hits its ceiling the fleet automatically migrates to the next available account. The sessions continue without interruption. Set up takes about five minutes per account. See the <a href="/guides/claude-code-account-rotation/">account rotation guide</a> for the full walkthrough.</p>
 
     <h3>How do I stop agents from pausing overnight for approval prompts?</h3>
     <p>Use amux's Standing Approvals feature (shipped September 2026). Go to <strong>Settings &rsaquo; Approvals</strong> and define rules for specific request classes: running tests, creating branches, reading config files, calling safe external APIs. When an overnight agent hits a covered request, amux answers it automatically. Requests outside your rules still surface to you. This lets overnight sessions run through to completion without granting unlimited authority — you control exactly which categories of action are pre-approved.</p>

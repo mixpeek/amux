@@ -1,9 +1,19 @@
 import { createElement, Activity, ChevronDown } from 'lucide';
 import { settled, phaseLabels } from './interactions.mjs';
-import registry from './control-registry.json';
 import { actionFromHandler } from './controls.mjs';
 
-export function installFeedback(interactions, ui, diagnostic = () => {}) {
+// The command registry is generated from app.js (scripts/build-state.mjs) and
+// fetched at runtime instead of bundled, so kernel.js only changes when the
+// state/ sources do. Bundling it made kernel.js, a minified one-line file,
+// change on almost every app.js edit, and every pair of dashboard PRs then
+// conflicted on it. The service worker precaches this URL for offline use.
+export const CONTROL_REGISTRY_URL = '/state/control-registry.json';
+
+export function installFeedback(interactions, ui, diagnostic = () => {}, registryUrl = CONTROL_REGISTRY_URL) {
+  // Empty until the fetch below lands. A control declared before then gets its
+  // registry-derived action and kind when the registry arrives (see refresh).
+  let commandHandlers = {};
+  const derivedAction = new WeakSet();
   const controls = new Map();
   let source = null;
   const hub = document.createElement('details');
@@ -47,14 +57,35 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
   const selectors = 'button, [role="button"], input, select, textarea, a[href], [onclick], [onchange]';
   function declare(element) {
     if (element.closest('#interaction-feedback')) return;
-    const handler = actionFromHandler(element.getAttribute('onclick') || element.getAttribute('onchange'), registry.command_handlers);
-    element.dataset.action ||= handler || element.id || element.getAttribute('name') || element.tagName.toLowerCase();
-    const declaration = registry.command_handlers[element.dataset.action];
+    const handler = actionFromHandler(element.getAttribute('onclick') || element.getAttribute('onchange'), commandHandlers);
+    if (!element.dataset.action) {
+      element.dataset.action = handler || element.id || element.getAttribute('name') || element.tagName.toLowerCase();
+      derivedAction.add(element);
+    }
+    const declaration = commandHandlers[element.dataset.action];
     if (declaration) element.dataset.interactionKind ||= declaration.kind;
     element.dataset.feedbackRequired ||= 'true';
     element.dataset.targetId ||= element.closest('[data-session], [data-id]')?.dataset.session || element.closest('[data-id]')?.dataset.id || element.id || element.dataset.action;
   }
   document.querySelectorAll(selectors).forEach(declare);
+  // Re-derive the actions THIS layer chose before the registry was known.
+  // An action written in markup is the author's and is left alone.
+  function refresh(element) {
+    if (derivedAction.has(element)) {
+      if (element.dataset.targetId === element.dataset.action) delete element.dataset.targetId;
+      delete element.dataset.action;
+      derivedAction.delete(element);
+    }
+    declare(element);
+  }
+  fetch(registryUrl, {credentials:'same-origin'})
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status)))
+    .then(registry => {
+      commandHandlers = registry?.command_handlers || {};
+      document.querySelectorAll(selectors).forEach(refresh);
+    })
+    .catch(error => diagnostic({verdict:'control_registry_unavailable', measured:false, n_considered:0,
+      why_unmeasured:String(error?.message || error)}));
   new MutationObserver(records => {
     for (const record of records) for (const node of record.addedNodes) {
       if (node.nodeType !== 1 || node.closest('#interaction-feedback')) continue;
@@ -360,7 +391,7 @@ export function installFeedback(interactions, ui, diagnostic = () => {}) {
   render();
   return {render, source:() => source, coverage:() => {
     const all = [...document.querySelectorAll(selectors)].filter(e => !e.closest('#interaction-feedback'));
-    const commands = all.filter(e => e.dataset.interactionKind || e.dataset.commandObserved || registry.command_handlers[e.dataset.action]);
+    const commands = all.filter(e => e.dataset.interactionKind || e.dataset.commandObserved || commandHandlers[e.dataset.action]);
     return {measured:true, n_considered:all.length, declared:all.filter(e => e.dataset.action && e.dataset.feedbackRequired && e.dataset.targetId).length,
       declared_command_controls:commands.filter(e => e.dataset.interactionKind).length,
       observed_command_controls:commands.filter(e => e.dataset.commandObserved).length,

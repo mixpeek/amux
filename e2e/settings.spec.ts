@@ -119,6 +119,12 @@ async function openSettings(page: Page): Promise<void> {
   });
 }
 
+/** API Keys left Settings for the Vault page's API Keys tab (b15e61d9). */
+async function openApiKeys(page: Page): Promise<void> {
+  await page.evaluate(() => (window as any).openVault('apikeys'));
+  await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key')).toBeVisible();
+}
+
 /** Bearer token as the SPA received it from the served bootstrap. */
 async function appToken(page: Page): Promise<string> {
   const tok = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
@@ -389,7 +395,7 @@ test('settings_api_key_anthropic', async ({ page, request }, testInfo) => {
     await request.get('/api/settings/env', { headers: authHeaders(token) })
   ).json()) as Record<string, string>;
 
-  await openSettings(page);
+  await openApiKeys(page);
   const input = page.locator('#settings-anthropic-key');
   await input.fill('sk-ant-e2e-settings-spec-77xy');
   const [res] = await Promise.all([
@@ -416,7 +422,7 @@ test('settings_api_key_anthropic', async ({ page, request }, testInfo) => {
   // Persistence: reload, panel re-open re-fetches from server.env in the
   // throwaway AMUX_HOME.
   await settle(page);
-  await openSettings(page);
+  await openApiKeys(page);
   await expect(page.locator('#settings-anthropic-key')).toHaveAttribute('placeholder', /77xy$/);
   await expect(page.locator('#settings-apikey-status')).toHaveText(/Key saved/);
 
@@ -472,7 +478,7 @@ test('settings_api_key_survives_slow_env_refresh', async ({ page, request }) => 
       (r) => r.url().includes('/api/settings/env') && r.request().method() === 'GET',
     ),
     (async () => {
-      await openSettings(page);
+      await openApiKeys(page);
       // Type while the GET is still held — the incident's interleaving.
       await page.locator('#settings-anthropic-key').fill('sk-ant-e2e-race-77zz');
     })(),

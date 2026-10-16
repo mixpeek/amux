@@ -12,6 +12,14 @@
 // the layer can see its click (the element matches the layer's selector, or it
 // carries a delegated data-* hook the layer also binds) and its handler is
 // started by a click/change/submit rather than pointerdown or touchstart.
+//
+// STABLE OUTPUT. The doc carries no line numbers and no population counts:
+// both move on almost any app.js edit, and committing them made every pair of
+// dashboard PRs conflict on this file. Rows are identified by file, control,
+// handler and wiring, and sorted on those. Counts go to stdout, and --check
+// still fails on the two invariants that matter (no async control outside the
+// shared layer, no unexempted gesture write). Failure messages carry
+// app.js:<line>, since they are read once and never committed.
 import fs from 'node:fs';
 import * as espree from 'espree';
 
@@ -210,6 +218,12 @@ const summary = {
   non_click_unexempted: nonClick.filter(r => !r.exempt).length,
 };
 
+// Code-point order, not localeCompare: the output must not depend on the
+// machine's ICU data or locale.
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const controlOf = r => r.label || r.id || r.tagName;
+const rowKey = r => [r.handler, r.file, controlOf(r), r.wiring, r.kind, r.id, r.tagName].join('\u0000');
+const stable = list => [...list].sort((a, b) => cmp(rowKey(a), rowKey(b)));
 const esc = s => String(s).replace(/\|/g, '\\|').replace(/[<>]/g, c => (c === '<' ? '&lt;' : '&gt;'));
 let md = `# Dashboard button feedback audit (AMUX-5417)
 
@@ -227,45 +241,40 @@ A press arms its control for 5 s, so a handler that awaits something before its 
 
 The shared layer in \`state/feedback.mjs\` does all three for every declared control, so individual handlers do not need their own busy code. "Today" below describes each handler's OWN feedback, measured from its source, which is what a press got before the shared layer covered it.
 
-## Summary
+## Invariants
 
-| measure | count |
-|---|---|
-| controls inventoried | ${summary.n_considered} |
-| async: reaches a request in the static call graph (over-approximates, since a render can reach a writer) | ${summary.async} |
-| of those, write | ${summary.async_writes} |
-| of those, read | ${summary.async_reads} |
-| async controls with a gap in their own feedback | ${summary.gaps_before_shared_layer} |
-| async controls the shared layer cannot see | ${summary.uncovered_by_shared_layer} |
-| writes started by a gesture (pointerdown/touch), exempt with a reason | ${summary.non_click_mutations - summary.non_click_unexempted} |
-| writes started by a gesture without an exemption | ${summary.non_click_unexempted} |
+\`node scripts/button-audit.mjs --check\` fails unless both hold:
 
-Counts are over control occurrences in the source (one markup site may render many times).
+- every async control (one whose handler reaches a request in the static call graph) is visible to the shared layer;
+- every write started by a gesture (pointerdown/touch) carries an exemption with a reason, listed below.
+
+Counts (controls inventoried, async, writes, reads, gaps) are printed by the script rather than kept here, so that adding one control does not rewrite this file. Rows are control occurrences in the source (one markup site may render many times), sorted by handler, file and control.
 
 ## Async controls
 
-| where | control | handler | kind | handler's own feedback today | gap | covered by shared layer |
+| file | control | handler | kind | handler's own feedback today | gap | covered by shared layer |
 |---|---|---|---|---|---|---|
 `;
-for (const r of asyncRows.sort((a, b) => a.handler.localeCompare(b.handler) || a.line - b.line)) {
-  md += `| ${r.file}:${r.line} | ${esc(r.label || r.id || r.tagName)} | \`${esc(r.handler)}\` | ${r.kind} | ${esc(r.today.join('; '))} | ${r.gap ? 'yes' : 'no'} | ${r.covered ? 'yes' : '**no**'} |\n`;
+for (const r of stable(asyncRows)) {
+  md += `| ${r.file} | ${esc(controlOf(r))} | \`${esc(r.handler)}\` | ${r.kind} | ${esc(r.today.join('; '))} | ${r.gap ? 'yes' : 'no'} | ${r.covered ? 'yes' : '**no**'} |\n`;
 }
 md += `
 ## Local controls
 
 These change the screen immediately (open a menu, switch a tab) and need no busy state.
 
-| where | control | handler | wiring |
+| file | control | handler | wiring |
 |---|---|---|---|
 `;
-for (const r of rows.filter(r => !r.kind.startsWith('async')).sort((a, b) => a.handler.localeCompare(b.handler) || a.line - b.line)) {
-  md += `| ${r.file}:${r.line} | ${esc(r.label || r.id || r.tagName)} | \`${esc(r.handler)}\` | ${r.wiring} |\n`;
+for (const r of stable(rows.filter(r => !r.kind.startsWith('async')))) {
+  md += `| ${r.file} | ${esc(controlOf(r))} | \`${esc(r.handler)}\` | ${r.wiring} |\n`;
 }
 if (nonClick.length) {
-  md += `\n## Writes started by gestures\n\n| line | event | handler | why it needs no press feedback |\n|---|---|---|---|\n`;
-  for (const r of nonClick) md += `| app.js:${r.line} | ${r.event} | \`${r.handler}\` | ${r.exempt || '**not exempt**'} |\n`;
+  md += `\n## Writes started by gestures\n\n| file | event | handler | why it needs no press feedback |\n|---|---|---|---|\n`;
+  const gestureKey = r => [r.handler, r.event].join('\u0000');
+  for (const r of [...nonClick].sort((a, b) => cmp(gestureKey(a), gestureKey(b))))
+    md += `| app.js | ${r.event} | \`${r.handler}\` | ${r.exempt || '**not exempt**'} |\n`;
 }
-md += `\n<!-- summary ${JSON.stringify(summary)} -->\n`;
 
 if (process.argv.includes('--check')) {
   const have = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8') : '';

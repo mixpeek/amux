@@ -11,7 +11,7 @@ Closes #<!-- issue number -->
 - [ ] **One focused change** — single issue, one crate/module where possible
 - [ ] **It builds clean:** `cargo check --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` (CI denies warnings)
 - [ ] **Tests pass:** `cargo test --workspace`
-- [ ] **Client change?** (`crates/amux-dashboard/static/`) bumped both `const APP_VER` (app.js) and `const CACHE = 'amux-vX.Y.Z'` (sw.js), and `node --check` passes
+- [ ] **Client change?** (`crates/amux-dashboard/static/`) `node --check` passes and `npm run build:state` was run (no version bump: the server derives it from content)
 - [ ] **Tested end-to-end** — I drove the actual UI/endpoint, not just verified it compiles
 - [ ] Rebased on latest `main`
 

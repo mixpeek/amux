@@ -2977,7 +2977,10 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
             // COUNT(*) as well as MIN(queued_at): this query is grouped per
             // lane, so an invariant counting the rows it returns can only ever
             // say "1". queue.parked_behind_hold shipped doing exactly that.
-            "SELECT session, MIN(queued_at), COUNT(*) FROM steering_queue GROUP BY session",
+            // A scheduled row counts from when it is due (STEER_DUE_AT_SQL), and
+            // one not yet due is not parked.
+            "SELECT session, MIN(MAX(queued_at, COALESCE(deliver_at,0))), COUNT(*) FROM steering_queue \
+             WHERE COALESCE(deliver_at,0) <= (julianday('now') - 2440587.5) * 86400.0 GROUP BY session",
         ) else {
             // The table not existing is a real answer (nothing queued), but an
             // unreadable one is not; do not turn a failed read into a clean pass.
@@ -3072,8 +3075,8 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
 /// fix against a file the server is not running.
 fn extract_caller_paths() -> Vec<checks::CallerPath> {
     let mut out = Vec::new();
-    if let Some(js) = amux_dashboard::DashboardAssets::get("app.js") {
-        let text = String::from_utf8_lossy(&js.data);
+    if let Some(js) = amux_dashboard::asset("app.js") {
+        let text = String::from_utf8_lossy(&js);
         out.extend(scan_js_calls(&text, "spa:app.js"));
     }
     // THE CLI HALF (AMUX-2917). CallerPath::source has documented

@@ -1,5 +1,27 @@
 [
   {
+    "hash": "3c023400c0000000000000000000000000000000",
+    "short": "3c023400c",
+    "title": "Scheduler pauses a failing schedule when its assigned worker is gone",
+    "date": "2026-10-16",
+    "type": "feat",
+    "tags": ["scheduler", "reliability"],
+    "description": "If a scheduled task fires repeatedly but fails because its assigned worker session no longer exists, amux now automatically pauses that schedule rather than retrying indefinitely. The Scheduler tab shows a paused badge with the failure reason. Re-enable the schedule once you have restored or replaced the worker."
+  },
+  {
+    "hash": "9bae682c0000000000000000000000000000000",
+    "short": "9bae682c",
+    "title": "Rotate verified CLI accounts automatically when one hits its usage limit",
+    "date": "2026-10-14",
+    "type": "feat",
+    "tags": [
+      "accounts",
+      "rate-limits",
+      "headless"
+    ],
+    "description": "amux now tracks the 5-hour and 7-day usage windows per registered Claude Code account, showing current percentage and reset time. When an account crosses the rotation threshold, all sessions on that account automatically migrate to the next available one. Configure with AMUX_ACCOUNT_ROTATION=1 and the rotation_policy settings in server.env. See the account rotation guide at amux.io/guides/claude-code-account-rotation/."
+  },
+  {
     "hash": "fa18b25aff520a9dcb5ffb8a9ac9bf1732acea58",
     "short": "fa18b25a",
     "title": "Mac-cleanup health tick runs under set -e, as the harness guard requires",

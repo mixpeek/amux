@@ -132,3 +132,32 @@ test('actual Playwright pass/failure/timeout/list callbacks produce honest evide
     if (mode === 'timeout') assert.ok(verdict.errors.some(x => x.includes('final status timedout')));
   }
 });
+
+// A PR runs a selection (scripts/ci-affected.mjs). Given the unfiltered
+// population too, a green verdict must say what it did not run, per project.
+test('a selected population reports what was not run instead of reading as the full suite', t => {
+  const f = fixture(t);
+  const universe = new EvidenceReporter({ outputDir: path.join(f.root, 'universe') });
+  const extra = { id: 'test-x', titlePath: () => ['suite', 'unselected'], parent: { project: () => ({ name: 'ios-safari' }) } };
+  universe.onBegin({ shard: null }, { allTests: () => [...f.tests, extra] });
+  const result = checkEvidence(f.root, path.join(f.root, 'full', 'manifest.json'), 4, path.join(f.root, 'universe', 'manifest.json'));
+  assert.equal(result.passed, true, JSON.stringify(result));
+  assert.equal(result.selection.scope, 'selected');
+  assert.equal(result.selection.not_run, 1);
+  assert.deepEqual(result.selection.per_project['ios-safari'], { run: 1, not_run: 1 });
+  assert.match(result.selection.note, /NOT selected/);
+});
+test('the full suite against itself reports scope full', t => {
+  const f = fixture(t);
+  const result = checkEvidence(f.root, path.join(f.root, 'full', 'manifest.json'), 4, path.join(f.root, 'full', 'manifest.json'));
+  assert.equal(result.selection.scope, 'full');
+  assert.equal(result.selection.not_run, 0);
+});
+test('a selected test missing from the unfiltered suite refuses green', t => {
+  const f = fixture(t);
+  const universe = new EvidenceReporter({ outputDir: path.join(f.root, 'universe') });
+  universe.onBegin({ shard: null }, { allTests: () => f.tests.slice(1) });
+  const result = checkEvidence(f.root, path.join(f.root, 'full', 'manifest.json'), 4, path.join(f.root, 'universe', 'manifest.json'));
+  assert.equal(result.passed, false);
+  assert.ok(result.errors.some(e => e.includes('absent from the unfiltered suite: test-0')));
+});

@@ -24,6 +24,12 @@ pub(super) enum Error {
         written: usize,
         total: usize,
     },
+    /// The run this call belongs to was cancelled (`mdai::runs`). Returning
+    /// drops the owned child, which kills its whole process group.
+    Cancelled {
+        written: usize,
+        stdout: usize,
+    },
 }
 
 struct OwnedChild {
@@ -184,6 +190,12 @@ pub(super) fn exchange(
     let mut written = 0;
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     loop {
+        if super::runs::cancel_requested() {
+            return Err(Error::Cancelled {
+                written,
+                stdout: stdout.len(),
+            });
+        }
         if started.elapsed() >= budget {
             return Err(Error::Timeout {
                 written,

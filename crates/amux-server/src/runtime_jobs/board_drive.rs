@@ -941,7 +941,7 @@ impl Fleet for LiveFleet {
         crate::api::session_verbs::session_is_isolated(lane)
     }
     fn auto_continue_enabled(&self, lane: &str) -> bool {
-        crate::api::session_verbs::standing_orders_on(lane, "CC_AUTO_CONTINUE")
+        crate::api::session_verbs::board_continue_on(lane)
     }
     async fn is_running(&self, lane: &str) -> bool {
         crate::api::session_verbs::is_running(lane).await
@@ -9874,7 +9874,7 @@ fn nudges_effective(home: &std::path::Path) -> (usize, usize) {
             }
             let Some(name) = p.file_stem().and_then(|x| x.to_str()) else { continue };
             total += 1;
-            if crate::api::session_verbs::standing_orders_on_in(home, name, "CC_AUTO_CONTINUE") {
+            if crate::api::session_verbs::board_continue_on_in(home, name) {
                 on += 1;
             }
         }

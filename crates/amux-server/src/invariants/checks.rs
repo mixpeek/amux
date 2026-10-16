@@ -1218,6 +1218,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("steering_history", "delivered_at", false),
     ("steering_history", "queued_at", false),
     ("steering_queue", "queued_at", false),
+    ("steering_queue", "deliver_at", false),
     // SECONDS, MEASURED on the live database 2026-09-14 (RR-0052 attempts,
     // db/attempts.rs): MAX(started_at) 1789414003 and MAX(ended_at) 1789413676
     // against a `now` of 1789414183.

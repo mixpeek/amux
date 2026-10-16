@@ -37,14 +37,14 @@ try {
   check('a worker sees only brand, last4 and rules', list.body.items?.[0]?.last4 === '4444' && !list.raw.includes(TEST_PAN), list.body.items?.[0]);
   const wadd = await call('POST', '/api/vault', { name: 'sneaky', fields: { number: TEST_PAN } }, W);
   check('a card added by a worker is not usable until the owner activates it', wadd.body.item?.status === 'pending_owner_activation', wadd.body);
-  // The owner activates the worker-staged card from Settings -> Integrations.
+  // The owner activates the worker-staged card on the Vault page's Payment Methods tab.
   {
     const br = await chromium.launch();
     const pg = await (await br.newContext({ ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 } })).newPage();
     await pg.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
     await pg.goto(amux.base + '/', { waitUntil: 'domcontentloaded' });
     await pg.waitForFunction(() => typeof _vaultLoad === 'function');
-    await pg.evaluate(() => { document.getElementById('settings-menu')?.classList.add('open'); _settingsTab('integrations'); });
+    await pg.evaluate(() => openVault('payments'));
     const row = pg.locator(`.vault-item[data-id="${wadd.body.item.id}"]`);
     await row.waitFor({ timeout: 10000 });
     const txt = await row.innerText();

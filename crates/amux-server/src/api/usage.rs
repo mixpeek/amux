@@ -259,9 +259,16 @@ enum ProviderProbe {
 type ProviderProbeFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ProviderProbe> + Send>> + Send + Sync>;
 
+/// Which account a provider CLI is signed in as. Read beside the usage probe
+/// so the row says whose quota it is: the owner rotates Claude logins across
+/// several subscriptions, and a bare "41% left" cannot say which one.
+type AccountFn =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>> + Send>> + Send + Sync>;
+
 #[derive(Clone)]
 struct UsageProbes {
     claude: ProbeFn,
+    claude_account: AccountFn,
     codex: ProviderProbeFn,
     gemini: ProviderProbeFn,
 }
@@ -282,6 +289,7 @@ struct UsageCache {
 pub fn routes() -> Router<AppState> {
     routes_with_probes(UsageProbes {
         claude: Arc::new(|| Box::pin(probe_usage_raw())),
+        claude_account: Arc::new(|| Box::pin(probe_claude_account())),
         codex: Arc::new(|| Box::pin(probe_codex_usage())),
         gemini: Arc::new(|| Box::pin(probe_gemini_usage())),
     })
@@ -302,6 +310,7 @@ pub fn routes_with(probe: ProbeFn) -> Router<AppState> {
     };
     routes_with_probes(UsageProbes {
         claude: probe,
+        claude_account: Arc::new(|| Box::pin(async { None })),
         codex: unavailable("Codex"),
         gemini: unavailable("Gemini"),
     })
@@ -331,9 +340,19 @@ async fn get_usage(
     // is the behaviour that provokes the rate limit in the first place.
     let fresh = matches!((&c.data, c.at), (Some(_), Some(at)) if at.elapsed() < ttl);
     if !fresh {
-        let (claude, codex, gemini) =
-            tokio::join!((probes.claude)(), (probes.codex)(), (probes.gemini)());
-        let shaped = shape_all_providers(claude, codex, gemini);
+        let (claude, claude_account, codex, gemini) = tokio::join!(
+            (probes.claude)(),
+            (probes.claude_account)(),
+            (probes.codex)(),
+            (probes.gemini)()
+        );
+        let mut shaped = shape_all_providers(claude, codex, gemini);
+        if let Some(email) = claude_account {
+            // Stored on the envelope so the stale fallback below serves the
+            // account that went with those numbers, never today's login.
+            // The Claude row is reshaped from this envelope on every response.
+            shaped["account_email"] = json!(email);
+        }
         if shaped.get("available") == Some(&json!(true))
             && shaped.get("stale") != Some(&json!(true))
         {
@@ -400,9 +419,9 @@ async fn get_usage(
     Json(body).into_response()
 }
 
-/// Read Codex's supported account/rateLimits/read JSON-RPC surface. The
-/// app-server receives no prompt and no mutation method; only the usage result
-/// crosses this boundary, never account identity.
+/// Read Codex's supported account/rateLimits/read and account/read JSON-RPC
+/// surfaces. The app-server receives no prompt and no mutation method; the
+/// usage result and the signed-in email cross this boundary, never a token.
 fn codex_probe_process(shell: &str) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(shell);
     command.args([
@@ -451,6 +470,7 @@ async fn probe_codex_usage() -> ProviderProbe {
         "\"capabilities\":{\"experimentalApi\":true}}}\n",
         "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\n",
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":null}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"account/read\",\"params\":{\"refreshToken\":false}}\n",
     );
     let Some(mut stdin) = child.stdin.take() else {
         return provider_probe_unavailable(
@@ -476,26 +496,39 @@ async fn probe_codex_usage() -> ProviderProbe {
     }
     let read = async {
         let mut lines = BufReader::new(stdout).lines();
+        let (mut limits, mut account): (Option<Value>, Option<Value>) = (None, None);
+        let mut account_answered = false;
         while let Some(line) = lines.next_line().await? {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             if message.get("id") == Some(&json!(2)) {
-                return Ok::<Option<Value>, std::io::Error>(message.get("result").cloned());
+                limits = Some(message.get("result").cloned().unwrap_or(Value::Null));
+            } else if message.get("id") == Some(&json!(3)) {
+                account_answered = true;
+                account = message.pointer("/result/account").cloned();
+            }
+            if limits.is_some() && account_answered {
+                break;
             }
         }
-        Ok(None)
+        Ok::<Option<Value>, std::io::Error>(limits.map(|mut body| {
+            if let (Some(obj), Some(account)) = (body.as_object_mut(), account) {
+                obj.insert("account".into(), account);
+            }
+            body
+        }))
     };
     let result = tokio::time::timeout(Duration::from_secs(12), read).await;
     let _ = child.kill().await;
     let _ = child.wait().await;
     match result {
-        Ok(Ok(Some(body))) => {
+        Ok(Ok(Some(body))) if !body.is_null() => {
             tracing::debug!(target: "amux::usage_probe", provider = "codex", verdict = "measured",
                 "subscription usage probe succeeded");
             ProviderProbe::Ok(body)
         }
-        Ok(Ok(None)) => provider_probe_unavailable(
+        Ok(Ok(_)) => provider_probe_unavailable(
             "codex",
             "unexpected_shape",
             "Codex account usage returned no rate-limit snapshot.",
@@ -549,9 +582,12 @@ async fn probe_gemini_usage() -> ProviderProbe {
     let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await;
     match output {
         Ok(Ok(output)) => match serde_json::from_slice::<Value>(&output.stdout) {
-            Ok(body) if body.get("available") == Some(&json!(true)) => {
+            Ok(mut body) if body.get("available") == Some(&json!(true)) => {
                 tracing::debug!(target: "amux::usage_probe", provider = "gemini", verdict = "measured",
                     "subscription usage probe succeeded");
+                if let Some(email) = gemini_active_account() {
+                    body["account_email"] = json!(email);
+                }
                 ProviderProbe::Ok(body)
             }
             Ok(body) => {
@@ -580,6 +616,56 @@ async fn probe_gemini_usage() -> ProviderProbe {
             "Gemini account usage probe timed out or disconnected.",
         ),
     }
+}
+
+/// The Gemini CLI records its signed-in Google account in
+/// `~/.gemini/google_accounts.json` as `active`. An email only; no credential.
+fn gemini_active_account() -> Option<String> {
+    let path =
+        std::path::Path::new(&std::env::var_os("HOME")?).join(".gemini/google_accounts.json");
+    let body: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    body.get("active")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// `claude auth status` prints the signed-in account as JSON. Run through the
+/// login shell for the same reason the Codex probe is (launchd's PATH is not
+/// the user's). A missing CLI, a timeout or a logged-out state is `None`, and
+/// the row then shows no account rather than a guessed one.
+async fn probe_claude_account() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(shell)
+            .args(["-lc", "exec claude auth status"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let account = match output {
+        Ok(Ok(output)) => claude_account_from_status(&output.stdout),
+        _ => None,
+    };
+    if account.is_none() {
+        tracing::warn!(target: "amux::usage_probe", provider = "claude", verdict = "account_unknown",
+            "claude auth status reported no signed-in account");
+    }
+    account
+}
+
+fn claude_account_from_status(stdout: &[u8]) -> Option<String> {
+    let body: Value = serde_json::from_slice(stdout).ok()?;
+    if body.get("loggedIn") != Some(&json!(true)) {
+        return None;
+    }
+    body.get("email")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn provider_probe_unavailable(
@@ -667,6 +753,7 @@ fn shape_claude_provider(body: &Value) -> Value {
         return json!({
             "id": "claude", "label": "Claude", "available": false,
             "measured": false, "n_considered": 0,
+            "account": body.get("account_email").cloned().unwrap_or(Value::Null),
             "cause": body.get("cause").cloned().unwrap_or(Value::Null),
             "reason": body.get("reason").cloned()
                 .unwrap_or_else(|| json!("Claude usage is unavailable.")),
@@ -709,6 +796,7 @@ fn shape_claude_provider(body: &Value) -> Value {
         .collect::<Vec<_>>();
     json!({
         "id": "claude", "label": "Claude", "available": true, "measured": true,
+        "account": body.get("account_email").cloned().unwrap_or(Value::Null),
         "n_considered": windows.len(), "metered": true,
         "source": "Anthropic subscription API", "windows": windows,
         "observed_at": body.get("observed_at"), "retry_at": body.get("retry_at"),
@@ -803,6 +891,7 @@ fn shape_codex_provider(probe: ProviderProbe) -> Value {
         "id": "codex", "label": "Codex", "available": true, "measured": true,
         "n_considered": windows.len(), "metered": true, "source": "Codex account API",
         "plan": plan, "windows": windows, "buckets": details,
+        "account": body.pointer("/account/email").cloned().unwrap_or(Value::Null),
         "reset_credits": body.get("rateLimitResetCredits").cloned().unwrap_or(Value::Null),
         "upsell": body.get("rateLimitUpsell").cloned().unwrap_or(Value::Null),
     })
@@ -844,6 +933,7 @@ fn shape_gemini_provider(probe: ProviderProbe) -> Value {
         "n_considered": windows.len(), "metered": true,
         "source": "Gemini Code Assist quota API",
         "auth_type": body.get("auth_type").cloned().unwrap_or(Value::Null),
+        "account": body.get("account_email").cloned().unwrap_or(Value::Null),
         "plan": body.pointer("/tier/name").cloned().unwrap_or(Value::Null),
         "tier": body.get("tier").cloned().unwrap_or(Value::Null),
         "credits": body.get("credits").cloned().unwrap_or(Value::Null),
@@ -1547,9 +1637,9 @@ mod tests {
 
     #[tokio::test]
     async fn undelivered_or_refused_prompts_do_not_claim_later_token_usage() {
-        let dir=tempfile::tempdir().unwrap();
-        let store=crate::db::Store::open(&dir.path().join("attr.db")).unwrap();
-        let now=chrono::Utc::now().timestamp();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("attr.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
         store.write(move |conn| {
             conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('owner','user','lane',?1,'direct')",[(now-100)*1000])?;
             conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('queued peer','session','lane',?1,'queued')",[(now-80)*1000])?;
@@ -1560,16 +1650,56 @@ mod tests {
             conn.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd,task) VALUES(?1,'lane','c','opus',1,0,0,1,2.0,'')",[now-20])?;
             Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
         }).unwrap();
-        let app=axum::Router::new().nest("/api/usage",routes_with(probe_fn(UsageProbe::Ok(json!({})),Arc::new(AtomicUsize::new(0)))))
-            .with_state(AppState {store:Arc::new(store),started:Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))});
-        let response=app.oneshot(Request::builder().uri("/api/usage/attribution?hours=1").body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(response.status(),StatusCode::OK);
-        let bytes=axum::body::to_bytes(response.into_body(),1<<20).await.unwrap();
-        let value:Value=serde_json::from_slice(&bytes).unwrap();
-        let sources:std::collections::HashMap<_,_>=value["by_source"].as_array().unwrap().iter().map(|r|(r["source"].as_str().unwrap(),r["cost_usd"].as_f64().unwrap())).collect();
-        assert_eq!(sources.get("user"),Some(&1.0),"{value}");
-        assert_eq!(sources.get("steer:task-callback"),Some(&2.0),"confirmed delivery control: {value}");
-        assert!(!sources.contains_key("session") && !sources.contains_key("steer:board-progress"),"no tokens attributed to undelivered input: {value}");
+        let app = axum::Router::new()
+            .nest(
+                "/api/usage",
+                routes_with(probe_fn(
+                    UsageProbe::Ok(json!({})),
+                    Arc::new(AtomicUsize::new(0)),
+                )),
+            )
+            .with_state(AppState {
+                store: Arc::new(store),
+                started: Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/usage/attribution?hours=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let sources: std::collections::HashMap<_, _> = value["by_source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["source"].as_str().unwrap(),
+                    r["cost_usd"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(sources.get("user"), Some(&1.0), "{value}");
+        assert_eq!(
+            sources.get("steer:task-callback"),
+            Some(&2.0),
+            "confirmed delivery control: {value}"
+        );
+        assert!(
+            !sources.contains_key("session") && !sources.contains_key("steer:board-progress"),
+            "no tokens attributed to undelivered input: {value}"
+        );
     }
 
     /// The service manager's PATH may contain a stale but executable shim.
@@ -1995,10 +2125,12 @@ mod tests {
                 }
             },
             "rateLimitResetCredits": {"availableCount": 2, "credits": [{"expiresAt": 1789257600}]},
-            "rateLimitUpsell": {"eligible": false}
+            "rateLimitUpsell": {"eligible": false},
+            "account": {"type": "chatgpt", "email": "codex@example.com", "planType": "pro"}
         });
         let gemini = json!({
             "available": true, "auth_type": "oauth-personal",
+            "account_email": "gemini@example.com",
             "tier": {"id": "standard", "name": "Google AI Pro"}, "credits": 1000,
             "quota": {"buckets": [
                 {"modelId": "gemini-3.5-pro", "remainingFraction": 0.72,
@@ -2007,10 +2139,16 @@ mod tests {
                  "remainingAmount": 910, "resetTime": "2026-09-06T20:00:00Z"}
             ]}
         });
-        let body = shape_all_providers(
+        let mut body = shape_all_providers(
             UsageProbe::Ok(live_shaped_body()),
             ProviderProbe::Ok(codex),
             ProviderProbe::Ok(gemini),
+        );
+        body["account_email"] = json!("claude@example.com");
+        // Each row names the account whose quota it is.
+        assert_eq!(
+            shape_claude_provider(&body)["account"],
+            "claude@example.com"
         );
         let providers = body["providers"].as_array().expect("provider rows");
         let mut response_ids = providers
@@ -2047,9 +2185,11 @@ mod tests {
                 && window["resets_at"].as_i64() == Some(1789088400i64)
         }));
         assert_eq!(codex["reset_credits"]["availableCount"], 2);
+        assert_eq!(codex["account"], "codex@example.com");
         assert_eq!(codex["buckets"][0]["credits"]["balance"], "12.50");
         let gemini = provider("gemini");
         assert_eq!(gemini["plan"], "Google AI Pro");
+        assert_eq!(gemini["account"], "gemini@example.com");
         assert_eq!(gemini["windows"].as_array().unwrap().len(), 2);
         assert_eq!(gemini["windows"][0]["remaining_amount"], 144);
         assert_eq!(provider("ollama")["metered"], false);
@@ -2063,6 +2203,45 @@ mod tests {
             !wire.contains("accountId"),
             "account identity field leaked: {wire}"
         );
+    }
+
+    #[test]
+    fn claude_account_comes_from_a_logged_in_auth_status_only() {
+        let status = br#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.com"}"#;
+        assert_eq!(
+            claude_account_from_status(status).as_deref(),
+            Some("a@example.com")
+        );
+        let out = br#"{"loggedIn":false,"email":"a@example.com"}"#;
+        assert_eq!(claude_account_from_status(out), None);
+        assert_eq!(claude_account_from_status(b"not json"), None);
+    }
+
+    #[tokio::test]
+    async fn the_claude_row_names_the_signed_in_account() {
+        let (probe, _) = probe_sequence(vec![UsageProbe::Ok(live_shaped_body())]);
+        let unavailable: ProviderProbeFn = Arc::new(|| {
+            Box::pin(async {
+                ProviderProbe::Unavailable {
+                    cause: "test",
+                    reason: "test".into(),
+                }
+            })
+        });
+        let app = app_routes(routes_with_probes(UsageProbes {
+            claude: probe,
+            claude_account: Arc::new(|| Box::pin(async { Some("b@example.com".to_string()) })),
+            codex: unavailable.clone(),
+            gemini: unavailable,
+        }));
+        let (_, body) = get(&app).await;
+        let claude = body["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "claude")
+            .unwrap();
+        assert_eq!(claude["account"], "b@example.com");
     }
 
     #[test]
@@ -2357,6 +2536,7 @@ mod tests {
         });
         let probes = UsageProbes {
             claude,
+            claude_account: Arc::new(|| Box::pin(async { None })),
             codex,
             gemini: Arc::new(|| {
                 Box::pin(async {

@@ -89,7 +89,7 @@ pub(super) async fn pass(ctx: &ConnectorsCtx) -> Value {
         Err(_) => results.push(json!({"status":"registry_busy","measured":false})),
     }
     if results.iter().any(|r| r["status"] == "ok") {
-        ROLLUP_CACHE.lock().expect("rollup cache").remove(&ctx.home);
+        invalidate_rollup(&ctx.home);
     }
     let rollup = accounts_rollup(&ctx.http, &ctx.home, false).await;
     let file_env = parse_env_file(&ctx.home.join("server.env"));

@@ -48,6 +48,29 @@ out2="$(LANE_TMP_ROOT="$R" LANE_TMP_IDLE_MIN=1440 LANE_TMP_MAX=2 bash -c ". '$F'
 left=$(ls "$R/lane3" | wc -l | tr -d ' ')
 [ "$left" = 1 ] && printf '%s' "$out2" | grep -q 'capped at 2' && echo "ok   a pass removes at most LANE_TMP_MAX entries and says it was capped" || { echo "FAIL cap: left=$left out=$out2"; fail=1; }
 grep -q 'AMUX_CLEANUP_LANE_TMP=0' "$ROOT/scripts/test-mac-cleanup-tick.sh" && echo "ok   the full-tick test never reaps the live lane temp dirs" || { echo "FAIL full-tick test does not disable the lane reaper"; fail=1; }
+# 2026-10-14: an unbounded find over a lane's 23 build checkouts ran the whole
+# tick past the scheduler's 600s kill, six ticks in a row. A `find` stub that is
+# slow for chosen entries stands in for a huge tree under load.
+STUB="$T/stub"; mkdir -p "$STUB"
+cat > "$STUB/find" <<'SH'
+#!/bin/bash
+case "$*" in *SLOW*) sleep "${SLOW_FIND_S:-5}" ;; esac
+exec /usr/bin/find "$@"
+SH
+chmod +x "$STUB/find"
+R6="$T/root6"; mkdir -p "$R6/lane/aSLOW" "$R6/lane/bold"; touch -t 202609300000 "$R6/lane/aSLOW" "$R6/lane/bold"
+out6="$(PATH="$STUB:$PATH" LANE_TMP_ROOT="$R6" LANE_TMP_IDLE_MIN=1440 LANE_TMP_WALK_S=1 bash -c ". '$F'; reap_lane_tmp 0")"
+[ -d "$R6/lane/aSLOW" ] && echo "ok   an entry whose idle walk runs past the walk limit is kept" || { echo "FAIL a slow-walk entry was removed"; fail=1; }
+[ ! -e "$R6/lane/bold" ] && echo "ok   and the pass goes on to judge the next entry" || { echo "FAIL the pass stopped at the slow entry: $out6"; fail=1; }
+printf '%s' "$out6" | grep -q 'kept 1 whose idle walk ran past 1s' && echo "ok   the unknown entry is counted in the log" || { echo "FAIL unknown count: $out6"; fail=1; }
+R7="$T/root7"; ST7="$T/state7"; mkdir -p "$R7/lane/aSLOW" "$R7/lane/bSLOW" "$R7/lane/cSLOW"
+touch -t 202609300000 "$R7/lane/aSLOW" "$R7/lane/bSLOW" "$R7/lane/cSLOW"
+out7="$(PATH="$STUB:$PATH" SLOW_FIND_S=2 STATE_DIR="$ST7" LANE_TMP_ROOT="$R7" LANE_TMP_IDLE_MIN=1440 LANE_TMP_WALK_S=10 LANE_TMP_BUDGET_S=1 bash -c ". '$F'; reap_lane_tmp 0")"
+[ ! -e "$R7/lane/aSLOW" ] && [ -d "$R7/lane/bSLOW" ] && [ -d "$R7/lane/cSLOW" ] && echo "ok   a pass stops judging once its budget is spent" || { echo "FAIL budget: $(ls "$R7/lane" | tr '\n' ' ') $out7"; fail=1; }
+printf '%s' "$out7" | grep -q '2 not reached inside the 1s budget, the next tick starts at lane/bSLOW' && echo "ok   and says where the next tick resumes" || { echo "FAIL budget log: $out7"; fail=1; }
+mkdir -p "$R7/lane/0first"; touch -t 202609300000 "$R7/lane/0first"
+PATH="$STUB:$PATH" SLOW_FIND_S=2 STATE_DIR="$ST7" LANE_TMP_ROOT="$R7" LANE_TMP_IDLE_MIN=1440 LANE_TMP_WALK_S=10 LANE_TMP_BUDGET_S=1 bash -c ". '$F'; reap_lane_tmp 0" >/dev/null
+[ ! -e "$R7/lane/bSLOW" ] && [ -d "$R7/lane/0first" ] && echo "ok   the next pass resumes at the cursor, ahead of an earlier entry" || { echo "FAIL cursor: $(ls "$R7/lane" | tr '\n' ' ')"; fail=1; }
 kill "$holder" 2>/dev/null; wait 2>/dev/null
 rm -f "$F"; rm -rf -- "${T:?}"
 exit $fail

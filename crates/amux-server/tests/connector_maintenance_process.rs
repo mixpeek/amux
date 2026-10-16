@@ -119,18 +119,32 @@ impl Rig {
         child.wait().unwrap();
     }
     async fn receipt(&self, after: f64) -> Value {
+        self.receipt_where(after, |_| true).await
+    }
+    /// The child ticks every second and each pass overwrites the receipt, so
+    /// the first receipt this poll sees is not necessarily the pass that did
+    /// the work: a slow first pass makes the next tick fire at once
+    /// (`MissedTickBehavior::Delay`) and its receipt can replace the first
+    /// inside one 50ms poll gap. A stage that asserts on one pass's verdict
+    /// waits for a receipt that satisfies `want`, and names the last one it
+    /// saw if none does.
+    async fn receipt_where(&self, after: f64, want: impl Fn(&Value) -> bool) -> Value {
+        let mut last = Value::Null;
         for _ in 0..200 {
             if let Ok(raw) = std::fs::read(self.home.join("connectors/maintenance.json")) {
                 if let Ok(v) = serde_json::from_slice::<Value>(&raw) {
                     if v["checked_at"].as_f64().is_some_and(|t| t > after) {
-                        return v;
+                        if want(&v) {
+                            return v;
+                        }
+                        last = v;
                     }
                 }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!(
-            "no scheduled durable receipt; {}",
+            "no scheduled durable receipt matched; last receipt after {after}: {last}; child log: {}",
             std::fs::read_to_string(self.home.join("child.log")).unwrap()
         );
     }
@@ -264,11 +278,34 @@ async fn scheduled_connector_maintenance_rotates_idle_grants_and_survives_sigkil
     assert_eq!(std::fs::read_to_string(&google_path).unwrap(), before_bytes);
     assert!(!failed.to_string().contains("old-secret"));
     state.lock().unwrap().reject = false;
+    let refreshes_before_recovery = state.lock().unwrap().refreshes.len();
     rig.start();
-    let recovered = rig.receipt(failed["checked_at"].as_f64().unwrap()).await;
+    // The pass that refreshes reports "ok"; every later pass reports "not_due"
+    // for the now-fresh grant, and either can be the receipt on disk when the
+    // poll looks (run 38940318679 read "not_due"). Wait for the first receipt
+    // past the failure that is no longer needs_reauth, then prove the refresh
+    // really happened from the provider and the grant file, which no later
+    // pass can overwrite.
+    let recovered = rig
+        .receipt_where(failed["checked_at"].as_f64().unwrap(), |v| {
+            v["grants"][0]["status"] != "needs_reauth"
+        })
+        .await;
     rig.kill();
-    assert_eq!(recovered["grants"][0]["status"], "ok");
-    assert_eq!(recovered["failures"], 0);
+    let status = recovered["grants"][0]["status"].as_str().unwrap_or("");
+    assert!(
+        status == "ok" || status == "not_due",
+        "recovered grant verdict {status:?}: {recovered}"
+    );
+    assert_eq!(recovered["failures"], 0, "{recovered}");
+    assert_eq!(
+        state.lock().unwrap().refreshes.len(),
+        refreshes_before_recovery + 1,
+        "recovery refreshes the revoked grant exactly once"
+    );
+    let google: Value = serde_json::from_slice(&std::fs::read(&google_path).unwrap()).unwrap();
+    assert_eq!(google["refresh_token"], "rotated-google");
+    assert_eq!(google["owner_metadata"]["pin"], "unchanged");
     assert_eq!(
         std::fs::read_to_string(home.path().join("connectors/custom.json")).unwrap(),
         definitions.to_string()

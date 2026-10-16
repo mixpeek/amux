@@ -317,6 +317,17 @@ pub const SPECS: &[SweepSpec] = &[
         env: "AMUX_SESSION_EVENTS_RETAIN_DAYS",
         default_days: 90.0,
     },
+    // The session.* status rows of the same table, kept 30 days (Ethan's yes on
+    // AMUX-6067/AMUX-6016, 2026-10-16). session.native_status alone was 354K rows
+    // and 2.7GB, ~7.7KB/row; message.* and task.* rows keep the 90 days above.
+    // Listed AFTER the 90-day spec: the chat.message test finds the first one.
+    SweepSpec {
+        table: "session_events",
+        ts_col: "ts",
+        unit: TsUnit::Secs,
+        env: "AMUX_SESSION_STATUS_EVENTS_RETAIN_DAYS",
+        default_days: 30.0,
+    },
     // ~1.8 KB per sample at a 300 s default interval: ~520 KB/day, ~15 MB at
     // 30 days. Kept longer than the interaction log because a row is small and
     // the question it answers ("when did the disk fill?") is asked weeks late.
@@ -503,7 +514,9 @@ fn iso_utc(secs: i64) -> String {
 /// returns None: the ISO column is compared lexicographically and cannot land
 /// 1000x off, so the mismatch this guard exists to catch cannot occur there.
 fn retention_eligible(spec: &SweepSpec) -> &'static str {
-    if spec.table == "cmd_history" {
+    if spec.env == "AMUX_SESSION_STATUS_EVENTS_RETAIN_DAYS" {
+        "COALESCE(type,'') LIKE 'session.%'"
+    } else if spec.table == "cmd_history" {
         "capture_pending=0"
     } else if spec.table == "session_events" {
         // Chat history is the conversation itself, kept like a coding
@@ -590,11 +603,12 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
 
     match conn.execute(
         &format!(
-            "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} < ?1 AND {} LIMIT 256)",
+            "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} < ?1 AND {} LIMIT {})",
             spec.table,
             spec.table,
             spec.ts_col,
-            retention_eligible(spec)
+            retention_eligible(spec),
+            SWEEP_BATCH
         ),
         rusqlite::params![&cutoff],
     ) {
@@ -606,8 +620,8 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
                 tracing::info!(
                     table = spec.table,
                     deleted = rows,
-                    batch_limit = 256,
-                    batch_saturated = rows == 256,
+                    batch_limit = SWEEP_BATCH,
+                    batch_saturated = rows == SWEEP_BATCH,
                     kept,
                     retain_days = days,
                     knob = spec.env,
@@ -654,6 +668,42 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
         }
         Err(e) => SweepResult::Error(format!("delete {}: {e}", spec.table)),
     }
+}
+
+/// One more batch for a table whose `sweep_one` already passed the guard this
+/// tick and came back saturated. Same cutoff and predicate; the guard's two
+/// full-table COUNTs are not repeated, because deleting rows older than the
+/// cutoff cannot change how many rows are at or after it. Those counts were
+/// most of each batch's 150-480ms (2026-10-16 log), and repeating them per
+/// batch would spend the catch-up budget counting.
+pub fn sweep_batch(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> rusqlite::Result<usize> {
+    let cutoff = cutoff_for(spec.unit, now_secs, retain_days(spec));
+    conn.execute(
+        &format!(
+            "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} < ?1 AND {} LIMIT {})",
+            spec.table,
+            spec.table,
+            spec.ts_col,
+            retention_eligible(spec),
+            SWEEP_BATCH
+        ),
+        rusqlite::params![&cutoff],
+    )
+}
+
+/// Rows per DELETE. Each batch is one write on the shared writer.
+pub const SWEEP_BATCH: usize = 256;
+
+/// `AMUX_STORAGE_CATCHUP_MS` (default 20000, 0 = one batch per tick as before):
+/// how long one tick may keep deleting a table whose batch came back full.
+///
+/// One 256-row batch an hour removed ~6K rows a day while `_amux_state_events`
+/// added ~30K, so its 14-day bound never held: 137K rows past it on 2026-10-16,
+/// logged as `batch_saturated=true` every hour with nothing acting on it.
+/// Batches stay 256 rows and each is its own write, so worker commands still
+/// interleave between them.
+fn catchup_budget_ms() -> u64 {
+    env_u64("AMUX_STORAGE_CATCHUP_MS", 20_000)
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,6 +1398,53 @@ pub const AGE_PRUNED_DIRS: &[(&str, &str, u64)] = &[
     ("transcripts", "AMUX_TRANSCRIPTS_RETAIN_DAYS", 30),
 ];
 
+/// Keep deleting a saturated table, one batch per write, until a batch comes
+/// back short or the budget is spent. Logs one line either way:
+/// `storage_retention_caught_up` or `storage_retention_backlog` (still behind
+/// after the budget, so the next tick resumes; the table has no cursor).
+async fn catch_up(state: &AppState, spec: &'static SweepSpec, now: f64) {
+    let budget = catchup_budget_ms();
+    if budget == 0 {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let (mut batches, mut rows, mut last) = (0u32, 0usize, SWEEP_BATCH);
+    while last == SWEEP_BATCH && (started.elapsed().as_millis() as u64) < budget {
+        let sink: std::sync::Arc<std::sync::Mutex<Option<rusqlite::Result<usize>>>> = Default::default();
+        let sink2 = sink.clone();
+        let r = state.store.write_async(move |conn| {
+            if let Ok(mut out) = sink2.lock() { *out = Some(sweep_batch(conn, spec, now)); }
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        }).await;
+        let got = sink.lock().ok().and_then(|mut v| v.take());
+        match (r, got) {
+            (Ok(_), Some(Ok(n))) => { last = n; rows += n; batches += 1; }
+            (r, got) => {
+                let error = match (r, got) {
+                    (Err(e), _) => e.to_string(),
+                    (_, Some(Err(e))) => e.to_string(),
+                    _ => "no receipt".to_string(),
+                };
+                tracing::warn!(verdict = "storage_retention_catchup_error", table = spec.table,
+                    knob = spec.env, batches, rows, %error, "retention catch-up stopped on an error");
+                return;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let behind = last == SWEEP_BATCH;
+    if behind {
+        tracing::warn!(verdict = "storage_retention_backlog", table = spec.table, knob = spec.env,
+            batches, rows, elapsed_ms, budget_ms = budget, measured = true, n_considered = rows,
+            "retention still behind after this tick's catch-up budget; the next tick resumes");
+    } else {
+        tracing::info!(verdict = "storage_retention_caught_up", table = spec.table, knob = spec.env,
+            batches, rows, elapsed_ms, measured = true, n_considered = rows,
+            "retention caught up: the last batch came back short");
+    }
+}
+
 pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     let t0 = std::time::Instant::now();
     let now = unix_now();
@@ -1379,6 +1476,12 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
                 .map(|v| format!("{v:?}"))
                 .unwrap_or_else(|| "Error(retention receipt unavailable)".into()),
         };
+        let first_rows = sink.lock().ok().and_then(|v| v.clone());
+        if let Some(SweepResult::Deleted { rows, .. }) = first_rows {
+            if rows == SWEEP_BATCH {
+                catch_up(state, spec, now).await;
+            }
+        }
         rep.tables.push((spec.table.to_string(), outcome));
         tokio::task::yield_now().await;
     }
@@ -2362,6 +2465,54 @@ mod tests {
             grown,
             size()
         );
+    }
+
+    /// A backlog larger than one batch clears in ONE tick (2026-10-16: one
+    /// 256-row batch an hour left 137K rows past the 14-day bound), and the
+    /// session.* 30-day rule trims status rows while message rows of the same
+    /// age keep their 90 days.
+    #[tokio::test]
+    async fn a_saturated_table_catches_up_within_one_tick() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("amux.db")).unwrap());
+        let now = unix_now();
+        let old = now - 40.0 * 86_400.0;
+        store.write_async(move |c| {
+            for i in 0..1000 {
+                c.execute("INSERT INTO session_events (ts, type, data) VALUES (?1, 'session.native_status', '{}')", rusqlite::params![old - i as f64])?;
+            }
+            c.execute("INSERT INTO session_events (ts, type, data) VALUES (?1, 'message.sent', '{}')", rusqlite::params![old])?;
+            c.execute("INSERT INTO session_events (ts, type, data) VALUES (?1, 'session.native_status', '{}')", rusqlite::params![now])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await.unwrap();
+        let state = AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        storage_tick(&state, home.path()).await;
+        let left: Vec<String> = store.read().unwrap()
+            .prepare("SELECT type FROM session_events ORDER BY ts").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(left, vec!["message.sent".to_string(), "session.native_status".to_string()],
+            "all 1000 aged status rows go in one tick; the 40-day message row and today's status row stay");
+    }
+
+    #[test]
+    fn sweep_batch_deletes_only_what_sweep_one_would() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, type TEXT, data TEXT)").unwrap();
+        let now = unix_now();
+        let old = now - 40.0 * 86_400.0;
+        for t in ["session.idle", "chat.message", "message.queued"] {
+            c.execute("INSERT INTO session_events (ts, type) VALUES (?1, ?2)", rusqlite::params![old, t]).unwrap();
+        }
+        let spec = SPECS.iter().find(|s| s.env == "AMUX_SESSION_STATUS_EVENTS_RETAIN_DAYS").unwrap();
+        assert_eq!(sweep_batch(&c, spec, now).unwrap(), 1, "only the session.* row is past 30 days for this spec");
+        let ninety = SPECS.iter().find(|s| s.env == "AMUX_SESSION_EVENTS_RETAIN_DAYS").unwrap();
+        assert_eq!(sweep_batch(&c, ninety, now).unwrap(), 0, "40 days is inside the 90-day bound");
     }
 
     #[tokio::test]

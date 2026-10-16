@@ -427,8 +427,18 @@ pub(crate) async fn start_job(
     std::fs::write(dir.join("in"), &text).map_err(|e| ("io".to_string(), e.to_string()))?;
 
     let me = format!("{worker}{DELEGATE_SUFFIX}");
+    // Vault secrets reach the job the way they reach a worker launch: never
+    // argv, never a file, and moved to their real names AFTER the prelude
+    // sources the scope env files, so the vault wins as it does at launch.
+    let vault = super::vault_secrets::deliver(&home(), worker, super::vault_secrets::DeliveryPath::Delegate)
+        .unwrap_or_else(|error| {
+            tracing::warn!(session = worker, %error, measured = false, n_considered = 0,
+                verdict = "vault_delivery_failed", "vault: a delegate runs without its worker's secrets (AMUX-5375)");
+            super::vault_secrets::Delivery { values: Vec::new(), manifest: Default::default() }
+        });
+    let (vault_env, vault_line) = super::vault_secrets::staged_env(&vault.values);
     let prelude = format!(
-        "{}export AMUX_SESSION={q}; export AMUX_WORKER={q}; export GIT_OPTIONAL_LOCKS=0; ",
+        "{}{vault_line}export AMUX_SESSION={q}; export AMUX_WORKER={q}; export GIT_OPTIONAL_LOCKS=0; ",
         super::session_verbs::headless_turn_prelude(worker, &provider, &cwd),
         q = sh_quote(&me)
     );
@@ -459,12 +469,8 @@ pub(crate) async fn start_job(
     if let Some(p) = &profile {
         cmd.env("AMUX_DELEGATE_SANDBOX", p);
     }
-    // Vault secrets reach the job's environment the way they reach a worker
-    // launch: never argv, never a file.
-    if let Ok(vals) = super::vault_secrets::launch_values(&home(), worker) {
-        for (k, v) in vals {
-            cmd.env(k, v);
-        }
+    for (k, v) in vault_env {
+        cmd.env(k, v);
     }
     let child = cmd.spawn().map_err(|e| ("spawn".to_string(), format!("could not start {provider}: {e}")))?;
     let pgid = child.id().unwrap_or(0);

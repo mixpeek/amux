@@ -1,4 +1,4 @@
-import { test, expect, Page } from './fixtures';
+import { test, expect, Page, allowUnusedRoute } from './fixtures';
 
 async function sourceFilter(page: Page, kind: string) {
   await page.getByRole('button', {name:'Filter messages', exact:true}).click();
@@ -533,7 +533,32 @@ test('a worker menu that loses its opening announces the failure', async ({ page
 });
 
 
+const SPECIMEN_CARD = {id:'AMUX-4242', title:'filter specimen', status:'todo'};
+const BOARD_LIST = /\/api\/board\?archived=0(&|$)/;
+
 async function filterSpecimen(page: Page) {
+  // The pushed card below only lasts until the next board refresh. Peers on
+  // the shared server mutate the board, so a refresh can land mid-test and
+  // replace boardItems with a list that has prefixes but no AMUX card, and the
+  // Board references count drops to 0 (ios-safari run 38809617752). Every
+  // board list this page loads therefore carries the specimen card too.
+  await page.route(BOARD_LIST, async route => {
+    const headers = { ...route.request().headers() };
+    delete headers['if-none-match'];
+    // A refresh still in flight when the test ends has nobody to answer.
+    const res = await route.fetch({ headers }).catch(() => null);
+    if (!res) return;
+    const body = await res.json().catch(() => null);
+    const out = { ...res.headers() };
+    delete out['etag']; delete out['content-length'];
+    if (Array.isArray(body) && !body.some((i: any) => i && i.id === SPECIMEN_CARD.id)) body.push(SPECIMEN_CARD);
+    await (Array.isArray(body)
+      ? route.fulfill({ status: res.status(), headers: out, json: body })
+      : route.fulfill({ response: res })).catch(() => {});
+  });
+  // Only fires when a board refresh happens during the test, which is the race
+  // this stub exists for and is not guaranteed in any given run.
+  allowUnusedRoute(page, BOARD_LIST);
   await page.evaluate(() => {
     // Board references count only for a prefix the loaded board uses. The
     // shared e2e server's board holds whatever earlier specs created, so name

@@ -10,7 +10,8 @@ removed 2026-08-09; git history has it):
   `src/db/` (SQLite), `migrations/` (SQL, append-only), `src/runtime_jobs/`
 - `crates/amux-dashboard` — the SPA as real static files (`static/app.js`,
   `app.css`, `index.html`, `sw.js`) — client JS is NO LONGER inside a Python
-  string; edit the static files and bump `APP_VER` (app.js) + `CACHE` (sw.js) together
+  string; edit the static files. `APP_VER` (app.js) and `CACHE` (sw.js) are derived from a
+  content hash at serve time, so there is nothing to bump
 - `crates/amux-core`, `crates/amux-cli` — shared types and the Rust CLI
 
 Always verify after edits:

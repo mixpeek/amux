@@ -127,7 +127,13 @@ fn runtime_updates_preserve_the_last_structurally_safe_snapshot() {
         .and_then(|tail| tail.split("/// Git branch cache").next())
         .expect("runtime invalidation function moved or disappeared");
     assert!(runtime_fn.contains("SESSIONS_RUNTIME_EPOCH.fetch_add"));
-    assert!(runtime_fn.contains("c.stamp = 0.0"));
+    // A report no longer forces a rebuild (RCA hog 20261015-182512: 25.7
+    // reports/min zeroing the stamp kept the single builder running back to
+    // back at 344% CPU). Freshness is snapshot_fresh's job.
+    assert!(
+        !runtime_fn.contains("c.stamp = 0.0"),
+        "a worker heartbeat must not force a fleet rebuild"
+    );
     assert!(
         !runtime_fn.contains("c.json.clear()"),
         "a worker heartbeat must not erase the stale-while-revalidate snapshot"

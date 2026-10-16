@@ -1930,8 +1930,20 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/vault/secrets/audit",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/vault/secrets/{id}",
-        methods: &["PUT", "DELETE"],
+        methods: &["PUT", "PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/vault/secrets/{id}/reveal",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/vault/secrets/{id}/access",
+        methods: &["GET"],
     },
     RouteEntry {
         path: "/api/chat-delegate",
@@ -2592,6 +2604,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/files/mdai/connect",
         methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/files/mdai/active",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/files/mdai/cancel",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/files/mdai/doc",
+        methods: &["GET", "PUT"],
     },
     RouteEntry {
         path: "/api/fs/mkdir",

@@ -52,11 +52,28 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _scrubbed=""
 for _k in ${!AMUX_@}; do
   case "$_k" in
-    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_E2E_*) ;;
+    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_E2E_*) ;;
     *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
   esac
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
+
+# WHICH DASHBOARD BYTES THIS SERVER SERVES. CI may boot a server binary main
+# compiled (rust.yml server-bin cache) for a PR that changed only the
+# dashboard; AMUX_DASHBOARD_DIR then points the server at the PR's static/
+# (crates/amux-dashboard/src/lib.rs). It is let through the scrub above, and
+# checked here, because a bad path would otherwise surface as a panic inside
+# the server rather than as this harness's own error. Unset: the binary's
+# embedded copy, as in production. Printed either way (AF-182: an output with
+# two states names the one it took).
+if [ -n "${AMUX_DASHBOARD_DIR:-}" ]; then
+  for _f in app.js sw.js index.html; do
+    [ -f "$AMUX_DASHBOARD_DIR/$_f" ] || { echo "[e2e] AMUX_DASHBOARD_DIR=$AMUX_DASHBOARD_DIR has no $_f; refusing to serve a partial dashboard" >&2; exit 1; }
+  done
+  echo "[e2e] DASHBOARD: served from AMUX_DASHBOARD_DIR=$AMUX_DASHBOARD_DIR, NOT the binary's embedded copy."
+else
+  echo "[e2e] DASHBOARD: the copy embedded in the server binary."
+fi
 
 # AEAB-52. THIS SCRIPT EXISTS TO PIN A SPECIFIC BUILD, so a server that hot-swaps
 # itself mid-suite is running a different binary from the one the suite chose.
@@ -97,6 +114,14 @@ export AMUX_ISOLATED=1
 
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 
+# CI builds the server ONCE per run (rust.yml `server-bin`) and hands every
+# e2e shard the binary. Each shard used to compile it itself, about 6 of a
+# shard's ~20 minutes, seven times over.
+if [ -n "${AMUX_E2E_SERVER_BIN:-}" ]; then
+  [ -x "$AMUX_E2E_SERVER_BIN" ] || { echo "[e2e] AMUX_E2E_SERVER_BIN is not an executable: $AMUX_E2E_SERVER_BIN" >&2; exit 1; }
+  echo "[e2e] SOURCE: prebuilt server $AMUX_E2E_SERVER_BIN (built once for this CI run)."
+  exec "$AMUX_E2E_SERVER_BIN"
+fi
 if [ "${AMUX_E2E_WORKING_TREE:-0}" = "1" ]; then
   echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD (AMUX_E2E_WORKING_TREE=1)."
   echo "[e2e] A peer mid-edit in this shared checkout can fail this run; that is the trade you asked for."

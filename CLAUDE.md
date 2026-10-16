@@ -49,6 +49,19 @@ board, workers, schedulers, filesystem, groups, memories, environment, messages.
 If a request decomposes into these, the work is configuration and UX. Do not add a
 ninth thing that re-expresses them.
 
+## Reuse existing paradigms (UI and code)
+
+Before building a view, find the one amux already has for that job and render
+through it: a folder is the file view (`_feCrumbsHtml`, `_feBuildRow`,
+`_feParentRow`, `_feEmptyRow`, `_feStatusText`), a prompt is `showConfirm` /
+`showPrompt`, a dialog is `.modal-overlay > .modal`. If it lacks a hook you need
+(a root, an open callback, a filter), add the hook to the shared one. A second
+table, dialog or list with its own markup drifts from the first on every later
+change. Specimen, 2026-10-16: the MDAI tab grew its own folder table, breadcrumb
+and "Folder" line beside the Files tab, and Ethan asked for it to be "the same
+file directory / file view as any other file view". Catalogue:
+`docs/ui-style-guide.md`.
+
 ## Dogfooding + two-fix rule
 
 You run inside amux. Fix rough edges at the root, not with workarounds. Every bug fix
@@ -84,7 +97,8 @@ Verify a hook by what it WROTE, not by the settings file.
 - **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary on any commit.
   Use `commit` for "did source change?", `build` for "same process image?".
 - **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
-- **Client JS: bump `APP_VER` (app.js) + `CACHE` (sw.js) together.**
+- **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;
+  the server stamps a content hash of `static/` (amux-dashboard `build.rs`) when serving.
 - Syntax gates: `cargo check --workspace`. Before push: `cargo clippy --workspace --all-targets -- -D warnings`.
   Tests: `scripts/test-contended.sh -p amux-server` (same args as `cargo test`, same exit status).
 - **Prefer offloading any of the above to remote hardware (see the remote-build convention below)

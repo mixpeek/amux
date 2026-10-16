@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code Account Rotation: Never Hit a Rate Limit Again (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Claude Code's 5-hour usage window kills overnight runs. Account rotation keeps your fleet moving by automatically switching to a fresh verified account when one hits its limit.">
+  <meta name="keywords" content="claude code rate limit, claude code usage limit, claude code 5 hour limit, claude code account rotation, claude code quota, claude code hit rate limit, how to avoid claude code rate limit, claude code max plan limit, multiple claude code accounts, claude code fleet">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-account-rotation/">
+  <meta property="og:title" content="Claude Code Account Rotation: Never Hit a Rate Limit Again — amux">
+  <meta property="og:description" content="Claude Code's 5-hour usage window kills overnight runs. Account rotation keeps your fleet moving by automatically switching to a fresh account when one hits its limit.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-account-rotation/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Account Rotation","item":"https://amux.io/guides/claude-code-account-rotation/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Account Rotation: Never Hit a Rate Limit Again (2026)","description":"Claude Code's 5-hour usage window kills overnight runs. Account rotation keeps your fleet moving by automatically switching to a fresh verified account when one hits its limit.","url":"https://amux.io/guides/claude-code-account-rotation/","datePublished":"2026-10-15","dateModified":"2026-10-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set Up Claude Code Account Rotation with amux","description":"Step-by-step guide to building a pool of verified Claude Code accounts so your agent fleet never stalls on a rate limit.","step":[{"@type":"HowToStep","name":"Verify additional Claude Code accounts","text":"Log in to each account with 'claude login' and complete OAuth. Each account needs a valid Claude Max subscription. amux stores the verified credential for each account."},{"@type":"HowToStep","name":"Register each account in amux","text":"Use 'amux accounts add <name>' for each account. amux stores credentials in its secure vault, never in env vars or config files."},{"@type":"HowToStep","name":"Configure rotation policy","text":"Set rotation_policy in your amux server.env: enabled=true, resume_limited=true, allow_unknown=false. The reserve_percent setting controls how much headroom to keep before triggering rotation."},{"@type":"HowToStep","name":"Enable usage window tracking","text":"amux tracks each account's 5-hour and 7-day usage windows with percentages and reset times. Enable with AMUX_ACCOUNT_ROTATION=1."},{"@type":"HowToStep","name":"Let amux rotate automatically","text":"When an account's usage crosses the rotation threshold, amux automatically switches all sessions on that account to the next available one. No manual intervention, no stalled overnight runs."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the Claude Code 5-hour usage limit?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Max plan subscribers have a rate limit that resets on a rolling 5-hour window. When you exhaust the window, Claude Code prints a message and stops accepting prompts until the window resets. The exact token ceiling is not published, but heavy usage (multiple parallel agents, large context sessions, all-day batch runs) hits it within a few hours. There is also a 7-day window that resets weekly."}},{"@type":"Question","name":"How does Claude Code account rotation work?","acceptedAnswer":{"@type":"Answer","text":"Account rotation means keeping a pool of verified Claude Code accounts and automatically switching to a fresh one when the active account hits its usage limit. amux tracks the 5-hour and 7-day usage windows for each account, shows current usage as a percentage with reset times, and rotates sessions to the next available account when one hits its ceiling. The rotation is transparent to the agent — it continues its current task on the new account without any interruption."}},{"@type":"Question","name":"Is it allowed to use multiple Claude Code accounts?","acceptedAnswer":{"@type":"Answer","text":"Each account must have its own valid Claude Max subscription. Sharing a single subscription across multiple logical users violates Anthropic's terms. Using multiple accounts — each with their own subscription, each belonging to a different user — is standard enterprise usage. The key distinction is that each account in the pool is a legitimate subscriber, not a shared credential."}},{"@type":"Question","name":"What happens to a running agent when rotation kicks in?","acceptedAnswer":{"@type":"Answer","text":"The agent continues its current task without interruption. amux rotates the underlying authentication credential for the session, so the agent's conversation context, file access, and tool permissions remain unchanged. From the agent's perspective, nothing happened. From the rate-limit window's perspective, usage is now accruing against the fresh account."}},{"@type":"Question","name":"How do I know which account is active and how much headroom remains?","acceptedAnswer":{"@type":"Answer","text":"The amux dashboard shows a real-time view of each account in the pool: current usage percentage for the 5-hour window, time until reset, 7-day window status, and which sessions are assigned to which account. The iOS app and PWA show the same view, so you can check headroom from your phone before queueing a large overnight batch."}},{"@type":"Question","name":"What is the reserve_percent setting?","acceptedAnswer":{"@type":"Answer","text":"reserve_percent controls how much headroom to keep on each account before triggering rotation. A value of 10 means amux rotates to the next account when the active account reaches 90% of its usage ceiling, rather than waiting until it actually hits the limit. This prevents a mid-task stall for jobs that would exhaust the remaining 10% partway through a long context window."}},{"@type":"Question","name":"Can I use API keys instead of account rotation?","acceptedAnswer":{"@type":"Answer","text":"Yes. API keys (ANTHROPIC_API_KEY) have no 5-hour window — they are pay-per-token with no rolling rate cap. If you have one or two heavy agents, an API key is simpler than managing an account pool. Account rotation makes more sense when you have multiple Max subscriptions already (a team) and want to pool their combined headroom without switching to per-token billing."}},{"@type":"Question","name":"What is the difference between rotation_policy enabled and resume_limited?","acceptedAnswer":{"@type":"Answer","text":"enabled=true turns on rotation globally. resume_limited means that when an account is limited, any session that was using it gets resumed on a fresh account as soon as one is available — rather than waiting until the limited account resets. These two flags work together: enabled lets the system rotate, resume_limited ensures stalled sessions recover as fast as possible rather than queuing behind the reset window."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Account Rotation</span></div>
+    <h1>Claude Code Account Rotation</h1>
+    <p class="subtitle">Claude Code&rsquo;s 5-hour usage window kills overnight runs. Account rotation keeps your fleet moving by switching to a fresh verified account when one hits its limit. <em>Published October 2026.</em></p>
+
+    <!-- EXP-135: top-of-page CTA on new account rotation page -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px;font-size:.9rem">
+        <strong>Running Claude Code agents overnight?</strong> <span style="color:var(--muted)">amux manages your account pool, rotates automatically on rate limits, and keeps the full fleet moving without waking you up.</span>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp135_rotation_topofpage_cta_click',{page:window.location.pathname})" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#the-problem" style="color:var(--dim);text-decoration:none;">The Rate Limit Problem</a></li>
+        <li><a href="#how-rotation-works" style="color:var(--dim);text-decoration:none;">How Account Rotation Works</a></li>
+        <li><a href="#windows" style="color:var(--dim);text-decoration:none;">The 5-Hour and 7-Day Windows</a></li>
+        <li><a href="#setup" style="color:var(--dim);text-decoration:none;">Setting Up an Account Pool in amux</a></li>
+        <li><a href="#policy" style="color:var(--dim);text-decoration:none;">Rotation Policy Options</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring Your Account Pool</a></li>
+        <li><a href="#api-key-vs-rotation" style="color:var(--dim);text-decoration:none;">API Keys vs. Account Rotation</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ───────────────────────────── SECTION: PROBLEM ───────────────────────────── -->
+    <h2 id="the-problem">The Rate Limit Problem</h2>
+
+    <p>Claude Code ships with a generous usage cap, but it is still a cap. Run three or four parallel agents against a heavy codebase for a few hours and you will see this:</p>
+
+    <pre><code><span class="err">Claude Code usage limit reached. Your limit will reset at 3:42 PM.</span></code></pre>
+
+    <p>The process exits. Everything in that session&rsquo;s queue is now blocked. If this happens at 11 PM on an overnight batch, you wake up to a fleet that has been down for eight hours with nothing to show for it.</p>
+
+    <p>There are three ways people deal with this today:</p>
+
+    <ul>
+      <li><strong>Wait it out.</strong> The simplest approach, and the most expensive in real time. The 5-hour window resets, you resume. Overnight batches become two-day batches.</li>
+      <li><strong>Switch to API keys.</strong> Pay-per-token with no rolling rate cap. Works well, but changes your billing model and requires you to manage API key credentials separately from your Max subscription sessions.</li>
+      <li><strong>Account rotation.</strong> Keep a pool of Max accounts. When one hits its ceiling, automatically move sessions to the next available account. The fleet keeps moving. No billing model change, no waking up at 3 AM.</li>
+    </ul>
+
+    <p>amux shipped account rotation in October 2026. Here is how it works.</p>
+
+    <!-- ───────────────────────────── SECTION: HOW IT WORKS ───────────────────────────── -->
+    <h2 id="how-rotation-works">How Account Rotation Works</h2>
+
+    <p>At its core, account rotation is a three-part system:</p>
+
+    <ol>
+      <li><strong>A credential vault.</strong> Each Claude Code account has its own verified OAuth credential stored in amux&rsquo;s secure vault. The credentials never appear in env vars, config files, or logs.</li>
+      <li><strong>Window tracking.</strong> amux tracks each account&rsquo;s 5-hour and 7-day usage windows in real time, expressed as percentages with reset times. When an account crosses the rotation threshold (configurable, default: 90%), it is marked as limited.</li>
+      <li><strong>Automatic session migration.</strong> When an account is marked limited, amux migrates all sessions on that account to the next available one. The migration is transparent to the running agent &mdash; its conversation context and tool state carry over unchanged.</li>
+    </ol>
+
+    <p>The result: from the agent&rsquo;s perspective, the rate limit never happened. From your overnight batch&rsquo;s perspective, it finished on time.</p>
+
+    <!-- ───────────────────────────── SECTION: WINDOWS ───────────────────────────── -->
+    <h2 id="windows">The 5-Hour and 7-Day Windows</h2>
+
+    <p>Claude Code Max has two usage windows:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Window</th><th>Resets</th><th>What triggers it</th><th>amux tracking</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>5-hour rolling</strong></td>
+            <td>5 hours after first use in the window</td>
+            <td>Token consumption, large context windows, parallel agents</td>
+            <td>Shows % used + exact reset time per account</td>
+          </tr>
+          <tr>
+            <td><strong>7-day rolling</strong></td>
+            <td>7 days after first use in the window</td>
+            <td>Sustained heavy usage across the week</td>
+            <td>Shows % used + days until reset per account</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The 5-hour window is the one that bites overnight runs. The 7-day window is the one that bites teams who have been running agents all week. amux tracks both, and the rotation logic considers both before deciding whether an account is available for a new session.</p>
+
+    <p>The exact token ceiling for each window is not published by Anthropic, but amux infers it from the rate-limit messages Claude Code emits and adjusts thresholds accordingly.</p>
+
+    <!-- ───────────────────────────── SECTION: SETUP ───────────────────────────── -->
+    <h2 id="setup">Setting Up an Account Pool in amux</h2>
+
+    <p>You need at least two Claude Code Max accounts (each with its own subscription). Here is the setup sequence:</p>
+
+    <p><strong>Step 1: Verify each account</strong></p>
+    <p>Log in to each account via Claude Code&rsquo;s OAuth flow. amux stores the verified credentials in its vault.</p>
+
+    <pre><code><span class="comment"># On each account's machine, or with each account's browser session</span>
+$ claude login
+<span class="ok">Logged in as alice@example.com</span></code></pre>
+
+    <p><strong>Step 2: Register accounts in amux</strong></p>
+    <p>Add each account to amux&rsquo;s credential vault. Labels help you track which account is which in the dashboard.</p>
+
+    <pre><code>$ amux accounts add alice --label "team-account-1"
+$ amux accounts add bob   --label "team-account-2"
+$ amux accounts add carol --label "team-account-3"</code></pre>
+
+    <p><strong>Step 3: Enable rotation</strong></p>
+    <p>Add the following to <code>~/.amux/server.env</code>:</p>
+
+    <pre><code>AMUX_ACCOUNT_ROTATION=1
+AMUX_ROTATION_POLICY=enabled
+AMUX_ROTATION_RESUME_LIMITED=true
+AMUX_ROTATION_RESERVE_PERCENT=10</code></pre>
+
+    <p><strong>Step 4: Restart amux</strong></p>
+    <p>The rotation engine starts on the next server launch and immediately begins tracking window usage for every registered account.</p>
+
+    <!-- ───────────────────────────── SECTION: POLICY ───────────────────────────── -->
+    <h2 id="policy">Rotation Policy Options</h2>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Setting</th><th>Values</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>AMUX_ROTATION_POLICY</code></td>
+            <td><code>enabled</code>, <code>disabled</code></td>
+            <td>Master switch. <code>disabled</code> keeps tracking on without any rotation.</td>
+          </tr>
+          <tr>
+            <td><code>AMUX_ROTATION_RESUME_LIMITED</code></td>
+            <td><code>true</code>, <code>false</code></td>
+            <td>When <code>true</code>: sessions that were stalled on a limited account resume on a fresh account as soon as one is available. When <code>false</code>: stalled sessions wait for the original account to reset.</td>
+          </tr>
+          <tr>
+            <td><code>AMUX_ROTATION_ALLOW_UNKNOWN</code></td>
+            <td><code>true</code>, <code>false</code></td>
+            <td>When <code>false</code> (recommended): only accounts registered in the vault can be used. Prevents sessions from silently falling back to an untracked credential.</td>
+          </tr>
+          <tr>
+            <td><code>AMUX_ROTATION_RESERVE_PERCENT</code></td>
+            <td>0&ndash;50 (integer)</td>
+            <td>Rotate when an account reaches <code>(100 - reserve_percent)%</code> of its window ceiling. Higher values rotate earlier and leave more headroom; lower values squeeze more usage out of each account before rotating.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>For most overnight-batch use cases, the defaults above (<code>enabled</code>, <code>resume_limited=true</code>, <code>allow_unknown=false</code>, <code>reserve_percent=10</code>) are the right starting point.</p>
+
+    <!-- ───────────────────────────── SECTION: MONITORING ───────────────────────────── -->
+    <h2 id="monitoring">Monitoring Your Account Pool</h2>
+
+    <p>The amux dashboard shows a real-time account pool view:</p>
+
+    <ul>
+      <li><strong>Per-account usage bars.</strong> Each account shows its 5-hour and 7-day windows as progress bars with percentages. Green is safe, yellow is approaching threshold, red is over threshold.</li>
+      <li><strong>Reset times.</strong> Each bar shows the exact time the window resets. Before you queue an overnight batch, you can see at a glance whether you have enough headroom or whether rotation will kick in mid-run.</li>
+      <li><strong>Session assignment.</strong> The dashboard shows which sessions are currently assigned to which account. After a rotation event, you can see the migration in the session&rsquo;s activity log.</li>
+      <li><strong>Phone access.</strong> The iOS app and the installable PWA show the same pool view. Check headroom from anywhere before starting a long run.</li>
+    </ul>
+
+    <!-- ───────────────────────────── SECTION: API KEYS VS ROTATION ───────────────────────────── -->
+    <h2 id="api-key-vs-rotation">API Keys vs. Account Rotation</h2>
+
+    <p>Both solve the rate-limit problem. Here is when to use each:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th></th><th>API Keys</th><th>Account Rotation</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Billing model</strong></td>
+            <td>Pay per token, no cap</td>
+            <td>Flat monthly per account</td>
+          </tr>
+          <tr>
+            <td><strong>Best for</strong></td>
+            <td>Bursty workloads, single agents, variable usage</td>
+            <td>Teams with existing Max subscriptions, sustained parallel usage</td>
+          </tr>
+          <tr>
+            <td><strong>Complexity</strong></td>
+            <td>Simpler: one credential, set <code>ANTHROPIC_API_KEY</code></td>
+            <td>More setup: register each account, configure rotation policy</td>
+          </tr>
+          <tr>
+            <td><strong>Cost predictability</strong></td>
+            <td>Variable (usage-based)</td>
+            <td>Predictable (N subscriptions, flat monthly)</td>
+          </tr>
+          <tr>
+            <td><strong>Rate limits</strong></td>
+            <td>API-tier limits (higher ceilings, different structure)</td>
+            <td>Max plan limits pooled across accounts</td>
+          </tr>
+          <tr>
+            <td><strong>Usage visibility</strong></td>
+            <td>Token counts in JSON output</td>
+            <td>Window percentages + reset times per account in dashboard</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>A common setup for engineering teams: API keys for the primary interactive developer loop, account rotation for the overnight batch fleet. The two approaches are not mutually exclusive.</p>
+
+    <!-- ───────────────────────────── SECTION: FAQ ───────────────────────────── -->
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list" style="margin-top:1.5rem;">
+      <details class="faq-item" open>
+        <summary>What is the Claude Code 5-hour usage limit?</summary>
+        <p>Claude Code Max plan subscribers have a rolling usage window that resets every 5 hours. When you exhaust the window, Claude Code stops accepting prompts until the window resets. The exact token ceiling is not published, but heavy parallel usage (3+ agents, large contexts) typically hits it within a few hours. There is also a 7-day rolling window for sustained weekly usage.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Is it allowed to use multiple Claude Code accounts?</summary>
+        <p>Each account in the pool must have its own valid Claude Max subscription. Using multiple accounts, each with their own subscription, is standard enterprise and team usage. The key constraint: one subscription = one account. Do not share a single subscription credential across multiple users or sessions.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What happens to a running agent when rotation kicks in?</summary>
+        <p>The agent continues without interruption. amux migrates the underlying credential for that session. The agent&rsquo;s conversation context, file access, and tool permissions stay intact. From the agent&rsquo;s side, nothing changed; from the rate-limit window&rsquo;s side, usage is now accruing against a fresh account.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What is the reserve_percent setting?</summary>
+        <p>It controls when rotation triggers, as a percentage of headroom to keep. <code>reserve_percent=10</code> means amux rotates when an account reaches 90% of its window ceiling, rather than waiting until it actually hits the limit. This prevents a mid-task stall for a large context job that would exhaust the last 10% partway through. A value of 0 rotates only after the limit is hit, which allows the most usage per account but creates brief stalls at rotation time.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I see which account my sessions are using?</summary>
+        <p>Yes. The amux dashboard shows the current account assignment for each session. The session&rsquo;s activity log records every rotation event, with timestamps and the reason for rotation (5-hour window, 7-day window, or manual override). The iOS app and PWA show the same view from your phone.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What if all accounts in the pool are limited at the same time?</summary>
+        <p>amux queues the affected sessions and resumes them as each account&rsquo;s window resets, in the order they will become available. The dashboard shows the earliest reset time across the pool, so you can see when the first account comes back. With three or more accounts on staggered schedules, simultaneous limits are rare in practice.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Should I use API keys or account rotation?</summary>
+        <p>API keys (ANTHROPIC_API_KEY) have no rolling rate cap and are simpler to set up: one credential, set the env var, done. Account rotation makes more sense if your team already has multiple Max subscriptions and you want to pool their headroom without changing to per-token billing. For most solo developers, an API key is the easier path. For teams running sustained parallel agents, rotation is more cost-predictable.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/claude-code-headless/" style="color:var(--dim);">Claude Code Headless Mode</a></li>
+        <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Agents in Parallel</a></li>
+        <li><a href="/guides/claude-code-max-plan/" style="color:var(--dim);">How to 10x Your Claude Code Max Plan</a></li>
+        <li><a href="/guides/token-spend-tracking/" style="color:var(--dim);">Token Spend Tracking</a></li>
+        <li><a href="/guides/agent-control-plane/" style="color:var(--dim);">What Is an Agent Control Plane?</a></li>
+      </ul>
+    </div>
+
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">Try amux — 525+ stars on GitHub</div>
+        <div style="color:var(--fg-dim);font-size:.9rem">Account rotation, workspace isolation, vault secrets. Open source, single Rust binary, zero dependencies.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp135_rotation_bottom_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

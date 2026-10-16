@@ -1655,7 +1655,23 @@ async fn rename(req: Request) -> Response {
     if !src.exists() {
         return j(404, json!({"error": "not found"}));
     }
-    let dst = src.parent().unwrap_or(Path::new("/")).join(&new_name);
+    // Optional `dest_dir` moves the entry into another folder (the file
+    // viewer's multi-select "Move to...", 2026-10-15). Absent, it renames in
+    // place exactly as before.
+    let dest_dir = body_str(&body, "dest_dir").trim().to_string();
+    let parent = if dest_dir.is_empty() {
+        src.parent().unwrap_or(Path::new("/")).to_path_buf()
+    } else {
+        let d = resolve_nonstrict(&expanduser(&dest_dir));
+        if !d.is_dir() {
+            return j(400, json!({"error": "destination is not a folder"}));
+        }
+        if d.starts_with(&src) {
+            return j(400, json!({"error": "cannot move a folder into itself"}));
+        }
+        d
+    };
+    let dst = parent.join(&new_name);
     if !is_path_allowed(&dst) {
         return j(403, json!({"error": "access denied"}));
     }
@@ -3547,6 +3563,32 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "not a directory: /no/such/dir-xyz");
+    }
+
+    /// "Move to..." in the file viewer's multi-select: `dest_dir` moves an entry
+    /// into another folder; a file or a folder-into-itself is refused.
+    #[tokio::test]
+    async fn rename_with_dest_dir_moves_into_another_folder() {
+        let app = app();
+        let td = tempfile::tempdir().unwrap();
+        let (a, b) = (td.path().join("a"), td.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("f.txt"), "z").unwrap();
+        let post = |body: Value| serde_json::to_vec(&body).unwrap();
+        let (st, v) = call(&app, "POST", "/api/fs/rename", Some("application/json"),
+            post(json!({"path": a.join("f.txt").to_str().unwrap(), "new_name": "f.txt", "dest_dir": b.to_str().unwrap()}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(b.join("f.txt").exists() && !a.join("f.txt").exists());
+        let (st, v) = call(&app, "POST", "/api/fs/rename", Some("application/json"),
+            post(json!({"path": b.join("f.txt").to_str().unwrap(), "new_name": "f.txt", "dest_dir": b.join("f.txt").to_str().unwrap()}))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "destination is not a folder");
+        std::fs::create_dir_all(a.join("inner")).unwrap();
+        let (st, v) = call(&app, "POST", "/api/fs/rename", Some("application/json"),
+            post(json!({"path": a.to_str().unwrap(), "new_name": "a", "dest_dir": a.join("inner").to_str().unwrap()}))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"], "cannot move a folder into itself");
     }
 
     #[tokio::test]

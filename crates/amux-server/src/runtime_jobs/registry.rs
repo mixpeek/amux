@@ -96,6 +96,7 @@ pub mod ids {
     pub const TRACE_ARCHIVE: &str = "trace-archive";
     pub const HOST_GUARD: &str = "host-guard";
     pub const GOAL_KEEPER: &str = "goal-keeper";
+    pub const TASK_TITLES: &str = "task-titles";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const PROJECT_EXECUTION: &str = "project-execution";
     pub const EVENT_PROCESSORS: &str = "event-processors";
@@ -188,6 +189,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TRACE_ARCHIVE,
     ids::HOST_GUARD,
     ids::GOAL_KEEPER,
+    ids::TASK_TITLES,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -758,6 +760,18 @@ pub const CATALOG: &[Doc] = &[
             EnvControl { var: "AMUX_GOAL_CONTINUE_IDLE_S", effect: "idle seconds before a continue, default 120", off: None },
             EnvControl { var: "AMUX_GOAL_CONTINUE_INTERVAL_S", effect: "minimum seconds between continues, default 600", off: None },
             EnvControl { var: "AMUX_GOAL_LOOP_GUARD", effect: "0 turns off goal-loop detection, park and restore (scoped)", off: None },
+        ],
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::TASK_TITLES,
+        name: "Card task titles",
+        purpose: "Keeps every running Claude worker's card title current. Claude Code titles only unnamed conversations and amux names every worker, so the card shows a generated title; this refreshes it from the worker's recent conversation when the transcript moved since the title and the title is older than the interval, a few workers per tick, oldest first. Covers isolated workers too: the title is a display label in amux meta and nothing reaches the worker. KEEP re-stamps the current title.",
+        env: &[
+            EnvControl { var: "AMUX_TASK_TITLE_SECS", effect: "seconds between ticks, default 60; 0 disables the refresh", off: Some("0") },
+            EnvControl { var: "AMUX_TASK_TITLE_REFRESH_S", effect: "minimum age of a title before it is refreshed, default 900", off: None },
+            EnvControl { var: "AMUX_TASK_TITLE_PER_TICK", effect: "titles generated per tick at most, default 3", off: None },
         ],
         pref: None,
         detail: None,
