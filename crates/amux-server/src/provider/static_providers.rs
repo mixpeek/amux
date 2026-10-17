@@ -579,6 +579,17 @@ mod tests {
         assert!(muse.structured_events);
         assert!(!muse.reports_usage);
         assert!(!muse.hot_model_switch);
+        // OpenCode: JSONL lifecycle events (M1), no hook surface wired, no usage
+        // API read on this host, no hot model switch. Pinned so a future flip is
+        // a build failure rather than a silent capability claim.
+        let opencode = OpenCodeAdapter.capabilities();
+        assert!(
+            opencode.structured_events,
+            "opencode run --format json emits JSONL lifecycle events"
+        );
+        assert!(!opencode.hooks, "no hook surface is wired for opencode yet");
+        assert!(!opencode.reports_usage, "no usage API is read on this host");
+        assert!(!opencode.hot_model_switch);
     }
 
     #[test]
