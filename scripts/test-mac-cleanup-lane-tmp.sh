@@ -18,7 +18,15 @@ sqlite3 "$DB" "CREATE TABLE schedules (id TEXT, command TEXT, enabled INTEGER, d
   INSERT INTO schedules VALUES ('S2', 'cd \$HOME/.amux/tmp/lane4/scheddir; ./run.sh', 1, NULL);
   INSERT INTO schedules VALUES ('S3', 'bash ~/.amux/tmp/lane1/oldidle/x.sh', 0, NULL);"
 export LANE_TMP_SCHED_DB="$DB"
-echo x > "$R/lane1/oldidle/sub/f"; echo y > "$R/lane1/oldtopfreshinside/deep/new"
+# Reapable content is BIG: a build artifact. A directory of a few small files
+# is now kept (next cell), so a one-byte file no longer stands for "idle junk".
+head -c 2000000 /dev/zero > "$R/lane1/oldidle/sub/f"; echo y > "$R/lane1/oldtopfreshinside/deep/new"
+# mxp-gs12, 2026-10-17: a manual gate a production promote waits on, in a dir.
+mkdir -p "$R/lane6/mvs-drill"; echo ok > "$R/lane6/mvs-drill/standby_ok"; echo 'echo go' > "$R/lane6/mvs-drill/promote.sh"
+touch -t 202609300000 "$R/lane6/mvs-drill/standby_ok" "$R/lane6/mvs-drill/promote.sh" "$R/lane6/mvs-drill"
+# Many small files is a dependency or build tree, not a gate: still reaped.
+mkdir -p "$R/lane6/many"; for i in $(seq 1 80); do echo $i > "$R/lane6/many/f$i"; done
+touch -t 202609300000 "$R/lane6/many"/* "$R/lane6/many"
 touch -t 202609300000 "$R/lane1/oldidle/sub/f" "$R/lane1/oldidle/sub" "$R/lane1/oldidle" "$R/lane1/oldtopfreshinside" "$R/lane2/inuse"
 (cd "$R/lane2/inuse" && exec sleep 30) & holder=$!
 sleep 1
@@ -31,7 +39,10 @@ out="$(LANE_TMP_ROOT="$R" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 
 [ -d "$R/lane1/fresh" ] && echo "ok   a fresh entry is kept" || { echo "FAIL fresh entry removed"; fail=1; }
 [ -d "$R/lane1/oldtopfreshinside" ] && echo "ok   an old directory with a fresh file deep inside is kept" || { echo "FAIL in-use cargo-style dir removed"; fail=1; }
 [ -d "$R/lane2/inuse" ] && echo "ok   an old entry a process works in is kept" || { echo "FAIL cwd entry removed"; fail=1; }
-printf '%s' "$out" | grep -q 'lane tmp: removed 2 entries' && echo "ok   the tick logs the count" || { echo "FAIL log: $out"; fail=1; }
+printf '%s' "$out" | grep -q 'lane tmp: removed 3 entries' && echo "ok   the tick logs the count" || { echo "FAIL log: $out"; fail=1; }
+[ -f "$R/lane6/mvs-drill/standby_ok" ] && echo "ok   a directory of a few small files (a manual gate) is kept" || { echo "FAIL small gate dir reaped"; fail=1; }
+[ ! -e "$R/lane6/many" ] && echo "ok   a directory of many small files is still reaped" || { echo "FAIL many-small-files dir kept"; fail=1; }
+printf '%s' "$out" | grep -q '1 small dir(s)' && echo "ok   kept small dirs are counted in the log" || { echo "FAIL small dir count: $out"; fail=1; }
 [ -f "$R/lane4/sched.sh" ] && [ -d "$R/lane4/scheddir" ] && echo "ok   entries an enabled schedule names are kept (~ and \$HOME forms)" || { echo "FAIL a schedule's file was reaped"; fail=1; }
 [ -f "$R/lane4/kc" ] && echo "ok   a small old file is kept" || { echo "FAIL small file reaped"; fail=1; }
 [ ! -e "$R/lane4/big.bin" ] && echo "ok   a large old file is still reaped" || { echo "FAIL large idle file kept"; fail=1; }

@@ -1482,6 +1482,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_feRecordOpen": {
+      "kind": "command._feRecordOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fetchGitBranches": {
       "kind": "command._fetchGitBranches",
       "feedback_required": true,
@@ -1496,6 +1502,12 @@
     },
     "_fileDownload": {
       "kind": "command._fileDownload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileEditBeacon": {
+      "kind": "command._fileEditBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2150,6 +2162,18 @@
     },
     "_mapSetSort": {
       "kind": "command._mapSetSort",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapSwRoute": {
+      "kind": "command._mapSwRoute",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mapSwStop": {
+      "kind": "command._mapSwStop",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4712,6 +4736,12 @@
     },
     "closeExplore": {
       "kind": "command.closeExplore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "closeFilePreview": {
+      "kind": "command.closeFilePreview",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

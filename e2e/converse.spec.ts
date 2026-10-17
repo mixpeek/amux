@@ -424,10 +424,18 @@ test('Converse (OpenAI Realtime): ask_worker goes to the chat companion, usage a
     await expect(page.locator('#vx-call-lbl')).toHaveText('Start');
     expect(chat.state.terminal, 'the worker terminal send path was never called').toBe(0);
 
-    const listed = await (await request.get(conv, { headers: auth })).json();
-    const rec = listed.conversations.find((c: any) => c.engine === 'openai');
-    expect(rec, 'the Realtime conversation is logged').toBeTruthy();
-    const full = await (await request.get(`${conv}/${rec.id}`, { headers: auth })).json();
+    // Hanging up queues the FINAL save behind any mid-call one (_vxSave
+    // serialises them), and it lands after the click resolves. Reading once
+    // could see an earlier save with no usage yet (CI 2026-10-16, f3ad69cc4:
+    // Expected 120, Received 0), so wait for the final record.
+    let full: any = null;
+    await expect.poll(async () => {
+      const listed = await (await request.get(conv, { headers: auth })).json();
+      const rec = listed.conversations.find((c: any) => c.engine === 'openai');
+      if (!rec) return 'not logged yet';
+      full = await (await request.get(`${conv}/${rec.id}`, { headers: auth })).json();
+      return full.ended_at ? 'final' : 'mid-call save';
+    }, { message: 'the Realtime conversation is logged with its final save', timeout: 15_000 }).toBe('final');
     expect(full.usage.input_audio_tokens).toBe(120);
     expect(full.usage.output_audio_tokens).toBe(300);
     expect(full.usage.audio_in_ms).toBeGreaterThan(0);

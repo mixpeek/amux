@@ -7671,10 +7671,10 @@ function render() {
         const hasBoard = !!displayTaskBoardId;
         const showLlm = llmTask && llmTask !== displayTaskName;
         return (showLlm
-          ? `<div class="card-preview" style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(llmTask)}</div>`
+          ? `<div class="card-preview card-task-full" style="font-weight:600;color:var(--text);">${esc(llmTask)}</div>`
           : '')
         + (displayTaskName
-          ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+          ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
           : '');
       })() : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
@@ -7976,6 +7976,28 @@ function _activeTaskLink(worker, cardId, title) {
     + esc(title) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);'
     + 'border:1px solid var(--accent);border-radius:6px;padding:0 6px;white-space:nowrap;">'
     + esc(cardId) + '</span></button>';
+}
+
+// A worker's task-name history (GET /api/sessions/{name}/task-history) in the
+// standard dialog, as a list (Ethan, 2026-10-16: "it should open a modal which
+// is a list").
+async function _peekTaskHistoryToggle(ev) {
+  if (ev) ev.stopPropagation();
+  const who = peekSession; if (!who) return;
+  const opener = document.getElementById('peek-task-history-btn');
+  const modal = _chipDetailModal('task-history-modal', 'Task history', who, '<p class="ui-help">Loading\u2026</p>', { returnFocus: opener });
+  const body = modal.querySelector('.modal-body');
+  try {
+    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=100', { headers: _authHeaders() })).json();
+    if (!modal.isConnected) return;
+    const rows = d.changes || [];
+    body.innerHTML = rows.length
+      ? '<ol class="chip-detail-list task-history-list">' + rows.map(c => '<li><div>' + esc(c.to || '') + '</div><div class="ui-help">'
+          + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + (c.card ? ' \u00b7 ' + esc(c.card) : '') + '</div></li>').join('') + '</ol>'
+      : '<p class="ui-help">No task changes recorded yet.</p>';
+    const foot = modal.querySelector('.modal-footer .ui-help');
+    if (foot) foot.textContent = rows.length ? rows.length + ' change' + (rows.length === 1 ? '' : 's') + ', newest first' : '';
+  } catch (e) { if (modal.isConnected) body.innerHTML = '<p class="ui-help">Could not load the task history.</p>'; }
 }
 
 function _bindPeekTaskIdentity(s, identity) {
@@ -9778,7 +9800,9 @@ function updateTelemetryPill() {
 // .modal-overlay > .modal > header / body / footer). A toast was the wrong
 // shape: on a phone it covered the list, vanished, and could not be acted on
 // (Ethan, 2026-09-26: "pressing 1 should open a modal").
-function _chipDetailModal(id, title, subtitle, bodyHtml) {
+// opts.returnFocus: the element that opened the dialog; focus goes back to it
+// on every close path (button, Esc, backdrop) so a keyboard reader keeps place.
+function _chipDetailModal(id, title, subtitle, bodyHtml, opts) {
   document.getElementById(id)?.remove();
   const overlay = document.createElement('div');
   overlay.id = id; overlay.className = 'modal-overlay active';
@@ -9788,7 +9812,8 @@ function _chipDetailModal(id, title, subtitle, bodyHtml) {
     + '<button class="modal-close" aria-label="Close">×</button></header>'
     + '<div class="modal-body">' + bodyHtml + '</div>'
     + '<footer class="modal-footer"><span class="ui-help"></span><button class="btn" data-close>Close</button></footer></section>';
-  const close = () => overlay.remove();
+  const opener = opts && opts.returnFocus;
+  const close = () => { overlay.remove(); if (opener && opener.isConnected) opener.focus({ preventScroll: true }); };
   overlay.onclick = e => { if (e.target === overlay) close(); };
   overlay.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   document.body.appendChild(overlay);
@@ -16211,18 +16236,10 @@ function _psfAcceptResponse(generation) {
   return false;
 }
 function _psfSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    const { col, dir } = _psfSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
-    return 0;
-  });
+  return [...entries].sort((a, b) => _feCompare(a, b, _psfSort));
 }
 function _psfSetSort(col) {
-  if (_psfSort.col === col) _psfSort.dir *= -1;
-  else { _psfSort.col = col; _psfSort.dir = 1; }
+  _feNextSort(_psfSort, col);
   _psfUpdateSortHeaders();
   if (_psfLastData) _psfRenderEntries(_psfLastData.dirPath, _psfLastData.data);
 }
@@ -26947,8 +26964,32 @@ async function _cacheStreamedImage(path, data) {
     _offlineBudgetEnforce();
   } catch (e) { console.warn('[files] could not save streamed image for offline', path, e); }
 }
+// The "Opened" column: tell the server this file was opened, then refresh the
+// cell in any listing showing it, so the time is right without a reload.
+function _feRecordOpen(path) {
+  if (!path) return;
+  fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }), keepalive: true })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d || !d.opened) return;
+      for (const row of document.querySelectorAll('[data-path]')) {
+        if (row.dataset.path !== path && row.dataset.path !== d.path) continue;
+        const cell = row.querySelector('.fe-cell-opened');
+        if (cell) cell.textContent = timeAgo(d.opened);
+      }
+      // Keep the cached Files listing in step, so a re-sort uses the new time.
+      const fl = _filesLastData;
+      if (fl && fl.data) {
+        const base = String(fl.data.path || fl.path || '').replace(/\/$/, '');
+        for (const e of fl.data.entries || []) if (base + '/' + e.name === d.path || base + '/' + e.name === path) e.opened = d.opened;
+      }
+    })
+    .catch(() => {});
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
+  if (!/\.mdai$/i.test(path || '') || options.raw) _feRecordOpen(path);
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
   // the node's metadata (model / date / cached), lets you scroll the run
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
@@ -27134,7 +27175,48 @@ function _fileVideoFullscreen() {
   _playVideoUrl(v._vpUrl, (_fileData && _fileData.path || '').split('/').pop());
 }
 
+// Unsaved text in the file editor (Ethan, 2026-10-16: "scratchpad is dropping
+// data"). Closing the editor (X, Escape, overlay) discarded typed text with no
+// word, and a new Scratchpad note opens here with only a manual Save button, so
+// a note closed before Save was gone. Only spreadsheets were guarded.
+function _fileEditDirty() {
+  const wrap = document.getElementById('file-edit-wrap'), ta = document.getElementById('file-edit-ta');
+  if (!_fileData || _fileData.readOnly || !wrap || wrap.style.display === 'none' || !ta) return false;
+  if (!_fileData.is_markdown && !_fileData._isNew) return false;   // _fileSave cannot write it anyway
+  if (_fileData._isNew && !ta.value.trim()) return false;          // an empty new note is nothing to keep
+  return ta.value !== (_fileData.content || '');
+}
+function _fileIsScratchpad(path) {
+  const p = String(path || '');
+  return p === _SP_ROOT || p.startsWith(_SP_ROOT + '/') || /\/Vault\/Scratchpad(\/|$)/.test(p);
+}
+function _fileEditBeacon(verdict) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'file-edit-close', verdict, scratchpad: _fileIsScratchpad(_fileData && _fileData.path),
+        is_new: !!(_fileData && _fileData._isNew), measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
+  } catch (e) {}
+}
 function closeFilePreview() {
+  if (_fileEditDirty()) {
+    if (_fileIsScratchpad(_fileData.path)) {
+      // A scratchpad note keeps what was typed: save, then close. A failed save
+      // stays open with the text, so nothing is lost.
+      _fileEditBeacon('scratchpad_saved_on_close');
+      _fileSave().then(() => {
+        if (_fileEditDirty()) { _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
+        closeFilePreview();
+      });
+      return;
+    }
+    showConfirm('This file has unsaved edits. Close without saving?', 'Discard changes', true).then(ok => {
+      if (!ok || !_fileData) return;
+      _fileEditBeacon('discarded_after_confirm');
+      _fileData.content = document.getElementById('file-edit-ta').value;
+      closeFilePreview();
+    });
+    return;
+  }
   if (_xlsxEd && _xlsxEd.dirty) {
     showConfirm('This spreadsheet has unsaved changes. Close without saving?', 'Discard changes', true)
       .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } });
@@ -27199,7 +27281,31 @@ async function _fileSave() {
   btn.classList.add('saving');
   btn.textContent = 'Saving…';
   try {
-    const r = await apiCall(API + '/api/file', {
+    let r = null, sent = false;
+    if (_fileData._isNew) {
+      // A NEW file never replaces an existing one: two notes started in the
+      // same second share a name, and the second used to overwrite the first.
+      // On 409 file_exists step to the next free name, quietly. Offline, fall
+      // through to apiCall's queue below.
+      try {
+        const base = _fileData.path.match(/^(.*?)(\.[^./]+)?$/);
+        for (let n = 1; n < 50; n++) {
+          const path = n === 1 ? _fileData.path : base[1] + '-' + n + (base[2] || '');
+          const res = await fetch(API + '/api/file', { method: 'PUT',
+            headers: Object.assign({'Content-Type': 'application/json'}, _authHeaders()),
+            body: JSON.stringify({path, content, create_only: true}) });
+          if (res.status === 409) continue;
+          sent = true;
+          _fileData.path = path;
+          if (res.ok) { r = res; break; }
+          // A real refusal: keep the text unsaved (and the editor open on close).
+          showToast(await _apiErrText(res));
+          btn.textContent = 'Save'; btn.classList.remove('saving');
+          return;
+        }
+      } catch (e) { sent = false; }
+    }
+    if (!sent) r = await apiCall(API + '/api/file', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path: _fileData.path, content})
@@ -27248,34 +27354,51 @@ let _exploreShowHidden = true;
 let _exploreLastData = null;  // last loaded dir data (for search re-filter)
 let _filesLastData = null;    // last loaded dir data for Files tab
 let _filesSort = { col: 'modified', dir: -1 }; // default: newest first (Ethan 2026-08-20); dirs still lead
+// The MDAI list keeps its own sort, most recently opened first (Ethan,
+// 2026-10-16: "make that the default for the mdai file list view").
+let _mdaiSort = { col: 'opened', dir: -1 };
 
-function _filesSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // dirs always first
-    const { col, dir } = _filesSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
-    return 0;
-  });
+// One comparator for every file table. Folders lead; a file never opened has
+// no "Opened" time and sorts after every opened one in either direction.
+function _feCompare(a, b, sort) {
+  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1; // dirs always first
+  const { col, dir } = sort;
+  if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+  if (col === 'modified') return dir * ((a.modified || 0) - (b.modified || 0));
+  if (col === 'opened') {
+    if (!a.opened || !b.opened) return (a.opened ? -1 : 0) + (b.opened ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    return dir * (a.opened - b.opened);
+  }
+  return 0;
+}
+function _filesSortEntries(entries, sort) {
+  return [...entries].sort((a, b) => _feCompare(a, b, sort || _filesSort));
 }
 
+// Times sort newest first on the first click; names and sizes ascending.
+function _feNextSort(sort, col) {
+  if (sort.col === col) sort.dir *= -1;
+  else { sort.col = col; sort.dir = (col === 'modified' || col === 'opened') ? -1 : 1; }
+}
 function _filesSetSort(col) {
-  if (_filesSort.col === col) _filesSort.dir *= -1;
-  else { _filesSort.col = col; _filesSort.dir = 1; }
+  _feNextSort(_filesSort, col);
   if (_filesLastData) {
     const { path, data, cacheTs } = _filesLastData;
     _renderFilesEntries(document.getElementById('files-body'), path, data, cacheTs);
   }
-  // The MDAI tab lists folders through the same view and sort.
-  if (typeof activeView !== 'undefined' && activeView === 'mdai' && document.getElementById('mdai-fe-body')) _mdaiRenderList();
+}
+function _mdaiSetSort(col) {
+  _feNextSort(_mdaiSort, col);
+  if (document.getElementById('mdai-fe-body')) _mdaiRenderList();
 }
 
 function _filesUpdateSortHeaders() {
-  const arrow = _filesSort.dir === 1 ? '↑' : '↓';
   document.querySelectorAll('#fe-col-headers [data-sort-col], #mdai-view [data-sort-col]').forEach(el => {
+    const sort = el.closest('#mdai-view') ? _mdaiSort : _filesSort;
+    const arrow = sort.dir === 1 ? '↑' : '↓';
     const col = el.dataset.sortCol;
-    const sorted = _filesSort.col === col;
+    const sorted = sort.col === col;
     el.classList.toggle('sorted', sorted);
     const existing = el.querySelector('.fe-sort-arrow');
     if (existing) existing.remove();
@@ -27891,7 +28014,7 @@ function _feCrumbsHtml(path, fnName) {
 function _feParentRow(onOpen) {
   const back = document.createElement('div');
   back.className = 'fe-back-row';
-  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
+  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div><div></div>`;
   back.onclick = onOpen;
   return back;
 }
@@ -27936,6 +28059,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
   const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
   const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+  const openedStr = entry.opened ? timeAgo(entry.opened) : '';
   const ep = entryPath.replace(/'/g, "\\'");
   const toggle = entry.type === 'dir'
     ? `<button class="fe-expand" title="Expand / collapse" onclick="event.stopPropagation();_feToggleExpand(this)">&#9656;</button>`
@@ -27945,6 +28069,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
     `<div class="fe-cell-name"${indentStyle}>${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
     `<div class="fe-cell-size">${sizeStr}</div>` +
     `<div class="fe-cell-date">${dateStr}</div>` +
+    `<div class="fe-cell-date fe-cell-opened">${openedStr}</div>` +
     `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
   if (entry.type === 'dir') {
     // Folders open on a single click on every device (fast, and mobile-friendly).
@@ -28429,13 +28554,7 @@ let _spLoadGen = 0;
 let _spSort = { col: 'modified', dir: -1 };
 
 function _spSortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    const { col, dir } = _spSort;
-    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
-    return dir * ((a.modified || 0) - (b.modified || 0));
-  });
+  return [...entries].sort((a, b) => _feCompare(a, b, _spSort));
 }
 function _spSortBy(col) {
   if (_spSort.col === col) _spSort.dir *= -1;
@@ -28444,7 +28563,7 @@ function _spSortBy(col) {
   if (_spLastData) _spRender(_spLastData.path, _spLastData.data);
 }
 function _spUpdateSortHeaders() {
-  ['name','size','modified'].forEach(c => {
+  ['name','size','modified','opened'].forEach(c => {
     const el = document.getElementById('sp-sort-' + c);
     if (el) el.textContent = _spSort.col === c ? (_spSort.dir > 0 ? '▲' : '▼') : '';
   });
@@ -28500,7 +28619,7 @@ function _spRender(path, data) {
   if (path !== _SP_ROOT && data.parent) {
     const back = document.createElement('div');
     back.className = 'fe-back-row';
-    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div><div></div>';
     back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
     body.appendChild(back);
   }
@@ -28520,11 +28639,13 @@ function _spRender(path, data) {
     const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
     const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
     const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+    const openedStr = entry.opened ? timeAgo(entry.opened) : '';
     const epEsc = ep.replace(/'/g, "\\'");
     row.innerHTML =
       '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
       '<div class="fe-cell-size">' + sizeStr + '</div>' +
       '<div class="fe-cell-date">' + dateStr + '</div>' +
+      '<div class="fe-cell-date fe-cell-opened">' + openedStr + '</div>' +
       '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
       '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
     if (entry.type === 'dir') {
@@ -28628,7 +28749,8 @@ async function _spCaptureSaveTyped() {
   if (!box || !box.value.trim()) return;
   const text = box.value;
   box.value = '';
-  if (!(await _spCaptureSave(text))) box.value = text;
+  if (!(await _spCaptureSave(text))) { box.value = text; return; }
+  try { localStorage.removeItem('amux_sp_capture_draft'); } catch (e) {}
 }
 async function _spCopy(path) {
   try {
@@ -28674,6 +28796,10 @@ function _spWireCapture() {
   }
   _spLoadRetain();
   box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
+  // Typed text survives a reload or the app being backgrounded until it is
+  // saved (2026-10-16, "scratchpad is dropping data").
+  try { const d = localStorage.getItem('amux_sp_capture_draft'); if (d && !box.value) box.value = d; } catch (e) {}
+  box.addEventListener('input', () => { try { if (box.value) localStorage.setItem('amux_sp_capture_draft', box.value); else localStorage.removeItem('amux_sp_capture_draft'); } catch (e) {} });
   document.addEventListener('paste', e => {
     if (activeView !== 'scratchpad' || e.target === box) return;
     const t = e.target;
@@ -30064,13 +30190,13 @@ async function _mdaiRenderList() {
   if (gen !== _mdaiDirGen) return;
   const q = _mdaiListFilter.trim().toLowerCase();
   if (q) entries = entries.filter(e => e.name.toLowerCase().includes(q));
-  entries = _filesSortEntries(entries);
+  entries = _filesSortEntries(entries, _mdaiSort);
   // The Files tab's own pieces: breadcrumb, sortable headers, parent row, empty
   // line and status bar (_feCrumbsHtml, _feParentRow, _feEmptyRow, _feStatusText).
   const parts = rel ? rel.split('/') : [];
-  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_filesSetSort(\'' + col + '\')">' + label + '</div>';
+  const hdr = (col, label) => '<div class="fe-col-hdr" data-sort-col="' + col + '" onclick="_mdaiSetSort(\'' + col + '\')">' + label + '</div>';
   body.innerHTML = '<div id="mdai-breadcrumb" class="fe-breadcrumb">' + _feCrumbsHtml(abs, '_mdaiCrumb') + '</div>'
-    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + '<div class="fe-col-hdr-actions"></div></div>'
+    + '<div class="fe-scroll"><div class="fe-col-headers" style="display:grid">' + hdr('name', 'Name') + hdr('size', 'Size') + hdr('modified', 'Modified') + hdr('opened', 'Opened') + '<div class="fe-col-hdr-actions"></div></div>'
     + '<div id="mdai-fe-body"></div></div>'
     + '<div id="mdai-fe-status" class="fe-status">' + esc(_feStatusText(entries, q)) + '</div>'
     + (_mdaiListData.truncated ? '<div class="mdai-hint">The folder scan was cut short, so this list may be incomplete.</div>' : '');
@@ -30186,6 +30312,7 @@ async function _mdaiNewFile(dirOrOpts) {
 async function openMdaiNode(path, opts) {
   opts = opts || {};
   const abs = _mdaiAbs(path);
+  _feRecordOpen(abs);
   _mdaiStopPoll();
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
@@ -33030,6 +33157,20 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // The MDAI view: Escape goes back, as it does from any file (Ethan,
+  // 2026-10-16). A node page closes to the list through closeMdaiNode, which
+  // asks before dropping unsaved edits; the New MDAI page cancels. A source
+  // picker opened over the node closes first.
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    const picker = document.querySelector('.mdai-picker-overlay');
+    const node = document.getElementById('mdai-overlay');
+    const create = document.getElementById('mdai-create-page');
+    if (picker) { e.preventDefault(); picker.remove(); return; }
+    if (node && node.classList.contains('active')) { e.preventDefault(); closeMdaiNode(); return; }
+    if (typeof activeView !== 'undefined' && activeView === 'mdai' && create && create.style.display !== 'none'
+        && create.offsetParent !== null) { e.preventDefault(); _mdaiCreateCancel(); return; }
+  }
+
   if (document.getElementById('grid-view').classList.contains('active')) {
     if (e.key === 'Escape') { e.preventDefault(); exitGridMode(); return; }
     if (_ctrlChord(e, 'c')) {
@@ -34438,7 +34579,7 @@ function switchView(view) {
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
-  if (view === 'map') { _mapLoad(); _mapInit(); }
+  if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
   if (view === 'cost') _costLoad();
   if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
@@ -34659,6 +34800,123 @@ let _mapServerLoaded = false; // true once we've synced from the server — guar
 let _mapEditingPin = null;
 let _mapEditingTag = null;
 
+// STOPWATCH FOR TIME TRIALS (AMUX-6114; Ethan, 2026-10-16: "add a stopwatch
+// thing to the maps tab and that fulfills our time trial use case"). Elapsed
+// time comes from timestamps, not a ticking counter, because iOS suspends the
+// page with the screen off. Distance comes from the phone's GPS points
+// (/api/map/location/points) inside the trial window: a fix worse than 50m or a
+// gap over 60s between fixes is not counted, so a tunnel never invents meters.
+// A running trial lives in localStorage so a reload or a reopened app resumes
+// it; a finished one is saved in the map document (`trials`), and its route is
+// the Location history view of its window.
+let _mapTrials = [];
+let _mapSwTick = null, _mapSwDistAt = 0, _mapSwDist = 0, _mapSwFixes = 0;
+function _mapSwState() { try { return JSON.parse(localStorage.getItem('amux_map_sw') || 'null'); } catch (e) { return null; } }
+function _mapSwSetState(v) { try { if (v) localStorage.setItem('amux_map_sw', JSON.stringify(v)); else localStorage.removeItem('amux_map_sw'); } catch (e) {} }
+function _mapSwFmt(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(x).padStart(2, '0');
+}
+function _mapSwPace(sec, m) { return m >= 50 ? _mapSwFmt(sec / (m / 1000)) + ' /km' : '\u2013 /km'; }
+function _mapSwHav(a, b) {
+  const r = 6371000, rad = Math.PI / 180, dl = (b.lat - a.lat) * rad, dn = (b.lon - a.lon) * rad;
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dn / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(h));
+}
+// Meters covered in [from, to] and the per-lap meters, from recorded fixes.
+async function _mapSwDistance(from, to, laps) {
+  const r = await fetch(API + '/api/map/location/points?from=' + Math.floor(from) + '&to=' + Math.ceil(to), { headers: _authHeaders() });
+  if (!r.ok) throw new Error('location points ' + r.status);
+  const pts = ((await r.json()).points || []).filter(p => p.lat != null && p.lon != null && !(p.h_acc > 50));
+  const marks = (laps || []).slice().sort((a, b) => a - b), per = new Array(marks.length + 1).fill(0);
+  let total = 0, prev = null;
+  for (const p of pts) {
+    if (prev && p.ts - prev.ts <= 60) {
+      const d = _mapSwHav(prev, p); total += d;
+      let k = 0; while (k < marks.length && p.ts > marks[k]) k++; per[k] += d;
+    }
+    prev = p;
+  }
+  return { total, per, fixes: pts.length };
+}
+function _mapSwToggle(open) {
+  const el = document.getElementById('map-sw'); if (!el) return;
+  const show = open === undefined ? el.hidden : !!open;
+  el.hidden = !show;
+  document.getElementById('map-sw-btn')?.setAttribute('aria-pressed', show ? 'true' : 'false');
+  if (show) { _mapSwRender(); _mapSwRenderPast(); }
+}
+function _mapSwRender() {
+  const st = _mapSwState(), now = Date.now() / 1000;
+  const run = !!st;
+  const q = id => document.getElementById(id);
+  if (!q('map-sw')) return;
+  q('map-sw-start').hidden = run; q('map-sw-lap').hidden = !run; q('map-sw-stop').hidden = !run;
+  q('map-sw-time').textContent = _mapSwFmt(run ? now - st.start : 0);
+  q('map-sw-dist').textContent = ((run ? _mapSwDist : 0) / 1000).toFixed(2) + ' km';
+  q('map-sw-pace').textContent = run ? _mapSwPace(now - st.start, _mapSwDist) : '\u2013 /km';
+  q('map-sw-gps').textContent = run ? (_mapSwFixes ? _mapSwFixes + ' GPS fixes so far' : 'Waiting for GPS from the amux app on your phone') : '';
+  const laps = run ? st.laps : [];
+  q('map-sw-laps').innerHTML = laps.map((t, i) => '<li>Lap ' + (i + 1) + ': ' + _mapSwFmt(t - (i ? laps[i - 1] : st.start)) + '</li>').join('');
+  clearInterval(_mapSwTick); _mapSwTick = null;
+  if (run && !q('map-sw').hidden) {
+    _mapSwTick = setInterval(() => {
+      if (document.getElementById('map-sw')?.hidden || !_mapSwState()) { clearInterval(_mapSwTick); _mapSwTick = null; return; }
+      const s2 = _mapSwState(), t = Date.now() / 1000;
+      document.getElementById('map-sw-time').textContent = _mapSwFmt(t - s2.start);
+      document.getElementById('map-sw-pace').textContent = _mapSwPace(t - s2.start, _mapSwDist);
+      if (t - _mapSwDistAt >= 10) { _mapSwDistAt = t; _mapSwDistance(s2.start, t, s2.laps).then(d => { _mapSwDist = d.total; _mapSwFixes = d.fixes; _mapSwRender(); }).catch(() => {}); }
+    }, 1000);
+  }
+}
+function _mapSwStart() {
+  _mapSwSetState({ start: Date.now() / 1000, laps: [] });
+  _mapSwDist = 0; _mapSwFixes = 0; _mapSwDistAt = 0;
+  _mapSwRender();
+}
+function _mapSwLap() {
+  const st = _mapSwState(); if (!st) return;
+  st.laps.push(Date.now() / 1000); _mapSwSetState(st); _mapSwRender();
+}
+async function _mapSwStop() {
+  const st = _mapSwState(); if (!st) return;
+  const end = Date.now() / 1000;
+  _mapSwSetState(null); clearInterval(_mapSwTick); _mapSwTick = null;
+  let d = { total: _mapSwDist, per: [], fixes: _mapSwFixes };
+  try { d = await _mapSwDistance(st.start, end, st.laps); } catch (e) { showToast('Saved without a fresh GPS distance: ' + (e.message || e)); }
+  const marks = [st.start, ...st.laps, end];
+  const splits = marks.slice(1).map((t, i) => ({ s: Math.round(t - marks[i]), m: Math.round(d.per[i] || 0) }));
+  const trial = { id: 'trial_' + Math.round(st.start * 1000), start: st.start, end, duration_s: Math.round(end - st.start), distance_m: Math.round(d.total), fixes: d.fixes, splits };
+  _mapTrials = [trial, ..._mapTrials].slice(0, 200);
+  _mapSave();
+  _mapSwDist = 0; _mapSwFixes = 0;
+  _mapSwRender(); _mapSwRenderPast();
+  showToast('Trial saved: ' + _mapSwFmt(trial.duration_s) + ', ' + (trial.distance_m / 1000).toFixed(2) + ' km');
+}
+function _mapSwRenderPast() {
+  const el = document.getElementById('map-sw-past'); if (!el) return;
+  if (!_mapTrials.length) { el.innerHTML = ''; return; }
+  const row = t => {
+    const best = (t.splits || []).filter(x => x.m >= 50).map(x => x.s / (x.m / 1000)).sort((a, b) => a - b)[0];
+    return '<li><span>' + esc(new Date(t.start * 1000).toLocaleDateString()) + ' \u00b7 ' + _mapSwFmt(t.duration_s) + ' \u00b7 ' + (t.distance_m / 1000).toFixed(2) + ' km \u00b7 ' + _mapSwPace(t.duration_s, t.distance_m)
+      + (best ? ' \u00b7 best split ' + _mapSwFmt(best) + ' /km' : '') + '</span>'
+      + '<button type="button" class="btn" onclick="_mapSwRoute(\'' + escJs(t.id) + '\')">Route</button></li>';
+  };
+  el.innerHTML = '<h4>Past trials</h4><ol>' + _mapTrials.slice(0, 5).map(row).join('') + '</ol>';
+}
+// A trial's route is the Location history of its window, drawn by that view.
+function _mapSwRoute(id) {
+  const t = _mapTrials.find(x => x.id === id); if (!t) return;
+  _locRange = { from: Math.floor(t.start), to: Math.ceil(t.end) };
+  if (typeof _mapToggleSidebar === 'function' && !_mapSettings.sidebarOpen && window.innerWidth > 600) _mapToggleSidebar();
+  _mapSidebarTab('history');
+  _locLoad();
+  // Leaflet must re-measure after the history pane changes the layout, or part
+  // of the map paints grey on a phone.
+  setTimeout(() => { if (_map) _map.invalidateSize(); }, 60);
+}
+
 function _mapLoad() {
   // Load from localStorage immediately for instant render
   try { var cp = localStorage.getItem('amux_map_pins'); if (cp) _mapPins = JSON.parse(cp); } catch(e) {}
@@ -34676,6 +34934,8 @@ function _mapLoad() {
     });
     if (needsSave) _mapSave();
     _mapTags = data.tags || [];
+    _mapTrials = Array.isArray(data.trials) ? data.trials : [];
+    _mapSwRenderPast();
     // Whether the sidebar is open is this device's state, not the document's:
     // a phone starts with the map showing (see _mapInit). Taking the saved
     // value here without applying it left the setting saying "open" over a
@@ -34720,7 +34980,7 @@ function _mapSave() {
   // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
   // the map is merely panned or zoomed.
   if (!_mapServerLoaded) return;
-  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings };
+  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings, trials: _mapTrials };
   // ?replace=1 — the dashboard holds the full set (guarded by _mapServerLoaded),
   // so it's authorized to replace the whole document, including deletions.
   apiCall(API + '/api/map?replace=1', {
@@ -52184,8 +52444,72 @@ function _dbRenderGrid(grid, columns, rows, sortable) {
     const arrow = sortable && _dbSort === c ? (_dbDir === 'asc' ? ' ▲' : ' ▼') : '';
     return '<th' + (sortable ? ' class="sortable" onclick="_dbSortBy(\'' + esc(c) + '\')"' : '') + '>' + esc(c) + arrow + '</th>';
   }).join('');
-  const body = rows.map(r => '<tr>' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
+  const body = rows.map((r, i) => '<tr class="db-row" tabindex="0" data-row="' + i + '">' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
   grid.innerHTML = '<table class="sqlr"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table>';
+  // The Data pane browses one table (title and primary key known); the Query
+  // pane shows an arbitrary result set, so it has neither.
+  grid._dbResult = { columns, rows, table: sortable ? _dbTable : null, offset: sortable ? _dbOffset : 0 };
+  if (!grid._dbRowWired) {
+    grid._dbRowWired = true;
+    grid.addEventListener('click', e => {
+      const tr = e.target.closest('tbody tr.db-row');
+      if (!tr || !grid.contains(tr)) return;
+      // Dragging to select cell text ends in a click; keep the selection.
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).trim() && tr.contains(sel.anchorNode)) return;
+      _dbOpenRow(grid, tr);
+    });
+    grid.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const tr = e.target.closest && e.target.closest('tbody tr.db-row');
+      if (!tr || e.target !== tr) return;
+      e.preventDefault();
+      _dbOpenRow(grid, tr);
+    });
+  }
+}
+
+// A cell holding a JSON object or array is shown indented; anything else is
+// shown exactly as stored.
+function _dbDetailValue(v) {
+  if (v === null || v === undefined) return { html: '<span class="sql-null">NULL</span>', copy: null };
+  let text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  const t = text.trim();
+  if (typeof v === 'object' || (t.length > 1 && ((t[0] === '{' && t.endsWith('}')) || (t[0] === '[' && t.endsWith(']'))))) {
+    try {
+      const parsed = typeof v === 'object' ? v : JSON.parse(t);
+      if (parsed && typeof parsed === 'object') {
+        return { html: '<pre class="db-detail-val db-detail-json">' + esc(JSON.stringify(parsed, null, 2)) + '</pre>', copy: text };
+      }
+    } catch (e) { /* not JSON: show as text */ }
+  }
+  return { html: '<pre class="db-detail-val">' + (text === '' ? '<span class="sql-null">(empty string)</span>' : esc(text)) + '</pre>', copy: text };
+}
+
+function _dbOpenRow(grid, tr) {
+  const res = grid._dbResult;
+  const i = parseInt(tr.dataset.row, 10);
+  if (!res || !res.rows || !res.rows[i]) return;
+  const row = res.rows[i];
+  const t = res.table ? _dbTables.find(x => x.name === res.table) : null;
+  const typeOf = name => { const c = t && t.columns.find(c => c.name === name); return c ? (c.type || '') : ''; };
+  const pkCols = t ? t.columns.filter(c => c.pk).sort((a, b) => a.pk - b.pk).map(c => c.name) : [];
+  const pkParts = pkCols.map(name => { const j = res.columns.indexOf(name); return j < 0 ? null : name + ' = ' + (row[j] === null ? 'NULL' : String(row[j])); });
+  const which = pkParts.length && pkParts.every(Boolean) ? pkParts.join(', ') : 'row ' + (res.offset + i + 1);
+  const values = res.columns.map((c, j) => _dbDetailValue(row[j]));
+  const html = '<dl class="db-detail">' + res.columns.map((c, j) => {
+    const ty = typeOf(c);
+    return '<div class="db-detail-item"><dt><span class="db-detail-name">' + esc(c) + '</span>' +
+      (ty ? '<span class="db-detail-type">' + esc(ty) + '</span>' : '') +
+      (values[j].copy !== null ? '<button type="button" class="btn db-detail-copy" data-col="' + j + '" aria-label="Copy ' + esc(c) + '">Copy</button>' : '') +
+      '</dt><dd>' + values[j].html + '</dd></div>';
+  }).join('') + '</dl>';
+  const title = (res.table || 'Query result') + ' · ' + which;
+  const overlay = _chipDetailModal('db-row-detail', title, res.columns.length + ' column' + (res.columns.length === 1 ? '' : 's'), html, { returnFocus: tr });
+  overlay.classList.add('db-row-detail');
+  overlay.querySelectorAll('.db-detail-copy').forEach(b => {
+    b.onclick = () => { const j = parseInt(b.dataset.col, 10); _copyTextWithToast(values[j].copy, 'Copied ' + res.columns[j]); };
+  });
 }
 
 function _dbRenderStructure() {

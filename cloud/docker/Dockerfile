@@ -78,6 +78,9 @@ COPY frustrations.md frustrations.md
 # looks for) without adding this line, so the guard went red on origin/main.
 # Fourth recurrence of the class the comment above already numbers three.
 COPY frustrations-archive.md frustrations-archive.md
+# The worker boundary registry: api/boundaries.rs embeds it with include_str!
+# so a box without the installed copy still has the rule text.
+COPY boundaries.toml boundaries.toml
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the
 # `debug-embed` feature, so a DEBUG binary reads the dashboard from

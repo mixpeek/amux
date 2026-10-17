@@ -110,6 +110,16 @@ edition = "2021"
 license = "MIT"
 
 # Fast iteration: thin LTO only for release, debug builds favor compile speed.
+# The server hashes its own executable at startup (build_hash: SHA-256 of the
+# whole file, before migrations and the listener). Unoptimised, sha2 made that
+# take ~10s on a ~300 MB debug binary here and 59.4s on the loaded nightly
+# runner, where nine restart_persistence servers start at once: the server
+# could not answer /health inside the test's 60s and the nightly was red three
+# nights running (AMUX-6095; log 2026-10-17 07:45:54.68 -> 07:46:54.07). The
+# release binary takes 0.3s. Optimise the hash in debug/test builds too.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = "symbols"

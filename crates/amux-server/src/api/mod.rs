@@ -8,6 +8,7 @@ pub mod alerts;
 pub mod aliases;
 pub mod auth;
 pub mod board;
+pub mod boundaries;
 pub mod contract;
 pub mod scratchpad;
 pub mod prompt_block;
@@ -206,6 +207,7 @@ pub fn router_with_connector_transport(
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
         .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
+        .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
         .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
@@ -276,6 +278,7 @@ pub fn router_with_connector_transport(
         // guard moved into the module's dispatch.
         .merge(session_verbs::routes())
         .merge(typing::routes())
+        .merge(boundaries::routes())
         // Realtime rooms (api/rt.rs): one WebSocket per tab multiplexing
         // ephemeral per-resource rooms, with an SSE + POST fallback.
         .merge(rt::routes())

@@ -204,6 +204,47 @@ test('a command control is immediately busy and its durable feedback survives re
   await expect(page.locator(`article[data-interaction-id="${id}"] .interaction-status`)).toHaveText('Completed');
 });
 
+test('a background read that lands right after a press is not that press\'s receipt', async ({ page }) => {
+  // CI runs 38944452996 and 38947919221: a fetchBoard continuation issued
+  // GET /api/board/changes in the gap between a click and the press layer's
+  // setTimeout(0) clear, and the Save button read data-interaction-kind
+  // "board.get". A window capture listener schedules the read before the press
+  // layer schedules its clear, which puts that read in the gap every time.
+  await boot(page);
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/prefs', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await pending;
+    return route.fulfill({json:{ok:true,applied:true}});
+  });
+  const beacons: any[] = [];
+  page.on('request', request => {
+    if (request.url().endsWith('/api/client-debug')) { try { beacons.push(request.postDataJSON()); } catch {} }
+  });
+  await page.evaluate(() => {
+    const button = document.createElement('button');
+    button.id='receipt-gap-save'; button.textContent='Save';
+    button.onclick=() => { void fetch('/api/prefs',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"key":"state-gap","value":"1"}'}); };
+    document.querySelector('.header-row')!.append(button);
+    window.addEventListener('click', event => {
+      if ((event.target as Element).id !== 'receipt-gap-save') return;
+      setTimeout(() => { void fetch('/api/board/changes?since_seq=0&limit=1'); }, 0);
+    }, true);
+  });
+  const save=page.locator('#receipt-gap-save');
+  const gapRead=page.waitForRequest(request => request.url().includes('/api/board/changes?since_seq=0&limit=1'));
+  await save.click();
+  await gapRead;
+  await expect(save).toHaveAttribute('aria-busy','true');
+  // The gap read has been issued, so a binding it was going to steal has
+  // happened: the kind must still be the press's own write.
+  expect(await save.getAttribute('data-interaction-kind')).toBe('environment.post');
+  await expect.poll(() => beacons.some(b => b.verdict === 'press_bind_skipped_foreign_task' && b.action === 'receipt-gap-save')).toBe(true);
+  release();
+  await expect(save).toHaveAttribute('aria-busy','false');
+});
+
 test('nonqueueable command reports server failure and sends a diagnostic', async ({page})=>{
   await boot(page);
   let failed=false;

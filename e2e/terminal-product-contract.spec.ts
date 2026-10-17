@@ -239,6 +239,10 @@ test('a tap, an upward swipe and a sideways drag at the bottom keep the terminal
   // The gesture that DOES ask for earlier output still relinquishes, from its
   // first pixels (e331c213: small upward gestures escape bottom following).
   await drag(0, 6);
+  // Let WebKit finish handling the synthetic touch (it can land a frame late:
+  // main rust run 39016591884, [ios-safari], read true). A single read after
+  // two frames, not a poll: a poll would pass a flip to false and back.
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
   expect(await page.evaluate('_peekFollowBottom')).toBe(false);
 });
 

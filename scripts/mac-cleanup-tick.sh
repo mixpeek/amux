@@ -183,7 +183,12 @@ USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
 # scratchpad/work/<clone>/ puts the tag at <proj>/<session>/scratchpad/work/<clone>/target/CACHEDIR.TAG,
 # seven levels down. At @6 the scan never saw them: one session held 47G and 23G of targets idle
 # over 6h with 21G free on the disk, and the summary read "eligible 0".
-TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8}
+# $HOME@3, last (disk RCA 2026-10-16, 207G free): a lane's own dot-folder,
+# ~/.mvs-infra-ops/target{,-mi5852,-base}, held 263G of build output idle since
+# 2026-09-28. The tag sits at ~/.<lane>/target/CACHEDIR.TAG, three levels down,
+# and no root above reached it, so every tick reported "consumers above 10G:
+# none". Last, so the high-yield roots spend the budget first.
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-$HOME/.amux/tmp@9:/private/tmp/claude-$(id -u)@8:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.amux@2:$HOME/.ao/data/worktrees@8:$HOME@3}
 TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
 # Under disk pressure the idle floor drops (DESKT-62). On 2026-10-01 the disk fell
 # from 574G to 155G in five days, and about 60G of build output sat 21-23h idle in
@@ -502,6 +507,11 @@ LIMITS_CMD=${AMUX_CLEANUP_LIMITS_CMD:-limits_reading}
 CRASH_DIR=${AMUX_CLEANUP_CRASH_DIR:-$HOME/Library/Logs/DiagnosticReports}
 CRASH_LOOP_N=${AMUX_CLEANUP_CRASH_LOOP_N:-10}
 CRASH_KEEP_DAYS=${AMUX_CLEANUP_CRASH_KEEP_DAYS:-30}
+# A loop with no crash in the last CRASH_RECENT_MIN has stopped: it is reported,
+# not escalated. Over the whole 24h a fixed loop kept escalating every 6h until
+# its reports aged out (RCA crashes 20261017-022150: git x30, the last at 16:57
+# the day before, none after the 19:50 fix). Same 6h as the escalation cooldown.
+CRASH_RECENT_MIN=${AMUX_CLEANUP_CRASH_RECENT_MIN:-360}
 # Report-only probes: launchd jobs outside com.apple that last exited non-zero
 # and are not running, the default gateway's packet loss with DNS lookup time,
 # and macOS thermal/CPU-speed limits.
@@ -1012,10 +1022,16 @@ check_crash_reports() { # <dry:0|1>
   if [ ! -d "$CRASH_DIR" ]; then echo "mac-cleanup: crash reports: no directory at $CRASH_DIR"; return 0; fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(find "$CRASH_DIR" -maxdepth 1 -type f -mtime -1 2>/dev/null | sed 's#.*/##; s/[-_][0-9]\{4\}-[0-9][0-9]-[0-9][0-9].*//' | sort | uniq -c | sort -rn | head -3)
+  local recent
   while read -r cnt name; do
     [ -n "${cnt:-}" ] || continue
     if [ "$cnt" -ge "$CRASH_LOOP_N" ]; then
-      HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+      recent=$(find "$CRASH_DIR" -maxdepth 1 -type f -mmin -"$CRASH_RECENT_MIN" -name "${name}[-_]*" 2>/dev/null | grep -c . || true)
+      if [ "$recent" -gt 0 ]; then
+        HEALTH_VERDICTS=$(printf '%s\ncrashes %s crashed %s times in 24h (at or over %s)\n' "$HEALTH_VERDICTS" "$name" "$cnt" "$CRASH_LOOP_N")
+      else
+        echo "mac-cleanup: crash reports: $name crashed $cnt times in 24h but none in the last $(( CRASH_RECENT_MIN / 60 ))h, so the loop has stopped; not a constraint (verdict=crash_loop_ended)"
+      fi
     fi
   done <<< "$top"
   old=$(find "$CRASH_DIR" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.diag' -o -name '*.hang' -o -name '*.spin' \) -mtime +"$CRASH_KEEP_DAYS" 2>/dev/null | grep -c . || true)
@@ -1853,6 +1869,13 @@ keep_docker_context() { # <profile>
 reap_lane_tmp() { # <dry:0|1>
   local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
+  # A directory of a few small files is kept like a small file (mxp-gs12,
+  # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
+  # production MVS promote waits on, was reaped twice (10-14, 10-16) because
+  # only a TOP-LEVEL file was protected. Kept: at most LANE_TMP_KEEP_DIR_FILES
+  # files, none over LANE_TMP_KEEP_FILE_KB, LANE_TMP_KEEP_DIR_KB in all. Build
+  # trees, clones and dependency dirs still go: they hold big files or many.
+  local keep_dir_files=${LANE_TMP_KEEP_DIR_FILES:-64} keep_dir_kb=${LANE_TMP_KEEP_DIR_KB:-4096} n_small_dir=0 nf
   [ -d "$root" ] || { echo "mac-cleanup: lane tmp: no $root"; return 0; }
   db=${LANE_TMP_SCHED_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
   # Every ~/.amux/tmp/<worker>/<entry> an enabled schedule names, as
@@ -1895,6 +1918,13 @@ reap_lane_tmp() { # <dry:0|1>
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
+    if [ -d "$e" ] && [ ! -L "$e" ] \
+       && [ -z "$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f -size +"${small_kb}"k -print -quit 2>/dev/null)" ]; then
+      nf=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f 2>/dev/null | head -n $((keep_dir_files + 1)) | grep -c . || true)
+      if [ "$nf" -ge 1 ] && [ "$nf" -le "$keep_dir_files" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$keep_dir_kb" ] 2>/dev/null; then
+        n_small_dir=$((n_small_dir+1)); continue
+      fi
+    fi
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
@@ -1904,7 +1934,7 @@ reap_lane_tmp() { # <dry:0|1>
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>

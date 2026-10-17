@@ -1179,6 +1179,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("issues", "lease_heartbeat_at", false),
     ("layout_presets", "created_at", false),
     ("logs", "ts", false),
+    ("file_opens", "opened_at", false), // epoch seconds, written by POST /api/fs/opened
     ("mdai_runs", "ts", false),
     ("org", "created_at", false),
     ("org_invites", "created_at", false),

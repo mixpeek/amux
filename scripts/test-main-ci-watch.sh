@@ -31,6 +31,7 @@ EOF
 cat > "$BIN/curl" <<'EOF'
 #!/bin/sh
 out=""; body=""; while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -d) body=$2; shift ;; esac; shift; done
+[ "${CURL_TIMEOUT:-0}" = 1 ] && { printf 000; exit 28; }
 # Parse the body strictly, as the board does: a lone surrogate is a 400.
 if ! printf '%s' "$body" | python3 -c 'import sys,json; json.loads(sys.stdin.buffer.read().decode("utf-8")); s=sys.stdin' 2>/dev/null \
    || printf '%s' "$body" | grep -q '\\ud[89a-f]'; then
@@ -65,6 +66,12 @@ check "two sends were made"                    2   "$(cat "$FIX/sends")"
 
 check "the card body is valid JSON with the test name" yes "$(has "$(cat "$FIX/bodies" 2>/dev/null)" 'draw-tab.spec.ts:460:5 Draw live')"
 check "no lone surrogate reached the board"   no  "$(has "$out" 'lone leading surrogate')"
+
+echo "1b. a board that times out (curl exit 28) still falls through to the message"
+rm -f "$FIX/state.json" "$FIX/sends"
+out=$(CURL_TIMEOUT=1 run 1 || true)
+check "the timeout is reported as a refusal"   yes "$(has "$out" 'board refused a todo card: HTTP 000')"
+check "the alert still lands by message"       yes "$(has "$out" '"alerts_not_delivered":0')"
 
 echo "2. two failed sends report the alert as not delivered"
 rm -f "$FIX/state.json" "$FIX/sends"

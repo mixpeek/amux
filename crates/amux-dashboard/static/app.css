@@ -1570,7 +1570,7 @@
      never desync (the two-container version misaligned on iOS). */
   .fe-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
   .fe-col-headers {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
     position: sticky; top: 0; z-index: 2;
     background: var(--card);
@@ -1585,7 +1585,7 @@
   .fe-sort-arrow { font-size: 0.65rem; opacity: 0.7; }
   .fe-col-hdr-actions { padding: 5px 4px; }
   .fe-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer; transition: background 0.08s;
     -webkit-tap-highlight-color: transparent;
@@ -1634,7 +1634,7 @@
   #lib-grid .lib-card:active { transform: scale(0.98); }
   #lib-grid .lib-card { transition: transform 0.08s; }
   .fe-back-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer;
   }
@@ -1643,7 +1643,7 @@
     /* Keep every column on mobile and let the table scroll sideways (standard
        mobile data-table UX) instead of hiding Size/Modified. min-width forces
        the horizontal overflow #fe-scroll then scrolls; header stays aligned. */
-    .fe-col-headers, .fe-row, .fe-back-row { min-width: 460px; }
+    .fe-col-headers, .fe-row, .fe-back-row { min-width: 552px; }
     .fe-cell-name { padding: 7px 8px; }
     .fe-cell-name span { font-size: 0.9rem; }
     .fe-menu-btn { opacity: 0.5; font-size: 1.1rem; }
@@ -3010,7 +3010,13 @@
        `.overlay` rule is overridden here. */
     #peek-overlay { padding: 6px; }
     #peek-overlay .overlay-header { padding-bottom: 0 !important; gap: 2px !important; margin-bottom: 2px; }
-    #peek-overlay #peek-task-row { display: none !important; }
+    /* The task row is SHOWN on a phone now, compact and wrapping (Ethan,
+       2026-10-16: "make sure i can see the full task name of a worker on the
+       card and details page"); it was dropped here for height since 08-09.
+       Focus mode and the keyboard-open state still hide it, like the dir row. */
+    #peek-overlay #peek-task-row { justify-content: flex-start !important; padding: 0 6px; gap: 4px !important; }
+    #peek-overlay #peek-task-label { font-size: 0.76rem !important; }
+    #peek-overlay.peek-focus #peek-task-row, .overlay.vv-compact #peek-task-row { display: none !important; }
     #peek-overlay .peek-dir-bar { padding: 1px 6px; font-size: 0.68rem; }
     #peek-overlay .peek-tabs { padding: 0 0 0 4px; }   /* right stays 0, see .peek-tabs */
     #peek-overlay .peek-tab { padding: 3px 8px; min-height: 36px; font-size: 0.75rem; }
@@ -7478,6 +7484,42 @@ details.status-evidence > summary { cursor:pointer; font-weight:600; margin:4px 
 .chip-detail-list > li { padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius-control, 8px); background:var(--bg); }
 .chip-detail-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .chip-detail-list p { margin:4px 0 0; }
+/* Database row detail: the shared chip-detail dialog, wider for a whole row.
+   Rows open it on click/tap and on Enter/Space when focused. */
+#sql-view table.sqlr tbody tr.db-row { cursor:pointer; }
+#sql-view table.sqlr tbody tr.db-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+#sql-view table.sqlr tbody tr.db-row:focus-visible td { background:var(--bg); }
+.db-row-detail > .modal { max-width:720px; max-height:min(86dvh, 820px); }
+.db-row-detail .modal-header { gap:8px; }
+.db-row-detail .modal-header > div { min-width:0; }
+.db-row-detail .modal-header h3 { overflow-wrap:anywhere; }
+.db-detail { margin:0; display:flex; flex-direction:column; gap:10px; }
+.db-detail-item { border:1px solid var(--border); border-radius:var(--radius-control, 8px); background:var(--bg); padding:8px 10px; min-width:0; }
+.db-detail-item dt { display:flex; align-items:center; gap:8px; margin:0 0 4px; min-width:0; }
+.db-detail-name { font-family:var(--mono); font-weight:600; font-size:0.82rem; overflow-wrap:anywhere; min-width:0; }
+.db-detail-type { color:var(--dim); font-size:0.7rem; font-family:var(--mono); text-transform:uppercase; flex-shrink:0; }
+.db-detail-copy { margin-left:auto; flex-shrink:0; min-height:32px; padding:4px 10px; font-size:0.76rem; }
+.db-detail-item dd { margin:0; min-width:0; }
+.db-detail-val { margin:0; font-family:var(--mono); font-size:0.8rem; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; color:var(--text); background:none; border:0; padding:0; max-width:100%; }
+.db-detail-json { color:var(--text); }
+.db-detail .sql-null { color:var(--muted, var(--dim)); font-style:italic; }
+@media (max-width: 600px) {
+  .db-row-detail .modal-close { min-height:44px; }
+  /* Phone: a bottom sheet the width of the screen, clear of the notch and the
+     home indicator. */
+  .modal-overlay.db-row-detail { padding:max(8px, env(safe-area-inset-top)) 0 0 0; align-items:flex-end; }
+  .db-row-detail > .modal {
+    max-width:none; width:100%;
+    max-height:calc(var(--dialog-viewport-height, 100dvh) - max(8px, env(safe-area-inset-top)));
+    border-radius:var(--radius-dialog) var(--radius-dialog) 0 0; border-bottom:0;
+  }
+  .db-row-detail .modal-header, .db-row-detail .modal-body, .db-row-detail .modal-footer {
+    padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right));
+  }
+  .db-row-detail .modal-footer { padding-bottom:calc(12px + env(safe-area-inset-bottom)); }
+  .db-detail-copy { min-height:44px; min-width:44px; }
+  .db-row-detail .modal-footer .btn { min-height:44px; }
+}
 @media (min-width:601px) { .header-row .header-actions { gap:10px !important; } .header-row .settings-btn,.header-row .btn-active,.header-row .btn-rate-limit,.header-row .header-add-btn { min-height:44px; } }
 @media (max-width:600px) {
  .header-row { gap:0; }
@@ -8267,12 +8309,12 @@ body.light .bd-answer-head { color: #bc4c00; }
 /* Scratchpad rows carry two actions (copy, menu); the shared 30px column
    overflowed every row by 10px and pushed both off-screen. */
 #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
-  grid-template-columns: minmax(0,1fr) 60px 92px 72px;
+  grid-template-columns: minmax(0,1fr) 60px 92px 92px 72px;
 }
 #scratchpad-view .fe-cell-actions { display:flex; gap:4px; justify-content:flex-end; align-items:center; }
 @media (max-width: 600px) {
   #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
-    grid-template-columns: minmax(0,1fr) 92px 96px;
+    grid-template-columns: minmax(0,1fr) 76px 76px 88px;
   }
   #scratchpad-view .fe-cell-size { display:none; }
 }
@@ -9217,6 +9259,14 @@ button.cv-sec:hover { color:var(--text); }
 #draw-view.draw-live .draw-lib, #draw-view.draw-live .draw-head, #draw-view.draw-live .draw-status,
 #draw-view.draw-live .draw-snapbar, #draw-view.draw-live .draw-selbar, #draw-view.draw-live .draw-lib-scrim { display:none !important; }
 #draw-view:fullscreen { height:100%; }
+/* Excalidraw pads its toolbar by --sat (env(safe-area-inset-top)) because it
+   assumes it owns the top of the screen. Here it sits under amux's header,
+   which already clears the status bar, so on an iPhone PWA the inset counted
+   twice: the shape toolbar dropped by the status-bar height and its right end
+   slid under the lock/hand column (Ethan, 2026-10-16). Only live mode in real
+   fullscreen puts the canvas at the screen edge again. */
+.draw-host .excalidraw { --sat:0px; }
+#draw-view.draw-live:fullscreen .draw-host .excalidraw { --sat:env(safe-area-inset-top); }
 /* No page scroll behind the canvas (on <html>: body is not a scroll container,
    so the sticky header keeps its offset). */
 html.draw-active { overflow:hidden; }
@@ -9250,13 +9300,19 @@ html.draw-active { overflow:hidden; }
   .draw-pen-color { width:44px; height:44px; }
   .draw-pen-width, .draw-pen-tool { min-width:44px; }
   /* Excalidraw's phone UI owns the top and bottom edges (shape toolbar, menu,
-     undo) and a right-hand column, so the snap toggles are a column on the left. */
-  .draw-snapbar { top:50%; bottom:auto; left:max(6px, env(safe-area-inset-left)); transform:translateY(-50%); flex-direction:column; padding:3px; }
+     undo) and a right-hand column, so the snap toggles are a column on the left,
+     top-aligned with that right-hand column (80px under the canvas top) so the
+     two mirror each other instead of this one floating over the middle of the
+     drawing. */
+  .draw-snapbar { top:80px; bottom:auto; left:max(6px, env(safe-area-inset-left)); transform:none; flex-direction:column; padding:3px; }
   .draw-snap { min-width:44px; padding:0; justify-content:center; flex-direction:column; gap:1px; font-size:0.9rem; }
   .draw-snap-lbl { display:none; }
   .draw-snap-state { font-size:0.56rem; padding:1px 4px; }
   .draw-snap-fs { border-left:none; border-top:1px solid var(--border); border-radius:0 0 8px 8px; }
   .draw-main { padding-bottom:env(safe-area-inset-bottom); }
+  /* .draw-main already clears the home indicator; Excalidraw's own --sab would
+     lift its bottom bar a second time. */
+  .draw-host .excalidraw { --sab:0px; }
   .draw-selbar { top:auto; bottom:calc(76px + env(safe-area-inset-bottom)); right:var(--space-2); }
   .draw-selbar .btn { min-height:44px; }
   .draw-dir-pop { left:8px !important; right:8px; width:auto; }
@@ -9572,3 +9628,23 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* MDAI list renders through the Files tab's file view (fe-* classes); the
    breadcrumb is a flex item here, so it must not grow to fill the column. */
 #mdai-breadcrumb { flex: 0 0 auto; }
+
+/* Maps stopwatch for time trials (AMUX-6114). */
+.map-sw { position:absolute; left:max(10px, env(safe-area-inset-left)); bottom:calc(46px + env(safe-area-inset-bottom)); z-index:500; width:min(300px, calc(100% - 20px)); max-height:70%; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,0.18); padding:var(--space-3); box-sizing:border-box; }
+.map-sw-time { font:600 2.2rem/1.1 ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+.map-sw-stats { display:flex; gap:var(--space-3); font-variant-numeric:tabular-nums; margin-top:2px; }
+.map-sw-gps { margin:4px 0 0; min-height:1em; }
+.map-sw-btns { display:flex; gap:var(--space-2); margin-top:var(--space-2); }
+.map-sw-btns .btn { flex:1; min-height:44px; }
+.map-sw-laps, .map-sw-past ol { margin:var(--space-2) 0 0; padding-left:1.4em; font-variant-numeric:tabular-nums; font-size:0.85rem; }
+.map-sw-past h4 { margin:var(--space-3) 0 0; font-size:0.8rem; color:var(--dim); font-weight:600; }
+.map-sw-past li { display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; }
+.map-sw-past li .btn { min-height:32px; padding:2px 8px; font-size:0.78rem; }
+@media (max-width: 600px) { .map-sw-past li .btn { min-height:44px; } }
+
+/* The worker's task name is shown in full: on the card and the details page it
+   wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
+.card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
+.peek-task-history-btn { font-size:0.72rem; padding:1px 8px; flex-shrink:0; }
+@media (max-width: 600px) { .peek-task-history-btn { min-height:44px; } }
+.task-history-list li { overflow-wrap:anywhere; }

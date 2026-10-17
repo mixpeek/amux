@@ -43,7 +43,7 @@
 //!   (max_filesize, ignored/hidden) — keep that honesty when touching it.
 
 use super::AppState;
-use axum::extract::{DefaultBodyLimit, RawQuery, Request};
+use axum::extract::{DefaultBodyLimit, RawQuery, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -64,6 +64,7 @@ pub fn routes() -> Router<AppState> {
         .route("/search", any(search))
         .route("/list", any(list_dir))
         .route("/delete", any(delete_path))
+        .route("/opened", any(opened))
         // NATIVE addition, not a Python port (AMUX-3511): existence-checked
         // resolution of a relative path a worker printed in its output.
         .route("/resolve", any(resolve_rel))
@@ -2161,7 +2162,11 @@ fn retry_eintr<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<
     f()
 }
 
-pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
+pub async fn ls(
+    State(state): State<AppState>,
+    method: Method,
+    RawQuery(q): RawQuery,
+) -> Response {
     if method != Method::GET {
         return not_found().await;
     }
@@ -2186,6 +2191,7 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
         }
         Err(e) => return j(500, json!({"error": e.to_string()})),
     };
+    let opened = opened_in_dir(&state, &pystr(&p));
     let mut items: Vec<(bool, String, String, std::fs::Metadata)> = rd
         .flatten()
         .filter_map(|e| {
@@ -2210,6 +2216,8 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
                 // Python: st_size if item.is_file() else None — dirs null.
                 "size": if !not_dir { Value::Null } else { json!(meta.len()) },
                 "modified": mtime_secs(&meta),
+                // When the dashboard last opened this file; null if never.
+                "opened": opened.get(&name).copied(),
             })
         })
         .collect();
@@ -2218,6 +2226,81 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
         200,
         json!({"path": pystr(&p), "parent": parent, "entries": entries}),
     )
+}
+
+/// Last-opened times of `dir`'s direct children, by name. A range scan on the
+/// primary key: every path under `dir/` sorts between `dir/` and `dir0`
+/// ('0' is the byte after '/'). A read failure is an empty map, so a listing
+/// never fails over this column; it logs once per call.
+fn opened_in_dir(state: &AppState, dir: &str) -> std::collections::HashMap<String, f64> {
+    let base = format!("{}/", dir.trim_end_matches('/'));
+    let upper = format!("{}0", dir.trim_end_matches('/'));
+    let read = || -> anyhow::Result<std::collections::HashMap<String, f64>> {
+        let conn = state.store.read()?;
+        let mut stmt =
+            conn.prepare("SELECT path, opened_at FROM file_opens WHERE path >= ?1 AND path < ?2")?;
+        let rows = stmt.query_map(rusqlite::params![base, upper], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows.flatten() {
+            let rest = &row.0[base.len()..];
+            if !rest.is_empty() && !rest.contains('/') {
+                out.insert(rest.to_string(), row.1);
+            }
+        }
+        Ok(out)
+    };
+    read().unwrap_or_else(|e| {
+        tracing::warn!(target: "amux::fs", dir, error = %e, verdict = "file_opens_read_failed",
+            "listing served without last-opened times");
+        Default::default()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/fs/opened {path} — the viewer records that it opened a file, which
+// is the "Opened" column of every listing. Not a fleet-state change, so it does
+// not bump the global revision.
+// ---------------------------------------------------------------------------
+
+async fn opened(State(state): State<AppState>, method: Method, body: axum::body::Bytes) -> Response {
+    if method != Method::POST {
+        return not_found().await;
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&body) else {
+        return j(400, json!({"error": "invalid JSON"}));
+    };
+    let raw = v.get("path").and_then(Value::as_str).unwrap_or("");
+    if raw.is_empty() {
+        return j(400, json!({"error": "missing path"}));
+    }
+    let p = resolve_nonstrict(&expanduser(raw));
+    if !is_path_allowed(&p) {
+        return j(403, json!({"error": "access denied"}));
+    }
+    let path = pystr(&p);
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    let key = path.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            conn.execute(
+                "INSERT INTO file_opens(path, opened_at) VALUES (?1, ?2) \
+                 ON CONFLICT(path) DO UPDATE SET opened_at = excluded.opened_at",
+                rusqlite::params![key, now],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        })
+        .await;
+    match res {
+        Ok(_) => j(200, json!({"ok": true, "path": path, "opened": now})),
+        Err(e) => {
+            tracing::warn!(target: "amux::fs", path, error = %e, verdict = "file_open_record_failed",
+                "could not record a file open");
+            j(500, json!({"error": "could not record the open"}))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3082,6 +3165,36 @@ mod tests {
             .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, v)
+    }
+
+    // ---- last opened (the "Opened" column) ----
+
+    #[tokio::test]
+    async fn an_opened_file_carries_its_time_in_the_listing_and_others_stay_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(d.join("a.mdai"), "x").unwrap();
+        std::fs::write(d.join("b.mdai"), "y").unwrap();
+        std::fs::create_dir(d.join("sub")).unwrap();
+        std::fs::write(d.join("sub/c.mdai"), "z").unwrap();
+        let app = Router::new()
+            .nest("/api/fs", routes())
+            .route("/api/ls", any(ls))
+            .with_state(state());
+        let dir_s = d.to_string_lossy().to_string();
+        let body = serde_json::to_vec(&json!({"path": format!("{dir_s}/a.mdai")})).unwrap();
+        let (st, v) = call(&app, "POST", "/api/fs/opened", Some("application/json"), body).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        // A file one level down must not leak into the parent listing.
+        let body = serde_json::to_vec(&json!({"path": format!("{dir_s}/sub/c.mdai")})).unwrap();
+        call(&app, "POST", "/api/fs/opened", Some("application/json"), body).await;
+        let uri = format!("/api/ls?path={dir_s}");
+        let (st, v) = call(&app, "GET", &uri, None, vec![]).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let opened = |n: &str| v["entries"].as_array().unwrap().iter().find(|e| e["name"] == n).unwrap()["opened"].clone();
+        assert!(opened("a.mdai").as_f64().is_some(), "{v}");
+        assert!(opened("b.mdai").is_null(), "{v}");
+        assert!(opened("sub").is_null(), "{v}");
     }
 
     // ---- output-path resolution (AMUX-3511) ----

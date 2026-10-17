@@ -142,9 +142,25 @@ async function measure(page: Page, t0: number, t1: number) {
   return { p50: pct(s.lat, 0.5), p95: pct(s.lat, 0.95), max: Math.max(...s.lat), n: s.lat.length, fps };
 }
 
+// Measured on CI, 20 runs each before 2026-10-17: per-frame p95 was 16-22ms on
+// desktop and mobile (Chromium, sender at ~60 moves/s) and 93-153ms on
+// ios-safari, where the WebKit sender is starved to ~9 moves/s. A flat 150ms
+// was 7x too loose for Chromium and 2% short for WebKit, so the CI bound is
+// 60ms (about 3x the worst Chromium p95) and a starved sender is judged by
+// latencyBound() instead.
 function perfBudget(info: TestInfo) {
   const strict = info.project.name === 'desktop' && !process.env.CI;
-  return strict ? { p95: 50, fps: 50, strict } : { p95: 150, fps: 25, strict };
+  return strict ? { p95: 50, fps: 50, strict } : { p95: 60, fps: 25, strict };
+}
+
+// The latency bound for a stroke sent at `inputHz`. Below 20 moves/s one
+// input interval alone is 50ms or more, so the receiver can trail by about two
+// intervals without anything being wrong in the realtime path: the bound is
+// 2000/inputHz ms (about 220ms at the 9 moves/s CI WebKit manages). The fps
+// check below treats a starved sender the same way.
+function latencyBound(budget: { p95: number }, inputHz: number) {
+  const starved = inputHz < 20;
+  return { p95: starved ? Math.max(budget.p95, Math.round(2000 / Math.max(inputHz, 1))) : budget.p95, starved };
 }
 
 async function ctx(browser: Browser, opts: { blockWs?: boolean } = {}) {
@@ -211,14 +227,15 @@ test('realtime draw: live stroke at frame rate, equal scenes, no remote undo, on
     // 85% of what was actually sent (printed, so a low bar is visible).
     const inputHz = moves * 1000 / (t1 - t0);
     const fpsBar = Math.min(budget.fps, Math.floor(inputHz * 0.85));
-    const line = `[rt-perf] ${info.project.name} per-frame stroke: input ${inputHz.toFixed(1)} moves/s; latency p50=${m.p50.toFixed(1)}ms p95=${m.p95.toFixed(1)}ms max=${m.max.toFixed(1)}ms n=${m.n}; remote fps=${m.fps.toFixed(1)} over ${t1 - t0}ms (budget ${budget.strict ? 'strict' : 'loose'}: p95<${budget.p95}, fps>=${fpsBar})`;
+    const lat = latencyBound(budget, inputHz);
+    const line = `[rt-perf] ${info.project.name} per-frame stroke: input ${inputHz.toFixed(1)} moves/s; latency p50=${m.p50.toFixed(1)}ms p95=${m.p95.toFixed(1)}ms max=${m.max.toFixed(1)}ms n=${m.n}; remote fps=${m.fps.toFixed(1)} over ${t1 - t0}ms (budget ${budget.strict ? 'strict' : 'loose'}: p95<${lat.p95}${lat.starved ? ' starved-sender bound' : ''}, fps>=${fpsBar})`;
     console.log(line);
     info.annotations.push({ type: 'rt-perf', description: line });
     // Side by side, for whoever reads the run: A drew, B shows it with A's cursor.
     await A.p.screenshot({ path: info.outputPath('A-sender.png') });
     await B.p.screenshot({ path: info.outputPath('B-receiver.png') });
     expect(m.n, 'B applied remote updates during the stroke').toBeGreaterThan(30);
-    expect(m.p95).toBeLessThan(budget.p95);
+    expect(m.p95, lat.starved ? `p95 against the starved-sender bound for ${inputHz.toFixed(1)} moves/s` : 'p95').toBeLessThan(lat.p95);
     // Below ~20 moves/s the SENDER is starved (CI WebKit measured 8.3 moves/s
     // on 2026-10-15) and a frame rate over a handful of frames is noise, not
     // a measurement: 6.6 against a bar of 7 failed a run whose scenes matched
@@ -280,8 +297,11 @@ test('realtime draw: late joiner snapshot, disconnect mid-stroke, saver hand-off
     await A.p.route('**/api/file', async route => { if (route.request().method() === 'PUT') await held; await route.continue(); });
     await setTool(A.p, 'rectangle');
     const ca = await canvasCenter(A.p);
-    await A.p.mouse.move(ca.cx - 150, ca.cy - 150); await A.p.mouse.down();
-    await A.p.mouse.move(ca.cx - 60, ca.cy - 90, { steps: 5 }); await A.p.mouse.up();
+    // Inside the clear middle of the canvas: on a phone the side columns sit
+    // under the top toolbar since ca78cc3f9, and a start 150px left of centre
+    // at 375px wide landed on the left column, so no rectangle was drawn.
+    await A.p.mouse.move(ca.cx - 100, ca.cy - 120); await A.p.mouse.down();
+    await A.p.mouse.move(ca.cx - 40, ca.cy - 80, { steps: 5 }); await A.p.mouse.up();
     const rectId = await A.p.evaluate(() => (window as unknown as Win)._draw.api.getSceneElements().find((e: any) => e.type === 'rectangle').id);
     const disk0 = JSON.parse(await readFile(path, 'utf8'));
     expect(disk0.elements.map((e: any) => e.id), 'the rectangle is not saved yet').not.toContain(rectId);

@@ -121,6 +121,17 @@ check "the count is reported"                         yes   "$(has "$out" 'prune
 check "a file that is not a crash report is kept, however old" yes "$([ -e "$CRASH_DIR/notes.txt" ] && echo yes || echo no)"
 check "a recent report is kept"                       yes   "$([ -e "$CRASH_DIR/Once-2026-10-13-010101.ips" ] && echo yes || echo no)"
 
+echo "4b. a loop that stopped crashing 6h+ ago is reported, not escalated (RCA crashes 20261017-022150)"
+CRASH_DIR="$FIX/crash-ended"; mkdir -p "$CRASH_DIR"
+for i in $(seq 10 21); do : > "$CRASH_DIR/git-2026-10-16-1${i}00.ips"; done
+perl -e 'my $t = time - 8*3600; utime $t, $t, @ARGV' "$CRASH_DIR"/git-*.ips
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
+check "no constraint for a loop that ended"           no    "$(has "$HEALTH_VERDICTS" '^crashes git')"
+check "it says so, with a verdict"                    yes   "$(has "$out" 'git crashed 12 times in 24h but none in the last 6h')"
+: > "$CRASH_DIR/git-2026-10-16-230000.ips"   # one fresh crash: the loop is live again
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash4b.out"; out=$(cat "$FIX/crash4b.out")
+check "a fresh crash makes it a constraint again"     yes   "$(has "$HEALTH_VERDICTS" '^crashes git crashed 13 times in 24h')"
+
 echo "5. report-only probes: launchd, network, thermal"
 printf 'PID\tStatus\tLabel\n-\t0\tcom.amux.ok\n-\t78\tcom.amux.broken\n123\t1\tcom.amux.running\n-\t1\tcom.apple.noise\n' > "$FIX/launchd"
 LAUNCHD_LIST_CMD="cat $FIX/launchd"; out=$(check_launchd_failing)

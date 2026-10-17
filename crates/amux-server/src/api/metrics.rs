@@ -336,7 +336,7 @@ fn resolve_bin(name: &str) -> &str {
     }
 }
 
-fn collect_system_metrics() -> serde_json::Value {
+pub(crate) fn collect_system_metrics() -> serde_json::Value {
     let hostname = cmd_output("hostname", &[])
         .unwrap_or_default()
         .trim()
@@ -540,7 +540,7 @@ fn memory_dir() -> PathBuf {
     home.join("memory")
 }
 
-fn collect_session_metrics() -> Vec<serde_json::Value> {
+pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
     let sdir = sessions_dir();
     let mdir = memory_dir();
     let entries = match std::fs::read_dir(&sdir) {

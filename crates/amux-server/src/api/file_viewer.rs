@@ -795,6 +795,15 @@ async fn put_file(req: Request) -> Response {
     // viewer sends the ETag it loaded the file with (the same mtime+size ETag
     // GET /api/file/raw serves); a worker that rewrote the file since gets its
     // version kept and the viewer a 409 to reload from.
+    // A NEW file must not land on an existing one. A scratchpad note is named
+    // by the second it was started, and two notes started in the same second
+    // (phone and desktop, two tabs) were both saved to that name, the second
+    // silently replacing the first (2026-10-16, "scratchpad is dropping data").
+    if body.get("create_only").and_then(Value::as_bool) == Some(true) && p.exists() {
+        tracing::warn!(target: "amux::file", path = %pystr(&p), measured = true, n_considered = 1,
+            verdict = "file_create_exists", "new-file save refused: that path already exists");
+        return j(409, json!({"error": "a file with that name already exists", "code": "file_exists"}));
+    }
     if let Some(want) = body.get("expected_etag").and_then(|v| v.as_str()) {
         if let Some(have) = current_etag(&p) {
             if have != want {
@@ -815,8 +824,11 @@ async fn put_file(req: Request) -> Response {
             Err(e) => return j(400, json!({"error": format!("content_base64 is not base64: {e}")})),
         },
         None => {
+            // Atomic like the binary path: std::fs::write truncates then writes,
+            // so a reader could get a half-written file (draw-tab.spec.ts:777 read
+            // Draw's recents mid-save and failed to parse it, rust run 38993495666).
             let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            std::fs::write(&p, content)
+            write_atomic(&p, content.as_bytes())
         }
     };
     match written {
@@ -3022,6 +3034,29 @@ pub(crate) mod tests {
 
     /// The spreadsheet viewer's save: bytes for .xlsx only, refused when the
     /// file changed on disk since it was opened, never half-written.
+    #[tokio::test]
+    async fn create_only_never_replaces_an_existing_file() {
+        let app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("2026-10-16-214521.md");
+        let put = |body: Value| {
+            HttpRequest::builder().method("PUT").uri("/api/file")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string())).unwrap()
+        };
+        let (status, _, _) = send(&app, put(json!({"path": target.to_str().unwrap(), "content": "first note", "create_only": true}))).await;
+        assert_eq!(status, StatusCode::OK, "a new path is created");
+        let (status, _, body) = send(&app, put(json!({"path": target.to_str().unwrap(), "content": "second note", "create_only": true}))).await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "file_exists");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first note", "the first note is kept");
+        // A normal save of an opened file still overwrites, as before.
+        let (status, _, _) = send(&app, put(json!({"path": target.to_str().unwrap(), "content": "edited"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "edited");
+    }
+
     #[tokio::test]
     async fn put_file_writes_xlsx_bytes_and_refuses_a_stale_save() {
         use base64::Engine as _;

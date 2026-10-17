@@ -62,7 +62,10 @@ PY
     for status in todo backlog; do
       body=$(python3 -c "import json,sys; print(json.dumps({'title':sys.argv[1],'desc':sys.argv[2],'status':sys.argv[3],'session':'amux'}))" "$title" "$desc" "$status")
       resp=$(mktemp "${TMPDIR:-/tmp}/main-ci-card.XXXXXX")   # GNU mktemp -t needs X's; this form works on both
-      code=$(curl -sk --max-time 20 -o "$resp" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: amux' -d "$body" "$U/api/board")
+      code=$(curl -sk --max-time 20 -o "$resp" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Amux-Session: amux' -d "$body" "$U/api/board") || code=000
+      # A board that does not answer in 20s (curl exit 28) is a refusal like any
+      # other: under set -e the bare assignment ended the script there, before
+      # the message fallback (SCHED-713, 2026-10-16 20:43, "exit 28").
       # The refusal's reason, not just its status: 2026-10-16 13:23 two 400s
       # were the lane's WIP gate ("blocked", holding 348 open cards), which a
       # bare code could not say.

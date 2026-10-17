@@ -733,6 +733,112 @@ struct ListSnapshot {
 /// the builder at about half the time whatever the poll or report rate; a
 /// status is at most one build interval staler than before. Structural
 /// changes (membership, isolation) still clear `json` and rebuild at once.
+// TASK-NAME HISTORY (Ethan, 2026-10-16: "make sure we're storing the list of
+// task changes per worker ... i want to be able to see the list of task changes
+// for a worker from the model easily"). A worker's task name is DERIVED on each
+// snapshot build (owner override, generated or Claude title, board card,
+// message, desc), so it is recorded where it is final: after build_array, a
+// change against the last recorded name appends one `task.renamed` row to
+// session_events (kept 90 days with the other task.* rows). The last names live
+// in memory, seeded once from the newest stored row per worker, so a restart
+// does not re-record every worker. Read it with
+// GET /api/sessions/{name}/task-history.
+static LAST_TASK_NAME: std::sync::LazyLock<std::sync::Mutex<Option<std::collections::HashMap<String, String>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// The task-name changes in `arr` against `last`: (worker, from, to, source, card).
+fn task_name_changes(arr: &[Value], last: &mut std::collections::HashMap<String, String>) -> Vec<(String, String, String, String, String)> {
+    let mut out = Vec::new();
+    for v in arr {
+        let (Some(name), Some(task)) = (v["name"].as_str(), v["task_name"].as_str()) else { continue };
+        let task = task.trim();
+        if name.is_empty() || task.is_empty() || last.get(name).map(String::as_str) == Some(task) {
+            continue;
+        }
+        let from = last.insert(name.to_string(), task.to_string()).unwrap_or_default();
+        out.push((name.to_string(), from, task.to_string(),
+            v["task_source"].as_str().unwrap_or("").to_string(),
+            v["task_board_id"].as_str().unwrap_or("").to_string()));
+    }
+    out
+}
+
+fn record_task_changes(store: &crate::db::SharedStore, conn: &rusqlite::Connection, arr: &[Value]) {
+    let Ok(mut guard) = LAST_TASK_NAME.lock() else { return };
+    let last = guard.get_or_insert_with(|| {
+        let mut m = std::collections::HashMap::new();
+        if let Ok(mut st) = conn.prepare(
+            "SELECT session, json_extract(data,'$.to') FROM session_events WHERE id IN \
+             (SELECT MAX(id) FROM session_events WHERE type='task.renamed' GROUP BY session)",
+        ) {
+            if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+                for (s, to) in rows.flatten() {
+                    if let Some(to) = to { m.insert(s, to); }
+                }
+            }
+        }
+        m
+    });
+    let changes = task_name_changes(arr, last);
+    drop(guard);
+    if changes.is_empty() {
+        return;
+    }
+    let n = changes.len();
+    let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+    let res = store.write(move |c| {
+        for (name, from, to, src, card) in &changes {
+            c.execute(
+                "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
+                rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    });
+    match res {
+        Ok(_) => tracing::info!(target: "amux::sessions", n, measured = true, n_considered = n,
+            verdict = "task_renamed_recorded", "recorded worker task-name changes"),
+        Err(e) => tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
+            "could not record worker task-name changes"),
+    }
+}
+
+/// GET /api/sessions/{name}/task-history?limit=N: the worker's task-name
+/// changes, newest first.
+pub async fn task_history(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50).clamp(1, 1000);
+    // Changes are detected when the fleet snapshot is built. Build it first (a
+    // cached call, at most one build per TTL), so a model asking for history
+    // gets the current name even when no dashboard is polling.
+    let st = state.store.clone();
+    let _ = tokio::task::spawn_blocking(move || legacy_sessions_array(&st)).await;
+    let who = name.clone();
+    let rows = state.store.read_async(move |c| {
+        let mut st = c.prepare(
+            "SELECT ts, data FROM session_events WHERE type='task.renamed' AND session=?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let out = st.query_map(rusqlite::params![who, limit], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)))?
+            .flatten()
+            .map(|(ts, d)| {
+                let mut v: Value = serde_json::from_str(&d).unwrap_or(json!({}));
+                v["ts"] = json!(ts);
+                v
+            })
+            .collect::<Vec<Value>>();
+        Ok(out)
+    }).await;
+    match rows {
+        Ok(changes) => Json(json!({"session": name, "measured": true, "n_considered": changes.len(), "limit": limit,
+            "changes": changes, "note": "newest first; recorded when the task name shown for the worker changes"})).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"session": name, "measured": false, "n_considered": 0,
+            "why_unmeasured": e.to_string()}))).into_response(),
+    }
+}
+
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
     now - published < ttl.max(build_s)
 }
@@ -3891,6 +3997,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
     // run. Cheap board/status requests remain independent of fleet discovery.
     let conn = store.dedicated_read()?;
     let arr = build_array(&conn)?;
+    record_task_changes(store, &conn, &arr);
     let json = serde_json::to_string(&arr)?;
     match race_verdict(
         epoch_start,
@@ -9668,6 +9775,19 @@ Checked, nothing of mine was at risk, no action needed from you.
     /// start was expired on publication, so the builder ran back to back. From
     /// publication, and for at least the build's own duration, it rests at
     /// least as long as it works.
+    #[test]
+    fn task_name_changes_record_only_a_new_name_per_worker() {
+        let mut last = std::collections::HashMap::new();
+        let snap = |t: &str| vec![json!({"name": "w1", "task_name": t, "task_source": "generated_title", "task_board_id": "AMUX-1"}),
+                                  json!({"name": "w2", "task_name": ""})];
+        let c = task_name_changes(&snap("Fix the build gate"), &mut last);
+        assert_eq!(c, vec![("w1".into(), "".into(), "Fix the build gate".into(), "generated_title".into(), "AMUX-1".into())],
+            "the first name seen is recorded; an empty one is not");
+        assert!(task_name_changes(&snap("Fix the build gate"), &mut last).is_empty(), "the same name again records nothing");
+        let c = task_name_changes(&snap("Ship the stopwatch"), &mut last);
+        assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
+    }
+
     #[test]
     fn a_snapshot_stays_fresh_for_as_long_as_it_took_to_build() {
         // A quick build: the TTL governs.

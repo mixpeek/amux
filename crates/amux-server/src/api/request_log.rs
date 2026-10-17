@@ -1888,6 +1888,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/metrics/telemetry",
         methods: &["GET"],
     },
+    // Worker boundaries (boundaries.toml) and resource awareness.
+    RouteEntry {
+        path: "/api/boundaries",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/resources",
+        methods: &["GET"],
+    },
     // Agent trace archive (370787b2), pinned launchers and the credential vault.
     RouteEntry {
         path: "/api/traces",
@@ -2654,6 +2663,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/fs/opened",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/ls",
         methods: ANY,
     },
@@ -2783,6 +2796,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/sessions/{name}/typing",
         methods: &["GET", "POST"],
+    },
+    // -- a worker's task-name changes, newest first (sessions_legacy::task_history)
+    RouteEntry {
+        path: "/api/sessions/{name}/task-history",
+        methods: &["GET"],
     },
     // -- Converse tab: voice conversations with a worker (api/converse.rs)
     RouteEntry { path: "/api/converse/config", methods: &["GET"] },

@@ -30032,6 +30032,11 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     if isolated {
         return block;
     }
+    // The boundary registry (boundaries.toml) reaches every non-isolated
+    // worker by default, first, so its rule text sits beside the guard that
+    // enforces it.
+    let bounds = crate::api::boundaries::boundaries_context_block();
+    let block = [bounds, block].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Keeping this scoped context current\n\n\

@@ -31,6 +31,45 @@ tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
 # run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
 CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts-v2}"  # v2: workflow-run verdicts; v1 judged check runs
 CI_DEPTH="${AMUX_CI_GATE_DEPTH:-40}"
+# The push workflow runs for one sha, as GitHub's JSON. AMUX_CI_FETCH_CMD
+# stands in for the network in tests; everything after it (the judging below
+# and the verdict cache) is the shipped path.
+ci_runs_json() {
+  local sha="$1" token
+  if [ -n "${AMUX_CI_FETCH_CMD:-}" ]; then "$AMUX_CI_FETCH_CMD" "$sha"; return; fi
+  token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
+    | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
+  [ -n "$token" ] || return 1
+  curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100"
+}
+# Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
+# with its rust run cancelled by the next push before any job started, so it
+# had no failing check run and "every check run passed" was true of the
+# checks workflow alone. Each required workflow must have completed with
+# success; a cancelled or skipped one leaves the commit without a verdict
+# (none), so the walk passes it over to an older, fully tested commit.
+# Kept at top level: the Python below is indentation-sensitive, and indenting
+# it inside a block made every verdict "unmeasured" (2026-10-16, 162e78e03).
+ci_judge_runs() {
+  AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
+import json,os,sys
+runs=json.load(sys.stdin)["workflow_runs"]
+need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
+if not runs: print("none"); raise SystemExit
+states=[]
+for w in need:
+    mine=sorted([r for r in runs if r["name"]==w], key=lambda r: r["created_at"])
+    if not mine: states.append("none"); continue
+    r=mine[-1]
+    if r["status"]!="completed": states.append("pending")
+    elif r["conclusion"]=="success": states.append("green")
+    elif r["conclusion"] in ("cancelled","skipped","stale"): states.append("none")
+    else: states.append("red")
+for v in ("red","pending","none"):
+    if v in states: print(v); raise SystemExit
+print("green")'
+}
 ci_verdict() {   # green | red | pending | none | unmeasured
   local sha="$1" cached
   if [ -n "${AMUX_CI_VERDICT_CMD:-}" ]; then "$AMUX_CI_VERDICT_CMD" "$sha"; return; fi
@@ -50,44 +89,45 @@ ci_verdict() {   # green | red | pending | none | unmeasured
       fi ;;
   esac
   local token v
-  if [ -n "${AMUX_CI_FETCH_CMD:-}" ]; then   # tests: stands in for the GitHub call, cache still applies
-    v=$("$AMUX_CI_FETCH_CMD" "$sha")
-  else
-    token=$(GH_TOKEN= "$HOME/.amux/github-app/get-token.sh" --min-remaining 300 2>/dev/null \
-      | sed -n 's/^export GH_TOKEN=//p' | tr -d "'\"") || true
-    [ -n "$token" ] || { echo unmeasured; return; }
-    # Judge by WORKFLOW RUNS, not check runs (2026-10-15): 6325024c7 went live
-    # with its rust run cancelled by the next push before any job started, so it
-    # had no failing check run and "every check run passed" was true of the
-    # checks workflow alone. Each required workflow must have completed with
-    # success; a cancelled or skipped one leaves the commit without a verdict
-    # (none), so the walk passes it over to an older, fully tested commit.
-    v=$(curl -sf --max-time 15 -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${AMUX_CI_REPO:-mixpeek/amux}/actions/runs?head_sha=$sha&event=push&per_page=100" \
-      | AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
-  import json,os,sys
-  runs=json.load(sys.stdin)["workflow_runs"]
-  need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
-  if not runs: print("none"); raise SystemExit
-  states=[]
-  for w in need:
-      mine=sorted([r for r in runs if r["name"]==w], key=lambda r: r["created_at"])
-      if not mine: states.append("none"); continue
-      r=mine[-1]
-      if r["status"]!="completed": states.append("pending")
-      elif r["conclusion"]=="success": states.append("green")
-      elif r["conclusion"] in ("cancelled","skipped","stale"): states.append("none")
-      else: states.append("red")
-  for v in ("red","pending","none"):
-      if v in states: print(v); raise SystemExit
-  print("green")' 2>/dev/null) || v=unmeasured
-  fi
+  v=$(ci_runs_json "$sha" | ci_judge_runs 2>/dev/null) || v=unmeasured
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
     mkdir -p "$CI_CACHE" && echo "$v" > "$CI_CACHE/$sha"
   fi
   echo "$v"
+}
+
+# A gate that cannot measure cannot vouch for its own replacement either: the
+# installed launcher is refreshed only after an activation, so a launcher whose
+# CI judge broke could never be replaced by its fix (2026-10-16: 162e78e03
+# indented the judge's Python, every pass logged ci_gate_unmeasured for about
+# 2.5h, and the fix in 29fa4caf9 was installed by hand). When unmeasured, adopt
+# $REF's launcher if it differs from this file, parses, and passes the launcher
+# test from that same commit, run here with self-heal off so it cannot recurse.
+# One attempt per tip, so an unhealable state does not rerun the test every pass.
+self_heal_launcher() {
+  local self="${AMUX_AUTHORITY_SELF:-$0}" tried tmp tdir
+  [ "${AMUX_AUTHORITY_SELF_HEAL:-1}" = 1 ] || return 0
+  [ -f "$self" ] && [ ! -L "$self" ] && [ -w "$(dirname "$self")" ] || return 0
+  tried="${self}.heal-tried"
+  [ "$(cat "$tried" 2>/dev/null)" = "$tip" ] && return 0
+  tmp=$(mktemp "$(dirname "$self")/.authority-heal.XXXXXX") || return 0
+  if ! git -C "$REPO" show "$tip:scripts/rust-auto-build-authority.sh" > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null \
+     || cmp -s "$tmp" "$self"; then
+    rm -f "$tmp"; return 0
+  fi
+  echo "$tip" > "$tried" 2>/dev/null || true
+  tdir=$(mktemp -d)
+  if git -C "$REPO" archive "$tip" scripts | tar -x -C "$tdir" 2>/dev/null \
+     && (cd "$tdir" && AMUX_AUTHORITY_SELF_HEAL=0 ${AMUX_AUTHORITY_HEAL_TEST_CMD:-bash scripts/test-build-activation-launcher.sh} >/dev/null 2>&1) \
+     && chmod 0755 "$tmp" && mv -f "$tmp" "$self"; then
+    say "LAUNCHER SELF-HEALED from $tip: the gate could not measure CI, and that commit's launcher passed its own test; the next pass runs it verdict=authority_launcher_self_healed"
+  else
+    rm -f "$tmp"
+    say "LAUNCHER SELF-HEAL REFUSED for $tip: its launcher did not pass its own test, kept this one verdict=authority_launcher_self_heal_refused"
+  fi
+  rm -rf "$tdir"
 }
 
 target="$tip"
@@ -98,6 +138,7 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     [ -n "$tip_state" ] || tip_state="$v"
     if [ "$v" = green ]; then target="$sha"; break; fi
     if [ "$v" = unmeasured ]; then
+      self_heal_launcher
       refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
     fi
     passed=$((passed + 1))

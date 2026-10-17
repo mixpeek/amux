@@ -449,8 +449,11 @@ test('Draw: clicking a drawing in Recent or In this folder opens it, and no file
     await expect.poll(() => sceneIds(page)).toEqual(await diskIds(a));
     await page.evaluate(() => { const api = (window as unknown as Win)._draw.api;
       api.updateScene({ elements: api.getSceneElementsIncludingDeleted().map((e: any) => ({ ...e, isDeleted: true, version: e.version + 1, versionNonce: e.versionNonce + 1 })) }); });
+    // Wait on the file, as above: the status already reads "saved" from the
+    // open, and on WebKit the change that flips it to dirty can land after a
+    // status check, so saved() alone returned before this save was written.
+    await expect.poll(() => diskIds(a), { timeout: 15_000 }).toEqual([]);
     await saved();
-    expect(await diskIds(a)).toEqual([]);
     await page.evaluate(p => (window as any)._drawOpen(p), a);
     await expect.poll(() => page.evaluate(() => { const d = (window as unknown as Win)._draw;
       const e = d.recents.find((x: any) => x.path === d.path); return e ? !!e.thumb : null; })).toBe(false);

@@ -1255,7 +1255,16 @@ async fn adopt_one(home: &Path, v: &serde_json::Value) -> bool {
             user_data_dir: dir,
             cdp_port: port,
             started_at: started,
-            last_verb_at: started,
+            // The ACTIVITY clock starts at adoption. It used to be `started`, so
+            // a browser launched two hours before a deploy read as idle for two
+            // hours the moment the new server adopted it, and the activity
+            // reaper released it on its next tick unless a keepalive happened
+            // to land first: tubescience-parity's browser was reaped three
+            // times on 2026-10-16 ("since_verb_s=7215" six minutes after a
+            // deploy) while its drivers sent /keepalive every 60s. The previous
+            // process's last verb is unknown, and an unknown is not idleness,
+            // so the adopted browser gets one full window.
+            last_verb_at: now_secs_i64(),
             pid,
             started_by,
             child: None,
@@ -1264,7 +1273,10 @@ async fn adopt_one(home: &Path, v: &serde_json::Value) -> bool {
     tracing::info!(
         pid,
         port,
-        "browser: adopted an orphan left by a previous server process"
+        started_at = started,
+        verdict = "browser_adopted_activity_clock_reset",
+        "browser: adopted an orphan left by a previous server process; its activity \
+         window starts now, since the previous process's last verb is unknown"
     );
     spawn_exit_monitor();
     true
@@ -7676,6 +7688,44 @@ mod pending_chrome_tests {
         let mut published = PendingChrome(Some(child)).publish();
         assert!(published.try_wait().unwrap().is_none());
         published.kill().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod adoption_activity_tests {
+    use super::*;
+    /// A browser adopted after a server restart is not "idle since it was
+    /// launched": its activity clock starts at adoption (2026-10-16, three
+    /// reaps of a driven browser right after deploys).
+    #[tokio::test]
+    async fn an_adopted_browser_gets_a_full_activity_window() {
+        // A stand-in CDP endpoint: adoption only needs /json/list to answer.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let body = "[]";
+                    let _ = sock.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await;
+                });
+            }
+        });
+        let home = tempfile::tempdir().unwrap();
+        let started = now_secs_i64() - 7200;
+        let record = serde_json::json!({
+            "profile": "adopt-activity-test", "cdp_port": port, "pid": std::process::id(),
+            "started_at": started, "started_by": "lane-x",
+            "user_data_dir": home.path().join("p").display().to_string(),
+        });
+        assert!(adopt_one(home.path(), &record).await, "a live CDP endpoint is adoptable");
+        let row = running_all().into_iter().find(|r| r.0 == "adopt-activity-test").expect("adopted");
+        RUNNING.lock().unwrap().remove("adopt-activity-test");
+        assert_eq!(row.2, started, "started_at keeps the launch time");
+        assert!(now_secs_i64() - row.5 <= 2, "the activity clock starts at adoption, not at launch (since_verb {}s)", now_secs_i64() - row.5);
     }
 }
 

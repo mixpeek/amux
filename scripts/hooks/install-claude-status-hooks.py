@@ -21,6 +21,9 @@ from typing import Any
 REPORT_MARKERS = ("hook-report.sh", "amux-report.sh")
 READ_GUARD_MARKERS = ("large-read-guard.py",)
 ASK_GUARD_MARKERS = ("ask-guard.py",)
+# mail-app-guard.py was folded into boundary-guard.py; an old wiring of it is
+# removed as managed rather than left running beside its replacement.
+BOUNDARY_GUARD_MARKERS = ("boundary-guard.py", "mail-app-guard.py")
 
 
 def is_amux_report(command: Any) -> bool:
@@ -37,6 +40,10 @@ def is_amux_read_guard(command: Any) -> bool:
 
 def is_amux_ask_guard(command: Any) -> bool:
     return isinstance(command, str) and any(marker in command for marker in ASK_GUARD_MARKERS)
+
+
+def is_amux_boundary_guard(command: Any) -> bool:
+    return isinstance(command, str) and any(marker in command for marker in BOUNDARY_GUARD_MARKERS)
 
 
 def group(command: str, matcher: str | None = None) -> dict[str, Any]:
@@ -96,6 +103,13 @@ def canonical_ask_guard(hook_path: str) -> list[dict[str, Any]]:
     return [group(f"python3 {quoted}", "^AskUserQuestion$")]
 
 
+def canonical_boundary_guard(hook_path: str) -> list[dict[str, Any]]:
+    # boundaries.toml, enforced by one guard. Anchored for the reason
+    # canonical_ask_guard gives: the matcher is an unanchored regex.
+    quoted = '"' + hook_path.replace('"', '\\"') + '"'
+    return [group(f"python3 {quoted}", "^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit)$")]
+
+
 # What an event's HANDLER must contain for the wiring to mean anything
 # (AMUX-4783). This script writes settings.json; only install.sh copies
 # hook-report.sh. Those are two different commands, and on 2026-09-18 they came
@@ -140,6 +154,7 @@ def merge(
     hook_path: str,
     read_guard_path: str = "$HOME/.amux/hooks/large-read-guard.py",
     ask_guard_path: str | None = None,
+    boundary_guard_path: str | None = None,
 ) -> dict[str, Any]:
     raw_hooks = data.setdefault("hooks", {})
     if not isinstance(raw_hooks, dict):
@@ -168,6 +183,7 @@ def merge(
                         is_amux_report(item.get("command"))
                         or is_amux_read_guard(item.get("command"))
                         or (ask_guard_path is not None and is_amux_ask_guard(item.get("command")))
+                        or (boundary_guard_path is not None and is_amux_boundary_guard(item.get("command")))
                     )
                 )
             ]
@@ -185,6 +201,8 @@ def merge(
     raw_hooks.setdefault("PreToolUse", []).extend(canonical_read_guard(read_guard_path))
     if ask_guard_path is not None:
         raw_hooks["PreToolUse"].extend(canonical_ask_guard(ask_guard_path))
+    if boundary_guard_path is not None:
+        raw_hooks["PreToolUse"].extend(canonical_boundary_guard(boundary_guard_path))
     return data
 
 
@@ -226,6 +244,11 @@ def main() -> int:
         help="wire the AskUserQuestion goal guard (AMUX-5234); omitted = leave any existing wiring alone",
     )
     parser.add_argument(
+        "--boundary-guard-path",
+        default=None,
+        help="wire the boundaries.toml guard; omitted = leave any existing wiring alone",
+    )
+    parser.add_argument(
         "--allow-unsupported-events",
         action="store_true",
         help="wire canonical events even when the installed handler cannot answer them",
@@ -258,7 +281,7 @@ def main() -> int:
     else:
         data = {}
     try:
-        merged = merge(data, args.hook_path, args.read_guard_path, args.ask_guard_path)
+        merged = merge(data, args.hook_path, args.read_guard_path, args.ask_guard_path, args.boundary_guard_path)
     except ValueError as exc:
         raise SystemExit(f"refusing to rewrite {args.settings}: {exc}")
     write_atomic(args.settings, merged)

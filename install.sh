@@ -383,6 +383,19 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/ask-guard.py" ]]; then
   say "ask guard: $AMUX_HOME/hooks/ask-guard.py"
 fi
 
+# Worker boundaries (boundaries.toml): one registry, one PreToolUse guard. The
+# registry is installed beside the guard so the guard never depends on the
+# server being up; owner overrides live in $AMUX_HOME/boundaries.toml and are
+# never written here. Replaces the unwired mail-app-guard.py.
+if [[ -f "$SCRIPT_DIR/scripts/hooks/boundary-guard.py" && -f "$SCRIPT_DIR/boundaries.toml" ]]; then
+  mkdir -p "$AMUX_HOME/hooks"
+  install_hook_from_head scripts/hooks/boundary-guard.py "$AMUX_HOME/hooks/boundary-guard.py"
+  install_hook_from_head boundaries.toml "$AMUX_HOME/hooks/boundaries.toml"
+  chmod +x "$AMUX_HOME/hooks/boundary-guard.py"
+  rm -f "${AMUX_HOME:?}/hooks/mail-app-guard.py"
+  say "boundary guard: $AMUX_HOME/hooks/boundary-guard.py ($(grep -c '^\[\[boundary\]\]' "$AMUX_HOME/hooks/boundaries.toml") boundaries)"
+fi
+
 # State-report hook (AMUX-2936), installed from the repo for the same reason as
 # the guard above: it was an unversioned runtime file, and unversioned runtime
 # files fork. There were already THREE spellings of "report state to amux" on
@@ -414,8 +427,9 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
     if /usr/bin/python3 "$SCRIPT_DIR/scripts/hooks/install-claude-status-hooks.py" \
       --settings "$_claude_settings" --hook-path '$HOME/.amux/hook-report.sh' \
       --read-guard-path '$HOME/.amux/hooks/large-read-guard.py' \
-      --ask-guard-path '$HOME/.amux/hooks/ask-guard.py'; then
-      say "Claude status + read-routing hooks: $_claude_settings"
+      --ask-guard-path '$HOME/.amux/hooks/ask-guard.py' \
+      --boundary-guard-path '$HOME/.amux/hooks/boundary-guard.py'; then
+      say "Claude status, read-routing and boundary hooks: $_claude_settings"
     else
       warn "could not wire Claude status hooks; the report-hook invariant will remain unhealthy"
     fi

@@ -37,6 +37,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 
@@ -539,6 +540,9 @@ def cmd_tick():
         cur = next((r for r in rows if r["email"] == current), None)
         if cur and cur["usable"]:
             resume_stranded()
+        # A worker that hit the login gap late is caught on the next ticks.
+        if time.time() - float(state.get("switched_at") or 0) < 900:
+            resume_auth_lost()
         return 0
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason, backed_off=skipped))
@@ -619,6 +623,99 @@ def resume_stranded(force=False):
     save(STATE, state)
     print(log("claude_rotate_resumed", measured=True, n_considered=len(names) + len(isolated),
               current=current_email(), resumed=done, not_on_prompt_or_recent=skipped, isolated_left_to_owner=isolated))
+
+
+# A switch ends with Claude Code writing the new login. On 2026-10-16 a
+# subagent running during the 16:10 switch failed with "Not logged in · Please
+# run /login": something read the login while it was being replaced. That write
+# is Claude Code's, so the gap is measured here and the workers it hits are
+# resumed, the same way limit-parked workers are.
+AUTH_LOST = re.compile(r"Not logged in.{0,40}/login")
+
+
+class LoginGapProbe:
+    """Poll `claude auth status` from the last sign-in step until the switch
+    returns, and report how long the CLI saw no login."""
+
+    def __init__(self):
+        self.samples, self._stop, self._t = [], threading.Event(), None
+
+    def start(self):
+        if self._t is None:
+            self._t = threading.Thread(target=self._run, daemon=True)
+            self._t.start()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                out = subprocess.run([CLAUDE, "auth", "status"], capture_output=True, text=True, timeout=10).stdout
+                logged = bool(json.loads(out).get("loggedIn"))
+            except Exception:
+                logged = None
+            self.samples.append((time.time(), logged))
+            self._stop.wait(0.2)
+
+    def stop(self):
+        if self._t is None:
+            return None
+        self._stop.set()
+        self._t.join(timeout=15)
+        return gap_stats(self.samples)
+
+
+def gap_stats(samples):
+    """Longest run of loggedIn=False readings, in seconds from the first false
+    sample to the next true one (or the last sample)."""
+    longest, n_false, start = 0.0, 0, None
+    for i, (t, logged) in enumerate(samples):
+        if logged is False:
+            n_false += 1
+            start = t if start is None else start
+        elif start is not None:
+            longest, start = max(longest, t - start), None
+    if start is not None:
+        longest = max(longest, samples[-1][0] - start)
+    return {"n_samples": len(samples), "n_logged_out": n_false, "longest_gap_s": round(longest, 2)}
+
+
+def auth_lost(screen):
+    """True when Claude's not-logged-in error is among the last lines on screen,
+    which is where a turn that died on it leaves it."""
+    lines = [l for l in (screen or "").splitlines() if l.strip()][-8:]
+    return any(AUTH_LOST.search(l) for l in lines)
+
+
+def resume_auth_lost():
+    """Continue running, non-isolated workers whose last turn died on the
+    login gap. Peeks only the tail, so a session that merely discusses the
+    message is left alone."""
+    try:
+        sessions = _amux("/api/sessions") or []
+    except Exception as e:
+        log("claude_rotate_auth_resume_failed", measured=False, why_unmeasured=str(e)[:200])
+        return []
+    state = load(STATE, {})
+    last = state.get("auth_resumed", {})
+    done, considered = [], 0
+    for s in sessions:
+        if not s.get("running") or s.get("isolated"):
+            continue
+        considered += 1
+        name = s["name"]
+        if time.time() - float(last.get(name, 0)) < RESUME_GAP_S:
+            continue
+        peek = _amux(f"/api/sessions/{urllib.parse.quote(name)}/peek?lines=12") or {}
+        if not auth_lost(peek.get("output") or ""):
+            continue
+        _amux(f"/api/sessions/{urllib.parse.quote(name)}/send", {"text": "continue"})
+        last[name] = time.time()
+        done.append(name)
+    state["auth_resumed"] = last
+    save(STATE, state)
+    if done:
+        print(log("claude_rotate_auth_resumed", measured=True, n_considered=considered,
+                  current=current_email(), resumed=done))
+    return done
 
 
 # ---------------------------------------------------------------- switching
@@ -825,6 +922,7 @@ def _switch(target, reason):
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env=dict(os.environ, BROWSER=opener))
         steps, tab, state, link_used, blank_since, waiting_since = [], None, None, False, None, None
+        gap = LoginGapProbe()
         try:
             deadline = started + SWITCH_TIMEOUT_S
             while time.time() < deadline:
@@ -850,6 +948,7 @@ def _switch(target, reason):
                 if re.search(r"Authorize", text) and "Logged in as" in text:
                     if ("Logged in as " + target) in text:
                         if click_text(tab, r"^Authorize$"):
+                            gap.start()
                             steps.append("authorize")
                             time.sleep(4)
                     elif click_text(tab, r"^Switch account$"):
@@ -904,6 +1003,10 @@ def _switch(target, reason):
                 cdp("nav", tab, "https://claude.ai/", check=False)
             cli_out = open(out_path, errors="replace").read() if os.path.exists(out_path) else ""
     after = cli_email()
+    time.sleep(1)
+    gap_info = gap.stop()
+    if gap_info:
+        log("claude_rotate_login_gap", measured=True, target=target, **gap_info)
     ok = after == target
     elapsed = round(time.time() - started, 1)
     if ok:
@@ -914,6 +1017,8 @@ def _switch(target, reason):
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
                   elapsed_s=elapsed, steps=steps))
         resume_stranded(force=True)
+        time.sleep(5)
+        resume_auth_lost()
         return 0
     tail = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)?", "", cli_out)[-300:]
     state = load(STATE, {})

@@ -6208,6 +6208,10 @@ ${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${R
   amux tunnel start [PORT]       Expose a port (default: the amux server)
   amux tunnel stop               Stop the tunnel
 
+${BOLD}Boundaries and resources:${RESET}
+  amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
+  amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
+
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
   amux alert "message" [reason]  Fire an immediate alert to the amux owner
   amux approvals ls|add|revoke|uses  Standing approvals: asks the owner already answered
@@ -6244,6 +6248,113 @@ ${BOLD}Examples:${RESET}
   amux send api --keys 'C-c'
   amux peek api 50
 EOF
+}
+
+# `amux resources`: what this machine has, how loaded it is, and what THIS
+# worker is using against the profile it declared (boundaries.toml
+# `resources`). `--json` prints the raw /api/resources payload.
+cmd_resources() {
+  local worker="${AMUX_SESSION:-}" raw=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --worker|-w) worker="${2:-}"; shift 2 ;;
+      --json)      raw=1; shift ;;
+      --help|-h)
+        cat <<'HELP'
+Usage: amux resources [--worker <name>] [--json]
+
+The machine's capacity and pressure, the heaviest workers, and one worker's own
+CPU and memory (default: $AMUX_SESSION) against its declared resource profile.
+Declare a profile with AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab.
+Run this before heavy work: builds, test suites, browsers, simulators, containers.
+HELP
+        return 0 ;;
+      *) die "amux resources: unknown option $1" ;;
+    esac
+  done
+  local out
+  out=$(_curl -sk --max-time 30 "$AMUX_API/api/resources?worker=${worker}") || die "amux resources: the server did not answer"
+  if [[ -n "$raw" ]]; then printf '%s\n' "$out"; return 0; fi
+  # The formatter is a quoted heredoc so it can use ordinary quotes, and it
+  # stays python 3.9 compatible (/usr/bin/python3 on macOS).
+  printf '%s' "$out" | python3 -c "$(cat <<'PY'
+import json, sys
+d = json.load(sys.stdin)
+h = d.get('host') or {}
+p = d.get('pressure') or {}
+la = h.get('load_avg') or [None, None, None]
+ncpu = h.get('cpu_count') or 1
+print('Machine  %s: %d cores, %.0f GB RAM, %.0f GB disk free' % (h.get('hostname', '?'), ncpu, h.get('ram_total_mb', 0) / 1024, h.get('disk_free_gb', 0)))
+if la[1] is not None:
+    print('  load    %.1f / %.1f / %.1f  (%.2f per core over 5 min)' % (la[0], la[1], la[2], la[1] / ncpu))
+print('  memory  %.0f%% used   swap %.1f of %.1f GB' % (h.get('ram_percent', 0), h.get('swap_used_mb', 0) / 1024, h.get('swap_total_mb', 0) / 1024))
+line = '  level   %s' % p.get('level', 'unknown')
+if p.get('reasons'):
+    line += '  (%s)' % '; '.join(p['reasons'])
+if p.get('why_unmeasured'):
+    line += '  [%s]' % p['why_unmeasured']
+print(line)
+print('Workers  %d running, %.1f GB between them (of %d registered)' % (d.get('workers_running', 0), d.get('workers_rss_mb', 0) / 1024, d.get('n_considered', 0)))
+for r in d.get('top_by_memory') or []:
+    print('  %-28s %5.1f GB  %5.0f%% CPU  %3d procs' % (r['name'][:28], r['rss_mb'] / 1024, r['cpu_percent'], r['n_processes']))
+w = d.get('worker')
+if w:
+    print('You      %s' % w['name'])
+    if w.get('measured'):
+        print('  using   %.0f%% CPU, %.2f GB in %d processes (%.0f%% of all worker memory)' % (w['cpu_percent'], w['rss_mb'] / 1024, w['n_processes'], 100 * w.get('share_of_worker_memory', 0)))
+    else:
+        print('  using   unknown: %s' % w.get('why_unmeasured'))
+    pr = w.get('profile') or {}
+    if pr.get('declared'):
+        print('  profile %s cpus, %s GB' % (pr.get('cpus') or '-', pr.get('mem_gb') or '-'))
+    else:
+        print('  profile not declared (set AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab)')
+    for o in w.get('over_profile') or []:
+        print('  OVER    %s' % o)
+PY
+)"
+}
+
+# `amux boundaries`: the worker boundaries from boundaries.toml, whether the
+# guard enforcing them is installed and wired, and how often each fired.
+cmd_boundaries() {
+  local raw=""
+  [[ "${1:-}" == "--json" ]] && raw=1
+  if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: amux boundaries [--json]   (registry: boundaries.toml; overrides: ~/.amux/boundaries.toml)"; return 0
+  fi
+  local out
+  out=$(_curl -sk --max-time 20 "$AMUX_API/api/boundaries") || die "amux boundaries: the server did not answer"
+  if [[ -n "$raw" ]]; then printf '%s\n' "$out"; return 0; fi
+  printf '%s' "$out" | python3 -c "$(cat <<'PY'
+import json, sys
+d = json.load(sys.stdin)
+h = d.get('hook') or {}
+wired = h.get('wired_in_settings')
+print('Registry %s; overrides %s (%s)' % (d.get('source'), 'present' if d.get('override_present') else 'none', d.get('override_file')))
+print('Guard    installed=%s wired=%s registry_matches_build=%s' % (h.get('guard_installed'), wired, h.get('registry_matches_build')))
+if wired is False or not h.get('guard_installed'):
+    print('  WARNING: the guard is not live, so only server-side gates hold. Run install.sh to install and wire it.')
+for e in d.get('errors') or []:
+    print('  ERROR   %s' % e)
+for b in d.get('boundaries') or []:
+    c = b.get('last_24h') or {}
+    fired = ', '.join('%s %s' % (k, v) for k, v in sorted(c.items())) or 'none'
+    print('')
+    print('[%s] %s%s' % (b['id'], b['title'], '' if b.get('enabled') else '  (DISABLED)'))
+    for x in b.get('enforced_by') or []:
+        print('  by      %s' % x)
+    print('  24h     %s' % fired)
+iso = (d.get('not_covered_by_hook') or {}).get('isolated_workers') or []
+covered = (d.get('isolated') or {}).get('covered_by_hook')
+if iso:
+    print('')
+    print('Not covered by the guard (isolated): %d workers' % len(iso))
+elif covered:
+    print('')
+    print('Isolated workers: covered by the guard (%d workers)' % (d.get('isolated') or {}).get('n_workers', 0))
+PY
+)"
 }
 
 cmd_order() {
@@ -9346,6 +9457,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     get)              shift; cmd_get "$@" ;;
     crm)              shift; cmd_crm "$@" ;;
     order)            shift; cmd_order "$@" ;;
+    resources|res)   shift; cmd_resources "$@" ;;
+    boundaries)       shift; cmd_boundaries "$@" ;;
     tunnel|t)         shift; cmd_tunnel "$@" ;;
     alert)            shift; cmd_alert "$@" ;;
     approvals)        shift; cmd_approvals "$@" ;;

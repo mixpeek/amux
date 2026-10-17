@@ -845,3 +845,31 @@ jobs:
           path: e2e-verdict.json
           if-no-files-found: error
           retention-days: 7
+
+  # Intermediate build artifacts are consumed inside this run (nextest-archive
+  # by test-shards, amux-server-bin by e2e-shards) and nothing else reads them.
+  # Even at retention-days 1/3 they held ~107 GB of the org-wide Actions quota on
+  # 2026-10-16 (about 2 GB per push x ~48 pushes a day), and mixpeek/mixpeek's
+  # uploads were refused with "Artifact storage quota has been hit". Delete them
+  # when the run has no failure. A run with a failure keeps them, because
+  # re-running its failed jobs downloads them again.
+  artifact-cleanup:
+    needs: [test, e2e]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this run's intermediate build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          n=0
+          for id in $(gh api "repos/$REPO/actions/runs/$RUN/artifacts?per_page=100" \
+                --jq '.artifacts[] | select(.name=="nextest-archive" or .name=="amux-server-bin") | .id'); do
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" && n=$((n + 1))
+          done
+          echo "artifact_cleanup deleted=$n run=$RUN"

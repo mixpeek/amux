@@ -127,6 +127,20 @@ class Policy(unittest.TestCase):
             cr.switch, cr.cli_email, cr.probe, cr.rank = real
         self.assertEqual(calls, ["vec", "mix"])
 
+    def test_login_gap_measures_the_longest_logged_out_run(self):
+        self.assertEqual(cr.gap_stats([(0, True), (1, True)])["longest_gap_s"], 0)
+        st = cr.gap_stats([(0, True), (1.0, False), (1.4, False), (1.9, True), (3, False), (3.2, True)])
+        self.assertEqual((st["n_logged_out"], st["longest_gap_s"]), (3, 0.9))
+        # Still logged out at the end: the gap runs to the last sample.
+        self.assertEqual(cr.gap_stats([(0, True), (2, False), (5, False)])["longest_gap_s"], 3)
+
+    def test_auth_lost_reads_only_the_tail(self):
+        err = "  \u23bf  Not logged in \u00b7 Please run /login"
+        self.assertTrue(cr.auth_lost("work\n" + err + "\n\n> "))
+        # The same words higher up (a session discussing it) are not a dead turn.
+        self.assertFalse(cr.auth_lost(err + "\n" + "\n".join("line %d" % i for i in range(20))))
+        self.assertFalse(cr.auth_lost("all good\n> "))
+
     def test_statusline_ignores_readings_right_after_switch(self):
         setup({}, current="ethan@x.com")
         cr.save(cr.STATE, {"switched_at": time.time()})

@@ -901,6 +901,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="fe-cell-name fe-col-hdr" onclick="_spSortBy('name')">Name <span id="sp-sort-name"></span></div>
     <div class="fe-cell-size fe-col-hdr" onclick="_spSortBy('size')">Size <span id="sp-sort-size"></span></div>
     <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('modified')">Modified <span id="sp-sort-modified"></span></div>
+    <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('opened')">Opened <span id="sp-sort-opened"></span></div>
     <div class="fe-cell-actions"></div>
   </div>
   <div id="sp-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
@@ -1078,6 +1079,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="fe-col-hdr" id="fe-hdr-name" data-sort-col="name" onclick="_filesSetSort('name')">Name</div>
       <div class="fe-col-hdr" id="fe-hdr-size" data-sort-col="size" onclick="_filesSetSort('size')">Size</div>
       <div class="fe-col-hdr" id="fe-hdr-modified" data-sort-col="modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" id="fe-hdr-opened" data-sort-col="opened" onclick="_filesSetSort('opened')" title="Last opened in amux">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="files-body"></div>
@@ -1429,6 +1431,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button class="map-open-btn" id="map-open-btn" onclick="_mapToggleSidebar()" title="Open sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
   <div class="map-main">
     <div id="map-container"></div>
+    <section class="map-sw" id="map-sw" hidden aria-label="Stopwatch">
+      <div class="map-sw-time" id="map-sw-time" role="timer" aria-live="off">0:00</div>
+      <div class="map-sw-stats"><span id="map-sw-dist">0.00 km</span><span id="map-sw-pace">&ndash; /km</span></div>
+      <p class="ui-help map-sw-gps" id="map-sw-gps"></p>
+      <div class="map-sw-btns">
+        <button class="btn primary" id="map-sw-start" onclick="_mapSwStart()">Start</button>
+        <button class="btn" id="map-sw-lap" onclick="_mapSwLap()" hidden>Lap</button>
+        <button class="btn danger" id="map-sw-stop" onclick="_mapSwStop()" hidden>Stop</button>
+      </div>
+      <ol class="map-sw-laps" id="map-sw-laps"></ol>
+      <div class="map-sw-past" id="map-sw-past"></div>
+    </section>
     <div class="map-drop-hint" id="map-drop-hint">&#x1F4CD; Click anywhere on the map to place a pin &mdash; Esc to cancel</div>
     <div class="map-toolbar">
       <button class="btn map-drop-btn" id="map-drop-btn" onclick="_mapToggleDropMode()" style="font-size:0.78rem;padding:3px 9px;" title="Drop a pin by clicking the map">&#x1F4CD; Drop Pin</button>
@@ -1442,6 +1456,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <option value="terrain">Terrain</option>
       </select>
       <button class="btn" id="map-pins-btn" onclick="_mapTogglePins()" aria-pressed="false" style="font-size:0.78rem;padding:3px 9px;" title="Hide pins on the map (the list stays)">Hide pins</button>
+      <button class="btn" id="map-sw-btn" onclick="_mapSwToggle()" aria-pressed="false" aria-controls="map-sw" style="font-size:0.78rem;padding:3px 9px;" title="Stopwatch for time trials: time, distance, pace and splits from your phone's GPS">&#x23F1; Stopwatch</button>
       <span class="map-coords" id="map-coords"></span>
     </div>
   </div>
@@ -2771,7 +2786,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-needs-input-row" class="peek-needs-input-row" hidden></div>
     <div id="peek-task-row" style="display:none;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%;">
       <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
-      <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow-x:auto;overflow-y:hidden;flex:0 1 auto;min-width:0;-webkit-overflow-scrolling:touch;scrollbar-width:none;touch-action:pan-x;overscroll-behavior-x:contain;cursor:pointer;"></span>
+      <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:normal;overflow-wrap:anywhere;flex:0 1 auto;min-width:0;cursor:pointer;"></span>
+      <button type="button" class="btn peek-task-history-btn" id="peek-task-history-btn" onclick="_peekTaskHistoryToggle(event)" aria-haspopup="dialog" title="This worker's task changes">History</button>
     </div>
     <div class="peek-toolbar">
       <div class="peek-msg-nav" id="peek-msg-nav" role="group" aria-label="Terminal navigation">
@@ -2986,6 +3002,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="fe-col-hdr" onclick="_psfSetSort('name')">Name</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('size')">Size</div>
       <div class="fe-col-hdr" onclick="_psfSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr" onclick="_psfSetSort('opened')">Opened</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
     <div id="psf-body" class="peek-split-files-body"></div>

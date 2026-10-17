@@ -15,7 +15,27 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
   let commandHandlers = {};
   const derivedAction = new WeakSet();
   const controls = new Map();
-  let source = null;
+  // The control whose click/change/submit is being dispatched, and that event.
+  // A request is the press's only while that event is still the CURRENT event
+  // (window.event), i.e. it was issued from the press's own listeners or the
+  // microtasks they ran. The old rule, "until a setTimeout(0) clears it", let
+  // every task already queued ahead of that timer through: a background
+  // fetchBoard continuation whose response landed in that gap issued
+  // GET /api/board/changes and became the press's receipt, relabelling a Save
+  // as board.get (interaction-receipts e2e, runs 38944452996, 38947919221).
+  let source = null, sourceEvent = null;
+  const dispatchVisible = 'event' in globalThis;
+  const foreignReported = new WeakSet();
+  function pressSource() {
+    if (!source) return null;
+    if (!dispatchVisible || globalThis.event === sourceEvent) return source;
+    if (sourceEvent && !foreignReported.has(sourceEvent)) {
+      foreignReported.add(sourceEvent);
+      diagnostic({verdict:'press_bind_skipped_foreign_task', measured:true, n_considered:1,
+        action:source.dataset.action, current_event:globalThis.event?.type || null});
+    }
+    return null;
+  }
   const hub = document.createElement('details');
   hub.id = 'interaction-feedback';
   const summary = document.createElement('summary');
@@ -159,11 +179,13 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
     declare(element);
     if (eventName === 'click' && isCommand(element)) armed = {element, at:Date.now(), bound:false};
     source = element;
+    sourceEvent = event;
     element.classList.add('action-responded');
     setTimeout(() => element.classList.remove('action-responded'), 450);
     // Only synchronous dispatch is causal. A later unrelated poll must never
     // borrow the most recently clicked button as its alleged origin.
-    setTimeout(() => { if (source === element) source = null; }, 0);
+    // pressSource() is the causal gate; this only drops the reference.
+    setTimeout(() => { if (source === element) { source = null; sourceEvent = null; } }, 0);
   }, true);
   function render(receipt) {
     if (receipt && controls.has(receipt.id)) {
@@ -374,9 +396,10 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
       if (armed && !armed.bound) diagnostic({verdict:'press_bind_skipped_background', measured:true,
         n_considered:1, action:armed.element.dataset.action, path:receipt.request?.path});
     } else if (receipt.phase === 'accepted') {
-      if (source) {
-        bind(source, receipt);
-        if (armed?.element === source) armed.bound = true;
+      const pressed = pressSource();
+      if (pressed) {
+        bind(pressed, receipt);
+        if (armed?.element === pressed) armed.bound = true;
       } else if (armed && !armed.bound && armed.element.isConnected && Date.now() - armed.at < ARM_MS) {
         armed.bound = true;
         bind(armed.element, receipt);
@@ -389,7 +412,7 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
     if (element && !['accepted','sending','running'].includes(receipt.phase)) settle(element, receipt);
   });
   render();
-  return {render, source:() => source, coverage:() => {
+  return {render, source:pressSource, coverage:() => {
     const all = [...document.querySelectorAll(selectors)].filter(e => !e.closest('#interaction-feedback'));
     const commands = all.filter(e => e.dataset.interactionKind || e.dataset.commandObserved || commandHandlers[e.dataset.action]);
     return {measured:true, n_considered:all.length, declared:all.filter(e => e.dataset.action && e.dataset.feedbackRequired && e.dataset.targetId).length,

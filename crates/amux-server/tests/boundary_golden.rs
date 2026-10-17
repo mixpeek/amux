@@ -91,7 +91,9 @@ fn normalize(v: &Value, roots: &[(String, String)], case: &str) -> Value {
             for (k, val) in map {
                 match k.as_str() {
                     // Timestamps differ between recording and rebuild.
-                    "modified" | "elapsed_ms" => continue,
+                    // `opened` (when the dashboard last opened a file) is a
+                    // native addition the recording predates; it is a time too.
+                    "modified" | "elapsed_ms" | "opened" => continue,
                     // Directory byte-size is filesystem trivia.
                     "size" if is_dir_entry => {
                         out.insert(k.clone(), Value::from(0));

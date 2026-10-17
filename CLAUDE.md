@@ -37,9 +37,12 @@ for status only: it must not add context, change permissions, send prompts, or
 trigger boards. Preserve owner input, delivery receipts and message history.
 Explicit owner queuing is transport only. Isolation overrides stale project
 metadata; a restarted raw CLI must not inherit harness routing.
-Two owner-configured exceptions reach isolated workers as owner input: their
-schedules, and the goal keeper continuing an owner-set Claude Code `/goal` that
-is not met (`AMUX_GOAL_CONTINUE=0` opts out).
+Three owner-configured exceptions reach isolated workers: their schedules, the
+goal keeper continuing an owner-set Claude Code `/goal` that is not met
+(`AMUX_GOAL_CONTINUE=0` opts out), and the worker boundaries in
+`boundaries.toml` (payments, email, credentials, resources), whose guard refuses
+the same tool calls for isolated workers (`apply_to_isolated = false` opts out).
+A refusal injects no prompt and routes nothing.
 A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
 send to, queue for and leave card notes that reach any worker, isolated included.
 

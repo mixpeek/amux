@@ -17,6 +17,9 @@ LOG="$TMP/authority.log"
 TRACE="$TMP/trace"
 PASS=0; FAIL=0
 export TRACE
+# Self-heal rewrites the launcher that is running; only the cells below that
+# point it at a scratch copy may turn it on.
+export AMUX_AUTHORITY_SELF_HEAL=0
 # CI verdicts come from a file, one "sha verdict" per line; unlisted = green.
 VERDICTS="$TMP/verdicts"; : > "$VERDICTS"
 printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$VERDICTS" > "$TMP/verdict"
@@ -141,7 +144,13 @@ expect grep -q "verdict=ci_gate_unmeasured" "$LOG"
 # the cache used to keep "red" forever and held a green commit back. This path
 # runs the real cache with only the GitHub call replaced.
 CACHE="$TMP/ci-cache"; FETCHED="$TMP/fetched"; : > "$FETCHED"
-printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$FETCHED" > "$TMP/fetch"
+# The stub answers in GitHub's workflow-runs shape, so the shipped parser runs.
+cat > "$TMP/fetch" <<EOF
+#!/usr/bin/env bash
+v=\$(awk -v s="\$1" '\$1==s {print \$2}' "$FETCHED" | tail -1)
+case "\$v" in red) c=failure ;; *) c=success ;; esac
+printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1"}]}' "\$c"
+EOF
 chmod +x "$TMP/fetch"
 run_cached() {
   AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
@@ -163,6 +172,36 @@ expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
 run_cached env AMUX_CI_RED_RECHECK_S=0
 expect test "$(cat "$CACHE/$RERUN")" = green
 expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
+
+# A GATE THAT CANNOT MEASURE HEALS ITS OWN LAUNCHER (2026-10-16): 162e78e03
+# broke the CI judge, every pass refused as unmeasured, and the fixed launcher
+# could only arrive through an activation it was refusing. With CI unreadable,
+# the elected ref's launcher replaces the running one when it passes its test.
+SELF="$TMP/bin/amux-build-authority"; mkdir -p "$TMP/bin"
+printf '#!/usr/bin/env bash\n# the broken installed launcher\n' > "$SELF"
+( cd "$AUTH"; printf '#!/usr/bin/env bash\n# the fixed launcher\n' > scripts/rust-auto-build-authority.sh
+  git add -A; git -c user.name=test -c user.email=test@example.com commit -qm fixed-launcher )
+git -C "$AUTH" update-ref refs/remotes/origin/main "$(git -C "$AUTH" rev-parse HEAD)"
+git -C "$STALE" fetch -q origin main
+HEALTIP=$(git -C "$STALE" rev-parse origin/main)
+echo "$HEALTIP unmeasured" >> "$VERDICTS"
+heal_run() { AMUX_AUTHORITY_SELF_HEAL=1 AMUX_AUTHORITY_SELF="$SELF" AMUX_AUTHORITY_HEAL_TEST_CMD="$1" run_launcher; }
+# Its test fails: the running launcher is kept and the refusal is logged.
+heal_run false
+expect grep -q "the broken installed launcher" "$SELF"
+expect grep -q "verdict=authority_launcher_self_heal_refused" "$LOG"
+# Same tip again: not retried (one attempt per tip).
+: > "$LOG"; heal_run true
+expect grep -q "the broken installed launcher" "$SELF"
+expect test "$(grep -c 'SELF-HEAL' "$LOG")" = 0
+# A new tip whose launcher passes: installed, logged, and the pass still refuses.
+rm -f "$SELF.heal-tried"; : > "$LOG"; heal_run true
+expect grep -q "the fixed launcher" "$SELF"
+expect grep -q "verdict=authority_launcher_self_healed" "$LOG"
+expect grep -q "verdict=ci_gate_unmeasured" "$LOG"
+# Already identical: nothing to do.
+: > "$LOG"; rm -f "$SELF.heal-tried"; heal_run true
+expect test "$(grep -c 'SELF-HEAL' "$LOG")" = 0
 
 echo "test-build-activation-launcher: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

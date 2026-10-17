@@ -220,9 +220,37 @@ pub fn admit_automation(what: &str) -> bool {
 
 // ---- probes ---------------------------------------------------------------
 
+/// Absolute paths first: the server's launchd PATH has no /usr/sbin, so a bare
+/// `sysctl` never ran on macOS and load and memory pressure were never read
+/// (2026-10-16: `/pressure` answered level ok with load1/load5/mem_level null
+/// while the host sat at load 20 with swap 88% used).
+fn resolve(program: &str) -> Vec<&str> {
+    match program {
+        "sysctl" => vec!["/usr/sbin/sysctl", "sysctl"],
+        "df" => vec!["/bin/df", "df"],
+        "ps" => vec!["/bin/ps", "ps"],
+        other => vec![other],
+    }
+}
+
 fn run(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    for exe in resolve(program) {
+        if let Ok(out) = std::process::Command::new(exe).args(args).output() {
+            if out.status.success() {
+                return Some(String::from_utf8_lossy(&out.stdout).into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// The probes that produced no reading, by name.
+pub fn missing_probes(r: &Readings) -> Vec<&'static str> {
+    let mut m = Vec::new();
+    if r.load5.is_none() { m.push("load"); }
+    if r.mem_level.is_none() { m.push("memory"); }
+    if r.disk_free_gb.is_none() { m.push("disk"); }
+    m
 }
 
 /// `{ 18.59 31.13 39.70 }` (macOS sysctl) or `18.59 31.13 39.70 ...` (/proc/loadavg).
@@ -441,6 +469,14 @@ async fn tick() {
     .await
     .unwrap_or_else(|_| (Readings::default(), (Level::Ok, vec![]), (vec![], 0)));
     let measured = readings.load5.is_some() || readings.mem_level.is_some() || readings.disk_free_gb.is_some();
+    let missing = missing_probes(&readings);
+    if !missing.is_empty() {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(target: "amux::host_guard", verdict = "host_guard_probe_missing", missing = %missing.join(","),
+                measured, n_considered = 3, "host guard judges pressure without these readings; a level of ok here is partial");
+        }
+    }
     if measured && prev != Some(level) {
         let from = prev.map(Level::as_str).unwrap_or("unknown");
         if level > Level::Ok {
@@ -456,7 +492,13 @@ async fn tick() {
         reasons,
         readings,
         measured,
-        why_unmeasured: (!measured).then(|| "no probe (load, memory, disk) produced a reading".to_string()),
+        why_unmeasured: if !measured {
+            Some("no probe (load, memory, disk) produced a reading".to_string())
+        } else if !missing.is_empty() {
+            Some(format!("partial: no {} reading, so the level ignores it", missing.join(" or ")))
+        } else {
+            None
+        },
         n_considered: considered,
         runaways,
         deferred: BTreeMap::new(),
