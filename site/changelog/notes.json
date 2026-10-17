@@ -1,5 +1,41 @@
 [
   {
+    "hash": "a8116aa610000000000000000000000000000000",
+    "short": "a8116aa6",
+    "title": "Full task name on the card and details page, with a recorded history of task changes",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": ["workers", "task-history", "dashboard"],
+    "description": "Worker cards and the worker details page now show the complete task name rather than a truncated version. Each time a worker's task changes, amux records the previous task in a durable history. Open the task history from the details page to see every task this worker has run, when it changed, and what ran before the current one."
+  },
+  {
+    "hash": "492262a500000000000000000000000000000000",
+    "short": "492262a5",
+    "title": "Task history opens as a list in the standard dialog",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": ["workers", "task-history"],
+    "description": "Clicking the task history button on a worker card opens a scrollable list of all past tasks in the standard details dialog. Each entry shows the task name, when it started, and how long it ran. No more losing track of what a long-running worker has done across a session."
+  },
+  {
+    "hash": "12b3475d30000000000000000000000000000000",
+    "short": "12b3475d",
+    "title": "Worker boundaries apply to isolated workers too",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": ["boundaries", "isolated-workers", "resource-limits"],
+    "description": "Resource limits declared in boundaries.toml now apply to isolated workers. Previously, workers running in isolated mode (direct owner-to-CLI transport, no harness routing) fell outside the boundaries registry. Now the orchestrator enforces their resource envelope regardless of isolation mode. Useful for long-running isolated sessions left overnight that need a memory ceiling."
+  },
+  {
+    "hash": "1804507e50000000000000000000000000000000",
+    "short": "1804507e",
+    "title": "A crash loop with no crash in the last 6 hours is reported, not escalated",
+    "date": "2026-10-16",
+    "type": "fix",
+    "tags": ["cleanup", "crash-detection"],
+    "description": "The cleanup tick now distinguishes a stale crash loop (no new crash in 6h) from an active one. Stale loops are reported on the dashboard so the operator can investigate and clear them; active loops are escalated. Previously both states triggered the same alert path, causing noise on workers that had recovered."
+  },
+  {
     "hash": "3c023400c0000000000000000000000000000000",
     "short": "3c023400c",
     "title": "Scheduler pauses a failing schedule when its assigned worker is gone",

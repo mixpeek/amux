@@ -107,7 +107,7 @@ def canonical_boundary_guard(hook_path: str) -> list[dict[str, Any]]:
     # boundaries.toml, enforced by one guard. Anchored for the reason
     # canonical_ask_guard gives: the matcher is an unanchored regex.
     quoted = '"' + hook_path.replace('"', '\\"') + '"'
-    return [group(f"python3 {quoted}", "^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit)$")]
+    return [group(f"python3 {quoted}", "^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob)$")]
 
 
 # What an event's HANDLER must contain for the wiring to mean anything

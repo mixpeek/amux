@@ -1244,7 +1244,9 @@
   }
   /* Title bar: file name on top, its folder path underneath, like a file manager. */
   .file-title-wrap { flex: 1; min-width: 0; margin-right: 8px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
-  .file-overlay-header h2 { font-size: 1rem; margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
+  .file-overlay-header h2 { font-size: 1rem; margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; outline: none; }
+  .file-overlay-header h2[data-sp-editable="1"] { cursor: text; border-bottom: 1px dashed var(--dim); padding-bottom: 1px; }
+  .file-overlay-header h2[data-sp-editable="1"]:focus { border-bottom-color: var(--accent); border-bottom-style: solid; }
   .file-subpath { font-size: 0.68rem; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'SF Mono','Fira Code',monospace; }
   /* The folder line is the way back to the file browser (AMUX-3663). It has to
      LOOK clickable or it stays the dim label it has always been, and the
@@ -3008,7 +3010,14 @@
        worker title a full carve-height below where it belonged. This is the
        selector that actually governs the worker detail view on a phone; the
        `.overlay` rule is overridden here. */
-    #peek-overlay { padding: 6px; }
+    /* The overlay starts at top:0 and pushes its CONTENT down by the status-bar
+       inset, instead of starting AT the inset. Starting at the inset left the
+       carve (0 -> inset) transparent, so the worker list behind bled through at
+       the very top on an iPhone PWA (Ethan, 2026-10-17 screenshot: another
+       worker's card above the peek header). Content position is unchanged:
+       before, top:inset + padding 6px = inset+6; now top:0 + padding-top
+       inset+6 = inset+6. The opaque var(--bg) now covers the carve. */
+    #peek-overlay { padding: 6px; top: 0; padding-top: calc(6px + env(safe-area-inset-top, 0px)); }
     #peek-overlay .overlay-header { padding-bottom: 0 !important; gap: 2px !important; margin-bottom: 2px; }
     /* The task row is SHOWN on a phone now, compact and wrapping (Ethan,
        2026-10-16: "make sure i can see the full task name of a worker on the

@@ -21,7 +21,9 @@ pub fn routes(dir: PathBuf) -> Router<AppState> {
         .route("/api/connection/security", get(status))
         .route(
             "/api/connection/session",
-            post(sign_in).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            post(sign_in)
+                .delete(sign_out)
+                .layer(axum::extract::DefaultBodyLimit::max(4096)),
         )
         .route(
             "/api/connection/certificate",
@@ -112,6 +114,30 @@ pub async fn sign_in(
         "set-cookie",
         HeaderValue::from_static("amux_member=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"),
     );
+    response
+}
+/// Sign out of this server on this device: the owner session and any member cookie
+/// end, so the next load asks for credentials again (the Connect tab's Sign out,
+/// 2026-10-17). Same-origin only, like sign-in, so another site cannot sign you out.
+/// It needs no credential: it only removes the caller's own cookies.
+pub async fn sign_out(OriginalUri(uri): OriginalUri, headers: HeaderMap) -> Response {
+    if !same_origin(&headers, &uri) {
+        return refusal(StatusCode::FORBIDDEN, "same_origin_required");
+    }
+    tracing::info!(target: "amux::auth", verdict = "owner_session_ended", "connection signed out on this device");
+    let mut response = (
+        [("cache-control", "no-store")],
+        Json(json!({"ok":true,"reload":"/api/_clear_sw"})),
+    )
+        .into_response();
+    for cookie in [
+        "__Host-amux_owner=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+        "amux_member=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+    ] {
+        response
+            .headers_mut()
+            .append("set-cookie", HeaderValue::from_static(cookie));
+    }
     response
 }
 async fn status(
@@ -485,5 +511,44 @@ mod tests {
             snapshot,
             std::fs::read(tls_dir.join("connection.pem")).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn sign_out_clears_owner_and_member_cookies_for_same_origin_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = app(Some("owner-secret"), dir.path());
+        let send = |origin: Option<&'static str>| {
+            let mut req = Request::builder()
+                .uri("/api/connection/session")
+                .method("DELETE")
+                .header("host", "localhost:18972");
+            if let Some(o) = origin {
+                req = req.header("origin", o);
+            }
+            let mut req = req.body(Body::empty()).unwrap();
+            req.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            router.clone().oneshot(req)
+        };
+        for origin in [None, Some("https://evil.test")] {
+            let response = send(origin).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert!(!response.headers().contains_key("set-cookie"));
+        }
+        let response = send(Some("https://localhost:18972")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert!(cookies
+            .iter()
+            .any(|c| c.starts_with("__Host-amux_owner=;") && c.contains("Max-Age=0")));
+        assert!(cookies
+            .iter()
+            .any(|c| c.starts_with("amux_member=;") && c.contains("Max-Age=0")));
     }
 }

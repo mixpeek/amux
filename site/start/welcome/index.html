@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Setting up your amux server</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Your amux Cloud server is being set up.">
+  <link rel="canonical" href="https://amux.io/start/">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <style>
+    .start-wrap{max-width:760px}
+    .free-note{border:1px solid var(--line-2);border-radius:var(--radius);padding:14px 18px;margin:18px 0;background:var(--bg-2)}
+    .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:10px 0 4px}
+    .plan{border:1px solid var(--line-2);border-radius:var(--radius);padding:14px;cursor:pointer;display:block;min-height:44px}
+    .plan input{margin-right:6px}
+    .plan:has(input:checked){border-color:var(--accent);background:var(--accent-dim)}
+    .plan .price{font-family:var(--font-display);font-size:1.4rem;margin:6px 0 2px}
+    .plan .spec{color:var(--fg-dim);font-size:.85rem}
+    .field{display:block;margin:16px 0}
+    .field span{display:block;font-weight:600;margin-bottom:6px}
+    .field input{width:100%;box-sizing:border-box;min-height:44px;padding:0 12px;font:inherit;border-radius:var(--radius);border:1px solid var(--line-2);background:var(--bg-3);color:var(--fg)}
+    .slug{display:flex;align-items:center;gap:6px}.slug input{flex:1}
+    .hint{color:var(--fg-mute);font-size:.85rem;margin-top:6px;min-height:1.2em}
+    .hint.bad{color:var(--err)}.hint.good{color:var(--ok)}
+    .go{min-height:48px;width:100%;margin-top:10px;font-size:1rem}
+    .err{color:var(--err);margin-top:10px;min-height:1.2em}
+    .steps{list-style:none;padding:0}.steps li{padding:8px 0;color:var(--fg-mute)}
+    .steps li.done{color:var(--fg-dim)}.steps li.now{color:var(--fg);font-weight:600}
+    .steps li.done::before{content:"\2713  ";color:var(--ok)}.steps li.now::before{content:"\2192  ";color:var(--accent)}
+    .ready{border:1px solid var(--ok);border-radius:var(--radius);padding:18px;margin:18px 0}
+    @media (max-width:600px){.plans{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main class="start-wrap">
+    <h1>Setting up your server</h1>
+    <p class="subtitle" id="sub">Payment received. This usually takes about three minutes.</p>
+    <ol class="steps" id="steps">
+      <li data-s="paying">Payment confirmed</li>
+      <li data-s="creating">Creating your server</li>
+      <li data-s="booting">Starting amux and getting its HTTPS certificate</li>
+      <li data-s="ready">Ready</li>
+    </ol>
+    <div class="ready" id="ready" style="display:none">
+      <h2>Your server is ready</h2>
+      <p><a class="btn btn-primary" id="open" href="#">Open your server</a></p>
+      <p>Sign in with <strong id="who">your email</strong> and the password you chose. Then connect a model: sign in with Claude, ChatGPT or Google, or paste an API key.</p>
+    </div>
+    <p class="hint" id="note">We will also email you when it is ready, so you can close this page.</p>
+    <p class="hint">Billing, invoices and cancellation: <a href="/start/billing/">manage billing</a>.</p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+// API: production by default. ?api= and ?tk= point a test run at the test-mode function.
+const Q = new URLSearchParams(location.search);
+const API = (Q.get('api') || 'https://cloud.amux.io').replace(/\/+$/, '');
+const TK = Q.get('tk') || '';
+const keep = s => (Q.get('api') ? '&api=' + encodeURIComponent(Q.get('api')) : '') + (TK ? '&tk=' + encodeURIComponent(TK) : '') + (s || '');
+
+const ORDER = ['paying', 'creating', 'booting', 'ready'];
+const sid = Q.get('session_id') || '';
+function show(state) {
+  const i = ORDER.indexOf(state);
+  document.querySelectorAll('#steps li').forEach((li, n) => li.className = n < i ? 'done' : (n === i ? 'now' : ''));
+}
+async function poll() {
+  try {
+    const d = await (await fetch(API + '/api/status?session_id=' + encodeURIComponent(sid))).json();
+    if (d.error) { document.getElementById('sub').textContent = 'We could not find this order. Check your email for the receipt.'; return; }
+    show(d.state);
+    if (d.state === 'ready') {
+      document.querySelectorAll('#steps li').forEach(li => li.className = 'done');
+      const r = document.getElementById('ready'); r.style.display = '';
+      document.getElementById('open').href = d.url; document.getElementById('open').textContent = 'Open ' + d.url.replace('https://', '');
+      if (d.email) document.getElementById('who').textContent = d.email;
+      document.getElementById('note').style.display = 'none';
+      return;
+    }
+  } catch (e) {}
+  setTimeout(poll, 3000);
+}
+poll();
+</script>
+</body>
+</html>

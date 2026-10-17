@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 GUARD = os.path.join(HERE, "boundary-guard.py")
 REGISTRY = os.environ.get("AMUX_BOUNDARIES_FILE") or os.path.join(REPO, "boundaries.toml")
-FILE_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit")
+FILE_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob")
 CRITICAL = json.dumps({"load5": 100.0, "ncpu": 4})
 OK = json.dumps({"load5": 1.0, "ncpu": 4, "mem_level": 1})
 
@@ -39,6 +39,10 @@ cases = 0
 def payload(example: str) -> dict:
     head, _, content = example.partition(" :: ")
     tool, _, rest = head.partition(" ")
+    if tool == "Grep" and rest.startswith("/"):
+        return {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": rest}}
+    if tool == "Glob" and rest.startswith("/"):
+        return {"tool_name": "Glob", "tool_input": {"pattern": rest}}
     if tool in FILE_TOOLS and rest.startswith("/"):
         ti = {"file_path": rest}
         if content:

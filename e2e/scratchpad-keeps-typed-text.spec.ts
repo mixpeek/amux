@@ -35,15 +35,16 @@ test('Scratchpad keeps typed text: a note closed before Save is saved, and captu
   };
   await expect.poll(found, { timeout: 15_000, message: 'the closed note was saved' }).toBe(1);
 
-  // An empty new note closed straight away adds no file.
-  const count = async () => ((await (await request.get('/api/ls?path=' + encodeURIComponent('~/Vault/Scratchpad') + '&hidden=0', { headers: auth })).json()).entries || []).length;
-  const before = await count();
+  // An empty new note closed straight away adds no file (path-based, so it is
+  // robust when other specs write to the shared Scratchpad in parallel).
   await page.evaluate(() => (window as any)._scratchpadNewNote());
   await expect(page.locator('#file-edit-ta')).toBeVisible();
+  const emptyPath = await page.evaluate(() => (0, eval)('_fileData').path as string);
   await page.locator('#file-overlay .btn', { hasText: '\u2715' }).first().click();
   await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
   await page.waitForTimeout(1000);
-  expect(await count(), 'an empty note is not saved').toBe(before);
+  expect((await request.get('/api/file?path=' + encodeURIComponent(emptyPath), { headers: auth })).ok(),
+    'an empty note is not saved to disk').toBe(false);
 
   // Quick capture: typed (not yet saved) text survives a reload.
   await page.locator('#sp-capture').fill(`draft ${marker}`);

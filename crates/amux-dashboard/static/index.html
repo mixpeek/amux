@@ -481,6 +481,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
         </div>
         <div class="settings-sep"></div>
+        <section class="settings-section" id="connection-session">
+          <button class="btn" id="connection-sign-out" onclick="_connectionSignOut()">Sign out of this server</button>
+          <button class="btn" id="connection-cloud-account" style="display:none" onclick="_appBridge('settings')">amux Cloud account</button>
+          <p class="connection-help" id="connection-sign-out-help">Ends this connection on this device. Then sign in again, or connect to another server by its address.</p>
+        </section>
+        <div class="settings-sep"></div>
         <section class="settings-section" id="connection-security">
           <details class="settings-fold"><summary class="settings-section-label">Connection &amp; security</summary>
           <p>These actions apply only to this server. Tokens and keys are never saved in the connection list.</p>

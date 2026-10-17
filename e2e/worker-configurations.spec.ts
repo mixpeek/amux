@@ -137,9 +137,10 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     await page.evaluate(() => { const el = document.getElementById('peek-board-config') as any; el._pbcHtml = ''; (window as any)._peekBoardPolicySync(); });
     await expect(boardConfig.locator('details.settings-fold')).toHaveAttribute('open', /.*/);
     await expect(boardConfig.locator('.pbc-row').first()).toBeVisible();
-    for (const label of ['Refill To Do from Backlog', 'Start To Do cards when idle', 'Keep going on unfinished cards', 'Board steers this worker', 'Plan my messages onto the board']) {
+    for (const label of ['Refill To Do from Backlog', 'Start To Do cards when idle', 'Keep going on unfinished cards', 'Board steers this worker']) {
       await expect(boardConfig).toContainText(label);
     }
+    await expect(boardConfig, '"Plan my messages onto the board" was removed').not.toContainText('Plan my messages onto the board');
     // Each checkbox sits directly before ITS OWN label (Ethan, 2026-10-04:
     // "when I uncheck these they revert back"). It used to sit at the far
     // right of its half of the two-column panel, next to the NEXT row's label,

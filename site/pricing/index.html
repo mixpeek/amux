@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#1e2330">
   <title>Pricing — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux pricing — free and open source self-hosted, or amux Cloud starting at $20/month with a 7-day free trial.">
+  <meta name="description" content="amux pricing: free and open source to self-host, or amux Cloud, your own dedicated amux server, from $39 a month.">
   <link rel="canonical" href="https://amux.io/pricing/">
   <meta property="og:title" content="Pricing — amux">
-  <meta property="og:description" content="Free open-source self-hosted, or amux Cloud from $20/mo with 7-day trial.">
+  <meta property="og:description" content="Free and open source to self-host, or your own dedicated amux server from $39 a month.">
   <meta property="og:url" content="https://amux.io/pricing/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="website">
@@ -40,11 +40,14 @@
 
     .pricing-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 1.5rem;
       max-width: 1120px;
       margin: 2rem auto 4rem;
       padding: 0 1.5rem;
+    }
+    @media (max-width: 1100px) {
+      .pricing-grid { grid-template-columns: repeat(2, 1fr); max-width: 760px; }
     }
     @media (max-width: 768px) {
       .pricing-grid { grid-template-columns: 1fr; max-width: 400px; }
@@ -234,36 +237,46 @@
         <a href="https://github.com/mixpeek/amux#install" class="pricing-cta pricing-cta-secondary">Get started</a>
       </div>
 
-      <!-- Cloud Monthly -->
+      <!-- Cloud Solo -->
       <div class="pricing-card featured">
-        <div class="pricing-badge">7-day free trial</div>
-        <div class="pricing-name">Cloud</div>
-        <div class="pricing-price">$20 <span>/mo</span></div>
+        <div class="pricing-badge">Most popular</div>
+        <div class="pricing-name">Cloud Solo</div>
+        <div class="pricing-price">$39 <span>/mo</span></div>
         <div class="pricing-note">Billed monthly &middot; cancel anytime</div>
         <ul class="pricing-features">
+          <li>Your own server: 4 vCPU, 8 GB RAM, 80 GB disk</li>
           <li>Everything in Open Source</li>
-          <li>Persistent cloud sessions</li>
-          <li>No setup or server required</li>
-          <li>Automatic backups to R2</li>
-          <li>Shareable session links</li>
-          <li>File sync &amp; workspace</li>
+          <li>Ready at yourname.amux.io in about 3 minutes</li>
+          <li>Runs 24/7 while your laptop sleeps</li>
+          <li>Continuous backups, restorable</li>
+          <li>Invite teammates by email</li>
+          <li>iOS app sign-in</li>
         </ul>
-        <a href="/cloud/" class="pricing-cta pricing-cta-primary">Start free trial</a>
+        <a href="/start/?plan=solo&amp;source=pricing" class="pricing-cta pricing-cta-primary">Get Solo</a>
       </div>
-
-      <!-- Cloud Annual -->
+      <!-- Cloud Team -->
       <div class="pricing-card">
-        <div class="pricing-name">Cloud Annual <span class="annual-save">Save 17%</span></div>
-        <div class="pricing-price">$200 <span>/yr</span></div>
-        <div class="pricing-note">$16.67/mo &middot; billed annually</div>
+        <div class="pricing-name">Cloud Team</div>
+        <div class="pricing-price">$69 <span>/mo</span></div>
+        <div class="pricing-note">Billed monthly &middot; cancel anytime</div>
         <ul class="pricing-features">
-          <li>Everything in Cloud</li>
-          <li>2 months free vs monthly</li>
-          <li>Priority support</li>
-          <li>Early access to new features</li>
-          <li>7-day free trial included</li>
+          <li>Your own server: 8 vCPU, 16 GB RAM, 160 GB disk</li>
+          <li>Everything in Solo</li>
+          <li>Twice the room: more workers at once</li>
         </ul>
-        <a href="/cloud/" class="pricing-cta pricing-cta-secondary">Start free trial</a>
+        <a href="/start/?plan=team&amp;source=pricing" class="pricing-cta pricing-cta-secondary">Get Team</a>
+      </div>
+      <!-- Cloud Max -->
+      <div class="pricing-card">
+        <div class="pricing-name">Cloud Max</div>
+        <div class="pricing-price">$129 <span>/mo</span></div>
+        <div class="pricing-note">Billed monthly &middot; cancel anytime</div>
+        <ul class="pricing-features">
+          <li>Your own server: 16 vCPU, 32 GB RAM, 320 GB disk</li>
+          <li>Everything in Team</li>
+          <li>For large fleets and heavy builds</li>
+        </ul>
+        <a href="/start/?plan=max&amp;source=pricing" class="pricing-cta pricing-cta-secondary">Get Max</a>
       </div>
     </div>
 
@@ -271,28 +284,33 @@
       <h2>Questions</h2>
 
       <div class="pricing-faq-item">
-        <div class="pricing-faq-q">What's included in the free trial?</div>
-        <div class="pricing-faq-a">Full access to amux Cloud for 7 days. No credit card required to start. You'll be prompted to add a payment method before the trial ends.</div>
+        <div class="pricing-faq-q">What do I get with amux Cloud?</div>
+        <div class="pricing-faq-a">A dedicated server that runs amux for you and nobody else, at your own address (yourname.amux.io). Your workers keep running when your laptop is closed, and your board, schedules and files are backed up continuously.</div>
       </div>
 
       <div class="pricing-faq-item">
-        <div class="pricing-faq-q">Do I need my own API key?</div>
-        <div class="pricing-faq-a">Yes. amux Cloud provides the infrastructure, but you bring your own Anthropic API key. You can add it in settings after signing up.</div>
+        <div class="pricing-faq-q">Is there a free trial?</div>
+        <div class="pricing-faq-a">The open-source version is free forever and has every feature. amux Cloud is paid from the start, and you can cancel at any time.</div>
       </div>
 
       <div class="pricing-faq-item">
-        <div class="pricing-faq-q">Can I switch between monthly and annual?</div>
-        <div class="pricing-faq-a">Yes. You can switch plans anytime from your billing settings. Upgrades are prorated, downgrades take effect at the next billing cycle.</div>
+        <div class="pricing-faq-q">Do I need my own model account or API key?</div>
+        <div class="pricing-faq-a">Yes. Sign in with Claude, ChatGPT or Google on your server, or paste an Anthropic, OpenAI or Gemini API key. Model usage is billed by that provider, separately from amux Cloud.</div>
+      </div>
+
+      <div class="pricing-faq-item">
+        <div class="pricing-faq-q">Can I change plans?</div>
+        <div class="pricing-faq-a">Yes, from billing on your server. A larger plan moves your server to bigger hardware within a few minutes.</div>
       </div>
 
       <div class="pricing-faq-item">
         <div class="pricing-faq-q">What happens when I cancel?</div>
-        <div class="pricing-faq-a">Your sessions and data remain accessible until the end of your billing period. After that, your container is paused. Data is retained for 30 days.</div>
+        <div class="pricing-faq-a">Your server runs until the end of the period you paid for. We then save a snapshot and turn it off. The snapshot is kept for 30 days, and resubscribing restores it.</div>
       </div>
 
       <div class="pricing-faq-item">
         <div class="pricing-faq-q">Is the self-hosted version feature-complete?</div>
-        <div class="pricing-faq-a">Yes. amux is fully open source. Cloud adds managed hosting, persistence, and sharing &mdash; the core features are identical.</div>
+        <div class="pricing-faq-a">Yes. amux is fully open source. Cloud adds the server, its address, backups and upkeep; the product is the same.</div>
       </div>
     </div>
   </main>

@@ -38,7 +38,9 @@ try:
 except ModuleNotFoundError:  # python < 3.11
     tomllib = None
 
-FILE_TOOLS = {"Read", "Edit", "Write", "MultiEdit", "NotebookEdit"}
+# Grep and Glob read the filesystem too: a Grep into the vault prints card
+# data (found by the MSG-90256 adversarial pass, 2026-10-17).
+FILE_TOOLS = {"Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -300,6 +302,13 @@ def main() -> None:
     ti = payload.get("tool_input") or {}
     command = (ti.get("command") or "") if tool == "Bash" else ""
     path = ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""
+    if tool in ("Grep", "Glob"):
+        # A directory search: match the directory as a directory, plus the
+        # Glob pattern or Grep glob, so ~/.amux/vault and ~/.amux/vault/* both hit.
+        base = os.path.expanduser(ti.get("path") or "")
+        pat = os.path.expanduser((ti.get("pattern") if tool == "Glob" else ti.get("glob")) or "")
+        joined = pat if pat.startswith("/") else (base.rstrip("/") + "/" + pat if base else pat)
+        path = (base.rstrip("/") + "/" if base else "") + "\n" + joined
     content = "\n".join(str(ti.get(k) or "") for k in ("content", "new_string", "new_source"))
     if tool == "MultiEdit":
         content += "\n".join(str(e.get("new_string") or "") for e in ti.get("edits") or [])

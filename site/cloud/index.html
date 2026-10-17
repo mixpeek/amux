@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux Cloud — Tunnel relay for local AI agents</title>
+  <title>amux Cloud: your own amux server, running 24/7</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux Cloud adds a stable public HTTPS tunnel to your local amux dashboard. Everything else in amux is free and open source. $20/month or $200/year.">
-  <meta name="keywords" content="amux cloud, amux pricing, AI agent cloud, expose localhost agents, amux tunnel pricing, amux cloud plan">
+  <meta name="description" content="amux Cloud is your own dedicated amux server at yourname.amux.io: workers run 24/7, everything is backed up, and you sign in from any browser or the iOS app. From $39 a month.">
+  <meta name="keywords" content="amux cloud, amux pricing, hosted amux, AI agent server, run Claude Code 24/7, amux cloud plan">
   <link rel="canonical" href="https://amux.io/cloud/">
-  <meta property="og:title" content="amux Cloud — Tunnel relay for local AI agents">
-  <meta property="og:description" content="amux Cloud adds a stable public HTTPS tunnel to your local amux dashboard. Everything else in amux is free and open source. $20/month or $200/year.">
+  <meta property="og:title" content="amux Cloud: your own amux server, running 24/7">
+  <meta property="og:description" content="amux Cloud is your own dedicated amux server at yourname.amux.io: workers run 24/7, everything is backed up, and you sign in from any browser or the iOS app. From $39 a month.">
   <meta property="og:url" content="https://amux.io/cloud/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,9 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Cloud","item":"https://amux.io/cloud/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux Cloud","description":"amux Cloud adds a stable public HTTPS tunnel to your local amux dashboard. Everything else in amux is free and open source.","url":"https://amux.io/cloud/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","offers":{"@type":"Offer","price":"20","priceCurrency":"USD","priceSpecification":{"@type":"UnitPriceSpecification","price":"20","priceCurrency":"USD","unitCode":"MON"}}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What does amux Cloud include?","acceptedAnswer":{"@type":"Answer","text":"amux Cloud includes exactly one feature beyond the free open-source version: the tunnel relay. This gives your local amux dashboard a stable public HTTPS URL at https://<id>.t.amux.io/ so you can reach it from anywhere without port forwarding. Everything else in amux — the dashboard, agent orchestration, kanban board, CRM, email, browser automation, scheduler, mobile PWA, self-healing watchdog — is free open source (MIT)."}},{"@type":"Question","name":"How much does amux Cloud cost?","acceptedAnswer":{"@type":"Answer","text":"amux Cloud costs $20/month or $200/year (two months free). This includes the tunnel relay feature. All other amux features are free and open source under the MIT license."}},{"@type":"Question","name":"Can I self-host amux Cloud?","acceptedAnswer":{"@type":"Answer","text":"Yes. The tunnel gateway source code is in cloud/gateway/ in the amux repository. You can deploy your own relay to any VM with a public IP using the included Terraform scripts. Self-hosting is free; you pay for the VM (typically $5-10/mo on GCP or AWS)."}},{"@type":"Question","name":"Is amux a SaaS product?","acceptedAnswer":{"@type":"Answer","text":"No. amux is a local-first tool — it runs on your machine, stores everything locally in SQLite, and never sends your agent output or code to any cloud service. amux Cloud is just a relay that forwards public HTTPS traffic to your local server. No data passes through or is stored on amux servers."}},{"@type":"Question","name":"How is amux Cloud different from Devin or other cloud AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"amux Cloud is not a cloud AI execution environment. It does not run your agents in the cloud — your agents (Claude Code, Codex CLI, Gemini CLI) run on your machine, using your API keys, accessing your local filesystem. amux Cloud only provides the HTTP tunnel relay so you can reach your local dashboard from a phone or remote machine. This is intentional: local execution means your code never leaves your machine."}},{"@type":"Question","name":"What happens if I cancel amux Cloud?","acceptedAnswer":{"@type":"Answer","text":"Your tunnel URL stops working and the relay is disabled. Everything else in amux continues to work exactly as before — all your sessions, board items, notes, CRM entries, and configuration are stored locally and are unaffected. You can re-subscribe at any time and your tunnel URL will be the same (it is derived from your token)."}}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Cloud", "item": "https://amux.io/cloud/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebPage", "name": "amux Cloud", "description": "amux Cloud is your own dedicated amux server at yourname.amux.io: workers run 24/7, everything is backed up, and you sign in from any browser or the iOS app. From $39 a month.", "url": "https://amux.io/cloud/"}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is amux Cloud?", "acceptedAnswer": {"@type": "Answer", "text": "A dedicated server that runs amux for you alone, at your own address (yourname.amux.io). It is the same open-source amux, kept running, updated and backed up for you."}}, {"@type": "Question", "name": "How much does it cost?", "acceptedAnswer": {"@type": "Answer", "text": "Solo is $39 a month, Team $69 and Max $129. Each is a dedicated server; the larger plans have more CPU, memory and disk. Billing is monthly and you can cancel at any time."}}, {"@type": "Question", "name": "Do I need my own model account?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Sign in with Claude, ChatGPT or Google on your server, or paste an Anthropic, OpenAI or Gemini API key. Model usage is billed by that provider."}}, {"@type": "Question", "name": "What happens if I cancel?", "acceptedAnswer": {"@type": "Answer", "text": "Your server runs until the end of the period you paid for. We then save a snapshot and turn it off. The snapshot is kept for 30 days and resubscribing restores it."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -41,125 +41,73 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <span>Cloud</span></div>
     <h1>amux Cloud</h1>
-    <p class="subtitle">One paid feature. Everything else is free.</p>
+    <p class="subtitle">Your own amux server, running 24/7.</p>
 
     <div class="cta-box">
-      <h3>Get set up with us</h3>
-      <p>Pick a time and we will walk you through installing amux, connecting your
-         first workers, and turning on the tunnel.</p>
-      <a class="btn btn-primary" href="https://calendly.com/mixpeek"
-         target="_blank" rel="noopener">Schedule onboarding</a>
+      <h3>Ready in about three minutes</h3>
+      <p>Pick a plan and pay. We build a dedicated server at yourname.amux.io and email you when it is ready.
+         Then sign in to your model account and give it work.</p>
+      <a class="btn btn-primary" href="/start/?plan=solo&amp;source=cloud">Get amux Cloud</a>
     </div>
 
-    <p><strong>Quick answer:</strong> amux Cloud costs $20/month and adds exactly one thing to the free open-source version: a <a href="/features/tunnel/">tunnel relay</a> that gives your local dashboard a stable public HTTPS URL. No data leaves your machine. Your agents run locally.</p>
+    <p><strong>Quick answer:</strong> amux Cloud is the open-source amux running on a dedicated server that belongs to
+       you alone. Your workers keep going when your laptop is closed, your board, schedules and files are backed up
+       continuously, and you reach it from any browser or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>.
+       It costs $39, $69 or $129 a month depending on the size of the server.</p>
 
     <h2>What you get</h2>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Feature</th>
-          <th>Open Source (free)</th>
-          <th>Cloud ($20/mo)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>Web dashboard (sessions, board, peek)</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Agent orchestration (Claude Code, Codex, Gemini CLI)</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Self-healing watchdog</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Kanban board</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Notes &amp; CRM</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Email integration (Gmail API)</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Browser automation (Playwright)</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Scheduler</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Mobile PWA (iOS / Android)</td><td>Yes (local network only)</td><td>Yes (public URL via tunnel)</td></tr>
-        <tr><td>iOS native app</td><td>Yes (free on App Store)</td><td>Yes</td></tr>
-        <tr><td>MCP server</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td><strong>Public HTTPS tunnel</strong></td><td>No</td><td><strong>Yes</strong> — stable <code>https://&lt;id&gt;.t.amux.io/</code></td></tr>
-        <tr><td>Self-host tunnel gateway</td><td>Yes (cloud/gateway/ in repo)</td><td>Included</td></tr>
-        <tr><td>Data stored on amux servers</td><td>None</td><td>None — local only</td></tr>
-      </tbody>
-    </table>
+    <ul>
+      <li><strong>A dedicated server.</strong> Single-tenant: no other customer runs on it.</li>
+      <li><strong>Your own address.</strong> yourname.amux.io, with HTTPS and sign-in.</li>
+      <li><strong>Always on.</strong> Workers and schedules run around the clock.</li>
+      <li><strong>Backups.</strong> The database streams to storage continuously and files are saved nightly.</li>
+      <li><strong>Your models.</strong> Sign in with Claude, ChatGPT or Google, or paste an API key.</li>
+      <li><strong>Teammates.</strong> Invite people by email to work on the same server.</li>
+    </ul>
 
     <h2>Pricing</h2>
-
     <table>
       <thead>
-        <tr>
-          <th>Plan</th>
-          <th>Price</th>
-          <th>Tunnel</th>
-          <th>License</th>
-        </tr>
+        <tr><th>Plan</th><th>Server</th><th>Price</th><th></th></tr>
       </thead>
       <tbody>
         <tr>
-          <td>Open Source</td>
-          <td>Free forever</td>
-          <td>Self-host only</td>
-          <td>MIT</td>
+          <td><strong>Solo</strong></td>
+          <td>4 vCPU, 8 GB RAM, 80 GB disk</td>
+          <td><strong>$39 / month</strong></td>
+          <td><a class="btn btn-primary" href="/start/?plan=solo&amp;source=cloud">Get Solo</a></td>
         </tr>
         <tr>
-          <td><strong>Cloud</strong></td>
-          <td><strong>$20 / month</strong><br>or $200 / year (2 months free)</td>
-          <td>Included — <code>*.t.amux.io</code></td>
-          <td>MIT</td>
+          <td><strong>Team</strong></td>
+          <td>8 vCPU, 16 GB RAM, 160 GB disk</td>
+          <td><strong>$69 / month</strong></td>
+          <td><a class="btn btn-primary" href="/start/?plan=team&amp;source=cloud">Get Team</a></td>
+        </tr>
+        <tr>
+          <td><strong>Max</strong></td>
+          <td>16 vCPU, 32 GB RAM, 320 GB disk</td>
+          <td><strong>$129 / month</strong></td>
+          <td><a class="btn btn-primary" href="/start/?plan=max&amp;source=cloud">Get Max</a></td>
         </tr>
       </tbody>
     </table>
-
-    <div class="cta-box" style="margin:2rem 0">
-      <h3>Get amux Cloud</h3>
-      <p>Book a setup call. We'll get your tunnel running and your AI agent fleet configured in under 30 minutes.</p>
-      <p style="font-size:0.85rem;opacity:0.6;margin-bottom:0.5rem">3 onboarding slots open this month</p>
-      <a class="btn btn-primary" href="/concierge/">Book a setup call</a>
-    </div>
-
-    <h2>What amux Cloud is not</h2>
-    <p>amux Cloud is <strong>not</strong> a cloud execution environment. It does not:</p>
-    <ul>
-      <li>Run your AI agents in the cloud &mdash; they run on your machine, with your API keys, on your filesystem</li>
-      <li>Store your code, agent output, or messages on any server</li>
-      <li>Require you to give amux access to your GitHub, codebase, or secrets</li>
-    </ul>
-    <p>This is intentional. Local execution means your code never leaves your machine. The tunnel relay only forwards HTTP traffic &mdash; it does not inspect or log request bodies.</p>
-    <p>If you want a fully managed cloud AI coding service (where agents run in the cloud), see <a href="/compare/amux-vs-devin/">Devin</a>, <a href="/compare/amux-vs-codex/">OpenAI Codex</a>, or <a href="/compare/amux-vs-jules/">Jules by Google</a>.</p>
-
-    <h2>Self-hosting the tunnel gateway</h2>
-    <p>The tunnel relay is open source. The <code>cloud/gateway/</code> directory in the amux repository contains everything you need to deploy your own relay:</p>
-    <ul>
-      <li>Terraform configuration for GCP (or any cloud with a VM and public IP)</li>
-      <li>A setup script that configures the gateway and issues TLS certificates</li>
-      <li>DNS configuration instructions for your own domain</li>
-    </ul>
-    <pre><code>cd cloud/gateway
-terraform init
-terraform apply  # prompts for GCP project + region
-
-# Then point amux at your gateway:
-amux config set tunnel_gateway https://t.yourdomain.com
-amux tunnel start 8824</code></pre>
-    <p>Self-hosting is free under the MIT license. You pay for the VM (typically $5–10/mo on GCP or AWS e2-micro).</p>
+    <p>Billed monthly in US dollars. Cancel at any time. Model usage is billed by your model provider.
+       Running amux on your own machine stays free and has every feature: <a href="https://github.com/mixpeek/amux#install">install it</a>.</p>
 
     <h2>Frequently asked questions</h2>
 
-    <h3>What does amux Cloud include?</h3>
-    <p>amux Cloud includes exactly one feature beyond the free open-source version: the tunnel relay. This gives your local amux dashboard a stable public HTTPS URL at <code>https://&lt;id&gt;.t.amux.io/</code> so you can reach it from anywhere without port forwarding. Everything else in amux &mdash; the dashboard, agent orchestration, kanban board, CRM, email, browser automation, scheduler, mobile PWA, self-healing watchdog &mdash; is free open source (MIT).</p>
+    <h3>What is amux Cloud?</h3>
+    <p>A dedicated server that runs amux for you alone, at your own address (yourname.amux.io). It is the same open-source amux, kept running, updated and backed up for you.</p>
 
-    <h3>How much does amux Cloud cost?</h3>
-    <p>amux Cloud costs $20/month or $200/year (two months free). This includes the tunnel relay feature. All other amux features are free and open source under the MIT license.</p>
+    <h3>How much does it cost?</h3>
+    <p>Solo is $39 a month, Team $69 and Max $129. Each is a dedicated server; the larger plans have more CPU, memory and disk. Billing is monthly and you can cancel at any time.</p>
 
-    <h3>Can I self-host amux Cloud?</h3>
-    <p>Yes. The tunnel gateway source code is in <code>cloud/gateway/</code> in the amux repository. You can deploy your own relay to any VM with a public IP using the included Terraform scripts. Self-hosting is free; you pay for the VM (typically $5–10/mo on GCP or AWS).</p>
+    <h3>Do I need my own model account?</h3>
+    <p>Yes. Sign in with Claude, ChatGPT or Google on your server, or paste an Anthropic, OpenAI or Gemini API key. Model usage is billed by that provider.</p>
 
-    <h3>Is amux a SaaS product?</h3>
-    <p>No. amux is a local-first tool &mdash; it runs on your machine, stores everything locally in SQLite, and never sends your agent output or code to any cloud service. amux Cloud is just a relay that forwards public HTTPS traffic to your local server. No data passes through or is stored on amux servers.</p>
 
-    <h3>How is amux Cloud different from Devin or other cloud AI coding tools?</h3>
-    <p>amux Cloud is not a cloud AI execution environment. It does not run your agents in the cloud &mdash; your agents (Claude Code, Codex CLI, Gemini CLI) run on your machine, using your API keys, accessing your local filesystem. amux Cloud only provides the HTTP tunnel relay. This is intentional: local execution means your code never leaves your machine.</p>
-
-    <h3>What happens if I cancel amux Cloud?</h3>
-    <p>Your tunnel URL stops working and the relay is disabled. Everything else in amux continues to work exactly as before &mdash; all your sessions, board items, notes, CRM entries, and configuration are stored locally and are unaffected. You can re-subscribe at any time and your tunnel URL will be the same (it is derived from your token).</p>
+    <h3>What happens if I cancel?</h3>
+    <p>Your server runs until the end of the period you paid for. We then save a snapshot and turn it off. The snapshot is kept for 30 days and resubscribing restores it.</p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

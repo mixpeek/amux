@@ -60,6 +60,7 @@ pub fn routes() -> Router<AppState> {
         .route("/open", any(open_native))
         .route("/upload", any(upload))
         .route("/rename", any(rename))
+        .route("/move", any(move_file))
         .route("/read", any(read_file))
         .route("/search", any(search))
         .route("/list", any(list_dir))
@@ -2176,6 +2177,7 @@ pub async fn ls(
         return j(400, json!({"error": "missing path"}));
     }
     let show_hidden = qs_get(&qs, "hidden").unwrap_or("0") == "1";
+    let include_titles = qs_get(&qs, "titles").unwrap_or("0") == "1";
     let p = resolve_nonstrict(&expanduser(&ls_path));
     if !is_path_allowed(&p) {
         return j(403, json!({"error": "access denied"}));
@@ -2210,7 +2212,7 @@ pub async fn ls(
     let entries: Vec<Value> = items
         .into_iter()
         .map(|(not_dir, _, name, meta)| {
-            json!({
+            let mut entry = json!({
                 "name": name,
                 "type": if not_dir { "file" } else { "dir" },
                 // Python: st_size if item.is_file() else None — dirs null.
@@ -2218,7 +2220,13 @@ pub async fn ls(
                 "modified": mtime_secs(&meta),
                 // When the dashboard last opened this file; null if never.
                 "opened": opened.get(&name).copied(),
-            })
+            });
+            if include_titles && not_dir {
+                if let Some(title) = first_line_title(&p.join(&name)) {
+                    entry["title"] = json!(title);
+                }
+            }
+            entry
         })
         .collect();
     let parent = p.parent().filter(|par| *par != p).map(pystr);
@@ -2226,6 +2234,31 @@ pub async fn ls(
         200,
         json!({"path": pystr(&p), "parent": parent, "entries": entries}),
     )
+}
+
+fn first_line_title(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    if !matches!(ext.as_str(), "md" | "markdown" | "mdx" | "txt") {
+        return None;
+    }
+    let mut buf = [0u8; 512];
+    let mut f = std::fs::File::open(path).ok()?;
+    let n = std::io::Read::read(&mut f, &mut buf).ok()?;
+    if n == 0 {
+        return None;
+    }
+    let text = std::str::from_utf8(&buf[..n]).ok()?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let title = trimmed.trim_start_matches('#').trim();
+        if !title.is_empty() {
+            return Some(title.chars().take(120).collect());
+        }
+    }
+    None
 }
 
 /// Last-opened times of `dir`'s direct children, by name. A range scan on the
@@ -2256,6 +2289,49 @@ fn opened_in_dir(state: &AppState, dir: &str) -> std::collections::HashMap<Strin
             "listing served without last-opened times");
         Default::default()
     })
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/fs/move — move a file or directory to a new absolute path
+// ---------------------------------------------------------------------------
+
+async fn move_file(req: Request) -> Response {
+    if req.method() != Method::POST {
+        return not_found().await;
+    }
+    let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(b) => b,
+        Err(e) => return j(500, json!({"error": e.to_string()})),
+    };
+    let body = match parse_body(&bytes) {
+        Ok(v) => v,
+        Err(e) => return j(500, json!({"error": e})),
+    };
+    let src_path = body_str(&body, "path").trim().to_string();
+    let dest_path = body_str(&body, "dest").trim().to_string();
+    if src_path.is_empty() || dest_path.is_empty() {
+        return j(400, json!({"error": "missing 'path' or 'dest'"}));
+    }
+    let src = resolve_nonstrict(&expanduser(&src_path));
+    let dest = resolve_nonstrict(&expanduser(&dest_path));
+    if !is_path_allowed(&src) || !is_path_allowed(&dest) {
+        return j(403, json!({"error": "access denied"}));
+    }
+    if !src.exists() {
+        return j(404, json!({"error": "not found"}));
+    }
+    if dest.exists() {
+        return j(409, json!({"error": "target already exists"}));
+    }
+    if let Some(parent) = dest.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return j(500, json!({"error": e.to_string()}));
+        }
+    }
+    match std::fs::rename(&src, &dest) {
+        Ok(()) => j(200, json!({"ok": true, "path": pystr(&dest)})),
+        Err(e) => j(500, json!({"error": e.to_string()})),
+    }
 }
 
 // ---------------------------------------------------------------------------

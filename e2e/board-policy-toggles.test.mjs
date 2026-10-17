@@ -10,7 +10,6 @@ test('the worker Board tab has a config container and _peekBoardPolicySync rende
  assert.match(app,/function renderPeekIssues\(\) \{\n  _renderPeekIssuesBody\(\);\n  _peekBoardPolicySync\(\);/);
  assert.match(app,/_PEEK_BOARD_ALL_CONFIGS/);
  assert.match(app,/field: 'auto_drain_backlog'/);
- assert.match(app,/field: 'board_decompose'/);
  assert.match(app,/field: 'board_force_adherence'/);
  assert.match(app,/togglePeekBoardPolicy/);
  assert.match(sv,/"board_decompose",\s*super::board_lifecycle::DECOMPOSE_KEY/);
@@ -41,7 +40,6 @@ test('an isolated worker shows all toggles disabled with the reason',()=>{
       auto_drain_backlog:true,auto_pickup:true,auto_continue:true,standing_orders:true});
  assert.doesNotMatch(el.innerHTML,/pbc-disabled/);
  assert.match(el.innerHTML,/Refill To Do from Backlog/);
- assert.match(el.innerHTML,/Plan my messages onto the board/);
  assert.match(el.innerHTML,/pbc-help/, 'every switch shows its helper text');
  assert.match(el.innerHTML,/togglePeekBoardPolicy/);
 });

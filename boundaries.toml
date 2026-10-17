@@ -85,13 +85,23 @@ block_examples = [
 allow_examples = ["rg '/api/vault/' crates/amux-server/src"]
 
 [[boundary.deny]]
-tools = ["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit"]
+tools = ["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob"]
 match_all = ['\.amux/(vault|ts-secrets)(/|\b)']
-match_none = ['^\s*(ls|du)\b']
+match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
 path = '\.amux/(vault|ts-secrets)/'
 reason = "The vault holds card and secret data that only the amux server reads. Use `amux order` for a payment and ask the owner for anything else."
-block_examples = ["cat ~/.amux/vault/items.json", "Read /Users/ethan/.amux/vault/items.json"]
+block_examples = ["cat ~/.amux/vault/items.json", "ls ~/.amux/vault; cat ~/.amux/vault/items.json", "Read /Users/ethan/.amux/vault/items.json", "Grep /Users/ethan/.amux/vault", "Glob /Users/ethan/.amux/vault/*.json"]
 allow_examples = ["ls ~/.amux/vault", "cat ~/.amux/logs/vault-audit.jsonl", "Write /Users/ethan/Dev/amux/docs/vault.md"]
+
+# The same files reached without the full path: from inside ~/.amux, or
+# through a glob (the MSG-90256 adversarial pass, 2026-10-17).
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['\.amux\b', "(^|[\\s/'\"=])(vault|ts-secrets)(/|\\s|$|['\"*])"]
+match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
+reason = "The vault holds card and secret data that only the amux server reads. Use `amux order` for a payment and ask the owner for anything else."
+block_examples = ["cd ~/.amux && cat vault/items.json", "cd ~/.amux/vault && cat items.json"]
+allow_examples = ["cat ~/.amux/logs/vault-audit.jsonl", "cd ~/.amux && ls vault"]
 
 [[boundary]]
 id = "email"
@@ -115,6 +125,14 @@ match_all = ['\bosascript\b', '''application\s+["']mail["']''']
 reason = "Mail.app sends from the machine's default (personal) account, skips the send audit, and a hand-rolled reply can send a blank email."
 block_examples = ["osascript -e 'tell application \"Mail\" to send newMessage'"]
 allow_examples = ["osascript -e 'tell application \"Messages\" to send \"hi\" to buddy \"x\"'", "grep 'application \"Mail\"' notes.md"]
+
+# The same through JavaScript for Automation.
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['\bosascript\b', "Application\\(\\s*['\"]Mail['\"]\\s*\\)"]
+reason = "Mail.app sends from the machine's default (personal) account, skips the send audit, and a hand-rolled reply can send a blank email."
+block_examples = ["osascript -l JavaScript -e 'Application(\"Mail\").send()'"]
+allow_examples = ["osascript -l JavaScript -e 'Application(\"Messages\").send(\"hi\")'"]
 
 [[boundary.deny]]
 tools = ["Bash"]
@@ -141,13 +159,23 @@ block_examples = [
 allow_examples = ["curl -sk -X POST $AMUX_URL/api/email/send -d @mail.json"]
 
 [[boundary.deny]]
-tools = ["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit"]
+tools = ["Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob"]
 match_all = ['\.amux/(gmail-tokens|gmail-oauth-client\.json|gcal-token\.json|auth-token|auth_token|worker-tokens)(/|\b)']
-match_none = ['^\s*(ls|du)\b']
-path = '\.amux/(gmail-tokens/|gmail-oauth-client\.json$|gcal-token\.json$|auth-token$|auth_token$|worker-tokens/)'
+match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
+path = '\.amux/(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)'
 reason = "These are the owner's credentials. Use the amux API, which holds them for you; a worker reading them can bypass every send gate."
-block_examples = ["cat ~/.amux/gmail-tokens/ethan@mixpeek.com.json", "Read /Users/ethan/.amux/auth-token"]
-allow_examples = ["ls ~/.amux/gmail-tokens"]
+block_examples = ["cat ~/.amux/gmail-tokens/ethan@mixpeek.com.json", "ls ~/.amux/gmail-tokens && cat ~/.amux/gmail-tokens/x.json", "Read /Users/ethan/.amux/auth-token", "Grep /Users/ethan/.amux/gmail-tokens", "Glob /Users/ethan/.amux/gmail-tok*/*"]
+allow_examples = ["ls ~/.amux/gmail-tokens", "Read /Users/ethan/Dev/amux/docs/credentials.md"]
+
+# The same credentials reached without the full path (from inside ~/.amux, or
+# through a glob such as gmail-tok*).
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['\.amux\b', '(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)']
+match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
+reason = "These are the owner's credentials. Use the amux API, which holds them for you; a worker reading them can bypass every send gate."
+block_examples = ["cd ~/.amux && cat gmail-tokens/x.json", "cat ~/.amux/gmail-tok*/x.json"]
+allow_examples = ["cd ~/.amux && ls gmail-tokens", "grep -rn auth-token ~/Dev/amux/docs"]
 
 [[boundary.deny]]
 tools = ["Bash"]

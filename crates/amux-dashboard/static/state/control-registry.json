@@ -888,6 +888,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_connectionSignOut": {
+      "kind": "command._connectionSignOut",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_connectorAuth": {
       "kind": "command._connectorAuth",
       "feedback_required": true,
@@ -3840,6 +3846,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_spArchive": {
+      "kind": "command._spArchive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_spCaptureSave": {
       "kind": "command._spCaptureSave",
       "feedback_required": true,
@@ -3852,8 +3864,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_spCleanArchive": {
+      "kind": "command._spCleanArchive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_spHandlePaste": {
       "kind": "command._spHandlePaste",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spMakeRow": {
+      "kind": "command._spMakeRow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3882,8 +3906,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_spSetupEditableTitle": {
+      "kind": "command._spSetupEditableTitle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spShowMenu": {
+      "kind": "command._spShowMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_spSortBy": {
       "kind": "command._spSortBy",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spUpdateTitle": {
+      "kind": "command._spUpdateTitle",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
