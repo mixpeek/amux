@@ -1,0 +1,12 @@
+# GitGuardian / ggshield configuration (repo-level).
+#
+# One known false positive is SCOPed here rather than silencing a detector:
+# e2e/chaos/vault-lifecycle.mjs plants these `vl-*` strings as synthetic vault
+# fixtures and reads them back only as SHA-256 (see that file's header: "no
+# record this test reads holds a value"). There is no credential, and the
+# values are already public on mixpeek/amux. The ignore is scoped to that one
+# fixture file; every other path keeps being scanned.
+version: 2
+secret:
+  ignored_paths:
+    - 'e2e/chaos/vault-lifecycle.mjs'
