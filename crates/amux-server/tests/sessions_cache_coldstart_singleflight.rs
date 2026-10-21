@@ -152,23 +152,34 @@ fn structural_changes_fail_closed_instead_of_returning_the_raced_snapshot() {
         .nth(1)
         .and_then(|tail| tail.split("Ok(json)").next())
         .expect("sessions cache write-back moved or disappeared");
-    // AMUX-4637 moved the comparison into race_verdict and returns a typed
-    // DiscoveryRaced instead of an untyped bail!, so the write-back now hands
-    // both live readings to race_verdict and returns its error, and race_verdict
-    // must compare BOTH the epoch and the registry. Same property as before:
-    // any structural change during the build refuses the raced snapshot.
+    // The verdict distinguishes measured structural changes from an unreadable
+    // registry. A measured race refuses both the response and cache writeback.
     assert!(writeback.contains("race_verdict("));
     assert!(writeback.contains("SESSIONS_EPOCH.load"));
     assert!(writeback.contains("registry_fingerprint()"));
-    assert!(writeback.contains("return Err(raced.into());"));
+    let raced_arm = writeback
+        .split("RaceVerdict::Raced => {")
+        .nth(1)
+        .and_then(|tail| tail.split("RaceVerdict::Unverifiable => {").next())
+        .expect("measured race refusal arm moved or disappeared");
+    assert!(raced_arm.contains("return Err(DiscoveryRaced.into());"));
+    assert!(raced_arm.contains("sessions_build_raced"));
+    assert!(!raced_arm.contains("ListSnapshot {"));
+    assert!(!raced_arm.contains("Ok(json)"));
     let verdict = SRC
         .split("fn race_verdict(")
         .nth(1)
         .and_then(|tail| tail.split("\n}\n").next())
         .expect("race_verdict moved or disappeared");
-    assert!(verdict.contains("epoch_now == epoch_start"));
-    assert!(verdict.contains("registry_now == registry_start"));
-    assert!(verdict.contains("Err(DiscoveryRaced)"));
+    let epoch_changed_arm = verdict
+        .split("if epoch_now != epoch_start {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n    }").next())
+        .expect("changed epoch guard moved or disappeared");
+    assert!(epoch_changed_arm.contains("return RaceVerdict::Raced;"));
+    assert!(verdict.contains("(Some(a), Some(b)) if a == b => RaceVerdict::Fresh"));
+    assert!(verdict.contains("(Some(_), Some(_)) => RaceVerdict::Raced"));
+    assert!(verdict.contains("_ => RaceVerdict::Unverifiable"));
     assert!(
         !writeback.contains("caller still gets"),
         "a response that raced an isolation/delete/config change must not be returned"
