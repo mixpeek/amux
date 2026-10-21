@@ -387,7 +387,16 @@ pub fn verify_replay(conn: &Connection) -> rusqlite::Result<ReplayReport> {
                 report.entities_checked += 1;
                 let divergence = match (&ent.state, live_snap) {
                     (Some(snap), Some(live_snap)) => {
-                        let fields = diff_fields(snap, live_snap);
+                        // Activity logs are deliberately not journaled (CW-860).
+                        // Ignore the field in legacy snapshots too, while still
+                        // auditing every other task field and all worker fields.
+                        let mut snap = snap.clone();
+                        let mut live_snap = live_snap.clone();
+                        if etype == "task" {
+                            if let Some(object) = snap.as_object_mut() { object.remove("log"); }
+                            if let Some(object) = live_snap.as_object_mut() { object.remove("log"); }
+                        }
+                        let fields = diff_fields(&snap, &live_snap);
                         if fields.is_empty() {
                             None
                         } else {

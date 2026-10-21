@@ -16,6 +16,8 @@
 
 pub mod advance;
 pub mod artifact_store;
+pub mod artifact_log;
+pub mod card_log;
 pub mod attempts;
 pub mod board_store;
 pub mod task_graph_store;
@@ -668,6 +670,12 @@ impl Store {
                 return Ok((vec![], true));
             }
         }
+        if oldest.is_none() {
+            let current: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
+            if since.0 < current {
+                return Ok((vec![], true));
+            }
+        }
         let mut stmt = conn.prepare(
             "SELECT rev, entity_type, entity_id, mutation, at FROM _amux_state_events
              WHERE rev > ?1 ORDER BY rev ASC LIMIT ?2",
@@ -907,7 +915,15 @@ fn apply_write(
             // Snapshot rides in the same INSERT as the event it describes —
             // journal row and payload cannot disagree about which transaction
             // produced them (RR-0111a).
-            let payload_json = ev.payload.as_ref().map(|p| p.to_string());
+            let payload_json = ev.payload.as_ref().map(|p| {
+                let mut payload = p.clone();
+                if entity_type_str == "task" {
+                    if let Some(object) = payload.as_object_mut() {
+                        object.remove("log");
+                    }
+                }
+                payload.to_string()
+            });
             conn.execute(
                 "INSERT INTO _amux_state_events (rev, entity_type, entity_id, mutation, at, payload)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

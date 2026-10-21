@@ -574,6 +574,67 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
     }
 }
 
+/// Logical row bytes, including a conservative allowance for SQLite record/index
+/// overhead. Read newest-first and stop at the cap: an incident-sized backlog
+/// must not require materializing every old payload before it can be pruned.
+const STATE_EVENT_ROW_BYTES: &str = "128 + length(CAST(entity_type AS BLOB)) + length(CAST(entity_id AS BLOB)) + length(CAST(mutation AS BLOB)) + length(CAST(at AS BLOB)) + coalesce(length(CAST(payload AS BLOB)), 0)";
+const DEFAULT_STATE_EVENTS_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+fn state_events_max_bytes() -> u64 {
+    std::env::var("AMUX_STATE_EVENTS_MAX_BYTES").ok()
+        .or_else(|| crate::config::parse_env_file(&amux_home().join("server.env"))
+            .get("AMUX_STATE_EVENTS_MAX_BYTES").cloned())
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_STATE_EVENTS_MAX_BYTES)
+}
+
+/// Keep a suffix of COMPLETE revisions, so delta sync never observes half a
+/// committed write. Unlike age retention this explicit byte limit may empty the
+/// journal if its newest revision alone exceeds the budget; clients full-sync.
+fn sweep_state_events_bytes(conn: &Connection, max_bytes: u64) -> rusqlite::Result<SweepResult> {
+    if max_bytes == 0 {
+        return Ok(SweepResult::Disabled);
+    }
+    let mut statement = conn.prepare(&format!(
+        "SELECT rev, {STATE_EVENT_ROW_BYTES} FROM _amux_state_events ORDER BY rev DESC, id DESC"
+    ))?;
+    let mut rows = statement.query([])?;
+    let mut retained_bytes = 0u64;
+    let mut retained_rows = 0i64;
+    let mut revision = None;
+    let mut revision_bytes = 0u64;
+    let mut revision_rows = 0i64;
+    let mut cutoff = None;
+    while let Some(row) = rows.next()? {
+        let rev: i64 = row.get(0)?;
+        if revision != Some(rev) {
+            retained_bytes = retained_bytes.saturating_add(revision_bytes);
+            retained_rows += revision_rows;
+            revision = Some(rev);
+            revision_bytes = 0;
+            revision_rows = 0;
+        }
+        revision_bytes = revision_bytes.saturating_add(row.get::<_, i64>(1)?.max(0) as u64);
+        revision_rows += 1;
+        if retained_bytes.saturating_add(revision_bytes) > max_bytes {
+            cutoff = Some(rev);
+            break;
+        }
+    }
+    drop(rows);
+    drop(statement);
+    let Some(cutoff) = cutoff else {
+        return Ok(SweepResult::Deleted { rows: 0, kept: retained_rows + revision_rows });
+    };
+    let deleted = conn.execute("DELETE FROM _amux_state_events WHERE rev <= ?1", [cutoff])?;
+    tracing::warn!(
+        deleted, retained_bytes, max_bytes, cutoff_rev = cutoff,
+        knob = "AMUX_STATE_EVENTS_MAX_BYTES",
+        "storage_state_events_size_trim: oldest revisions exceeded byte limit"
+    );
+    Ok(SweepResult::Deleted { rows: deleted, kept: retained_rows })
+}
+
 // ---------------------------------------------------------------------------
 // Filesystem sinks
 // ---------------------------------------------------------------------------
@@ -1107,6 +1168,65 @@ async fn checkpoint_wal(store: &crate::db::SharedStore, home: &Path) -> (Option<
     (before, after)
 }
 
+/// Run only in the dedicated subprocess, before any server threads start.
+/// The caller sets SQLITE_TMPDIR on this child, never on the live process.
+pub fn storage_vacuum_helper(db: &Path) -> Result<(), String> {
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_secs(30)).map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA temp_store=FILE; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+        .map_err(|e| e.to_string())
+}
+
+fn configured_vacuum_tmpdir() -> Option<std::path::PathBuf> {
+    ["AMUX_VACUUM_TMPDIR", "SQLITE_TMPDIR"].into_iter()
+        .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()).map(Into::into))
+}
+
+fn vacuum_command(exe: &Path, db: &Path, tmp: &Path) -> std::io::Result<std::process::Command> {
+    // SQLite silently falls back from an unusable temp directory. Refuse that
+    // fallback: success must mean the configured volume was usable.
+    if !tmp.is_dir() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "VACUUM temporary directory does not exist"));
+    }
+    let probe = tmp.join(format!(".amux-vacuum-probe-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?;
+    drop(file);
+    std::fs::remove_file(&probe)?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--storage-vacuum-helper").arg(db).env("SQLITE_TMPDIR", tmp)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    Ok(cmd)
+}
+
+fn vacuum_in_subprocess(db: &Path, tmp: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = vacuum_command(&exe, db, tmp).map_err(|e| e.to_string())?
+        .spawn().map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                let mut detail = String::new();
+                if let Some(stderr) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut std::io::Read::take(stderr, 8192), &mut detail);
+                }
+                return Err(format!("VACUUM helper exited {status}: {}", detail.trim()));
+            }
+            Ok(None) if std::time::Instant::now() < deadline =>
+                std::thread::sleep(std::time::Duration::from_millis(100)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("VACUUM helper timeout or wait failure: {result:?}"));
+            }
+        }
+    }
+}
+
 async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
     let marker = home.join(".last-vacuum");
     let min_interval = env_u64("AMUX_VACUUM_INTERVAL_SECS", 86_400);
@@ -1132,10 +1252,18 @@ async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
     // below was written whether or not the work succeeded, so the next attempt
     // was suppressed for another 24 hours and the log line said "VACUUM
     // completed" only on a branch that never ran.
+    let tmpdir = configured_vacuum_tmpdir();
+    let tmpdir_label = tmpdir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "SQLite default".into());
     let res = store
         .read_async(move |conn| {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-            conn.execute_batch("VACUUM;")?;
+            if let Some(tmpdir) = tmpdir {
+                let db: String = conn.query_row("SELECT file FROM pragma_database_list WHERE name='main'", [], |r| r.get(0))?;
+                vacuum_in_subprocess(Path::new(&db), &tmpdir)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            } else {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+                conn.execute_batch("VACUUM;")?;
+            }
             Ok(())
         })
         .await;
@@ -1150,12 +1278,13 @@ async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
             tracing::info!(
                 took_ms = t0.elapsed().as_millis() as u64,
                 knob = "AMUX_VACUUM_INTERVAL_SECS",
+                temp_dir = %tmpdir_label,
                 "storage sweep: VACUUM completed"
             );
             true
         }
         Err(e) => {
-            tracing::warn!(error = %e, "storage sweep: VACUUM failed");
+            tracing::warn!(error = %e, temp_dir = %tmpdir_label, "storage sweep: VACUUM failed");
             false
         }
     }
@@ -1234,6 +1363,10 @@ pub const AGE_PRUNED_DIRS: &[(&str, &str, u64)] = &[
 ];
 
 pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
+    storage_tick_with_limit(state, home, state_events_max_bytes()).await
+}
+
+async fn storage_tick_with_limit(state: &AppState, home: &Path, state_event_limit: u64) -> StorageReport {
     let t0 = std::time::Instant::now();
     let now = unix_now();
     let mut rep = StorageReport { at: now, ..Default::default() };
@@ -1255,6 +1388,12 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
             for spec in SPECS {
                 out.push((spec.table.to_string(), format!("{:?}", sweep_one(conn, spec, now))));
             }
+            let bounded = sweep_state_events_bytes(conn, state_event_limit)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "storage_state_events_size_trim: byte retention failed");
+                    SweepResult::Error(e.to_string())
+                });
+            out.push(("_amux_state_events_bytes".into(), format!("{bounded:?}")));
             if let Ok(mut s) = sink2.lock() {
                 *s = out;
             }
@@ -1696,6 +1835,72 @@ mod tests {
         assert!(uploads.join("saved.png").exists(), "probe failure must never mean no references");
         assert!(report.upload_refs_error.as_deref().unwrap().contains("saved_messages"));
         assert_eq!(report.files_removed, 0);
+    }
+
+    #[tokio::test]
+    async fn state_event_byte_cap_is_enforced_by_one_storage_tick() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store.write_async(|conn| {
+            for rev in 1..=20 {
+                conn.execute("INSERT INTO _amux_state_events (rev,entity_type,entity_id,mutation,at,payload) VALUES (?1,'board','card','upsert',?2,?3)",
+                    rusqlite::params![rev, iso_utc(unix_now() as i64), "x".repeat(4096)])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        }).await.unwrap();
+        // Avoid a real VACUUM; this test measures the retention tick itself.
+        std::fs::write(home.path().join(".last-vacuum"), "test").unwrap();
+        let state = AppState { store, started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let cap = 10_000u64;
+        let report = storage_tick_with_limit(&state, home.path(), cap).await;
+        assert!(report.tables.iter().any(|(name, result)| name == "_amux_state_events_bytes" && result.contains("rows: 18")), "{report:?}");
+        state.store.read_async(move |conn| {
+            let (bytes, oldest): (u64, i64) = conn.query_row(&format!("SELECT sum({STATE_EVENT_ROW_BYTES}),min(rev) FROM _amux_state_events"), [], |r| Ok((r.get(0)?,r.get(1)?)))?;
+            assert!(bytes <= cap, "one tick must enforce the byte bound: {bytes} > {cap}");
+            assert_eq!(oldest,19,"must trim oldest revisions first");
+            Ok(())
+        }).await.unwrap();
+    }
+
+    #[test]
+    fn state_event_byte_cap_never_keeps_a_partial_revision() {
+        let c = mem();
+        c.execute_batch("CREATE TABLE _amux_state_events(id INTEGER PRIMARY KEY,rev INTEGER,entity_type TEXT,entity_id TEXT,mutation TEXT,at TEXT,payload TEXT)").unwrap();
+        for rev in [1,2,2,3] {
+            c.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES (?1,'b','c','u','now',?2)", rusqlite::params![rev, "x".repeat(1024)]).unwrap();
+        }
+        assert_eq!(sweep_state_events_bytes(&c, 2500).unwrap(), SweepResult::Deleted { rows: 3, kept: 1 });
+        assert_eq!(sweep_state_events_bytes(&c, 100).unwrap(), SweepResult::Deleted { rows: 1, kept: 0 });
+        assert_eq!(sweep_state_events_bytes(&c, 0).unwrap(), SweepResult::Disabled);
+    }
+
+    #[test]
+    fn vacuum_temp_directory_is_child_scoped_and_invalid_paths_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = std::env::var_os("SQLITE_TMPDIR");
+        let cmd = vacuum_command(Path::new("amux-server"), Path::new("test.db"), tmp.path()).unwrap();
+        let child_env: Vec<_> = cmd.get_envs().collect();
+        assert!(child_env.contains(&(std::ffi::OsStr::new("SQLITE_TMPDIR"), Some(tmp.path().as_os_str()))));
+        assert_eq!(std::env::var_os("SQLITE_TMPDIR"), before,"server environment must remain unchanged");
+        assert!(vacuum_command(Path::new("amux-server"), Path::new("test.db"), &tmp.path().join("absent")).is_err());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(),0,"writability probe must clean up");
+    }
+
+    #[test]
+    fn vacuum_helper_reclaims_database_pages_and_preserves_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("vacuum.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t(v BLOB); INSERT INTO t VALUES (zeroblob(1048576)); INSERT INTO t VALUES ('survivor'); DELETE FROM t WHERE rowid=1;").unwrap();
+        let before = std::fs::metadata(&db).unwrap().len();
+        drop(conn);
+        storage_vacuum_helper(&db).unwrap();
+        assert!(std::fs::metadata(&db).unwrap().len() < before);
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(conn.query_row("SELECT v FROM t",[],|r|r.get::<_,String>(0)).unwrap(),"survivor");
+        assert!(storage_vacuum_helper(&tmp.path().join("absent.db")).is_err());
+        assert!(!tmp.path().join("absent.db").exists());
     }
 
     #[test]

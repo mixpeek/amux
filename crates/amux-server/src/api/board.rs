@@ -1404,7 +1404,7 @@ async fn get_contract(
         // for the ones that already happened, and for `force`/ack'd replaces
         // which are still allowed to destroy prose on purpose.
         "recovering_a_clobbered_desc": {
-            "where": "_amux_state_events rows carry the FULL pre-mutation card snapshot in                       their payload, so a description overwritten by a PATCH is recoverable                       without any backup",
+            "where": "_amux_state_events rows carry the post-mutation card snapshot (excluding the bounded activity log) in                       their payload, so a description overwritten by a PATCH is recoverable                       without any backup",
             "how": "find the row for the mutation (by card id and timestamp) and read the                     snapshot out of its payload",
             "prevention": "PATCH refuses two acts and the refusal body names which via `rule`: SIZE — a replace dropping a strict majority of a desc of 500+ chars, any writer; and AUTHORSHIP — a replace by a DIFFERENT session in which NONE of the card owner's lines survive, at any magnitude and in either direction. Length is not the test: a 54-char desc replaced by 17 chars and a 264-char desc replaced by 392 both destroyed everything and both passed the old size floors (AF-191). Both escape via desc_shrink_ack. To ADD rather than replace — almost always what a reviewer means — send PATCH /api/board/<id> {\"desc_append\": \"your note\"}. `desc_append` is a FIELD in the PATCH body, not a sub-path: POST /api/board/<id>/desc-append is NOT routed and a lane guessed it twice on 2026-08-24 (AF-187)",
             "why_this_happens": "GET /api/board OMITS `desc` (slim rows carry desc_len/                                 desc_head, and a `slim` key holding the ARRAY of dropped                                  field names — not the flag `1` this line claimed until                                  2026-08-27). An ABSENT field is not an empty one, and                                  .get(\"desc\") returns None either way — read desc_len,                                  read `slim` to see everything else that was dropped, or                                  GET the single card",
@@ -15606,10 +15606,8 @@ async fn create_artifact(
         };
         crate::db::artifact_store::insert(conn, &row)?;
         let stamp = chrono::Local::now().format("%H:%M").to_string();
-        task.log = Some(bs::append_log(
-            task.log.as_deref(),
-            &stamp,
-            &format!("artifact ({actor_w}): {kind_w}/{state_w} {ref_w}"),
+        task.log = Some(crate::db::artifact_log::append_artifact_log(
+            task.log.as_deref(), &stamp, &actor_w, &kind_w, &state_w, &ref_w,
         ));
         task.updated = now;
         task.rev += 1;

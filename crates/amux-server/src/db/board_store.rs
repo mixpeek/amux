@@ -1742,7 +1742,12 @@ pub fn append_log(existing: Option<&str>, hhmm: &str, line: &str) -> String {
         out.push_str(&today);
         out.push('`');
     }
-    format!("{out}\n`{hhmm}` {line}").trim().to_string()
+    let full = format!("{out}\n`{hhmm}` {line}").trim().to_string();
+    let bounded = super::card_log::bound_log(&full);
+    if bounded != full && !base.lines().next().is_some_and(|line| line.ends_with(" older lines trimmed")) {
+        tracing::warn!(before_bytes = full.len(), after_bytes = bounded.len(), "board card log trimmed");
+    }
+    bounded
 }
 
 // ---------------------------------------------------------------------------
@@ -3972,6 +3977,13 @@ fn entered_state_at_for_write(conn: &Connection, row: &IssueRow) -> Option<i64> 
 }
 
 pub fn save_patched(conn: &Connection, row: &mut IssueRow) -> rusqlite::Result<usize> {
+    if let Some(log) = &row.log {
+        let bounded = super::card_log::bound_log(log);
+        if bounded != *log {
+            tracing::warn!(task = %row.id, before_bytes = log.len(), after_bytes = bounded.len(), "board card log trimmed");
+            row.log = Some(bounded);
+        }
+    }
     let dep_json = if row.depends_on.is_empty() {
         None
     } else {
