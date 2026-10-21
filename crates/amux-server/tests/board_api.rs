@@ -389,7 +389,7 @@ async fn capture_decomposition_is_atomic_ordered_and_keeps_the_message_on_the_ep
     assert_eq!(child_detail["messages"][0]["id"], json!(39225));
     assert_eq!(child_detail["artifacts"][0]["ref"], json!("/tmp/result.md"));
     assert!(
-        child_detail["log"].as_str().unwrap().contains("artifact (api-anonymous): implementation/created /tmp/result.md"),
+        child_detail["log"].as_str().unwrap().contains("artifact (api-anonymous): implementation/created 1 files under /tmp/"),
         "artifact registration must be part of the task action history: {child_detail}"
     );
 
