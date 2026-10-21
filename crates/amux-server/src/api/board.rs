@@ -15939,7 +15939,7 @@ async fn apply_status_update(
         // `advance` appended the claim audit line, so read that before adding progress.
         let current_log = if claimed { bs::get_issue(conn, &id)?.and_then(|r| r.log) } else { row.log };
         let next = bs::append_log(current_log.as_deref(), &stamp, &line);
-        conn.execute("UPDATE issues SET log=?1 WHERE id=?2", rusqlite::params![next, &id])?;
+        conn.execute("UPDATE issues SET log=?1, rev=COALESCE(rev,0)+1, version=COALESCE(version,0)+1 WHERE id=?2", rusqlite::params![next, &id])?;
         let inserted = crate::db::artifact_store::insert_captured_refs(
             conn, &id, refs,
             &format!("automatically captured from status update by {actor}"), now_secs(),
@@ -15962,6 +15962,9 @@ async fn apply_status_update(
             mutation: amux_core::revision::MutationKind::Created,
             payload: None,
         }));
+        if let Some(updated) = bs::get_issue(conn, &id)? {
+            events.push(ev_snap(&updated, MutationKind::Updated));
+        }
         *result_w.lock().expect("status update result slot poisoned") = Some(StatusUpdateResult {
             captured: inserted, claimed, prior_status, status, owner, claim_verdict,
         });
@@ -15992,7 +15995,7 @@ async fn append_card_log(
                 .unwrap_or(None);
             let next = bs::append_log(existing.as_deref(), &stamp, &line);
             conn.execute(
-                "UPDATE issues SET log=?1 WHERE id=?2",
+                "UPDATE issues SET log=?1, rev=COALESCE(rev,0)+1, version=COALESCE(version,0)+1 WHERE id=?2",
                 rusqlite::params![next, &id],
             )?;
             let inserted = match capture {
@@ -16005,7 +16008,7 @@ async fn append_card_log(
                 )?,
                 None => Vec::new(),
             };
-            let events = inserted
+            let mut events: Vec<PendingEvent> = inserted
                 .iter()
                 .map(|artifact| crate::db::PendingEvent {
                     entity_type: amux_core::revision::EntityType::Other("artifact".into()),
@@ -16014,6 +16017,9 @@ async fn append_card_log(
                     payload: None,
                 })
                 .collect();
+            if let Some(updated) = bs::get_issue(conn, &id)? {
+                events.push(ev_snap(&updated, MutationKind::Updated));
+            }
             *captured_w.lock().expect("artifact capture slot poisoned") = inserted;
             Ok(WriteOutcome { applied: true, events })
         })

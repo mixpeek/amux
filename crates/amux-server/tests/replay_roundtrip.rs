@@ -156,10 +156,14 @@ async fn write_then_replay_round_trip() {
 
     let live_card = board_store::get_issue(&conn, &cid).unwrap().unwrap();
     let replayed_card = &rs.entities["task"][&cid];
+    let mut expected = live_card.snapshot();
+    // CW-860: bounded activity history is not duplicated into the journal.
+    assert!(expected.as_object_mut().unwrap().remove("log").is_some());
+    assert!(replayed_card.state.as_ref().unwrap().get("log").is_none());
     assert_eq!(
         replayed_card.state.as_ref(),
-        Some(&live_card.snapshot()),
-        "journal alone reproduces the board row"
+        Some(&expected),
+        "journal reproduces all board fields except the activity log"
     );
     assert_eq!(replayed_card.events_folded, 4); // create + desc + 2 status moves
 
@@ -319,10 +323,9 @@ async fn horizon_honesty_reports_instead_of_fabricating() {
     assert_eq!(report.entities_checked, 1);
     assert_eq!(report.entities_matched, 1);
     let rs = replay::replay_state(&conn, report.head_rev).unwrap();
-    assert_eq!(
-        rs.entities["task"][&cid].state.as_ref(),
-        Some(&board_store::get_issue(&conn, &cid).unwrap().unwrap().snapshot())
-    );
+    let mut expected = board_store::get_issue(&conn, &cid).unwrap().unwrap().snapshot();
+    assert!(expected.as_object_mut().unwrap().remove("log").is_some());
+    assert_eq!(rs.entities["task"][&cid].state.as_ref(), Some(&expected));
     // The ghost's replayed state is honestly unknown.
     assert_eq!(rs.entities["task"]["GHOST-9"].state, None);
 }
