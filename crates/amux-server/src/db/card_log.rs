@@ -20,36 +20,40 @@ pub fn bound_log(log: &str) -> String {
         .rev()
         .filter_map(|word| word.strip_prefix("plan_sha256="))
         .find(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()));
-    let fold_index = lines.iter().rposition(|line| {
-        let body = line.trim();
-        let body = body
-            .strip_prefix('`')
-            .and_then(|rest| rest.split_once('`'))
-            .map(|(_, rest)| rest.trim_start())
-            .unwrap_or(body);
-        let body = match body.split_once(": ") {
-            Some((actor, rest)) if !actor.contains(' ') => rest,
-            _ => body,
+    let mut fold = None;
+    let mut folded_lines = 0usize;
+    lines.retain(|line| {
+        let Some((target, inferred)) = super::board_store::folded_into_detail(Some(line)) else {
+            return true;
         };
-        line.len() <= 1024
-            && body
-                .strip_prefix("capture folded into ")
-                .is_some_and(|rest| {
-                    !rest.trim().is_empty() && !rest.trim().starts_with("[inferred]")
-                })
+        folded_lines += 1;
+        let canonical = format!(
+            "capture folded into {target}{}",
+            if inferred { " [inferred]" } else { "" }
+        );
+        // A real minted card id is small. An arbitrarily long, malformed
+        // target must not make the protected header violate the hard byte cap.
+        fold = (canonical.len() <= MAX_LOG_BYTES - 256).then_some(canonical);
+        if fold.is_none() {
+            tracing::warn!("board card oversized fold metadata dropped while trimming log");
+        }
+        false
     });
-    let fold = fold_index.map(|index| lines.remove(index));
+    let redundant_folds = folded_lines.saturating_sub(usize::from(fold.is_some()));
     let mut start = lines
         .len()
         .saturating_sub(MAX_LOG_LINES - 1 - usize::from(fold.is_some()));
     let mut bytes: usize = lines[start..].iter().map(|line| line.len() + 1).sum();
     loop {
-        let count = previous.unwrap_or(0).saturating_add(start);
+        let count = previous
+            .unwrap_or(0)
+            .saturating_add(start)
+            .saturating_add(redundant_folds);
         let mut marker = format!("{count} older lines trimmed");
         if let Some(plan) = plan {
             marker.push_str(&format!(" plan_sha256={plan}"));
         }
-        let header = match fold {
+        let header = match fold.as_deref() {
             Some(fold) => format!("{marker}\n{fold}\n"),
             None => format!("{marker}\n"),
         };
@@ -120,7 +124,7 @@ mod metadata_tests {
             log = bound_log(&format!("{log}\nnew entry"));
         }
         assert!(log.contains(&format!("plan_sha256={hash}")));
-        assert!(log.contains("`05:10` worker: capture folded into CW-42 [inferred]"));
+        assert!(log.contains("capture folded into CW-42 [inferred]"));
         assert!(log.lines().count() <= MAX_LOG_LINES);
         assert!(log.len() <= MAX_LOG_BYTES);
     }
@@ -136,5 +140,68 @@ mod metadata_tests {
         assert!(bounded.len() <= MAX_LOG_BYTES);
         assert!(bounded.ends_with("latest"));
         assert!(!bounded.contains(&"x".repeat(100)));
+    }
+}
+
+#[cfg(test)]
+mod fold_order_tests {
+    use super::*;
+    use crate::db::board_store::{append_log, folded_into_detail};
+
+    #[test]
+    fn latest_callback_target_survives_multiple_folds_and_repeated_trims() {
+        let input = format!("{}\n`05:10` worker: capture folded into CW-11\n`05:11` worker: capture folded into CW-22 [inferred]\n{}", "old entry\n".repeat(200), "new entry\n".repeat(400));
+        assert_eq!(
+            folded_into_detail(Some(&input)),
+            Some(("CW-22".into(), true))
+        );
+        let mut bounded = bound_log(&input);
+        assert_eq!(
+            folded_into_detail(Some(&bounded)),
+            Some(("CW-22".into(), true))
+        );
+        assert!(!bounded.contains("capture folded into CW-11"));
+        for _ in 0..600 {
+            bounded = append_log(Some(&bounded), "05:12", "current work");
+        }
+        assert_eq!(
+            folded_into_detail(Some(&bounded)),
+            Some(("CW-22".into(), true))
+        );
+        assert!(bounded.lines().count() <= MAX_LOG_LINES);
+        assert!(bounded.len() <= MAX_LOG_BYTES);
+        assert!(bounded.contains("older lines trimmed"));
+    }
+
+    #[test]
+    fn long_fold_lines_use_the_existing_parser_and_a_compact_target() {
+        let input = format!(
+            "{}\ncapture folded into CW-11 {}\ncapture folded into [inferred] CW-22\n{}",
+            "old\n".repeat(200),
+            "note".repeat(400),
+            "new\n".repeat(400)
+        );
+        assert_eq!(
+            folded_into_detail(Some(&input)),
+            Some(("CW-22".into(), true))
+        );
+        let bounded = bound_log(&input);
+        assert_eq!(
+            folded_into_detail(Some(&bounded)),
+            Some(("CW-22".into(), true))
+        );
+        assert!(!bounded.contains("capture folded into CW-11"));
+        assert!(bounded.len() <= MAX_LOG_BYTES);
+    }
+
+    #[test]
+    fn oversized_fold_target_cannot_expand_the_header_past_the_cap() {
+        let input = format!(
+            "capture folded into {}\nlatest",
+            "x".repeat(MAX_LOG_BYTES * 2)
+        );
+        let bounded = bound_log(&input);
+        assert!(bounded.len() <= MAX_LOG_BYTES);
+        assert!(bounded.ends_with("latest"));
     }
 }
