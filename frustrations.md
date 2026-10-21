@@ -3356,3 +3356,25 @@ FIX: 831cc0cb + a35d850f. Added `encode_waiting_on` mirroring
    per ethos rule 4 -- both servers here reported "healthy" the whole time, so
    nothing about the failure was wrong-looking from either process's own vantage
    point.
+
+## Automatic full VACUUM interrupted an owned scoring run
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-21
+SESSION: Codex session 01a15741-f620-7073-94df-dbb8f609d6dd
+CARD: CW-785
+SYMPTOM: A reporting POST timed out after 10 seconds during a measured 23-second automatic VACUUM interval, database lock failures and writer queues over 25 seconds. The exact POST outcome is unknown; owned cleanup preserved three records, one interrupted attempt and 22 not-run slots.
+COST: An actual seed47 scoring run stopped without a complete quality or throughput score after about 47 minutes of scoring; all prior failed reporting history remains preserved.
+FIX: Reuse large-database automatic-VACUUM deferral from 7e0750037f52267ad04ca14fb2dc6fb93cc08acf on the exact commissioned base. Preserve retention, WAL management and the configured helper; verify concurrent file-backed writes and unchanged success marker. Local preparation only until exact review and actual build adoption evidence.
+
+## Custom temporary paths bypassed fixture worker spawn prevention
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-21
+SESSION: Codex session 01a15741-f620-7073-94df-dbb8f609d6dd
+CARD: CW-785
+SYMPTOM: A full server test run with TMPDIR inside the isolated checkout made a non-repository fixture inherit Git and put a temporary AMUX_HOME outside the hardcoded throwaway prefixes. The spawn-refusal test actually started an unprompted Claude fixture process; its expected refusal failed.
+COST: One full validation returned 2743 passed, two failed and eight ignored after about ten minutes. An unintended test CLI process required exact-PID containment; no task prompt was sent by this session.
+FIX: Use a recognized throwaway fixture root outside Git and the supported private TMUX_TMPDIR with inherited TMUX removed. Both affected cases pass with those bindings. The exact test-owned Claude process was stopped and reaping verified; its empty tmux session and failure evidence remain preserved. No live service or other worker was stopped.
