@@ -576,6 +576,21 @@ async fn golden_rate_limit_recovery() {
         })
         .await;
     }
+    // A committed Idle row can be visible before the writer broadcasts its
+    // event. Await the actual final edge before stopping the consumer.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.expect("worker journal must remain available");
+            let final_idle = event.entity_type == EntityType::Worker
+                && event.entity_id == wid.as_str()
+                && matches!(&event.mutation,
+                    MutationKind::StatusChanged { from, to } if from == "active" && to == "idle");
+            journal.push(event);
+            if final_idle {
+                break;
+            }
+        }
+    }).await.expect("final worker Idle event must be published before inspecting the journal");
     processor.abort();
     journal.extend(drain(&mut rx));
 
