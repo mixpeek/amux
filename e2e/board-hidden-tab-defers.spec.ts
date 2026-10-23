@@ -37,6 +37,12 @@ test('a hidden tab reads no board changes until it is shown, then catches up', a
       try { const b = JSON.parse(r.postData() || '{}'); if (b.kind === 'hidden-tab-catchup') beacons.push(b); } catch {}
     }
   });
+  // Count worker-list reads at the function: its response may come from the
+  // client's short-lived query cache without a network request.
+  await page.evaluate(() => {
+    const w = window as any; const orig = w.fetchSessions; w.__sessReads = 0;
+    w.fetchSessions = (...a: any[]) => { w.__sessReads++; return orig(...a); };
+  });
   await page.evaluate(() => { (window as any).__hidden = true; document.dispatchEvent(new Event('visibilitychange')); });
   for (let i = 0; i < 3; i++) {
     const r = await request.patch(`/api/board/${id}`, { headers, data: { title: `hidden tab renamed ${i}` } });
@@ -47,11 +53,12 @@ test('a hidden tab reads no board changes until it is shown, then catches up', a
   await page.evaluate(() => (globalThis as any).eval('_scheduleSessionInvalidation()'));
   await page.waitForTimeout(1500);
   expect(reads).toEqual([]);
+  expect(await page.evaluate(() => (window as any).__sessReads)).toBe(0);
 
   await page.evaluate(() => { (window as any).__hidden = false; document.dispatchEvent(new Event('visibilitychange')); });
   await expect(page.locator(`.board-card[data-id="${id}"]`).first()).toContainText('hidden tab renamed 2', { timeout: 30_000 });
-  expect(reads.filter(u => u.startsWith('/api/board/changes')).length).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => reads.filter(u => u === '/api/sessions').length).toBeGreaterThanOrEqual(1);
+  expect(reads.filter(u => u.startsWith('/api/board')).length).toBeGreaterThanOrEqual(1);
+  expect(await page.evaluate(() => (window as any).__sessReads)).toBeGreaterThanOrEqual(1);
   await expect.poll(() => beacons.length).toBe(1);
   expect(beacons[0].verdict).toBe('reads_deferred_while_hidden');
   expect(beacons[0].board_changes).toBeGreaterThan(0);
