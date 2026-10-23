@@ -15,12 +15,15 @@ test('project creation retains exact description and stable identity after lost 
  assert.equal(uuid,1);assert.deepEqual(selected,['sample']);assert.equal(storage.get('create_sample'),'');
 });
 test('busy SSE invalidations cannot indefinitely postpone status and queued-message refresh',()=>{
- let timer=null,reads=0,scheduled=0;
- const ctx=vm.createContext({_invSessTimer:null,setTimeout:fn=>{timer=fn;scheduled++;return scheduled},fetchSessions:()=>reads++});
+ let timer=null,reads=0,scheduled=0,delay=0;const doc={hidden:false};
+ const ctx=vm.createContext({_invSessTimer:null,_sessionChangesWhileHidden:0,_HIDDEN_SESSIONS_MS:15000,document:doc,setTimeout:(fn,ms)=>{timer=fn;delay=ms;scheduled++;return scheduled},fetchSessions:()=>reads++});
  vm.runInContext(source.slice(source.indexOf('function _scheduleSessionInvalidation('),source.indexOf('async function _fetchSessionsOnce(')),ctx);
  for(let n=0;n<100;n++)ctx._scheduleSessionInvalidation();
  assert.equal(scheduled,1);timer();assert.equal(reads,1);
- ctx._scheduleSessionInvalidation();assert.equal(scheduled,2);timer();assert.equal(reads,2);
+ ctx._scheduleSessionInvalidation();assert.equal(scheduled,2);assert.equal(delay,400);timer();assert.equal(reads,2);
+ // A hidden tab coalesces into one read per 15 s and counts what it skipped.
+ doc.hidden=true;for(let n=0;n<5;n++)ctx._scheduleSessionInvalidation();
+ assert.equal(scheduled,3);assert.equal(delay,15000);assert.equal(ctx._sessionChangesWhileHidden,5);timer();assert.equal(reads,3);
  assert.match(source,/if \(key === 'sessions'\) \{\s*_scheduleSessionInvalidation\(\)/);
 });
 test('project draft text participates in the existing durable settings store',()=>{
