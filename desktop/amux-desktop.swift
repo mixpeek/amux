@@ -923,18 +923,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
     }
 
-    // ── Pinned notes: floating panels in this process ──
+    // ── Native API calls (pins, the dock badge, the menu bar) ──
+    // The API wants the owner token, which the dashboard shell hands each page
+    // as window._AMUX_AUTH_TOKEN. URLSession shares none of WebKit's state, so
+    // these calls borrow it from an open dashboard. Without it a remote server
+    // answered every one of them 401 missing_credential (2026-10-22: about seven
+    // a minute from one laptop, so pins and the badge never loaded).
+    var apiToken: String?
+
+    func withAPIToken(_ go: @escaping (String?) -> Void) {
+        if let t = apiToken { go(t); return }
+        guard let c = controllers.first(where: { $0.webView.url.map(isServerURL) ?? false }) else { go(nil); return }
+        c.webView.evaluateJavaScript("window._AMUX_AUTH_TOKEN || ''") { [weak self] v, _ in
+            let t = (v as? String).flatMap { $0.isEmpty ? nil : $0 }
+            self?.apiToken = t
+            go(t)
+        }
+    }
+
     func api(_ path: String, method: String = "GET", _ done: @escaping (Any?) -> Void) {
         guard let s = serverURL, let url = URL(string: normalized(s.absoluteString) + path) else { done(nil); return }
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.timeoutInterval = 8
-        let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
-        session.dataTask(with: req) { data, _, _ in
-            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
-            DispatchQueue.main.async { done(obj) }
-            session.finishTasksAndInvalidate()
-        }.resume()
+        withAPIToken { [weak self] token in
+            var req = URLRequest(url: url)
+            req.httpMethod = method
+            req.timeoutInterval = 8
+            if let token = token { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+            let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
+            session.dataTask(with: req) { data, resp, _ in
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                let obj = status == 401 ? nil : data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                DispatchQueue.main.async {
+                    // A refused token is stale (the owner rotated it): drop it so
+                    // the next call reads the dashboard's current one.
+                    if status == 401 {
+                        NSLog("amux-desktop: native_api_unauthorized path=%@ had_token=%d", path, token == nil ? 0 : 1)
+                        self?.apiToken = nil
+                    }
+                    done(obj)
+                }
+                session.finishTasksAndInvalidate()
+            }.resume()
+        }
     }
 
     func refreshPins(then: (() -> Void)? = nil) {
@@ -1051,6 +1080,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         // The standalone readout (make menubar) already owns a status item.
         if standaloneMenuBarRunning() { return }
         menuBar = MenuBarController(apiBase: normalized(s.absoluteString))
+        menuBar?.authToken = { [weak self] go in
+            guard let self = self else { go(nil); return }
+            DispatchQueue.main.async { self.withAPIToken(go) }
+        }
     }
 
     func standaloneMenuBarRunning() -> Bool {

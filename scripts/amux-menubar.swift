@@ -70,6 +70,9 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
     var statsTimer: Timer?
     var currentStats = SysStats()
     let apiBase: String
+    // Supplies the owner token for API calls. The app sets it (a remote server
+    // refuses an anonymous request); the standalone readout talks to localhost.
+    var authToken: ((@escaping (String?) -> Void) -> Void)?
 
     override convenience init() {
         self.init(apiBase: ProcessInfo.processInfo.environment["AMUX_URL"] ?? "https://localhost:8824")
@@ -157,8 +160,14 @@ class MenuBarController: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
 
     func fetchPinnedFiles() {
         guard let url = URL(string: apiBase + "/api/pinned") else { return }
+        guard let authToken = authToken else { requestPinnedFiles(url, token: nil); return }
+        authToken { [weak self] token in self?.requestPinnedFiles(url, token: token) }
+    }
+
+    func requestPinnedFiles(_ url: URL, token: String?) {
         var req = URLRequest(url: url)
         req.timeoutInterval = 5
+        if let token = token { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
         session.dataTask(with: req) { [weak self] data, _, _ in
             guard let data = data,
