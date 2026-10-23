@@ -411,6 +411,7 @@ pub enum SweepResult {
     /// The cutoff would have emptied a non-empty table — almost certainly a
     /// unit mismatch. Nothing was deleted.
     Refused { total: i64, cutoff: String },
+    Deferred { rows: usize, reason: String },
     Error(String),
 }
 
@@ -591,31 +592,26 @@ fn state_events_max_bytes() -> u64 {
 /// Keep a suffix of COMPLETE revisions, so delta sync never observes half a
 /// committed write. Unlike age retention this explicit byte limit may empty the
 /// journal if its newest revision alone exceeds the budget; clients full-sync.
-fn sweep_state_events_bytes(conn: &Connection, max_bytes: u64) -> rusqlite::Result<SweepResult> {
+fn state_event_byte_cutoff(conn: &Connection, max_bytes: u64) -> rusqlite::Result<Option<i64>> {
     if max_bytes == 0 {
-        return Ok(SweepResult::Disabled);
+        return Ok(None);
     }
     let mut statement = conn.prepare(&format!(
         "SELECT rev, {STATE_EVENT_ROW_BYTES} FROM _amux_state_events ORDER BY rev DESC, id DESC"
     ))?;
     let mut rows = statement.query([])?;
     let mut retained_bytes = 0u64;
-    let mut retained_rows = 0i64;
     let mut revision = None;
     let mut revision_bytes = 0u64;
-    let mut revision_rows = 0i64;
     let mut cutoff = None;
     while let Some(row) = rows.next()? {
         let rev: i64 = row.get(0)?;
         if revision != Some(rev) {
             retained_bytes = retained_bytes.saturating_add(revision_bytes);
-            retained_rows += revision_rows;
             revision = Some(rev);
             revision_bytes = 0;
-            revision_rows = 0;
         }
         revision_bytes = revision_bytes.saturating_add(row.get::<_, i64>(1)?.max(0) as u64);
-        revision_rows += 1;
         if retained_bytes.saturating_add(revision_bytes) > max_bytes {
             cutoff = Some(rev);
             break;
@@ -623,21 +619,217 @@ fn sweep_state_events_bytes(conn: &Connection, max_bytes: u64) -> rusqlite::Resu
     }
     drop(rows);
     drop(statement);
-    let Some(cutoff) = cutoff else {
-        return Ok(SweepResult::Deleted { rows: 0, kept: retained_rows + revision_rows });
+    Ok(cutoff)
+}
+
+#[cfg(test)]
+fn sweep_state_events_bytes(conn: &Connection, max_bytes: u64) -> rusqlite::Result<SweepResult> {
+    if max_bytes == 0 { return Ok(SweepResult::Disabled); }
+    let deleted = match state_event_byte_cutoff(conn, max_bytes)? {
+        Some(cutoff) => conn.execute("DELETE FROM _amux_state_events WHERE rev <= ?1", [cutoff])?,
+        None => 0,
     };
-    let deleted = conn.execute("DELETE FROM _amux_state_events WHERE rev <= ?1", [cutoff])?;
-    tracing::warn!(
-        deleted, retained_bytes, max_bytes, cutoff_rev = cutoff,
-        knob = "AMUX_STATE_EVENTS_MAX_BYTES",
-        "storage_state_events_size_trim: oldest revisions exceeded byte limit"
-    );
-    Ok(SweepResult::Deleted { rows: deleted, kept: retained_rows })
+    let kept = conn.query_row("SELECT count(*) FROM _amux_state_events", [], |r| r.get(0))?;
+    Ok(SweepResult::Deleted { rows: deleted, kept })
 }
 
 // ---------------------------------------------------------------------------
 // Filesystem sinks
 // ---------------------------------------------------------------------------
+
+// Planning can inspect gigabytes of retained history. Never run it on the
+// serialized writer. Each mutation below releases the writer before replanning.
+const RETENTION_BATCH_ROWS: usize = 128;
+const RETENTION_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const RETENTION_PASS_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+const RETENTION_SQL_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+
+// SQLite progress bounds instruction execution, not I/O, commit or rollback.
+// Keep complete large revisions atomic; interrupt rather than splitting them.
+fn bounded_retention_sql<T>(conn: &Connection, budget: std::time::Duration,
+    work: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    struct ResetProgress<'a>(&'a Connection);
+    impl Drop for ResetProgress<'_> {
+        fn drop(&mut self) { self.0.progress_handler(0,None::<fn()->bool>); }
+    }
+    let deadline=std::time::Instant::now()+budget;
+    conn.progress_handler(1000,Some(move || std::time::Instant::now()>=deadline));
+    let _reset=ResetProgress(conn);
+    work()
+}
+
+fn retention_write_error(rows:usize, error:anyhow::Error) -> SweepResult {
+    if error.downcast_ref::<rusqlite::Error>().is_some_and(|e|
+        e.sqlite_error_code()==Some(rusqlite::ErrorCode::OperationInterrupted)) {
+        retention_deferred(rows,"SQLite instruction budget interrupted atomic mutation")
+    } else { SweepResult::Error(error.to_string()) }
+}
+
+fn retention_deferred(rows: usize, reason: &str) -> SweepResult {
+    tracing::warn!(rows, reason, measured=true, n_considered=1,
+        verdict="storage_retention_deferred", "retention preserved rows outside its bounded batch");
+    SweepResult::Deferred { rows, reason:reason.into() }
+}
+
+fn retention_row_bytes(conn: &Connection, table: &str) -> rusqlite::Result<String> {
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
+    let columns = stmt.query_map([table], |r| r.get::<_,String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut expr = "128".to_string();
+    for name in columns {
+        expr.push_str(&format!(" + coalesce(length(CAST(\"{}\" AS BLOB)),0)",name.replace('"',"\"\"")));
+    }
+    Ok(expr)
+}
+
+async fn sweep_age_cooperative(
+    store: &crate::db::SharedStore, spec: SweepSpec, now: f64, deadline:std::time::Instant,
+) -> SweepResult {
+    let days = retain_days(&spec);
+    if days <= 0.0 { return SweepResult::Disabled; }
+    let cutoff = cutoff_for(spec.unit, now, days);
+    let mut deleted = 0;
+    loop {
+        let cut = cutoff.clone();
+        let plan = store.read_async(move |conn| {
+            let total: i64 = conn.query_row(&format!("SELECT count(*) FROM {}", spec.table), [], |r| r.get(0))?;
+            let survivor: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE {} >= ?1)", spec.table, spec.ts_col), [&cut], |r| r.get(0))?;
+            let bytes = retention_row_bytes(conn,spec.table)?;
+            let mut stmt = conn.prepare(&format!("SELECT rowid, CAST({} AS TEXT),{bytes} FROM {} WHERE {} < ?1 AND {} ORDER BY rowid LIMIT ?2",
+                spec.ts_col, spec.table, spec.ts_col, retention_eligible(&spec)))?;
+            let rows = stmt.query_map(rusqlite::params![cut, RETENTION_BATCH_ROWS as i64], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?,r.get::<_,u64>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((total, survivor, rows,bytes,oldest_secs(conn,&spec)))
+        }).await;
+        let (total, survivor, mut rows,bytes,oldest) = match plan { Ok(v) => v, Err(e) => return SweepResult::Error(e.to_string()) };
+        if total > 0 && !survivor {
+            tracing::error!(table=spec.table, cutoff, total, verdict="storage_retention_refused", "retention cutoff has no survivor");
+            return SweepResult::Refused { total, cutoff };
+        }
+        if rows.is_empty() {
+            if let Some(oldest) = oldest {
+                let age_days=(now-oldest)/86_400.0;
+                if age_days < 0.0 || age_days > days*1.5 {
+                    tracing::warn!(table=spec.table, knob=spec.env, age_days, retain_days=days,
+                        verdict="storage_retention_empty_suspicious", "retention deleted nothing despite out-of-window timestamps");
+                }
+            }
+            return SweepResult::Deleted { rows: deleted, kept: total };
+        }
+        let mut planned_bytes=0u64;
+        let end=rows.iter().take_while(|row| {
+            planned_bytes=planned_bytes.saturating_add(row.2);
+            planned_bytes<=RETENTION_BATCH_BYTES
+        }).count();
+        // A single large row still needs to expire. Use one atomic,
+        // instruction-budgeted deletion rather than permanently skipping it.
+        let oversized=end==0;
+        rows.truncate(end.max(1));
+        if std::time::Instant::now()>=deadline { return retention_deferred(deleted,"age pass time budget reached"); }
+        let cut = cutoff.clone();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let out = count.clone();
+        let result = store.write_async(move |conn| bounded_retention_sql(conn,RETENTION_SQL_BUDGET,|| {
+            // Recheck on the writer: a planning snapshot cannot grant deletion.
+            let survivor: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE {} >= ?1)", spec.table, spec.ts_col), [&cut], |r| r.get(0))?;
+            if survivor {
+                let mut size_stmt = conn.prepare(&format!("SELECT {bytes} FROM {} WHERE rowid=?1",spec.table))?;
+                let mut stmt = conn.prepare(&format!("DELETE FROM {} WHERE rowid=?1 AND CAST({} AS TEXT)=?2 AND {} < ?3 AND {}",
+                    spec.table, spec.ts_col, spec.ts_col, retention_eligible(&spec)))?;
+                let mut n = 0;
+                let mut remaining=RETENTION_BATCH_BYTES;
+                for (id, ts, _) in rows {
+                    use rusqlite::OptionalExtension;
+                    let current:Option<u64>=size_stmt.query_row([id],|r|r.get(0)).optional()?;
+                    if let Some(size)=current {
+                        if size>remaining && !(oversized && n==0) { break; }
+                        let changed=stmt.execute(rusqlite::params![id, ts, cut])?;
+                        if changed>0 {remaining=remaining.saturating_sub(size);}
+                        n+=changed;
+                    }
+                }
+                out.store(n, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        })).await;
+        if let Err(e) = result { return retention_write_error(deleted,e); }
+        let n = count.load(std::sync::atomic::Ordering::Relaxed);
+        if n == 0 { return retention_deferred(deleted,"age plan changed before mutation"); }
+        deleted += n;
+        tracing::info!(table=spec.table, deleted=n, knob=spec.env,
+            verdict="storage_retention_batch", "retention age batch committed");
+        tokio::task::yield_now().await;
+    }
+}
+
+// Delete journal PREFIXES of complete revisions, with a row and payload-byte
+// budget. A larger revision uses one instruction-budgeted atomic transaction.
+async fn sweep_journal_cooperative(
+    store: &crate::db::SharedStore, cutoff: i64, age_cut: Option<String>, byte_limit: Option<u64>, deadline:std::time::Instant,
+) -> SweepResult {
+    let mut deleted = 0;
+    let knob=if age_cut.is_some() {"AMUX_STATE_EVENTS_RETAIN_DAYS"} else {"AMUX_STATE_EVENTS_MAX_BYTES"};
+    loop {
+        let plan = store.read_async(move |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT id,rev,{STATE_EVENT_ROW_BYTES} FROM _amux_state_events WHERE rev<=?1 ORDER BY rev,id LIMIT ?2"))?;
+            let rows = stmt.query_map(rusqlite::params![cutoff, (RETENTION_BATCH_ROWS+1) as i64], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,u64>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await;
+        let rows = match plan { Ok(v) => v, Err(e) => return SweepResult::Error(e.to_string()) };
+        if rows.is_empty() {
+            return match store.read_async(|conn| Ok(conn.query_row("SELECT count(*) FROM _amux_state_events", [], |r| r.get(0))?)).await {
+                Ok(kept) => SweepResult::Deleted { rows: deleted, kept },
+                Err(e) => SweepResult::Error(e.to_string()),
+            };
+        }
+        let mut end = rows.len().min(RETENTION_BATCH_ROWS);
+        let mut bytes = 0u64;
+        for (i, row) in rows.iter().take(end).enumerate() {
+            bytes = bytes.saturating_add(row.2);
+            if bytes > RETENTION_BATCH_BYTES { end=i; break; }
+        }
+        if end < rows.len() {
+            let incomplete_rev = rows[end].1;
+            while end > 0 && rows[end-1].1 == incomplete_rev { end -= 1; }
+        }
+        if std::time::Instant::now()>=deadline { return retention_deferred(deleted,"journal pass time budget reached"); }
+        let oversized=end==0;
+        let last_rev=if oversized {rows[0].1} else {rows[end-1].1};
+        let expected: Vec<_> = rows.iter().take_while(|r| r.1<=last_rev).map(|r| (r.0,r.1)).collect();
+        let cut = age_cut.clone();
+        let applied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let out = applied.clone();
+        let result = store.write_async(move |conn| bounded_retention_sql(conn,RETENTION_SQL_BUDGET,|| {
+            if let Some(cut) = cut {
+                let survivor: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM _amux_state_events WHERE at>=?1)", [&cut], |r| r.get(0))?;
+                let changed: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM _amux_state_events WHERE rev<=?1 AND at>=?2)", rusqlite::params![last_rev,cut], |r| r.get(0))?;
+                if !survivor || changed { return Ok(crate::db::WriteOutcome { applied:false, events:vec![] }); }
+            }
+            // Detect stale/reused revisions and concurrent prefix changes. LIMIT
+            // also refuses a revision that grew after read planning.
+            let mut stmt = conn.prepare("SELECT id,rev FROM _amux_state_events WHERE rev<=?1 ORDER BY rev,id LIMIT ?2")?;
+            let actual = stmt.query_map(rusqlite::params![last_rev,(RETENTION_BATCH_ROWS+1) as i64], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if actual == expected {
+                // Recheck the full current revision size under the same guard.
+                let current_bytes:u64=conn.query_row(&format!("SELECT coalesce(sum({STATE_EVENT_ROW_BYTES}),0) FROM _amux_state_events WHERE rev<=?1"),[last_rev],|r|r.get(0))?;
+                if oversized || current_bytes<=RETENTION_BATCH_BYTES {
+                    let n=conn.execute("DELETE FROM _amux_state_events WHERE rev<=?1", [last_rev])?;
+                    out.store(n, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        })).await;
+        if let Err(e) = result { return retention_write_error(deleted,e); }
+        let n=applied.load(std::sync::atomic::Ordering::Relaxed);
+        if n==0 { return retention_deferred(deleted,"journal plan changed before mutation"); }
+        deleted += n;
+        tracing::info!(deleted=n, cutoff_rev=last_rev, knob, ?byte_limit, age_cutoff=?age_cut,oversized,
+            verdict="storage_retention_batch", "complete journal revision batch committed");
+        tokio::task::yield_now().await;
+    }
+}
 
 /// `AMUX_SERVER_LOG_MAX_MB` (default 64, 0 disables). Separate knob from
 /// `AMUX_LOG_MAX_MB` on purpose: that one bounds each SESSION's pane log, and
@@ -1380,39 +1572,61 @@ async fn storage_tick_with_limit(state: &AppState, home: &Path, state_event_limi
     let now = unix_now();
     let mut rep = StorageReport { at: now, ..Default::default() };
 
-    // DB retention runs on the writer thread — one transaction, and
-    // `applied: false` so retention never bumps `_amux_rev`. A delete of aged
-    // rows is not a state change any client needs to delta-sync (the
-    // request-log sweep established this; without it, every sweep would look
-    // like a fleet-wide mutation and trigger a sync storm).
-    // Results travel back on an Arc the closure captures: `write` must return a
-    // `WriteOutcome`, so there is no other channel for them, and a module-level
-    // static would let two ticks (or a test) overwrite each other's results.
-    let sink: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
-    let sink2 = sink.clone();
-    let res = state
-        .store
-        .write_async(move |conn| {
-            let mut out = Vec::new();
-            for spec in SPECS {
-                out.push((spec.table.to_string(), format!("{:?}", sweep_one(conn, spec, now))));
-            }
-            let bounded = sweep_state_events_bytes(conn, state_event_limit)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "storage_state_events_size_trim: byte retention failed");
-                    SweepResult::Error(e.to_string())
-                });
-            out.push(("_amux_state_events_bytes".into(), format!("{bounded:?}")));
-            if let Ok(mut s) = sink2.lock() {
-                *s = out;
-            }
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
-        })
-        .await;
-    match res {
-        Err(e) => rep.tables.push(("<write>".into(), format!("Error({e})"))),
-        Ok(_) => rep.tables = sink.lock().map(|s| s.clone()).unwrap_or_default(),
+    let retention_deadline=std::time::Instant::now()+RETENTION_PASS_BUDGET;
+    // Read-heavy planning uses pooled readers; each bounded mutation releases
+    // the sole writer so report/heartbeat traffic can make progress.
+    for spec in SPECS.iter().copied().filter(|s| s.table != "_amux_state_events") {
+        let result = sweep_age_cooperative(&state.store, spec, now,retention_deadline).await;
+        rep.tables.push((spec.table.to_string(), format!("{result:?}")));
     }
+    let spec = *SPECS.iter().find(|s| s.table == "_amux_state_events").unwrap();
+    let days = retain_days(&spec);
+    let age_result = if days <= 0.0 {
+        SweepResult::Disabled
+    } else {
+        let cutoff = cutoff_for(spec.unit, now, days);
+        let cut = cutoff.clone();
+        let plan = state.store.read_async(move |conn| {
+            let total: i64 = conn.query_row("SELECT count(*) FROM _amux_state_events", [], |r| r.get(0))?;
+            let first_surviving: Option<i64> = conn.query_row("SELECT min(rev) FROM _amux_state_events WHERE at>=?1", [cut], |r| r.get(0))?;
+            Ok((total,first_surviving))
+        }).await;
+        match plan {
+            Err(e) => SweepResult::Error(e.to_string()),
+            Ok((0,_)) => SweepResult::Deleted { rows:0, kept:0 },
+            Ok((total,None)) => {
+                tracing::error!(total, cutoff, verdict="storage_retention_refused", "journal age cutoff has no survivor");
+                SweepResult::Refused { total, cutoff }
+            },
+            Ok((_,Some(first))) => match first.checked_sub(1) {
+                Some(last) => sweep_journal_cooperative(&state.store, last, Some(cutoff),None,retention_deadline).await,
+                None => retention_deferred(0,"journal revision underflow"),
+            },
+        }
+    };
+    rep.tables.push(("_amux_state_events".into(), format!("{age_result:?}")));
+    let mut byte_result = if state_event_limit == 0 {
+        SweepResult::Disabled
+    } else {
+        match state.store.read_async(move |conn| Ok(state_event_byte_cutoff(conn, state_event_limit)?)).await {
+            Err(e) => SweepResult::Error(e.to_string()),
+            Ok(Some(last)) => sweep_journal_cooperative(&state.store,last,None,Some(state_event_limit),retention_deadline).await,
+            Ok(None) => match state.store.read_async(|conn| Ok(conn.query_row("SELECT count(*) FROM _amux_state_events", [], |r| r.get(0))?)).await {
+                Ok(kept) => SweepResult::Deleted { rows:0, kept },
+                Err(e) => SweepResult::Error(e.to_string()),
+            },
+        }
+    };
+    if state_event_limit > 0 && matches!(byte_result,SweepResult::Deleted { .. }) {
+        // New revisions can arrive while chunks release the writer. Do not
+        // report cap enforcement from a cutoff planned before those appends.
+        match state.store.read_async(move |conn| Ok(state_event_byte_cutoff(conn,state_event_limit)?)).await {
+            Ok(None) => {},
+            Ok(Some(_)) => byte_result=retention_deferred(match byte_result { SweepResult::Deleted { rows,.. } => rows, _ => 0 },"journal grew beyond byte cap during retention"),
+            Err(e) => byte_result=SweepResult::Error(e.to_string()),
+        }
+    }
+    rep.tables.push(("_amux_state_events_bytes".into(), format!("{byte_result:?}")));
 
     let logs = home.join("logs");
     rep.rotated_bytes = rotate_server_log(&logs).unwrap_or(0);
@@ -1502,7 +1716,7 @@ async fn storage_tick_with_limit(state: &AppState, home: &Path, state_event_limi
     // most once per day. Full VACUUM is expensive and stays gated; the WAL
     // checkpoint it used to carry now runs above on its own schedule.
     let total_deleted: usize = rep.tables.iter()
-        .filter(|(_, v)| v.contains("Deleted { rows:") && !v.contains("rows: 0"))
+        .filter(|(_, v)| (v.contains("Deleted { rows:") || v.contains("Deferred { rows:")) && !v.contains("rows: 0"))
         .count();
     if total_deleted > 0 {
         rep.vacuumed = maybe_vacuum(&state.store, home).await;
@@ -1883,6 +2097,145 @@ mod tests {
         assert_eq!(sweep_state_events_bytes(&c, 2500).unwrap(), SweepResult::Deleted { rows: 3, kept: 1 });
         assert_eq!(sweep_state_events_bytes(&c, 100).unwrap(), SweepResult::Deleted { rows: 1, kept: 0 });
         assert_eq!(sweep_state_events_bytes(&c, 0).unwrap(), SweepResult::Disabled);
+    }
+
+    #[tokio::test]
+    async fn cooperative_journal_handles_oversize_revision_atomically() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store.write_async(|conn| {
+            for _ in 0..=RETENTION_BATCH_ROWS {
+                conn.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES(1,'b','c','u','old','x')", [])?;
+            }
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        }).await.unwrap();
+        assert_eq!(sweep_journal_cooperative(&store,1,None,None,std::time::Instant::now()+RETENTION_PASS_BUDGET).await,SweepResult::Deleted {rows:RETENTION_BATCH_ROWS+1,kept:0});
+        let rows: i64 = store.read_async(|conn| Ok(conn.query_row("SELECT count(*) FROM _amux_state_events",[],|r| r.get(0))?)).await.unwrap();
+        assert_eq!(rows,0,"a large complete revision must still expire atomically");
+        store.write_async(|conn| {
+            conn.execute("DELETE FROM _amux_state_events", [])?;
+            conn.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES(2,'b','c','u','old',zeroblob(?1))", [RETENTION_BATCH_BYTES+1])?;
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        }).await.unwrap();
+        assert_eq!(sweep_journal_cooperative(&store,2,None,None,std::time::Instant::now()+RETENTION_PASS_BUDGET).await,SweepResult::Deleted {rows:1,kept:0});
+        let rows: i64 = store.read_async(|conn| Ok(conn.query_row("SELECT count(*) FROM _amux_state_events",[],|r| r.get(0))?)).await.unwrap();
+        assert_eq!(rows,0,"a large complete revision must not block later retention forever");
+    }
+
+    #[tokio::test]
+    async fn cooperative_progress_interrupt_rolls_back_and_removes_writer_handler() {
+        let home=tempfile::tempdir().unwrap();
+        let store=std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store.write_async(|conn| {
+            for rev in 1..=1000 {
+                conn.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES(?1,'b','c','u','old','x')",[rev])?;
+            }
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        }).await.unwrap();
+        let error=store.write_async(|conn| bounded_retention_sql(conn,std::time::Duration::ZERO,|| {
+            // Predicate prevents SQLite's constant-time truncate optimization.
+            conn.execute("DELETE FROM _amux_state_events WHERE rev>=0",[])?;
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        })).await.err().expect("forced progress interrupt must fail");
+        assert!(matches!(retention_write_error(7,error),SweepResult::Deferred {rows:7,..}));
+        store.write_async(|conn| {
+            let rows:i64=conn.query_row("SELECT count(*) FROM _amux_state_events",[],|r|r.get(0))?;
+            assert_eq!(rows,1000,"interrupted atomic delete must roll back every row");
+            // Enough VM instructions to catch a handler left on the writer.
+            let sum:i64=conn.query_row("WITH RECURSIVE n(v) AS(VALUES(1) UNION ALL SELECT v+1 FROM n WHERE v<10000) SELECT sum(v) FROM n",[],|r|r.get(0))?;
+            assert_eq!(sum,50_005_000);
+            conn.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES(1001,'b','c','u','new','x')",[])?;
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        }).await.unwrap();
+    }
+
+    #[test]
+    fn cooperative_progress_handler_is_removed_during_panic_unwind() {
+        let conn=Connection::open_in_memory().unwrap();
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _=bounded_retention_sql::<()>(&conn,std::time::Duration::ZERO,|| panic!("forcing scoped handler unwind"));
+        }));
+        assert!(result.is_err());
+        let sum:i64=conn.query_row("WITH RECURSIVE n(v) AS(VALUES(1) UNION ALL SELECT v+1 FROM n WHERE v<10000) SELECT sum(v) FROM n",[],|r|r.get(0)).unwrap();
+        assert_eq!(sum,50_005_000);
+    }
+
+    #[tokio::test]
+    async fn cooperative_age_large_row_uses_atomic_bounded_path() {
+        let home=tempfile::tempdir().unwrap();
+        let store=std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        let now=unix_now();
+        store.write_async(move |conn| {
+            conn.execute_batch("CREATE TABLE retention_big_row(ts REAL,payload BLOB)")?;
+            conn.execute("INSERT INTO retention_big_row VALUES(?1,zeroblob(?2))",rusqlite::params![now-200_000.0,RETENTION_BATCH_BYTES+1])?;
+            conn.execute("INSERT INTO retention_big_row VALUES(?1,'survivor')",[now])?;
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        }).await.unwrap();
+        let spec=SweepSpec {table:"retention_big_row",ts_col:"ts",unit:TsUnit::Secs,env:"CW785_BIG_ROW_TEST_DAYS",default_days:1.0};
+        assert_eq!(sweep_age_cooperative(&store,spec,now,std::time::Instant::now()+RETENTION_PASS_BUDGET).await,SweepResult::Deleted {rows:1,kept:1});
+    }
+
+    #[tokio::test]
+    async fn cooperative_age_preserves_unit_guard_pending_captures_and_revision() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        let now=unix_now();
+        let spec=SweepSpec { table:"cmd_history",ts_col:"ts",unit:TsUnit::Millis,env:"CW785_UNUSED_RETAIN_DAYS",default_days:1.0 };
+        store.write_async(move |conn| {
+            for i in 0..300 {
+                conn.execute("INSERT INTO cmd_history(session,ts,text,type,capture_pending) VALUES('cw785',?1,'test','user',?2)", rusqlite::params![(now-200_000.0)*1000.0,i==0])?;
+            }
+            conn.execute("INSERT INTO cmd_history(session,ts,text,type,capture_pending) VALUES('cw785',?1,'survivor','user',0)",[now*1000.0])?;
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        }).await.unwrap();
+        let before=store.current_rev().unwrap();
+        assert_eq!(sweep_age_cooperative(&store,spec,now,std::time::Instant::now()+RETENTION_PASS_BUDGET).await, SweepResult::Deleted {rows:299,kept:2});
+        assert_eq!(store.current_rev().unwrap(),before,"maintenance must not bump delta revision");
+        let wrong = SweepSpec { unit:TsUnit::Secs, ..spec };
+        assert_eq!(sweep_age_cooperative(&store,wrong,now,std::time::Instant::now()+RETENTION_PASS_BUDGET).await,SweepResult::Deleted {rows:0,kept:2});
+        let wrong = SweepSpec { default_days:0.00001,..spec };
+        // Once even the only survivor is older than the fixed cutoff, refuse.
+        assert!(matches!(sweep_age_cooperative(&store,wrong,now+100.0,std::time::Instant::now()+RETENTION_PASS_BUDGET).await,SweepResult::Refused {..}));
+    }
+
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn cooperative_journal_releases_writer_between_complete_revisions() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store.write_async(|conn| {
+            conn.execute_batch("CREATE TABLE report_probe(n INTEGER)")?;
+            for rev in 1..=4096 {
+                for _ in 0..2 {
+                    conn.execute("INSERT INTO _amux_state_events(rev,entity_type,entity_id,mutation,at,payload) VALUES(?1,'b','c','u','old',zeroblob(262144))",[rev])?;
+                }
+            }
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        }).await.unwrap();
+        let worker=store.clone();
+        let sweep=tokio::spawn(async move { sweep_journal_cooperative(&worker,4095,None,None,std::time::Instant::now()+RETENTION_PASS_BUDGET).await });
+        let start=std::time::Instant::now();
+        let mut interleaved=false;
+        let mut worst=std::time::Duration::ZERO;
+        while !sweep.is_finished() && start.elapsed()<std::time::Duration::from_secs(35) {
+            let request_start=std::time::Instant::now();
+            store.write_async(|conn| {
+                conn.execute("INSERT INTO report_probe SELECT count(*) FROM _amux_state_events",[])?;
+                Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+            }).await.unwrap();
+            worst=worst.max(request_start.elapsed());
+            let remaining:i64=store.read_async(|conn| Ok(conn.query_row("SELECT count(*) FROM _amux_state_events",[],|r|r.get(0))?)).await.unwrap();
+            if remaining>2 && remaining<8192 { interleaved=true; }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        eprintln!("CW785 measured file-backed fixture_bytes={} worst_report_roundtrip_ms={} sweep_observation_ms={}",8192u64*262144,worst.as_millis(),start.elapsed().as_millis());
+        assert!(worst<std::time::Duration::from_secs(5),"report-like writer exceeded half the fixed POST budget");
+        assert!(interleaved,"ordinary writer must run while retention is incomplete");
+        assert_eq!(sweep.await.unwrap(),SweepResult::Deleted {rows:8190,kept:2});
+        store.read_async(|conn| {
+            let revisions:i64=conn.query_row("SELECT count(*) FROM (SELECT rev FROM _amux_state_events GROUP BY rev HAVING count(*)<>2)",[],|r|r.get(0))?;
+            assert_eq!(revisions,0,"whole revisions must survive");
+            Ok(())
+        }).await.unwrap();
     }
 
     #[test]
