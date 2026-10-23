@@ -3,6 +3,7 @@
 // is the self-hosted owner case; the Cloud cases mock that one response.
 // The offer's state is the server pref `cloud_offer`, reset before each test.
 import { test, expect, Page } from './fixtures';
+import { cleanup } from './teardown';
 
 test.describe.configure({ mode: 'serial' });
 // Opts out of the harness's "dismissed" seed for this spec (fixtures.ts).
@@ -175,6 +176,6 @@ test('a context a spec opens itself starts with the offer dismissed', async ({ b
     expect(await page.evaluate(() => localStorage.getItem('amux_cloud_offer'))).toBe('{"dismissed":1}');
     expect(await page.evaluate(() => localStorage.getItem('amux_walkthrough_done'))).toBe('1');
   } finally {
-    await ctx.close();
+    await cleanup('close the spec-made context', () => ctx.close());
   }
 });
