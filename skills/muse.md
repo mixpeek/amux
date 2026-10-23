@@ -46,6 +46,13 @@ Do not wait in a loop for the reply: it arrives as a new message in this worker.
 `muse-send --status` counts queued commands; `~/.muse-cli/replies.jsonl` records
 every reply sent back.
 
+## A Mac with no amux server
+
+Muse reads the inbox on the Mac it is paired with. If that Mac only runs the
+Mac app against a server elsewhere, `muse-reply` there needs the server:
+`~/.muse-cli/amux.json` with `{"url": "https://<server>:8824", "token": "<owner token>"}`.
+Without it, replies go to `https://localhost:8824`.
+
 ## Muse sending work on its own
 
 Muse can start a thread with any worker, not only answer one:

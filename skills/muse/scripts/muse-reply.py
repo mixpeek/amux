@@ -24,7 +24,23 @@ INBOX = os.path.join(INBOX_DIR, "inbox.jsonl")
 REPLIES = os.path.join(INBOX_DIR, "replies.jsonl")
 
 
+# On a Mac with no amux server of its own (a laptop whose Mac app talks to a
+# server elsewhere), ~/.muse-cli/amux.json names that server:
+#   {"url": "https://<server>:8824", "token": "<owner token>"}
+CONFIG = os.path.join(INBOX_DIR, "amux.json")
+
+
+def config() -> dict:
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def amux_url() -> str:
+    if config().get("url"):
+        return config()["url"].rstrip("/")
     try:
         with open(os.path.expanduser("~/.amux/endpoint.json"), encoding="utf-8") as f:
             url = json.load(f).get("canonical_url", "")
@@ -54,7 +70,8 @@ def post(session: str, text: str) -> int:
     req = urllib.request.Request(
         f"{amux_url()}/api/sessions/{session}/send",
         data=json.dumps({"text": text}).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": "Bearer " + config()["token"]} if config().get("token") else {})},
         method="POST",
     )
     ctx = ssl.create_default_context()
