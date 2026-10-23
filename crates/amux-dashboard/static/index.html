@@ -1462,6 +1462,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div style="display:flex;gap:6px;align-items:center;">
       <input id="logs-search" class="search-input" type="text" placeholder="Search..." style="width:140px;font-size:0.72rem;padding:4px 8px;" oninput="logsSearchQuery=this.value;renderActivity()">
       <button class="btn" title="Refresh" onclick="fetchLogs()" style="font-size:0.7rem;padding:2px 6px;">&#x21BB;</button>
+      <button class="btn" id="logs-export" title="Download what this tab shows" onclick="logsExport()" style="font-size:0.7rem;padding:2px 6px;">Export</button>
     </div>
   </div>
   <div class="logs-subtabs">

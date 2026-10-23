@@ -38900,6 +38900,28 @@ async function fetchLogs() {
   } catch(e) {}
 }
 
+// Export what the open Logs tab shows. Raw Logs re-reads the server's largest
+// tail (5,000 lines) so the file is more than the 300 on screen; the line
+// filter still applies.
+async function logsExport() {
+  const day = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  if (_logsSubtab === 'raw') {
+    let lines = _logsRawLines;
+    try {
+      const r = await fetch(API + '/api/logs/raw?lines=5000');
+      if (r.ok) lines = (await r.json()).lines || lines;
+    } catch (e) {}
+    const filt = (document.getElementById('raw-filter')?.value || '').toLowerCase();
+    const out = lines.map(_stripAnsi).filter(l => !filt || l.toLowerCase().includes(filt));
+    _mdaiSaveBlob(out.join('\n') + '\n', 'text/plain;charset=utf-8', 'amux-logs-' + day + '.log');
+  } else if (_logsSubtab === 'activity') {
+    _mdaiSaveBlob(JSON.stringify(_logsActivityVisible(), null, 2), 'application/json', 'amux-activity-' + day + '.json');
+  } else {
+    const el = document.getElementById('logs-' + _logsSubtab + '-body');
+    _mdaiSaveBlob((el?.innerText || '') + '\n', 'text/plain;charset=utf-8', 'amux-' + _logsSubtab + '-' + day + '.txt');
+  }
+}
+
 async function fetchRawLogs() {
   try {
     const r = await fetch(API + '/api/logs/raw?lines=300');
@@ -38953,9 +38975,8 @@ function _togglePayload(rowEl) {
   if (caret) caret.textContent = pay.classList.contains('open') ? '\u25be' : '\u25b8';
 }
 
-function renderActivity() {
-  const el = document.getElementById('logs-activity-body');
-  if (!el) return;
+// The events the Activity tab shows: its filter and search applied.
+function _logsActivityVisible() {
   let evts = _logsEvents.slice();
   // Hide pure GET reads unless http filter is active
   if (_logsFilter !== 'http') evts = evts.filter(e => !(e.type === 'http' && e.action === 'get'));
@@ -38972,6 +38993,13 @@ function renderActivity() {
       e.type.toLowerCase().includes(q)
     );
   }
+  return evts;
+}
+
+function renderActivity() {
+  const el = document.getElementById('logs-activity-body');
+  if (!el) return;
+  const evts = _logsActivityVisible();
   if (!evts.length) {
     el.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">' +
       (_logsFilter || logsSearchQuery ? 'No matching events' : 'No events yet \u2014 activity will appear as you use amux') + '</div>';
