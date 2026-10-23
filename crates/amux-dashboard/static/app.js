@@ -48035,6 +48035,21 @@ let _sseFallback = false;
 let _pollTimer = null;
 
 let _invBoardTimer = null;
+// Board changes that arrived while this tab was hidden. Every Mac app tab and
+// every background browser tab runs this whole page, and each one used to
+// re-read the board on every change, which costs seconds on a large board
+// (2026-10-22: ten Mac app tabs, four identical 3.8s reads at once). A hidden
+// tab now counts the changes and catches up once when it is shown again.
+let _boardChangesWhileHidden = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_boardChangesWhileHidden) return;
+  const n = _boardChangesWhileHidden;
+  _boardChangesWhileHidden = 0;
+  _cdcBoardUpdate();
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'board-hidden-catchup', verdict: 'board_refetch_deferred_while_hidden',
+      measured: true, n_considered: n, ver: APP_VER }) }).catch(() => {});
+});
 let _invSessTimer = null;
 let _invMessagesTimer = null;
 let _cdcSeq = 0;
@@ -48199,7 +48214,8 @@ function connectSSE() {
           // Coalesced per key so an event burst is one fetch.
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
-            _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
+            if (document.hidden) _boardChangesWhileHidden++;
+            else _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
           }
           if (key === 'sessions') {
             _scheduleSessionInvalidation();
