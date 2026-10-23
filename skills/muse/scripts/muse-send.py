@@ -58,7 +58,9 @@ def queue(text: str, reply: bool) -> dict:
         entry["text"] += (
             f"\n\n(From amux worker {session} on {entry['host']}. When done, send the result back"
             f" with work and context: muse-reply {entry['id']} \"<your reply>\""
-            f". A longer reply can be piped: ... | muse-reply {entry['id']})"
+            f". A longer reply can be piped: ... | muse-reply {entry['id']}."
+            f" If you can only write files on the Mac, append"
+            f" {{\"id\": \"{entry['id']}\", \"text\": \"<your reply>\"}} to ~/.muse-cli/outbox.jsonl)"
         )
     with open(INBOX, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")

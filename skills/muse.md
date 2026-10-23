@@ -46,12 +46,22 @@ Do not wait in a loop for the reply: it arrives as a new message in this worker.
 `muse-send --status` counts queued commands; `~/.muse-cli/replies.jsonl` records
 every reply sent back.
 
-## A Mac with no amux server
+## When Muse is paired with a different Mac
 
-Muse reads the inbox on the Mac it is paired with. If that Mac only runs the
-Mac app against a server elsewhere, `muse-reply` there needs the server:
-`~/.muse-cli/amux.json` with `{"url": "https://<server>:8824", "token": "<owner token>"}`.
-Without it, replies go to `https://localhost:8824`.
+Muse reads the inbox only on the Mac it is paired with. If amux runs on another
+Mac, commands from a worker queue where nothing reads them. Once, on the paired
+Mac, from an amux checkout:
+
+```bash
+bash skills/muse/install-paired-mac.sh https://<amux server>:8824
+```
+
+It asks for the owner token, writes `~/.muse-cli/amux.json` (mode 600), installs
+`muse-reply` and `muse-sync`, and runs `muse-sync` every minute. That copies new
+commands from the server's inbox into the local one for Muse's poll, and sends
+back any reply Muse appended to `~/.muse-cli/outbox.jsonl` (for when Muse can
+write files there but not run commands). Replies carry a stable `msg_id`, so a
+retry after a timeout is delivered once. Log: `~/.muse-cli/sync.log`.
 
 ## Muse sending work on its own
 

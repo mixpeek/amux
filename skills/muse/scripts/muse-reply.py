@@ -12,6 +12,7 @@ Usage:
   some-command | muse-reply <id>
   muse-reply --to <worker> "work for you, unprompted"
 """
+import hashlib
 import json
 import os
 import ssl
@@ -67,9 +68,12 @@ def find(entry_id: str) -> dict:
 
 
 def post(session: str, text: str) -> int:
+    # A stable msg_id makes a retry of the same reply a no-op on the server: a
+    # send that outlived the timeout had still landed, and the retry doubled it.
+    msg_id = "muse-" + hashlib.sha256(f"{session}\n{text}".encode()).hexdigest()[:24]
     req = urllib.request.Request(
         f"{amux_url()}/api/sessions/{session}/send",
-        data=json.dumps({"text": text}).encode(),
+        data=json.dumps({"text": text, "msg_id": msg_id}).encode(),
         headers={"Content-Type": "application/json",
                  **({"Authorization": "Bearer " + config()["token"]} if config().get("token") else {})},
         method="POST",
@@ -78,11 +82,16 @@ def post(session: str, text: str) -> int:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # amux serves a self-signed certificate
     try:
-        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as r:
             return r.status
     except urllib.error.HTTPError as e:
         print(f"amux refused the reply: {e.code} {e.read()[:300].decode(errors='replace')}", file=sys.stderr)
         return e.code
+    except TimeoutError:
+        # The server holds a send to a busy worker; it usually lands anyway.
+        print(f"no answer from {amux_url()} in 60 s; it may still be delivered, and retrying is safe"
+              " (the same reply is sent only once)", file=sys.stderr)
+        return 0
     except OSError as e:
         print(f"amux unreachable at {amux_url()}: {e}", file=sys.stderr)
         return 0
