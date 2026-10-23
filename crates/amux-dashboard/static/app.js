@@ -6063,11 +6063,12 @@ function fetchSessions() {
 function _scheduleSessionInvalidation() {
   // A busy fleet can emit faster than 400ms indefinitely. Debouncing by
   // resetting this timer starved status/queue reads while SSE looked healthy.
+  if (document.hidden) _sessionChangesWhileHidden++;
   if (_invSessTimer) return;
   _invSessTimer = setTimeout(() => {
     _invSessTimer = null;
     fetchSessions();
-  }, 400);
+  }, document.hidden ? _HIDDEN_SESSIONS_MS : 400);
 }
 async function _fetchSessionsOnce() {
   const snapshotEpoch = _sessionsSnapshotEpoch;
@@ -48035,20 +48036,27 @@ let _sseFallback = false;
 let _pollTimer = null;
 
 let _invBoardTimer = null;
-// Board changes that arrived while this tab was hidden. Every Mac app tab and
-// every background browser tab runs this whole page, and each one used to
-// re-read the board on every change, which costs seconds on a large board
-// (2026-10-22: ten Mac app tabs, four identical 3.8s reads at once). A hidden
-// tab now counts the changes and catches up once when it is shown again.
+// What a hidden tab skipped. Every Mac app tab and every background browser
+// tab runs this whole page, and each one used to re-read the board and the
+// worker list on every change (2026-10-22: one Mac app with ten tabs sent 590
+// requests a minute, four identical 3.8s board reads at once). A hidden tab now
+// counts board changes and reads them once when shown, and reads the worker
+// list at most every _HIDDEN_SESSIONS_MS so notifications still arrive while
+// the whole app is in the background.
 let _boardChangesWhileHidden = 0;
+let _sessionChangesWhileHidden = 0;
+const _HIDDEN_SESSIONS_MS = 15000;
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || !_boardChangesWhileHidden) return;
-  const n = _boardChangesWhileHidden;
+  if (document.hidden) return;
+  const board = _boardChangesWhileHidden, workers = _sessionChangesWhileHidden;
+  if (!board && !workers) return;
   _boardChangesWhileHidden = 0;
-  _cdcBoardUpdate();
+  _sessionChangesWhileHidden = 0;
+  if (board) _cdcBoardUpdate();
+  if (_invSessTimer) { clearTimeout(_invSessTimer); _invSessTimer = null; fetchSessions(); }
   fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-    body: JSON.stringify({ kind: 'board-hidden-catchup', verdict: 'board_refetch_deferred_while_hidden',
-      measured: true, n_considered: n, ver: APP_VER }) }).catch(() => {});
+    body: JSON.stringify({ kind: 'hidden-tab-catchup', verdict: 'reads_deferred_while_hidden',
+      measured: true, n_considered: board + workers, board_changes: board, session_changes: workers, ver: APP_VER }) }).catch(() => {});
 });
 let _invSessTimer = null;
 let _invMessagesTimer = null;

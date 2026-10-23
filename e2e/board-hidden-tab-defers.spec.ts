@@ -1,7 +1,7 @@
 // 2026-10-22: the Mac app runs a whole dashboard per tab, and every tab re-read
-// the board on every change, hidden or not, so ten tabs made ten reads of a
-// board that takes seconds to serve. A hidden tab now waits and catches up once
-// when it is shown.
+// the board and the worker list on every change, hidden or not, so ten tabs made
+// ten reads of a board that takes seconds to serve. A hidden tab now waits and
+// catches up once when it is shown.
 import { test, expect } from './fixtures';
 
 test('a hidden tab reads no board changes until it is shown, then catches up', async ({ page, request }) => {
@@ -32,9 +32,9 @@ test('a hidden tab reads no board changes until it is shown, then catches up', a
   const beacons: any[] = [];
   page.on('request', r => {
     const u = new URL(r.url());
-    if (r.method() === 'GET' && u.pathname.startsWith('/api/board')) reads.push(u.pathname + u.search);
+    if (r.method() === 'GET' && (u.pathname.startsWith('/api/board') || u.pathname === '/api/sessions')) reads.push(u.pathname + u.search);
     if (r.method() === 'POST' && u.pathname === '/api/client-debug') {
-      try { const b = JSON.parse(r.postData() || '{}'); if (b.kind === 'board-hidden-catchup') beacons.push(b); } catch {}
+      try { const b = JSON.parse(r.postData() || '{}'); if (b.kind === 'hidden-tab-catchup') beacons.push(b); } catch {}
     }
   });
   await page.evaluate(() => { (window as any).__hidden = true; document.dispatchEvent(new Event('visibilitychange')); });
@@ -43,13 +43,17 @@ test('a hidden tab reads no board changes until it is shown, then catches up', a
     expect(r.ok()).toBeTruthy();
   }
   await expect.poll(() => page.evaluate(() => (globalThis as any).eval('_boardChangesWhileHidden')), { timeout: 20_000 }).toBeGreaterThan(0);
+  // A worker change while hidden waits too (the SSE handler's own scheduler).
+  await page.evaluate(() => (globalThis as any).eval('_scheduleSessionInvalidation()'));
   await page.waitForTimeout(1500);
   expect(reads).toEqual([]);
 
   await page.evaluate(() => { (window as any).__hidden = false; document.dispatchEvent(new Event('visibilitychange')); });
   await expect(page.locator(`.board-card[data-id="${id}"]`).first()).toContainText('hidden tab renamed 2', { timeout: 30_000 });
   expect(reads.filter(u => u.startsWith('/api/board/changes')).length).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => reads.filter(u => u === '/api/sessions').length).toBeGreaterThanOrEqual(1);
   await expect.poll(() => beacons.length).toBe(1);
-  expect(beacons[0].verdict).toBe('board_refetch_deferred_while_hidden');
-  expect(beacons[0].n_considered).toBeGreaterThan(0);
+  expect(beacons[0].verdict).toBe('reads_deferred_while_hidden');
+  expect(beacons[0].board_changes).toBeGreaterThan(0);
+  expect(beacons[0].session_changes).toBe(1);
 });
