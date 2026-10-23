@@ -48140,6 +48140,34 @@ async function _cdcBoardUpdate() {
   } catch (e) { fetchBoard(); }
 }
 
+// A hidden tab waits for its reload until it is shown: every Mac app tab and
+// background browser tab reloaded at once on each server build, and each
+// reload re-reads the board and the fleet (2026-10-22: 24 page loads in ten
+// minutes from one laptop). Shown, it reloads at once, before you act on it.
+let _verReloadWhenShown = '';
+function _reloadForServerVersion(v, delayMs) {
+  if (document.hidden) { _verReloadWhenShown = v; return; }
+  const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
+  if (Date.now() - last <= 600000) return;
+  sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+  console.warn('amux: server is v' + v + ', client is v' + APP_VER + ' — updating');
+  // Nudge the SW first (it skipWaiting()s + claims on install), so the
+  // reload serves the NEW shell in one cycle instead of two.
+  const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
+    ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
+    : Promise.resolve();
+  _upd.finally(() => setTimeout(() => location.reload(), delayMs));
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_verReloadWhenShown) return;
+  const v = _verReloadWhenShown;
+  _verReloadWhenShown = '';
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'version-reload', verdict: 'reload_deferred_until_shown', measured: true,
+      n_considered: 1, server_ver: v, ver: APP_VER }) }).catch(() => {});
+  _reloadForServerVersion(v, 0);
+});
+
 function connectSSE() {
   if (_sseFallback || _sse) return;
   _sse = new EventSource(_authUrl(API + '/api/events'));
@@ -48288,20 +48316,7 @@ function connectSSE() {
         // code (SW app shells live for DAYS in PWAs / Chrome app-mode windows and
         // old poll loops have hammered the server before) — reload to pick up the
         // new shell. Rate-limited so a broken SW can't cause a reload storm.
-        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) {
-          const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
-          if (Date.now() - last > 600000) {
-            sessionStorage.setItem('amux_ver_reload', String(Date.now()));
-            console.warn('amux: server is v' + msg.v + ', client is v' + APP_VER + ' — updating');
-            // Nudge the SW first (it skipWaiting()s + claims on install), so the
-            // reload serves the NEW shell in one cycle instead of two.
-            const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
-              ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
-              : Promise.resolve();
-            _upd.finally ? _upd.finally(() => setTimeout(() => location.reload(), 2500))
-                         : setTimeout(() => location.reload(), 2500);
-          }
-        }
+        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) _reloadForServerVersion(msg.v, 2500);
       }
     } catch(err) { console.error('SSE parse:', err); }
   };
