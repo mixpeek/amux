@@ -269,6 +269,10 @@ export default defineConfig({
         origins: [{
           origin: `https://localhost:${t.port}`,
           // amux_cloud_offer: the self-hosted Cloud offer stays off too (fixtures.ts).
+          // WebKit (ios-safari) ignores this localStorage (measured 2026-10-23: a raw
+          // @playwright/test page there started empty and wrote the cloud_offer
+          // pref). The fixtures.ts init script is what covers WebKit, so a spec
+          // that renders at phone width imports test from ./fixtures.
           localStorage: [{ name: 'amux_walkthrough_done', value: '1' }, { name: 'amux_cloud_offer', value: '{"dismissed":1}' }],
         }],
       },

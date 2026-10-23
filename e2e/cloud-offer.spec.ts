@@ -40,6 +40,20 @@ async function verdict(page: Page) {
   return page.evaluate(() => (window as any)._cloudOfferVerdict);
 }
 
+// The offer's state is ONE server pref, so any page on the same e2e server can
+// spend the trigger first. When the offer never shows, say what the pref held,
+// so that race reads as a race instead of a missing offer.
+async function expectOfferShown(page: Page) {
+  try {
+    await expect(page.locator('#cloud-offer')).toBeVisible({ timeout: 10000 });
+  } catch (e) {
+    const r = await page.request.get('/api/prefs?key=cloud_offer', { headers: await token(page) });
+    throw new Error(`#cloud-offer never showed; the server's cloud_offer pref is ${await r.text()}. `
+      + 'A trigger this page did not record means another context on this server spent it '
+      + '(every context must start with the fixtures.ts dismissed seed).\n' + String(e));
+  }
+}
+
 async function openSettingsAccount(page: Page) {
   await page.evaluate(() => { (window as any).toggleSettings(); (window as any)._settingsTab('account'); });
 }
@@ -52,7 +66,7 @@ test('phone: a self-hosted owner is offered Cloud once, and a dismissal holds ac
   expect(v.phone).toBe(true);
 
   const offer = page.locator('#cloud-offer');
-  await expect(offer).toBeVisible({ timeout: 10000 });
+  await expectOfferShown(page);
   await expect(offer).toHaveAttribute('data-trigger', 'phone');
   await expect(offer).toContainText('even when this computer sleeps');
   await expect(page.locator('#cloud-offer-go')).toHaveAttribute('href', 'https://amux.io/start/?source=app-phone');
@@ -89,7 +103,7 @@ test('phone: a self-hosted owner is offered Cloud once, and a dismissal holds ac
 test('a trigger shows once: a reload without dismissing does not repeat it', OPT, async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 700 });
   await boot(page);
-  await expect(page.locator('#cloud-offer')).toBeVisible({ timeout: 10000 });
+  await expectOfferShown(page);
   await page.reload();
   await verdict(page);
   await page.waitForTimeout(2500);
@@ -149,3 +163,18 @@ for (const [label, identity] of [
     await expect(page.locator('#settings-cloud-offer')).toBeHidden();
   });
 }
+
+// A context a spec opens itself gets the same seed as the fixture's, so its
+// phone-width pages cannot spend the server-wide trigger (run 39968514404:
+// golden_realtime_convergence did, in the other worker, mid-test above).
+test('a context a spec opens itself starts with the offer dismissed', async ({ browser, baseURL }) => {
+  const ctx = await browser.newContext({ baseURL, ignoreHTTPSErrors: true, viewport: { width: 375, height: 700 } });
+  try {
+    const page = await ctx.newPage();
+    await page.goto('/');
+    expect(await page.evaluate(() => localStorage.getItem('amux_cloud_offer'))).toBe('{"dismissed":1}');
+    expect(await page.evaluate(() => localStorage.getItem('amux_walkthrough_done'))).toBe('1');
+  } finally {
+    await ctx.close();
+  }
+});

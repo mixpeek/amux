@@ -313,6 +313,11 @@ test('Request and URL inputs receive correlation without losing response bodies'
 
 test('reachable controls have feedback declarations and missing declarations fail the inventory',async({page},testInfo)=>{
   await boot(page);
+  // Declarations are stamped by a pass that runs after boot's readiness hook;
+  // a slow runner read coverage before it ran (run 39968514404, mobile: 0).
+  // Waiting for it still fails when nothing is ever declared.
+  await expect.poll(()=>page.evaluate(()=>(window as any).__amuxState.coverage().declared_command_controls),
+    {message:'command controls are declared after boot'}).toBeGreaterThan(0);
   const coverage=await page.evaluate(()=>(window as any).__amuxState.coverage());
   expect(coverage.measured).toBe(true);
   expect(coverage.n_considered).toBeGreaterThan(10);
