@@ -24,6 +24,10 @@ jobs:
       - name: Browser evidence and lifecycle cleanup controls (AF-768, AF-773)
         run: |
           npm ci --ignore-scripts
+          # worker-lifecycle-cleanup.test.mjs launches a real Playwright run, so
+          # the headless shell must be on the runner (it failed 2026-10-23:
+          # "Executable doesn't exist ... chrome-headless-shell").
+          npx playwright install --only-shell chromium
           node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs tests/e2e-plan.test.mjs
           npm run test:project-setup
           npm run test:outbox
