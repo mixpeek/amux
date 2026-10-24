@@ -28240,6 +28240,30 @@ CLAUDE-POSTFIX-COMPLETE
         assert!(!prompt.contains("terminal history"), "{prompt}");
     }
 
+    #[test]
+    fn structured_resume_allows_owned_worktrees_and_card_paths_without_path_approval() {
+        for card in [Some("CW-1031".to_string()), None] {
+            let context = StructuredResumeContext {
+                session: "Codex-W3".into(), card: card.clone(), cwd: "/home/badschaff/worker's start".into(),
+            };
+            for reason in ["", "provider swap", "model swap", "provider version restart"] {
+                let prompt = structured_resume_prompt(&context, reason);
+                assert!(prompt.contains(&format!("Start in `{}`", sh_quote(&context.cwd))), "{prompt}");
+                assert!(prompt.contains("your own worktrees under /models-fast and /ssd/badschaff/lmqr"), "{prompt}");
+                assert!(prompt.contains("a card's named paths are also allowed"), "{prompt}");
+                assert!(prompt.contains("Never park to ask about paths"), "{prompt}");
+                assert!(prompt.contains("Preserve explicit owner holds and access restrictions"), "{prompt}");
+                assert!(!prompt.contains("work only in that exact directory"), "{prompt}");
+                assert!(prompt.contains("AMUX_SESSION='Codex-W3' amux board ls --mine"), "{prompt}");
+                if card.is_some() {
+                    assert!(prompt.contains("amux board show CW-1031"), "{prompt}");
+                } else {
+                    assert!(prompt.contains("No exact active claim was recorded"), "{prompt}");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn refused_live_swap_preserves_env_meta_and_runtime_before_any_write() {
         let dir = tempfile::tempdir().unwrap();
