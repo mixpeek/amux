@@ -10787,8 +10787,9 @@ fn structured_resume_prompt(context: &StructuredResumeContext, reason: &str) -> 
         None => "No exact active claim was recorded. Inspect this worker's scoped queue before selecting actionable work.".into(),
     };
     format!(
-        "Continue worker {name} after a {reason_text} using durable amux state. First run \
-         `cd -- {} && pwd && git status --short`; work only in that exact directory. {task} \
+        "Continue worker {name} after a {reason_text} using durable amux state. Start in `{}`; first run \
+         `cd -- {} && pwd && git status --short`; your own worktrees under /models-fast and /ssd/badschaff/lmqr and a card's named paths are also allowed. \
+         Never park to ask about paths. Preserve explicit owner holds and access restrictions. {task} \
          The supported scoped list is `AMUX_SESSION={} amux board ls --mine`. Never choose \
          from unfiltered fleet output. Inspect assigned non-terminal cards with \
          `amux board show <ID>`; each card's source message, epic, dependencies, priority and \
@@ -10796,7 +10797,7 @@ fn structured_resume_prompt(context: &StructuredResumeContext, reason: &str) -> 
          read its complete linked assignment with `amux board show <ID> --messages` before \
          acting, including attachment paths and criteria beyond the preview. For other cards, \
          consult linked messages only when context is missing. Do not automatically load the worker terminal log.",
-        sh_quote(&context.cwd), sh_quote(name),
+        sh_quote(&context.cwd), sh_quote(&context.cwd), sh_quote(name),
     )
 }
 
@@ -28254,7 +28255,7 @@ CLAUDE-POSTFIX-COMPLETE
                 assert!(prompt.contains("Never park to ask about paths"), "{prompt}");
                 assert!(prompt.contains("Preserve explicit owner holds and access restrictions"), "{prompt}");
                 assert!(!prompt.contains("work only in that exact directory"), "{prompt}");
-                assert!(prompt.contains("AMUX_SESSION='Codex-W3' amux board ls --mine"), "{prompt}");
+                assert!(prompt.contains("AMUX_SESSION=Codex-W3 amux board ls --mine"), "{prompt}");
                 if card.is_some() {
                     assert!(prompt.contains("amux board show CW-1031"), "{prompt}");
                 } else {
