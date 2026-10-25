@@ -438,6 +438,14 @@ impl AcpSession {
     /// Spawn `opencode acp` (or a fixture) and complete the handshake.
     pub async fn spawn(start: AcpStart) -> Result<(Self, Handshake)> {
         let mut cmd = Command::new(&start.binary);
+        // `acp` is the CLI's agent-protocol SUBCOMMAND, not a flag: without it
+        // the binary starts its TUI. Measured 2026-10-25 against opencode
+        // 2.1.4 — a bare `opencode` with this same stdin wrote 12 KB of ANSI to
+        // stdout, answered no frame at all, and never exited, so `initialize`
+        // timed out after 60s: every real ACP start failed while every fixture
+        // test passed, because a shell script answers stdin whatever its argv.
+        // `the_agent_is_launched_with_its_acp_subcommand` now pins this.
+        cmd.arg("acp");
         cmd.current_dir(&start.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -485,7 +493,21 @@ impl AcpSession {
             tokio::spawn(log_stderr(start.worker.clone(), stderr));
         }
 
-        let handshake = session.handshake(&start).await?;
+        let handshake = match session.handshake(&start).await {
+            Ok(h) => h,
+            Err(e) => {
+                // Self-announcing: the argv is the first thing to check when an
+                // agent goes silent, and this line is what a log sweep reads.
+                tracing::error!(
+                    worker = %start.worker,
+                    program = %start.binary.display(),
+                    argv = "acp",
+                    error = %e,
+                    "acp: handshake failed — the agent never answered (argv is `<program> acp`; a bare program starts a TUI that answers nothing)"
+                );
+                return Err(e);
+            }
+        };
         Ok((session, handshake))
     }
 
@@ -1492,6 +1514,30 @@ mod tests {
 
     // -- spawn path: a fixture ACP binary -----------------------------------
 
+    /// The spawn argv is `<program> acp`, and that is load-bearing: a bare
+    /// `opencode` starts its TUI, which answers no frame at all. The fixture
+    /// records its argv, so this is the regression that the 60s handshake
+    /// timeout could not be (2026-10-25: every live start failed, every fixture
+    /// test passed, because a script reads stdin whatever its argv says).
+    #[tokio::test]
+    async fn the_agent_is_launched_with_its_acp_subcommand() {
+        let dir = std::env::temp_dir().join(format!("amux-acp-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = acp_fixture_script(&dir, "argv-fixture");
+        let (events_tx, _rx) = broadcast::channel(64);
+        let start = AcpStart::new("argv-worker", dir.clone(), binary, events_tx);
+        let (session, _handshake) = AcpSession::spawn(start).await.unwrap();
+        session.close().await;
+        let argv = std::fs::read_to_string(dir.join("argv-fixture.argv")).unwrap_or_default();
+        let args: Vec<&str> = argv
+            .split('\0')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .collect();
+        assert_eq!(args, ["acp"], "spawn argv was {args:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_real_process_completes_a_turn_and_drops_a_dead_resume_ref() {
         let dir = std::env::temp_dir().join(format!("amux-acp-{}", ulid::Ulid::new()));
@@ -1546,6 +1592,14 @@ mod tests {
     /// Ignored in CI (no opencode auth there), like the real-claude tests.
     /// Proves the two M2 claims the fixtures cannot: a live agent streams TOOL
     /// events, and two turns share ONE session (no new process, same id).
+    ///
+    /// `AMUX_ACP_LIVE_MODEL` selects the agent's model; unset leaves the agent's
+    /// own default. Measured 2026-10-25 on this box: the default model answered
+    /// every prompt with `503 Upstream request failed: Endpoint is unavailable`
+    /// (a provider problem, not an amux one — `opencode acp` does the same with
+    /// no amux in the loop), while `opencode/deepseek-v4.1-flash-free` returned
+    /// `end_turn` and wrote the file. A worker's model is configured, so the
+    /// live proof takes one.
     #[tokio::test]
     #[ignore = "requires installed+authenticated opencode CLI; run with -- --ignored"]
     async fn real_opencode_acp_turn_end_to_end() {
@@ -1553,6 +1607,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (tx, mut rx) = broadcast::channel(4096);
         let mut start = AcpStart::new("real-acp", dir.clone(), PathBuf::from("opencode"), tx);
+        start.model = std::env::var("AMUX_ACP_LIVE_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty());
         start.turn_timeout = Duration::from_secs(240);
         let (session, handshake) = AcpSession::spawn(start).await.unwrap();
         assert!(!handshake.session_id.is_empty(), "a live session has an id");
