@@ -9,6 +9,7 @@
 //! drive it deterministically. The OpenCode transport implementation lands
 //! against the RR-0028e spike's coverage matrix.
 
+pub mod acp;
 pub mod events;
 pub mod mock;
 pub mod structured;

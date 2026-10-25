@@ -1,8 +1,10 @@
 # Plan: first-class OpenCode provider for amux
 
 **Fork:** `pedrovgp/amux` · **Branch:** `feat/opencode-provider` · **Base:** `main` (== upstream `1c7fbc5`)
-**Target binary:** OpenCode `v2.0.28` (measured on this machine, 2026-10-14)
-**Status:** plan — no code yet
+**Target binary:** OpenCode `v2.0.32` (measured on this machine, 2026-10-17; the
+plan began against `v2.0.28`, so re-measure on upgrade)
+**Status:** M0 + M1 shipped (PR #335, upstream `a95b05ab`); **M2 built** (ACP
+transport, `crates/amux-server/src/opencode/acp.rs`)
 
 ## Why
 
@@ -64,6 +66,12 @@ $ opencode run --format json --model opencode-go/deepseek-v4.1-flash "Reply with
 (`tool_use`/`step_finish` shapes), resume after process death, and behavior with
 no `--model` set.
 
+*(Measured 2026-10-17, during M2 — see the M2 section below: ACP carries the
+tool-using event set (`tool_call`/`tool_call_update`, with `rawInput`, `content`
+and a `diff` for edits), continuity is `session/resume <id>`, and an unset model
+leaves the session on the agent's own default. The `run`-path shapes above are
+kept as the fallback transport's record.)*
+
 ---
 
 ## Staging
@@ -120,6 +128,25 @@ Use `opencode acp` or `opencode serve`'s v2 API for tool-level events,
 mid-turn message delivery, and real approval handling. Only if M1's limitations
 bite (they will for long tasks: a one-shot `run` has no mid-turn stdin).
 
+**STATUS: BUILT (2026-10-17) over `opencode acp`, re-measured on v2.0.32.**
+The transport lives in `crates/amux-server/src/opencode/acp.rs` and is selected
+inside `StructuredCliProtocol` for OpenCode workers (`AMUX_OPENCODE_ACP=0` opts
+back into the M1 `run` path). What it delivers, and what it cannot:
+
+| M2 goal | Result |
+|---|---|
+| Tool-level events | **Yes.** `tool_call` / `tool_call_update` carry the tool name, `kind`, `locations`, full `rawInput`, the tool's `content`, and a `diff` block for edits. |
+| Real approval handling | **Yes.** When the worker's opencode config marks a tool `ask`, the agent sends `session/request_permission` (`once`/`always`/`reject`) and blocks until amux answers. |
+| Mid-turn message delivery | **No — measured limit.** A second `session/prompt` while a turn runs is rejected: `-32603 Session already has an active ACP prompt`. Messages keep queueing at the turn boundary (`AtTurnBoundary`). True steering needs `opencode serve` (HTTP v2, `delivery: "steer"`). |
+| Bonus: usage | `usage_update` (tokens + USD cost) and the prompt result's `inputTokens`/`outputTokens`/`thoughtTokens`/`cachedReadTokens`. |
+| Bonus: continuity | `session/resume <id>` continues a persisted session; a refused id is dropped (same dead-ref rule as M1). |
+
+Other measured protocol facts: the model is a config option
+(`session/set_config_option`, `configId: "model"`, value `provider/model`;
+there is no `session/set_model`), and `session/cancel` is a **notification**
+(sent as a request the agent answers `-32601`).
+
+
 ---
 
 ## Risks / honest limits
@@ -127,6 +154,11 @@ bite (they will for long tasks: a one-shot `run` has no mid-turn stdin).
 - **One-shot turns (M1).** `opencode run` has no stdin session, so mid-turn
   messages reject at the turn boundary — same shape as claude/gemini/codex
   headless today. ACP/serve (M2) is the fix.
+  **Measured 2026-10-17: ACP does NOT fix this.** OpenCode's ACP adapter rejects
+  a second concurrent `session/prompt` with `-32603 "Session already has an
+  active ACP prompt"`, so mid-turn delivery still happens at the turn boundary
+  on both transports. `opencode serve` (`delivery: "steer"`) is the only path
+  that actually steers a running turn.
 - **Approvals.** Headless writes hang without `--auto` (or a config). Must set it
   for workers; that is a policy choice to state, not hide.
 - **Provider-id spelling.** Keep `"opencode"` canonical; no legacy alias needed.
@@ -142,6 +174,9 @@ bite (they will for long tasks: a one-shot `run` has no mid-turn stdin).
 - Live smoke (M0): register/start/send/peek an opencode worker.
 - Live smoke (M1): a headless turn emits `turn_started` → `progress` →
   `turn_completed`, and a second turn resumes the same `ses_...`.
+- Live smoke (M2): `cargo test -p amux-server opencode::acp -- --ignored` drives
+  a REAL `opencode acp` process — a tool-calling turn must surface a `tool_used`
+  with the written path, usage tokens, and two turns on ONE session id.
 
 ## Workflow
 
@@ -150,6 +185,9 @@ open an upstream PR against `mixpeek/amux` if the maintainers want it.
 
 ## Immediate next actions
 
-1. Measure the tool-using event vocabulary and resume behavior (30 min).
-2. Implement M0 (S1, S2, S5) + tests.
-3. Smoke-test M0, then M1.
+1. ~~Measure the tool-using event vocabulary and resume behavior (30 min).~~ Done
+   (2026-10-17, ACP; see the M2 section).
+2. ~~Implement M0 (S1, S2, S5) + tests.~~ Done.
+3. ~~Smoke-test M0, then M1.~~ Done (PR #335).
+4. ~~M2: ACP transport.~~ Built; remaining: land it, then decide whether
+   `opencode serve` is worth a mid-turn-steering follow-up.

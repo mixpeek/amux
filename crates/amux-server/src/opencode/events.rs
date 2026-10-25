@@ -44,7 +44,7 @@ use serde_json::Value;
 /// One-line, bounded summary for `ProgressReport`/`ToolEvent` detail fields:
 /// first line only, capped at 120 chars. Events are headlines, not
 /// transcripts (Invariant 30).
-fn summarize(text: &str) -> String {
+pub(super) fn summarize(text: &str) -> String {
     let first = text.lines().next().unwrap_or("").trim();
     let mut out: String = first.chars().take(120).collect();
     if first.chars().count() > 120 {
@@ -56,7 +56,7 @@ fn summarize(text: &str) -> String {
 /// Best-effort human summary of a tool-call input object: prefer the fields
 /// that carry the action (a Bash `command`, an Edit `file_path`), fall back
 /// to compact JSON. Never the full payload — that goes to logs.
-fn tool_detail(input: &Value) -> Option<String> {
+pub(super) fn tool_detail(input: &Value) -> Option<String> {
     for key in [
         "command",
         "cmd",
@@ -79,7 +79,7 @@ fn tool_detail(input: &Value) -> Option<String> {
 /// Does a provider error message describe a quota/rate limit? Used for Codex,
 /// whose limit errors arrive as free-text `error` events (real capture
 /// below: "You've hit your usage limit...").
-fn is_rate_limit_message(msg: &str) -> bool {
+pub(super) fn is_rate_limit_message(msg: &str) -> bool {
     let m = msg.to_lowercase();
     ["usage limit", "rate limit", "quota", "too many requests"]
         .iter()
