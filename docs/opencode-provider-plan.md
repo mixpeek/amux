@@ -146,6 +146,37 @@ Other measured protocol facts: the model is a config option
 there is no `session/set_model`), and `session/cancel` is a **notification**
 (sent as a request the agent answers `-32601`).
 
+#### The default model is pinned (2026-10-25)
+
+An OpenCode worker that names no model runs
+**`opencode/deepseek-v4.1-flash-free`** — *DeepSeek V4.1 Flash Free* — because
+the agent's own default is not a fact amux can rely on. Measured on this box,
+same binary, same account, bare `opencode acp` with no amux in the loop:
+
+| model | result |
+|---|---|
+| the agent's own default | `503 Upstream request failed: Endpoint is unavailable` on every prompt (9 retries observed) |
+| `opencode/deepseek-v4.1-flash-free` | `end_turn`, file written, turn over in 12s |
+
+One constant, `opencode::DEFAULT_MODEL` (`crates/amux-server/src/opencode/mod.rs`),
+read by every path so they cannot disagree:
+
+- the structured transport (`run` and `acp` both pass it as `--model`, and ACP
+  applies it with `session/set_config_option`);
+- the interactive launch (`opencode_launch_opts` appends
+  `--model <default>` unless the worker already carries one);
+- the worker row (`default_model_for_provider("opencode")`), so the model a
+  worker runs is visible and editable rather than implicit.
+
+Two overrides, both intentional and both winning over the constant:
+
+1. **Per worker** — `amux register NAME --provider opencode --model X`
+   (`_amux_workers.model`, i.e. `--model` in its `CC_FLAGS`).
+2. **Fleet-wide** — `AMUX_OPENCODE_MODEL=X` in the server environment
+   (`~/.amux/server.env`), for a box whose accounts can reach a different model.
+
+A blank value is *no* value: whitespace never becomes a model name.
+
 
 ---
 

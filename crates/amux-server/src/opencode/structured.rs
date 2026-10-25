@@ -186,8 +186,11 @@ impl CliProvider {
     /// codex 0.141.0) — see events.rs for the captured output they produce.
     ///
     /// `model` is the worker's configured model (tier alias or full id);
-    /// all three CLIs take `--model`. None = the CLI's own default — never
-    /// invent one here (the model choice is the user's, ethos rule 8).
+    /// all three CLIs take `--model`. Pass `None` and the provider's own
+    /// default applies — never invent one here (the model choice is the user's,
+    /// ethos rule 8). OpenCode's fleet default is resolved one layer up, in
+    /// [`WorkerConfig::effective_model`], so both the `run` and `acp`
+    /// transports get the same answer.
     ///
     /// `resume` is the conversation ref a previous run reported (see the
     /// module docs' continuity section); None = a fresh conversation.
@@ -329,12 +332,49 @@ pub struct WorkerConfig {
     /// script; production leaves it `None` and resolves via PATH).
     pub binary: Option<PathBuf>,
     /// The worker's configured model (`_amux_workers.model`), passed as
-    /// `--model` on every run. None = the CLI's own default.
+    /// `--model` on every run. None = whatever
+    /// [`WorkerConfig::effective_model`] resolves for the provider.
     pub model: Option<String>,
     /// A persisted conversation ref to resume from (hydrated by
     /// backend::bootstrap from `_amux_conversations`). None = start fresh;
     /// the stream's own init line supersedes this the moment a run starts.
     pub conversation: Option<String>,
+}
+
+impl WorkerConfig {
+    /// The model this worker's runs actually ask the CLI for.
+    ///
+    /// The worker's own `model` always wins. Without one, OpenCode is PINNED to
+    /// the fleet default ([`super::default_model`]) instead of falling through
+    /// to the agent's own choice, which was measured answering `503 Endpoint is
+    /// unavailable` on every ACP turn (2026-10-25) — a worker that cannot
+    /// answer a prompt is not a worker. Every other provider still passes
+    /// NOTHING: its default is decided by its own launch arm, and inventing one
+    /// here is the failure [`CliProvider::args`] documents.
+    fn effective_model(&self) -> Option<String> {
+        resolve_model(
+            self.provider,
+            self.model.as_deref(),
+            &super::default_model(),
+        )
+    }
+}
+
+/// [`WorkerConfig::effective_model`] as a pure function, so the rule can be
+/// tested without touching the process environment of every other test.
+fn resolve_model(
+    provider: CliProvider,
+    configured: Option<&str>,
+    opencode_default: &str,
+) -> Option<String> {
+    if let Some(model) = configured.map(str::trim).filter(|m| !m.is_empty()) {
+        return Some(model.to_string());
+    }
+    match provider {
+        CliProvider::OpenCode => Some(opencode_default.trim().to_string())
+            .filter(|m| !m.is_empty()),
+        _ => None,
+    }
 }
 
 struct WorkerShared {
@@ -465,6 +505,13 @@ impl StructuredCliProtocol {
             worker = %worker,
             provider = config.provider.family(),
             transport,
+            // Which model a worker will actually run, resolved once. Without
+            // this line, "why did this worker answer with a different model
+            // than its row says" is unanswerable from the log.
+            model = config
+                .effective_model()
+                .as_deref()
+                .unwrap_or("(provider default)"),
             "structured transport selected"
         );
         self.workers.lock().unwrap().insert(
@@ -542,9 +589,10 @@ impl StructuredCliProtocol {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(cfg.provider.binary()));
             let mut cmd = Command::new(&program);
+            let model = cfg.effective_model();
             cmd.args(
                 cfg.provider
-                    .args(text, cfg.model.as_deref(), resumed_from.as_deref()),
+                    .args(text, model.as_deref(), resumed_from.as_deref()),
             )
             .current_dir(&cfg.cwd)
             .stdin(Stdio::null())
@@ -780,7 +828,7 @@ impl StructuredCliProtocol {
             binary,
             shared.events.clone(),
         );
-        start.model = cfg.model.clone();
+        start.model = cfg.effective_model();
         start.resume = resume.clone();
         start.turn_timeout = acp_turn_timeout();
         let (session, handshake) = acp::AcpSession::spawn(start).await?;
@@ -1685,6 +1733,103 @@ mod tests {
             1,
             "one acp process serves every turn"
         );
+    }
+
+    #[tokio::test]
+    async fn an_opencode_worker_without_a_model_pins_the_fleet_default() {
+        // The requirement, end to end: a worker that named NO model must still
+        // run a model amux chose, not whatever the agent picked today (measured
+        // 2026-10-25: the agent's own default 503s on every turn). The fixture
+        // records the `session/set_config_option` frame it received.
+        let dir = tempfile::tempdir().unwrap();
+        let script = crate::opencode::acp::acp_fixture_script(dir.path(), "default-model-acp");
+        let proto = StructuredCliProtocol::new().with_acp(true);
+        let w = worker_id("0000E");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script),
+                model: None, // nothing configured: the fleet default applies
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("pin-1")).await.unwrap();
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+        assert!(lifecycle_kinds(&evs).contains(&"turn_completed"), "{evs:?}");
+
+        let recorded =
+            std::fs::read_to_string(dir.path().join("default-model-acp.config")).unwrap_or_default();
+        let expected = crate::opencode::default_model();
+        assert!(
+            recorded.contains(&expected),
+            "the session must be pinned to {expected}, got: {recorded}"
+        );
+        // And it is the fleet constant, not an accident of this box's env.
+        assert_eq!(
+            crate::opencode::DEFAULT_MODEL,
+            "opencode/deepseek-v4.1-flash-free"
+        );
+
+        // A worker that DID name a model keeps it: configuration wins.
+        let script2 = crate::opencode::acp::acp_fixture_script(dir.path(), "own-model-acp");
+        let w2 = worker_id("0000F");
+        proto.register(
+            w2.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script2),
+                model: Some("opencode-go/deepseek-v4.1-flash".to_string()),
+                conversation: None,
+            },
+        );
+        let mut rx2 = proto.events(&w2);
+        proto.send_prompt(&w2, prompt("own-1")).await.unwrap();
+        let evs2 = collect_until_terminal(&mut rx2, Duration::from_secs(20)).await;
+        assert!(lifecycle_kinds(&evs2).contains(&"turn_completed"), "{evs2:?}");
+        let recorded2 =
+            std::fs::read_to_string(dir.path().join("own-model-acp.config")).unwrap_or_default();
+        assert!(
+            recorded2.contains("opencode-go/deepseek-v4.1-flash"),
+            "{recorded2}"
+        );
+        assert!(!recorded2.contains(&expected), "the default overrode the worker: {recorded2}");
+    }
+
+    #[test]
+    fn resolve_model_pins_opencode_and_never_invents_one_for_other_providers() {
+        // A blank/whitespace configured model is NO model, not a model named " ".
+        for configured in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_model(CliProvider::OpenCode, configured, "fleet/default"),
+                Some("fleet/default".to_string()),
+                "{configured:?}"
+            );
+        }
+        // Anything configured wins, verbatim.
+        assert_eq!(
+            resolve_model(CliProvider::OpenCode, Some(" opencode-go/x "), "fleet/default"),
+            Some("opencode-go/x".to_string())
+        );
+        // Other providers keep the agent's own default: `args()` is not allowed
+        // to invent a model for them (ethos rule 8).
+        for p in [
+            CliProvider::ClaudeCode,
+            CliProvider::GeminiCli,
+            CliProvider::CodexCli,
+        ] {
+            assert_eq!(resolve_model(p, None, "fleet/default"), None, "{p:?}");
+            assert_eq!(
+                resolve_model(p, Some("haiku"), "fleet/default"),
+                Some("haiku".to_string()),
+                "{p:?}"
+            );
+        }
+        // An empty fleet default is not a model either.
+        assert_eq!(resolve_model(CliProvider::OpenCode, None, "  "), None);
     }
 
     #[tokio::test]

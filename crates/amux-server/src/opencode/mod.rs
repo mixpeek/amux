@@ -14,6 +14,36 @@ pub mod events;
 pub mod mock;
 pub mod structured;
 
+/// The model an OpenCode worker runs when neither the worker nor the fleet
+/// named one.
+///
+/// OpenCode's own default is not a fact amux can rely on. Measured 2026-10-25 on
+/// this fleet: an ACP session left on the agent's default answered every prompt
+/// with `503 Upstream request failed: Endpoint is unavailable` (reproduced with
+/// bare `opencode acp`, no amux in the loop), while
+/// `opencode/deepseek-v4.1-flash-free` finished a tool-calling turn in 12s.
+/// Pinning also makes two workers of the same provider comparable in cost and
+/// behaviour instead of silently running whatever the CLI chose today.
+///
+/// Two things override it, and both are meant to: the worker's own model
+/// (`amux register --model …`, `_amux_workers.model`) and the fleet-wide
+/// `AMUX_OPENCODE_MODEL`.
+pub const DEFAULT_MODEL: &str = "opencode/deepseek-v4.1-flash-free";
+
+/// The fleet default for OpenCode workers: `AMUX_OPENCODE_MODEL` when it is set
+/// and non-empty, else [`DEFAULT_MODEL`].
+///
+/// One function, because the structured transport, the interactive launch and
+/// the worker row must not be able to disagree about which model a worker runs
+/// (ethos rule 1: a view shares the predicate of the mechanism it describes).
+pub fn default_model() -> String {
+    std::env::var("AMUX_OPENCODE_MODEL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
 use amux_core::ids::{MessageId, TurnId, WorkerId};
 use amux_core::protocol::{ProgressReport, RateLimit, WorkerEvent};
 use async_trait::async_trait;

@@ -6260,10 +6260,13 @@ pub(crate) fn default_model_for_provider(provider: &str) -> String {
         "grok" => "grok-4.6".into(),
         // The catalog default (is_default/is_current) as of 1.0.3.
         "muse" => "muse-spark-1.3-contributor".into(),
-        // OpenCode has no single default model (`provider/model#variant`, from
-        // the worker's own config). Empty is honest; the launch arm never
-        // invents a model (ethos rule 8: the model choice is the user's).
-        "opencode" => String::new(),
+        // OpenCode is PINNED, not left empty. Its own default is not something
+        // amux can rely on: measured 2026-10-25, a worker on the agent's default
+        // answered every ACP prompt with `503 Endpoint is unavailable`, while
+        // `opencode/deepseek-v4.1-flash-free` completed a turn in 12s. One
+        // constant, overridable per worker (`--model`, which always wins) and
+        // fleet-wide (`AMUX_OPENCODE_MODEL`).
+        "opencode" => crate::opencode::default_model(),
         _ => get_default_model(),
     }
 }
@@ -6510,9 +6513,11 @@ pub(crate) fn grok_new_session_id() -> String {
 ///   2026-10-16: the env pair was on the process but the marker was absent
 ///   from the model until --standalone was added.
 /// - yolo normalizes to `--auto`; stale spellings never leak.
-/// - No model default: opencode wants `provider/model#variant` and its own
-///   config supplies the default. A `--model` in CC_FLAGS passes through.
-pub(crate) fn opencode_launch_opts(flags: &str, extra_flags: &str) -> String {
+/// - The pinned fleet default ([`crate::opencode::DEFAULT_MODEL`], or
+///   `AMUX_OPENCODE_MODEL`) is appended when nothing else named a model, so the
+///   TUI and the structured transport run the same one. A `--model` the worker
+///   already carries ALWAYS wins: the model choice is the user's.
+pub(crate) fn opencode_launch_opts(flags: &str, extra_flags: &str, default_model: &str) -> String {
     let mut oflags = flags.to_string();
     let oyolo = PROVIDER_YOLO_FLAGS.iter().any(|f| oflags.contains(f));
     if oyolo {
@@ -6524,6 +6529,9 @@ pub(crate) fn opencode_launch_opts(flags: &str, extra_flags: &str) -> String {
     }
     if !extra_flags.is_empty() {
         opts += &format!(" {}", shell_quote_flags(extra_flags));
+    }
+    if !opts.contains("--model") && !opts.contains("-m ") && !default_model.is_empty() {
+        opts += &format!(" --model {}", shell_quote_flags(default_model));
     }
     if oyolo && !opts.contains("--auto") {
         opts += " --auto";
@@ -6837,38 +6845,53 @@ mod opencode_provider_tests {
     }
 
     #[test]
-    fn opencode_yolo_is_auto_and_has_no_invented_model() {
+    fn opencode_yolo_is_auto_and_pins_the_fleet_default_model() {
         assert_eq!(provider_yolo_flag("opencode"), "--auto");
-        // No provider default model: opencode wants provider/model#variant and
-        // the worker's own config supplies it (ethos rule 8).
-        assert_eq!(default_model_for_provider("opencode"), "");
+        // PINNED, not invented: the agent's own default was measured answering
+        // `503 Endpoint is unavailable` on every ACP turn (2026-10-25), so the
+        // fleet runs one known-good model unless the worker or
+        // `AMUX_OPENCODE_MODEL` says otherwise.
+        assert_eq!(
+            default_model_for_provider("opencode"),
+            crate::opencode::DEFAULT_MODEL
+        );
+        assert_eq!(crate::opencode::DEFAULT_MODEL, "opencode/deepseek-v4.1-flash-free");
     }
 
     #[test]
     fn opencode_launch_is_standalone_and_normalizes_yolo() {
+        let fleet_model = super::default_model_for_provider("opencode");
         // `--standalone` is load-bearing: without a private server the TUI
         // reads config from the shared background service, which never saw the
         // worker's OPENCODE_CONFIG_CONTENT (measured live 2026-10-16).
-        let opts = opencode_launch_opts("--dangerously-skip-permissions", "");
+        let opts = opencode_launch_opts("--dangerously-skip-permissions", "", &fleet_model);
         assert!(opts.contains("--standalone"), "private server is the scoped-context channel: {opts}");
         assert!(opts.contains("--auto"), "{opts}");
         assert!(
             !opts.contains("--dangerously-skip-permissions"),
             "claude's yolo spelling must not leak: {opts}"
         );
+        // The pinned default rides along, so the TUI and the structured
+        // transport run the same model.
+        assert!(
+            opts.contains(&format!("--model {fleet_model}")),
+            "the fleet default must be applied: {opts}"
+        );
 
         // A user-supplied --standalone is not duplicated.
-        let opts = opencode_launch_opts("--standalone", "");
+        let opts = opencode_launch_opts("--standalone", "", &fleet_model);
         assert_eq!(opts.matches("--standalone").count(), 1, "{opts}");
 
-        // Model flags pass through verbatim; no model is invented.
-        let opts = opencode_launch_opts("--model opencode-go/deepseek-v4.1-flash", "");
+        // A worker's own --model ALWAYS wins over the fleet default.
+        let opts = opencode_launch_opts("--model opencode-go/deepseek-v4.1-flash", "", &fleet_model);
         assert!(opts.contains("--model"), "{opts}");
         assert!(opts.contains("opencode-go/deepseek-v4.1-flash"), "{opts}");
+        assert_eq!(opts.matches("--model").count(), 1, "two models: {opts}");
+        assert!(!opts.contains(&fleet_model), "the default overrode the worker: {opts}");
         assert!(!opts.contains("sonnet"), "{opts}");
 
         // Even with nothing configured, the private server rides along.
-        let opts = opencode_launch_opts("", "");
+        let opts = opencode_launch_opts("", "", "");
         assert_eq!(opts.trim(), "--standalone");
     }
 }
@@ -16825,10 +16848,14 @@ pub(crate) async fn start_session(
             // through to build_claude_cmd — that would launch `claude`.
             //
             // The opts are pure (opencode_launch_opts): yolo normalizes to
-            // `--auto`, no model is invented, and `--standalone` always rides
-            // so the worker runs its own server with its own env (the
-            // scoped-context channel + lane isolation; see the helper's doc).
-            format!("{base_bin}{}", opencode_launch_opts(&flags, extra_flags))
+            // `--auto`, the pinned fleet model is appended unless the worker
+            // named one, and `--standalone` always rides so the worker runs its
+            // own server with its own env (the scoped-context channel + lane
+            // isolation; see the helper's doc).
+            format!(
+                "{base_bin}{}",
+                opencode_launch_opts(&flags, extra_flags, &default_model_for_provider("opencode"))
+            )
         }
         _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts,
     };

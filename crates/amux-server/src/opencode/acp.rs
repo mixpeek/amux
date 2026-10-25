@@ -1009,6 +1009,7 @@ pub(crate) fn acp_fixture_script(dir: &std::path::Path, name: &str) -> std::path
     let path = dir.join(name);
     let runs = dir.join(format!("{name}.runs"));
     let argv = dir.join(format!("{name}.argv"));
+    let config = dir.join(format!("{name}.config"));
     let mut body = String::from("#!/bin/sh\n");
     body.push_str(&format!("printf x >> '{}'\n", runs.display()));
     body.push_str(&format!(
@@ -1022,7 +1023,7 @@ pub(crate) fn acp_fixture_script(dir: &std::path::Path, name: &str) -> std::path
     *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"OpenCode","version":"2.0.32"}}}\n' "$id" ;;
     *'"method":"session/resume"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"session not found"}}\n' "$id" ;;
     *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_fixture"}}\n' "$id" ;;
-    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*) printf '%s\n' "$line" >> 'CONFIGFILE'; printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_fixture","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","name":"write","title":"write","kind":"edit","status":"pending","locations":[],"rawInput":{}}}}\n'
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_fixture","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"in_progress","kind":"edit","title":"write","locations":[{"path":"%s/hello.txt"}],"rawInput":{"path":"%s/hello.txt","content":"hi"}}}}\n' "$PWD" "$PWD"
@@ -1037,6 +1038,7 @@ done
     );
     let mut f = std::fs::File::create(&path).unwrap();
     use std::io::Write;
+    let body = body.replace("CONFIGFILE", &config.display().to_string());
     f.write_all(body.as_bytes()).unwrap();
     #[cfg(unix)]
     {
@@ -1593,13 +1595,14 @@ mod tests {
     /// Proves the two M2 claims the fixtures cannot: a live agent streams TOOL
     /// events, and two turns share ONE session (no new process, same id).
     ///
-    /// `AMUX_ACP_LIVE_MODEL` selects the agent's model; unset leaves the agent's
-    /// own default. Measured 2026-10-25 on this box: the default model answered
-    /// every prompt with `503 Upstream request failed: Endpoint is unavailable`
-    /// (a provider problem, not an amux one — `opencode acp` does the same with
-    /// no amux in the loop), while `opencode/deepseek-v4.1-flash-free` returned
-    /// `end_turn` and wrote the file. A worker's model is configured, so the
-    /// live proof takes one.
+    /// The model is the fleet default ([`crate::opencode::default_model`]) —
+    /// the same one a registered worker resolves — and `AMUX_ACP_LIVE_MODEL`
+    /// overrides it for a box whose default differs. Measured 2026-10-25 on
+    /// this box: the AGENT's own default model answered every prompt with
+    /// `503 Upstream request failed: Endpoint is unavailable` (a provider
+    /// problem, not an amux one — bare `opencode acp` does the same with no amux
+    /// in the loop), while the fleet default returned `end_turn` and wrote the
+    /// file. That is why the fleet default is pinned rather than inherited.
     #[tokio::test]
     #[ignore = "requires installed+authenticated opencode CLI; run with -- --ignored"]
     async fn real_opencode_acp_turn_end_to_end() {
@@ -1609,7 +1612,8 @@ mod tests {
         let mut start = AcpStart::new("real-acp", dir.clone(), PathBuf::from("opencode"), tx);
         start.model = std::env::var("AMUX_ACP_LIVE_MODEL")
             .ok()
-            .filter(|m| !m.trim().is_empty());
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| Some(crate::opencode::default_model()));
         start.turn_timeout = Duration::from_secs(240);
         let (session, handshake) = AcpSession::spawn(start).await.unwrap();
         assert!(!handshake.session_id.is_empty(), "a live session has an id");
