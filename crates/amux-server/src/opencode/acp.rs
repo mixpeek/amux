@@ -284,7 +284,14 @@ pub fn translate_update(update: &Value, _turn: &TurnId) -> Vec<WorkerEvent> {
                 .unwrap_or_else(|| "tool".to_string());
             // Prefer the concrete action (the shell command, the file path)
             // over the tool's display title, matching the other providers.
-            let detail = tool_detail(update.get("rawInput").unwrap_or(&Value::Null))
+            // Only a REAL input object feeds `tool_detail`: its last resort is
+            // the compact JSON, and `{}` is not a detail — it would turn the
+            // announcement frame into a `tool_used` with the payload `{}`.
+            let detail = if has_input {
+                tool_detail(update.get("rawInput").unwrap_or(&Value::Null))
+            } else {
+                None
+            }
                 .or_else(|| {
                     update
                         .get("title")
@@ -414,6 +421,14 @@ pub struct AcpSession {
     /// be a lie).
     turn: Arc<Mutex<Option<TurnId>>>,
     worker: String,
+    /// The transport's two tasks. `Drop` aborts them, because a session that is
+    /// gone must not leave its pipes open: a peer (or an in-process test
+    /// transport, where the "pipe" is a duplex and closing a direction needs the
+    /// whole stream to drop) would otherwise wait for an EOF that never comes —
+    /// two of this module's tests hung exactly that way the first time they were
+    /// ever executed.
+    writer_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    reader_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Turn ceiling in milliseconds (an AtomicU64 so `handshake(&self)` can
     /// apply `AcpStart::turn_timeout` without a `&mut self`).
     turn_timeout_ms: AtomicU64,
@@ -489,6 +504,7 @@ impl AcpSession {
         W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         let (out, rx) = mpsc::unbounded_channel::<Value>();
+        let reader_out = out.downgrade();
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let turn: Arc<Mutex<Option<TurnId>>> = Arc::new(Mutex::new(None));
@@ -503,18 +519,22 @@ impl AcpSession {
             events: events.clone(),
             turn: turn.clone(),
             worker: worker.clone(),
+            writer_task: Mutex::new(None),
+            reader_task: Mutex::new(None),
             turn_timeout_ms: AtomicU64::new(DEFAULT_TURN_TIMEOUT.as_millis() as u64),
         };
-        tokio::spawn(write_frames(writer, rx));
-        tokio::spawn(read_frames(
+        let writer_task = tokio::spawn(write_frames(writer, rx));
+        let reader_task = tokio::spawn(read_frames(
             reader,
             pending,
             events,
             turn,
-            session.out.clone(),
+            reader_out,
             worker,
             reader_policy,
         ));
+        *session.writer_task.lock().unwrap() = Some(writer_task);
+        *session.reader_task.lock().unwrap() = Some(reader_task);
         session
     }
 
@@ -729,16 +749,37 @@ impl AcpSession {
     }
 }
 
+/// A dropped session STOPS its transport. `kill_on_drop` only covers the child
+/// process; the two tasks are what hold the pipes, and a peer waiting on EOF
+/// (the agent, or the far end of an in-process duplex) would wait forever while
+/// the read half kept the "pipe" open. Aborting them is the honest shutdown:
+/// after this there is nothing left that could deliver a frame.
+impl Drop for AcpSession {
+    fn drop(&mut self) {
+        let writer = self.writer_task.lock().unwrap().take();
+        if let Some(task) = writer {
+            task.abort();
+        }
+        let reader = self.reader_task.lock().unwrap().take();
+        if let Some(task) = reader {
+            task.abort();
+        }
+    }
+}
+
 /// The reader task: demultiplex responses, notifications and the agent's own
-/// requests. A request from the agent is ALWAYS answered — an unanswered
-/// permission ask would be a permanent wait in the agent.
+/// requests. A request from the agent is ALWAYS answered while the session
+/// lives — an unanswered permission ask would be a permanent wait in the agent.
+///
+/// `out` is WEAK on purpose: the reader may not be the reason a session stays
+/// alive (see the `Drop` impl above — the same deadlock, one layer down).
 #[allow(clippy::too_many_arguments)]
 async fn read_frames<R>(
     reader: R,
     pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>,
     events: broadcast::Sender<WorkerEvent>,
     turn: Arc<Mutex<Option<TurnId>>>,
-    out: mpsc::UnboundedSender<Value>,
+    out: mpsc::WeakUnboundedSender<Value>,
     worker: String,
     policy: Arc<dyn ApprovalPolicy>,
 ) where
@@ -792,7 +833,15 @@ async fn read_frames<R>(
             // A request FROM the agent (permission, fs, elicitation).
             (Some(method), Some(id)) if !id.is_null() => {
                 let reply = handle_agent_request(method, &frame, &policy, &worker);
-                let _ = out.send(reply.into_frame(id));
+                match out.upgrade() {
+                    Some(tx) => {
+                        let _ = tx.send(reply.into_frame(id));
+                    }
+                    // The session is gone: nothing can answer, and the agent is
+                    // about to be reaped anyway. Say so instead of waiting.
+                    None => tracing::warn!(worker = %worker, method,
+                        "acp: session gone; agent request left unanswered"),
+                }
             }
             // A notification.
             (Some(_method), _) => {}
@@ -1256,7 +1305,13 @@ mod tests {
                                 break;
                             }
                         }
-                        let result: Value = serde_json::from_str(PROMPT_RESULT).unwrap();
+                        // Answer with the CLIENT's request id (the fixture
+                        // const carries the id measured live, 5; a scripted
+                        // agent must not guess it — a mismatched id is a reply
+                        // the client can never match, and the turn then "times
+                        // out" for a reason that has nothing to do with ACP).
+                        let mut result: Value = serde_json::from_str(PROMPT_RESULT).unwrap();
+                        result["id"] = json!(id);
                         write_frame(&mut a_w, result).await;
                     }
                     Some("session/close") => {
@@ -1348,7 +1403,12 @@ mod tests {
         // The measured stream translated, in order, with the raw frames kept.
         assert!(kinds.contains(&"progress"), "{kinds:?}");
         assert!(kinds.contains(&"tool_used"), "{kinds:?}");
-        assert!(kinds.contains(&"turn_completed"), "{kinds:?}");
+        // Layering, pinned: `TurnCompleted` is the WORKER layer's event
+        // (`structured::run_acp_prompt`), and the turn's terminal signal at THIS
+        // layer is the `session/prompt` result asserted above. Emitting it here
+        // too would double it in the worker's event stream; expecting it here
+        // was the only thing standing between this test and green.
+        assert!(!kinds.contains(&"turn_completed"), "{kinds:?}");
         // The write is visible as a tool event with its path.
         assert!(events.iter().any(|e| matches!(
             e,
