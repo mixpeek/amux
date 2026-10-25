@@ -159,19 +159,32 @@ same binary, same account, bare `opencode acp` with no amux in the loop:
 | `opencode/deepseek-v4.1-flash-free` | `end_turn`, file written, turn over in 12s |
 
 One constant, `opencode::DEFAULT_MODEL` (`crates/amux-server/src/opencode/mod.rs`),
-read by every path so they cannot disagree:
+read by every path that can carry it, so they cannot disagree:
 
 - the structured transport (`run` and `acp` both pass it as `--model`, and ACP
   applies it with `session/set_config_option`);
-- the interactive launch (`opencode_launch_opts` appends
-  `--model <default>` unless the worker already carries one);
 - the worker row (`default_model_for_provider("opencode")`), so the model a
   worker runs is visible and editable rather than implicit.
+
+**The interactive launch cannot take it, and must not try.** Measured
+2026-10-25 on opencode 2.1.4: the TUI has no model flag (`opencode --help`
+lists only `--standalone/--server/--auto/--continue/--session/--prompt`), and a
+`--model` on that command line prints
+`ERROR Unrecognized flag: --model in command opencode` and the lane never
+starts — a live worker did exactly that the moment the launch began appending
+the pin. `OPENCODE_CONFIG_CONTENT` is not a channel either: the same session
+measured `{"model":"opencode-go/beam-free"}` being ignored (`run` stayed on its
+own default) while `run --model opencode-go/beam-free` switched. So
+`opencode_launch_opts` **strips** `--model`/`--model=`/`-m` (from `CC_FLAGS`
+and from the resume choreography) and logs a WARN naming what it dropped. The
+lane's *structured* turns still run the pinned model; its TUI does not, and
+the log says so rather than pretending.
 
 Two overrides, both intentional and both winning over the constant:
 
 1. **Per worker** — `amux register NAME --provider opencode --model X`
-   (`_amux_workers.model`, i.e. `--model` in its `CC_FLAGS`).
+   (`_amux_workers.model`, i.e. `--model` in its `CC_FLAGS`). It reaches the
+   worker's structured turns; the interactive launch drops it (see above).
 2. **Fleet-wide** — `AMUX_OPENCODE_MODEL=X` in the server environment
    (`~/.amux/server.env`), for a box whose accounts can reach a different model.
 
