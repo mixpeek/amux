@@ -114,9 +114,20 @@ impl Scope {
         match kind.trim() {
             "global" => Ok(Scope::Global),
             // Group names are compared lowercased, as scope_env_layers does.
-            "group" if name_ok(target) => Ok(Scope::Group(target.to_lowercase())),
+            // A comma-separated target is a SET of groups, any of which may use
+            // the item (Ethan, 2026-10-17). It is stored sorted and deduped, so
+            // the associated data binds the exact set and a single group keeps
+            // the bytes it had before sets existed.
+            "group" => {
+                let set: std::collections::BTreeSet<String> =
+                    target.split(',').map(|g| g.trim().to_lowercase()).filter(|g| !g.is_empty()).collect();
+                if set.is_empty() || !set.iter().all(|g| name_ok(g)) || set.len() > 32 {
+                    return Err(format!("scope {kind:?} needs one or more valid group names"));
+                }
+                Ok(Scope::Group(set.into_iter().collect::<Vec<_>>().join(",")))
+            }
             "worker" if name_ok(target) => Ok(Scope::Worker(target.to_string())),
-            "group" | "worker" => Err(format!("scope {kind:?} needs a valid target name")),
+            "worker" => Err(format!("scope {kind:?} needs a valid target name")),
             other => Err(format!("scope must be global, group or worker, not {other:?}")),
         }
     }
@@ -383,7 +394,25 @@ fn public_view(item: &Value) -> Value {
         "created": item["created"], "updated": item["updated"],
         "rotated": item.get("rotated").cloned().unwrap_or(Value::Null),
         "version": item_version(item), "by": item["by"], "note": item["note"], "source": item["source"],
+        "kind": item_kind(item),
     })
+}
+
+/// What the owner filed this under: a plain `secret`, or an `api_key` (the
+/// Vault's API Keys tab lists those). The kind is presentation only: storage,
+/// scope, precedence, delivery and every access rule are the same for both,
+/// because both are the same item in the same store. Items written before
+/// kinds existed are secrets.
+pub(crate) const SECRET_KINDS: [&str; 2] = ["secret", "api_key"];
+
+fn item_kind(item: &Value) -> &str {
+    item["kind"].as_str().filter(|k| SECRET_KINDS.contains(k)).unwrap_or("secret")
+}
+
+fn body_kind(body: &Value) -> Option<Result<&'static str, String>> {
+    let k = body.get("kind")?.as_str().unwrap_or("").trim();
+    Some(SECRET_KINDS.iter().find(|x| **x == k).copied()
+        .ok_or_else(|| format!("kind must be one of {SECRET_KINDS:?}")))
 }
 
 /// One writer at a time for the store and the delivery ledger. The temp file
@@ -413,7 +442,7 @@ fn worker_groups(home: &Path, worker: &str) -> std::collections::BTreeSet<String
 fn applies(scope: &Scope, worker: &str, groups: &std::collections::BTreeSet<String>) -> bool {
     match scope {
         Scope::Global => true,
-        Scope::Group(g) => groups.contains(g),
+        Scope::Group(set) => set.split(',').any(|g| groups.contains(g)),
         Scope::Worker(w) => w == worker,
     }
 }
@@ -760,6 +789,10 @@ fn refuse_worker(home: &Path, who: &str, action: &str) -> Response {
 /// can do that (the same rule as `worker_identity::owner_allowed`). The
 /// dashboard sends the bearer on every call (`_authHeaders`).
 fn owner_only(state: &super::AppState, headers: &HeaderMap, uri: &Uri, home: &Path, action: &str) -> Result<(), Box<Response>> {
+    if let Some(w) = super::session_verbs::admin_origin(headers, "vault_secrets") {
+        audit(home, json!({"ts": now_f64(), "event": "secret_admin_access", "action": action, "by": w}));
+        return Ok(());
+    }
     if let Some(w) = worker_origin(headers) {
         return Err(Box::new(refuse_worker(home, &w, action)));
     }
@@ -803,8 +836,10 @@ async fn list(headers: HeaderMap, RawQuery(q): RawQuery) -> Response {
         Ok(i) => i,
         Err(e) => return store_unreadable(e),
     };
-    // A worker sees the metadata of what applies to it, nothing else.
-    let origin = worker_origin(&headers);
+    // A worker sees the metadata of what applies to it, nothing else. An
+    // admin-group worker sees the owner's view.
+    let origin = worker_origin(&headers)
+        .filter(|_| super::session_verbs::admin_origin(&headers, "vault_list").is_none());
     let viewer = origin.clone().or_else(|| qs(&q, "worker"));
     let visible: Vec<&Value> = match &origin {
         Some(w) => {
@@ -896,6 +931,11 @@ fn key_unavailable(e: &str) -> (StatusCode, Value) {
 }
 
 fn create_item(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, note: &str, source: Option<&str>) -> Result<Value, (StatusCode, Value)> {
+    create_item_of_kind(home, key, scope, value, by, note, source, "secret")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_item_of_kind(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, note: &str, source: Option<&str>, kind: &str) -> Result<Value, (StatusCode, Value)> {
     let _g = store_lock().lock().unwrap_or_else(|p| p.into_inner());
     let mut items = load(home).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})))?;
     if let Some(dup) = items.iter().find(|i| i["key"] == key && item_scope(i).as_ref() == Some(scope)) {
@@ -910,7 +950,7 @@ fn create_item(home: &Path, key: &str, scope: &Scope, value: &str, by: &str, not
     let now = now_f64();
     let item = json!({"id": id, "key": key, "scope": scope.kind(), "target": scope.target(),
         "nonce": nonce, "ct": ct, "key_fp": fingerprint(&master), "created": now, "updated": now,
-        "version": 1, "by": by, "note": note, "source": source});
+        "version": 1, "by": by, "note": note, "source": source, "kind": kind});
     items.push(item.clone());
     save(home, &items).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})))?;
     Ok(item)
@@ -951,11 +991,15 @@ async fn create(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(n) => n,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "description"})),
     };
-    match create_item(&home, &key, &scope, &value, "owner", &note, None) {
+    let kind = match body_kind(&body).unwrap_or(Ok("secret")) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "kind"})),
+    };
+    match create_item_of_kind(&home, &key, &scope, &value, "owner", &note, None, kind) {
         Ok(item) => {
             audit(&home, json!({"ts": now_f64(), "event": "secret_added", "item": item["id"], "key": key,
-                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner"}));
-            tracing::info!(key = %key, scope = scope.kind(), measured = true, n_considered = 1,
+                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner", "kind": kind}));
+            tracing::info!(key = %key, scope = scope.kind(), kind, measured = true, n_considered = 1,
                 verdict = "vault_secret_added", "vault: a secret was added (no value logged)");
             (StatusCode::CREATED, Json(json!({"ok": true, "item": public_view(&item),
                 "applies": "workers receive it at their next start or restart"}))).into_response()
@@ -1051,6 +1095,10 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(n) => n,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "description"})),
     };
+    let new_kind = match body_kind(&body).transpose() {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "kind"})),
+    };
     let new_key = body.get("key").and_then(Value::as_str).map(|k| k.trim().to_string());
     if let Some(k) = &new_key {
         if let Err(e) = valid_key(k) {
@@ -1101,6 +1149,12 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
                     changes.push("description");
                 }
             }
+            if let Some(k) = new_kind {
+                if item_kind(&items[pos]) != k {
+                    items[pos]["kind"] = json!(k);
+                    changes.push("kind");
+                }
+            }
             if changes.is_empty() {
                 return Ok((public_view(&items[pos]), changes, Value::Null));
             }
@@ -1119,7 +1173,7 @@ async fn update(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         return Json(json!({"ok": true, "item": view, "changes": []})).into_response();
     }
     let running = super::session_verbs::running_workers().await;
-    let affects_process = changes.iter().any(|c| *c != "description");
+    let affects_process = changes.iter().any(|c| *c != "description" && *c != "kind");
     let stale = if affects_process { holders(&load_ledger(&home), &running, &id, None) } else { Vec::new() };
     audit(&home, json!({"ts": now_f64(), "event": "secret_updated", "item": id, "key": view["key"],
         "scope": view["scope"], "target": view["target"], "version": view["version"], "changes": changes,
@@ -1253,9 +1307,9 @@ async fn access(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
 
 /// Fields an audit line may carry out of this endpoint. The writer never puts
 /// a value in the file; this is the second wall.
-const AUDIT_FIELDS: [&str; 16] = [
+const AUDIT_FIELDS: [&str; 17] = [
     "ts", "event", "item", "key", "scope", "target", "by", "version", "path", "session", "action",
-    "changes", "from", "running_stale", "still_held_by", "error",
+    "changes", "from", "running_stale", "still_held_by", "error", "kind",
 ];
 
 fn audit_view(line: &Value) -> Value {
@@ -1354,6 +1408,9 @@ async fn import(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e})),
     };
+    if matches!(&scope, Scope::Group(set) if set.contains(',')) {
+        return err(StatusCode::BAD_REQUEST, json!({"error": "import reads one group's env file; import into one group, then add the others"}));
+    }
     let src = env_source(&home, &scope, body.get("source").and_then(Value::as_str));
     let env = super::session_verbs::EnvFile::load(&src);
     let Some(value) = env.get(&key).map(str::to_string).filter(|v| !v.is_empty()) else {
@@ -1469,6 +1526,29 @@ mod tests {
         let r2 = resolve(&rev, h.path(), "w1");
         assert_eq!(r2["A"].0["id"], r["A"].0["id"]);
         assert_eq!(r2["B"].0["id"], r["B"].0["id"]);
+    }
+
+    /// Ethan, 2026-10-17: a secret can be used by several groups.
+    #[test]
+    fn a_group_set_reaches_members_of_any_listed_group_and_binds_the_set() {
+        let h = home();
+        std::fs::write(h.path().join("sessions/inside.env"), "CC_TAGS=\"amux\"\n").unwrap();
+        std::fs::write(h.path().join("sessions/other.env"), "CC_TAGS=\"claude-account-x\"\n").unwrap();
+        std::fs::write(h.path().join("sessions/outside.env"), "CC_TAGS=\"gtm\"\n").unwrap();
+        let set = Scope::parse("group", " Claude-Account-X, amux ,amux").unwrap();
+        assert_eq!(set, Scope::Group("amux,claude-account-x".into()), "sorted, lowercased, deduped");
+        assert!(Scope::parse("group", " , ").is_err() && Scope::parse("group", "ok,bad name").is_err());
+        assert_eq!(Scope::parse("group", "solo").unwrap(), Scope::Group("solo".into()), "one group keeps its old form");
+        let master = [3u8; 32];
+        let mut items = Vec::new();
+        put(&mut items, &master, "PW", set.clone(), "secret");
+        for (w, gets) in [("inside", true), ("other", true), ("outside", false)] {
+            assert_eq!(resolve(&items, h.path(), w).contains_key("PW"), gets, "{w}");
+        }
+        // The set is in the associated data: shrinking it without re-sealing fails.
+        let mut narrowed = items[0].clone();
+        narrowed["target"] = json!("amux");
+        assert!(open(&master, &narrowed).is_err());
     }
 
     #[test]

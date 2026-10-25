@@ -336,6 +336,15 @@ async fn ingest_visits(
         Ok((stored, rejected)) => {
             tracing::info!(target: "amux::location", verdict = "location_visits_ingest", stored, rejected,
                 measured = true, n_considered = n, "location visits ingested");
+            // New visits can mark map pins "been" (map_store::match_visits).
+            if stored > 0 {
+                let st = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = super::map::match_visits_now(&st).await {
+                        tracing::warn!(target: "amux::map", verdict = "map_visits_match_failed", error = %e, "matching pins to new visits failed");
+                    }
+                });
+            }
             Json(json!({"ok": true, "stored": stored, "rejected": rejected, "measured": true, "n_considered": n})).into_response()
         }
         Err(e) => server_error(e),

@@ -309,4 +309,43 @@
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
+  <url>
+    <loc>https://amux.io/walkthrough/</loc>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.jpg</video:thumbnail_loc>
+      <video:title>amux walkthrough: from one agent to a whole AI engineering team</video:title>
+      <video:description>A narrated tour of amux on the desktop: start one coding agent, then run a team that coordinates with @mentions, answer only what needs you, chat beside the terminal, drain the board through status gates, and keep every message, log and commit on your own machine.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop.mp4</video:content_loc>
+      <video:duration>245</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-mobile.jpg</video:thumbnail_loc>
+      <video:title>amux on your phone: run and approve coding agents from anywhere</video:title>
+      <video:description>A narrated tour of amux on a phone: start an agent, answer only what needs you, have one worker brief another with an @mention, chat or talk to a worker, watch the board drain, and keep going offline.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-mobile.mp4</video:content_loc>
+      <video:duration>93</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.jpg</video:thumbnail_loc>
+      <video:title>amux in one minute</video:title>
+      <video:description>A silent, captioned one-minute tour of amux: start an agent, answer only what needs you, have one worker brief another with an @mention, tile the team, and watch the board gate Done.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-desktop-short.mp4</video:content_loc>
+      <video:duration>56</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/walkthrough/amux-walkthrough-mobile-short.jpg</video:thumbnail_loc>
+      <video:title>amux on your phone in 30 seconds</video:title>
+      <video:description>A silent, captioned tour of amux on a phone: answer only what needs you, have one worker brief another with an @mention, and watch the board drain.</video:description>
+      <video:content_loc>https://amux.io/walkthrough/amux-walkthrough-mobile-short.mp4</video:content_loc>
+      <video:duration>31</video:duration>
+      <video:publication_date>2026-10-17</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+  </url>
 </urlset>

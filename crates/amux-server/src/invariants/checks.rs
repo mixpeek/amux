@@ -756,6 +756,31 @@ pub struct DeployLag {
     /// fallback reintroduces the bug above, and a reader must be able to see
     /// that it happened.
     pub age_source: String,
+    /// Why the builder is not moving, from the activation gate's state file
+    /// (`~/.amux/activation-gate.json`), when the gate is HOLDING: no recent
+    /// main commit passed CI, so there was nothing to deploy. None when the
+    /// gate is not holding or its file is unreadable.
+    ///
+    /// 2026-10-24: this check failed for 27 hours with the server 73 commits
+    /// behind, and its text sent the reader to the builder log. The builder
+    /// was fine. main was red, and the fix was in CI, not in the builder.
+    pub gate_hold: Option<String>,
+}
+
+/// The gate's own words for a hold, from `activation-gate.json`. Pure so the
+/// mapping is tested; the caller reads the file.
+pub fn gate_hold_reason(gate: &serde_json::Value) -> Option<String> {
+    if gate["verdict"].as_str() != Some("ci_gate_no_green") {
+        return None;
+    }
+    let tip = gate["tip"].as_str().unwrap_or("");
+    let state = gate["tip_state"].as_str().unwrap_or("unknown");
+    let held = gate["held"].as_i64().map(|n| format!(" in the last {n}")).unwrap_or_default();
+    Some(format!(
+        "the CI gate is holding: no main commit{held} passed both `rust` and `checks`, and \
+         main's tip {} is {state}",
+        short(tip)
+    ))
 }
 
 /// When did origin/main first move PAST `served`?
@@ -852,19 +877,27 @@ pub fn served_commit_is_current(
         "threshold_s": threshold_s,
         "measured": true,
         "age_source": lag.age_source,
+        "gate_hold": lag.gate_hold,
     });
     if lag.oldest_unserved_age_s <= threshold_s {
         // Behind, but not yet longer than a build plausibly takes.
         return vec![InvariantResult::pass(ID).evidence(evidence)];
     }
+    let why = match &lag.gate_hold {
+        Some(hold) => format!(
+            "The builder is not the fault: {hold}. Fix main's CI (scripts/main-ci-watch.sh \
+             keeps a card on the amux lane for it); the server follows once a commit is green."
+        ),
+        None => "The builder may be ticking and still shipping nothing; check \
+                 `cargo_build_backoff` and BUILD FAILED in the builder log (AMUX-4947/AMUX-4957)."
+            .to_string(),
+    };
     vec![InvariantResult::fail(
         ID,
         "the served commit advances when origin/main moves".to_string(),
         format!(
             "serving {} while origin/main is {} — {} commit(s) behind, and the oldest unserved \
-             commit has been waiting {}s (over the {}s a build is given). The builder may be \
-             ticking and still shipping nothing; check `cargo_build_backoff` and BUILD FAILED \
-             in the builder log (AMUX-4947/AMUX-4957).",
+             commit has been waiting {}s (over the {}s a build is given). {why}",
             short(&lag.served),
             short(&lag.origin_head),
             lag.behind,
@@ -1052,10 +1085,17 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // Map store (0128): map_store::now() is epoch seconds as f64.
+    ("map_meta", "updated_at", false),
+    ("map_pins", "created_at", false),
+    ("map_pins", "updated_at", false),
+    ("map_shares", "created_at", false),
+    ("map_shares", "revoked_at", false),
     ("_amux_invariant_result", "ts", false),
     ("card_contracts", "deploy_at", false),
     ("land_queue", "done_at", false), // land_queue.rs: now_f64(); live 1791295108.5
     ("land_queue", "queued_at", false),
+    ("schedules", "locked_at", false), // api/schedules.rs: Utc::now().timestamp()
     ("land_queue", "started_at", false),
     ("card_contracts", "frozen_at", false), // measured: 1791242852.2 on 2026-10-06
     ("card_contracts", "review_at", false),
@@ -1129,6 +1169,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // SECONDS: api/signals.rs `raise_in_store` stamps chrono::Utc::now().timestamp()
     // (migration 0088, AMUX-5237).
     ("board_signals", "raised_at", false),
+    // SECONDS: api/signals.rs `create_subscription` and the fire path stamp
+    // chrono::Utc::now().timestamp() (migration 0130).
+    ("signal_fires", "fired_at", false),
+    ("signal_subscriptions", "created_at", false),
+    ("signal_subscriptions", "last_fired_at", false),
     // SECONDS: DEFAULT (unixepoch('subsec')) in migration 0061.
     ("board_change_log", "changed_at", false),
     ("chatgpt_oauth_requests", "decided_at", false), // chatgpt_app.rs, REAL epoch seconds
@@ -10497,6 +10542,33 @@ mod served_commit_tests {
             behind,
             oldest_unserved_age_s: age,
             age_source: "origin_reflog_arrival".into(),
+            gate_hold: None,
+        }
+    }
+
+    /// 2026-10-24: 27 hours failing, 73 behind, and the text pointed at the
+    /// builder log while the gate file said main was red. A hold names the
+    /// gate and CI; a lag with no hold keeps pointing at the builder.
+    #[test]
+    fn a_gate_hold_names_ci_and_not_the_builder() {
+        let gate = serde_json::json!({"verdict": "ci_gate_no_green", "tip": "210066e2d0a5bd6a",
+            "tip_state": "red", "target": "", "held": 40});
+        let mut l = lag(73, 97_067);
+        l.gate_hold = gate_hold_reason(&gate);
+        let held = served_commit_is_current(Some(&l), "", 1_800);
+        assert_eq!(held[0].status, Status::Fail);
+        let o = &held[0].observed;
+        assert!(o.contains("CI gate is holding") && o.contains("210066e2d0a5") && o.contains("red"), "{o}");
+        assert!(!o.contains("cargo_build_backoff"), "a hold is not a builder fault: {o}");
+
+        let plain = served_commit_is_current(Some(&lag(73, 97_067)), "", 1_800);
+        assert!(plain[0].observed.contains("cargo_build_backoff"), "{}", plain[0].observed);
+
+        for not_held in [
+            serde_json::json!({"verdict": "ci_gate_green", "target": "abc"}),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(gate_hold_reason(&not_held), None, "{not_held}");
         }
     }
 

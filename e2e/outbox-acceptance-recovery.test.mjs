@@ -55,7 +55,7 @@ function installMissingStubs(src,ctx){
 function harness(queue,replies,transport=null){
  const requests=[],patches=[],signals=[],timers=[],beacons=[],peekNudges=[];
  const element={classList:{add(){},remove(){},contains(){return false;}},textContent:'',innerHTML:''};
- const ctx=vm.createContext({peekSession:'test-worker',_peekKickFast:()=>peekNudges.push(Date.now()),Date,Set,console,Response,JSON,navigator:{onLine:true},_upqList:async()=>[],_uploadSyncPending:false,_syncChecklist:[],_syncBannerRequested:false,_syncBannerAuto:false,_syncPillText:'',_syncChecklistAt:0,updateConnectionStatus(){},_clearSyncTransientToast(){},_syncBannerBeacon:(phase,items)=>beacons.push({phase,n:(items||[]).length}),encodeURIComponent,decodeURIComponent,document:{getElementById:()=>element},drafts:[],offlineQueue:queue,_outboxActive:new Set(),describeOp:()=> 'test send',esc:s=>s,
+ const ctx=vm.createContext({peekSession:'test-worker',_outboxDeliveryLock:(name,work)=>work(),_peekKickFast:()=>peekNudges.push(Date.now()),Date,Set,console,Response,JSON,navigator:{onLine:true},_upqList:async()=>[],_uploadSyncPending:false,_syncChecklist:[],_syncBannerRequested:false,_syncBannerAuto:false,_syncPillText:'',_syncChecklistAt:0,updateConnectionStatus(){},_clearSyncTransientToast(){},_syncBannerBeacon:(phase,items)=>beacons.push({phase,n:(items||[]).length}),encodeURIComponent,decodeURIComponent,document:{getElementById:()=>element},drafts:[],offlineQueue:queue,_outboxActive:new Set(),describeOp:()=> 'test send',esc:s=>s,
   _outboxLock:async(_,f)=>f(),_readQueue:()=>queue,_interactionReplay:()=>({id:'int-test'}),_outboxQueueable:()=>true,_mutateQueue:async f=>f(queue),_authHeaders:h=>h,
   _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});if(transport)return transport(url,opts);const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
   _apiErrText:async r=>(await r.json()).error,_ownerMentionHeaders:(u,b,h)=>h,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},
@@ -91,7 +91,9 @@ test('wrong acknowledgement and read failure keep uncertainty durable and retrie
 });
 test('unkeyed uncertain message and unrelated refused edits stay blocked',async()=>{
  const h=harness([pending({state:'blocked',error:'delivery unconfirmed',options:{method:'POST',body:'{"text":"continue"}'}}),pending({id:'board',url:'/api/board/AF-1',state:'blocked',error:'acceptance is uncertain'})],[]);
- await h.drain();h.schedule();assert.equal(h.queue.length,2);assert.equal(h.requests.length,0);assert.equal(h.timers.length,0);
+ await h.drain();h.schedule();assert.equal(h.queue.length,2);assert.equal(h.requests.length,0);
+ // No retry is scheduled. The sync pass's own 5s stall check (runSyncBanner's watchdog) is not a retry.
+ assert.equal(h.timers.filter(ms=>ms!==5000).length,0);
 });
 test('steering confirmations use the server transport namespace',async()=>{
  const h=harness([pending({url:'/api/sessions/test-worker/steer',delivery_uncertain:true})],[{status:200,body:{accepted:true,msg_id:'steer:same-identity',id:'steering-row'}}]);

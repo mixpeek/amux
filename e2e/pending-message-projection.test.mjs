@@ -21,7 +21,7 @@ test('acknowledgement removes pending display and restores history row',()=>{
 });
 test('server steering replaces only its exact durable outbox identity',()=>{
  const script=source.slice(source.indexOf('function _steerQueueFor('),source.indexOf('function _steerHumanCount('));
- const ctx=vm.createContext({offlineQueue:[{id:'q',url:'/api/sessions/lane/steer',options:{body:JSON.stringify({text:'same',msg_id:'one'})},timestamp:Date.now()}]});vm.runInContext(script,ctx);
+ const ctx=vm.createContext({offlineQueue:[{id:'q',url:'/api/sessions/lane/steer',options:{body:JSON.stringify({text:'same',msg_id:'one'})},timestamp:Date.now()}],_outboxUncertainMessage:()=>''});vm.runInContext(script,ctx);
  const server={name:'lane',steering:[{id:'steer-server',text:'same',transport_id:'one'}]};
  assert.equal(ctx._steerQueueFor(server).length,1);assert.equal(ctx.offlineQueue.length,1,'projection must not delete durable intent');
  server.steering[0].transport_id='two';assert.equal(ctx._steerQueueFor(server).length,2,'same text from another send remains separate');

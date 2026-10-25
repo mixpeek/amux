@@ -168,6 +168,11 @@ async function ctx(browser: Browser, opts: { blockWs?: boolean } = {}) {
   // Not every project's storageState carries this (ios-safari's does not), and
   // the first-run walkthrough would sit on top of the canvas.
   await c.addInitScript(() => { try { localStorage.setItem('amux_walkthrough_done', '1'); } catch {} });
+  // The harness's cloud-offer seed too (fixtures.ts), which a raw context does
+  // not get. Without it this phone-width owner page recorded "phone offer shown"
+  // in the server pref and, run beside cloud-offer.spec.ts in one shard, its
+  // phone case found the offer already spent (ios-safari, main since 70adf4bbe).
+  await c.addInitScript(() => { try { if (!localStorage.getItem('amux_cloud_offer')) localStorage.setItem('amux_cloud_offer', '{"dismissed":1}'); } catch {} });
   if (opts.blockWs) await c.addInitScript(BLOCK_WS);
   // Keep this spec off the server-global draw_* prefs (last drawing, folder,
   // snap settings): the other Draw specs run against the same server in

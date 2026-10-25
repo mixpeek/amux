@@ -53,6 +53,7 @@ fn disk_strained_gb() -> f64 { env_f64("AMUX_HOST_DISK_STRAINED_GB", 40.0) }
 fn disk_critical_gb() -> f64 { env_f64("AMUX_HOST_DISK_CRITICAL_GB", 10.0) }
 /// Runaway: a worker tool process older than this, averaging at least
 /// `AMUX_RUNAWAY_AVG_CORES` of CPU over its whole life.
+const SLOW_SAMPLE_MS: u64 = 10_000;
 fn runaway_min_secs() -> f64 { env_f64("AMUX_RUNAWAY_MIN_SECS", 900.0) }
 fn runaway_avg_cores() -> f64 { env_f64("AMUX_RUNAWAY_AVG_CORES", 0.8) }
 /// Nice value a runaway is lowered to. `AMUX_RUNAWAY_RENICE=0` reports only.
@@ -141,6 +142,9 @@ pub struct HostPressure {
     /// Worker tool processes considered for the runaway check.
     pub n_considered: usize,
     pub runaways: Vec<Runaway>,
+    /// Who is using the CPU and memory: workers, and where the rest is.
+    /// None when `ps` did not run this tick.
+    pub utilization: Option<Utilization>,
     /// Automated ticks skipped because the host was critical, by loop, since boot.
     pub deferred: BTreeMap<String, u64>,
     pub sampled_at: i64,
@@ -167,7 +171,7 @@ fn slot() -> &'static RwLock<Option<HostPressure>> {
 pub fn set_level_for_test(level: Option<Level>) {
     *slot().write().unwrap() = level.map(|level| HostPressure {
         level, reasons: vec!["test pressure".into()], readings: Readings::default(), measured: true,
-        why_unmeasured: None, n_considered: 0, runaways: vec![], deferred: BTreeMap::new(),
+        why_unmeasured: None, n_considered: 0, runaways: vec![], utilization: None, deferred: BTreeMap::new(),
         sampled_at: chrono::Utc::now().timestamp(),
     });
 }
@@ -337,10 +341,17 @@ pub struct Proc {
     pub cpu_s: f64,
     pub elapsed_s: f64,
     pub nice: i32,
+    /// Resident memory, KiB.
+    pub rss_kb: u64,
+    /// ps `%cpu`: recent CPU share, 100 = one core.
+    pub pcpu: f64,
     pub comm: String,
 }
 
-/// Parse `ps -axo pid=,ppid=,time=,etime=,nice=,comm=`.
+/// The one `ps` the tick runs. `comm` is last because it can hold spaces.
+const PS_ARGS: &[&str] = &["-axo", "pid=,ppid=,time=,etime=,nice=,rss=,%cpu=,comm="];
+
+/// Parse `ps -axo pid=,ppid=,time=,etime=,nice=,rss=,%cpu=,comm=`.
 pub fn parse_ps(text: &str) -> Vec<Proc> {
     text.lines()
         .filter_map(|l| {
@@ -350,8 +361,10 @@ pub fn parse_ps(text: &str) -> Vec<Proc> {
             let cpu_s = parse_cputime(it.next()?)?;
             let elapsed_s = parse_etime(it.next()?)?;
             let nice = it.next()?.parse().ok()?;
+            let rss_kb = it.next()?.parse().ok()?;
+            let pcpu = it.next()?.parse().ok()?;
             let comm = it.collect::<Vec<_>>().join(" ");
-            Some(Proc { pid, ppid, cpu_s, elapsed_s, nice, comm })
+            Some(Proc { pid, ppid, cpu_s, elapsed_s, nice, rss_kb, pcpu, comm })
         })
         .collect()
 }
@@ -409,6 +422,186 @@ pub fn parse_panes(text: &str) -> HashMap<u32, String> {
         .collect()
 }
 
+// ---- utilization ------------------------------------------------------------
+//
+// Who is using the machine, from the same `ps` the runaway check reads. Every
+// process is charged to exactly one place: the worker whose pane it runs
+// under, or else its root ancestor (the topmost process below launchd), so
+// the parts add up to the machine total. 2026-10-17, load 87 on 28 cores:
+// the worker table summed to about 5 of the ~27 busy cores, and nothing said
+// where the other 22 were (a Docker VM, `amux land` and pytest runs whose
+// shell had exited, macOS daemons). A table that cannot show its remainder
+// reads as the whole story.
+
+/// One worker's processes, summed.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WorkerUse {
+    pub name: String,
+    pub cpu_percent: f64,
+    pub rss_mb: f64,
+    pub n_processes: usize,
+}
+
+/// One root process tree that no worker pane owns.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OtherUse {
+    /// `vm` | `detached` | `apps` | `system` | `amux_server`
+    pub kind: String,
+    pub root_pid: u32,
+    pub command: String,
+    pub cpu_percent: f64,
+    pub rss_mb: f64,
+    pub n_processes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Utilization {
+    pub n_processes: usize,
+    /// 100 per logical core.
+    pub capacity_percent: f64,
+    pub cpu_percent_total: f64,
+    pub workers_cpu_percent: f64,
+    pub unattributed_cpu_percent: f64,
+    /// Unattributed CPU by kind of root process.
+    pub by_kind: BTreeMap<String, f64>,
+    /// Every worker with a live pane, heaviest CPU first.
+    pub workers: Vec<WorkerUse>,
+    /// The heaviest root trees no worker owns.
+    pub top_unattributed: Vec<OtherUse>,
+    pub kinds: BTreeMap<String, String>,
+    pub sample_ms: u64,
+    pub sampled_at: i64,
+}
+
+const KINDS: &[(&str, &str)] = &[
+    ("vm", "a virtual machine (Docker Desktop, colima, lima): its CPU is the containers inside, named by `docker stats`"),
+    ("detached", "a process tree with no live parent: launchd agents, and processes left running after the shell or worker that started them exited"),
+    ("apps", "a macOS app the owner runs (Chrome, Docker Desktop's UI, editors)"),
+    ("system", "macOS itself: WindowServer, Spotlight, fseventsd, security scanning"),
+    ("amux_server", "the amux server and the jobs it runs"),
+];
+
+/// What kind of root a process tree hangs from. `comm` is the executable path.
+pub fn root_kind(comm: &str, pid: u32, self_pid: u32) -> &'static str {
+    let base = comm.rsplit('/').next().unwrap_or(comm);
+    if pid == self_pid || matches!(base, "amux-server-rs" | "amux-server") {
+        "amux_server"
+    } else if comm.contains("Virtualization.VirtualMachine") || base.starts_with("qemu-system") || matches!(base, "vfkit" | "krunkit") {
+        "vm"
+    } else if comm.starts_with("/Applications/") || comm.contains(".app/Contents/") && !comm.starts_with("/System/") {
+        "apps"
+    } else if ["/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/"].iter().any(|p| comm.starts_with(p))
+        || matches!(base, "kernel_task" | "launchd")
+    {
+        "system"
+    } else {
+        "detached"
+    }
+}
+
+/// Charge every process to a worker pane or a root tree. Pure, so the
+/// attribution is testable without a machine.
+pub fn utilization(procs: &[Proc], panes: &HashMap<u32, String>, ncpu: usize, self_pid: u32) -> Utilization {
+    let by_pid: HashMap<u32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+    // Walk up to a pane (worker) or the topmost ancestor below pid 1.
+    let owner = |pid: u32| -> Result<String, u32> {
+        let (mut cur, mut top) = (pid, pid);
+        for _ in 0..64 {
+            if let Some(w) = panes.get(&cur) {
+                return Ok(w.clone());
+            }
+            match by_pid.get(&cur) {
+                Some(p) if p.ppid > 1 && p.ppid != cur => {
+                    top = cur;
+                    cur = p.ppid;
+                }
+                Some(_) => return Err(cur),
+                None => return Err(top),
+            }
+        }
+        Err(cur)
+    };
+    let mut workers: HashMap<String, WorkerUse> = HashMap::new();
+    let mut roots: HashMap<u32, OtherUse> = HashMap::new();
+    let mut total = 0.0;
+    for p in procs {
+        total += p.pcpu;
+        let rss = p.rss_kb as f64 / 1024.0;
+        match owner(p.pid) {
+            Ok(w) => {
+                let e = workers.entry(w.clone()).or_insert(WorkerUse { name: w, cpu_percent: 0.0, rss_mb: 0.0, n_processes: 0 });
+                e.cpu_percent += p.pcpu;
+                e.rss_mb += rss;
+                e.n_processes += 1;
+            }
+            Err(root) => {
+                let comm = by_pid.get(&root).map(|r| r.comm.as_str()).unwrap_or(p.comm.as_str());
+                let e = roots.entry(root).or_insert_with(|| OtherUse {
+                    kind: root_kind(comm, root, self_pid).to_string(),
+                    root_pid: root,
+                    command: comm.chars().take(160).collect(),
+                    cpu_percent: 0.0,
+                    rss_mb: 0.0,
+                    n_processes: 0,
+                });
+                e.cpu_percent += p.pcpu;
+                e.rss_mb += rss;
+                e.n_processes += 1;
+            }
+        }
+    }
+    let round = |x: f64| (x * 10.0).round() / 10.0;
+    let mut workers: Vec<WorkerUse> = workers.into_values().map(|mut w| { w.cpu_percent = round(w.cpu_percent); w.rss_mb = round(w.rss_mb); w }).collect();
+    workers.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal).then(a.name.cmp(&b.name)));
+    let mut by_kind: BTreeMap<String, f64> = KINDS.iter().map(|(k, _)| (k.to_string(), 0.0)).collect();
+    for r in roots.values() {
+        *by_kind.entry(r.kind.clone()).or_default() += r.cpu_percent;
+    }
+    for v in by_kind.values_mut() {
+        *v = round(*v);
+    }
+    let mut others: Vec<OtherUse> = roots.into_values().map(|mut r| { r.cpu_percent = round(r.cpu_percent); r.rss_mb = round(r.rss_mb); r }).collect();
+    others.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal).then(a.root_pid.cmp(&b.root_pid)));
+    others.truncate(10);
+    let workers_cpu: f64 = workers.iter().map(|w| w.cpu_percent).sum();
+    Utilization {
+        n_processes: procs.len(),
+        capacity_percent: (ncpu.max(1) * 100) as f64,
+        cpu_percent_total: round(total),
+        workers_cpu_percent: round(workers_cpu),
+        unattributed_cpu_percent: round((total - workers_cpu).max(0.0)),
+        by_kind,
+        workers,
+        top_unattributed: others,
+        kinds: KINDS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        sample_ms: 0,
+        sampled_at: chrono::Utc::now().timestamp(),
+    }
+}
+
+/// One `ps` and one `tmux list-panes -a`: the whole input for both the
+/// runaway check and the utilization. None when `ps` did not run.
+fn sample_procs() -> Option<(Vec<Proc>, HashMap<u32, String>)> {
+    let ps = run("ps", PS_ARGS)?;
+    let panes = run("tmux", &["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).map(|s| parse_panes(&s)).unwrap_or_default();
+    Some((parse_ps(&ps), panes))
+}
+
+/// A sample at most `max_age_s` old: the tick's when fresh, else a new one.
+/// Blocking (one `ps`); call from `spawn_blocking`.
+pub fn utilization_fresh(max_age_s: i64) -> Option<Utilization> {
+    let now = chrono::Utc::now().timestamp();
+    if let Some(u) = current().and_then(|p| p.utilization).filter(|u| now - u.sampled_at <= max_age_s) {
+        return Some(u);
+    }
+    let t = std::time::Instant::now();
+    let (procs, panes) = sample_procs()?;
+    let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let mut u = utilization(&procs, &panes, ncpu, std::process::id());
+    u.sample_ms = t.elapsed().as_millis() as u64;
+    Some(u)
+}
+
 fn renice(pid: u32) -> Result<(), String> {
     let out = std::process::Command::new("renice")
         .args(["-n", &RENICE_TO.to_string(), "-p", &pid.to_string()])
@@ -421,13 +614,11 @@ fn renice(pid: u32) -> Result<(), String> {
     }
 }
 
-fn check_runaways(level: Level) -> (Vec<Runaway>, usize) {
-    let Some(ps) = run("ps", &["-axo", "pid=,ppid=,time=,etime=,nice=,comm="]) else { return (vec![], 0) };
-    let panes = run("tmux", &["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).map(|s| parse_panes(&s)).unwrap_or_default();
+fn check_runaways(level: Level, procs: &[Proc], panes: &HashMap<u32, String>) -> (Vec<Runaway>, usize) {
     if panes.is_empty() {
         return (vec![], 0);
     }
-    let (found, considered) = find_runaways(&parse_ps(&ps), &panes, runaway_min_secs(), runaway_avg_cores());
+    let (found, considered) = find_runaways(procs, panes, runaway_min_secs(), runaway_avg_cores());
     let act = level >= Level::Strained && renice_enabled();
     let runaways = found
         .into_iter()
@@ -460,14 +651,34 @@ fn check_runaways(level: Level) -> (Vec<Runaway>, usize) {
 
 async fn tick() {
     let prev = slot().read().ok().and_then(|g| g.as_ref().map(|p| p.level));
-    let (readings, (level, reasons), (runaways, considered)) = tokio::task::spawn_blocking(|| {
+    let (readings, (level, reasons), (runaways, considered), utilization) = tokio::task::spawn_blocking(|| {
         let r = sample_readings();
         let c = classify(&r);
-        let rw = check_runaways(c.0);
-        (r, c, rw)
+        let t = std::time::Instant::now();
+        let (rw, u) = match sample_procs() {
+            Some((procs, panes)) => {
+                let rw = check_runaways(c.0, &procs, &panes);
+                let mut u = utilization(&procs, &panes, r.ncpu, std::process::id());
+                u.sample_ms = t.elapsed().as_millis() as u64;
+                (rw, Some(u))
+            }
+            None => ((vec![], 0), None),
+        };
+        (r, c, rw, u)
     })
     .await
-    .unwrap_or_else(|_| (Readings::default(), (Level::Ok, vec![]), (vec![], 0)));
+    .unwrap_or_else(|_| (Readings::default(), (Level::Ok, vec![]), (vec![], 0), None));
+    // The sample is what `amux resources` serves, so a slow one is the thing a
+    // worker waits on at the worst moment (it took 71s per request before the
+    // tick cached it, 2026-10-17).
+    match &utilization {
+        Some(u) if u.sample_ms > SLOW_SAMPLE_MS => tracing::warn!(target: "amux::host_guard", verdict = "host_utilization_slow",
+            sample_ms = u.sample_ms, n_processes = u.n_processes, measured = true, n_considered = u.n_processes,
+            "one ps + tmux sample took {}ms over {} processes", u.sample_ms, u.n_processes),
+        None => tracing::warn!(target: "amux::host_guard", verdict = "host_utilization_unmeasured", measured = false,
+            n_considered = 0, "ps did not run, so worker utilization is unknown this tick"),
+        _ => {}
+    }
     let measured = readings.load5.is_some() || readings.mem_level.is_some() || readings.disk_free_gb.is_some();
     let missing = missing_probes(&readings);
     if !missing.is_empty() {
@@ -501,6 +712,7 @@ async fn tick() {
         },
         n_considered: considered,
         runaways,
+        utilization,
         deferred: BTreeMap::new(),
         sampled_at: chrono::Utc::now().timestamp(),
     };
@@ -525,7 +737,10 @@ mod tests {
     fn host_guard_live_probe() {
         let r = sample_readings();
         let (level, reasons) = classify(&r);
-        let (runaways, considered) = check_runaways(Level::Ok);
+        let (procs, panes) = sample_procs().expect("ps runs on a real host");
+        let (runaways, considered) = check_runaways(Level::Ok, &procs, &panes);
+        let u = utilization(&procs, &panes, r.ncpu, std::process::id());
+        println!("cpu {} of {}: workers {} unattributed {} {:?}", u.cpu_percent_total, u.capacity_percent, u.workers_cpu_percent, u.unattributed_cpu_percent, u.by_kind);
         println!("readings {r:?}\nlevel {level:?} {reasons:?}\nconsidered {considered}");
         for x in &runaways {
             println!("  {} pid {} {:.2} cores {}s nice {} [{}] {}", x.worker, x.pid, x.avg_cores, x.elapsed_s, x.nice, x.action, x.command);
@@ -567,13 +782,13 @@ mod tests {
     #[test]
     fn only_long_hot_tool_processes_under_a_worker_pane_are_runaways() {
         let ps = "\
-  100     1   0:01.00   02:00:00  0 tmux
-  200   100   5:00.00   02:00:00  0 -bash
-  201   200  30:00.00   02:00:00  0 claude
-  300   201  73:00.00   01:13:00  0 grep
-  301   201   0:10.00   01:13:00  0 sleep
-  302   201   5:00.00   00:05:00  0 cargo
-  400     1 9000:00.00  03-00:00:00 0 VirtualMachine
+  100     1   0:01.00   02:00:00  0  2048   0.1 tmux
+  200   100   5:00.00   02:00:00  0  1024   0.0 -bash
+  201   200  30:00.00   02:00:00  0 409600 12.0 claude
+  300   201  73:00.00   01:13:00  0  4096  99.0 grep
+  301   201   0:10.00   01:13:00  0   512   0.0 sleep
+  302   201   5:00.00   00:05:00  0 204800 150.0 cargo
+  400     1 9000:00.00  03-00:00:00 0 8388608 250.0 VirtualMachine
 ";
         let procs = parse_ps(ps);
         assert_eq!(procs.len(), 7);
@@ -588,12 +803,54 @@ mod tests {
     }
 
     #[test]
+    fn utilization_charges_every_process_to_one_worker_or_root_and_the_parts_add_up() {
+        // A worker's pane tree; a pytest left running under an `amux land`
+        // whose shell exited (reparented to launchd); a Docker VM; a system
+        // daemon; Chrome with a helper; the amux server itself (pid 900).
+        let ps = "\
+  100     1   0:01.00   02:00:00  0    2048   0.5 /usr/local/bin/tmux
+  200   100   5:00.00   02:00:00  0    1024   0.0 -bash
+  201   200  30:00.00   02:00:00  0  409600  12.0 claude
+  302   201   5:00.00   00:05:00  0  204800 150.0 /Users/x/.rustup/toolchains/stable/bin/rustc
+  500     1   0:01.00   00:05:00  0    4096   1.0 bash
+  501   500   9:00.00   00:05:00  0  102400  80.0 /usr/local/bin/python3
+  502   501   9:00.00   00:05:00  0  102400  70.0 /usr/local/bin/python3
+  400     1 9000:00.00 03-00:00:00 0 8388608 250.0 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+  600     1  10:00.00 09-00:00:00 0   20480  20.0 /System/Library/Frameworks/CoreServices.framework/fseventsd
+  700     1  10:00.00 01:00:00    0  512000  30.0 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  701   700  10:00.00 01:00:00    0  256000  60.0 /Applications/Google Chrome.app/Contents/Frameworks/Helper (Renderer)
+  900     1  10:00.00 09-00:00:00 0  300000  40.0 /Users/x/.local/bin/amux-server-rs
+";
+        let procs = parse_ps(ps);
+        assert_eq!(procs.len(), 12, "every line parses, paths with spaces included");
+        let panes = parse_panes("amux-builder 200\n");
+        let u = utilization(&procs, &panes, 28, 900);
+        assert_eq!(u.capacity_percent, 2800.0);
+        assert_eq!(u.cpu_percent_total, 713.5);
+        // The worker owns its pane's whole tree, nothing above it.
+        assert_eq!(u.workers.len(), 1);
+        assert_eq!((u.workers[0].name.as_str(), u.workers[0].cpu_percent, u.workers[0].n_processes), ("builder", 162.0, 3));
+        // Workers plus the remainder is the machine, so nothing is unaccounted.
+        assert_eq!(u.workers_cpu_percent + u.unattributed_cpu_percent, u.cpu_percent_total);
+        assert_eq!(u.by_kind["vm"], 250.0);
+        assert_eq!(u.by_kind["detached"], 151.5, "the orphaned land tree (151) and the tmux server itself (0.5)");
+        assert_eq!(u.by_kind["apps"], 90.0, "Chrome and its helper are one tree");
+        assert_eq!(u.by_kind["system"], 20.0);
+        assert_eq!(u.by_kind["amux_server"], 40.0);
+        // The orphaned subtree is one row named by its root, not three pythons.
+        let land = u.top_unattributed.iter().find(|o| o.root_pid == 500).expect("the detached tree is listed");
+        assert_eq!((land.kind.as_str(), land.n_processes, land.cpu_percent), ("detached", 3, 151.0));
+        assert_eq!(u.top_unattributed[0].kind, "vm", "heaviest first");
+        assert!(u.kinds.contains_key("detached") && u.kinds.len() == u.by_kind.len(), "every kind is explained");
+    }
+
+    #[test]
     fn automation_is_deferred_only_by_a_fresh_measured_critical_sample() {
         let now = chrono::Utc::now().timestamp();
         let set = |level: Level, measured: bool, age: i64| {
             *slot().write().unwrap() = Some(HostPressure {
                 level, reasons: vec!["test".into()], readings: Readings::default(), measured,
-                why_unmeasured: None, n_considered: 0, runaways: vec![], deferred: BTreeMap::new(),
+                why_unmeasured: None, n_considered: 0, runaways: vec![], utilization: None, deferred: BTreeMap::new(),
                 sampled_at: now - age,
             });
         };

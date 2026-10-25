@@ -161,6 +161,10 @@ async fn coding_and_chat_workers_share_every_generic_operation() {
 
     // --- board: the same card ops attribute to either worker ---------------
     for name in ["code-lane", "chat-lane"] {
+        // A new worker starts with every Board-tab switch off, which means no
+        // board at all; the owner turns it on, as the Board tab does.
+        let (st, v) = call(&app, "PATCH", &format!("/api/sessions/{name}/config"), Some(json!({"board_enabled": true}))).await;
+        assert!(st.is_success(), "{name}: {st} {v}");
         // Each worker files on its own board, as the board requires of any worker.
         let (st, card) = call_as(&app, name, "POST", "/api/board",
             Some(json!({"title": format!("shared task for {name}"), "status": "todo", "session": name}))).await;

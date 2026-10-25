@@ -13,6 +13,13 @@ declare function submitCreate(): Promise<void>;
 
 async function createBody(page: import('@playwright/test').Page, dir: string) {
   let body: any = null;
+  // The default directory's check (started by openCreate) answers LAST, as it
+  // did on ios-safari in CI: it must not undo the check for the chosen dir.
+  await page.route(/\/api\/git-check\?/, async (route) => {
+    const asked = new URL(route.request().url()).searchParams.get('dir');
+    if (asked !== dir) await new Promise((r) => setTimeout(r, 800));
+    await route.continue();
+  });
   await page.route(/\/api\/sessions$/, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     body = route.request().postDataJSON();
@@ -28,6 +35,7 @@ async function createBody(page: import('@playwright/test').Page, dir: string) {
     await submitCreate();
   }, dir);
   await expect.poll(() => body).not.toBeNull();
+  await page.waitForTimeout(1000);   // let the delayed default-dir answer land
   return body;
 }
 

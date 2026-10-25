@@ -945,12 +945,28 @@ pub async fn start(home: &Path, lane: &str) -> Result<Started, Refusal> {
             ));
         }
         if std::time::Instant::now() > deadline {
+            // Its own last words before the container goes: the 2026-10-22
+            // timeouts were an import crash that only this log showed.
+            let server_log = docker(
+                &["exec", &name, "tail", "-n", "15", "/tmp/computer-server.log"],
+                Duration::from_secs(15),
+            )
+            .await
+            .map(|o| format!("{}{}", o.stdout, o.stderr))
+            .unwrap_or_default();
             let _ = docker(&["rm", "-f", &name], Duration::from_secs(60)).await;
             forget(&name);
+            tracing::warn!(
+                "[computer] verdict=computer_server_not_ready lane={lane} image={image} last_line={:?}",
+                server_log.lines().last().unwrap_or("")
+            );
             return Err(refuse(
                 504,
                 "not_ready",
-                json!({ "error": "computer-server did not answer within 180s; the container was removed" }),
+                json!({
+                    "error": "computer-server did not answer within 180s; the container was removed",
+                    "server_log_tail": server_log.lines().map(str::to_string).collect::<Vec<_>>(),
+                }),
             ));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;

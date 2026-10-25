@@ -390,17 +390,33 @@ pub enum Admission {
     Deny,
 }
 
-/// The admission decision, as a pure function of the two signals, so it is
+/// The admission decision, as a pure function of its signals, so it is
 /// testable without a machine in any particular state.
 ///
 /// `pressure_level` is the kernel's own verdict (1 normal, 2 warn, 4 critical).
 /// `swap_used_mb` is absolute rather than a fraction on purpose: macOS GROWS the
 /// swap file on demand, so "percent of swap used" stays flat as the problem gets
 /// worse and is close to useless as a signal.
+///
+/// `swap_growth_mb` is how much swap grew over the recent window (`None` until
+/// there is a window to measure). It exists because `swap_used_mb` alone is a
+/// HIGH-WATER MARK on macOS: pages swapped out hours ago stay counted until
+/// whatever owns them is touched or exits. 2026-10-17: swap read 20.4 GB at
+/// noon and 20.8 GB at 14:55 with the kernel at `normal` and 86% of RAM free
+/// throughout, so the old swap-alone rule refused every start all afternoon
+/// and, after a tmux server kill at 14:51, refused to bring 19 lanes back. A
+/// gate that denies on the healthy baseline is ethos rule 7's failure.
+///
+/// So with the kernel at `normal`, heavy swap denies only while it is still
+/// GROWING, which is the "working set no longer fits" case that the swap rule
+/// was written to catch. A stale balance under normal pressure is `Strained`:
+/// logged, not blocked. With the kernel at `warn` or unreadable, heavy swap
+/// still denies on its own.
 pub(crate) fn admission_for(
     pressure_level: Option<u32>,
     swap_used_mb: Option<f64>,
     swap_deny_mb: f64,
+    swap_growth_mb: Option<f64>,
 ) -> Admission {
     // Unknown must not deny: a host where these are unreadable (non-macOS, a
     // sandbox) would otherwise be unable to start any worker at all.
@@ -408,12 +424,46 @@ pub(crate) fn admission_for(
         return Admission::Deny;
     }
     if swap_used_mb.is_some_and(|mb| mb >= swap_deny_mb) {
-        return Admission::Deny;
+        if pressure_level != Some(1) {
+            return Admission::Deny;
+        }
+        if swap_growth_mb.is_some_and(|g| g >= SWAP_GROWTH_DENY_MB) {
+            return Admission::Deny;
+        }
+        return Admission::Strained;
     }
     if pressure_level == Some(2) {
         return Admission::Strained;
     }
     Admission::Allow
+}
+
+/// Swap growth over [`SWAP_GROWTH_WINDOW`] at or above which heavy swap under
+/// `normal` kernel pressure counts as active swapping rather than a stale
+/// balance. 512 MB in five minutes is a working set spilling, not noise.
+const SWAP_GROWTH_DENY_MB: f64 = 512.0;
+const SWAP_GROWTH_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Record one swap reading and return how much swap grew across the window,
+/// or `None` until the oldest retained reading is at least a minute old.
+/// Readings come from every `admission()` call (/health polls it), so the
+/// window fills on its own without a background job.
+fn swap_growth_mb(now_mb: Option<f64>) -> Option<f64> {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static SAMPLES: Mutex<VecDeque<(Instant, f64)>> = Mutex::new(VecDeque::new());
+    let now_mb = now_mb?;
+    let now = Instant::now();
+    let mut q = SAMPLES.lock().ok()?;
+    while q.front().is_some_and(|(t, _)| now.duration_since(*t) > SWAP_GROWTH_WINDOW) {
+        q.pop_front();
+    }
+    if q.back().is_none_or(|(t, _)| now.duration_since(*t).as_secs() >= 10) {
+        q.push_back((now, now_mb));
+    }
+    let (t0, mb0) = *q.front()?;
+    (now.duration_since(t0).as_secs() >= 60).then_some(now_mb - mb0)
 }
 
 /// Swap in use, in MB, at or above which amux stops admitting workers.
@@ -430,7 +480,14 @@ pub fn swap_deny_mb() -> f64 {
 /// Live admission check against this host.
 pub fn admission() -> Admission {
     let m = mem_health();
-    admission_for(m.pressure_level, m.swap_used_mb, swap_deny_mb())
+    let growth = swap_growth_mb(m.swap_used_mb);
+    let verdict = admission_for(m.pressure_level, m.swap_used_mb, swap_deny_mb(), growth);
+    if verdict == Admission::Strained && m.pressure_level == Some(1) {
+        tracing::debug!(target: "amux::admission", swap_used_mb = ?m.swap_used_mb,
+            swap_growth_mb = ?growth, verdict = "swap_stale_admitted",
+            "heavy swap under normal kernel pressure and not growing: admitted as strained");
+    }
+    verdict
 }
 
 /// A fixed admission verdict for one router, used in place of the live host
@@ -1358,7 +1415,7 @@ mod admission_tests {
     #[test]
     fn the_healthy_2026_08_28_baseline_allows() {
         assert_eq!(
-            admission_for(Some(1), Some(2207.4), 8192.0),
+            admission_for(Some(1), Some(2207.4), 8192.0, None),
             Admission::Allow
         );
     }
@@ -1368,7 +1425,7 @@ mod admission_tests {
     /// page accounting.
     #[test]
     fn a_kernel_critical_verdict_denies() {
-        assert_eq!(admission_for(Some(4), Some(0.0), 8192.0), Admission::Deny);
+        assert_eq!(admission_for(Some(4), Some(0.0), 8192.0, None), Admission::Deny);
     }
 
     /// Kernel `warn` is reported, not blocked. Refusing on warn would deny during
@@ -1376,28 +1433,44 @@ mod admission_tests {
     #[test]
     fn kernel_warn_is_strained_not_denied() {
         assert_eq!(
-            admission_for(Some(2), Some(100.0), 8192.0),
+            admission_for(Some(2), Some(100.0), 8192.0, None),
             Admission::Strained
         );
     }
 
-    /// Heavy sustained swap denies on its own, because the kernel's pressure level
-    /// can still read `normal` while the working set has stopped fitting.
+    /// Heavy swap that is still GROWING denies even when the kernel says
+    /// normal: the working set has stopped fitting.
     #[test]
-    fn heavy_swap_denies_even_when_the_kernel_says_normal() {
+    fn heavy_growing_swap_denies_even_when_the_kernel_says_normal() {
+        assert_eq!(admission_for(Some(1), Some(9000.0), 8192.0, Some(600.0)), Admission::Deny);
         assert_eq!(
-            admission_for(Some(1), Some(9000.0), 8192.0),
-            Admission::Deny
-        );
-        assert_eq!(
-            admission_for(Some(1), Some(8192.0), 8192.0),
+            admission_for(Some(1), Some(8192.0), 8192.0, Some(512.0)),
             Admission::Deny,
-            "boundary is inclusive"
+            "both boundaries are inclusive"
         );
+        assert_eq!(admission_for(Some(1), Some(8191.9), 8192.0, Some(5000.0)), Admission::Allow);
+    }
+
+    /// The 2026-10-17 reading: 20.8 GB of swap left over from hours earlier, the
+    /// kernel at normal, swap flat. The old rule denied this and kept 19 lanes
+    /// down after a crash. It must admit, as strained.
+    #[test]
+    fn a_stale_swap_balance_under_normal_pressure_is_strained_not_denied() {
+        assert_eq!(admission_for(Some(1), Some(20832.75), 8192.0, Some(3.0)), Admission::Strained);
+        assert_eq!(admission_for(Some(1), Some(20832.75), 8192.0, Some(-400.0)), Admission::Strained);
         assert_eq!(
-            admission_for(Some(1), Some(8191.9), 8192.0),
-            Admission::Allow
+            admission_for(Some(1), Some(20832.75), 8192.0, None),
+            Admission::Strained,
+            "no window yet (just after a restart) must not deny either"
         );
+    }
+
+    /// Heavy swap with the kernel at warn, or with no kernel verdict at all,
+    /// still denies on the balance alone.
+    #[test]
+    fn heavy_swap_still_denies_under_warn_or_unknown_pressure() {
+        assert_eq!(admission_for(Some(2), Some(9000.0), 8192.0, Some(0.0)), Admission::Deny);
+        assert_eq!(admission_for(None, Some(9000.0), 8192.0, None), Admission::Deny);
     }
 
     /// UNKNOWN must never deny. On a host where these are unreadable — Linux, the
@@ -1405,9 +1478,9 @@ mod admission_tests {
     /// worker at all, which is a far worse failure than not having the gate.
     #[test]
     fn unreadable_signals_allow_rather_than_brick_the_fleet() {
-        assert_eq!(admission_for(None, None, 8192.0), Admission::Allow);
-        assert_eq!(admission_for(None, Some(100.0), 8192.0), Admission::Allow);
-        assert_eq!(admission_for(Some(1), None, 8192.0), Admission::Allow);
+        assert_eq!(admission_for(None, None, 8192.0, None), Admission::Allow);
+        assert_eq!(admission_for(None, Some(100.0), 8192.0, None), Admission::Allow);
+        assert_eq!(admission_for(Some(1), None, 8192.0, None), Admission::Allow);
     }
 
     /// And the live check must not be denying right now, or every lane start on

@@ -29,6 +29,12 @@ set -euo pipefail
 SRC_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# A THROWAWAY HOME for every install-hooks.sh run below. Case A used to run it
+# with the real HOME, and install-hooks.sh installs into ~/.amux/hooks when that
+# directory exists, so every run of this test replaced the fleet's LIVE
+# PreToolUse guard with the fixture's copy of the branch under test (found
+# 2026-10-18, when it also replaced the live post-push verify).
+export HOME="$TMP/home"; mkdir -p "$HOME"
 fail=0
 
 note() { printf '  %s\n' "$*"; }
@@ -156,7 +162,7 @@ cp -p "$SRC_REPO/scripts/atomic-replace.sh" "$wt/scripts/"
 printf '#!/bin/bash\n# stale\n' > "$TMP/home/hook-report.sh"; chmod 0711 "$TMP/home/hook-report.sh"
 ino_before=$(ls -i "$TMP/home/hook-report.sh" | awk '{print $1}')
 cout="$(cd "$wt" && AMUX_REPORT_HOOK_DEST="$TMP/home/hook-report.sh" AMUX_SHARED_GUARD_DEST="$TMP/home/hooks/git-shared-guard.py" \
-  AMUX_READ_ROUTER_DEST="$TMP/home/hooks/large-read-guard.py" bash scripts/install-hooks.sh 2>&1)" || true   # its verdict is checked below, line by line
+  AMUX_READ_ROUTER_DEST="$TMP/home/hooks/large-read-guard.py" AMUX_POST_PUSH_VERIFY_DEST="$TMP/home/hooks/post-push-verify.py" bash scripts/install-hooks.sh 2>&1)" || true   # its verdict is checked below, line by line
 if cmp -s "$wt/scripts/hooks/hook-report.sh" "$TMP/home/hook-report.sh"; then
   ok "C: a stale report hook is replaced with the tracked one"
 else

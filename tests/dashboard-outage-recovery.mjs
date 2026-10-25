@@ -48,8 +48,8 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -207,7 +207,9 @@ test('connection status follows reads while pending write errors remain visible 
 
 function sharedStorage() {
   const flights = new Map();
-  return {stored: new Map(), locks: {request(name, work) {
+  // The Web Locks signature: request(name, [options,] callback).
+  return {stored: new Map(), locks: {request(name, options, work) {
+    if (typeof options === 'function') work = options;
     const flight = (flights.get(name) || Promise.resolve()).then(work);
     flights.set(name, flight.catch(() => {}));
     return flight;
@@ -817,7 +819,7 @@ test('reconnect retries retain completed file checkmarks without uploading those
 
 test('a queue entry removed in another tab cannot earn an acknowledgement checkmark', async () => {
   const {ctx, stored, element} = fixture(); await enqueue(ctx);
-  ctx._outboxLock=async (name, work) => {if(name.startsWith('amux-outbox-delivery:')) stored.set('amux_offline_queue','[]'); return work();};
+  ctx._outboxDeliveryLock=async (name, work) => {if(name.startsWith('amux-outbox-delivery:')) stored.set('amux_offline_queue','[]'); return work();};
   await ctx.runSyncBanner();
   assert.equal(element('sync-title-text').textContent,'0 synced, 1 skipped');
   assert.doesNotMatch(element('sync-items').innerHTML,/sync-item done/);
@@ -928,7 +930,9 @@ test('identity arriving after settings opened refreshes billing without another 
   const calls=[];
   const ctx=vm.createContext({_cloudEmail:'',location:{hostname:'example.test'},document:{getElementById:id=>id==='settings-menu'?{classList:{contains:()=>true}}:null},
     fetch:async()=>({ok:true,status:200,json:async()=>({is_cloud:true,email:'owner@example.test',has_api_key:true})}),
-    _applyIdentityToSettings(){},loadTeamSection(){},_loadGatewayOrgs(){},
+    // _initIdentity calls these too (2aa72c6b6 added _cloudOfferInit); a missing
+    // one throws inside its try and the billing refresh this test pins never runs.
+    _applyIdentityToSettings(){},_cloudOfferInit(){},loadTeamSection(){},_loadGatewayOrgs(){},
     _loadCloudPlan(){calls.push('plan')},loadBillingSection(){calls.push('billing')}});
   vm.runInContext(code('_initIdentity'),ctx);await ctx._initIdentity();
   assert.deepEqual(calls,['plan','billing']);assert.equal(ctx._cloudEmail,'owner@example.test');

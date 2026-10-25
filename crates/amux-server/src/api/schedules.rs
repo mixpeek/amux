@@ -37,6 +37,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Local;
 use serde::{Deserialize, Deserializer};
+use crate::runtime_jobs::schedule_lifecycle as lifecycle;
+use crate::runtime_jobs::schedule_lifecycle::Bounds;
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, Mutex};
 
@@ -387,6 +389,137 @@ fn de_flag<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
     })
 }
 
+/// Take a write's outcome out of its slot, dropping the guard before the
+/// caller awaits anything (a held `MutexGuard` makes the handler `!Send`).
+fn take_slot<T>(slot: &Mutex<Option<T>>) -> Option<T> {
+    slot.lock().expect("slot").take()
+}
+
+/// Present-vs-absent for nullable PATCH fields: absent is `None`, an explicit
+/// `null` is `Some(None)` (clear), a value is `Some(Some(v))`.
+fn de_present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Ok(Some(Option::<T>::deserialize(d)?))
+}
+
+/// The lifecycle fields of one create/PATCH body, validated. Each is
+/// `None` = not mentioned, `Some(None)` = clear, `Some(Some(v))` = set.
+#[derive(Default)]
+struct BoundsInput {
+    once: Option<String>,
+    not_before: Option<Option<String>>,
+    until: Option<Option<String>>,
+    max_runs: Option<Option<i64>>,
+}
+
+fn bounds_refusal(error: String) -> Response {
+    err(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": error,
+            "code": "schedule_bounds_invalid",
+            "accepted": {
+                "once": "YYYY-MM-DDTHH:MM (local) or RFC 3339: fire one time, then done",
+                "after": "datetime: no fire before it",
+                "until": "datetime: no fire after it; the schedule ends",
+                "max_runs": "integer >= 1: scheduled fires allowed (Run now not counted)",
+            },
+        }),
+    )
+}
+
+fn parse_bounds(body: &ScheduleBody, now: chrono::DateTime<Local>) -> Result<BoundsInput, String> {
+    use crate::runtime_jobs::schedule_lifecycle::parse_when;
+    let now_s = fmt_minute(now);
+    let when = |name: &str, v: &Option<Option<String>>| -> Result<Option<Option<String>>, String> {
+        match v {
+            None => Ok(None),
+            Some(None) => Ok(Some(None)),
+            Some(Some(x)) if x.trim().is_empty() => Ok(Some(None)),
+            Some(Some(x)) => parse_when(x)
+                .map(|t| Some(Some(t)))
+                .map_err(|e| format!("{name}: {e}")),
+        }
+    };
+    let mut out = BoundsInput {
+        not_before: when("after", &body.after)?,
+        until: when("until", &body.until)?,
+        max_runs: body.max_runs,
+        once: None,
+    };
+    if let Some(o) = body.once.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+        let t = parse_when(o).map_err(|e| format!("once: {e}"))?;
+        if body.schedule_expr.as_deref().is_some_and(|e| !e.trim().is_empty()) {
+            return Err(
+                "once and schedule_expr are exclusive: once fires one time, schedule_expr recurs".into(),
+            );
+        }
+        if t < now_s {
+            return Err(format!("once {t} is in the past (now {now_s})"));
+        }
+        out.once = Some(t);
+    }
+    if let Some(Some(m)) = out.max_runs {
+        if m < 1 {
+            return Err(format!("max_runs must be at least 1, got {m}"));
+        }
+    }
+    if let Some(Some(u)) = &out.until {
+        if u.as_str() <= now_s.as_str() {
+            return Err(format!("until {u} is not in the future (now {now_s})"));
+        }
+        if let Some(Some(nb)) = &out.not_before {
+            if u <= nb {
+                return Err(format!("until {u} must be after after/not_before {nb}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Write the validated bounds onto a row.
+fn apply_bounds(s: &mut DurableSchedule, b: &BoundsInput) {
+    let opt = |v: &Option<String>| v.clone().map(Value::from).unwrap_or(Value::Null);
+    if let Some(v) = &b.not_before {
+        s.set("not_before", opt(v));
+    }
+    if let Some(v) = &b.until {
+        s.set("until", opt(v));
+    }
+    if let Some(v) = b.max_runs {
+        s.set("max_runs", v.map(Value::from).unwrap_or(Value::Null));
+    }
+    if let Some(t) = &b.once {
+        s.set("sched_type", json!("once"));
+        s.set("run_at", json!(t));
+        s.set("schedule_expr", Value::Null);
+    }
+}
+
+/// The first fire a recurring row should carry now, honouring `not_before`.
+fn bounded_next(s: &DurableSchedule, parsed: &ScheduleExpr, now: chrono::DateTime<Local>) -> Option<String> {
+    crate::runtime_jobs::schedule_lifecycle::Bounds::of(s)
+        .first_after(parsed, now)
+        .map(fmt_minute)
+}
+
+/// The 409 for a worker re-enabling (or running) an owner-locked schedule.
+fn owner_lock_refusal(id: &str, verb: &str, by: &str, s: &DurableSchedule) -> Response {
+    tracing::warn!(schedule = id, verb, caller = by, locked_by = %s.str_field("locked_by"),
+        verdict = "schedule_owner_lock_refused", measured = true, n_considered = 1,
+        "a non-owner tried to re-enable or run a schedule the owner disabled");
+    err(
+        StatusCode::CONFLICT,
+        json!({
+            "error": format!("{id} was disabled by the owner and is locked; a worker cannot {verb} it"),
+            "code": "schedule_owner_locked",
+            "locked_by": s.str_field("locked_by"),
+            "lock_reason": s.str_field("lock_reason"),
+            "locked_at": s.raw().get("locked_at").cloned().unwrap_or(Value::Null),
+            "how": "ask the owner; an owner PATCH {\"enabled\":1} (dashboard, or a request with no worker header) clears the lock",
+        }),
+    )
+}
+
 fn bad_expr(expr: &str, e: &scheduler::ExprParseError) -> Response {
     err(
         StatusCode::BAD_REQUEST,
@@ -401,6 +534,7 @@ fn bad_expr(expr: &str, e: &scheduler::ExprParseError) -> Response {
                 "weekly on <day> at HH:MM", "monthly on 1-28 at HH:MM",
                 "MIN HOUR DOM MON DOW (5-field cron)"
             ],
+            "one_off": "for a single fire pass once:'YYYY-MM-DDTHH:MM' instead of an expression",
         }),
     )
 }
@@ -435,25 +569,37 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
         // delivered). `skipped` is a deliberate no-op and is not a failure.
         let mut fails: std::collections::HashMap<String, (i64, Option<i64>)> =
             std::collections::HashMap::new();
+        // GS-12 finding 5: `interrupted` (a restart mid-run) and failures on an
+        // expired USER credential are counted apart, so 881 identical token
+        // failures read as one cause and a restart does not read as a bug.
+        let mut extra: std::collections::HashMap<String, (i64, i64)> =
+            std::collections::HashMap::new();
         {
-            let mut stmt = conn.prepare(
+            let sql = format!(
                 "SELECT schedule_id, COUNT(*), \
                         SUM(CASE WHEN status IN ('error','refused') THEN 1 ELSE 0 END), \
-                        MAX(CASE WHEN status IN ('error','refused') THEN ran_at END) \
+                        MAX(CASE WHEN status IN ('error','refused') THEN ran_at END), \
+                        SUM(CASE WHEN status='interrupted' THEN 1 ELSE 0 END), \
+                        SUM(CASE WHEN status IN ('error','refused') AND {} THEN 1 ELSE 0 END) \
                  FROM schedule_runs WHERE ran_at >= ?1 GROUP BY schedule_id",
-            )?;
+                lifecycle::credential_sql_predicate()
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let it = stmt.query_map([day_ago], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, Option<i64>>(2)?.unwrap_or(0),
                     r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    r.get::<_, Option<i64>>(5)?.unwrap_or(0),
                 ))
             })?;
             for row in it {
-                let (k, v, f, last_f) = row?;
+                let (k, v, f, last_f, intr, cred) = row?;
                 fires.insert(k.clone(), v);
-                fails.insert(k, (f, last_f));
+                fails.insert(k.clone(), (f, last_f));
+                extra.insert(k, (intr, cred));
             }
         }
         // Every run row the window considered, fleet-wide: the denominator
@@ -466,19 +612,25 @@ pub async fn list(State(state): State<AppState>, Query(p): Query<ListParams>) ->
             .map(|s| {
                 let mut v = s.to_json();
                 crate::runtime_jobs::schedule_failure::expose(&mut v);
+                expose_instants(&mut v);
                 let f = *fires.get(s.id()).unwrap_or(&0);
                 v["fires_day"] = json!(f);
                 v["fleet_share"] = json!((100.0 * f as f64 / total as f64 * 10.0).round() / 10.0);
                 let (nf, last_fail) = fails.get(s.id()).copied().unwrap_or((0, None));
+                let (interrupted, cred) = extra.get(s.id()).copied().unwrap_or((0, 0));
                 v["run_stats_24h"] = json!({
                     "runs": f,
                     "failures": nf,
                     "last_failure_at": last_fail,
+                    "interrupted": interrupted,
+                    "credential_failures": cred,
+                    "credential_cause": if cred > 0 { json!("expired_user_credential") } else { Value::Null },
                     "window_s": 86_400,
                     "failure_statuses": ["error", "refused"],
                     "measured": true,
                     "n_considered": window_rows,
                 });
+                v["locked"] = json!(!s.str_field("locked_by").trim().is_empty());
                 let (class, planned) = cadence_class(s.schedule_expr(), s.str_field("sched_type"));
                 v["cadence_class"] = json!(class);
                 v["planned_fires_day"] = planned
@@ -566,6 +718,11 @@ pub(crate) fn cadence_class(expr: Option<&str>, sched_type: &str) -> (&'static s
     let Ok(parsed) = ScheduleExpr::parse(expr) else {
         return ("unknown", None);
     };
+    // One date a year: filed apart, so 49 one-offs written this way stop
+    // reading as "weekly" (GS-12 finding 5).
+    if lifecycle::is_fixed_date_cron(expr) {
+        return ("yearly", Some(1.0 / 365.0));
+    }
     let per_day = match &parsed {
         ScheduleExpr::Cron(sched) => {
             let now = Local::now();
@@ -591,6 +748,23 @@ pub(crate) fn cadence_class(expr: Option<&str>, sched_type: &str) -> (&'static s
 
 // ---- GET /api/schedules/{id} ----------------------------------------------
 
+/// `next_run`/`run_at` are this server's wall clock with no zone. A browser in
+/// another zone read them as its own local time, so a cloud server in UTC showed
+/// an every-minute schedule as due in "3h 59m" to a customer in New York (amux
+/// Cloud e2e, 2026-10-18). Publish the same instants as epoch milliseconds.
+fn expose_instants(v: &mut Value) {
+    let Some(o) = v.as_object_mut() else { return };
+    for (field, ms_field) in [("next_run", "next_run_ms"), ("run_at", "run_at_ms")] {
+        let ms = o
+            .get(field)
+            .and_then(Value::as_str)
+            .and_then(scheduler::parse_minute)
+            .map(|t| json!(t.timestamp_millis()))
+            .unwrap_or(Value::Null);
+        o.insert(ms_field.into(), ms);
+    }
+}
+
 pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let store = state.store.clone();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
@@ -602,6 +776,7 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(Ok(Some(s))) => {
             let mut v = s.to_json();
             crate::runtime_jobs::schedule_failure::expose(&mut v);
+            expose_instants(&mut v);
             // A tombstone must not read as live (AMUX-3431): the raw row
             // carries enabled:1 next to deleted:<ts>, and SCHED-349's owner
             // read exactly that as a working schedule for five days. Say it
@@ -693,6 +868,27 @@ pub struct ScheduleBody {
     /// Claimed attribution (weaker than the header; see `mutation_by`).
     #[serde(default)]
     pub by: Option<String>,
+    /// Fire ONE time at this local datetime, then done (`sched_type=once`).
+    /// The honest spelling of a one-off: 49 GS-12 one-offs were written as
+    /// fixed-date yearly crons because nothing else said "once, at 09:05".
+    #[serde(default)]
+    pub once: Option<String>,
+    /// No fire before this datetime (stored as `not_before`). `null` or ""
+    /// clears it on PATCH.
+    #[serde(default, alias = "not_before", deserialize_with = "de_present")]
+    pub after: Option<Option<String>>,
+    /// No fire after this datetime; the schedule ends with a reason. `null`
+    /// or "" clears it on PATCH.
+    #[serde(default, deserialize_with = "de_present")]
+    pub until: Option<Option<String>>,
+    /// Scheduled fires allowed (Run now is not counted), then it ends. Setting
+    /// it on PATCH starts a new budget. `null` clears it.
+    #[serde(default, deserialize_with = "de_present")]
+    pub max_runs: Option<Option<i64>>,
+    /// Why it is being disabled. An OWNER disable locks the schedule with this
+    /// reason; the owning worker is told it.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// PATCH-only: explicitly restore a soft-deleted schedule (AMUX-3431).
     /// Without this a PATCH to a tombstone is refused with 409 — silently
     /// accepting the write is how a deleted burn backstop read as live for
@@ -881,6 +1077,14 @@ pub async fn create(
     let by = mutation_by(&headers, body.by.as_deref());
     let now = Local::now();
     let now_ts = chrono::Utc::now().timestamp();
+    let bounds_in = match parse_bounds(&body, now) {
+        Ok(b) => b,
+        Err(e) => return bounds_refusal(e),
+    };
+    if let Some(t) = &bounds_in.once {
+        body.run_at = Some(t.clone());
+        body.sched_type = Some("once".into());
+    }
     let run_at = body.run_at.clone().unwrap_or_else(|| fmt_minute(now));
 
     // next_run — prefer schedule_expr (forces recurring), like Python; but
@@ -890,14 +1094,13 @@ pub async fn create(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let mut probe_row = DurableSchedule::from_map(Map::new());
+    apply_bounds(&mut probe_row, &bounds_in);
     let (sched_type, next_run) = match expr {
         Some(e) => match ScheduleExpr::parse(e) {
             Ok(parsed) => (
                 "recurring".to_string(),
-                parsed
-                    .next_run_after(now)
-                    .map(fmt_minute)
-                    .unwrap_or_else(|| run_at.clone()),
+                bounded_next(&probe_row, &parsed, now).unwrap_or_else(|| run_at.clone()),
             ),
             Err(perr) => return bad_expr(e, &perr),
         },
@@ -1011,6 +1214,14 @@ pub async fn create(
     m.insert("created".into(), json!(now_ts));
     m.insert("updated".into(), json!(now_ts));
     m.insert("deleted".into(), Value::Null);
+    for k in ["not_before", "until", "max_runs"] {
+        if let Some(v) = probe_row.raw().get(k) {
+            m.insert(k.into(), v.clone());
+        }
+    }
+    let fixed_date = expr.is_some_and(lifecycle::is_fixed_date_cron)
+        && bounds_in.max_runs.flatten().is_none()
+        && bounds_in.until.clone().flatten().is_none();
 
     let slot: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -1032,6 +1243,9 @@ pub async fn create(
                 "expr": row.schedule_expr().unwrap_or(row.str_field("run_at")),
                 "enabled": row.i64_field("enabled", 1),
                 "kind": row.str_field("kind"),
+                "not_before": row.raw().get("not_before").cloned().unwrap_or(Value::Null),
+                "until": row.raw().get("until").cloned().unwrap_or(Value::Null),
+                "max_runs": row.raw().get("max_runs").cloned().unwrap_or(Value::Null),
             });
             insert_audit(
                 conn,
@@ -1074,6 +1288,13 @@ pub async fn create(
                 if let Some(n) = cadence_note(&expr, &kind) {
                     o.insert("cadence_note".into(), n);
                 }
+                if fixed_date {
+                    let id = o.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                    tracing::info!(schedule = %id, expr = %expr, verdict = "schedule_fixed_date_cron",
+                        measured = true, n_considered = 1,
+                        "schedule created with a fixed-date cron and no bound; told it recurs yearly");
+                    o.insert("fixed_date_note".into(), json!(lifecycle::fixed_date_note(&expr)));
+                }
                 attach_isolated_note(o, "create");
             }
             if kind_defaulted {
@@ -1086,6 +1307,9 @@ pub async fn create(
                     );
                 }
             }
+            // Same absolute instants the list publishes, so a client can show "Next run" from
+            // the create answer without parsing the server's zone-less wall clock.
+            expose_instants(&mut body);
             (StatusCode::CREATED, Json(body)).into_response()
         }
         Err(e) => internal(e),
@@ -1168,6 +1392,15 @@ pub async fn patch(
     }
     let by = mutation_by(&headers, body.by.as_deref());
     let now = Local::now();
+    let bounds_in = match parse_bounds(&body, now) {
+        Ok(b) => b,
+        Err(e) => return bounds_refusal(e),
+    };
+    // The owner is a request with no worker header (the dashboard, or the
+    // owner's own shell); `is_owner_request` is the predicate the board's
+    // owner gates already use.
+    let owner = crate::api::standing_approvals::is_owner_request(&headers);
+    let caller_worker = crate::api::session_verbs::hdr_worker(&headers);
 
     enum Outcome {
         NotFound,
@@ -1175,11 +1408,13 @@ pub async fn patch(
             deleted_at: i64,
             deleted_by: Option<String>,
         },
-        Applied(Value),
+        Locked(DurableSchedule),
+        Applied(Value, Option<(DurableSchedule, String)>),
     }
     let slot: Arc<Mutex<Option<Outcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let id_w = id.clone();
+    let by_outer = by.clone();
     let write = state
         .store
         .write_async(move |conn| {
@@ -1214,6 +1449,15 @@ pub async fn patch(
                 s.set("deleted", Value::Null);
                 insert_audit(conn, s.id(), "deleted", &old, "", "api-resurrect", &by)?;
             }
+            // THE OWNER LOCK (GS-12 finding 5: the owner's disable of SCHED-173
+            // was undone by a worker 70 minutes later, and the worker had no
+            // way to know the disable was the owner's).
+            let was_enabled = s.enabled();
+            let locked = !s.str_field("locked_by").trim().is_empty();
+            if body.enabled == Some(1) && !was_enabled && locked && !owner {
+                return finish(&slot_w, Outcome::Locked(s), no_write());
+            }
+            let old_lock = s.str_field("locked_by").to_string();
             let old_vals: Map<String, Value> = AUDIT_FIELDS
                 .iter()
                 .map(|k| {
@@ -1289,6 +1533,44 @@ pub async fn patch(
                 };
                 s.set("exit_actions", stored);
             }
+            apply_bounds(&mut s, &bounds_in);
+
+            // Disable / enable bookkeeping: why it is off, and the owner lock.
+            let now_enabled = s.enabled();
+            let reason = body
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .unwrap_or("no reason given")
+                .to_string();
+            let mut disabled_notice: Option<String> = None;
+            if body.enabled == Some(0) && owner {
+                s.set("locked_by", json!(by));
+                s.set("lock_reason", json!(reason));
+                s.set("locked_at", json!(chrono::Utc::now().timestamp()));
+                tracing::info!(schedule = %s.id(), by = %by, reason = %reason,
+                    verdict = "schedule_owner_lock_set", measured = true, n_considered = 1,
+                    "owner disabled a schedule; locked against worker re-enable");
+            }
+            if was_enabled && !now_enabled {
+                s.set("disabled_reason", json!(if owner {
+                    format!("disabled by the owner ({by}): {reason}")
+                } else {
+                    format!("disabled by {by}: {reason}")
+                }));
+                let session = s.str_field("session").trim().to_string();
+                if !session.is_empty() && caller_worker != session {
+                    disabled_notice = Some(reason.clone());
+                }
+            } else if !was_enabled && now_enabled {
+                s.set("disabled_reason", Value::Null);
+                if owner {
+                    s.set("locked_by", Value::Null);
+                    s.set("lock_reason", Value::Null);
+                    s.set("locked_at", Value::Null);
+                }
+            }
 
             // Recompute next_run from the (possibly new) expr, Python-style.
             match s.schedule_expr().map(str::to_string) {
@@ -1296,12 +1578,30 @@ pub async fn patch(
                     s.set("sched_type", json!("recurring"));
                     let nr = ScheduleExpr::parse(&e)
                         .ok()
-                        .and_then(|p| p.next_run_after(now))
-                        .map(fmt_minute)
+                        .and_then(|p| bounded_next(&s, &p, now))
                         .unwrap_or_else(|| s.str_field("run_at").to_string());
                     s.set("next_run", json!(nr));
                 }
                 None => {
+                    // A recurring row whose expression was cleared, with no
+                    // legacy recurrence, recurs on nothing. legacy_next_run read
+                    // it as DAILY at run_at's clock time, so a PATCH of
+                    // {"schedule_expr":"","run_at":"2026-10-31T20:05"} answered
+                    // 200 and armed the row for 20:05 TODAY (seven GS-12
+                    // one-offs, 2026-10-19, reverted before they fired). With a
+                    // full date in run_at the caller meant once at that minute,
+                    // which is what `once:` writes; say so in the log.
+                    let run_at = s.str_field("run_at").to_string();
+                    if s.str_field("sched_type") == "recurring"
+                        && s.str_field("recurrence").trim().is_empty()
+                        && crate::runtime_jobs::scheduler::parse_minute(&run_at).is_some()
+                    {
+                        s.set("sched_type", json!("once"));
+                        s.set("schedule_expr", Value::Null);
+                        tracing::info!(schedule = %s.id(), run_at = %run_at,
+                            verdict = "schedule_expr_cleared_to_once", measured = true, n_considered = 1,
+                            "schedule_expr cleared with a dated run_at: the row is now a one-shot at run_at");
+                    }
                     let nr = legacy_next_run(
                         s.str_field("sched_type"),
                         Some(s.str_field("recurrence")).filter(|x| !x.is_empty()),
@@ -1314,6 +1614,14 @@ pub async fn patch(
             }
             s.set("updated", json!(chrono::Utc::now().timestamp()));
             update_schedule(conn, &s)?;
+            // A new max_runs budget, or re-enabling a row that spent its
+            // budget, starts counting from zero. Otherwise re-enable would end
+            // it again at its next fire with nothing having run.
+            let spent = Bounds::of(&s).max_runs.is_some_and(|m| s.i64_field("cron_runs", 0) >= m);
+            if bounds_in.max_runs.is_some() || (!was_enabled && now_enabled && spent) {
+                conn.execute("UPDATE schedules SET cron_runs=0 WHERE id=?1", [s.id()])?;
+                s.set("cron_runs", json!(0));
+            }
 
             // Audit every changed tracked field (esp. enabled) — AMUX-1735.
             for k in AUDIT_FIELDS {
@@ -1323,6 +1631,14 @@ pub async fn patch(
                     insert_audit(conn, s.id(), k, &old, &new, "api-patch", &by)?;
                 }
             }
+            if old_lock != s.str_field("locked_by") {
+                let new_lock = if s.str_field("locked_by").is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ({})", s.str_field("locked_by"), s.str_field("lock_reason"))
+                };
+                insert_audit(conn, s.id(), "locked_by", &old_lock, &new_lock, "api-patch", &by)?;
+            }
             let events = vec![ev(s.id(), MutationKind::Updated)];
             let mut out = s.to_json();
             if was_deleted {
@@ -1330,9 +1646,10 @@ pub async fn patch(
                     o.insert("resurrected".into(), json!(true));
                 }
             }
+            let notice = disabled_notice.map(|r| (s.clone(), r));
             finish(
                 &slot_w,
-                Outcome::Applied(out),
+                Outcome::Applied(out, notice),
                 WriteOutcome {
                     applied: true,
                     events,
@@ -1341,12 +1658,20 @@ pub async fn patch(
         })
         .await;
     match write {
-        Ok(_) => match slot.lock().expect("slot").take() {
+        Ok(_) => match take_slot(&slot) {
             // AMUX-3546: the card says "created OR EDITED". An edit that
             // changes the cadence is the same decision as choosing it, made a
             // second time, and it is the one a schedule actually gets — nobody
             // deletes and recreates to go from hourly to every 10m.
-            Some(Outcome::Applied(mut v)) => {
+            Some(Outcome::Applied(mut v, notice)) => {
+                // Tell the owning worker its schedule was disabled by someone
+                // else, so it does not re-enable a decision it cannot see.
+                if let Some((sched, reason)) = notice {
+                    let told = lifecycle::notify_disabled(&state.store, &sched, &by_outer, owner, &reason).await;
+                    if let Value::Object(o) = &mut v {
+                        o.insert("disable_notice".into(), told);
+                    }
+                }
                 if let Value::Object(o) = &mut v {
                     let expr = o
                         .get("schedule_expr")
@@ -1363,9 +1688,11 @@ pub async fn patch(
                     }
                     attach_isolated_note(o, "patch");
                 }
+                expose_instants(&mut v);
                 Json(v).into_response()
             }
             Some(Outcome::NotFound) => not_found(),
+            Some(Outcome::Locked(s)) => owner_lock_refusal(&id, "re-enable", &by_outer, &s),
             Some(Outcome::Tombstone {
                 deleted_at,
                 deleted_by,
@@ -1541,13 +1868,16 @@ pub async fn skip_next(
                 "api-skip",
                 &by,
             )?;
+            let ms = |v: &str| scheduler::parse_minute(v).map(|t| t.timestamp_millis());
             let body = json!({
                 "ok": true,
                 "id": s.id(),
                 "title": s.str_field("title"),
                 // WHAT WAS GIVEN UP, and where it resumes.
                 "skipped": skipped,
+                "skipped_ms": ms(skipped.as_str()),
                 "next_run": new_next,
+                "next_run_ms": ms(new_next.as_str()),
                 "schedule_expr": s.schedule_expr(),
                 "enabled": s.i64_field("enabled", 0),
             });
@@ -1641,9 +1971,9 @@ pub async fn run_now(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    // DUAL-SCHEDULER: while Python owns firing, a Rust run-now that recorded
-    // a run and delivered nothing would be a lie in the run history. Refuse
-    // honestly, with the way out in the body.
+    // SHADOW MODE (AMUX_RS_SCHEDULER=0): a run-now that recorded a run and
+    // delivered nothing would be a lie in the run history. Refuse honestly,
+    // with the way out in the body.
     if !scheduler::firing_enabled() {
         return err(
             StatusCode::CONFLICT,
@@ -1678,6 +2008,13 @@ pub async fn run_now(
     })
     .await
     {
+        Ok(Ok((Some(s), _)))
+            if !s.is_deleted()
+                && !s.str_field("locked_by").trim().is_empty()
+                && !crate::api::standing_approvals::is_owner_request(&headers) =>
+        {
+            return owner_lock_refusal(&id, "run", &by, &s);
+        }
         Ok(Ok((Some(s), _))) if !s.is_deleted() => s,
         Ok(Ok((Some(s), del_by))) => {
             // Running a deleted schedule by hand is the same fiction as
@@ -2240,6 +2577,7 @@ mod tests {
         assert_eq!(created["sched_type"], json!("recurring"));
         assert_eq!(created["enabled"], json!(1));
         assert!(created["next_run"].as_str().unwrap().contains("T09:00"));
+        assert!(created["next_run_ms"].as_i64().is_some(), "create answers with the absolute instant: {created}");
 
         let (st, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
         assert_eq!(st, StatusCode::OK);
@@ -2300,6 +2638,34 @@ mod tests {
         assert_eq!(arr[0]["session"], json!("alpha"));
         let (_, all) = send(&app, "GET", "/api/schedules", None, &[]).await;
         assert_eq!(all.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_expr_with_a_dated_run_at_makes_a_one_shot_not_a_daily() {
+        // 2026-10-19: seven GS-12 one-offs were PATCHed this way, answered 200,
+        // and were armed DAILY at run_at's clock time, days early.
+        let (app, _dir) = app();
+        let (_, created) = send(
+            &app,
+            "POST",
+            "/api/schedules",
+            Some(json!({ "title": "t", "session": "alpha", "schedule_expr": "5 20 31 10 *" })),
+            &SES,
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let when = (Local::now() + chrono::Duration::days(12)).format("%Y-%m-%dT%H:%M").to_string();
+        let (st, patched) = send(
+            &app,
+            "PATCH",
+            &format!("/api/schedules/{id}"),
+            Some(json!({ "schedule_expr": "", "run_at": when })),
+            &SES,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{patched}");
+        assert_eq!(patched["sched_type"], json!("once"), "{patched}");
+        assert_eq!(patched["next_run"], json!(when), "{patched}");
     }
 
     #[tokio::test]
@@ -2506,13 +2872,23 @@ mod tests {
         assert_eq!(attached["deduped"], json!(true));
     }
 
+    /// The absolute instant travels beside the zone-less wall-clock string.
+    #[test]
+    fn next_run_is_published_as_epoch_ms_from_the_servers_clock() {
+        let mut v = json!({"next_run": "2026-10-18T16:54", "run_at": ""});
+        super::expose_instants(&mut v);
+        let want = scheduler::parse_minute("2026-10-18T16:54").unwrap().timestamp_millis();
+        assert_eq!(v["next_run_ms"], json!(want));
+        assert_eq!(v["run_at_ms"], Value::Null, "no time, no instant");
+    }
+
     #[tokio::test]
     async fn run_now_is_409_in_shadow_mode() {
-        // Default deployment: AMUX_RS_SCHEDULER unset -> shadow mode. (No
-        // test in this crate ever SETS the var — the firing paths are
-        // exercised through scheduler_tick's explicit bool — so clearing it
-        // here cannot race another test.)
-        std::env::remove_var("AMUX_RS_SCHEDULER");
+        // Explicit opt-out: AMUX_RS_SCHEDULER=0 -> shadow mode. (No other
+        // test in this crate reads the var — the firing paths are exercised
+        // through scheduler_tick's explicit bool — so setting it here cannot
+        // race another test.)
+        std::env::set_var("AMUX_RS_SCHEDULER", "0");
         let (app, _dir) = app();
         let (_, created) = send(
             &app,
@@ -3123,5 +3499,117 @@ mod tests {
         assert_eq!(row["fires_day"], json!(4), "fires_day and runs must be the same count");
         assert_eq!(row["cadence_class"], json!("loop"));
         assert_eq!(row["planned_fires_day"], json!(144.0));
+    }
+
+    // ---- GS-12 finding 5: lifecycle fields, owner lock ----------------------
+
+    #[tokio::test]
+    async fn once_and_bounds_are_validated_and_stored() {
+        let (app, _dir) = app();
+        let when = fmt_minute(Local::now() + chrono::Duration::days(3));
+        let (st, c) = send(&app, "POST", "/api/schedules",
+            Some(json!({"title": "one-off", "session": "lock-test-nobody", "kind": "shell", "command": "true", "once": when})), &SES).await;
+        assert_eq!(st, StatusCode::CREATED, "{c}");
+        assert_eq!(c["sched_type"], json!("once"));
+        assert_eq!(c["run_at"], json!(when));
+        assert_eq!(c["next_run"], json!(when), "a one-shot fires at its datetime");
+        assert_eq!(c["schedule_expr"], Value::Null);
+
+        let until = fmt_minute(Local::now() + chrono::Duration::days(10));
+        let after = fmt_minute(Local::now() + chrono::Duration::days(2));
+        let (st, b) = send(&app, "POST", "/api/schedules",
+            Some(json!({"title": "bounded", "session": "lock-test-nobody", "kind": "shell", "command": "true",
+                        "schedule_expr": "daily at 09:00", "after": after, "until": until, "max_runs": 3})), &SES).await;
+        assert_eq!(st, StatusCode::CREATED, "{b}");
+        assert_eq!(b["not_before"], json!(after));
+        assert_eq!(b["until"], json!(until));
+        assert_eq!(b["max_runs"], json!(3));
+        assert!(b["next_run"].as_str().unwrap() >= after.as_str(), "first fire honours after: {b}");
+
+        let past = fmt_minute(Local::now() - chrono::Duration::days(1));
+        for (bad, why) in [
+            (json!({"once": when, "schedule_expr": "every 1h"}), "exclusive"),
+            (json!({"once": past}), "in the past"),
+            (json!({"once": "soon"}), "unparseable"),
+            (json!({"schedule_expr": "every 1h", "max_runs": 0}), "at least 1"),
+            (json!({"schedule_expr": "every 1h", "until": past}), "not in the future"),
+            (json!({"schedule_expr": "every 1h", "after": until, "until": after}), "must be after"),
+        ] {
+            let mut body = bad.clone();
+            body["title"] = json!("bad");
+            let (st, e) = send(&app, "POST", "/api/schedules", Some(body), &SES).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{bad} -> {e}");
+            assert_eq!(e["code"], json!("schedule_bounds_invalid"));
+            assert!(e["error"].as_str().unwrap().contains(why), "{bad}: {e}");
+        }
+
+        // PATCH clears a bound with null and starts a new max_runs budget.
+        let id = b["id"].as_str().unwrap();
+        let (st, p) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({"until": null, "max_runs": 5})), &SES).await;
+        assert_eq!(st, StatusCode::OK, "{p}");
+        assert_eq!(p["until"], Value::Null);
+        assert_eq!(p["max_runs"], json!(5));
+        assert_eq!(p["cron_runs"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn a_fixed_date_cron_is_told_it_recurs_yearly_and_filed_as_yearly() {
+        let (app, _dir) = app();
+        let (st, c) = send(&app, "POST", "/api/schedules",
+            Some(json!({"title": "drill", "session": "lock-test-nobody", "kind": "shell", "command": "true", "schedule_expr": "5 0 3 10 *"})), &SES).await;
+        assert_eq!(st, StatusCode::CREATED, "{c}");
+        assert!(c["fixed_date_note"].as_str().unwrap().contains("once:"), "{c}");
+        let (_, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
+        assert_eq!(list[0]["cadence_class"], json!("yearly"));
+        // Bounded to one fire, it is a one-off and needs no note.
+        let (_, c2) = send(&app, "POST", "/api/schedules",
+            Some(json!({"title": "drill2", "session": "lock-test-nobody", "kind": "shell", "command": "true", "schedule_expr": "5 0 3 10 *", "max_runs": 1})), &SES).await;
+        assert!(c2.get("fixed_date_note").is_none(), "{c2}");
+    }
+
+    #[tokio::test]
+    async fn an_owner_disable_locks_out_a_worker_re_enable_until_the_owner_lifts_it() {
+        let (app, _dir) = app();
+        let (_, c) = send(&app, "POST", "/api/schedules",
+            Some(json!({"title": "prod control", "session": "lock-test-nobody", "kind": "shell", "command": "true", "schedule_expr": "every 1h"})), &SES).await;
+        let id = c["id"].as_str().unwrap().to_string();
+        let path = format!("/api/schedules/{id}");
+
+        // Owner (no worker header) disables with a reason.
+        let (st, d) = send(&app, "PATCH", &path, Some(json!({"enabled": 0, "reason": "prod freeze"})), &[]).await;
+        assert_eq!(st, StatusCode::OK, "{d}");
+        assert_eq!(d["lock_reason"], json!("prod freeze"));
+        assert!(!d["locked_by"].as_str().unwrap_or("").is_empty(), "{d}");
+        assert!(d["disabled_reason"].as_str().unwrap().contains("owner"), "{d}");
+        assert_eq!(d["disable_notice"]["route"], json!("none"), "an unregistered worker cannot be told: {d}");
+
+        // A worker cannot re-enable it, and is told why.
+        let (st, r) = send(&app, "PATCH", &path, Some(json!({"enabled": 1})), &SES).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{r}");
+        assert_eq!(r["code"], json!("schedule_owner_locked"));
+        assert_eq!(r["lock_reason"], json!("prod freeze"));
+        // Other edits still go through, and leave it disabled and locked.
+        let (st, e) = send(&app, "PATCH", &path, Some(json!({"title": "prod control v2"})), &SES).await;
+        assert_eq!(st, StatusCode::OK, "{e}");
+        assert_eq!(e["enabled"], json!(0));
+        assert_eq!(e["lock_reason"], json!("prod freeze"));
+
+        // The owner lifts it by enabling.
+        let (st, o) = send(&app, "PATCH", &path, Some(json!({"enabled": 1})), &[]).await;
+        assert_eq!(st, StatusCode::OK, "{o}");
+        assert_eq!(o["enabled"], json!(1));
+        assert_eq!(o["locked_by"], Value::Null);
+        assert_eq!(o["disabled_reason"], Value::Null);
+
+        // A worker's own disable does not lock.
+        let (_, w) = send(&app, "PATCH", &path, Some(json!({"enabled": 0, "reason": "done for today"})), &SES).await;
+        assert_eq!(w["locked_by"], Value::Null);
+        assert!(w["disabled_reason"].as_str().unwrap().contains("tester-session"), "{w}");
+        let (st, _) = send(&app, "PATCH", &path, Some(json!({"enabled": 1})), &SES).await;
+        assert_eq!(st, StatusCode::OK, "an unlocked schedule stays the worker's to re-enable");
+
+        let (_, audit) = send(&app, "GET", &format!("/api/schedules/audit?id={id}&limit=100"), None, &[]).await;
+        let lock_rows = audit.as_array().unwrap().iter().filter(|r| r["field"] == json!("locked_by")).count();
+        assert_eq!(lock_rows, 2, "set and cleared, both audited: {audit}");
     }
 }

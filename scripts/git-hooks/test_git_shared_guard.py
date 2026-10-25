@@ -714,7 +714,68 @@ def main():
         failures.append("lock-note: an absent lsof did not report unmeasured: %r" % _err[:220])
     if "no process holds it open" in _err:
         failures.append("lock-note: an absent lsof reported the lock UNHELD: %r" % _err[:220])
-    os.unlink(_lock)
+
+    # 6. STALE-LOCK RECOVERY (mxp-gs12 review, 2026-10-18): past
+    #    AMUX_INDEX_LOCK_STALE_S with no holder, the guard removes the lock and
+    #    logs it. Four states, each with its twin: an UNMEASURED probe never
+    #    removes, a lock under the threshold is kept, removal off (0) keeps it,
+    #    and a lock a live process HOLDS open is kept however old it is.
+    _rec_home = os.path.join(tmp, "rechome")
+    os.makedirs(_rec_home, exist_ok=True)
+    _rec_log = os.path.join(_rec_home, ".amux", "logs", "git-guard-lock-recovery.log")
+    _very_old = time.time() - 4000
+
+    def _stale_lock():
+        open(_lock, "w").close()
+        os.utime(_lock, (_very_old, _very_old))
+
+    _stale_lock()
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_LSOF": "/nonexistent/lsof", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock whose holder probe did NOT run")
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_INDEX_LOCK_STALE_S": "0", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock with AMUX_INDEX_LOCK_STALE_S=0")
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp,
+                         extra_env={"AMUX_INDEX_LOCK_STALE_S": "999999", "HOME": _rec_home})
+    if not os.path.exists(_lock):
+        failures.append("lock-recovery: removed a lock younger than the threshold")
+    # Held: a live process keeps the file open, so lsof names it.
+    _holder = subprocess.Popen([sys.executable, "-c",
+                                "import sys,time; f=open(sys.argv[1]); time.sleep(30)", _lock])
+    try:
+        time.sleep(0.5)
+        os.utime(_lock, (_very_old, _very_old))
+        _lockcases += 1
+        _rc, _err = run_hook("git commit -m x", work, tmp, extra_env={"HOME": _rec_home})
+        if not os.path.exists(_lock):
+            failures.append("lock-recovery: removed a lock a LIVE process holds open: %r" % _err[:200])
+        elif "held" not in _err:
+            failures.append("lock-recovery: a held lock did not read as held: %r" % _err[:200])
+    finally:
+        _holder.kill()
+        _holder.wait()
+    # Unheld, old, default threshold: removed, said so, and logged.
+    _stale_lock()
+    _lockcases += 1
+    _rc, _err = run_hook("git commit -m x", work, tmp, extra_env={"HOME": _rec_home})
+    if os.path.exists(_lock):
+        failures.append("lock-recovery: a stale unheld lock past the threshold was NOT removed: %r" % _err[:220])
+    if "removed a stale" not in _err or _rc != 0:
+        failures.append("lock-recovery: removal not announced, or the command was blocked: rc=%s %r" % (_rc, _err[:220]))
+    try:
+        _recs = [json.loads(l) for l in open(_rec_log)]
+    except Exception:
+        _recs = []
+    if not any(r.get("verdict") == "index_lock_stale_removed" and r.get("measured") is True for r in _recs):
+        failures.append("lock-recovery: no index_lock_stale_removed line in %s" % _rec_log)
+    if os.path.exists(_lock):
+        os.unlink(_lock)
 
     # ---- MC-1624: the amend LOCK REFUSAL, which shipped with no test ----------
     # The pin is checked at ADMISSION. mvs-research pinned correctly, their
@@ -1202,6 +1263,36 @@ def main():
     if "${D:?}" not in _rmreason:
         failures.append("rm-correction: the denial must name the ${VAR:?} rewrite; got %r" % _rmreason[:200])
     _rmcases = len(_rmcases) + 1
+
+    # --- a RUNNING worker's ~/.amux/tmp/<worker> is not anyone else's to delete ----
+    # 2026-10-20 18:45Z: a disk cleanup ran rm -rf ~/.amux/tmp/mxp-gs12 mid-run.
+    _ah = tempfile.mkdtemp(prefix="guard-amuxhome-")
+    _live = {"AMUX_HOME": _ah, "AMUX_GUARD_LIVE_WORKERS": "mxp-gs12,tubescience-parity"}
+    _t = _ah + "/tmp"
+    _scases = [
+        ("the incident: unmanaged session rm -rf a live worker's tmp", "rm -rf %s/mxp-gs12" % _t, {}, True),
+        ("a path inside a live worker's tmp", "rm -rf %s/mxp-gs12/wt/target" % _t, {}, True),
+        ("the whole tmp root", "rm -rf %s" % _t, {}, True),
+        ("a glob over every worker's tmp", "rm -rf %s/*" % _t, {}, True),
+        ("another amux worker deleting it", "rm -rf %s/mxp-gs12" % _t, {"AMUX_SESSION": "amux-admin"}, True),
+        ("the owner clears its own tmp", "rm -rf %s/mxp-gs12/old" % _t, {"AMUX_SESSION": "mxp-gs12"}, False),
+        ("a stopped worker's tmp", "rm -rf %s/gone-worker" % _t, {}, False),
+        ("a path outside tmp", "rm -rf %s/logs/x.log" % _ah, {}, False),
+        ("a guarded variable path is left to the shell", 'rm -rf "${T:?}/mxp-gs12"', {"T": _t}, False),
+    ]
+    for _n, _cmd, _envadd, _want in _scases:
+        _out = _hook_out(_cmd, dict(_live, **_envadd))
+        _got = '"permissionDecision": "deny"' in _out
+        if _got != _want:
+            failures.append("live-scratch: %s -> denied=%s, want %s. stdout: %r" % (_n, _got, _want, _out[:200]))
+    _out = _hook_out("rm -rf %s/mxp-gs12" % _t, _live)
+    if "mxp-gs12" not in _out or "amux send" not in _out:
+        failures.append("live-scratch: the denial must name the worker and the ask path; got %r" % _out[:200])
+    _cl = os.path.join(_ah, "logs", "tool-corrections.jsonl")
+    _recs = [json.loads(l) for l in open(_cl)] if os.path.exists(_cl) else []
+    if not any(r.get("event") == "live_scratch_remove" and r.get("owners") == ["mxp-gs12"] for r in _recs):
+        failures.append("live-scratch: no live_scratch_remove line naming mxp-gs12 in %s" % _cl)
+    _rmcases += len(_scases) + 2
 
     total = (len(cases) + len(trio) + len(quad) + len(matrix) + _bodies + 1
              + len(redir_cases) + _mr101 + _subst + _lockcases + _amendlock + _sweep

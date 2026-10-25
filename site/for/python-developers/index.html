@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"amux for Python Developers","item":"https://amux.io/for/python-developers/"}]}</script>
 
@@ -44,21 +43,31 @@
       {"@type":"Question","name":"Can I run pytest across multiple agents with amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. Launch one Claude Code agent per test module or test file. Each agent runs its own pytest loop, fixing failures it encounters. amux shows all agents on a shared dashboard so you can see which tests are passing across the fleet."}},
       {"@type":"Question","name":"How does amux help with Python dependency upgrades?","acceptedAnswer":{"@type":"Answer","text":"When a major dependency like Django, SQLAlchemy, or Pydantic releases a breaking version, spawn one agent per affected module via amux. Add a board card for each migration task, let agents claim them atomically, and monitor progress from the web dashboard or iOS app."}},
       {"@type":"Question","name":"Does amux work with Python virtual environments?","acceptedAnswer":{"@type":"Answer","text":"Yes. Set the venv path in your CLAUDE.md so every agent activates the same environment. Alternatively, use one agent per venv and coordinate via the shared board. amux does not manage Python environments itself — it orchestrates Claude Code agents that run inside whatever environment you configure."}},
-      {"@type":"Question","name":"How do I install amux for Python development?","acceptedAnswer":{"@type":"Answer","text":"Install with Homebrew: brew install mixpeek/amux/amux. Then register your project and start agents. No Python required — amux is a single Rust binary."}}
+      {"@type":"Question","name":"How do I install amux for Python development?","acceptedAnswer":{"@type":"Answer","text":"curl -fsSL https://amux.io/install.sh | bash. Then register your project and start agents. No Python required — amux is a single Rust binary."}}
     ]
   }</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -68,10 +77,6 @@
     <p class="subtitle">Python's ecosystem is vast: monorepos, dozens of test modules, long migration chains, ML pipelines. amux lets you work all of them simultaneously — one <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agent per package, per test file, per migration. Monitor them all from your browser or phone.</p>
 
     <!-- EXP-083: top-of-page CTA — python-developers, September 2026 refresh, started 2026-09-07 -->
-    <div style="background:var(--green,#2e7d32);color:#000;border-radius:8px;padding:0.85rem 1.25rem;margin:1.25rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
-      <span style="font-weight:600">Open-source AI agent fleet for Python teams. Single Rust binary, 394+ stars on GitHub.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#000;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;font-size:0.9rem" onclick="posthog&&posthog.capture('exp083_python_devs_topofpage_cta_click')">View amux on GitHub ★</a>
-    </div>
 
     <h2>Why Python + amux Works</h2>
     <p>Python projects sprawl naturally: multiple packages in a monorepo, test suites measured in thousands of files, migration chains that take days to untangle. The answer to scale is parallelism — and amux brings that to the agent level. Instead of one <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agent doing one thing, you run ten agents doing ten things at once, each aware of what the others are doing via a shared kanban board.</p>
@@ -85,7 +90,7 @@
 
     <h2>Python-Specific Workflows</h2>
     <pre><code><span class="dim"># Install amux (single Rust binary)</span>
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 <span class="dim"># Register separate agents for different parts of your Python project</span>
 amux register auth-agent --dir ~/myproject --yolo
@@ -143,7 +148,7 @@ amux board drain on tests-agent</code></pre>
     <div class="cta-box">
       <h3>Get started with amux</h3>
       <p>Open-source control plane for AI agent teams. Single Rust binary, installs in one command.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -189,7 +194,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
         <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How do I install amux for Python development?</summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          <p>Install with Homebrew: <code>brew install mixpeek/amux/amux</code>. No Python required — amux is a single Rust binary. Register your project directory, start agents, and open the dashboard at <code>https://localhost:8824</code>.</p>
+          <p><code>curl -fsSL https://amux.io/install.sh | bash</code>. No Python required — amux is a single Rust binary. Register your project directory, start agents, and open the dashboard at <code>https://localhost:8824</code>.</p>
         </div>
       </details>
     </div>
@@ -232,10 +237,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

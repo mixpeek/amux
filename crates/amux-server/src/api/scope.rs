@@ -1040,6 +1040,11 @@ async fn scope_write(
                 "'{actor}' is a member with {} access ({}) and may configure only workers inside it, not the {level} layer for '{name}'.",
                 m.level(), if m.name().is_empty() { "global" } else { m.name() }))
         }
+        None if super::session_verbs::is_admin_worker(actor) => {
+            tracing::info!(actor, level, name, gate = "scope_write", verdict = "admin_group_owner_gate",
+                measured = true, n_considered = 1, "an admin-group worker passed an owner-only gate");
+            (true, format!("admin-group worker {actor} (owner reach)"))
+        }
         None => scope_write_allowed(level, name, actor),
     };
     if !ok {
@@ -1053,7 +1058,7 @@ async fn scope_write(
     };
 
     let value = value.cloned().unwrap_or(Value::Null);
-    if key == "env" && !actor.is_empty() {
+    if key == "env" && !actor.is_empty() && !super::session_verbs::is_admin_worker(actor) {
         if let Some(k) = owner_only_key_changed(&home, level, name, &value) {
             tracing::warn!(actor = %actor, level, name, key = %k, verdict = "scope_owner_only_key_refused",
                 "a session tried to change an owner-only scope key");

@@ -89,6 +89,22 @@ pub(crate) fn enabled(lane: &str, key: &str) -> bool {
     switch_on(env.as_deref(), scoped.as_deref())
 }
 
+/// Whether amux may type a turn-end nudge into this lane. These nudges are the
+/// board steering the worker, so they follow "Board steers this worker"
+/// (AMUX_BOARD_FORCE_ADHERENCE), the one switch whose note promises to stop
+/// nudges and reminders. Ethan, 2026-10-17, on an owner-ask reminder that
+/// reached a worker with every board switch off: "got this automated message
+/// despite everything being disabled in the board".
+pub(crate) fn nudges_wanted(lane: &str, what: &str) -> bool {
+    if crate::runtime_jobs::board_drive::board_reminders_wanted(lane) {
+        return true;
+    }
+    tracing::info!(session = %lane, nudge = what, measured = true, n_considered = 1,
+        verdict = "turn_end_nudge_board_steering_off",
+        "turn-end: nudge not typed into the lane; \"Board steers this worker\" is off");
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Text normalisation
 // ---------------------------------------------------------------------------
@@ -878,6 +894,11 @@ async fn file_ask_card_via(
     path: AskPath,
     isolated: bool,
 ) -> Result<(String, bool, AskPath), String> {
+    if !isolated && crate::api::board_lifecycle::board_unused(lane) {
+        tracing::info!(session = lane, origin, verdict = "board_unused_suppressed", measured = true, n_considered = 1,
+            "ask card not filed: every board switch is off for this worker");
+        return Err("every board switch is off for this worker; no card filed".into());
+    }
     use crate::db::board_store as bs;
     let tag = question_key(question);
     let owner = owner_name();
@@ -1159,7 +1180,7 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
     // an abnormal stop, not an idle: amux-cloud 2026-10-06 ~12:31 (`pkill -f`
     // matched its own shell) and amux the same day ended on "No response
     // requested." with a card in doing, and sat idle until the owner asked.
-    if ended_after_sigkill(&records, &turn) {
+    if ended_after_sigkill(&records, &turn) && nudges_wanted(&name, "sigkill-resume") {
         if let Some(card) = state.store.read().ok()
             .and_then(|c| crate::runtime_jobs::board_drive::exact_resume_card(&c, &name).ok().flatten())
         {
@@ -1211,6 +1232,9 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
         }
         OwnerAsk::InBoundary { ref sentence } => {
             super::promise_nudge::forget_promise(&name);
+            if !nudges_wanted(&name, "owner-ask") {
+                return;
+            }
             if !enabled(&name, OWNER_ASK_KEY) {
                 tracing::info!(session = %name, verdict = "owner_ask_disabled", sentence = %clip(sentence, 160),
                     "turn-end: in-boundary owner ask left alone ({OWNER_ASK_KEY} is off)");
@@ -1523,6 +1547,22 @@ mod tests {
             "a raw conversation must not become a board ask even with a stale recorder flag");
     }
 
+    /// "Board steers this worker" off (the default) means no turn-end nudge is
+    /// typed into the lane; on, they are.
+    #[test]
+    fn turn_end_nudges_follow_board_steering() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/quiet.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        std::fs::write(home.path().join("sessions/steered.env"),
+            "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=1\n").unwrap();
+        for what in ["owner-ask", "promise", "sigkill-resume"] {
+            assert!(!nudges_wanted("quiet", what), "{what} must not reach a lane with board steering off");
+            assert!(nudges_wanted("steered", what), "{what} reaches a lane with board steering on");
+        }
+    }
+
     #[tokio::test]
     async fn owner_policy_cannot_use_the_owner_transport_exception() {
         let home = tempfile::tempdir().unwrap();
@@ -1717,7 +1757,7 @@ mod tests {
         let (_tmp, state) = hermetic_state();
         let q = "Needs one thing from you: a semantic-search sign-in so I can validate parity?";
         let (id, created, path) = file_ask_card_via(
-            &state, "tubescience-parity", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::Decision, false,
+            &state, "ask-policy-test-lane", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::Decision, false,
         )
         .await
         .unwrap();
@@ -1736,7 +1776,7 @@ mod tests {
         drop(conn);
         // Dedupe works across both shapes: the same question finds this card.
         let (id2, created2, _) = file_ask_card_via(
-            &state, "tubescience-parity", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::NeedsYou, false,
+            &state, "ask-policy-test-lane", Some(Boundary::OwnerOnly), q, "ctx", "test", AskPath::NeedsYou, false,
         )
         .await
         .unwrap();

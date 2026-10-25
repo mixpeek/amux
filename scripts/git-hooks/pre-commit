@@ -38,6 +38,41 @@ set -e
 ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 
+# EVERYTHING ON MAIN: refuse a commit onto a fork (Ethan, 2026-10-24: "no
+# branches, no forks, everything main"). The shared checkout's main forked from
+# origin on 2026-10-07 and took ~90 commits over two weeks, 1300 behind origin,
+# none pushable and none reaching anyone; a server hand-built from it then ran
+# the Mac. Being ahead (commits not pushed yet) or a little behind (a race) is
+# normal. Being far behind while also ahead means these commits will never
+# fast-forward onto main, so stop here, where the fix is one rebase.
+# AMUX_FORK_BEHIND_MAX (default 30) is the "far" line; AMUX_ALLOW_FORK_COMMIT=<why>
+# commits anyway and logs the reason.
+if git rev-parse --verify -q origin/main >/dev/null 2>&1 && git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  _fk_behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+  _fk_ahead=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  _fk_max=${AMUX_FORK_BEHIND_MAX:-30}
+  if [ "$_fk_behind" -gt "$_fk_max" ] && [ "$_fk_ahead" -gt 0 ]; then
+    _fk_base=$(git merge-base HEAD origin/main 2>/dev/null)
+    _fk_when=$(git log -1 --format=%cd --date=short "$_fk_base" 2>/dev/null)
+    if [ -n "${AMUX_ALLOW_FORK_COMMIT:-}" ]; then
+      echo "amux: WARN fork_commit_allowed behind=$_fk_behind ahead=$_fk_ahead reason=${AMUX_ALLOW_FORK_COMMIT} measured=true" >&2
+    else
+      cat >&2 <<EOF_FORK
+amux: REFUSED fork_commit behind=$_fk_behind ahead=$_fk_ahead measured=true
+This branch forked from origin/main on ${_fk_when:-?} ($_fk_base): it has $_fk_ahead commit(s)
+origin lacks and lacks $_fk_behind of origin's. A commit here cannot reach main and
+cannot deploy (the Mac's builder deploys origin/main only).
+Put the work on main instead:
+  git fetch origin main
+  git worktree add --detach /tmp/onmain-\$\$ origin/main   # or rebase this branch onto origin/main
+  # re-apply your change there, commit, then: git push origin HEAD:main
+Commit here anyway: AMUX_ALLOW_FORK_COMMIT="<why>" git commit ...
+EOF_FORK
+      exit 1
+    fi
+  fi
+fi
+
 # ── RECORD WHAT THIS COMMIT IS SUPPOSED TO CONTAIN (AF-565) ──────────────────
 #
 # For a pathspec commit (`git commit -- <paths>`) git builds a TEMPORARY index
@@ -323,6 +358,41 @@ if [ -n "$STAGED_RS" ]; then
     echo ""
     echo "Stage the module file too:   git add <the path(s) above>"
     echo "Or drop the declaration if it was not meant to ship yet."
+    exit 1
+  fi
+fi
+
+# ── 2b. A migration number another migration already holds (2026-10-24) ──────
+#
+# de0259901 was committed from a checkout 1250 commits behind origin and named
+# its migration 0116, which 0116_issues_updated_integer already held. Its own
+# tree had no 0116 yet, so its build was green; CI went red on every migration
+# test (UNIQUE constraint failed: _amux_migrations.version) and held all
+# deploys for 10 hours. The registration test only runs in CI, after the push.
+# This compares against the index AND the local origin/main ref (no fetch), so
+# a stale checkout is caught by what it already fetched.
+MIG_DIR=crates/amux-server/migrations
+STAGED_MIG=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep -E "^$MIG_DIR/[0-9]{4}_[^/]*\.sql$" || true)
+if [ -n "$STAGED_MIG" ]; then
+  _mig_index=$(git ls-files -- "$MIG_DIR" 2>/dev/null | grep -E '/[0-9]{4}_[^/]*\.sql$' || true)
+  _mig_origin=$(git ls-tree --name-only origin/main -- "$MIG_DIR/" 2>/dev/null | grep -E '/[0-9]{4}_[^/]*\.sql$' || true)
+  _mig_bad=""
+  for f in $STAGED_MIG; do
+    n=$(basename "$f" | cut -c1-4)
+    for other in $(printf '%s\n%s\n' "$_mig_index" "$_mig_origin" | sort -u); do
+      [ "$other" = "$f" ] && continue
+      [ "$(basename "$other" | cut -c1-4)" = "$n" ] && _mig_bad="$_mig_bad$f (version $n is held by $(basename "$other"))\n"
+    done
+  done
+  if [ -n "$_mig_bad" ]; then
+    _mig_max=$(printf '%s\n%s\n' "$_mig_index" "$_mig_origin" | sed -n 's#.*/\([0-9]\{4\}\)_.*#\1#p' | sort -n | tail -1)
+    _mig_next=$(printf '%04d' $((10#${_mig_max:-0} + 1)))
+    echo "" >&2
+    echo "amux: verdict=migration_number_taken: a staged migration reuses a version number" >&2
+    printf "  %b" "$_mig_bad" | sed '/^  $/d' >&2
+    echo "  The next free number (index and origin/main) is $_mig_next. Rename the file," >&2
+    echo "  then set its version and name in crates/amux-server/src/db/migrate.rs." >&2
+    echo "  origin/main is read as last fetched; run git fetch origin main if it is old." >&2
     exit 1
   fi
 fi

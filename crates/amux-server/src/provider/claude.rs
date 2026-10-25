@@ -171,6 +171,12 @@ pub enum UsageProbe {
     Transport(&'static str),
     /// 2xx, but the body was not JSON we could read.
     BadShape,
+    /// The only credential is the subscription token the dashboard's "Sign in
+    /// with Claude" saved (`claude setup-token`). Anthropic's usage endpoint
+    /// refuses that token (401, measured live on a Cloud server 2026-10-21),
+    /// so it is not asked: the sign-in works for workers, the plan usage is
+    /// simply not reported for it.
+    SubscriptionTokenOnly,
     /// A dated reading, possibly historical. Routing accepts only failure=None.
     Snapshot {
         body: serde_json::Value,
@@ -212,6 +218,9 @@ pub async fn probe_usage_raw() -> UsageProbe {
     let Some(token) = oauth_token().await else {
         return UsageProbe::NoToken;
     };
+    if token.from_env {
+        return UsageProbe::SubscriptionTokenOnly;
+    }
     if token.expires_at_ms > 0 && chrono::Utc::now().timestamp_millis() > token.expires_at_ms {
         return UsageProbe::Expired;
     }
@@ -334,6 +343,9 @@ struct OauthToken {
     access_token: String,
     /// Unix ms; 0 = the credential did not say.
     expires_at_ms: i64,
+    /// Read from CLAUDE_CODE_OAUTH_TOKEN (the dashboard sign-in), not from
+    /// the keychain or ~/.claude.
+    from_env: bool,
 }
 
 /// Both credential stores hold the same JSON shape:
@@ -349,6 +361,7 @@ fn parse_credentials_json(raw: &str) -> Option<OauthToken> {
     Some(OauthToken {
         access_token,
         expires_at_ms,
+        from_env: false,
     })
 }
 
@@ -383,7 +396,16 @@ async fn oauth_token() -> Option<OauthToken> {
     if let Some(t) = keychain_token().await {
         return Some(t);
     }
-    file_token()
+    file_token().or_else(|| env_token(crate::api::settings::effective_env(&crate::config::amux_home(), "CLAUDE_CODE_OAUTH_TOKEN")))
+}
+
+/// The subscription token the dashboard's "Sign in with Claude" saves
+/// (`claude setup-token`, CLAUDE_CODE_OAUTH_TOKEN in server.env). Without this
+/// a server signed in that way read "No Claude subscription token on this host"
+/// in Settings forever. Its expiry is not stored, so 0 (the endpoint decides).
+fn env_token(value: Option<String>) -> Option<OauthToken> {
+    let v = value?.trim().to_string();
+    (!v.is_empty()).then_some(OauthToken { access_token: v, expires_at_ms: 0, from_env: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +503,14 @@ fn window_from_percent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_subscription_token_is_a_usage_credential() {
+        let t = env_token(Some(" sk-ant-oat01-fake-token \n".into())).expect("token");
+        assert_eq!((t.access_token.as_str(), t.expires_at_ms, t.from_env), ("sk-ant-oat01-fake-token", 0, true));
+        assert!(env_token(Some("  ".into())).is_none());
+        assert!(env_token(None).is_none());
+    }
 
     // -- response mapping (the network-free contract) ----------------------
 
@@ -672,6 +702,7 @@ mod tests {
             UsageProbe::Http(c) => format!("http_{c}"),
             UsageProbe::Transport(w) => format!("transport_{w}"),
             UsageProbe::BadShape => "bad_shape".into(),
+            UsageProbe::SubscriptionTokenOnly => "subscription_token_only".into(),
             UsageProbe::Snapshot { failure, .. } => if failure.is_some() {
                 "last_known"
             } else {

@@ -1,0 +1,5 @@
+-- Land guards at turn time (mxp-gs12 review, 2026-10-18): the server re-runs
+-- the freeze and reused-message guards when a queued land's turn comes, so
+-- the escapes the lane sent with the request are kept on its row.
+-- ADDCOL: land_queue freeze_override TEXT
+-- ADDCOL: land_queue allow_reused_message INTEGER NOT NULL DEFAULT 0

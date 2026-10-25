@@ -37,7 +37,9 @@ fn defaults_approve_judgment_only() {
     assert!(p.enabled && p.other && !p.money && !p.prod_data && !p.outbound);
     assert_eq!(p.money_cap_usd, 50.0);
     assert!(p.sources.iter().all(|(k, s)| s == "default" || (matches!(k.as_str(), "money" | "prod_data" | "outbound") && s == CONTRACT_RULE_11)));
-    assert_eq!(decide(&p, &item("card", "other", "decision", "Which option?")), Decision::Approve);
+    assert_eq!(decide(&p, &item("card", "other", "decision", "Rename the cache flag?")), Decision::Approve);
+    // "Proceed" does not pick an option (gs12 review finding 2).
+    assert_eq!(decide(&p, &item("card", "other", "decision", "Which option?")), Decision::Never("multiple_choice"));
     assert_eq!(
         decide(&p, &item("card", "prod_data", "decision", "Migrate prod data?")),
         Decision::SkipCategory("prod_data".into())
@@ -53,7 +55,7 @@ fn defaults_approve_judgment_only() {
     );
     assert_eq!(
         p.summary("all workers"),
-        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself."
+        "Auto-approve is ON for all workers: judgment asks and never money, prices, deletions, production data, outside parties, scope, priorities, reversals of owner actions, choices between options, passed windows or asks you added a note to. Key, sign-in and grant asks go back to the worker to do itself."
     );
 
     // Even a policy struct with them switched on cannot approve these.
@@ -209,7 +211,7 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     let mock = Arc::new(Mock::default());
 
     // Already waiting when the policy first runs: the baseline.
-    seed(&st, "OLD-1", "lane-a", "decision", "Which schema option?", now - 500.0);
+    seed(&st, "OLD-1", "lane-a", "decision", "Rename the schema field?", now - 500.0);
     let rep = tick_with(&mock, &st, &home, now).await;
     assert_eq!(rep.baseline, 1);
     assert!(rep.approved.is_empty());
@@ -255,7 +257,8 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     assert_eq!(rep.sent_back, ["NEW-CRED"]);
     let sends = mock.sends.lock().unwrap().clone();
     assert_eq!(sends.len(), 2, "{sends:?}");
-    assert_eq!(sends.iter().filter(|(w, t)| w == "lane-a" && t.starts_with("Approved (NEW-") && t.contains(". Proceed.")).count(), 1);
+    assert_eq!(sends.iter().filter(|(w, t)| w == "lane-a" && t.starts_with("[amux policy, not the owner] Approved by policy (NEW-") && t.contains(". Proceed.")
+        && t.contains("Ethan has not seen this ask")).count(), 1);
     assert!(sends.iter().any(|(w, t)| w == "lane-a" && t.starts_with("Sent back (NEW-CRED)")));
     assert!(mock.emails.lock().unwrap().is_empty(), "outbound is off by default");
     assert_eq!(mock.fyis.lock().unwrap().len(), 1, "one FYI per batch");
@@ -265,7 +268,12 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     for id in ["NEW-OTHER", "NEW-PAUSED", "NEW-CRED"] {
         let c = card(&st, id);
         assert_eq!(c.status, "todo", "{id}");
-        assert!(c.desc.contains("Approved automatically by owner policy") || c.desc.contains("Sent back to lane-a"), "{id}: {}", c.desc);
+        assert!(c.desc.contains("Approved automatically by policy:needs-input-auto") || c.desc.contains("Sent back to lane-a"), "{id}: {}", c.desc);
+        // The board log names the policy, never `api-anonymous` (which is what
+        // an owner's own dashboard click reads as), and says who authorized it.
+        let log = c.log.clone().unwrap_or_default();
+        assert!(log.contains(&format!("{POLICY_ACTOR}: needsyou -> todo (authorized_by: policy:needs-input-auto")), "{id}: {log}");
+        assert!(!log.contains("api-anonymous"), "{id}: {log}");
     }
     // Everything else is untouched and still waiting on the owner.
     for id in ["OLD-1", "NEW-16", "NEW-425", "NEW-NOFIG", "NEW-PROD", "NEW-SNOOZE", "NEW-OFFLANE", "NEW-REFUSE"] {
@@ -296,7 +304,7 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     let v = view(&home, "", &led, &[], now + 120.0);
     // Two approvals (one to a paused lane), one send-back, one refusal.
     assert_eq!(v["recent_count"], 4);
-    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself.");
+    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, prices, deletions, production data, outside parties, scope, priorities, reversals of owner actions, choices between options, passed windows or asks you added a note to. Key, sign-in and grant asks go back to the worker to do itself.");
 
     // The owner's explicit sweep, with outbound switched on globally: the
     // baseline item and the held email are re-evaluated; the credential ask,
@@ -478,6 +486,9 @@ fn production_and_customer_changes_are_judged_as_prod_data() {
         assert_eq!(never_reason(&it), None, "{id}: not a never-rule");
         assert_eq!(decide(&Policy::default(), &it), Decision::SkipCategory("prod_data".into()), "{id}");
     }
+    // 2026-10-23, verbatim: a role write in 37 customer orgs, filed as other.
+    let roles = item("card", "decision", "other", "May I set role=admin on the creating user in each of the 37 production orgs that have no admin user (all 37 creators are currently member; 30 of the orgs hold admin-permission keys), so their keys keep working when the owner-role key clamp returns?");
+    assert_eq!(decide(&Policy::default(), &roles), Decision::SkipCategory("prod_data".into()), "MF-4425");
     let local = item("card", "decision", "decision", "Want me to scale the local kind cluster to three nodes for the soak, or keep one?");
     assert_eq!(decide(&Policy::default(), &local), Decision::Approve, "a local change names no production or customer target");
 }
@@ -603,4 +614,123 @@ fn owner_control_decisions_are_held_without_credential_send_back() {
         assert_eq!(decide(&policy, &item("card", "other", "decision", q)), Decision::Never("owner_control_decision"), "{q}");
     }
     assert_eq!(decide(&policy, &item("card", "other", "decision", "Should I rerun the flaky fixture test?")), Decision::Approve);
+}
+
+
+// ---- gs12 review finding 2: what the policy may not answer ----------------
+
+#[test]
+fn price_deletion_multiple_choice_and_expired_asks_stay_with_the_owner() {
+    let p = Policy::default();
+    let d = |q: &str| decide(&p, &item("card", "other", "decision", q));
+    // MG-2029, a customer price increase filed as "other".
+    assert_eq!(d("May I move the platform from Gemini 2.5 to 3.5? It is a customer price increase of about 8 percent."), Decision::Never("price"));
+    assert_eq!(d("Should the Pro plan tiers change with the new rate card?"), Decision::Never("price"));
+    // MG-2017's shape: anything that deletes.
+    assert_eq!(d("May I land 3eed662 (the DSAR executor on, which deletes organizations on their own deletion requests)?"), Decision::Never("deletion"));
+    assert_eq!(d("Shall I drop the stale analytics tables in the scratch project?"), Decision::Never("deletion"));
+    assert_eq!(d("Purge the local build cache under ~/.amux/tmp?"), Decision::Never("deletion"));
+    // MG-2016: an enumerated or open question.
+    assert_eq!(d("Which of the fourteen numbered decisions in the handoff are a yes, which are a no, and what number where one is asked?"), Decision::Never("multiple_choice"));
+    assert_eq!(d("Pick one: 1) keep the shard, 2) split it, 3) retire it?"), Decision::Never("multiple_choice"));
+    assert_eq!(d("Should the cache stay in Redis or move to the local disk?"), Decision::Never("multiple_choice"));
+    // Approvable: a worker proposal, a named recommendation, a yes/no, "or hold".
+    assert_eq!(d("Want me to keep the retry loop for another hour, or stop it now?"), Decision::Approve);
+    assert_eq!(d("Should the cache stay in Redis or move to the local disk? I recommend Redis."), Decision::Approve);
+    assert_eq!(d("Do you approve rerunning the flaky fixture test, or hold?"), Decision::Approve);
+    // MG-2024: a window that has passed.
+    let at = |q: &str, now: f64| decide_at(&p, &item("card", "other", "decision", q), now);
+    let q = "Hold the rolling restart of the staging cache at 2026-10-09T04:50Z?";
+    let window = chrono::DateTime::parse_from_rfc3339("2026-10-09T04:50:00Z").unwrap().timestamp() as f64;
+    assert_eq!(ask_window_end(&item("card", "other", "decision", q)), Some(window));
+    assert_eq!(at(q, window - 60.0), Decision::Approve);
+    assert_eq!(at(q, window + 60.0), Decision::Never("expired"));
+    assert_eq!(at("Run the soak by 2026-10-09?", window + 3600.0), Decision::Approve, "a bare date runs to the end of its day");
+    // A date that is context, not a window, is not an expiry.
+    assert_eq!(ask_window_end(&item("card", "other", "decision", "The flag was hand-applied 2026-09-28; keep it?")), None);
+}
+
+#[test]
+fn an_ask_carrying_an_owner_note_is_never_answered_by_the_policy() {
+    let mut it = item("card", "other", "decision", "Rename the cache flag?");
+    it["owner_notes"] = json!(["mxp-gs12@chat: only if it never touches TubeScience"]);
+    assert_eq!(decide(&Policy::default(), &it), Decision::Never("owner_noted"));
+    it["owner_notes"] = json!([]);
+    assert_eq!(decide(&Policy::default(), &it), Decision::Approve);
+}
+
+/// Through the real queue builder and the real board PATCH: an owner note on
+/// a waiting card reaches the queue item, holds the policy, and shows in the
+/// view's `held` list with its reason.
+#[tokio::test]
+async fn an_owner_note_on_the_card_holds_the_policy_through_the_job() {
+    let st = state();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    let now = now_f64();
+    let mock = Arc::new(Mock::default());
+    tick_with(&mock, &st, &home, now).await; // empty baseline
+    seed(&st, "NOTE-1", "lane-a", "decision", "Rename the cache flag?", now);
+    // The owner (an unnamed dashboard caller) adds a condition while it waits.
+    let resp = crate::api::board::patch_item(
+        State(st.clone()),
+        axum::extract::Path("NOTE-1".to_string()),
+        HeaderMap::new(),
+        Json(json!({"desc_append": "Only if the old name keeps working for a week."})),
+    )
+    .await;
+    assert!(resp.status().is_success(), "{}", resp.status());
+    let log = card(&st, "NOTE-1").log.unwrap_or_default();
+    assert!(log.contains("owner note on the open ask, by api-anonymous: Only if the old name keeps working"), "{log}");
+    let q = needs_input::build(&st.store.read().unwrap(), &home, now + 1.0).unwrap();
+    let it = q.items.iter().find(|i| i["card"] == "NOTE-1").unwrap();
+    assert_eq!(it["owner_notes"][0], "api-anonymous: Only if the old name keeps working for a week.");
+    let rep = tick_with(&mock, &st, &home, now + 60.0).await;
+    assert!(rep.approved.is_empty(), "{rep:?}");
+    assert_eq!(card(&st, "NOTE-1").status, "needsyou");
+    assert_eq!(outcomes(&st)["NOTE-1"], "never");
+    let led = load_ledger(&st.store.read().unwrap()).unwrap();
+    let v = view(&home, "", &led, &q.items, now + 60.0);
+    assert_eq!(v["held_count"], 1);
+    assert!(v["held"][0]["detail"].as_str().unwrap().contains("you added a note"), "{v}");
+    // A peer lane's note is not the owner's and is not recorded as one.
+    seed(&st, "NOTE-2", "lane-a", "decision", "Rename the second flag?", now);
+    let mut h = HeaderMap::new();
+    h.insert("x-amux-session", axum::http::HeaderValue::from_static("lane-b"));
+    let _ = crate::api::board::patch_item(State(st.clone()), axum::extract::Path("NOTE-2".to_string()), h,
+        Json(json!({"desc_append": "peer context"}))).await;
+    assert!(!card(&st, "NOTE-2").log.unwrap_or_default().contains("owner note on the open ask"));
+}
+
+#[tokio::test]
+async fn a_card_approved_once_is_the_owners_when_the_worker_reasks() {
+    let st = state();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    std::fs::create_dir_all(home.join("email-approvals")).unwrap();
+    let now = now_f64();
+    let mock = Arc::new(Mock::default());
+    tick_with(&mock, &st, &home, now).await; // empty baseline
+
+    seed(&st, "RE-1", "lane-a", "decision", "Rename the cache flag to cache_ttl?", now);
+    let rep = tick_with(&mock, &st, &home, now + 60.0).await;
+    assert_eq!(rep.approved, ["RE-1"]);
+    assert_eq!(card(&st, "RE-1").status, "todo");
+
+    // The worker declines the policy's answer and re-asks with new words.
+    st.store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET status='needsyou', ask_question='Rename the cache flag to cache_ttl? (A policy approval arrived; I need your own yes.)' WHERE id='RE-1'",
+                [],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .unwrap();
+    let rep = tick_with(&mock, &st, &home, now + 120.0).await;
+    assert!(rep.approved.is_empty(), "{rep:?}");
+    assert_eq!(card(&st, "RE-1").status, "needsyou");
+    assert_eq!(outcomes(&st)["RE-1"], "never");
 }

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,64 +20,63 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Orchestration 2026","item":"https://amux.io/guides/ai-agent-orchestration-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Orchestration in 2026: Patterns, Tools, and the Complete Architecture Guide","description":"The definitive guide to AI agent orchestration. Five patterns, 12 tools, the five-layer stack, and a decision framework for multi-agent coding teams.","url":"https://amux.io/guides/ai-agent-orchestration-2026/","datePublished":"2026-05-25","dateModified":"2026-08-01","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is AI agent orchestration?","acceptedAnswer":{"@type":"Answer","text":"AI agent orchestration is the practice of coordinating multiple AI coding agents working in parallel on a shared codebase. Instead of running one agent at a time, an orchestration layer manages task assignment, code isolation (via git worktrees or branches), inter-agent communication, conflict resolution, and result aggregation. The orchestrator ensures agents don't step on each other's work and that their combined output integrates cleanly. Tools like amux, Claude Squad, workmux, and Microsoft Conductor provide this orchestration layer, while platforms like Cursor v3, Google Antigravity 2.0, and Claude Code are adding built-in multi-agent support."}},{"@type":"Question","name":"How many AI coding agents can run in parallel?","acceptedAnswer":{"@type":"Answer","text":"On a modern laptop (16GB+ RAM), 5-7 terminal-based agents (Claude Code, Aider, Codex CLI) run comfortably. With 32GB+ RAM and git worktree isolation, 10-15 agents are practical. Cloud-hosted agents (Devin, Copilot Coding Agent, Codex cloud) have higher concurrency limits since compute is remote. Some teams report running 30-50+ agents on dedicated servers. The practical ceiling depends on your API rate limits (Anthropic's Claude Code Max allows ~45 Opus requests/5min), available memory, and disk I/O for git operations."}},{"@type":"Question","name":"How do parallel AI agents avoid merge conflicts?","acceptedAnswer":{"@type":"Answer","text":"The standard approach is git worktree isolation: each agent operates in its own worktree on a separate branch, working on non-overlapping files. The orchestration layer assigns tasks that touch different parts of the codebase. When agents finish, their branches are merged sequentially with automated conflict detection. If conflicts arise, a dedicated merge-resolution agent can handle them, or the orchestrator flags them for human review. Tools like amux track which files each agent is touching and warn before overlap occurs."}},{"@type":"Question","name":"What is the difference between the five orchestration patterns?","acceptedAnswer":{"@type":"Answer","text":"Solo: one agent handles everything sequentially — simplest but slowest. Parallel Workers: multiple agents work on independent tasks simultaneously — fastest for embarrassingly parallel work. Pipeline: agents are arranged in stages (plan, implement, test, review) — best for quality-critical workflows. Hub-and-Spoke: a coordinator agent breaks down work and delegates to specialist agents — best for complex projects requiring architectural decisions. Swarm: agents self-organize via shared state (a task board or message bus) without a central coordinator — best for large-scale, loosely-coupled work."}},{"@type":"Question","name":"How much does multi-agent orchestration cost?","acceptedAnswer":{"@type":"Answer","text":"Costs depend on the model, plan, and number of agents. With Claude Code Max ($100/month for Opus 4.6), running 5 parallel agents for 8 hours costs the subscription fee — no per-token charges. On API billing, the same workload costs roughly $30-80/day depending on task complexity and context window usage. A 10-agent fleet on API billing runs $50-150/day. The orchestration tools themselves are mostly free and open source (amux, Claude Squad, workmux). The main cost optimization lever is model routing: use cheaper models (Sonnet, Haiku) for routine tasks and reserve Opus for complex reasoning."}}]}</script>
   <style>
-    .pattern-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid rgba(255,255,255,0.06); }
+    .pattern-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid var(--tint); }
     .pattern-card h3 { margin-top: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
-    .pattern-card .pattern-num { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; background: rgba(110,231,183,0.15); color: #6ee7b7; border-radius: 6px; padding: 0.2rem 0.5rem; font-weight: 600; }
+    .pattern-card .pattern-num { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; background: rgba(110,231,183,0.15); color: var(--c-green); border-radius: 6px; padding: 0.2rem 0.5rem; font-weight: 600; }
     .pattern-card .pattern-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; font-size: 0.8rem; }
-    .pattern-card .tag { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 0.25rem 0.6rem; }
-    .pattern-card .tag-complexity { background: rgba(251,191,36,0.12); color: #fbbf24; }
-    .pattern-card .tag-agents { background: rgba(96,165,250,0.15); color: #60a5fa; }
-    .pattern-card .tag-best { background: rgba(110,231,183,0.1); color: #6ee7b7; }
+    .pattern-card .tag { background: var(--tint); border-radius: 6px; padding: 0.25rem 0.6rem; }
+    .pattern-card .tag-complexity { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+    .pattern-card .tag-agents { background: rgba(96,165,250,0.15); color: var(--c-blue); }
+    .pattern-card .tag-best { background: rgba(110,231,183,0.1); color: var(--c-green); }
     .pattern-card .best-for { background: rgba(110,231,183,0.06); border: 1px solid rgba(110,231,183,0.15); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; font-size: 0.88rem; }
-    .pattern-card .best-for strong { color: #6ee7b7; }
+    .pattern-card .best-for strong { color: var(--c-green); }
     .pattern-card .tradeoff { background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.15); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.75rem; font-size: 0.88rem; }
-    .pattern-card .tradeoff strong { color: #f87171; }
-    .arch-diagram { background: #1a1f2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 1.25rem; margin: 1rem 0; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.5; color: #8892a4; white-space: pre; }
-    .arch-diagram .highlight { color: #6ee7b7; }
-    .arch-diagram .accent { color: #60a5fa; }
-    .arch-diagram .warn { color: #fbbf24; }
+    .pattern-card .tradeoff strong { color: var(--c-red); }
+    .arch-diagram { background: var(--panel); border: 1px solid var(--tint-2); border-radius: 10px; padding: 1.25rem; margin: 1rem 0; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.5; color: var(--fg-mute); white-space: pre; }
+    .arch-diagram .highlight { color: var(--c-green); }
+    .arch-diagram .accent { color: var(--c-blue); }
+    .arch-diagram .warn { color: var(--c-amber); }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
-    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
-    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
-    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--c-green); }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.3rem; opacity: 0.7; }
     .stat-grid .stat-card .stat-source a { color: inherit; }
     @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
     .cmp-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.84rem; }
-    .cmp-table th, .cmp-table td { padding: 0.65rem 0.7rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
-    .cmp-table th { font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card, #232838); z-index: 2; }
+    .cmp-table th, .cmp-table td { padding: 0.65rem 0.7rem; text-align: left; border-bottom: 1px solid var(--tint-2); }
+    .cmp-table th { font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card, var(--panel-2)); z-index: 2; }
     .cmp-table th:first-child { min-width: 120px; }
     .cmp-table td:first-child { font-weight: 600; }
-    .cmp-table a { color: #6ee7b7; }
-    .cmp-table .y { color: #6ee7b7; }
-    .cmp-table .n { color: #f87171; }
-    .cmp-table .p { color: #fbbf24; }
-    .cmp-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }
+    .cmp-table a { color: var(--c-green); }
+    .cmp-table .y { color: var(--c-green); }
+    .cmp-table .n { color: var(--c-red); }
+    .cmp-table .p { color: var(--c-amber); }
+    .cmp-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid var(--tint); border-radius: 12px; }
     .cmp-wrap .cmp-table { margin: 0; }
     .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .key-insight strong { color: #6ee7b7; }
+    .key-insight strong { color: var(--c-green); }
     .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .warning-box strong { color: #f87171; }
-    .decision-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
-    .decision-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
+    .warning-box strong { color: var(--c-red); }
+    .decision-card { background: var(--bg-card, var(--panel-2)); border-left: 3px solid var(--c-green); border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .decision-card h4 { margin-top: 0; color: var(--c-green); font-size: 1.05rem; }
     .decision-card ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
-    .layer-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.06); }
+    .layer-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--tint); }
     .layer-card h4 { margin-top: 0; display: flex; align-items: center; gap: 0.5rem; }
-    .layer-card .layer-num { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; background: rgba(96,165,250,0.15); color: #60a5fa; border-radius: 4px; padding: 0.15rem 0.4rem; }
-    .tool-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.06); }
+    .layer-card .layer-num { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; background: rgba(96,165,250,0.15); color: var(--c-blue); border-radius: 4px; padding: 0.15rem 0.4rem; }
+    .tool-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--tint); }
     .tool-card h4 { margin-top: 0; font-size: 1.05rem; }
     .tool-card h4 a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.15); }
-    .tool-card h4 a:hover { color: #6ee7b7; border-color: #6ee7b7; }
+    .tool-card h4 a:hover { color: var(--c-green); border-color: var(--c-green); }
     .tool-card .tool-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; font-size: 0.78rem; }
-    .tool-card .tag { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 0.2rem 0.5rem; }
-    .tool-card .tag-oss { background: rgba(96,165,250,0.15); color: #60a5fa; }
-    .tool-card .tag-commercial { background: rgba(251,191,36,0.12); color: #fbbf24; }
-    .tool-card .tag-builtin { background: rgba(167,139,250,0.15); color: #a78bfa; }
+    .tool-card .tag { background: var(--tint); border-radius: 6px; padding: 0.2rem 0.5rem; }
+    .tool-card .tag-oss { background: rgba(96,165,250,0.15); color: var(--c-blue); }
+    .tool-card .tag-commercial { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+    .tool-card .tag-builtin { background: rgba(167,139,250,0.15); color: light-dark(oklch(0.48 0.150 293.5), #a78bfa); }
   [data-theme="light"] .pattern-card { border-color: var(--border); }
   [data-theme="light"] .pattern-num  { background: oklch(0.36 0.18 145 / .15); color: var(--ok); }
   [data-theme="light"] .tag-complexity { background: oklch(0.44 0.18 65 / .12);  color: var(--warn); }
@@ -94,18 +93,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td  { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -115,12 +124,6 @@
     <p class="subtitle">Multi-agent system inquiries surged 1,445% in 2025. Every major AI coding tool now supports some form of parallel agent execution. But running agents in parallel is not the same as orchestrating them. This guide covers the five proven orchestration patterns, the five-layer architecture stack that makes them work, every major orchestration tool compared, and the decision framework for choosing the right approach for your team and codebase.</p>
 
     <!-- EXP-018: top-of-page CTA — same green/teal format as EXP-015 WIN -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <p style="margin:0;font-size:0.95rem"><strong>Want to run 10+ agents in parallel with real orchestration?</strong> amux coordinates agents via a shared kanban board, task dependencies, reviewer assignments, and event-sourced audit logs — web dashboard and iOS app included. Open source, single Rust binary.</p>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:#10b981;color:#fff;padding:10px 18px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
 
     <div class="stat-grid">
       <div class="stat-card">
@@ -141,7 +144,7 @@
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
-      <strong style="display:block;margin-bottom:0.5rem;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted,#8892a4)">Contents</strong>
+      <strong style="display:block;margin-bottom:0.5rem;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted,var(--fg-mute))">Contents</strong>
       <ol style="margin:0;padding-left:1.2rem;font-size:0.9rem;line-height:1.8">
         <li><a href="#why-orchestration">Why orchestration &mdash; not just parallelism</a></li>
         <li><a href="#five-patterns">The five orchestration patterns</a></li>
@@ -724,10 +727,12 @@ approved?     compiles?      pass?          approved?</div>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

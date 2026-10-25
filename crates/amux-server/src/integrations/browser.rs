@@ -2301,6 +2301,16 @@ pub async fn start(
     // std::sync::Mutex, and holding one across an await deadlocks the runtime.
     // The same listing already resolves the page tab; its URL was being thrown
     // away, which is why the response could not say where the browser landed.
+    // WAIT FOR THE PAGE THE CALLER ASKED FOR. Chrome gets `url` on its command
+    // line and CDP answers before the launch tab has committed it, so a start
+    // used to return with the tab still on about:blank and the lane's first
+    // `state` read a blank page (2026-10-17 replay: linkedin.com started and
+    // observed about:blank in the same second). Bounded: a slow site returns
+    // with what it has, and says so.
+    let wants_page = !url.is_empty() && url != "about:blank";
+    if wants_page {
+        settle_launch_tab(port, session, url).await;
+    }
     let launch_page = cdp_list(port).await.ok().and_then(|tabs| {
         tabs.as_array()
             .and_then(|ts| {
@@ -2891,9 +2901,27 @@ impl CdpClient {
         params: Value,
         timeout: std::time::Duration,
     ) -> anyhow::Result<Value> {
+        self.call_in(None, method, params, timeout, None).await
+    }
+
+    /// `call`, optionally inside a child session (a cross-origin iframe this
+    /// socket attached to, see `attach_frames`), and optionally keeping the
+    /// EVENTS that arrive while waiting instead of dropping them.
+    pub async fn call_in(
+        &mut self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+        mut events: Option<&mut Vec<Value>>,
+    ) -> anyhow::Result<Value> {
         self.next_id += 1;
         let id = self.next_id;
-        let payload = json!({ "id": id, "method": method, "params": params }).to_string();
+        let mut msg = json!({ "id": id, "method": method, "params": params });
+        if let Some(sid) = session {
+            msg["sessionId"] = json!(sid);
+        }
+        let payload = msg.to_string();
         let fut = async {
             use tokio_tungstenite::tungstenite::Message;
             self.ws.send(Message::Text(payload)).await?;
@@ -2971,6 +2999,11 @@ impl CdpClient {
                             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                         }
                         // No id match: a protocol event — not ours, keep reading.
+                        if let Some(ev) = events.as_deref_mut() {
+                            if v.get("method").is_some() {
+                                ev.push(v);
+                            }
+                        }
                     }
                     Message::Close(_) => anyhow::bail!(
                         "CDP websocket closed during {method} ({skipped_unparseable} unparseable \
@@ -2994,15 +3027,80 @@ impl CdpClient {
         }
     }
 
+    /// Attach to the page's cross-origin iframes. Chrome runs each in its own
+    /// process, so `Runtime.evaluate` on the page never reaches into one (a
+    /// Stripe or Braintree card field). `Target.setAutoAttach` with `flatten`
+    /// announces each existing one as `Target.attachedToTarget` on THIS socket;
+    /// commands then go to it with its `sessionId` (`call_in`, `eval_in`).
+    /// Returns (sessionId, url) per iframe. `settle` is how long to keep
+    /// collecting announcements after Chrome acknowledges.
+    pub async fn attach_frames(
+        &mut self,
+        settle: std::time::Duration,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let mut events = Vec::new();
+        self.call_in(
+            None,
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }),
+            std::time::Duration::from_secs(10),
+            Some(&mut events),
+        )
+        .await?;
+        let deadline = tokio::time::Instant::now() + settle;
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            use tokio_tungstenite::tungstenite::Message;
+            match tokio::time::timeout(left, self.ws.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                        if v.get("method").is_some() {
+                            events.push(v);
+                        }
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => return Err(e.into()),
+                Ok(None) => anyhow::bail!("CDP websocket closed while attaching frames"),
+                Err(_) => break,
+            }
+        }
+        Ok(events
+            .iter()
+            .filter(|e| e["method"] == "Target.attachedToTarget")
+            .filter(|e| e.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("iframe"))
+            .filter_map(|e| {
+                Some((
+                    e.pointer("/params/sessionId")?.as_str()?.to_string(),
+                    e.pointer("/params/targetInfo/url").and_then(Value::as_str).unwrap_or("").to_string(),
+                ))
+            })
+            .collect())
+    }
+
     /// Runtime.evaluate with by-value results. A page exception is an ERROR
     /// carrying the page's own description, never a silent null — an eval
     /// that cannot fail reads as "the page had no answer" (ethos rule 7).
     pub async fn eval(&mut self, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
+        self.eval_session(None, expr, timeout_s).await
+    }
+
+    /// `eval` inside an attached iframe (`attach_frames`).
+    pub async fn eval_in(&mut self, session: &str, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
+        self.eval_session(Some(session), expr, timeout_s).await
+    }
+
+    async fn eval_session(&mut self, session: Option<&str>, expr: &str, timeout_s: u64) -> anyhow::Result<Value> {
         let r = self
-            .call(
+            .call_in(
+                session,
                 "Runtime.evaluate",
                 json!({ "expression": expr, "returnByValue": true, "awaitPromise": true }),
                 std::time::Duration::from_secs(timeout_s),
+                None,
             )
             .await?;
         if let Some(ex) = r.get("exceptionDetails") {
@@ -3841,6 +3939,33 @@ pub async fn resolve_page_avoiding(
     };
     let tab_id = |t: &Value| t.get("id").and_then(Value::as_str).map(str::to_string);
 
+    // A JOINER DRIVES ONLY ITS OWN TAB. Every other tab in the browser belongs
+    // to the owner whether or not the owner has bound it, so the rebind rules
+    // below (prefer a real page, take an unclaimed one) must never run for a
+    // joiner. If its tab is gone or unreachable it gets a fresh one.
+    if let Some(own) = joined_tab(session) {
+        let alive = tabs
+            .iter()
+            .find(|t| tab_id(t).as_deref() == Some(own.as_str()))
+            .and_then(page_of)
+            .filter(|_| avoid != Some(own.as_str()));
+        let p = match alive {
+            Some(p) => p,
+            None => {
+                let t = cdp_new_tab(port, create_url.unwrap_or("about:blank")).await.map_err(DriverError::Cdp)?;
+                let p = page_of(&t).ok_or_else(|| DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no webSocketDebuggerUrl: {t}")))?;
+                if let Some(j) = JOINED.lock().expect("joined registry poisoned").get_mut(session) {
+                    j.tab = p.target_id.clone();
+                }
+                tracing::warn!(session, old_tab = %own, new_tab = %p.target_id, measured = true, n_considered = 1,
+                    verdict = "browser_join_tab_replaced", "a joined session's own tab was gone or unreachable; opened a new one rather than using the owner's");
+                p
+            }
+        };
+        NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), p.target_id.clone());
+        return Ok(p);
+    }
+
     let (bound, claimed_by_others): (Option<String>, std::collections::HashSet<String>) = {
         let map = NATIVE_TARGETS.lock().expect("native targets poisoned");
         (
@@ -4047,14 +4172,107 @@ fn latest_started_by<'a>(
     mine.into_iter().max_by_key(|r| (r.started_at, r.pid))
 }
 
+// ---- joining a running browser ---------------------------------------------
+//
+// One Chrome runs per profile. A second session wanting the same profile used
+// to be refused with a 409, and the shared browser route then dropped to its
+// CDP rung: a headless COPY of the human's Chrome profile, made once and never
+// refreshed, so its sign-ins went stale (measured 2026-10-17: all 13 CDP
+// routes in two days followed exactly that refusal). Joining gives the second
+// session its own NEW tab in the running browser, which already holds the
+// profile's live sign-ins. It never adopts the owner's tabs, never displaces
+// the owner, and its stop closes only its own tab.
+
+/// A session's join of a browser another session started.
+#[derive(Clone, Debug)]
+pub struct Join {
+    pub profile: String,
+    /// The tab this session opened. It is the ONLY tab a joiner drives and the
+    /// only one its stop closes. The general resolver rebinds a blank binding
+    /// to any unclaimed real page, and in a shared browser that is the
+    /// owner's tab: measured 2026-10-17, a joined session navigated and then
+    /// closed a tab it never opened while its own stayed on about:blank.
+    pub tab: String,
+}
+
+/// session -> its join.
+pub static JOINED: LazyLock<Mutex<std::collections::HashMap<String, Join>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn joined_port(g: &std::collections::HashMap<String, RunningBrowser>, session: &str) -> Option<(u16, String)> {
+    let profile = JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.profile.clone())?;
+    g.values().find(|r| r.profile == profile).map(|r| (r.cdp_port, r.profile.clone()))
+}
+
+/// Open a fresh tab for `session` in the browser already running `profile`
+/// and bind the session to it. Errors when that profile is not running.
+pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<DriverPage, DriverError> {
+    if session.trim().is_empty() {
+        return Err(DriverError::Cdp(anyhow::anyhow!("joining a running browser needs an explicit session")));
+    }
+    let port = {
+        let g = RUNNING.lock().expect("browser registry poisoned");
+        g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)
+    };
+    let Some(port) = port else { return Err(DriverError::NotRunning) };
+    let t = cdp_new_tab(port, if url.is_empty() { "about:blank" } else { url })
+        .await
+        .map_err(DriverError::Cdp)?;
+    let target_id = t.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+    let ws_url = t.get("webSocketDebuggerUrl").and_then(Value::as_str).unwrap_or_default().to_string();
+    if target_id.is_empty() || ws_url.is_empty() {
+        return Err(DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no target: {t}")));
+    }
+    JOINED.lock().expect("joined registry poisoned")
+        .insert(session.to_string(), Join { profile: profile.to_string(), tab: target_id.clone() });
+    NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), target_id.clone());
+    tracing::info!(session, profile, cdp_port = port, target = %target_id, measured = true, n_considered = 1,
+        verdict = "browser_joined", "a session joined the browser already running its profile, in its own tab");
+    Ok(DriverPage { cdp_port: port, target_id, ws_url, url: url.to_string(), title: String::new() })
+}
+
+/// The profile `session` joined, if it is a joiner rather than an owner.
+pub fn joined_profile(session: &str) -> Option<String> {
+    JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.profile.clone())
+}
+
+/// The tab `session` opened by joining, if it is a joiner.
+pub fn joined_tab(session: &str) -> Option<String> {
+    JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.tab.clone())
+}
+
+/// Release a joined session: close ONLY its own tab and forget the join. The
+/// browser and its owner's tabs keep running. Returns (profile, closed tab).
+pub async fn leave_joined(session: &str) -> Option<(String, Option<String>)> {
+    let Join { profile, tab } = JOINED.lock().expect("joined registry poisoned").remove(session)?;
+    NATIVE_TARGETS.lock().expect("native targets poisoned").remove(session);
+    let target = Some(tab);
+    let port = {
+        let g = RUNNING.lock().expect("browser registry poisoned");
+        g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)
+    };
+    if let (Some(port), Some(t)) = (port, target.as_deref()) {
+        let _ = reqwest::Client::new()
+            .put(format!("http://127.0.0.1:{port}/json/close/{t}"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+    }
+    tracing::info!(session, profile = %profile, target = target.as_deref().unwrap_or(""), measured = true, n_considered = 1,
+        verdict = "browser_join_released", "a joined session closed its own tab; the shared browser keeps running");
+    Some((profile, target))
+}
+
 /// WHICH BROWSER A SESSION MEANS (AMUX-3828).
 ///
 /// 1. The one it STARTED. That is what a lane means by "my browser", and it is
 ///    what makes two workers on two profiles independent without either naming
 ///    a profile on every verb.
-/// 2. Otherwise, if exactly one is running, that one — an unambiguous situation
+/// 2. Otherwise the one it JOINED: a browser another session started on the
+///    profile it asked for, where it owns a tab of its own.
+/// 3. Otherwise, if exactly one is running, that one — an unambiguous situation
 ///    should not require a parameter.
-/// 3. Otherwise None. With several browsers and no claim on any of them, a
+/// 4. Otherwise None. With several browsers and no claim on any of them, a
 ///    guess would drive somebody else's page; the caller must name a profile.
 ///
 /// Ethan's requirement is BOTH shapes: workers on DIFFERENT browsers are served
@@ -4065,6 +4283,9 @@ pub fn port_for_session(session: &str) -> Option<u16> {
     let g = RUNNING.lock().expect("browser registry poisoned");
     if let Some(r) = latest_started_by(&g, session) {
         return Some(r.cdp_port);
+    }
+    if let Some((port, _)) = joined_port(&g, session) {
+        return Some(port);
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.cdp_port);
@@ -4079,6 +4300,9 @@ pub fn profile_for_session(session: &str) -> Option<String> {
     let g = RUNNING.lock().expect("browser registry poisoned");
     if let Some(r) = latest_started_by(&g, session) {
         return Some(r.profile.clone());
+    }
+    if let Some((_, profile)) = joined_port(&g, session) {
+        return Some(profile);
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.profile.clone());
@@ -5116,6 +5340,65 @@ pub async fn click_grounded(
 /// `complete`; a slow page degrades to "still loading", never a hang. Then
 /// re-inject the capture shim (parity with Python `_bu_open` re-injecting
 /// per navigation) and run the landing check.
+/// Wait (bounded) until the launch tab has left about:blank and finished
+/// loading. Logs `browser_start_settle_timeout` when the page is still loading
+/// at the deadline, so a sweep sees starts that return early.
+async fn settle_launch_tab(port: u16, session: &str, url: &str) {
+    let budget = std::time::Duration::from_millis(
+        std::env::var("AMUX_BROWSER_START_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000),
+    );
+    let began = std::time::Instant::now();
+    let deadline = began + budget;
+    let blank = |u: &str| u.is_empty() || u == "about:blank";
+    let mut ws = None;
+    let mut last_url = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(tabs) = cdp_list(port).await {
+            if let Some(t) = tabs.as_array().and_then(|ts| ts.iter().find(|t| t.get("type").and_then(Value::as_str) == Some("page"))) {
+                last_url = t.get("url").and_then(Value::as_str).unwrap_or("").to_string();
+                if !blank(&last_url) {
+                    ws = t.get("webSocketDebuggerUrl").and_then(Value::as_str).map(str::to_string);
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    // The tab list shows a PENDING navigation's url, and the about:blank
+    // document it replaces already reads readyState "complete". So ask the
+    // document itself, and accept only a loaded document that is no longer
+    // about:blank. Measured: checking the list and readyState alone returned
+    // after 127 ms on a page that took 2 s, and the next read was still blank.
+    let mut ready = String::new();
+    if let Some(ws) = ws {
+        if let Ok(mut c) = CdpClient::connect(&ws).await {
+            while std::time::Instant::now() < deadline {
+                if let Ok(v) = c.eval("JSON.stringify([location.href, document.readyState])", 3).await {
+                    let pair: Vec<String> = v.as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+                    if let [href, state] = pair.as_slice() {
+                        last_url = href.clone();
+                        ready = state.clone();
+                        if !blank(href) && state == "complete" {
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+        }
+    }
+    let ready = if blank(&last_url) { String::new() } else { ready };
+    let waited_ms = began.elapsed().as_millis() as u64;
+    if ready == "complete" {
+        tracing::info!(session, url, landed = %last_url, waited_ms, measured = true, n_considered = 1,
+            verdict = "browser_start_settled", "browser start waited for the requested page to load");
+    } else {
+        tracing::warn!(session, url, landed = %last_url, ready_state = %ready, waited_ms, measured = true, n_considered = 1,
+            verdict = "browser_start_settle_timeout",
+            "browser start returned before the requested page finished loading; the first read may see a partial or blank page");
+    }
+}
+
 pub async fn navigate_and_settle(c: &mut CdpClient, url: &str) -> anyhow::Result<Value> {
     c.call(
         "Page.navigate",

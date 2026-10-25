@@ -5,7 +5,7 @@
 // Every assertion that matters reads the FILE ON DISK or the request that left
 // the page, not the UI's own claim, because the failure this guards against is
 // a status line that says "saved" over a write that never happened.
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { APIRequestContext, Page, TestInfo } from '@playwright/test';
@@ -820,5 +820,193 @@ test('Draw: saving recents keeps entries another tab wrote', async ({ page, requ
     });
     expect(kept.before, 'the list scrolled at all').toBeGreaterThan(0);
     expect(kept.after, 'scroll kept across a re-render').toBe(kept.before);
+  });
+});
+
+// Library management (Ethan, 2026-10-18): rename and delete drawings and
+// components from the library, open the folder in Files, and pick the folder
+// new drawings go to. Every check reads the disk or the stored pref.
+const exists = (p: string) => access(p).then(() => true, () => false);
+
+async function rowMenu(page: Page, rowSel: string, action: 'Rename' | 'Delete') {
+  await showDrawings(page);
+  const more = page.locator('.draw-row', { has: page.locator(rowSel) }).locator('.draw-row-more');
+  await more.scrollIntoViewIfNeeded();
+  await more.click();
+  await page.locator('#draw-item-menu').getByRole('menuitem', { name: action }).click();
+}
+async function answerRename(page: Page, name: string) {
+  await expect(page.locator('#modal-prompt-input')).toBeVisible();
+  await page.locator('#modal-prompt-input').fill(name);
+  await page.locator('#modal-prompt-input').press('Enter');
+}
+async function confirmDelete(page: Page) {
+  await page.locator('#modal-btns .btn.danger').click();
+}
+
+test('Draw: rename and delete drawings and components; default folder; open the folder in Files', async ({ page, request }, info) => {
+  test.setTimeout(150_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-manage-', async dir => {
+    const a = join(dir, 'Alpha.excalidraw'), b = join(dir, 'Beta.excalidraw');
+    await writeFile(a, sceneOf([{ id: 'alpha-rect', type: 'rectangle', x: 0 }]));
+    await writeFile(b, sceneOf([{ id: 'beta-rect', type: 'rectangle', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(p => (window as any)._drawOpen(p), a);
+    await expect.poll(() => sceneIds(page)).toEqual(['alpha-rect']);
+    await page.evaluate(() => (window as any)._drawLibRender());
+
+    // Rename a drawing that is not open, from the folder list.
+    await showDrawings(page);
+    await expect(page.locator(`.draw-pop-file[data-path="${b}"]`)).toHaveCount(1);
+    await rowMenu(page, `.draw-pop-file[data-path="${b}"]`, 'Rename');
+    await expect(page.locator('#modal-prompt-input'), 'the dialog starts with the current name').toHaveValue('Beta');
+    await answerRename(page, 'Bee');
+    const bee = join(dir, 'Bee.excalidraw');
+    await expect.poll(() => exists(bee)).toBe(true);
+    expect(await exists(b)).toBe(false);
+    expect(await diskIds(bee)).toEqual(['beta-rect']);
+
+    // Rename the open drawing from Recent: the editor follows the file.
+    await rowMenu(page, `.draw-recent[data-path="${a}"]`, 'Rename');
+    await answerRename(page, 'Ay');
+    const ay = join(dir, 'Ay.excalidraw');
+    await expect.poll(() => exists(ay)).toBe(true);
+    expect(await exists(a)).toBe(false);
+    await expect.poll(() => page.evaluate(() => (window as unknown as Win)._draw.path)).toMatch(/\/Ay\.excalidraw$/);
+
+    // Delete a drawing that is not open.
+    await page.evaluate(() => (window as any)._drawLibRender());
+    // The open drawing's folder can read as its resolved path (/private/var on
+    // macOS), so rows are matched on the file name.
+    await rowMenu(page, '.draw-pop-file[data-path$="/Bee.excalidraw"]', 'Delete');
+    await confirmDelete(page);
+    await expect.poll(() => exists(bee)).toBe(false);
+
+    // Delete the open drawing, with an edit still inside the autosave
+    // debounce: the file stays deleted and a fresh drawing takes its place.
+    await addEl(page, 'late-edit');
+    await rowMenu(page, '.draw-recent[data-path$="/Ay.excalidraw"]', 'Delete');
+    await confirmDelete(page);
+    await expect.poll(() => exists(ay)).toBe(false);
+    await expect.poll(() => page.evaluate(() => (window as unknown as Win)._draw.path)).toBe(join(dir, 'Untitled.excalidraw'));
+    await page.waitForTimeout(2500);
+    expect(await exists(ay), 'no autosave recreated the deleted file').toBe(false);
+    await expect(page.locator('.draw-recent[data-path$="/Ay.excalidraw"]')).toHaveCount(0);
+
+    // Default folder: pick a subfolder; New creates drawings there.
+    const sub = join(dir, 'Diagrams');
+    await mkdir(sub);
+    await page.evaluate(() => (window as any)._drawLibRender());
+    await showDrawings(page);
+    await page.locator('#draw-default-dir-btn').click();
+    await page.locator('#draw-dir-pop .draw-pop-row', { hasText: 'Diagrams' }).click();
+    await expect(page.locator('#draw-dir-pop .draw-pop-path')).toHaveText(sub);
+    await page.locator('#draw-dir-pop').getByRole('button', { name: 'Use as default' }).click();
+    const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as unknown as Win)._AMUX_AUTH_TOKEN }));
+    await expect.poll(async () => (await (await request.get('/api/prefs?key=draw_dir', { headers })).json()).value).toBe(sub);
+    await page.evaluate(() => (window as any)._drawNew(true));
+    await expect.poll(() => page.evaluate(() => (window as unknown as Win)._draw.path)).toBe(join(sub, 'Untitled.excalidraw'));
+
+    // Components: rename and delete, read back from the library file.
+    const libPath = join(await page.evaluate(() => (window as unknown as Win)._AMUX_DATA_DIR), 'draw', 'library.excalidrawlib');
+    const id = 'e2ecomp' + Date.now();
+    await page.evaluate(cid => { const d = (window as unknown as Win)._draw, X = d.lib.X;
+      const els = X.convertToExcalidrawElements([{ type: 'ellipse', x: 0, y: 0, width: 40, height: 40 }]);
+      return d.api.updateLibrary({ libraryItems: [{ id: cid, status: 'unpublished', created: Date.now(), name: 'Widget', elements: els }], merge: true }); }, id);
+    const libNames = async () => { try { return JSON.parse(await readFile(libPath, 'utf8')).libraryItems.filter((i: any) => i.id === id).map((i: any) => i.name); } catch { return []; } };
+    await expect.poll(libNames, { timeout: 10_000 }).toEqual(['Widget']);
+    await page.locator('#draw-libtab-components').click();
+    const cell = page.locator('.draw-lib-cell', { has: page.locator(`.draw-lib-item[data-id="${id}"]`) });
+    await cell.locator('.draw-row-more').click();
+    await page.locator('#draw-item-menu').getByRole('menuitem', { name: 'Rename' }).click();
+    await answerRename(page, 'Gadget');
+    await expect.poll(libNames, { timeout: 10_000 }).toEqual(['Gadget']);
+    await cell.locator('.draw-row-more').click();
+    await page.locator('#draw-item-menu').getByRole('menuitem', { name: 'Delete' }).click();
+    await confirmDelete(page);
+    await expect.poll(libNames, { timeout: 10_000 }).toEqual([]);
+
+    // Open the drawing's folder in the Files tab.
+    await showDrawings(page);
+    await page.locator('#draw-folder-files').click();
+    await expect.poll(() => page.evaluate(() => [(0, eval)('activeView'), (0, eval)('_filesPath')])).toEqual(['files', sub]);
+  });
+});
+
+test('Draw: the selection bar deletes what is selected', async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-delsel-', async dir => {
+    const p = join(dir, 'Sel.excalidraw');
+    await writeFile(p, sceneOf([{ id: 'keep', type: 'rectangle', x: 0 }, { id: 'drop', type: 'ellipse', x: 300 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(x => (window as any)._drawOpen(x), p);
+    await expect.poll(() => sceneIds(page)).toEqual(['drop', 'keep']);
+    await page.evaluate(() => (window as unknown as Win)._draw.api.updateScene({ appState: { selectedElementIds: { drop: true } } }));
+    await expect(page.locator('#draw-selbar')).toBeVisible();
+    await page.locator('#draw-delete-sel-btn').click();
+    await expect.poll(() => sceneIds(page)).toEqual(['keep']);
+    await expect(page.locator('#draw-selbar')).toBeHidden();
+    await expect.poll(() => diskIds(p), { timeout: 15_000 }).toEqual(['keep']);
+  });
+});
+
+// Autosave never loses strokes: a failed write retries on its own, and edits
+// that never reached the server come back from a local draft on the next open.
+test('Draw: a failed save retries, and unsaved edits survive a reload', async ({ page, request }, info) => {
+  test.skip(info.project.name !== 'desktop', 'save and draft logic is the same on every device');
+  test.setTimeout(120_000);
+  await withDrawPrefs(page, request, info, 'amux-draw-draft-', async dir => {
+    const p = join(dir, 'Safe.excalidraw');
+    await writeFile(p, sceneOf([{ id: 'base', type: 'rectangle', x: 0 }]));
+    await page.reload();
+    await openDraw(page);
+    await page.evaluate(x => (window as any)._drawOpen(x), p);
+    await expect.poll(() => sceneIds(page)).toEqual(['base']);
+    const draft = () => page.evaluate(x => { const raw = localStorage.getItem('amux_draw_draft:' + x);
+      return raw ? JSON.parse(JSON.parse(raw).content).elements.filter((e: any) => !e.isDeleted).map((e: any) => e.id).sort() : null; }, p);
+
+    // 1. The server refuses: the edit goes to a draft and is retried without a click.
+    let fail = true;
+    await page.route('**/api/file', route => (fail && route.request().method() === 'PUT' && (route.request().postData() || '').includes('Safe.excalidraw'))
+      ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'disk full' }) })
+      : route.continue());
+    await addEl(page, 'one');
+    await expect(page.locator('#draw-save-state')).toHaveAttribute('data-state', 'error', { timeout: 10_000 });
+    await expect(page.locator('#draw-status-text')).toContainText('retrying in');
+    expect(await draft()).toEqual(['base', 'one']);
+    fail = false;
+    await expect.poll(() => diskIds(p), { timeout: 15_000 }).toEqual(['base', 'one']);
+    await waitSaved(page);
+    expect(await draft(), 'a saved edit leaves no draft').toBeNull();
+
+    // 2. The tab goes away before the edit is saved (the server still refuses
+    // as it closes): the next open restores it.
+    fail = true;
+    await addEl(page, 'two');
+    await expect.poll(draft, { timeout: 10_000 }).toEqual(['base', 'one', 'two']);
+    await page.reload();
+    await page.unroute('**/api/file');
+    await openDraw(page);
+    await expect.poll(() => sceneIds(page)).toEqual(['base', 'one', 'two']);
+    await expect.poll(() => diskIds(p), { timeout: 15_000 }).toEqual(['base', 'one', 'two']);
+    await expect.poll(draft).toBeNull();
+
+    // 3. A draft written on an older disk version asks rather than overwriting.
+    await page.evaluate(x => {
+      const d = (window as unknown as Win)._draw;
+      const content = JSON.stringify({ type: 'excalidraw', version: 2, source: 'e2e', appState: {}, files: {},
+        elements: d.api.getSceneElements().concat([Object.assign({}, d.api.getSceneElements()[0], { id: 'stale-edit', x: 600 })]) });
+      localStorage.setItem('amux_draw_draft:' + x, JSON.stringify({ path: x, base: 'W/"old"', ts: Date.now(), content }));
+    }, p);
+    await page.reload();
+    await openDraw(page);
+    await expect(page.locator('#draw-conflict')).toBeVisible();
+    await expect(page.locator('#draw-conflict-msg')).toContainText('earlier session');
+    expect(await diskIds(p), 'nothing written before the user chose').toEqual(['base', 'one', 'two']);
+    await page.locator('#draw-conflict').getByRole('button', { name: 'Keep mine' }).click();
+    await expect.poll(() => diskIds(p), { timeout: 15_000 }).toEqual(['base', 'one', 'stale-edit', 'two']);
+    await expect.poll(draft).toBeNull();
   });
 });

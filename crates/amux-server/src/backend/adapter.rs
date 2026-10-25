@@ -595,7 +595,11 @@ pub(crate) fn claude_auto_resume_banner(raw: &str) -> Option<String> {
     // Claude's current footer splits the reset warning and capitalized
     // continuation across lines. The same composer/chrome anchors still own it.
     let normalized = warning.to_ascii_lowercase();
-    if normalized.contains("continuing automatically at ") && normalized.contains("esc to cancel") {
+    // 2026-10-20 Claude Code also words it "limit resets 1pm / Continuing
+    // shortly · esc to cancel" once the reset is near or past.
+    if (normalized.contains("continuing automatically at ") || normalized.contains("continuing shortly"))
+        && normalized.contains("esc to cancel")
+    {
         Some(warning.to_string())
     } else {
         None
@@ -1229,6 +1233,43 @@ fn codex_model_bar(line: &str) -> bool {
         && (location == "~" || location.starts_with("~/") || location.starts_with('/'))
 }
 
+/// Codex's hint row under the model bar (0.163+): `? for shortcuts`,
+/// optionally followed by a warnings notice such as `⚠ 2 warnings · f2 to
+/// view`. Anchored at the start of the row so prose that merely mentions
+/// shortcuts does not qualify.
+fn codex_footer_hint_row(line: &str) -> bool {
+    let low = line.trim().to_ascii_lowercase();
+    if !low.starts_with("? for shortcuts") {
+        return false;
+    }
+    let rest = low["? for shortcuts".len()..].trim();
+    rest.is_empty() || rest.starts_with('\u{26a0}') || rest.contains("f2 to view")
+}
+
+/// A row under a Codex model bar that is not a known hint row: the provider
+/// changed its footer again. Logged once an hour per row text, so a sweep sees
+/// the drift before customers report queued messages that never deliver.
+fn codex_footer_drift(row: &str) {
+    let row: String = row.chars().take(120).collect();
+    let key = format!("codex-footer-drift:{row}");
+    if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(now_secs())) {
+        tracing::warn!(
+            measured = true,
+            n_considered = 1,
+            verdict = "codex_footer_unrecognized",
+            row = %row,
+            "a row under the Codex model bar is not a known hint row; the pane is not read as Codex, so queued input waits for a boundary it cannot see"
+        );
+    }
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn codex_active_status_line(line: &str) -> bool {
     let low = line.trim().to_ascii_lowercase();
     low.starts_with("• working (")
@@ -1281,10 +1322,26 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     // Provider identity must be the CURRENT footer, not a Codex-looking frame
     // pasted into another provider's prompt. The model/path bar is Codex's
     // final non-empty row and its prompt glyph is `›` (not Claude's `❯`).
-    let model_i = tail
-        .len()
-        .checked_sub(1)
-        .filter(|i| codex_model_bar(tail[*i]))?;
+    //
+    // Codex 0.163 paints one more row UNDER the model bar: `? for shortcuts`
+    // and, when it has any, `⚠ 2 warnings · f2 to view`. Requiring the bar to
+    // be the very last row made every such frame read as "not Codex", so an
+    // idle lane never reached a delivery boundary and a new Cloud customer's
+    // first task sat queued forever (C6-2, 2026-10-18). Only that one
+    // recognised hint row may follow the bar; anything else still refuses, so
+    // a pasted Codex frame above another provider's footer stays foreign.
+    let last = tail.len().checked_sub(1)?;
+    let model_i = if codex_model_bar(tail[last]) {
+        last
+    } else if last > 0 && codex_model_bar(tail[last - 1]) {
+        if !codex_footer_hint_row(tail[last]) {
+            codex_footer_drift(tail[last]);
+            return None;
+        }
+        last - 1
+    } else {
+        return None;
+    };
     let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
     // Current Codex paints the active row immediately before its disabled
     // prompt. Older builds painted it immediately after the submitted prompt,

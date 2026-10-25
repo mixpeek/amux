@@ -11,6 +11,7 @@ struct WebView: UIViewRepresentable {
     @Binding var canGoForward: Bool
     @Binding var loadError: String?
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
+    var onLongPress: () -> Void = {}
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -39,6 +40,17 @@ struct WebView: UIViewRepresentable {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
         webView.backgroundColor = UIColor(red: 0.051, green: 0.067, blue: 0.09, alpha: 1) // #0d1117
+
+        // Long-press opens Settings. It must never take a touch from the page:
+        // cancelsTouchesInView and delaysTouchesBegan stay false, and it
+        // recognizes alongside WebKit's own recognizers.
+        let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
+        press.minimumPressDuration = 0.6
+        press.cancelsTouchesInView = false
+        press.delaysTouchesBegan = false
+        press.delaysTouchesEnded = false
+        press.delegate = context.coordinator
+        webView.addGestureRecognizer(press)
 
         // Pull-to-refresh
         let refresh = UIRefreshControl()
@@ -109,7 +121,7 @@ struct WebView: UIViewRepresentable {
     }
 
     // MARK: - Coordinator
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
         var parent: WebView
         weak var webView: WKWebView?
         var refreshControl: UIRefreshControl?
@@ -255,6 +267,54 @@ struct WebView: UIViewRepresentable {
             decisionHandler(own ? .grant : .prompt)
         }
 
+        // JavaScript alert / confirm / prompt. A WKUIDelegate that does not
+        // implement these makes WebKit skip the panel entirely: prompt() returns
+        // null, confirm() false, alert() nothing, with no error anywhere. Every
+        // dashboard "New folder" / "New file" in Files did nothing in the app
+        // while working in Safari (owner report 2026-10-18).
+        private func presenter(for webView: WKWebView) -> UIViewController? {
+            var vc = webView.window?.rootViewController
+            while let next = vc?.presentedViewController { vc = next }
+            return vc
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            guard let vc = presenter(for: webView) else {
+                logger.error("JS alert dropped: no view controller to present from")
+                completionHandler(); return
+            }
+            let a = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+            vc.present(a, animated: true)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            guard let vc = presenter(for: webView) else {
+                logger.error("JS confirm dropped: no view controller to present from")
+                completionHandler(false); return
+            }
+            let a = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+            vc.present(a, animated: true)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                     defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (String?) -> Void) {
+            guard let vc = presenter(for: webView) else {
+                logger.error("JS prompt dropped: no view controller to present from")
+                completionHandler(nil); return
+            }
+            let a = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+            a.addTextField { $0.text = defaultText }
+            a.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+            a.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(a.textFields?.first?.text) })
+            vc.present(a, animated: true)
+        }
+
         // Handle window.open — navigate in same webview instead of dropping
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
@@ -326,6 +386,15 @@ struct WebView: UIViewRepresentable {
             webView.reload()
             armWatchdog(host: webView.url?.host ?? parent.url.host)
         }
+
+        @objc func handleLongPress(_ sender: UILongPressGestureRecognizer) {
+            guard sender.state == .began else { return }
+            logger.info("long-press: opening Settings")
+            parent.onLongPress()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {
             webView?.reload()

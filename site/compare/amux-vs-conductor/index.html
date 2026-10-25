@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Conductor: Run Parallel Coding Agents on Mac, Linux or Your Phone (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Conductor compared (October 2026). Conductor is a Mac app that runs Claude Code, Codex and Cursor agents in isolated git worktrees. amux is an open-source control plane that runs an AI engineering team on macOS or Linux with a shared task board, agent messages, schedules, self-healing and a free phone app.">
+  <meta name="keywords" content="amux vs conductor, conductor alternative, conductor.build alternative, run parallel claude code agents, conductor linux, manage multiple claude code agents, ai engineering team">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-conductor/">
+  <meta property="og:title" content="amux vs Conductor: Run Parallel Coding Agents on Mac, Linux or Your Phone (2026)">
+  <meta property="og:description" content="Conductor runs parallel agents in git worktrees on a Mac. amux runs an AI engineering team on Mac or Linux with a shared board, messages, schedules, self-healing and a free phone app.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-conductor/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Conductor", "item": "https://amux.io/compare/amux-vs-conductor/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Conductor: Run Parallel Coding Agents on Mac, Linux or Your Phone", "description": "amux vs Conductor compared (October 2026). Conductor is a Mac app that runs Claude Code, Codex and Cursor agents in isolated git worktrees. amux is an open-source control plane that runs an AI engineering team on macOS or Linux with a shared task board, agent messages, schedules, self-healing and a free phone app.", "url": "https://amux.io/compare/amux-vs-conductor/", "datePublished": "2026-10-18", "dateModified": "2026-10-18", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is the difference between amux and Conductor?", "acceptedAnswer": {"@type": "Answer", "text": "Conductor is a Mac app for running several Claude Code, Codex or Cursor agents side by side, each in its own git worktree, and then reviewing and merging their diffs. amux is an open-source control plane for running an AI engineering team: agents share a task board with atomic claiming, message each other, run on schedules and restart themselves after crashes, on macOS or Linux, and you can supervise them from a web dashboard or your phone."}}, {"@type": "Question", "name": "Is Conductor free?", "acceptedAnswer": {"@type": "Answer", "text": "Conductor has a free plan that runs multiple agents in parallel in local workspaces on your Mac with your own subscriptions or keys. Pro is $50 per month and Teams is $60 per user per month; those plans add Conductor Cloud and the mobile app, according to conductor.build/pricing in October 2026. amux is free to self-host with every feature, and amux Cloud starts at $39 per month for a dedicated always-on server."}}, {"@type": "Question", "name": "Does Conductor run on Linux or Windows?", "acceptedAnswer": {"@type": "Answer", "text": "Conductor's site describes it as a Mac app and lists only Mac requirements for local workspaces. amux self-hosts on macOS or Linux with one command: curl -fsSL https://amux.io/install.sh | bash. amux Cloud runs on a dedicated server you reach from any browser."}}, {"@type": "Question", "name": "Which is better for running agents overnight?", "acceptedAnswer": {"@type": "Answer", "text": "For unattended runs, amux is built around it: a watchdog compacts context, restarts crashed sessions and replays the last message, schedules start work at set times, and the board tells each agent what to pick up next. Conductor Cloud keeps agents working when you close the app on its paid plans. Conductor's local workspaces depend on your Mac staying awake."}}, {"@type": "Question", "name": "Can I use amux and Conductor together?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. They overlap on running agents in parallel, so teams usually pick one as the place agents live. A common split is Conductor for hands-on, review-heavy feature work on a Mac, and amux for a standing fleet that works through a backlog, runs scheduled jobs and keeps going overnight."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Conductor</span></div>
+
+    <h1>amux vs Conductor</h1>
+    <p class="subtitle">Two ways to run parallel coding agents. Updated October 2026.</p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--accent)">
+      <strong>Quick answer:</strong> Conductor is a polished Mac app for running a handful of Claude Code, Codex or Cursor agents side by side, each in its own git worktree, then reviewing and merging their diffs. amux runs an AI engineering team: agents share a task board, message each other, run on schedules and restart themselves, on macOS or Linux, supervised from a dashboard or your phone. Pick Conductor for hands-on parallel feature work on a Mac. Pick amux for a standing fleet that keeps shipping while you sleep.
+    </div>
+
+    <h2 id="table">amux vs Conductor at a glance</h2>
+    <table>
+      <thead><tr><th></th><th>amux</th><th>Conductor</th></tr></thead>
+      <tbody>
+        <tr><td>What it is</td><td>Open-source control plane for an AI engineering team</td><td>Mac app for parallel coding agents</td></tr>
+        <tr><td>Platforms</td><td>macOS and Linux (self-host), any browser (Cloud)</td><td>Mac (local workspaces)</td></tr>
+        <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Claude Code, Codex, Cursor</td></tr>
+        <tr><td>Isolation</td><td>Per-worker directories, opt-in git worktree per worker</td><td>Git worktree per workspace</td></tr>
+        <tr><td>Shared task board</td><td>Yes, atomic claiming so two agents never take the same card</td><td>No</td></tr>
+        <tr><td>Agents message each other</td><td>Yes, origin-stamped messages</td><td>No</td></tr>
+        <tr><td>Schedules and loops</td><td>Yes (daily at 9am, every 15m, cron)</td><td>No</td></tr>
+        <tr><td>Self-healing</td><td>Compacts context, restarts crashes, replays last message</td><td>Not described</td></tr>
+        <tr><td>Diff review and merge UI</td><td>Review on the board and in the file viewer</td><td>Yes, a core feature</td></tr>
+        <tr><td>Phone</td><td>Free PWA and iOS app</td><td>Mobile app on Pro</td></tr>
+        <tr><td>Always-on hosting</td><td>amux Cloud: dedicated server at yourname.amux.io from $39/mo</td><td>Conductor Cloud on Pro ($50/mo) and Teams ($60/user/mo), Vercel sandbox</td></tr>
+        <tr><td>Source</td><td>Open source (MIT + Commons Clause)</td><td>Not described as open source</td></tr>
+        <tr><td>Price to start</td><td>Free, every feature</td><td>Free plan; Pro $50/mo</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.85rem;color:var(--fg-mute)">Conductor details from <a href="https://www.conductor.build/" target="_blank" rel="noopener">conductor.build</a> and <a href="https://www.conductor.build/pricing" target="_blank" rel="noopener">its pricing page</a>, October 2026.</p>
+
+    <h2 id="conductor">What Conductor does well</h2>
+    <p>Conductor, from Y Combinator company Melty Labs, is built for one developer driving several agents on one repository. Each workspace is a git worktree with its own branch, terminal and diff, so agents cannot step on each other's files, and the review-and-merge flow is the center of the app. It supports Claude Code, Codex and Cursor with your existing subscriptions, and its paid plans add Conductor Cloud, which keeps agents running in a hosted sandbox when you close the app.</p>
+    <p>If your day is "start five agents on five features, review each diff, merge the good ones," Conductor is a clean fit, especially if you already work on a Mac.</p>
+
+    <h2 id="amux">What amux does differently</h2>
+    <p>amux treats agents as a team rather than as tabs. Work lives on a shared board: an agent claims a card atomically, does it, attaches evidence and moves it on, so ten agents can drain a backlog without two of them grabbing the same task. Agents message each other to hand off or unblock, schedules start work at set times, and a watchdog compacts context, restarts crashed sessions and replays the last message so runs survive the night.</p>
+    <p>It is open source and self-hosts on macOS or Linux as one Rust binary with SQLite. You supervise from the web dashboard, the free iOS app or the PWA. When you want the team running around the clock, amux Cloud gives you the same server at <code>yourname.amux.io</code> from $39 a month, and <code>amux export</code> / <code>amux import</code> move your board, schedules and memories across.</p>
+
+    <h2 id="choose">Which should you choose?</h2>
+    <ul>
+      <li><strong>Choose Conductor</strong> if you work on a Mac, run a few agents at a time, and want the best diff-review and merge experience.</li>
+      <li><strong>Choose amux</strong> if you want agents coordinating on a backlog, running on Linux or a server, working overnight, or managed from your phone without a paid plan.</li>
+      <li><strong>Use both</strong> if you like Conductor for interactive feature work and want amux running the standing fleet: scheduled jobs, triage, test and docs work.</li>
+    </ul>
+
+    <h2 id="start">How to try amux</h2>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>
+    <p>The installer asks before installing Rust or tmux. You need at least one agent CLI. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="/guides/run-ai-engineering-team/">how to run an AI engineering team</a>.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">What is the difference between amux and Conductor?</summary>
+      <p style="color:var(--fg-dim)">Conductor is a Mac app for running several Claude Code, Codex or Cursor agents side by side, each in its own git worktree, and then reviewing and merging their diffs. amux is an open-source control plane for running an AI engineering team: agents share a task board with atomic claiming, message each other, run on schedules and restart themselves after crashes, on macOS or Linux, and you can supervise them from a web dashboard or your phone.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Is Conductor free?</summary>
+      <p style="color:var(--fg-dim)">Conductor has a free plan that runs multiple agents in parallel in local workspaces on your Mac with your own subscriptions or keys. Pro is $50 per month and Teams is $60 per user per month; those plans add Conductor Cloud and the mobile app, according to conductor.build/pricing in October 2026. amux is free to self-host with every feature, and amux Cloud starts at $39 per month for a dedicated always-on server.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Does Conductor run on Linux or Windows?</summary>
+      <p style="color:var(--fg-dim)">Conductor's site describes it as a Mac app and lists only Mac requirements for local workspaces. amux self-hosts on macOS or Linux with one command: curl -fsSL https://amux.io/install.sh | bash. amux Cloud runs on a dedicated server you reach from any browser.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Which is better for running agents overnight?</summary>
+      <p style="color:var(--fg-dim)">For unattended runs, amux is built around it: a watchdog compacts context, restarts crashed sessions and replays the last message, schedules start work at set times, and the board tells each agent what to pick up next. Conductor Cloud keeps agents working when you close the app on its paid plans. Conductor's local workspaces depend on your Mac staying awake.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Can I use amux and Conductor together?</summary>
+      <p style="color:var(--fg-dim)">Yes. They overlap on running agents in parallel, so teams usually pick one as the place agents live. A common split is Conductor for hands-on, review-heavy feature work on a Mac, and amux for a standing fleet that works through a backlog, runs scheduled jobs and keeps going overnight.</p>
+    </details>
+
+    <h2>Related comparisons</h2>
+    <ul>
+      <li><a href="/compare/amux-vs-cmux/">amux vs cmux</a></li>
+      <li><a href="/compare/amux-vs-claude-code-agent-teams/">amux vs Claude Code agent teams</a></li>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+      <li><a href="/guides/best-claude-code-session-managers-2026/">Best Claude Code session managers (2026)</a></li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

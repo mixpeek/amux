@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -21,13 +21,12 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Open-source control plane for running an AI engineering team — launch, monitor, and self-heal dozens of parallel Claude Code, Codex, or Gemini CLI agents from one dashboard or your phone. Built-in kanban board, CRM, Gmail, browser automation, scheduler, and skills. MIT licensed, single Rust binary, zero external dependencies.","url":"https://amux.io/","downloadUrl":"https://github.com/mixpeek/amux","softwareVersion":"0.9.x","releaseNotes":"https://amux.io/changelog/","license":"https://github.com/mixpeek/amux/blob/main/LICENSE","author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"amux Changelog","description":"Recent amux releases and features","url":"https://amux.io/changelog/","itemListElement":[{"@type":"ListItem","position":1,"name":"Full task name on the card and details page, with a recorded history of task changes","description":"Worker cards now show the complete task name. Every task change is recorded in a durable history accessible from the details page — scroll back through everything a worker has run in a session.","url":"https://amux.io/changelog/#a8116aa6"},{"@type":"ListItem","position":2,"name":"Worker boundaries apply to isolated workers too","description":"Resource limits declared in boundaries.toml now enforce for isolated workers. Long-running isolated sessions left overnight get the same memory and CPU ceiling as harness-managed workers.","url":"https://amux.io/changelog/#12b3475d"},{"@type":"ListItem","position":3,"name":"Rotate verified CLI accounts automatically when one hits its usage limit","description":"amux tracks the 5-hour and 7-day usage windows per registered Claude Code account and automatically rotates sessions to a fresh account when one hits its ceiling. No more stalled overnight runs.","url":"https://amux.io/changelog/#9bae682c"},{"@type":"ListItem","position":2,"name":"Skill examples shown when a skill is expanded, inferred from its Markdown","description":"Expanding a skill in the Skills tab shows example invocations inferred from the skill body. Add an ## Examples section for explicit examples. Up to 5 shown with clipboard copy buttons.","url":"https://amux.io/changelog/#b4c191b"},{"@type":"ListItem","position":3,"name":"Skill examples appear in the / dropdown across the whole dashboard","description":"Type / in any steering bar, Chat, or board card input to see every skill with its example invocations as clickable suggestions. Makes skills discoverable without memorizing command names.","url":"https://amux.io/changelog/#2db6fd9"},{"@type":"ListItem","position":4,"name":"Calendar shows every Google Calendar, Google-Calendar visual style, refreshes every minute","description":"The calendar tab now syncs every Google Calendar you own, keeps each calendar's color, uses a Google-Calendar-style time-block layout, and refreshes automatically every minute.","url":"https://amux.io/changelog/#88d041b"},{"@type":"ListItem","position":5,"name":"Connectors: Forget button confirms before removing credentials","description":"The Forget button now shows an in-modal confirmation step before removing credentials. The modal confirms removal before closing.","url":"https://amux.io/changelog/#c4c3c81"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "ItemList", "name": "amux Changelog", "description": "Recent amux releases and features", "url": "https://amux.io/changelog/", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Each worker tab shows that worker's data", "description": "Switching from one worker to another on the same tab could paint the first worker's answer onto the second when it arrived late. Ten tabs, including Memory, Git, Steering, Logs and Shell, now check that an answer still belongs to the worker on screen before showing it, so Save and Push always act on the worker you are looking at.", "url": "https://amux.io/changelog/#4065457e"}, {"@type": "ListItem", "position": 2, "name": "Drag a tab into the Mac app window to split it", "description": "In the amux Mac app, drag a tab over a window and a preview shows which half of the pane it will take. Drop it and the window becomes a grid of up to four panes, each keeping its page state, with dividers you can drag to resize.", "url": "https://amux.io/changelog/#8200abbd"}, {"@type": "ListItem", "position": 3, "name": "See how much memory and CPU each worker uses", "description": "amux now samples each worker's memory, CPU and process count every 30 seconds and keeps seven days of history. The new Resources tab in Metrics shows live numbers and peaks per worker, and you can cap how many workers run at once and stagger their start after a reboot.", "url": "https://amux.io/changelog/#de025990"}, {"@type": "ListItem", "position": 4, "name": "Claude sign-in on amux Cloud uses your subscription", "description": "Signing in to Claude from the dashboard now runs the same login as /login on a laptop. Your plan usage shows in the dashboard, and workers run on your Claude subscription instead of an API key.", "url": "https://amux.io/changelog/#85a71cca"}, {"@type": "ListItem", "position": 5, "name": "Stuck queued messages can be retried or removed", "description": "A message saved on your device that never reached its worker used to sit in the Queued list with its buttons disabled. It now says what happened, and you can send it again or remove it.", "url": "https://amux.io/changelog/#2dc70bcb"}]}</script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <style>
     .changelog-hero{max-width:800px;margin:0 auto 48px;text-align:center}
     .changelog-hero h1{font-size:clamp(1.8rem,4vw,2.6rem);font-weight:700;margin-bottom:12px;line-height:1.15}
@@ -38,7 +37,7 @@
     .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:32px;justify-content:center}
     .filter-pill{background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:20px;padding:6px 16px;font-size:.82rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;font-family:inherit}
     .filter-pill:hover{border-color:var(--accent);color:var(--accent)}
-    .filter-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+    .filter-pill.active{background:var(--accent);border-color:var(--accent);color:var(--bg)}
     .entry{display:grid;grid-template-columns:120px 1fr;gap:0 24px;padding:20px 0;border-bottom:1px solid var(--border)}
     .entry:last-child{border-bottom:none}
     .entry-date-col{text-align:right;padding-top:2px}
@@ -51,13 +50,13 @@
     .entry-tags{display:flex;gap:6px;flex-wrap:wrap}
     .tag{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:2px 8px;font-size:.72rem;color:var(--muted)}
     .type-badge{border-radius:4px;padding:2px 7px;font-size:.72rem;font-weight:600;white-space:nowrap;flex-shrink:0}
-    .type-feat{background:rgba(34,197,94,.12);color:#22c55e}
-    .type-fix{background:rgba(251,191,36,.1);color:#d4a017}
-    .type-perf{background:rgba(99,102,241,.1);color:#818cf8}
-    .type-docs{background:rgba(148,163,184,.1);color:#94a3b8}
+    .type-feat{background:rgba(34,197,94,.12);color:var(--c-green)}
+    .type-fix{background:rgba(251,191,36,.1);color:light-dark(oklch(0.48 0.146 84.3), #d4a017)}
+    .type-perf{background:rgba(99,102,241,.1);color:light-dark(oklch(0.48 0.150 276.9), #818cf8)}
+    .type-docs{background:rgba(148,163,184,.1);color:light-dark(oklch(0.48 0.035 256.8), #94a3b8)}
     .type-chore{background:rgba(148,163,184,.08);color:var(--muted)}
     #loading{text-align:center;padding:40px;color:var(--muted)}
-    #error{padding:16px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;color:#f87171;margin:16px 0}
+    #error{padding:16px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;color:var(--c-red);margin:16px 0}
     #empty{text-align:center;padding:40px;color:var(--muted)}
     .github-cta{text-align:center;margin:48px 0 0;padding:28px;background:var(--card);border:1px solid var(--border);border-radius:12px}
     .github-cta h3{margin:0 0 8px;font-size:1.1rem}
@@ -73,20 +72,30 @@
   [data-theme="light"] .type-docs { background: oklch(0.38 0.014 250 / .10); color: var(--fg-dim); }
   [data-theme="light"] .entry-hash { opacity: 1; }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
 <header class="site-header">
-  <a class="logo" href="/">amux</a>
-  <nav>
-    <a href="/docs/" class="hide-mobile">docs</a>
-    <a href="/guides/" class="hide-mobile">guides</a>
-    <a href="/compare/" class="hide-mobile">compare</a>
-    <a href="/demos/" class="hide-mobile">demos</a>
-    <a href="/blog/" class="hide-mobile">blog</a>
-    <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
-  </nav>
-</header>
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
 
 <main>
   <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <span>Changelog</span></div>
@@ -120,7 +129,7 @@
 
   <div class="github-cta">
     <h3>amux is open source</h3>
-    <p>MIT licensed. Single Rust binary. Zero external dependencies.</p>
+    <p>MIT + Commons Clause. One Rust binary plus SQLite.</p>
     <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Star on GitHub</a>
   </div>
 </main>
@@ -228,11 +237,13 @@
       </div>
     </div>
     <div class="footer-bottom">
-      <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+      <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
       <div class="footer-bottom-links">
         <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
         <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        <a href="/security/">Security</a>
+        <a href="/privacy/">Privacy</a>
       </div>
     </div>
   </div>

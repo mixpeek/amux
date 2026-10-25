@@ -25,21 +25,17 @@
 //! DB row. If you find yourself wanting a hybrid, one of the two lists above
 //! tells you which properties your job actually needs.
 //!
-//! # DUAL-SCHEDULER SAFETY (critical while the strangler fig is live)
+//! # Firing and shadow mode
 //!
-//! The Python server on :8822 keeps running and OWNS schedule firing. Both
-//! servers read/write the SAME `schedules` / `schedule_runs` rows, so two
-//! live firing loops would double-deliver every schedule. Therefore:
+//! The Python server that once owned schedule firing is gone (792ce1f), so
+//! the Rust firing loop is ON by default. `AMUX_RS_SCHEDULER=0` (or
+//! `false`/`off`/`no`) selects SHADOW MODE:
 //!
-//! - The Rust firing loop ships DISABLED. `AMUX_RS_SCHEDULER=1` in the
-//!   environment enables real firing; anything else means SHADOW MODE.
 //! - In shadow mode [`scheduler::run_scheduler`] still computes next-run
 //!   times and, for every schedule that comes due, records what it WOULD
 //!   have fired as an `_amux_state_events` row with entity type
 //!   `Other("schedule_shadow")` — one event per (schedule, occurrence),
-//!   deduped in memory. It touches NEITHER `schedules` nor `schedule_runs`,
-//!   so Python's loop is entirely undisturbed. Phase 11 validation compares
-//!   these shadow events against Python's actual `schedule_runs` fires.
+//!   deduped in memory. It touches NEITHER `schedules` nor `schedule_runs`.
 //! - The CRUD API (`api::schedules`) is always live — creates, edits,
 //!   deletes and audit rows are shared state both servers agree on. The ONE
 //!   exception is run-now: with firing disabled it answers 409
@@ -62,6 +58,7 @@ pub mod cdc_poller;
 pub mod codex_ledger;
 pub mod commit_mention_notes;
 pub mod context_health;
+pub mod subscription_relaunch;
 pub mod converse_retention;
 pub mod contract_watch;
 pub mod land_queue;
@@ -72,6 +69,7 @@ pub mod needs_input_auto;
 pub(crate) mod executor;
 pub mod gemini_ledger;
 pub mod heartbeat;
+pub mod goal_check;
 pub mod goal_keeper;
 pub mod task_titles;
 pub mod host_guard;
@@ -86,10 +84,16 @@ pub mod worktree_hygiene;
 mod poll_watch;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.
+pub mod receipts;
 pub mod recordings_transcribe;
 pub mod registry;
 pub mod scheduler;
 pub mod schedule_failure;
+pub mod schedule_wake;
+/// Owner card for queued messages held behind a composer draft (called from
+/// the steering loop, not a periodic job of its own).
+pub mod draft_hold;
+pub mod schedule_lifecycle;
 pub mod episodes;
 pub mod status_history;
 pub mod storage;
@@ -99,6 +103,7 @@ pub mod telegram_poll;
 pub mod telegram_relay;
 pub mod token_ledger;
 pub mod tunnel;
+pub mod worker_resources;
 
 pub use scheduler::{
     firing_enabled, run_scheduler, scheduler_tick, DueRuns, DurableSchedule, ExprParseError,

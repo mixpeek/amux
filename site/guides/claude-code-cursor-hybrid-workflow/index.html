@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -22,22 +22,31 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together","description":"Developers use 2.3 AI tools on average. Here's the workflow architecture for running Claude Code, Cursor, and other AI tools on the same codebase — with task routing, conflict prevention, and cost optimization.","datePublished":"2026-04-24","dateModified":"2026-04-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/claude-code-cursor-hybrid-workflow/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Hybrid Stack","item":"https://amux.io/guides/claude-code-cursor-hybrid-workflow/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can you run Claude Code and Cursor on the same codebase at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code runs in the terminal and Cursor runs in the IDE — they don't conflict at the process level. The risk is concurrent edits to the same files. Use git worktrees to give Claude Code agents isolated copies of the repo, or establish a file-level routing rule: Cursor edits the file you're focused on, Claude Code agents work on everything else. An orchestrator like amux coordinates which agent owns which files and prevents collisions."}},{"@type":"Question","name":"Should I use Claude Code or Cursor for coding?","acceptedAnswer":{"@type":"Answer","text":"Use both. They excel at different tasks. Cursor is faster for inline edits, autocomplete, and single-file changes where you're actively reading the code. Claude Code is stronger for multi-file refactors, architecture changes, debugging across modules, and any task that benefits from running multiple agents in parallel. The average developer already uses 2.3 AI tools — the question isn't which one, it's how to route tasks between them."}},{"@type":"Question","name":"How do you prevent git conflicts when using multiple AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"Three strategies, from simplest to most robust: (1) File-level routing — Cursor edits files in your active editor tabs, Claude Code agents work on other files. (2) Branch-per-agent — each Claude Code session works on its own branch and merges when done. (3) Git worktrees — each agent gets an isolated working copy of the repo. amux creates worktrees automatically and handles cleanup. For most workflows, file-level routing plus branch-per-agent is sufficient."}},{"@type":"Question","name":"What's the best AI coding workflow in 2026?","acceptedAnswer":{"@type":"Answer","text":"The emerging best practice is a three-layer stack: an IDE tool (Cursor or Copilot) for interactive editing, a terminal agent (Claude Code) for deep multi-file work, and an orchestrator (amux) to run multiple terminal agents in parallel and coordinate with your IDE. This gives you fast autocomplete for the file you're editing, powerful agents for background tasks, and fleet management for overnight or batch operations. Cost-wise, route simple completions to cheaper models in the IDE and reserve expensive Opus-tier models for complex Claude Code tasks."}},{"@type":"Question","name":"How much does the hybrid Claude Code + Cursor stack cost?","acceptedAnswer":{"@type":"Answer","text":"The base cost is $20/month for Cursor Pro plus $100-200/month for Claude Code Max (or pay-per-token via API). The key to cost optimization is routing: simple inline edits and autocomplete in Cursor use cheaper models (often GPT-4o-mini or Claude Haiku), while complex multi-file tasks in Claude Code use Opus or Sonnet. Teams report that the hybrid approach costs 20-40% less than running everything through expensive models, because 60-70% of daily coding tasks are simple enough for the IDE's cheaper completions."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -518,10 +527,12 @@ amux serve  # &rarr; https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

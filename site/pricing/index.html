@@ -18,7 +18,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <style>
     .pricing-hero {
       text-align: center;
@@ -89,6 +88,7 @@
       margin-bottom: 0.75rem;
     }
     .pricing-price {
+      white-space: nowrap;
       font-size: 2.5rem;
       font-weight: 700;
       letter-spacing: -0.03em;
@@ -106,8 +106,10 @@
       margin-bottom: 1.5rem;
     }
 
+    main { max-width: 1180px; }
     .pricing-features {
       list-style: none;
+      padding: 0;
       flex: 1;
       margin-bottom: 1.5rem;
     }
@@ -192,32 +194,35 @@
       margin-left: 0.3rem;
     }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
-      <a href="/pricing/">pricing</a>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/blog/" class="hide-mobile">blog</a>      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
 
   <main>
-    <!-- EXP-049: pricing page top-of-page CTA -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:12px 20px;margin:1rem auto;max-width:900px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>amux is free and open-source.</strong> <span style="color:var(--muted)">Self-host with zero agent limits, no session fees, MIT licensed. Install in under 2 minutes.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp049_pricing_topofpage_cta_click')" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
-
     <div class="pricing-hero">
       <h1>Simple, transparent pricing</h1>
-      <p>Self-host for free, or let us run it for you.</p>
+      <p>Self-host for free, or get your own always-on server.</p>
     </div>
 
     <div class="pricing-grid">
@@ -248,7 +253,7 @@
           <li>Everything in Open Source</li>
           <li>Ready at yourname.amux.io in about 3 minutes</li>
           <li>Runs 24/7 while your laptop sleeps</li>
-          <li>Continuous backups, restorable</li>
+          <li>Snapshot kept 30 days after you cancel</li>
           <li>Invite teammates by email</li>
           <li>iOS app sign-in</li>
         </ul>
@@ -256,6 +261,7 @@
       </div>
       <!-- Cloud Team -->
       <div class="pricing-card">
+        <div class="pricing-badge">Best for teams and client work</div>
         <div class="pricing-name">Cloud Team</div>
         <div class="pricing-price">$69 <span>/mo</span></div>
         <div class="pricing-note">Billed monthly &middot; cancel anytime</div>
@@ -263,6 +269,7 @@
           <li>Your own server: 8 vCPU, 16 GB RAM, 160 GB disk</li>
           <li>Everything in Solo</li>
           <li>Twice the room: more workers at once</li>
+          <li>The pick for freelancers, agencies and small teams running agents across several projects</li>
         </ul>
         <a href="/start/?plan=team&amp;source=pricing" class="pricing-cta pricing-cta-secondary">Get Team</a>
       </div>
@@ -285,7 +292,7 @@
 
       <div class="pricing-faq-item">
         <div class="pricing-faq-q">What do I get with amux Cloud?</div>
-        <div class="pricing-faq-a">A dedicated server that runs amux for you and nobody else, at your own address (yourname.amux.io). Your workers keep running when your laptop is closed, and your board, schedules and files are backed up continuously.</div>
+        <div class="pricing-faq-a">A dedicated server that runs amux for you and nobody else, at your own address (yourname.amux.io). Your workers keep running when your laptop is closed.</div>
       </div>
 
       <div class="pricing-faq-item">
@@ -310,14 +317,14 @@
 
       <div class="pricing-faq-item">
         <div class="pricing-faq-q">Is the self-hosted version feature-complete?</div>
-        <div class="pricing-faq-a">Yes. amux is fully open source. Cloud adds the server, its address, backups and upkeep; the product is the same.</div>
+        <div class="pricing-faq-a">Yes. amux is fully open source. Cloud adds the server and its address; the product is the same.</div>
       </div>
     </div>
   </main>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <p>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a>.</p>
+      <p>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a>. <a href="/demos/">Demos</a> &middot; <a href="/security/">Security</a> &middot; <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
     </div>
   </footer>
 

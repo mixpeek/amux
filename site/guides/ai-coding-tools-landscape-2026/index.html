@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,56 +20,55 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Coding Tools Landscape 2026","item":"https://amux.io/guides/ai-coding-tools-landscape-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The AI Coding Tools Landscape (2026): Every Agent, IDE, and Platform Compared","description":"The complete map of every AI coding tool in 2026. IDE agents, terminal agents, cloud agents, orchestration platforms, SDKs, and open standards compared.","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/","datePublished":"2026-05-18","dateModified":"2026-05-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the best AI coding tool in 2026?","acceptedAnswer":{"@type":"Answer","text":"There is no single best tool — the right choice depends on your workflow. For inline code completion and chat, Cursor and GitHub Copilot lead. For autonomous terminal-based coding, Claude Code and Codex CLI are the top choices. For fully autonomous cloud agents, Devin and OpenAI Codex are the most capable. For running multiple agents in parallel, amux, Claude Squad, and Claude Code's built-in Agent Teams provide orchestration. Most productive developers use 2-3 tools together."}},{"@type":"Question","name":"How many AI coding tools exist in 2026?","acceptedAnswer":{"@type":"Answer","text":"As of May 2026, there are 30+ actively maintained AI coding tools across five categories: IDE-integrated agents (Cursor, Copilot, Windsurf, Continue, Amp, Augment Code), terminal/CLI agents (Claude Code, Aider, Codex CLI, Gemini CLI, Goose, Cline), cloud/background agents (Devin, OpenAI Codex, OpenHands, Replit Agent, Bolt, Lovable), orchestration platforms (amux, Claude Squad, Claude Code Agent Teams), and agent SDKs/frameworks (Claude Agent SDK, OpenAI Agents SDK, Google ADK, LangGraph, CrewAI)."}},{"@type":"Question","name":"What is the cheapest AI coding tool?","acceptedAnswer":{"@type":"Answer","text":"Several powerful AI coding tools are completely free: Aider (open-source, bring your own API key), Continue (open-source IDE extension), Goose (open-source by Block/AAIF), Gemini CLI (free with Google account — 1,000 requests/day on Gemini 2.5 Pro), Kilo Code (open-source), and amux (open-source orchestration). GitHub Copilot has a free tier with 2,000 completions/month. Claude Code's free tier provides limited usage on the Anthropic API."}},{"@type":"Question","name":"Should I use an IDE agent or a terminal agent?","acceptedAnswer":{"@type":"Answer","text":"Use IDE agents (Cursor, Copilot, Windsurf) for real-time code completion, inline chat, and interactive editing where you want tight feedback loops. Use terminal agents (Claude Code, Codex CLI, Aider) for autonomous multi-file tasks, background coding, and workflows where the agent needs to run commands, tests, and iterate without supervision. Many developers use both: an IDE agent for interactive work and a terminal agent for larger autonomous tasks."}},{"@type":"Question","name":"What is the difference between a coding agent and a coding assistant?","acceptedAnswer":{"@type":"Answer","text":"A coding assistant provides suggestions that a human reviews and accepts (autocomplete, inline chat). A coding agent autonomously executes multi-step tasks — reading files, writing code, running tests, fixing errors, and iterating until the task is done. Assistants augment human coding; agents replace it for specific tasks. In 2026, most tools offer both modes: Cursor has both autocomplete (assistant) and agent mode, Claude Code operates primarily as an agent, and GitHub Copilot now has Copilot Coding Agent for autonomous work."}},{"@type":"Question","name":"What are AGENTS.md and MCP?","acceptedAnswer":{"@type":"Answer","text":"AGENTS.md is an open standard (now under the Linux Foundation's Agentic AI Foundation) for giving AI coding agents project-specific context — build steps, test commands, coding conventions, and architectural rules. Think of it as a README for AI agents. MCP (Model Context Protocol) is Anthropic's open standard for connecting AI agents to external tools and data sources via a standardized API. Together, AGENTS.md tells agents what to do and MCP gives them the tools to do it. Both are supported by most major AI coding tools in 2026."}},{"@type":"Question","name":"Can I run multiple AI coding agents at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. Running parallel agents is one of the biggest productivity multipliers in 2026. You need three things: workspace isolation (git worktrees or separate branches so agents don't conflict), task coordination (a shared board or spec that divides work), and monitoring (visibility into what each agent is doing). Tools like amux, Claude Squad, and Claude Code's Agent Teams provide this orchestration layer. Without orchestration, you can still run multiple terminal agents in separate tmux panes, but you lose coordination and monitoring."}}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"AI Coding Tools 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"IDE-Integrated Agents","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#ide"},{"@type":"ListItem","position":2,"name":"Terminal & CLI Agents","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#terminal"},{"@type":"ListItem","position":3,"name":"Cloud & Background Agents","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#cloud"},{"@type":"ListItem","position":4,"name":"Agent Orchestration Platforms","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#orchestration"},{"@type":"ListItem","position":5,"name":"Agent SDKs & Frameworks","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#sdks"},{"@type":"ListItem","position":6,"name":"Open Standards & Protocols","url":"https://amux.io/guides/ai-coding-tools-landscape-2026/#standards"}]}</script>
   <style>
-    .landscape-stat { display: inline-block; background: rgba(110,231,183,0.10); border: 1px solid rgba(110,231,183,0.25); border-radius: 8px; padding: 0.15rem 0.6rem; font-size: 0.82rem; font-weight: 600; color: #6ee7b7; margin-right: 0.4rem; margin-bottom: 0.3rem; }
+    .landscape-stat { display: inline-block; background: rgba(110,231,183,0.10); border: 1px solid rgba(110,231,183,0.25); border-radius: 8px; padding: 0.15rem 0.6rem; font-size: 0.82rem; font-weight: 600; color: var(--c-green); margin-right: 0.4rem; margin-bottom: 0.3rem; }
     .cat-header { display: flex; align-items: center; gap: 0.75rem; margin-top: 2.5rem; margin-bottom: 0.5rem; }
-    .cat-header .cat-icon { font-size: 1.5rem; width: 2.2rem; height: 2.2rem; display: grid; place-items: center; background: var(--surface-2, #2a3040); border-radius: 8px; border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+    .cat-header .cat-icon { font-size: 1.5rem; width: 2.2rem; height: 2.2rem; display: grid; place-items: center; background: var(--surface-2, var(--panel-3)); border-radius: 8px; border: 1px solid var(--border, var(--tint)); }
     .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0 1.75rem; }
     @media (max-width: 600px) { .tool-grid { grid-template-columns: 1fr; } }
-    .tool-card { background: var(--surface, #232838); border-radius: 10px; padding: 1.15rem 1.25rem; border: 1px solid var(--border, rgba(255,255,255,0.06)); transition: border-color 0.2s; }
+    .tool-card { background: var(--surface, var(--panel-2)); border-radius: 10px; padding: 1.15rem 1.25rem; border: 1px solid var(--border, var(--tint)); transition: border-color 0.2s; }
     .tool-card:hover { border-color: rgba(110,231,183,0.25); }
     .tool-card h4 { margin: 0 0 0.15rem; font-size: 1rem; }
     .tool-card h4 a { color: var(--text, #e8eaf0); text-decoration: none; border-bottom: 1px solid var(--border, rgba(255,255,255,0.12)); }
-    .tool-card h4 a:hover { color: #6ee7b7; border-color: #6ee7b7; }
-    .tool-card .maker { font-size: 0.8rem; color: var(--muted, #8892a4); margin-bottom: 0.5rem; }
+    .tool-card h4 a:hover { color: var(--c-green); border-color: var(--c-green); }
+    .tool-card .maker { font-size: 0.8rem; color: var(--muted, var(--fg-mute)); margin-bottom: 0.5rem; }
     .tool-card .maker a { color: var(--dim, #a0aab8); }
     .tool-card .tool-desc { font-size: 0.88rem; color: var(--dim, #b0b8c8); margin-bottom: 0.6rem; line-height: 1.45; }
     .tool-card .tool-meta { display: flex; flex-wrap: wrap; gap: 0.35rem; }
     .tool-card .tag { font-size: 0.72rem; padding: 0.12rem 0.45rem; border-radius: 4px; font-weight: 500; }
-    .tag-free { background: rgba(110,231,183,0.12); color: #6ee7b7; }
-    .tag-freemium { background: rgba(147,197,253,0.12); color: #93c5fd; }
-    .tag-paid { background: rgba(251,191,36,0.12); color: #fbbf24; }
-    .tag-oss { background: rgba(110,231,183,0.08); color: #6ee7b7; border: 1px solid rgba(110,231,183,0.2); }
-    .tag-enterprise { background: rgba(248,113,113,0.10); color: #f87171; }
+    .tag-free { background: rgba(110,231,183,0.12); color: var(--c-green); }
+    .tag-freemium { background: rgba(147,197,253,0.12); color: light-dark(oklch(0.48 0.096 251.8), #93c5fd); }
+    .tag-paid { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+    .tag-oss { background: rgba(110,231,183,0.08); color: var(--c-green); border: 1px solid rgba(110,231,183,0.2); }
+    .tag-enterprise { background: rgba(248,113,113,0.10); color: var(--c-red); }
     .cmp-table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: 0.85rem; }
-    .cmp-table th, .cmp-table td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.06); }
-    .cmp-table th { font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted, #8892a4); white-space: nowrap; }
+    .cmp-table th, .cmp-table td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid var(--tint); }
+    .cmp-table th { font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted, var(--fg-mute)); white-space: nowrap; }
     .cmp-table td:first-child { font-weight: 500; white-space: nowrap; }
     .cmp-table td:first-child a { color: var(--text, #e8eaf0); border-bottom: 1px dotted var(--border); }
-    .cmp-table td:first-child a:hover { color: #6ee7b7; }
-    .decision-box { background: var(--surface, #232838); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+    .cmp-table td:first-child a:hover { color: var(--c-green); }
+    .decision-box { background: var(--surface, var(--panel-2)); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, var(--tint)); }
     .decision-box h4 { margin-top: 0; font-size: 0.95rem; }
-    .decision-box .rec { color: #6ee7b7; font-weight: 600; }
+    .decision-box .rec { color: var(--c-green); font-weight: 600; }
     .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.15rem; margin: 1.5rem 0; }
-    .key-insight strong { color: #6ee7b7; }
-    .updated-badge { display: inline-block; background: rgba(110,231,183,0.12); color: #6ee7b7; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 500; margin-bottom: 1rem; }
+    .key-insight strong { color: var(--c-green); }
+    .updated-badge { display: inline-block; background: rgba(110,231,183,0.12); color: var(--c-green); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 500; margin-bottom: 1rem; }
     .amux-cta { display: flex; align-items: flex-start; gap: 1rem; background: linear-gradient(135deg, rgba(110,231,183,0.06), rgba(110,231,183,0.02)); border: 1px solid rgba(110,231,183,0.2); border-radius: 12px; padding: 1.25rem; margin: 2rem 0; }
     .amux-cta .cta-text { flex: 1; }
-    .amux-cta .cta-text h4 { margin: 0 0 0.35rem; font-size: 1rem; color: #6ee7b7; }
+    .amux-cta .cta-text h4 { margin: 0 0 0.35rem; font-size: 1rem; color: var(--c-green); }
     .amux-cta .cta-text p { font-size: 0.88rem; color: var(--dim); margin: 0; }
     .amux-cta .cta-links { display: flex; gap: 0.6rem; margin-top: 0.75rem; }
     .amux-cta .cta-links a { font-size: 0.82rem; padding: 0.35rem 0.8rem; border-radius: 6px; font-weight: 500; text-decoration: none; }
-    .amux-cta .cta-links .cta-primary { background: #6ee7b7; color: #1a1f2e; }
-    .amux-cta .cta-links .cta-secondary { border: 1px solid rgba(110,231,183,0.3); color: #6ee7b7; }
-    .std-card { background: var(--surface, #232838); border-radius: 10px; padding: 1.15rem; margin-bottom: 1rem; border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+    .amux-cta .cta-links .cta-primary { background: var(--c-green); color: var(--panel); }
+    .amux-cta .cta-links .cta-secondary { border: 1px solid rgba(110,231,183,0.3); color: var(--c-green); }
+    .std-card { background: var(--surface, var(--panel-2)); border-radius: 10px; padding: 1.15rem; margin-bottom: 1rem; border: 1px solid var(--border, var(--tint)); }
     .std-card h4 { margin-top: 0; }
     .std-card h4 a { color: var(--text); border-bottom: 1px solid var(--border); text-decoration: none; }
-    .std-card h4 a:hover { color: #6ee7b7; }
+    .std-card h4 a:hover { color: var(--c-green); }
     .std-card .steward { font-size: 0.8rem; color: var(--muted); }
   [data-theme="light"] .landscape-stat { background: oklch(0.36 0.18 145 / .10); border-color: oklch(0.36 0.18 145 / .3); color: var(--ok); }
   [data-theme="light"] .tag-free     { background: oklch(0.36 0.18 145 / .12); color: var(--ok); }
@@ -92,18 +91,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -639,10 +648,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

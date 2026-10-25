@@ -1275,6 +1275,13 @@ struct StartBody {
     /// this flag, a cross-session start refuses and names the owner.
     #[serde(default)]
     takeover: bool,
+    /// When another session already runs this profile, open a tab of the
+    /// caller's own in that browser instead of refusing (or taking over).
+    /// Non-destructive: the owner's tabs and browser are untouched, and a
+    /// joiner's stop closes only its tab. The shared route asks for this so a
+    /// busy profile no longer drops workers onto the stale CDP copy.
+    #[serde(default)]
+    join: bool,
     /// Every unknown field lands here and is echoed back as
     /// `ignored_fields` (the board API's pattern). Silently swallowing a
     /// misspelled or misplaced field manufactured "the feature does not
@@ -1365,6 +1372,45 @@ async fn start(
         let same = attrib
             .as_deref()
             .is_some_and(|a| !r_owner.is_empty() && a == r_owner);
+        if !same && !body.takeover && body.join {
+            if let Some(joiner) = attrib.as_deref() {
+                return match chrome::join_running(joiner, &r_profile, "about:blank").await {
+                    Ok(page) => {
+                    // Navigate through CDP and wait for the page to settle, as
+                    // a normal start does: a URL handed to /json/new left the
+                    // joined tab on about:blank (found by browser-goal-e2e).
+                    let mut url_now = body.url.clone();
+                    if !body.url.is_empty() {
+                        match connect_session(joiner, None).await {
+                            Ok((_, mut cdp)) => {
+                                if let Err(e) = chrome::navigate_and_settle(&mut cdp, &body.url).await {
+                                    tracing::warn!(session = joiner, url = %body.url, error = %e, verdict = "browser_join_navigate_failed",
+                                        measured = true, n_considered = 1, "joined tab opened but its first navigation failed");
+                                    url_now = "about:blank".into();
+                                }
+                            }
+                            Err(_) => url_now = "about:blank".into(),
+                        }
+                    }
+                    Json(json!({
+                        "ok": true, "joined": true, "profile": r_profile, "owner": r_owner,
+                        "cdp_port": page.cdp_port, "target": page.target_id, "url": url_now,
+                        "note": "joined the browser already running this profile, in a tab of your own; stop closes only that tab",
+                    })).into_response()
+                    }
+                    Err(e) => {
+                        let e = match e { chrome::DriverError::NotRunning => "the browser stopped before the join".to_string(), chrome::DriverError::Cdp(c) => c.to_string() };
+                        tracing::warn!(session = joiner, profile = %r_profile, error = %e, measured = true, n_considered = 1,
+                            verdict = "browser_join_failed", "could not join the running browser; falling back to the takeover refusal");
+                        err(StatusCode::CONFLICT, json!({
+                            "error": format!("this profile is running under session {r_owner:?} and joining it failed: {e}"),
+                            "running": {"profile": r_profile, "started_by": r_owner, "pid": r_pid},
+                            "join_failed": true,
+                        }))
+                    }
+                };
+            }
+        }
         if !same && !body.takeover {
             // ASK THE BROWSER WHAT IT IS DOING (AMUX-3610). The refusal used to
             // name an owner and stop, which leaves a caller facing an
@@ -2193,6 +2239,19 @@ async fn stop(
     // stop record as "amux" for an anonymous caller (amux-cloud's catch).
     let attrib = explicit_session(body.get("session").and_then(Value::as_str), &headers);
     let actor = attrib.as_deref().unwrap_or("(unattributed)");
+    // A JOINED session owns a tab, not the browser: close that tab and stop
+    // there. Checked before target resolution so a joiner's stop can never
+    // resolve to (and kill) the owner's browser.
+    if let Some(joiner) = attrib.as_deref() {
+        if chrome::joined_profile(joiner).is_some() {
+            if let Some((profile, tab)) = chrome::leave_joined(joiner).await {
+                return Json(json!({
+                    "ok": true, "stopped": true, "joined": true, "profile": profile, "closed_tab": tab,
+                    "browser_left_running": true,
+                })).into_response();
+            }
+        }
+    }
     let home = chrome::amux_home();
     // RESOLVE THE TARGET FROM THE REQUEST (MHC-816).
     //
@@ -2433,6 +2492,64 @@ struct ProfileForQuery {
 /// whether it is signed in there, and why (2026-10-07). Answers for the
 /// calling worker's scope (X-Amux-Session, or ?worker= for the owner asking
 /// on a worker's behalf).
+/// The profile for `site` as `worker` should use it: the selector behind both
+/// `amux browser for` and a browser route started without a profile, so the
+/// two can never disagree. Blocking (reads every profile's cookie jar).
+/// Returns (choice, candidates considered, selection cards).
+pub(crate) fn site_choice(
+    worker: &str,
+    site: &str,
+    identity: Option<&str>,
+    role: Option<&str>,
+) -> (crate::integrations::browser_logins::Choice, usize, Vec<Value>) {
+    use crate::integrations::browser_logins as bl;
+    let home = chrome::amux_home();
+    let list = chrome::list_profiles(&home, false);
+    let chrome_dir = chrome::chrome_user_data_dir();
+    let cands: Vec<bl::Candidate> = list
+        .iter()
+        .filter(|p| p.on_disk)
+        .filter(|p| identity.is_none_or(|id| p.identity.eq_ignore_ascii_case(id)))
+        .filter(|p| role.map_or(!matches!(p.role.as_str(), "test" | "deprecated"), |r| p.role == r))
+        .map(|p| bl::Candidate {
+            name: p.name.clone(),
+            role: p.role.clone(),
+            domains: p.domains.clone(),
+            allowed: worker.is_empty() || super::browser_scope::profile_allowed(worker, &p.name).is_ok(),
+            jar: profile_jar(&crate::integrations::browser::resolve_profile_dir(&home, &chrome_dir, &p.name)).unwrap_or_default(),
+        })
+        .collect();
+    let (default_profile, _) = default_browser_profile(worker);
+    let allowed: Vec<_> = cands.iter().filter(|c| c.allowed).collect();
+    let default_profile = allowed.iter().find(|c| c.name == default_profile).or_else(|| allowed.first()).map(|c| c.name.as_str()).unwrap_or("");
+    let choice = bl::resolve_for_site(site, &cands, default_profile);
+    let cards: Vec<Value> = list.iter().filter(|p| cands.iter().any(|c| c.name == p.name)).map(profile_selection_card).collect();
+    (choice, cands.len(), cards)
+}
+
+/// Registered profiles that match an explicit identity or role but hold no
+/// browser data on this machine, so `site_choice` cannot offer them. Without
+/// this the refusal said nothing matched while the registry named the exact
+/// identity (esteininger21@gmail.com -> ethan-personal, 2026-10-18).
+fn unsynced_matches(list: &[chrome::BrowserProfile], identity: Option<&str>, role: Option<&str>) -> Vec<String> {
+    if identity.is_none() && role.is_none() {
+        return Vec::new();
+    }
+    list.iter()
+        .filter(|p| !p.on_disk)
+        .filter(|p| identity.is_none_or(|id| p.identity.eq_ignore_ascii_case(id)))
+        .filter(|p| role.is_none_or(|r| p.role == r))
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+/// `site_choice` for a URL, or None when the URL names no public site.
+pub(crate) fn profile_for_url(worker: &str, url: &str) -> Option<crate::integrations::browser_logins::Choice> {
+    let host = reqwest::Url::parse(url).ok()?.host_str()?.to_string();
+    let site = crate::integrations::browser_logins::site_of(&host)?;
+    Some(site_choice(worker, &site, None, None).0)
+}
+
 async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Response {
     use crate::integrations::browser_logins as bl;
     let raw = if q.site.trim().is_empty() { q.url.trim().to_string() } else { q.site.trim().to_string() };
@@ -2452,34 +2569,31 @@ async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Re
     let identity=q.identity.clone();
     let role=q.role.clone();
     if role.as_ref().is_some_and(|r|!bl::ROLES.contains(&r.as_str())) {return err(StatusCode::BAD_REQUEST,json!({"error":"unknown profile role"}));}
+    let _ = home;
     let out = tokio::task::spawn_blocking(move || {
-        let list = chrome::list_profiles(&home, false);
-        let chrome_dir = chrome::chrome_user_data_dir();
-        let cands: Vec<bl::Candidate> = list
-            .iter()
-            .filter(|p| p.on_disk)
-            .filter(|p| identity.as_ref().is_none_or(|id|p.identity.eq_ignore_ascii_case(id)))
-            .filter(|p| role.as_ref().map_or(!matches!(p.role.as_str(),"test"|"deprecated"),|r|&p.role==r))
-            .map(|p| bl::Candidate {
-                name: p.name.clone(),
-                role: p.role.clone(),
-                domains: p.domains.clone(),
-                allowed: w2.is_empty() || super::browser_scope::profile_allowed(&w2, &p.name).is_ok(),
-                jar: profile_jar(&crate::integrations::browser::resolve_profile_dir(&home, &chrome_dir, &p.name))
-                    .unwrap_or_default(),
-            })
-            .collect();
-        let (default_profile, _) = default_browser_profile(&w2);
-        let allowed:Vec<_>=cands.iter().filter(|c|c.allowed).collect();
-        let default_profile=allowed.iter().find(|c|c.name==default_profile).or_else(||allowed.first()).map(|c|c.name.as_str()).unwrap_or("");
-        let choice=bl::resolve_for_site(&site, &cands, default_profile);
-        let cards:Vec<Value>=list.iter().filter(|p|cands.iter().any(|c|c.name==p.name)).map(profile_selection_card).collect();
-        (choice, site, cands.len(), cards)
+        let (choice, n, cards) = site_choice(&w2, &site, identity.as_deref(), role.as_deref());
+        let unsynced = if choice.profile.is_empty() {
+            unsynced_matches(&chrome::list_profiles(&chrome::amux_home(), false), identity.as_deref(), role.as_deref())
+        } else {
+            Vec::new()
+        };
+        (choice, site, n, cards, unsynced)
     })
     .await;
     match out {
-        Ok((choice, site, n, cards)) => {
-            if choice.profile.is_empty(){return err(StatusCode::NOT_FOUND,json!({"error":"no allowed profile matches the requested identity and role","measured":true,"n_considered":n,"choices":cards}));}
+        Ok((choice, site, n, cards, unsynced)) => {
+            if choice.profile.is_empty() {
+                if unsynced.is_empty() {
+                    return err(StatusCode::NOT_FOUND, json!({"error":"no allowed profile matches the requested identity and role","measured":true,"n_considered":n,"choices":cards,"unsynced":unsynced}));
+                }
+                tracing::warn!(target: "amux::browser", site = %site, worker = %worker, unsynced = ?unsynced,
+                    verdict = "browser_profile_unsynced", "the profile for this identity has no browser data on this machine");
+                let names = unsynced.join(", ");
+                return err(StatusCode::NOT_FOUND, json!({
+                    "error": format!("{names} matches the requested identity and role but has no saved browser data on this machine, so it cannot be opened"),
+                    "hint": format!("Do not substitute another identity. Ask the owner to sync or sign in {names} (amux browser create {} <url>), then retry.", unsynced[0]),
+                    "measured": true, "n_considered": n, "choices": cards, "unsynced": unsynced}));
+            }
             tracing::info!(target: "amux::browser", site = %site, worker = %worker, profile = %choice.profile,
                 signed_in = choice.signed_in, measured = true, n_considered = n,
                 verdict = "browser_profile_resolved", "browser profile chosen for a site");
@@ -4579,6 +4693,32 @@ sends a real pointer click, and reports dispatched separately from observed_effe
 // gated e2e lives in integrations::browser's #[ignore]d test + AMUX-2598's
 // scripted run).
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod unsynced_tests {
+    use super::*;
+
+    fn profile(name: &str, identity: &str, role: &str, on_disk: bool) -> chrome::BrowserProfile {
+        chrome::BrowserProfile {
+            name: name.into(), path: String::new(), last_used: None, size_mb: None, domains: Vec::new(),
+            label: String::new(), role: role.into(), identity: identity.into(), registered: true, on_disk, owner: None,
+        }
+    }
+
+    #[test]
+    fn a_registered_identity_with_no_data_on_disk_is_named_rather_than_reported_missing() {
+        let list = vec![
+            profile("ethan", "ethan@mixpeek.com", "primary", true),
+            profile("ethan-personal", "esteininger21@gmail.com", "personal", false),
+            profile("ethan-money", "ethan@mixpeek.com", "restricted", false),
+        ];
+        assert_eq!(unsynced_matches(&list, Some("ESTEININGER21@gmail.com"), None), vec!["ethan-personal"]);
+        assert_eq!(unsynced_matches(&list, Some("ethan@mixpeek.com"), Some("restricted")), vec!["ethan-money"]);
+        assert!(unsynced_matches(&list, Some("nobody@example.com"), None).is_empty(), "an unknown identity is still a plain miss");
+        assert!(unsynced_matches(&list, Some("ethan@mixpeek.com"), Some("primary")).is_empty(), "a profile on disk is not unsynced");
+        assert!(unsynced_matches(&list, None, None).is_empty(), "no filter, nothing to explain");
+    }
+}
 
 #[cfg(test)]
 mod tests {

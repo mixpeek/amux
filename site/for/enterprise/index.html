@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,7 +23,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -101,27 +100,33 @@
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Enterprise</span></div>
 
-    <div style="background:#0d7c42;color:#fff;border-radius:8px;padding:1rem 1.4rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
-      <span><strong>amux</strong> &mdash; self-hosted AI agent control plane for enterprise teams. Audit logs, CLAUDE.md enforcement, multi-runtime, zero external deps. 503+ stars.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#fff;color:#0d7c42;font-weight:600;padding:0.45rem 1rem;border-radius:6px;white-space:nowrap;text-decoration:none" onclick="posthog.capture('exp093_enterprise_topofpage_cta_click')">&#11088; Star on GitHub</a>
-    </div>
 
     <h1>amux for Enterprise Engineering Teams</h1>
     <p class="subtitle">Run a parallel AI engineering team on your own infrastructure. Self-hosted, audit-logged, no vendor lock-in — Claude Code, Codex, and Gemini CLI agents working from a shared task board across all your repositories. <em>Updated September 2026.</em></p>
@@ -141,8 +146,7 @@
     <p>amux runs on any server your team controls — an EC2 instance in your VPC, an internal GCP VM, an on-prem box. There are no amux cloud accounts, no data transmitted to amux servers, and no external API dependencies beyond the AI model providers your team already uses (Anthropic, OpenAI, or Google). The server is a single Rust binary. Deploy it in under five minutes:</p>
 
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># On your team's VM or server
-pip install amux   # or: uvx amux serve (zero-install)
-# or: brew install mixpeek/amux/amux (macOS)
+curl -fsSL https://amux.io/install.sh | bash
 
 amux serve --host 0.0.0.0 --port 8824
 # Dashboard accessible at https://your-server:8824 for your whole team</code></pre>
@@ -280,11 +284,8 @@ amux board add "Write integration tests for PaymentProcessor class"
     <ol>
       <li>
         <strong>Install on your team's server.</strong>
-        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;"><code># Recommended: pipx for isolated install
-pipx install amux
-
-# Zero-install alternative (no pip)
-uvx amux serve --host 0.0.0.0 --port 8824</code></pre>
+        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;">curl -fsSL https://amux.io/install.sh | bash
+</pre>
       </li>
       <li>
         <strong>Add org-wide CLAUDE.md to each repository.</strong> Start with your most important repo. The CLAUDE.md should encode standards that currently live only in team memory — things a new engineer would get wrong on their first PR. Commit and have it reviewed like any other change.
@@ -329,7 +330,7 @@ amux register infra-agents --dir /repos/infrastructure --yolo</code></pre>
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
       <p>Self-hosted, single Rust binary, zero external dependencies. Your code stays inside your network. Runs on any Linux server in under five minutes.</p>
-      <pre><code>pip install amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve --host 0.0.0.0 --port 8824
 # Dashboard at https://your-server:8824 for the whole team</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star amux on GitHub</a>

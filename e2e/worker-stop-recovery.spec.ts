@@ -30,8 +30,16 @@ test('Stop persists once during an outage and clears after acknowledgement', asy
   await expect.poll(() => beacons.some(b => b.verdict === 'stop_intent_coalesced')).toBe(true);
   await page.screenshot({path:testInfo.outputPath('stop-pending.png'),fullPage:true});
   allowStop = true;
-  await page.evaluate(() => (window as any).runSyncBanner(true));
-  await expect.poll(async () => (await queue()).length).toBe(0);
+  // runSyncBanner returns the pass already in flight when there is one. On a
+  // slow runner that was the automatic retry still talking to the 503 stub, so
+  // the queue waited on outage backoff past the 5s poll (ios-safari, CI
+  // 6bfd07021 and 3e3a0c3fc: "Expected: 0 Received: 1"). Each poll awaits the
+  // current pass and starts a fresh one, which is the next retry the app would
+  // make anyway, without the backoff wait.
+  await expect.poll(async () => {
+    await page.evaluate(() => (window as any).runSyncBanner(true));
+    return (await queue()).length;
+  }, {timeout: 15_000}).toBe(0);
   await expect(page.locator('.card').filter({hasText:'stop-fixture'})).toContainText('stopped');
   await page.screenshot({path:testInfo.outputPath('stop-confirmed.png'),fullPage:true});
 });

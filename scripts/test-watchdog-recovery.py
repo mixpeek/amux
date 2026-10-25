@@ -135,6 +135,64 @@ class WatchdogRecoveryTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt): self.w.run()
         restart.assert_called_once()
 
+    # 2026-10-21 06:25-10:31Z: every recovery killed a boot still in progress
+    # (85s to 5+ min before the bind on a loaded host), 95 times in a row.
+    def test_a_server_still_booting_is_not_restarted(self):
+        down = ("down", "no listener on localhost:8824")
+        logs = []
+        with mock.patch.object(self.w, "probe", side_effect=[down] * 6 + [KeyboardInterrupt]), \
+             mock.patch.object(self.w, "booting_server", return_value=(4242, 85)), \
+             mock.patch.object(self.w, "restart_server") as restart, \
+             mock.patch.object(self.w, "log", side_effect=logs.append), \
+             mock.patch.object(self.w.time, "sleep"):
+            with self.assertRaises(KeyboardInterrupt): self.w.run()
+        restart.assert_not_called()
+        self.assertTrue(any("verdict=booting" in l and "pid 4242" in l for l in logs), logs)
+
+    def test_down_with_no_server_process_still_recovers(self):
+        down = ("down", "no listener on localhost:8824")
+        with mock.patch.object(self.w, "probe", side_effect=[down] * self.w.DOWN_ESCALATE + [KeyboardInterrupt]), \
+             mock.patch.object(self.w, "booting_server", return_value=None), \
+             mock.patch.object(self.w, "restart_server", return_value=True) as restart, \
+             mock.patch.object(self.w.time, "sleep"):
+            with self.assertRaises(KeyboardInterrupt): self.w.run()
+        restart.assert_called_once()
+
+    def test_boot_grace_is_judged_by_process_age(self):
+        self.w.BOOT_GRACE = 900
+        with mock.patch.object(self.w, "_find_server_pid", return_value=4242), \
+             mock.patch.object(self.w.subprocess, "check_output", return_value=b"   01:25\n"):
+            self.assertEqual(self.w.booting_server(), (4242, 85))
+        with mock.patch.object(self.w, "_find_server_pid", return_value=4242), \
+             mock.patch.object(self.w.subprocess, "check_output", return_value=b"1-02:00:00\n"):
+            self.assertIsNone(self.w.booting_server(), "a day-old process is hung, not booting")
+        with mock.patch.object(self.w, "_find_server_pid", return_value=None):
+            self.assertIsNone(self.w.booting_server())
+
+    def test_kickstarted_server_still_booting_is_not_booted_out(self):
+        calls = []
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(self.w.subprocess, "run", side_effect=run), \
+             mock.patch.object(self.w.time, "sleep", return_value=None), \
+             mock.patch.object(self.w, "probe", return_value=("down", "refused")), \
+             mock.patch.object(self.w, "booting_server", return_value=(4242, 31)):
+            self.assertTrue(self.w.restart_server(reload_if_needed=True))
+        self.assertFalse([c for c in calls if "bootout" in c], calls)
+
+    def test_a_hung_server_is_sampled_before_the_restart(self):
+        verdict = ("hung", "port open, /health did not answer")
+        with mock.patch.object(self.w, "probe", side_effect=[verdict] * self.w.HUNG_THRESHOLD + [KeyboardInterrupt]), \
+             mock.patch.object(self.w, "_find_server_pid", return_value=4242), \
+             mock.patch.object(self.w, "capture_stack") as stack, \
+             mock.patch.object(self.w, "restart_server", return_value=True), \
+             mock.patch.object(self.w.time, "sleep"):
+            with self.assertRaises(KeyboardInterrupt): self.w.run()
+        stack.assert_called_once_with(4242, "hung")
+
     def test_default_down_budget_is_one_minute(self):
         self.assertEqual(self.w.DOWN_ESCALATE * self.w.CHECK_INTERVAL, 60)
 

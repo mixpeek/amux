@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -122,18 +121,28 @@
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -338,64 +347,64 @@
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
       <thead>
-        <tr style="border-bottom:2px solid var(--border,#333)">
+        <tr style="border-bottom:2px solid var(--border,var(--rule))">
           <th style="text-align:left;padding:0.6rem 0.75rem">Monitoring need</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Without amux</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">With amux</th>
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">See what agent is doing now</td>
           <td style="padding:0.6rem 0.75rem">Attach tmux, read scrolling output</td>
           <td style="padding:0.6rem 0.75rem">Click session card → peek panel, live stream</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">See agent's plan / task list</td>
           <td style="padding:0.6rem 0.75rem">Read initial prompt response, hope it stays current</td>
           <td style="padding:0.6rem 0.75rem">Plan strip — structured, real-time, always current</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Know if the plan is stale</td>
           <td style="padding:0.6rem 0.75rem">No signal — must re-read output to infer</td>
           <td style="padding:0.6rem 0.75rem">Stale plan warning shows "last updated Nh ago" (v0.9.81)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">View individual subagent transcripts</td>
           <td style="padding:0.6rem 0.75rem">Must attach to tmux and navigate manually</td>
           <td style="padding:0.6rem 0.75rem">Subagent switcher: ▲/▼ buttons or tap agent panel rows (v0.9.79/v0.9.83)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Load historical output beyond terminal buffer</td>
           <td style="padding:0.6rem 0.75rem">Attach to terminal, use tmux scroll mode (desktop only)</td>
           <td style="padding:0.6rem 0.75rem">"Load earlier output" bar pages backward through log file (v0.9.82)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Monitor from phone</td>
           <td style="padding:0.6rem 0.75rem">SSH + tmux attach (fragile, double-wrapping on mobile)</td>
           <td style="padding:0.6rem 0.75rem">iOS app or PWA, responsive peek reflows to phone width (v0.9.85)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Monitor 5+ agents simultaneously</td>
           <td style="padding:0.6rem 0.75rem">Multiple terminal windows or tmux splits</td>
           <td style="padding:0.6rem 0.75rem">Single dashboard, all sessions in one view</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Wake up multiple idle agents at once</td>
           <td style="padding:0.6rem 0.75rem">Open each terminal, send "continue" individually</td>
           <td style="padding:0.6rem 0.75rem">Bulk-actions → "Continue all idle sessions" in one tap (v0.9.78)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Send mid-task instructions</td>
           <td style="padding:0.6rem 0.75rem">Attach tmux, type at risk of interrupting agent</td>
           <td style="padding:0.6rem 0.75rem">Send bar or saved message chip, delivered at turn boundary</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Detect stuck or crashed agent</td>
           <td style="padding:0.6rem 0.75rem">Check each terminal manually, easy to miss</td>
           <td style="padding:0.6rem 0.75rem">Status dot goes red/yellow, visible at a glance</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Track task completion across fleet</td>
           <td style="padding:0.6rem 0.75rem">No built-in tracking, check agent output manually</td>
           <td style="padding:0.6rem 0.75rem">Kanban board shows todo/doing/done per session</td>
@@ -498,10 +507,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

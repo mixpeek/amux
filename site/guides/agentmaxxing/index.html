@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,23 +20,32 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agentmaxxing","item":"https://amux.io/guides/agentmaxxing/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Definitive Guide to Agentmaxxing: Running Parallel AI Coding Agents at Scale","description":"The complete guide to agentmaxxing — running 5, 10, or 50+ AI coding agents in parallel with task decomposition, git isolation, fleet monitoring, and cost optimization.","url":"https://amux.io/guides/agentmaxxing/","datePublished":"2026-04-06","dateModified":"2026-04-06","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run Multiple AI Coding Agents in Parallel (Agentmaxxing)","description":"Step-by-step guide to running parallel AI coding agents with proper isolation, monitoring, and task coordination.","step":[{"@type":"HowToStep","name":"Decompose your backlog","text":"Split work into atomic, independent tasks that can run without coordination. Each task should take 10-45 minutes for a single agent."},{"@type":"HowToStep","name":"Set up git isolation","text":"Create a separate git worktree or branch per agent so agents never write to the same files simultaneously."},{"@type":"HowToStep","name":"Register and launch agents","text":"Register each agent as an amux session with its own working directory, model preference, and CLAUDE.md rules."},{"@type":"HowToStep","name":"Monitor the fleet","text":"Use the amux web dashboard or mobile PWA to watch agent status, token spend, and output in real time."},{"@type":"HowToStep","name":"Review and merge","text":"Triage output from each agent — quick-accept clean PRs, flag issues, and merge completed work."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is agentmaxxing?","acceptedAnswer":{"@type":"Answer","text":"Agentmaxxing is the practice of running multiple AI coding agents in parallel to multiply developer throughput. Instead of working with one AI agent sequentially, you launch 5, 10, or 50+ agents simultaneously — each working on a separate task in an isolated git branch. The term emerged in early 2026 as CLI-based AI coding agents (Claude Code, Codex CLI, Gemini CLI) became reliable enough to run unsupervised."}},{"@type":"Question","name":"How many AI coding agents can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"On a laptop (16GB RAM): 5-7 agents comfortably. On a workstation (32GB+ RAM): 10-15 agents. On a cloud VM (4+ cores, 16GB RAM): 20-50+ agents. The bottleneck is usually API rate limits, not local compute — each agent is just a tmux session running a CLI tool. Stagger agent starts by 10-30 seconds to avoid hitting rate limits simultaneously."}},{"@type":"Question","name":"Do I need a special tool to run parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"You can start with bare tmux and git worktrees. But an orchestrator like amux adds self-healing (auto-restart crashed agents), fleet monitoring (web dashboard, mobile PWA), atomic task claiming (no duplicate work), token spend tracking, and agent-to-agent communication. These become essential once you run more than 3-4 agents."}},{"@type":"Question","name":"What tasks work best for agentmaxxing?","acceptedAnswer":{"@type":"Answer","text":"Tasks that are atomic, independently verifiable, and don't require cross-file coordination: unit tests for specific modules, single-file migrations, bug fixes with clear reproduction steps, API endpoint implementations, documentation for specific components, dependency upgrades for individual packages. Avoid tasks that touch shared state, require subjective judgment, or have unbounded scope."}},{"@type":"Question","name":"How much does agentmaxxing cost?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code Max plan ($200/month): unlimited usage — 10 agents cost the same as 1. On API pricing: $0.50-2/agent-hour for Sonnet, $5-15/agent-hour for Opus. A typical 2-hour sprint with 10 agents on mixed models costs $20-50 on API pricing, or $0 marginal on Max plan. The Max plan is overwhelmingly the best value for agentmaxxing."}},{"@type":"Question","name":"Is agentmaxxing just vibe coding with more agents?","acceptedAnswer":{"@type":"Answer","text":"Vibe coding is a mindset — describing what you want in natural language and letting AI write it. Agentmaxxing is a workflow — running multiple agents in parallel with proper isolation, task decomposition, and monitoring. You can agentmax with vibe coding prompts or with precise engineering specs. The key difference is that agentmaxxing requires upfront planning (task splitting, branch isolation, guardrails) that solo vibe coding does not."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -692,7 +701,7 @@ amux board add "Update documentation references to UserManager"</code></pre>
     <h3>Is agentmaxxing just vibe coding with more agents?</h3>
     <p>No. Vibe coding is a prompting style (natural language, let the AI figure it out). Agentmaxxing is an operational workflow (parallel execution, git isolation, task coordination, fleet monitoring). You can agentmax with vibe-coding-style prompts or with precise engineering specs. The key difference is that agentmaxxing requires upfront planning that solo vibe coding does not.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Start agentmaxxing with amux</h3><p>Run dozens of Claude Code agents in parallel. Self-healing, web dashboard, mobile monitoring, and token tracking. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+    <div class="cta-box" style="margin-top:3rem;"><h3>Start agentmaxxing with amux</h3><p>Run dozens of Claude Code agents in parallel. Self-healing, web dashboard, mobile monitoring, and token tracking. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register worker-1 --dir ~/Dev/myproject --yolo
 amux start worker-1
 amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
@@ -734,10 +743,12 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

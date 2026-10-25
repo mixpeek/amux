@@ -24,9 +24,18 @@ RUN python3.12 -m playwright install --with-deps chromium \
 # Install the existing /cmd protocol at build time with its supported Python.
 # No package download at sandbox boot. Bind inside the container; Docker still
 # publishes this API only on the host's loopback interface.
-RUN python3.12 -m pip install 'cua-computer-server[linux]==0.3.46' \
- && python3.12 -c 'import computer_server' \
- && printf '#!/bin/bash\nexec python3.12 -m computer_server --host 0.0.0.0\n' > /dockerstartup/custom_startup.sh \
+#
+# fastapi<0.145: computer-server 0.3.46 passes websocket_max_size to FastAPI(),
+# which only its catch-all **extra accepted, and 0.145.0 removed that. An image
+# rebuilt on 2026-10-22 resolved 0.161.0, the server died on import, Kasm
+# printed "Unknown Service: custom_startup" forever, and every `amux computer
+# start` timed out at 180s. The build now makes the same FastAPI() call
+# (computer_server.main itself needs a display to import), so a break like
+# that fails the image build. The server's own output goes to
+# /tmp/computer-server.log, which a failed start reports.
+RUN python3.12 -m pip install 'cua-computer-server[linux]==0.3.46' 'fastapi<0.145' \
+ && python3.12 -c 'import computer_server; from fastapi import FastAPI; FastAPI(websocket_max_size=1)' \
+ && printf '#!/bin/bash\nexec python3.12 -m computer_server --host 0.0.0.0 >>/tmp/computer-server.log 2>&1\n' > /dockerstartup/custom_startup.sh \
  && chmod +x /dockerstartup/custom_startup.sh
 
 LABEL amux-computer.image="1"

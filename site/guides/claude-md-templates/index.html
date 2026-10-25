@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -22,7 +22,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"CLAUDE.md Templates: 20+ Ready-to-Use Configs for Every Project Type","description":"Copy-paste CLAUDE.md templates for Python APIs, React apps, monorepos, data pipelines, mobile apps, CLI tools, and more.","datePublished":"2026-04-12","dateModified":"2026-09-06","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/claude-md-templates/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a CLAUDE.md file?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md is a markdown file placed in your project root (or ~/.claude/CLAUDE.md for global settings) that gives Claude Code persistent instructions about your project. It defines coding conventions, test commands, deployment workflows, forbidden patterns, and architectural context. Claude reads it at the start of every conversation, so you don't have to repeat yourself."}},{"@type":"Question","name":"Where should I put CLAUDE.md?","acceptedAnswer":{"@type":"Answer","text":"There are three levels: (1) ~/.claude/CLAUDE.md for global personal preferences that apply to all projects, (2) PROJECT_ROOT/CLAUDE.md for project-wide instructions checked into git, and (3) PROJECT_ROOT/subdir/CLAUDE.md for directory-scoped overrides. Claude loads all three, with more specific files taking precedence."}},{"@type":"Question","name":"How long should CLAUDE.md be?","acceptedAnswer":{"@type":"Answer","text":"Keep it under 500 lines. Every line in CLAUDE.md consumes context tokens on every conversation, so conciseness matters. Focus on things Claude gets wrong without the instruction — don't document what it already does correctly. A good CLAUDE.md is 50-200 lines of high-signal rules, not a comprehensive wiki."}},{"@type":"Question","name":"What's the difference between CLAUDE.md and a system prompt?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md is file-based and version-controlled. It lives in your repo, gets reviewed in PRs, and evolves with your codebase. A system prompt is set at the API level and can't be inspected by teammates. CLAUDE.md is the standard way to configure Claude Code project behavior — it's loaded automatically without any API configuration."}},{"@type":"Question","name":"Can I use CLAUDE.md with amux multi-agent sessions?","acceptedAnswer":{"@type":"Answer","text":"Yes. Every amux session runs Claude Code in your project directory, so all sessions automatically inherit the same CLAUDE.md. This is one of the key benefits of CLAUDE.md for multi-agent workflows: you define conventions once and every parallel agent follows them. For agent-specific overrides, use subdirectory CLAUDE.md files or per-session hooks."}},{"@type":"Question","name":"Should I commit CLAUDE.md to version control?","acceptedAnswer":{"@type":"Answer","text":"Yes, always commit project-level CLAUDE.md files. They're part of your project's development infrastructure, just like .eslintrc or pyproject.toml. Teammates benefit from the same instructions, and changes are tracked in git history. Only ~/.claude/CLAUDE.md (personal global preferences) stays uncommitted."}}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"CLAUDE.md Templates","item":"https://amux.io/guides/claude-md-templates/"}]}</script>
@@ -34,28 +33,38 @@
     .tmpl-card-head{padding:0.75rem 1rem;background:var(--bg-alt,#f9f9f9);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
     [data-theme=dark] .tmpl-card-head{background:var(--bg-alt,#1a1a1a)}
     .tmpl-card-head h3{margin:0;font-size:0.95rem;font-weight:600}
-    .tmpl-tag{font-size:0.7rem;padding:2px 8px;border-radius:12px;background:var(--green);color:#000;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    .tmpl-tag{font-size:0.7rem;padding:2px 8px;border-radius:12px;background:var(--green);color:var(--bg);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
     .tmpl-card pre{margin:0;padding:1rem;font-size:0.78rem;line-height:1.5;overflow-x:auto;max-height:400px;background:var(--bg)}
     .tmpl-copy{font-size:0.75rem;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;font-family:'JetBrains Mono',monospace;transition:background .15s}
-    .tmpl-copy:hover{background:var(--green);color:#000;border-color:var(--green)}
-    .tmpl-copy.copied{background:var(--green);color:#000;border-color:var(--green)}
+    .tmpl-copy:hover{background:var(--green);color:var(--bg);border-color:var(--green)}
+    .tmpl-copy.copied{background:var(--green);color:var(--bg);border-color:var(--green)}
     .filter-bar{display:flex;flex-wrap:wrap;gap:0.5rem;margin:1.5rem 0}
     .filter-btn{font-size:0.8rem;padding:5px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg);color:var(--muted);cursor:pointer;font-family:'Geist',sans-serif;transition:all .15s}
-    .filter-btn:hover,.filter-btn.active{background:var(--green);color:#000;border-color:var(--green)}
+    .filter-btn:hover,.filter-btn.active{background:var(--green);color:var(--bg);border-color:var(--green)}
     .tmpl-note{font-size:0.82rem;color:var(--muted);padding:0.5rem 1rem;border-top:1px solid var(--border);line-height:1.4}
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -63,10 +72,6 @@
     <h1>CLAUDE.md Templates</h1>
     <p class="subtitle">Copy-paste configs for every project type. Each template is battle-tested across thousands of amux agent sessions and explained line by line. <span class="updated-badge">Updated September 2026</span></p>
 
-    <div style="background:var(--green,#2e7d32);color:#000;border-radius:8px;padding:0.85rem 1.25rem;margin:1.25rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
-      <span style="font-weight:600">Run an AI engineering team from one dashboard — open source, single binary, 387+ stars.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#000;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;font-size:0.9rem" onclick="posthog&&posthog.capture('exp079_claude_md_templates_topofpage_cta_click')">View amux on GitHub ★</a>
-    </div>
 
     <p>A good <code>CLAUDE.md</code> is the single highest-leverage thing you can do for AI coding agent quality. It's loaded at the start of every Claude Code conversation, persists across sessions, and gets version-controlled alongside your code. The difference between a project with a well-tuned <code>CLAUDE.md</code> and one without is the difference between an agent that understands your codebase and one that guesses.</p>
     <p>These templates are starting points. Copy the one closest to your stack, delete lines Claude already gets right, and add rules for things it gets wrong. A good <code>CLAUDE.md</code> is 50&ndash;200 lines of high-signal corrections, not a comprehensive wiki.</p>
@@ -840,10 +845,12 @@ amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primar
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
           <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

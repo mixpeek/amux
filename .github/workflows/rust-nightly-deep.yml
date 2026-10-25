@@ -49,6 +49,13 @@ jobs:
     name: full suite + extended property testing
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # The runner ran out of disk linking amux-server's test binary with full
+      # debuginfo ("rustc-LLVM ERROR: IO failure on output stream: No space
+      # left on device", run 39560941125). rust.yml's test build drops it for
+      # the same reason; panics keep file:line without it.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

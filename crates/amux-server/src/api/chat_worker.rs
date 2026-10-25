@@ -828,7 +828,9 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
             // Who started this turn, and with what words: a companion's send
             // during an owner turn is delivered as the owner's (owner_relay_quote).
             ("chat_inflight_origin", json!(q.origin)),
-            ("chat_inflight_text", json!(q.text.chars().take(300).collect::<String>())),
+            // Stored masked: this meta file sits in ~/.amux (and its backups)
+            // and is the source of the owner-relay origin stamp.
+            ("chat_inflight_text", json!(super::session_verbs::redact_secrets(&q.text.chars().take(300).collect::<String>()))),
             ("chat_inflight_started", json!(crate::config::now_f64())),
         ],
     );
@@ -999,6 +1001,89 @@ async fn finish_turn(
 /// not summarised by a model: status, the card it is on, what waits on the
 /// owner, board counts and trend, git state and its last reply. The companion
 /// reaches deeper with the amux CLI and directs the worker with `amux send`.
+/// The shell prelude of a Chat tab turn: its worker's prelude (scope settings,
+/// credentials, env), then its own identity, so an `amux send` it makes is
+/// stamped as the worker's Chat tab (see owner_relay_quote).
+///
+/// Auto-memory is OFF for a Chat tab (mxp-gs12@chat, 2026-10-19). A turn runs
+/// in its worker's directory, and Claude Code keys auto-memory by directory,
+/// so the companion loaded and edited the same memory folder as its worker
+/// and every other lane in that checkout (1,964 files under ~/Dev/mixpeek).
+/// It wrote its own paraphrase of an owner ruling there ("HA set kept up:
+/// ... shared MVS writer"), wider than the ruling and the spec, then answered
+/// from it six hours later, and the worker loaded the same note. The owner's
+/// words now reach the companion verbatim in its context block instead.
+fn companion_prelude(worker_prelude: &str, key: &str) -> String {
+    format!(
+        "{worker_prelude}export AMUX_SESSION={k}; export AMUX_WORKER={k}; export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1; ",
+        k = sh_quote(key)
+    )
+}
+
+/// Compactions a Chat tab conversation may reach before the next turn starts
+/// a fresh one (`AMUX_CHAT_COMPANION_MAX_COMPACTIONS`, default 2; 0 disables).
+fn companion_max_compactions() -> u32 {
+    std::env::var("AMUX_CHAT_COMPANION_MAX_COMPACTIONS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(2)
+}
+
+/// Transcript size past which a Chat tab conversation is rotated
+/// (`AMUX_CHAT_COMPANION_MAX_MB`, default 24; 0 disables).
+fn companion_max_bytes() -> u64 {
+    std::env::var("AMUX_CHAT_COMPANION_MAX_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(24) * 1024 * 1024
+}
+
+/// Why a Chat tab conversation should be rotated, or None. A transcript that
+/// cannot be read is not rotated: the resume path handles a missing one.
+fn companion_rotation_reason(path: &std::path::Path, max_compactions: u32, max_bytes: u64) -> Option<String> {
+    let bytes = std::fs::metadata(path).ok()?.len();
+    if max_bytes > 0 && bytes >= max_bytes {
+        return Some(format!("transcript {} MB >= {} MB", bytes / (1024 * 1024), max_bytes / (1024 * 1024)));
+    }
+    let compactions = super::session_verbs::count_compact_boundaries(path)?;
+    (max_compactions > 0 && compactions >= max_compactions)
+        .then(|| format!("{compactions} compactions >= {max_compactions}"))
+}
+
+/// The owner's own messages to a worker, verbatim, newest first: what the
+/// owner typed in the Chat tab (`chat` / `chat-companion`) and in the terminal
+/// (`user` with no origin). Masked again on the way out.
+fn owner_words(c: &rusqlite::Connection, worker: &str, limit: i64) -> rusqlite::Result<Vec<(i64, &'static str, String)>> {
+    let mut st = c.prepare(
+        "SELECT ts, type, COALESCE(text,'') FROM cmd_history WHERE session=?1 \
+         AND ((type='chat' AND origin='chat-companion') OR (type='user' AND COALESCE(origin,'')='')) \
+         ORDER BY ts DESC LIMIT ?2",
+    )?;
+    let rows = st
+        .query_map(rusqlite::params![worker, limit], |r| {
+            let kind: String = r.get(1)?;
+            Ok((r.get::<_, i64>(0)?, if kind == "chat" { "Chat tab" } else { "terminal" }, r.get::<_, String>(2)?))
+        })?
+        .flatten()
+        .map(|(ts, k, t)| (ts, k, super::session_verbs::redact_secrets(&t)))
+        .collect();
+    Ok(rows)
+}
+
+/// A `cmd_history.ts` as local time. Rows are written in milliseconds; a
+/// seconds value (older rows, fixtures) is accepted too. The recent log used
+/// to read milliseconds as seconds, which is out of range, so every line had
+/// an empty time.
+fn local_time(ts: i64, fmt: &str) -> String {
+    let secs = if ts > 100_000_000_000 { ts / 1000 } else { ts };
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|d| d.with_timezone(&chrono::Local).format(fmt).to_string())
+        .unwrap_or_default()
+}
+
+/// What every Chat tab turn is told about where facts come from. Sent every
+/// turn, so a long conversation cannot drift away from it.
+const COMPANION_ACCURACY: &str = "- accuracy: state a fact only from something you read this turn (this block, a command you ran, \
+a file at origin/main) and name the source beside it. The worker's ledger, progress notes, memory and replies are \
+its own claims: say \"the worker reports\" unless you checked the artifact itself. For what the owner decided, quote \
+the owner's words listed above with their time; do not restate a ruling from your memory or an earlier answer. For a \
+scope or goal question, read the governing spec section itself, not a list derived from it. When you have not \
+checked something, say so and name the check. Do not save notes to any memory folder.\n";
+
 pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool, text: &str) -> String {
     let wenv = parse_env(worker);
     let dir = wenv.get_or("CC_DIR", "").to_string();
@@ -1081,15 +1166,21 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let (branch, dirty, last_commit) = if dir.is_empty() {
-        (None, None, None)
+    let (branch, dirty, last_commit, behind) = if dir.is_empty() {
+        (None, None, None, None)
     } else {
         (
             run(git(&["rev-parse", "--abbrev-ref", "HEAD"])).await,
             run(git(&["status", "--porcelain", "--untracked-files=no"])).await.map(|s| s.lines().count()),
             run(git(&["log", "-1", "--format=%h %s (%cr)"])).await,
+            run(git(&["rev-list", "--count", "HEAD..origin/main"])).await.and_then(|s| s.parse::<u64>().ok()),
         )
     };
+    let w3 = worker.to_string();
+    let owner_said = state.store.read_async(move |c| Ok(owner_words(c, &w3, 12)?)).await.unwrap_or_default();
+    // A fresh conversation (first turn, rotation, reset) carries the last
+    // exchanges of this Chat tab over verbatim.
+    let carried: Vec<Value> = if fresh { read_messages(state, &companion_key(worker), 8, None) } else { Vec::new() };
     let last = super::session_verbs::last_assistant_message(worker, 1500);
     let (prompt_state, background) = background_context(state, worker, running, &last).await;
     let touched = touched_cards(state, worker, &last, &activity_log).await;
@@ -1098,10 +1189,21 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     let isolated = super::session_verbs::env_flag_on(wenv.get("CC_ISOLATED"));
     tracing::info!(worker, isolated, fresh, measured = true, n_considered = 1,
         verdict = "chat_companion_context", "Chat context includes the worker directory and isolation state");
-    out.push_str(if isolated {
-        "- isolated terminal: yes; direct owner-to-CLI transport. Chat is a separate conversation; do not inject harness instructions or automate the terminal.\n"
+    // Ethan, 2026-10-19: "even if a worker is isolated, its chat should be able
+    // to interact/access it". The old line ("do not ... automate the terminal")
+    // read as "do not send", and a Chat tab sat 45 minutes on an approved owner
+    // decision. Isolation keeps amux automation out of the terminal; the chat
+    // speaks for the owner, and the server accepts its send as owner input
+    // (`chat_speaks_for_owner`, verdict `isolated_send_from_own_chat_tab`).
+    out.push_str(&if isolated {
+        format!(
+            "- isolated terminal: yes; direct owner-to-CLI transport, so amux adds no automation of its own. \
+             You speak for the owner: read it and send it the owner's instructions with `amux send {worker} --stdin` \
+             as usual (amux accepts your send as owner input). Relay an owner decision right away; do not hold it \
+             or ask the owner to paste it.\n"
+        )
     } else {
-        "- isolated terminal: no\n"
+        "- isolated terminal: no\n".to_string()
     });
     out.push_str(&format!(
         "- process: {}\n",
@@ -1150,15 +1252,47 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
         if let Some(l) = last_commit {
             out.push_str(&format!(", last commit {l}"));
         }
+        if let Some(n) = behind {
+            out.push_str(&format!(", {n} commit(s) behind origin/main"));
+        }
         out.push('\n');
+        // mxp-gs12@chat, 2026-10-19: the directory was 756 commits behind with
+        // 121 files of other lanes' uncommitted edits.
+        if behind.unwrap_or(0) > 0 || dirty.unwrap_or(0) > 0 {
+            out.push_str(&format!(
+                "- that directory is a working copy, not main: a file opened there can be stale or another lane's \
+                 draft. Read committed bytes with `git -C {dir} show origin/main:<path>` (`git -C {dir} fetch -q origin` \
+                 first for the latest).\n"
+            ));
+        }
+    }
+    if !owner_said.is_empty() {
+        out.push_str("- the owner's own words to this worker, newest first (quote these for what the owner decided):\n");
+        for (ts, via, text) in &owner_said {
+            let when = local_time(*ts, "%m-%d %H:%M");
+            out.push_str(&format!("  {when} [{via}] {}\n", clip(text.trim(), 700)));
+        }
+    }
+    if !carried.is_empty() {
+        out.push_str("- this is a new conversation; the Chat tab's last exchanges, oldest first:\n");
+        for m in &carried {
+            let who = if m.get("role").and_then(Value::as_str) == Some("assistant") { "you" } else { "owner" };
+            let t = m.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            out.push_str(&format!("  {who}: {}\n", clip(t, 1200)));
+        }
     }
     if !activity_log.is_empty() {
         out.push_str("- recent log (newest first):\n");
         for (ts, typ, origin, text) in &activity_log {
-            let when = chrono::DateTime::from_timestamp(*ts as i64, 0)
-                .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
-                .unwrap_or_default();
-            let who = if origin.is_empty() { typ.as_str() } else { origin.as_str() };
+            let when = local_time(*ts as i64, "%H:%M");
+            // `chat-companion` is the OWNER typing in the Chat tab; shown raw it
+            // read as the companion's own send.
+            let who = match (typ.as_str(), origin.as_str()) {
+                ("chat", "chat-companion") => "owner, Chat tab",
+                ("user", "") => "owner, terminal",
+                (t, "") => t,
+                (_, o) => o,
+            };
             out.push_str(&format!("  {when} [{who}] {}\n", clip(text, 200)));
         }
     }
@@ -1174,6 +1308,10 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
          name the background work, the wait and the card it is for (the recently touched line), not \"no active \
          task\". Agents the status bar merely lists may be finished; call them live only when the line says so.\n",
     );
+    out.push_str(COMPANION_ACCURACY);
+    tracing::info!(worker, fresh, owner_words = owner_said.len(), carried = carried.len(),
+        behind = behind.map(|n| n as i64).unwrap_or(-1), measured = true, n_considered = 1,
+        verdict = "chat_companion_grounding", "Chat context carries the owner's words and the accuracy rule");
     // THE ESCALATION LADDER (AMUX-5432, Ethan 2026-10-01). Sent every turn,
     // not only on a fresh conversation, so existing Chats learn it too.
     out.push_str(&format!(
@@ -1452,6 +1590,28 @@ async fn execute(
             (c, false)
         }
     };
+    // A Chat tab's conversation is bounded (mxp-gs12@chat, 2026-10-19: one
+    // conversation ran 304 turns and 8 compactions since 10-08, and an answer
+    // Ethan corrected at 18:54 came back at 00:26 from the compacted summary).
+    // Past the bound the next turn starts fresh; the context block carries the
+    // owner's words and the last exchanges over.
+    let (conv, fresh) = if provider != "codex" && !fresh && companion_parent(name).is_some() {
+        let path = super::session_verbs::claude_home()
+            .join("projects")
+            .join(super::session_verbs::project_name(&work_dir))
+            .join(format!("{conv}.jsonl"));
+        match companion_rotation_reason(&path, companion_max_compactions(), companion_max_bytes()) {
+            Some(reason) => {
+                tracing::warn!(session = %name, old = %conv, %reason, measured = true, n_considered = 1,
+                    verdict = "chat_companion_conversation_rotated",
+                    "a Chat tab's conversation passed its bound; starting a fresh one");
+                (new_conversation_id(), true)
+            }
+            None => (conv, fresh),
+        }
+    } else {
+        (conv, fresh)
+    };
     if provider != "codex" && fresh {
         // Recorded BEFORE the turn: the transcript readers resolve the
         // conversation file from this id while the turn is still running.
@@ -1481,13 +1641,9 @@ async fn execute(
         }
     }
     let prelude = match companion_parent(name) {
-        // The Chat tab runs with its worker's scope settings (credentials,
-        // env) but under its own identity, so an `amux send` it makes is
-        // stamped as the worker's Chat tab (see owner_relay_quote).
-        Some(worker) => format!(
-            "{}export AMUX_SESSION={key}; export AMUX_WORKER={key}; ",
-            super::session_verbs::headless_turn_prelude(worker, provider, &work_dir),
-            key = sh_quote(name)
+        Some(worker) => companion_prelude(
+            &super::session_verbs::headless_turn_prelude(worker, provider, &work_dir),
+            name,
         ),
         None => super::session_verbs::headless_turn_prelude(name, provider, &work_dir),
     };
@@ -2413,7 +2569,10 @@ mod tests {
         let first = companion_prompt(&state, "companion-context-probe", fresh, "owner question").await;
         assert!(first.starts_with("You are the chat companion for the amux worker `companion-context-probe`"));
         assert!(first.contains(&format!("- worker directory: {}", dir.display())));
-        assert!(first.contains("- isolated terminal: yes; direct owner-to-CLI transport."));
+        assert!(first.contains("- isolated terminal: yes; direct owner-to-CLI transport"));
+        // The chat must read the line as permission to send, never as a ban.
+        assert!(first.contains("amux send companion-context-probe --stdin"), "{first}");
+        assert!(!first.contains("do not inject harness instructions or automate the terminal"));
         assert!(first.ends_with("[owner]\nowner question"));
         let (_, fresh) = codex_conversation("thread-existing".into(), false);
         let resumed = companion_prompt(&state, "companion-context-probe", fresh, "follow-up").await;
@@ -2623,5 +2782,82 @@ mod companion_tests {
         assert!(p.contains("- background: not measured"), "{p}");
         assert!(p.contains("- an idle prompt is not an idle worker"), "{p}");
         assert!(!p.contains('\u{2014}'), "no em dashes");
+    }
+
+    /// mxp-gs12@chat, 2026-10-19: the companion shared its worker's memory
+    /// folder (one directory, one auto-memory) and answered from its own
+    /// paraphrase saved there. A Chat tab turn now runs with auto-memory off.
+    #[test]
+    fn a_chat_tab_turn_runs_with_auto_memory_off_under_its_own_identity() {
+        let p = companion_prelude("export FOO=1; ", "gs-probe@chat");
+        assert!(p.starts_with("export FOO=1; "), "the worker's prelude still runs first: {p}");
+        assert!(p.contains("export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1;"), "{p}");
+        assert!(p.contains("export AMUX_SESSION='gs-probe@chat';") || p.contains("export AMUX_SESSION=gs-probe@chat;"), "{p}");
+    }
+
+    #[test]
+    fn a_long_chat_tab_conversation_is_rotated_by_compactions_or_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conv.jsonl");
+        let line = "{\"type\":\"system\",\"subtype\":\"compact_boundary\"}\n";
+        std::fs::write(&path, format!("{{}}\n{line}")).unwrap();
+        assert_eq!(companion_rotation_reason(&path, 2, 0), None, "one compaction is under the bound");
+        std::fs::write(&path, format!("{line}{{}}\n{line}")).unwrap();
+        assert_eq!(companion_rotation_reason(&path, 2, 0).as_deref(), Some("2 compactions >= 2"));
+        assert_eq!(companion_rotation_reason(&path, 0, 0), None, "0 disables the compaction bound");
+        let big = companion_rotation_reason(&path, 0, 10);
+        assert!(big.as_deref().is_some_and(|r| r.starts_with("transcript ")), "{big:?}");
+        assert_eq!(companion_rotation_reason(&dir.path().join("missing.jsonl"), 2, 10), None,
+            "an unreadable transcript is left to the resume path");
+    }
+
+    /// The owner's words reach the companion verbatim and labelled by where
+    /// they were typed; a peer's send is not presented as the owner's; a
+    /// fresh conversation carries the last exchanges; and every turn carries
+    /// the accuracy rule.
+    #[tokio::test]
+    async fn a_companion_gets_the_owners_words_verbatim_and_the_accuracy_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("companion.db")).unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "t".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let w = "companion-grounding-probe";
+        let key = companion_key(w);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        state.store.write(move |c| {
+            c.execute("INSERT INTO cmd_history (text,type,session,ts,origin) VALUES ('everything without HA scales to zero across Ray and MVS','chat',?1,?2,'chat-companion')", rusqlite::params![w, now_ms - 60_000])?;
+            c.execute("INSERT INTO cmd_history (text,type,session,ts,origin) VALUES ('no processing, use what you have','user',?1,?2,'')", rusqlite::params![w, now_ms - 30_000])?;
+            c.execute("INSERT INTO cmd_history (text,type,session,ts,origin) VALUES ('peer says the writer stays up','direct',?1,?2,'some-peer')", rusqlite::params![w, now_ms])?;
+            c.execute("INSERT INTO session_events (ts,session,type,data,source) VALUES (1.0,?1,?2,'{\"role\":\"user\",\"text\":\"is scale to zero core?\"}','t')", rusqlite::params![key, CHAT_EVENT])?;
+            c.execute("INSERT INTO session_events (ts,session,type,data,source) VALUES (2.0,?1,?2,'{\"role\":\"assistant\",\"text\":\"Yes, per spec line 65.\"}','t')", rusqlite::params![key, CHAT_EVENT])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fresh = companion_prompt(&state, w, true, "is it core?").await;
+        assert!(fresh.contains("- the owner's own words to this worker, newest first"), "{fresh}");
+        assert!(fresh.contains("[terminal] no processing, use what you have"), "{fresh}");
+        assert!(fresh.contains("[Chat tab] everything without HA scales to zero across Ray and MVS"), "{fresh}");
+        let words = fresh.split("- the owner's own words").nth(1).unwrap().split("\n- ").next().unwrap();
+        assert!(!words.contains("peer says the writer stays up"), "a peer's send is not the owner's words: {words}");
+        assert!(words.find("no processing").unwrap() < words.find("everything without HA").unwrap(), "newest first: {words}");
+        assert!(fresh.contains("- this is a new conversation; the Chat tab's last exchanges, oldest first:\n  owner: is scale to zero core?\n  you: Yes, per spec line 65.\n"), "{fresh}");
+        assert!(fresh.contains("[owner, Chat tab] everything without HA"), "the recent log names the owner: {fresh}");
+        assert!(fresh.contains(COMPANION_ACCURACY), "{fresh}");
+        let resumed = companion_prompt(&state, w, false, "and now?").await;
+        assert!(!resumed.contains("this is a new conversation"), "a resumed conversation already has its exchanges");
+        assert!(resumed.contains(COMPANION_ACCURACY) && resumed.contains("[Chat tab] everything without HA"), "{resumed}");
+        assert!(!fresh.contains('\u{2014}') && !COMPANION_ACCURACY.contains('\u{2014}'), "no em dashes");
+    }
+
+    #[test]
+    fn cmd_history_times_read_in_milliseconds_or_seconds() {
+        let ms = local_time(1_792_370_508_117, "%Y");
+        let s = local_time(1_792_370_508, "%Y");
+        assert_eq!(ms, s);
+        assert_eq!(ms, "2026");
     }
 }

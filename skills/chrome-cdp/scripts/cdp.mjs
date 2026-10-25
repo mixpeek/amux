@@ -645,6 +645,7 @@ async function runDaemon(targetId) {
   const lastSync = new Map();
   const boundNoted = new Set(), revokedNoted = new Set();
   let profCache = null, profCacheAt = 0, syncNote = '';
+  const rotatingNoted = new Set();
   let syncChain = Promise.resolve();
   async function autoSync(tag) {
     if (!AUTO_SYNC) return;
@@ -693,6 +694,12 @@ async function runDaemon(targetId) {
         syncNote = `[amux] saved ${site} logins to amux profile '${out.profile}' (${out.cookies_landed}/${out.cookies_sent} cookies` +
           `${out.local_storage_set ? `, ${out.local_storage_set} localStorage keys` : ''}, ${reason}). ` +
           `Next time: AMUX_PROFILE=${out.profile}`;
+      }
+      if (out.sign_in_instead && !rotatingNoted.has(site)) {
+        // Said once per site per daemon: the copy is refused every time, the advice need not repeat.
+        rotatingNoted.add(site);
+        syncNote = (syncNote ? syncNote + '\n' : '') + `[amux] ${out.sign_in_instead}`;
+        process.stderr.write(`[amux] WARN ${site}: rotating session token not copied into an amux profile (verdict=cdp_sync_rotating_session_not_copied)\n`);
       }
     } catch (e) {
       syncLog({ error: e.message, tag, target: targetId });
@@ -1093,7 +1100,14 @@ async function main() {
     const url = args[0] || 'about:blank';
     const cdp = new CDP();
     await cdp.connect(getWsUrl());
-    const { targetId } = await cdp.send('Target.createTarget', { url });
+    // A worker's tab goes in a new background window. A plain createTarget lands
+    // in whichever window Ethan last used, whatever Chrome profile that is, and
+    // pulls it forward: a social-activities lookup opened inside his Work window
+    // with the automation banner on top (2026-10-20). Run by hand (no
+    // AMUX_SESSION) it still opens where you are looking.
+    const worker = !!process.env.AMUX_SESSION;
+    const { targetId } = await cdp.send('Target.createTarget', worker ? { url, newWindow: true, background: true } : { url });
+    if (worker) process.stderr.write(`[amux] opened in a background window, not your active one (worker ${process.env.AMUX_SESSION})\n`);
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {

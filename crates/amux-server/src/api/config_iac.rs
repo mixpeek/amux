@@ -40,15 +40,22 @@ use super::AppState;
 
 /// Everything an instance's configuration consists of, in one payload.
 pub async fn export(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    let conn = match state.store.read() {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("store unreadable: {e}")})),
-            )
-        }
-    };
+    match export_doc(&state) {
+        Ok(doc) => (StatusCode::OK, Json(doc)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        ),
+    }
+}
+
+/// The export document itself. Shared with the move bundle
+/// (`api/move_bundle.rs`), whose `config` part is exactly this.
+pub(crate) fn export_doc(state: &AppState) -> Result<Value, String> {
+    let conn = state
+        .store
+        .read()
+        .map_err(|e| format!("store unreadable: {e}"))?;
 
     // ---- skins, all three levels ------------------------------------------
     let mut skins = Map::new();
@@ -139,17 +146,31 @@ pub async fn export(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "version": 1,
-            "skins": Value::Object(skins),
-            "columns": columns,
-            "workers": workers,
-            "note": "apply is idempotent; workers are DECLARED here, not started \
-                     (`amux workers start <name>` is the separate verb, on purpose)",
-        })),
-    )
+    Ok(json!({
+        "version": 1,
+        "skins": Value::Object(skins),
+        "columns": columns,
+        "workers": workers,
+        "note": "apply is idempotent; workers are DECLARED here, not started \
+                 (`amux workers start <name>` is the separate verb, on purpose)",
+    }))
+}
+
+/// Who may write instance configuration: the human. A request that names a
+/// session is an agent, refused unless AMUX_SCOPE_WRITE_AGENTS=1 (same policy
+/// as /api/scope). Returns the refusal text, or None when allowed.
+pub(crate) fn agent_write_refusal(headers: &HeaderMap, what: &str) -> Option<String> {
+    let actor = headers
+        .get("x-amux-session")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    (!actor.is_empty() && std::env::var("AMUX_SCOPE_WRITE_AGENTS").ok().as_deref() != Some("1"))
+        .then(|| {
+            format!(
+                "session '{actor}' may not {what}: global and group layers belong to the \
+                 human (same policy as /api/scope). Set AMUX_SCOPE_WRITE_AGENTS=1 to allow it."
+            )
+        })
 }
 
 /// Apply a config document. Reports per-item `changed` vs `unchanged` so a
@@ -161,24 +182,22 @@ pub async fn apply(
 ) -> (StatusCode, Json<Value>) {
     // Writing global/group configuration is the human's, matching
     // /api/scope's own policy: a session may not reshape the whole instance.
-    let actor = headers
-        .get("x-amux-session")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if !actor.is_empty() && std::env::var("AMUX_SCOPE_WRITE_AGENTS").ok().as_deref() != Some("1") {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": format!(
-                    "session '{actor}' may not apply instance config — global and group \
-                     layers belong to the human (same policy as /api/scope). Set \
-                     AMUX_SCOPE_WRITE_AGENTS=1 to allow it."
-                ),
-            })),
-        );
+    if let Some(error) = agent_write_refusal(&headers, "apply instance config") {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": error })));
     }
+    let (ok, report) = apply_doc(&state, &doc, false).await;
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::MULTI_STATUS
+    };
+    (status, Json(report))
+}
 
+/// Apply (or, with `dry_run`, only compare) a config document. In a dry run
+/// `changed` lists what apply WOULD change and nothing is written. The move
+/// bundle's import uses both modes. Returns (no errors, report).
+pub(crate) async fn apply_doc(state: &AppState, doc: &Value, dry_run: bool) -> (bool, Value) {
     let mut changed: Vec<String> = Vec::new();
     let mut unchanged: Vec<String> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
@@ -209,6 +228,10 @@ pub async fn apply(
                 });
                 if have.as_deref() == Some(want.as_str()) {
                     unchanged.push(key);
+                    continue;
+                }
+                if dry_run {
+                    changed.push(key);
                     continue;
                 }
                 let k2 = key.clone();
@@ -271,6 +294,10 @@ pub async fn apply(
                     unchanged.push(tag);
                     continue;
                 }
+            }
+            if dry_run {
+                changed.push(tag);
+                continue;
             }
             let res = state
                 .store
@@ -339,6 +366,10 @@ pub async fn apply(
                 unchanged.push(tag);
                 continue;
             }
+            if dry_run {
+                changed.push(tag);
+                continue;
+            }
             let body: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
             if let Some(p) = f.parent() {
                 let _ = std::fs::create_dir_all(p);
@@ -350,20 +381,18 @@ pub async fn apply(
         }
     }
 
-    let status = if errors.is_empty() {
-        StatusCode::OK
-    } else {
-        StatusCode::MULTI_STATUS
-    };
+    let ok = errors.is_empty();
+    let verb = if dry_run { "would change" } else { "changed" };
     (
-        status,
-        Json(json!({
-            "ok": errors.is_empty(),
+        ok,
+        json!({
+            "ok": ok,
+            "dry_run": dry_run,
             "changed": changed,
             "unchanged": unchanged,
             "errors": errors,
             // The number people actually want on a second run.
-            "summary": format!("{} changed, {} already matched", changed.len(), unchanged.len()),
-        })),
+            "summary": format!("{} {verb}, {} already matched", changed.len(), unchanged.len()),
+        }),
     )
 }

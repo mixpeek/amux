@@ -10,6 +10,17 @@ When editing CSS:
 - The viewport uses `viewport-fit=cover` — fixed overlays must extend to physical edges
 - Test that flex containers don't overflow on 375px-wide screens
 
+**Gut-check every new feature against phone real estate (Ethan, 2026-10-21).**
+On a phone a view gets at most ONE row of controls above its content and ONE
+below. When a feature adds a control, it joins that row: the row scrolls
+sideways (`flex-wrap:nowrap; overflow-x:auto`) or the extras go behind a `⋯`
+menu. Never wrap to a second row and never add a new bar. The Messages log had
+grown to six rows on top and a two-row pager, leaving the list the bottom
+third of a 375px screen; `e2e/messages-mobile-one-row.spec.ts` is the pattern
+for pinning it (each control's centre inside the one bar, bar height at most
+56px, content at least half the viewport). Before calling a UI change done,
+screenshot it at 375px and count the rows.
+
 
 Use the production component contract in `docs/ui-style-guide.md` and **Settings →
 Style guide** before creating or changing a control. Reuse `.btn`, `.input`, the

@@ -71,6 +71,23 @@ assert not any("/api/sessions/" in r[2] and "hook-report.sh" not in r[2] for r i
 print("ok   installer is idempotent and preserves unrelated hooks/settings")
 PY
 
+# The registered ask-guard command must FAIL OPEN when its script is missing
+# (exit 2 from `python3 <missing>` is a block to Claude Code) and must still
+# pass a real deny through. Run the generated command itself, not a paraphrase.
+ASK_CMD="$(/usr/bin/python3 -c 'import json,sys
+v=json.load(open(sys.argv[1]))
+print([h["command"] for g in v["hooks"]["PreToolUse"] for h in g["hooks"] if "ask-guard.py" in h["command"]][0])' "$SETTINGS")"
+mkdir -p "$TMP/askhome/.amux/hooks"
+missing_rc=0
+HOME="$TMP/askhome" bash -c "$ASK_CMD" </dev/null || missing_rc=$?
+printf 'import sys\nsys.stderr.write("denied")\nsys.exit(2)\n' > "$TMP/askhome/.amux/hooks/ask-guard.py"
+deny_rc=0
+HOME="$TMP/askhome" bash -c "$ASK_CMD" </dev/null 2>/dev/null || deny_rc=$?
+[[ "$missing_rc" == 0 ]] || { echo "FAIL ask guard blocks when its script is missing (rc=$missing_rc)"; exit 1; }
+grep -q '"verdict":"script_missing"' "$TMP/askhome/.amux/logs/ask-guard.jsonl" || { echo "FAIL missing ask-guard script left no log line"; exit 1; }
+[[ "$deny_rc" == 2 ]] || { echo "FAIL ask guard swallowed a deliberate deny (rc=$deny_rc)"; exit 1; }
+echo "ok   ask guard fails open on a missing script, logs it, and keeps a real deny"
+
 # Drive the shipped hook against a disposable HTTP endpoint. The endpoint can
 # refuse requests or drop a response after reading the body, which exercises
 # the durable producer rather than a paraphrase of its JSON encoder.

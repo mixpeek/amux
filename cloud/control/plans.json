@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "status": "approved",
+  "status_note": "Approved by the owner on 2026-10-14: Solo $39, Team $69, Max $129.",
+  "currency": "usd",
+  "price_floor_multiple": 2.0,
+  "guard_multiple": 1.95,
+  "backup_fraction": 0.2,
+  "ipv4_monthly_usd": 0.6,
+  "default_location": "fsn1",
+  "locations": [
+    "fsn1",
+    "nbg1",
+    "hel1"
+  ],
+  "plans": [
+    {
+      "id": "solo",
+      "name": "Solo",
+      "price_usd": 39,
+      "server_type": "cx33",
+      "specs": "4 vCPU, 8 GB RAM, 80 GB disk",
+      "stripe_lookup_key": "amux_cloud_solo_monthly"
+    },
+    {
+      "id": "team",
+      "name": "Team",
+      "price_usd": 69,
+      "server_type": "cx43",
+      "specs": "8 vCPU, 16 GB RAM, 160 GB disk",
+      "stripe_lookup_key": "amux_cloud_team_monthly"
+    },
+    {
+      "id": "max",
+      "name": "Max",
+      "price_usd": 129,
+      "server_type": "cx53",
+      "specs": "16 vCPU, 32 GB RAM, 320 GB disk",
+      "stripe_lookup_key": "amux_cloud_max_monthly"
+    }
+  ]
+}

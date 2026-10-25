@@ -360,6 +360,20 @@ if [[ -f "$SCRIPT_DIR/scripts/git-hooks/git-shared-guard.py" ]]; then
   say "git guard: $AMUX_HOME/hooks/git-shared-guard.py (sha ${_guard_sha:0:12})"
 fi
 
+# Post-push verify (MC-1203). ~/.claude/settings.json runs
+# ~/.amux/hooks/post-push-verify.py after every Bash call, and until 2026-10-18
+# that file existed only there, unversioned: it compared the checkout's HEAD
+# with origin/main, so every `amux land` and sha push (which never move HEAD)
+# raised a false "VERIFY FAILED" telling the lane to pull --rebase a shared
+# checkout (59 times for one worker). The source now lives in
+# scripts/git-hooks/ and is installed from there.
+if [[ -f "$SCRIPT_DIR/scripts/git-hooks/post-push-verify.py" ]]; then
+  mkdir -p "$AMUX_HOME/hooks"
+  install_hook_from_head scripts/git-hooks/post-push-verify.py "$AMUX_HOME/hooks/post-push-verify.py"
+  chmod +x "$AMUX_HOME/hooks/post-push-verify.py"
+  say "post-push verify: $AMUX_HOME/hooks/post-push-verify.py"
+fi
+
 # Cheap-model read router. Full Read/cat/less/more calls over the configurable
 # line threshold are sent to `amux delegate read`; bounded reads stay with the
 # primary model for editing and debugging. Like the git guard, the bytes that
@@ -807,3 +821,6 @@ echo "  Auth token  $AMUX_HOME/auth_token    (the dashboard + amux-rs read this 
 echo "  CLI         amux-rs --url https://localhost:$PORT health"
 echo "  Logs        $AMUX_HOME/logs/server-rs.log"
 echo "  Uninstall   ./uninstall.sh   (removes binaries + agents; never touches $AMUX_HOME data)"
+echo ""
+echo "Want it running 24/7 at yourname.amux.io? Get amux Cloud at https://amux.io/start/ and"
+echo "move this install with: amux export, then amux import <file> --to https://<you>.amux.io"

@@ -28,7 +28,7 @@ fn setting(session: &str, key: &str) -> Option<String> {
         .or_else(|| std::env::var(key).ok())
 }
 pub(crate) fn enabled(session: &str) -> bool {
-    !session_verbs::session_is_isolated(session)
+    !no_board(session)
         && !session_verbs::parse_env(session)
             .get("CC_PROJECT")
             .is_some()
@@ -61,6 +61,65 @@ pub(crate) fn force_adherence(session: &str) -> bool {
     })
 }
 pub(crate) const DECOMPOSE_KEY: &str = POLICY_KEY;
+
+/// BOARD OFF (Ethan, 2026-10-17: "make sure that if all these are off, the
+/// board is not used - that means putting shit on the board, standing messages
+/// about the board, etc."). A worker whose own settings leave all four Board
+/// tab switches off (Board steers this worker, Start To Do cards, Keep going,
+/// Refill from Backlog) gets the board the way an isolated worker does: no card
+/// is filed for it, nothing about the board is typed into it, and no standing
+/// board instruction is composed into its context. A project worker keeps its
+/// board, because its project controller runs on cards whatever the switches
+/// say. Reads the same keys the Board tab writes, so the view and this gate
+/// cannot disagree.
+pub(crate) fn board_unused(session: &str) -> bool {
+    let drain = std::env::var(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY).ok();
+    board_unused_in(&session_verbs::home(), session, drain.as_deref())
+}
+
+/// Does this worker have a board at all? The same predicate the board API's
+/// refusal uses (`isolated_no_board` unless admin, `board_off`). A board
+/// WARNING about a worker with no board is one nobody can act on from that
+/// worker: the gs12 review counted 54 `isolated_cards_unrouted` and 35
+/// `board_census_slow` WARNs for one isolated lane. Warnings scoped by this
+/// demote to debug for a boardless worker and say so in their fields.
+pub(crate) fn lane_has_board(session: &str) -> bool {
+    let isolated = session_verbs::session_is_isolated(session) && !session_verbs::is_admin_worker(session);
+    !isolated && !board_unused(session)
+}
+
+/// `drain_process_value` is the process env's backlog-drain value, which wins
+/// over every scope (the same precedence `dispatch_backlog_when_idle` uses).
+pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_process_value: Option<&str>) -> bool {
+    use session_verbs::{auto_continue_on, scoped_setting_in, BOARD_CONTINUE_KEY};
+    // Only a registered worker (it has an env file) can have its board off.
+    if session.is_empty() || !home.join("sessions").join(format!("{session}.env")).exists()
+        || session_verbs::parse_env(session).get("CC_PROJECT").is_some()
+    {
+        return false;
+    }
+    let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| std::env::var(k).ok()).as_deref());
+    let cont = scoped_setting_in(home, session, BOARD_CONTINUE_KEY)
+        .or_else(|| scoped_setting_in(home, session, "CC_AUTO_CONTINUE"));
+    // Someone has to have turned the board off. A worker nobody configured
+    // (a fresh install, an API-created lane) keeps its board: unset is the
+    // default, and the default must not silently take the board away.
+    let switched_off = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", BOARD_CONTINUE_KEY, "CC_AUTO_CONTINUE",
+        crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY]
+        .iter()
+        .any(|k| scoped_setting_in(home, session, k).is_some_and(|v| !auto_continue_on(Some(&v))))
+        || drain_process_value.is_some_and(|v| !auto_continue_on(Some(v)));
+    switched_off
+        && !on(FORCE_ADHERENCE_KEY)
+        && !on("CC_AUTO_PICKUP")
+        && !auto_continue_on(cont.as_deref())
+        && !crate::runtime_jobs::board_drive::dispatch_backlog_when_idle_in(home, session, drain_process_value)
+}
+
+/// No board for this worker: isolated, or every board switch off.
+pub(crate) fn no_board(session: &str) -> bool {
+    session_verbs::session_is_isolated(session) || board_unused(session)
+}
 
 pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
     enabled(session)
@@ -2121,6 +2180,45 @@ mod tests {
     /// Ethan, 2026-09-24: decompose ON, force adherence OFF by default. The
     /// default must not withhold an owner's words; only an explicit override
     /// at the worker layer turns withholding on.
+    #[test]
+    fn board_is_unused_only_when_every_board_switch_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let s = dir.path().join("sessions");
+        std::fs::create_dir_all(&s).unwrap();
+        for (name, env, unused) in [
+            ("off", "CC_DIR=/tmp\nCC_AUTO_PICKUP=0\nAMUX_BOARD_FORCE_ADHERENCE=0\n", true),
+            ("unset", "CC_DIR=/tmp\n", false),
+            ("steer", "AMUX_BOARD_FORCE_ADHERENCE=1\n", false),
+            ("pickup", "CC_AUTO_PICKUP=1\n", false),
+            ("cont", "CC_BOARD_CONTINUE=1\n", false),
+            ("legacy", "CC_AUTO_CONTINUE=1\n", false),
+            ("drain", "AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1\n", false),
+            ("project", "CC_PROJECT=p1\n", false),
+            ("iso", "CC_ISOLATED=1\nCC_AUTO_PICKUP=0\n", true),
+        ] {
+            std::fs::write(s.join(format!("{name}.env")), env).unwrap();
+            assert_eq!(board_unused_in(dir.path(), name, None), unused, "{name}");
+        }
+        // The process env wins over every scope for the drain switch.
+        assert!(board_unused_in(dir.path(), "drain", Some("0")));
+        assert!(no_board("off") && no_board("iso") && !no_board("steer"));
+        assert!(!enabled("off"), "no decomposition onto a board that is off");
+        // Board automation is refused; other automation is not.
+        use crate::api::session_verbs::board_off_refusal;
+        for g in ["board-drive", "board-progress", "promise-nudge", "owner-ask", "accountability"] {
+            assert!(board_off_refusal("off", g).is_some(), "{g}");
+            assert!(board_off_refusal("steer", g).is_none(), "{g} on a board-on worker");
+        }
+        for g in ["scoped-context", "turn-end-sigkill", "auto-compact", ""] {
+            assert!(board_off_refusal("off", g).is_none(), "{g} is not board automation");
+        }
+        assert!(crate::api::session_verbs::compose_worker_context("off", false)
+            .contains(crate::api::session_verbs::BOARD_OFF_CONTEXT));
+        assert!(!crate::api::session_verbs::compose_worker_context("steer", false)
+            .contains(crate::api::session_verbs::BOARD_OFF_CONTEXT));
+    }
+
     #[test]
     fn force_adherence_is_off_by_default_and_on_only_by_explicit_override() {
         let dir = tempfile::tempdir().unwrap();

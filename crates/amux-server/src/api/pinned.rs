@@ -1,8 +1,9 @@
 //! /api/pinned — CRUD for pinned-note overlays.
 //!
 //! Each row is a filesystem path the user wants to float as an always-on-top
-//! macOS window. The dashboard's Pinned tab manages the list; the `amux pin`
-//! CLI command launches the Swift overlay.
+//! macOS window. Rows sharing a `group_id` launch together as tabs in one
+//! overlay. The dashboard's Pinned tab manages the list; the `amux pin` CLI
+//! command launches the Swift overlay.
 
 use super::AppState;
 use axum::extract::{Path, State};
@@ -25,7 +26,7 @@ async fn list(State(state): State<AppState>) -> Response {
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, file_path, title, pos_x, pos_y, width, height, opacity, active, created_at, updated_at
+        "SELECT id, file_path, title, pos_x, pos_y, width, height, opacity, active, created_at, updated_at, group_id
          FROM pinned_notes ORDER BY created_at DESC",
     ) {
         Ok(s) => s,
@@ -45,6 +46,7 @@ async fn list(State(state): State<AppState>) -> Response {
                 "active": r.get::<_, i64>(8)? != 0,
                 "created_at": r.get::<_, i64>(9)?,
                 "updated_at": r.get::<_, i64>(10)?,
+                "group_id": r.get::<_, Option<String>>(11)?,
             }))
         })
         .ok();
@@ -59,7 +61,9 @@ async fn list(State(state): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct CreateBody {
-    file_path: String,
+    file_path: Option<String>,
+    #[serde(default)]
+    file_paths: Vec<String>,
     #[serde(default)]
     title: String,
     #[serde(default = "default_pos")]
@@ -72,6 +76,8 @@ struct CreateBody {
     height: i64,
     #[serde(default = "default_opacity")]
     opacity: f64,
+    #[serde(default)]
+    group_id: Option<String>,
 }
 
 fn default_pos() -> i64 { 100 }
@@ -80,20 +86,32 @@ fn default_height() -> i64 { 500 }
 fn default_opacity() -> f64 { 0.6 }
 
 async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> Response {
-    let fp = body.file_path.trim().to_string();
-    if fp.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "file_path required"}))).into_response();
+    let mut paths: Vec<String> = body.file_paths.iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if let Some(ref fp) = body.file_path {
+        let fp = fp.trim().to_string();
+        if !fp.is_empty() && !paths.contains(&fp) {
+            paths.insert(0, fp);
+        }
     }
-    let title = if body.title.is_empty() {
-        std::path::Path::new(&fp)
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_else(|| fp.clone())
+    if paths.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "file_path or file_paths required"}))).into_response();
+    }
+
+    let group_id = if paths.len() > 1 || body.group_id.is_some() {
+        body.group_id.unwrap_or_else(|| format!("pg_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()))
     } else {
-        body.title.clone()
+        String::new()
     };
+
     let (px, py, w, h, op) = (body.pos_x, body.pos_y, body.width, body.height, body.opacity);
-    let fp2 = fp.clone();
+    let title = body.title.clone();
+    let group_id2 = group_id.clone();
+    let paths2 = paths.clone();
+
     match state
         .store
         .write_async(move |conn| {
@@ -101,11 +119,22 @@ async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> 
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            conn.execute(
-                "INSERT INTO pinned_notes (file_path, title, pos_x, pos_y, width, height, opacity, active, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?8)",
-                rusqlite::params![fp, title, px, py, w, h, op, now],
-            )?;
+            let gid: Option<&str> = if group_id.is_empty() { None } else { Some(&group_id) };
+            for fp in &paths {
+                let t = if title.is_empty() {
+                    std::path::Path::new(fp)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| fp.clone())
+                } else {
+                    title.clone()
+                };
+                conn.execute(
+                    "INSERT INTO pinned_notes (file_path, title, pos_x, pos_y, width, height, opacity, active, created_at, updated_at, group_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?8, ?9)",
+                    rusqlite::params![fp, t, px, py, w, h, op, now, gid],
+                )?;
+            }
             Ok(crate::db::WriteOutcome {
                 applied: true,
                 events: vec![],
@@ -117,10 +146,11 @@ async fn create(State(state): State<AppState>, Json(body): Json<CreateBody>) -> 
             let id = state.store.read().ok()
                 .and_then(|c| c.query_row(
                     "SELECT id FROM pinned_notes WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
-                    [&fp2], |r| r.get::<_, i64>(0),
+                    [&paths2[0]], |r| r.get::<_, i64>(0),
                 ).ok())
                 .unwrap_or(0);
-            (StatusCode::CREATED, Json(json!({"ok": true, "id": id}))).into_response()
+            let gid_val: Value = if group_id2.is_empty() { Value::Null } else { Value::String(group_id2) };
+            (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "group_id": gid_val}))).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
@@ -142,6 +172,8 @@ struct UpdateBody {
     opacity: Option<f64>,
     #[serde(default)]
     active: Option<bool>,
+    #[serde(default)]
+    group_id: Option<String>,
 }
 
 async fn update(
@@ -176,6 +208,7 @@ async fn update(
             maybe!(body.height, "height");
             maybe!(body.opacity, "opacity");
             maybe!(body.active.map(|b| b as i64), "active");
+            maybe!(body.group_id, "group_id");
 
             let sql = format!("UPDATE pinned_notes SET {} WHERE id = ?{}", sets.join(", "), idx);
             params.push(Box::new(id));
@@ -204,21 +237,49 @@ async fn delete(State(state): State<AppState>, Path(id): Path<i64>) -> Response 
     }
 }
 
+/// One pinned note as `launch` reads it: file path, group id, x, y, width,
+/// height, opacity.
+type PinRow = (String, Option<String>, i64, i64, i64, i64, f64);
+
 async fn launch(State(state): State<AppState>, Path(id): Path<i64>) -> Response {
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
     };
-    let note: Option<(String, String, i64, i64, i64, i64, f64)> = conn
+
+    // Fetch the target pin and its group_id.
+    let note: Option<PinRow> = conn
         .query_row(
-            "SELECT file_path, title, pos_x, pos_y, width, height, opacity FROM pinned_notes WHERE id = ?1",
+            "SELECT file_path, group_id, pos_x, pos_y, width, height, opacity FROM pinned_notes WHERE id = ?1",
             [id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )
         .ok();
-    let Some((fp, _title, px, py, w, h, op)) = note else {
+    let Some((fp, group_id, px, py, w, h, op)) = note else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response();
     };
+
+    // Collect all file paths: if this pin is in a group, get all siblings.
+    let mut file_paths = Vec::new();
+    let mut group_ids_to_activate = Vec::new();
+    if let Some(ref gid) = group_id {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id, file_path FROM pinned_notes WHERE group_id = ?1 ORDER BY created_at ASC"
+        ) {
+            if let Ok(rows) = stmt.query_map([gid], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            }) {
+                for row in rows.flatten() {
+                    group_ids_to_activate.push(row.0);
+                    file_paths.push(row.1);
+                }
+            }
+        }
+    }
+    if file_paths.is_empty() {
+        file_paths.push(fp);
+        group_ids_to_activate.push(id);
+    }
 
     let script_dir = std::env::current_exe()
         .ok()
@@ -231,25 +292,28 @@ async fn launch(State(state): State<AppState>, Path(id): Path<i64>) -> Response 
         "pinned-overlay".to_string()
     };
 
-    match std::process::Command::new(&overlay_str)
-        .arg(&fp)
-        .arg("--x").arg(px.to_string())
-        .arg("--y").arg(py.to_string())
-        .arg("--width").arg(w.to_string())
-        .arg("--height").arg(h.to_string())
-        .arg("--opacity").arg(op.to_string())
-        .spawn()
-    {
+    let mut cmd = std::process::Command::new(&overlay_str);
+    for p in &file_paths {
+        cmd.arg(p);
+    }
+    cmd.arg("--x").arg(px.to_string())
+       .arg("--y").arg(py.to_string())
+       .arg("--width").arg(w.to_string())
+       .arg("--height").arg(h.to_string())
+       .arg("--opacity").arg(op.to_string());
+
+    match cmd.spawn() {
         Ok(_) => {
-            let id2 = id;
             let _ = state
                 .store
                 .write_async(move |conn| {
-                    conn.execute("UPDATE pinned_notes SET active = 1 WHERE id = ?1", [id2])?;
+                    for aid in &group_ids_to_activate {
+                        conn.execute("UPDATE pinned_notes SET active = 1 WHERE id = ?1", [aid])?;
+                    }
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                 })
                 .await;
-            Json(json!({"ok": true, "launched": true})).into_response()
+            Json(json!({"ok": true, "launched": true, "files": file_paths.len()})).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("failed to launch overlay: {e}")}))).into_response(),
     }

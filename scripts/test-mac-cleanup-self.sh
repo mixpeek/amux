@@ -35,7 +35,7 @@ addlog() { printf '%s\n' "$3" > "$LOGS/$1.log"; age "$2" "$LOGS/$1.log"; }   # <
 probe() { # the self line, a blank line, then the verdicts
   # Env, never positional args: the tick parses "$@" as its own flags when sourced.
   TICK_PATH="$TICK" AMUX_CLEANUP_SELF_SCHED_ID=SCHED-T AMUX_CLEANUP_SELF_DB="$DB" AMUX_CLEANUP_SELF_RUNS_DIR="$LOGS" \
-  AMUX_CLEANUP_SELF_FALLBACK_LOG="$FB" bash -c '
+  AMUX_CLEANUP_SELF_FALLBACK_LOG="$FB" AMUX_CLEANUP_STATE_DIR="$FIX/state" bash -c '
     AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK_PATH"; HEALTH_VERDICTS=""
     check_self_runs; echo; printf "%s\n" "$HEALTH_VERDICTS" | grep . || true'; }
 DONE="mac-cleanup: done elapsed=300s purge=no skipped=none constraints=0"
@@ -64,6 +64,16 @@ check "four in 24h is a constraint"                   yes "$(has "$out" '^self 4
 check "a newest ok means no streak"                   no  "$(has "$out" 'in a row of SCHED-T')"
 check "a row over 24h old is not read"                no  "$(has "$out" 'old')"
 
+echo "3a. failed runs already escalated are not raised again (RCA self 20261021-125823)"
+mkdir -p "$FIX/state"; printf 'esc_self=%s\n' "$((NOW-3000))" > "$FIX/state/state"
+out=$(probe)
+check "every failure predates the last escalation: no constraint" no "$(has "$out" '^self 4 of 6 runs')"
+check "it says so, with a verdict"                    yes "$(has "$out" 'all 4 failed runs of SCHED-T in 24h predate the last self escalation.*verdict=self_failures_already_escalated')"
+printf 'esc_self=%s\n' "$((NOW-5000))" > "$FIX/state/state"
+out=$(probe)
+check "a failure after the escalation raises it again" yes "$(has "$out" '^self 4 of 6 runs of SCHED-T in 24h did not finish ok')"
+rm -f "$FIX/state/state"
+
 echo "4. the run logs: slow, skipped, killed and blocked runs"
 newdb 1 <<<"600|ok|"; newlogs
 addlog slow 900 "mac-cleanup: done elapsed=500s purge=no skipped=none constraints=0"
@@ -78,6 +88,16 @@ check "three runs that skipped arms are one"          yes "$(has "$out" '^self 3
 check "blocked fires are one, though recorded ok"     yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
 check "a killed run is counted, a blocked one is not" yes "$(has "$out" '1 killed before the done line, 2 found another tick running')"
 check "a log still being written is not judged"       yes "$(has "$out" ' 7 run log\(s\)')"
+
+echo "4a2. skipped runs already escalated are not raised again (RCA self 20261020-005306)"
+mkdir -p "$FIX/state"; printf 'esc_self=%s\n' "$((NOW-600))" > "$FIX/state/state"
+out=$(probe)
+check "every skip predates the last escalation: no constraint" no "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "it says so, with a verdict"                    yes "$(has "$out" 'all 3 runs that skipped arms in 24h predate the last self escalation.*verdict=self_skips_already_escalated')"
+printf 'esc_self=%s\n' "$((NOW-1500))" > "$FIX/state/state"
+out=$(probe)
+check "a skip after the escalation raises it again"   yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+rm -f "$FIX/state/state"
 
 echo "4b. a slow run older than 6h is reported, not escalated (RCA self 20261016-082126)"
 newdb 1 <<<"600|ok|"; newlogs
@@ -100,6 +120,27 @@ out=$(stat() { gnu_stat "$@"; }; export -f stat; probe 2>&1 || true)
 check "an age read under GNU stat does not crash"     no  "$(has "$out" 'unbound variable')"
 check "and still judges the recent run"               yes "$(has "$out" 'slowest in the last 6h 481s')"
 
+echo "4d. a fire that met an earlier run of the same schedule lost nothing (RCA self 20261023-145529)"
+# Run logs are named after their start in ms. A manual run started 5 min before
+# the cron fire and still writing when it came is the hour's check.
+newdb 1 <<<"600|ok|"; newlogs
+for h in 1 2; do
+  c=$((NOW - h*3600)); addlog "$((c - 300))000" $((h*3600 - 60)) "$DONE"; addlog "${c}000" $((h*3600)) "$LOCKED"
+done
+out=$(probe)
+check "covered fires raise no constraint"             no  "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick')"
+check "they are counted apart, with a verdict"        yes "$(has "$out" '0 found another tick running and did nothing, 2 met an earlier run of this schedule still working')"
+check "and the verdict names why"                     yes "$(has "$out" 'verdict=self_collision_covered')"
+# The same two fires, but each earlier run had already finished: something
+# outside the schedule held the lock, which is the 2026-10-15 duplicate tick.
+newlogs
+for h in 1 2; do
+  c=$((NOW - h*3600)); addlog "$((c - 900))000" $((h*3600 + 300)) "$DONE"; addlog "${c}000" $((h*3600)) "$LOCKED"
+done
+out=$(probe)
+check "a holder outside the schedule still counts"    yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
+check "and is not called covered"                     no  "$(has "$out" 'verdict=self_collision_covered')"
+
 echo "5. the fallback's own log"
 newdb 1 <<<"600|ok|"; newlogs
 for h in 1 2 3; do echo "mac-cleanup-fallback: $(stamp $((NOW-h*3600))) last tick output is 90m old (over 80m): the amux scheduler is not running SCHED-T, so launchd is" >> "$FB"; done
@@ -108,6 +149,13 @@ echo "mac-cleanup-fallback: $(stamp "$NOW") scheduler ran within 80m, nothing to
 out=$(probe)
 check "three fallback runs in 24h are a constraint"   yes "$(has "$out" '^self the launchd fallback ran this check 3 times in 24h')"
 check "older runs and no-op lines are not counted"    yes "$(has "$out" 'the launchd fallback ran it 3x')"
+# Self RCA 20261018-165251: runs already escalated are not raised again.
+mkdir -p "$FIX/state"; echo "esc_self=$((NOW-1800))" > "$FIX/state/state"; out=$(probe)
+check "runs older than the last self escalation are not raised again" no "$(has "$out" '^self the launchd fallback')"
+check "and it says why"                               yes "$(has "$out" 'verdict=self_fallback_already_escalated')"
+echo "mac-cleanup-fallback: $(stamp $((NOW-60))) the last tick did not finish: the amux scheduler is not running SCHED-T, so launchd is" >> "$FB"; out=$(probe)
+check "control: one newer fallback run raises it again" yes "$(has "$out" '^self the launchd fallback ran this check 4 times in 24h')"
+rm -f -- "$FIX/state/state"
 
 echo "6. a disabled or missing schedule"
 newdb 0 <<<""; newlogs; out=$(probe)
@@ -123,7 +171,7 @@ rmdir -- "${DB:?}"
 
 echo "8. system_health runs it and carries its constraints"
 newdb 0 <<<""; newlogs
-out=$(TICK_PATH="$TICK" FIXD="$FIX" AMUX_CLEANUP_AGENT_VOLUME_CMD=true AMUX_CLEANUP_SELF_SCHED_ID=SCHED-T AMUX_CLEANUP_SELF_DB="$DB" AMUX_CLEANUP_SELF_RUNS_DIR="$LOGS" \
+out=$(TICK_PATH="$TICK" FIXD="$FIX" AMUX_CLEANUP_AGENT_VOLUME_CMD=true AMUX_CLEANUP_UTIL_CMD=true AMUX_CLEANUP_SELF_SCHED_ID=SCHED-T AMUX_CLEANUP_SELF_DB="$DB" AMUX_CLEANUP_SELF_RUNS_DIR="$LOGS" \
   AMUX_CLEANUP_SELF_FALLBACK_LOG="$FB" bash -c '
   AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_SCOPE_FILE=/dev/null . "$TICK_PATH"
   HEALTH_PROBES=on HEALTH_PS_CMD=true ORPHAN_PS_CMD=true LIMITS_CMD=true LAUNCHD_LIST_CMD=true NET_CMD=true THERMAL_CMD=true

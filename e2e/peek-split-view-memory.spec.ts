@@ -64,17 +64,28 @@ const NO_NESTING = { panelMode: true, visibleTabBars: 0, splitPanes: 0, splitHan
 test.describe('desktop split', () => {
   test.skip(({ viewport }) => !!viewport && viewport.width <= 600, 'a phone has no split: the button opens Files');
 
-  for (const view of ['chat', 'messages'] as const) {
+  // Terminal (Ethan, 2026-10-21: "add terminal as an option here, so i can
+  // have terminal in both sides").
+  const LABEL = { chat: 'Chat', messages: 'Messages', terminal: 'Terminal' } as const;
+  for (const view of ['chat', 'messages', 'terminal'] as const) {
     test(`Split > ${view} renders one panel, never a nested worker view`, async ({ page }) => {
       await boot(page);
       await open(page, A);
       await page.locator('#peek-split-toggle').click();
-      await page.locator('#psp-menu button', { hasText: view === 'chat' ? 'Chat' : 'Messages' }).click();
+      await page.locator('#psp-menu button', { hasText: LABEL[view] }).click();
       await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
       await expect(page.locator('#psp-frame')).toHaveAttribute('src', new RegExp('peekTab=' + view + '&peekSplitChild=1'));
       const frame = page.frameLocator('#psp-frame');
       expect(await frameState(frame)).toEqual(NO_NESTING);
       expect(await nesting(page)).toEqual({ tabBars: 1, splitWraps: 1 });
+      // The pane's own dropdown names the chosen view, Terminal included.
+      await expect(page.locator('#psp-panes .psp-pane-view').first()).toHaveValue(view);
+      if (view === 'terminal') {
+        // The second side IS a terminal: its panel shows and it can be typed into.
+        await expect(frame.locator('#peek-terminal-panel')).toBeVisible();
+        await expect(frame.locator('#peek-cmd-input')).toBeVisible();
+        expect(await frame.locator('body').evaluate(() => (window as any).eval('_peekTab'))).toBe('terminal');
+      }
 
       // After a re-render cycle the answer is the same.
       await page.evaluate(() => (window as any).fetchSessions());
@@ -92,15 +103,17 @@ test.describe('desktop split', () => {
     });
   }
 
-  test('Split > Files shows one tab bar and no frame', async ({ page }) => {
+  // Files in a pane is the Files view itself (2026-10-22: "if its file view it
+  // should be the file view"), at the worker's folder.
+  test('Split > Files is the Files view in a pane, one tab bar', async ({ page }) => {
     await boot(page);
     await open(page, A);
     await page.locator('#peek-split-toggle').click();
     await page.locator('#psp-menu button', { hasText: 'Files' }).click();
     await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-    await expect(page.locator('#psp-frame')).toBeHidden();
+    await expect(page.locator('#psp-frame')).toHaveAttribute('src', /\/\?embed=files#path=/);
+    await expect(page.frameLocator('#psp-frame').locator('#files-view')).toBeVisible({ timeout: 15000 });
     expect(await nesting(page)).toEqual({ tabBars: 1, splitWraps: 1 });
-    expect(await page.locator('iframe#psp-frame[src]').count()).toBe(0);
   });
 
   // Only the iframe the split builds (&peekSplitChild=1) is a side panel. A
@@ -113,7 +126,7 @@ test.describe('desktop split', () => {
     expect(await page.locator('#peek-split-files').count()).toBe(1);
     await page.evaluate(() => (window as any)._peekSplitOpen('files'));
     await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-    await expect(page.locator('#psf-body')).toBeVisible();
+    await expect(page.locator('#psp-frame')).toHaveAttribute('src', /embed=files/);
   });
 
   test('each worker keeps its own view: A split+Chat, B default, reload restores', async ({ page }) => {
@@ -128,13 +141,13 @@ test.describe('desktop split', () => {
     await open(page, B);
     await expect(page.locator('#peek-split-wrap')).not.toHaveClass(/split-active/);
     await expect(page.locator('#peek-tab-terminal')).toHaveClass(/active/);
-    await expect(page.locator('#psp-frame')).not.toHaveAttribute('src', /.+/);
+    await expect(page.locator('#psp-panes .psp-pane')).toHaveCount(0);
     // B picks a different main tab; it must not bleed into A.
     await page.evaluate(() => (window as any).setPeekTab('steering'));
 
     await open(page, A);
     await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-    await expect(page.locator('.psp-opt[data-psp="chat"]')).toHaveClass(/active/);
+    await expect(page.locator('#psp-panes .psp-pane-view').first()).toHaveValue('chat');
     await expect(page.locator('#psp-frame')).toHaveAttribute('src', /peekTab=chat/);
     await expect(page.locator('#peek-tab-terminal')).toHaveClass(/active/);
     expect(await frameState(page.frameLocator('#psp-frame'))).toEqual(NO_NESTING);
@@ -155,8 +168,56 @@ test.describe('desktop split', () => {
 
     // And the store is keyed per worker.
     const views = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_peek_views') || '{}'));
-    expect(views[A]).toMatchObject({ split: true, splitView: 'chat', tab: 'terminal' });
+    expect(views[A]).toMatchObject({ split: true, splitView: 'chat', splitViews: ['chat'], tab: 'terminal' });
     expect(views[B]).toMatchObject({ split: false, tab: 'steering' });
+  });
+
+  // Ethan, 2026-10-22: "make split view the ability to have 2-4 panes. each
+  // pane should just be the worker details page ... each pane should have a
+  // dropdown of a particular view".
+  test('2-4 panes: each is the worker page on its own view, picked from its dropdown', async ({ page }) => {
+    await boot(page);
+    await open(page, A);
+    await page.locator('#peek-split-toggle').click();
+    await page.locator('#psp-menu button', { hasText: 'Messages' }).click();
+    const panes = page.locator('#psp-panes .psp-pane');
+    await expect(panes).toHaveCount(1);
+    // Every worker tab is a pane option, not a fixed list.
+    const opts = await panes.first().locator('.psp-pane-view option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value));
+    expect(opts).toEqual(expect.arrayContaining(['files', 'terminal', 'messages', 'chat', 'steering', 'scope']));
+    // Add up to three panes beside the worker page: four in all, then no more.
+    await panes.last().locator('.psp-pane-add').click();
+    await panes.last().locator('.psp-pane-add').click();
+    await expect(panes).toHaveCount(3);
+    await expect(panes.last().locator('.psp-pane-add')).toBeHidden();
+    // Each pane is its own embedded worker page on its own view.
+    const srcs = await panes.locator('.psp-frame').evaluateAll(fs => fs.map(f => (f as HTMLIFrameElement).dataset.src));
+    expect(srcs[0]).toMatch(/peekTab=messages&peekSplitChild=1/);
+    expect(new Set(srcs).size).toBe(3);
+    // Pane 2 goes to Chat through its dropdown, then to Steering: tab to tab on
+    // the same worker switches the pane's own page without reloading it.
+    const second = panes.nth(1);
+    // nth(1) of the panes, not :nth-child(2): drag handles sit between panes.
+    const inner = second.locator('.psp-frame').contentFrame();
+    await second.locator('.psp-pane-view').selectOption('chat');
+    await expect(second.locator('.psp-frame')).toHaveAttribute('src', /peekTab=chat/);
+    await expect(inner.locator('#peek-overlay')).toHaveClass(/active/, { timeout: 15000 });
+    const before = await second.locator('.psp-frame').getAttribute('src');
+    await second.locator('.psp-pane-view').selectOption('steering');
+    await expect.poll(() => inner.locator('body').evaluate(() => (window as any).eval('_peekTab'))).toBe('steering');
+    expect(await second.locator('.psp-frame').getAttribute('src'), 'no reload').toBe(before);
+    // Close the middle pane; the others stay, and the split survives a reload.
+    await second.locator('.psp-pane-close').click();
+    await expect(panes).toHaveCount(2);
+    await page.reload();
+    await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+    await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', A, { timeout: 10_000 });
+    await expect(panes).toHaveCount(2);
+    await expect(panes.first().locator('.psp-pane-view')).toHaveValue('messages');
+    // Closing the last pane closes the split.
+    await panes.last().locator('.psp-pane-close').click();
+    await panes.last().locator('.psp-pane-close').click();
+    await expect(page.locator('#peek-split-wrap')).not.toHaveClass(/split-active/);
   });
 
   test('a saved tab the worker no longer has falls back to Terminal', async ({ page }) => {

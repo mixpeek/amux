@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,7 +23,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -94,45 +93,44 @@
         "name": "What is cheaper — amux or n8n?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is free and open source (MIT + Commons Clause) for self-hosting with no limits on sessions, board issues, notes, CRM, or schedules. The only paid piece is the tunnel relay (amux cloud, $20/month or $200/year). n8n is also open source and free to self-host. n8n cloud starts at approximately $24/month for 2,500 workflow executions. Both tools are cheap to run locally; both add cost if you want a hosted service."
+          "text": "amux is free and open source (MIT + Commons Clause) for self-hosting with no limits on sessions, board issues, notes, CRM, or schedules. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io. n8n is also open source and free to self-host. n8n cloud starts at approximately $24/month for 2,500 workflow executions. Both tools are cheap to run locally; both add cost if you want a hosted service."
         }
       }
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs n8n</span></div>
 
-    <div style="background:#0d7c42;color:#fff;border-radius:8px;padding:1rem 1.4rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
-      <span><strong>amux</strong> &mdash; open-source AI agent control plane. Orchestrate coding agents, browser automation, kanban, email, and scheduler from one dashboard or your phone. 503+ stars.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#fff;color:#0d7c42;font-weight:600;padding:0.45rem 1rem;border-radius:6px;white-space:nowrap;text-decoration:none" onclick="posthog.capture('exp092_n8n_compare_topofpage_cta_click')">&#11088; Star on GitHub</a>
-    </div>
 
     <h1>amux vs n8n</h1>
     <p class="subtitle">n8n is the leading open-source workflow automation platform — connect SaaS APIs, webhooks, and data pipelines in a visual editor. amux is an open-source control plane for AI coding agents — run and monitor dozens of Claude Code, Codex, and Gemini CLI sessions from your phone. These tools serve different jobs. Here is the honest comparison. <em>Updated September 2026.</em></p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
-    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/></svg>
-        ⭐ Star amux on GitHub
-      </a>
-    </div>
 
     <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
       <strong>Quick answer:</strong> amux and n8n solve different problems. n8n connects APIs and SaaS tools in visual workflows — no AI agents, no coding. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. If you need to automate SaaS data flows, use n8n. If you need to run and monitor a fleet of coding agents, use amux. The tools compose well together.
@@ -222,7 +220,7 @@
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;"><strong>Pricing</strong></td>
-            <td style="padding:10px 16px;text-align:center;">Free (OSS). Tunnel relay: $20/mo or $200/yr</td>
+            <td style="padding:10px 16px;text-align:center;">Free (OSS). amux Cloud (your own hosted server): from $39/mo</td>
             <td style="padding:10px 16px;text-align:center;">Free (self-host). n8n cloud: ~$24/mo for 2,500 executions</td>
           </tr>
           <tr>
@@ -294,7 +292,7 @@ GET https://localhost:8824/api/board?status=done&amp;since=yesterday
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">What is cheaper — amux or n8n?</summary>
-      <p style="margin:0.8rem 0 0;">Both are free to self-host. amux's only paid piece is the tunnel relay ($20/month or $200/year). n8n cloud starts at approximately $24/month for 2,500 workflow executions. For pure local use, both cost nothing beyond the machine they run on.</p>
+      <p style="margin:0.8rem 0 0;">Both are free to self-host. amux's only paid option is amux Cloud, your own always-on hosted amux server from $39/month. n8n cloud starts at approximately $24/month for 2,500 workflow executions. For pure local use, both cost nothing beyond the machine they run on.</p>
     </details>
 
     <h2 id="whats-new-sept-2026">What&rsquo;s new in amux &mdash; September 2026</h2>
@@ -364,10 +362,12 @@ amux start myproject</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

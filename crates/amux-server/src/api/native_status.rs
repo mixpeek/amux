@@ -375,6 +375,7 @@ pub(crate) fn replay(state: &AppState) {
         tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_adoption_failed",
             "observer installation drift could not be repaired; retained status spool still replays");
     }
+    observer_error_census(&crate::config::amux_home());
     let Ok(workers) = std::fs::read_dir(root()) else {
         return;
     };
@@ -393,6 +394,77 @@ pub(crate) fn replay(state: &AppState) {
         replay_run(state, &name, &worker.path().join(run));
     }
 }
+
+/// Byte offset already counted in `status-observer-errors.jsonl`, per file.
+static OBSERVER_ERRORS_SEEN: std::sync::Mutex<Option<(PathBuf, u64)>> = std::sync::Mutex::new(None);
+
+/// Count what the passive observer wrote to `status-observer-errors.jsonl`
+/// since the last pass, by `error_type` and worker, and WARN when it is not
+/// zero.
+///
+/// The hook appended 16,081 lines there (9,065 TimeoutError, 5,131 HTTPError
+/// on 2026-10-18) and nothing read the file, so ~690 hook timeouts in one lane
+/// surfaced only in a transcript review. The hook now also writes
+/// `lock_budget_exceeded` (it gave up waiting for the spool lock rather than
+/// hold the provider's turn) and `slow_hook`. The first pass of a process
+/// reports the backlog once, then only new lines are counted.
+pub(crate) fn observer_error_census(home: &Path) -> Option<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = home.join("status-observer-errors.jsonl");
+    let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let mut seen = OBSERVER_ERRORS_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let (backlog, from) = match seen.as_ref() {
+        Some((p, off)) if *p == path && *off <= len => (false, *off),
+        _ => (true, 0),
+    };
+    if len == from {
+        *seen = Some((path, len));
+        return None;
+    }
+    // A backlog read is bounded to the newest 4 MiB; its first, cut line is
+    // skipped below.
+    const BACKLOG_CAP: u64 = 4 << 20;
+    let cut = backlog && len > BACKLOG_CAP;
+    let from = if cut { len - BACKLOG_CAP } else { from };
+    let mut buf = String::new();
+    let read = std::fs::File::open(&path).and_then(|mut f| {
+        f.seek(SeekFrom::Start(from))?;
+        // A partial trailing line is left for the next pass.
+        f.take(len - from).read_to_string(&mut buf)
+    });
+    if let Err(error) = read {
+        tracing::warn!(%error, measured = false, n_considered = 0, verdict = "native_status_observer_errors_unreadable",
+            "could not read the passive observer's error log");
+        return None;
+    }
+    let complete = buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let mut by_type: std::collections::BTreeMap<String, u64> = Default::default();
+    let mut by_worker: std::collections::BTreeMap<String, u64> = Default::default();
+    let mut n = 0u64;
+    for line in buf[..complete].lines().skip(usize::from(cut)) {
+        let v: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+        n += 1;
+        *by_type.entry(v["error_type"].as_str().unwrap_or("unparsed").to_string()).or_default() += 1;
+        *by_worker.entry(v["worker"].as_str().unwrap_or("").to_string()).or_default() += 1;
+    }
+    *seen = Some((path, from + complete as u64));
+    if n == 0 {
+        return None;
+    }
+    let mut workers: Vec<(String, u64)> = by_worker.into_iter().collect();
+    workers.sort_by_key(|w| std::cmp::Reverse(w.1));
+    workers.truncate(8);
+    let summary = json!({"errors": n, "by_type": by_type, "top_workers": workers, "backlog": backlog});
+    if backlog {
+        tracing::info!(measured = true, n_considered = n, verdict = "native_status_observer_errors_backlog",
+            summary = %summary, "passive observer error log on disk at startup, counted once");
+    } else {
+        tracing::warn!(measured = true, n_considered = n, verdict = "native_status_observer_errors",
+            summary = %summary, "passive status hook recorded errors since the last pass (timeouts, lock budget overruns, slow hooks)");
+    }
+    Some(summary)
+}
+
 fn replay_run(state: &AppState, name: &str, dir: &Path) {
     let Ok(files) = std::fs::read_dir(dir) else {
         return;
@@ -441,6 +513,30 @@ fn replay_run(state: &AppState, name: &str, dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// gs12 review: the hook's error log had 16K lines and no reader.
+    #[test]
+    fn observer_errors_are_counted_once_by_type_then_only_new_lines() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status-observer-errors.jsonl");
+        let line = |t: &str, w: &str| format!("{}\n", serde_json::json!({"at":1.0,"worker":w,"error_type":t}));
+        std::fs::write(&path, line("TimeoutError", "a") + &line("TimeoutError", "b")).unwrap();
+        let first = super::observer_error_census(dir.path()).expect("backlog counted");
+        assert_eq!(first["backlog"], true);
+        assert_eq!(first["errors"], 2);
+        assert_eq!(first["by_type"]["TimeoutError"], 2);
+        assert!(super::observer_error_census(dir.path()).is_none(), "nothing new, nothing reported");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(line("lock_budget_exceeded", "a").as_bytes()).unwrap();
+        f.write_all(b"{\"error_type\":\"partial").unwrap();
+        let next = super::observer_error_census(dir.path()).expect("new line counted");
+        assert_eq!(next["backlog"], false);
+        assert_eq!(next["errors"], 1, "a partial trailing line waits for the next pass");
+        assert_eq!(next["by_type"]["lock_budget_exceeded"], 1);
+        f.write_all(b"\"}\n").unwrap();
+        assert_eq!(super::observer_error_census(dir.path()).unwrap()["by_type"]["partial"], 1);
+    }
+
     /// An unchanged state is recorded as a bare update; only a real transition
     /// carries the report.
     #[test]

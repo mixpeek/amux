@@ -375,7 +375,8 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
         "SELECT id, title, COALESCE(desc,''), status, COALESCE(session,''), COALESCE(type,''),
                 COALESCE(ask_type,''), COALESCE(ask_question,''), COALESCE(ask_unblocks,''),
                 COALESCE(ask_actor,''), COALESCE(decision_question,''), COALESCE(decision_rationale,''),
-                COALESCE(waiting_on,''), COALESCE(entered_state_at,0), COALESCE(updated,0), COALESCE(created,0)
+                COALESCE(waiting_on,''), COALESCE(entered_state_at,0), COALESCE(updated,0), COALESCE(created,0),
+                COALESCE(log,'')
            FROM issues
           WHERE deleted IS NULL AND COALESCE(archived,0) = 0
             AND (status = 'needsyou'
@@ -402,6 +403,7 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
                 r.get::<_, i64>(13)?,
                 r.get::<_, i64>(14)?,
                 r.get::<_, i64>(15)?,
+                r.get::<_, String>(16)?,
             ),
         ))
     })?;
@@ -420,7 +422,7 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
             dq,
             drat,
             waiting,
-            (entered, updated, created),
+            (entered, updated, created, log),
         ) = row?;
         n_considered += 1;
         if status == "needsyou" && !actor_is_owner(&actor) {
@@ -456,6 +458,9 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
                 "category": category, "rank": rank, "since": since,
                 "chips": chips(&format!("{question} {unblocks} {desc}")),
                 "standing_category": standing_category(&ask_type, category),
+                // Owner notes added while this ask waited: every answer to it
+                // carries them, and the auto-approve policy leaves it alone.
+                "owner_notes": crate::db::board_store::owner_notes_since_ask(&log),
             }),
         );
     }
@@ -539,7 +544,7 @@ async fn get_queue(State(state): State<AppState>) -> Response {
 /// store must not allow: owner-only, the rule standing approvals use.
 pub(crate) fn refuse_worker(headers: &HeaderMap, action: &str) -> Option<Response> {
     let lane = super::alerts::hdr_worker(headers);
-    if lane.is_empty() {
+    if lane.is_empty() || super::session_verbs::admin_origin(headers, "needs_input_triage").is_some() {
         return None;
     }
     tracing::warn!(verdict = "triage_action", action, outcome = "refused_worker", caller = %lane,

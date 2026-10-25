@@ -65,9 +65,18 @@ fn main() {
     } else {
         println!("cargo:warning=build_git_metadata_unavailable measured=false n_considered=0 identity=unknown");
     }
+    // The image build (cloud/docker/Dockerfile) has no .git; CI passes the commit it checked
+    // out as AMUX_SOURCE_COMMIT so a customer server's /health can name its revision.
+    println!("cargo:rerun-if-env-changed=AMUX_SOURCE_COMMIT");
+    let source_commit = std::env::var("AMUX_SOURCE_COMMIT")
+        .ok()
+        .filter(|c| c.len() >= 12 && c.chars().all(|ch| ch.is_ascii_hexdigit()));
     let mut sha = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_default();
     if sha.is_empty() {
-        sha = "unknown".into();
+        sha = source_commit
+            .as_ref()
+            .map(|c| c[..12].to_string())
+            .unwrap_or_else(|| "unknown".into());
     } else if git(&[
         "status",
         "--porcelain",
@@ -81,7 +90,9 @@ fn main() {
     {
         sha.push_str("-dirty");
     }
-    let mut full = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let mut full = git(&["rev-parse", "HEAD"])
+        .or(source_commit)
+        .unwrap_or_else(|| "unknown".into());
     if sha.ends_with("-dirty") {
         full.push_str("-dirty");
     }

@@ -1,0 +1,317 @@
+# Self-hosting amux
+
+Everything past the one-line install: day-to-day commands, Linux services, architecture, CLI, configuration, macOS permissions and security. Start with the [README](../README.md#install) if you have not installed yet.
+
+## After first install
+
+Once installed, day-to-day commands are short:
+
+```bash
+make run        # rebuild + reinstall; the running server self-adopts in ~5s
+make dev        # run against a scratch DB (safe for testing migrations)
+make status     # launchd + /health at a glance
+make restart    # kick the launchd-managed server
+make check      # cargo check + JS syntax (fast, no link)
+make test       # clippy + cargo test
+```
+
+`make run` is the command after `git pull` — it rebuilds release, installs the binary, and the launchd-managed server picks it up automatically. `make dev` is for working on migrations or features you don't want touching the live DB.
+
+**Requirements:** tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
+
+### Linux: systemd user services
+
+On Linux with systemd (Ubuntu 22.04+, Debian 11+, Fedora 36+), `./install.sh` automatically creates and enables three user-level services:
+
+- `amux-server.service` — the main server
+- `amux-builder.service` — auto-rebuild on code changes  
+- `amux-builder.timer` — periodic rebuild check (every 60s)
+
+After `./install.sh` completes, the services are ready to start:
+
+```bash
+systemctl --user enable amux-server amux-builder.timer
+systemctl --user start amux-server
+```
+
+View logs and status:
+
+```bash
+journalctl --user -u amux-server -f      # follow logs
+systemctl --user status amux-server      # service status
+```
+
+See [docs/systemd-setup.md](systemd-setup.md) for complete documentation: troubleshooting, multi-user setup, environment overrides, and migration between versions.
+
+For other Linux distributions without systemd, run the server manually:
+
+```bash
+AMUX_RS_PORT=8824 ~/.local/bin/amux-server-rs
+```
+
+**Platform support:**
+- **macOS** (primary) — `./install.sh` sets up launchd agents for automatic startup and rebuild
+- **Linux** (systemd) — `./install.sh` creates systemd user services (Ubuntu 22.04+, Debian 11+, Fedora 36+)
+- **Other Linux** — `./install.sh` builds and installs binaries; run the server manually or wrap in your process manager
+
+> **License:** [MIT + Commons Clause](../LICENSE) — free to use, modify, and self-host. Commercial resale requires a separate license.
+
+## Which server is real?
+
+**The Rust server (`crates/amux-server`, port 8824).** That is what `./install.sh` installs, what the dashboard talks to, and where all new work lands. Every `/api` family answers natively; the live proof is `GET /api/debug/boundary`, which reports `proxied: []`. If you are reading code, start in `crates/` — it is the only server code in the tree. The same binary also answers the retired port 8822 while a compatibility bind survives (see [Legacy](#legacy-the-python-server)), so there is no second server to reason about; the Python predecessor is gone.
+
+## Architecture
+
+One Rust workspace, four crates:
+
+| Crate | What |
+|---|---|
+| `crates/amux-server` | The server: axum HTTP API on **8824** (HTTPS, self-signed; plain HTTP redirected), single-writer SQLite store with an event journal, SSE + delta sync, scheduler/orchestrator runtime, embedded dashboard |
+| `crates/amux-dashboard` | The SPA, embedded into the server binary at build time (no node/npm needed) |
+| `crates/amux-cli` | `amux-rs`, the CLI (board, workers, send, schedules, health) |
+| `crates/amux-core` | Shared domain types: ids, scopes, revisions, memory, protocol |
+
+Everything in amux is built on **eight primitives**, and new capability is expressed by composing them rather than wrapping them:
+
+- **board** — shared kanban with atomic claiming, types, and status gates (`done` ≠ `verified`)
+- **workers** — parallel agent sessions (tmux by default), each with durable identity
+- **schedulers** — cron-style recurring and one-shot jobs with an audited run history
+- **filesystem** — browse/edit/search any worker's working directory; file viewer + media pipeline
+- **groups** — tags on workers; scoping for visibility, gates, memory, and env (workers see same-group peers)
+- **memories** — layered instructions/knowledge composed global → group → worker
+- **environment** — layered env vars the same way (which 3p APIs a worker can reach)
+- **messages** — inter-worker and human-to-worker text, delivered at turn boundaries
+
+The uniform way to read/write per-scope configuration (memory, rules, env, board gates, status availability at global/group/worker level) is one endpoint: `GET`/`PUT /api/scope`.
+
+Useful pointers:
+
+- **Server boundary / migration status:** [docs/rust-migration/server-boundary.md](rust-migration/server-boundary.md) — the full ownership matrix (all families RUST-NATIVE, zero proxied) and the contract subtleties, cross-checked by tests and served live at `/api/debug/boundary`.
+- **Cutover runbook:** [docs/rust-migration/cutover-runbook.md](rust-migration/cutover-runbook.md) — the gates for retiring the Python server.
+- **Rebuild plan:** [docs/rust-rebuild-plan.md](rust-rebuild-plan.md).
+
+### Terminal backends: tmux, herdr, and the structured protocol
+
+tmux is the default and fully supported backend. Sessions can instead run on [herdr](https://github.com/herdrdev/herdr): set `AMUX_HERDR_SESSION=<herdr session name>` in `~/.amux/server.env` (the herdr session that hosts amux workspaces; workers opt in per-session with `CC_BACKEND=herdr`). The herdr path is not covered by CI (its tests mock the process boundary), so treat a green build as proving backend selection, not the integration.
+
+Longer term, terminal scraping is the fallback, not the plan: the `opencode` module (`crates/amux-server/src/opencode/`) defines the structured AgentProtocol through which prompts, messages, cancellation, and state queries flow directly, shrinking the scraper to a liveness check as coverage grows.
+
+## Computed files: `.mdai`
+
+A `.mdai` file is a **computed markdown file**: a node in a directed acyclic graph (DAG) whose value is produced by a model. It composes two existing primitives, the **filesystem** and the **model over linked files**, and adds no new subsystem. A node connects to source files, folders, or other `.mdai` files through per-connection prompts (the edges), and its markdown body is the instruction that synthesizes those sources into the node's output. Opening a node runs its whole upstream chain and populates the output.
+
+The extension is `.mdai` (a single extension), not `.md.ai`: macOS reads a trailing `.ai` as an Adobe Illustrator file, so `foo.md.ai` would be misclassified as binary artwork by Finder and editors. `.mdai` stays plain text everywhere.
+
+### File format
+
+YAML frontmatter declares the connections and an optional model; the markdown body is the node's synthesis prompt.
+
+```yaml
+---
+sources:
+  - path: notes/meeting.md
+    prompt: Extract the decisions and open questions from this note.
+  - path: research.mdai
+    prompt: Use this synthesized research as background.
+model: claude-haiku-4-5   # optional per-file override
+---
+# Weekly brief
+Write a five-line brief that states each decision and the single most
+important open question, using only the connected sources.
+```
+
+- `sources` is a list of connections, each `{path, prompt}`. `path` is a file, a folder (expanded to its files, size-capped), another `.mdai` file resolved relative to the containing `.mdai` file's directory, or the live amux source `amux:messages?days=N&limit=N&offset=N`. `prompt` is the configurable edge prompt; a sensible default is filled in when a connection is created without one. A bare string entry (just the path) is also accepted and gets the default prompt.
+- `amux:messages` reads user directives from `cmd_history`. With no query it uses the last 14 days. `days=N` is capped at 90. A count window like `limit=1000` has no implicit day cutoff, and `offset=N` pages backward from the newest message; rows are rendered oldest-first with `MSG-<id>` evidence labels.
+- `model` is an optional per-file override.
+- The markdown body is the node synthesis instruction. A plain markdown file with no frontmatter is a valid node with no sources.
+
+### How opening runs the chain
+
+Opening a node resolves its sources **upstream-first, depth-first**: every `.mdai` source runs to completion before this node synthesizes, so upstream output is available as context. The resolved sources are assembled with their edge prompts and handed to the model along with the body prompt to produce the output. Because sources can be other `.mdai` files, the graph is an arbitrary DAG.
+
+- **Cycle detection.** A node that transitively depends on itself is detected during resolution and errors honestly, naming the loop (for example `a.mdai -> b.mdai -> a.mdai`) rather than looping forever.
+- **Run-on-open with an input-hash cache.** Every open runs the chain, but a node whose resolved sources, body prompt, and model are unchanged since its last run reuses that output instead of spending a model call to reproduce an identical result. The input hash is recorded per run, and history distinguishes a cached reuse from a fresh computation.
+- **History.** Each open records a run (path, timestamp, input hash, output, model, and whether it was cached). History is browsable newest-first.
+
+### Model
+
+The default is the **fastest Claude model** (Haiku 4.5 today), resolved from the `AMUX_HELPER_MODEL` config path the rest of the server's helper calls read: a per-file `model:` wins, else `AMUX_HELPER_MODEL`, else the fastest-Claude default. The value is resolved from config rather than pinned in code, so the default improves as the fast tier does. A `.mdai` node inherits the same helper CLI (`AMUX_HELPER_CLI`, default `claude`).
+
+### Endpoints
+
+Rooted at the same files root as the Files browser (`AMUX_FILES_ROOT`, else `$HOME`):
+
+| Method + path | What |
+|---|---|
+| `POST /api/files/mdai/run {path}` | Resolve and run the DAG, record a history entry, return the entry node's latest output plus the upstream-first node order |
+| `GET /api/files/mdai` | List every `.mdai` file under the files root with metadata (source count, model, title, mtime, last run time) |
+| `GET /api/files/mdai/history?path=<rel>` | The node's run history, newest first |
+| `POST /api/files/mdai/connect {source, target, prompt?}` | Append a source connection to the target's frontmatter, writing a sensible default edge prompt when none is given |
+
+Run a node (path is relative to the files root):
+
+```bash
+curl -sk -X POST https://localhost:8824/api/files/mdai/run \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"weekly.mdai"}'
+```
+
+Connect a source into a target (writes the edge into `weekly.mdai`'s frontmatter):
+
+```bash
+curl -sk -X POST https://localhost:8824/api/files/mdai/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"notes/meeting.md","target":"weekly.mdai","prompt":"Extract the decisions."}'
+```
+
+The dashboard's directory-view UI for creating and connecting `.mdai` files is tracked separately (AMUX-3245) and will be documented when it ships.
+
+## Logs and the daily sweep
+
+Every `/api` request is recorded in a structured request log (`_amux_request_log`, served at `GET /api/logs` and the dashboard's Logs tab; raw server tracing at `~/.amux/logs/server-rs.log`; retention `AMUX_REQLOG_RETAIN_DAYS`, default 14 days).
+
+On top of it sits a **daily log sweep**: a scheduler entry that prompts a session to run five standing queries (error families, latency p95 vs trailing norm, proxy volume — which must stay zero, auth-failure spikes, and worker-log anomalies), judge the results, and file board cards. The contract lives in [docs/rust-migration/log-sweep.md](rust-migration/log-sweep.md). It is a contract for a model, not an automation: amux supplies the queries and the substrate; the session supplies the judgment.
+
+## CLI
+
+`install.sh` also installs the Bash `amux` client. To update just that client
+from a resolved, reviewed checkout, run `make install-cli` (optionally
+`BIN_DIR=/usr/local/bin`). It checks a private snapshot before atomic publication;
+invalid source leaves the installed client intact. Do not point the installed
+client at a mutable checkout with a symlink.
+
+`amux-rs` finds the server via `--url`, then `$AMUX_RS_URL`, then `$AMUX_URL` (every running amux session has it), falling back to `https://localhost:8824` — the port `./install.sh` configures. So a bare invocation just works:
+
+```bash
+amux-rs health                                        # no env or flags needed
+amux-rs board add "task title" --type code
+amux-rs board list --status todo
+amux-rs board doing PROJ-1
+amux-rs board done PROJ-1 --checked "Tests / lint pass"   # gates are surfaced loudly, never bypassed silently
+amux-rs workers list
+amux-rs send worker-1 "implement the login endpoint and report back"
+amux-rs schedules list
+```
+
+Board mutations are gate-aware: a 409 from a status gate prints the checklist and the exact retry command instead of failing silently.
+
+## Configuration
+
+Server configuration lives in `~/.amux/server.env` (plain `KEY=value`; process env wins). Highlights:
+
+| Variable | What |
+|---|---|
+| `AMUX_RS_PORT` | server port (installer sets 8824) |
+| `AMUX_HOME` | data dir (default `~/.amux`) |
+| `AMUX_DB` | SQLite path (default `$AMUX_HOME/amux.db`) |
+| `AMUX_HERDR_SESSION` | herdr session hosting amux workspaces (enables the herdr backend) |
+| `AMUX_REQLOG_RETAIN_DAYS` | request-log retention (default 14) |
+| `AMUX_SCOPE_WRITE_AGENTS` | `1` lets agent sessions write group/global scope layers (default: only their own worker layer) |
+
+[`server.env.example`](../server.env.example) documents the full set. Never commit your real `server.env` — several values are secrets.
+
+## macOS permissions
+
+amux drives a few system apps on your behalf, and macOS gates each one behind
+TCC. Each grant below is load-bearing. Without it the feature hangs or fails
+silently rather than reporting a problem. Granting them takes about two minutes, and
+they are listed **most-unblocking first** so you can stop when you have what you
+use.
+
+Everything is under **System Settings → Privacy & Security**.
+
+### 1. Automation → Messages  *(the urgent owner alert)*
+
+**Grant:** Privacy & Security → Automation → find your terminal (iTerm, Terminal)
+and the `amux-server-rs` entry → tick **Messages**.
+
+**Without it:** `amux alert` cannot text you. The send *hangs* for the full 12s
+timeout on every page, so the fire alarm is slowest exactly when it matters. amux breaks the circuit after the first timeout and says so in the
+channel map, but the message does not arrive.
+
+**Also check:** Messages must be *signed in to iMessage* (Messages → Settings →
+iMessage). AppleScript can accept a `send` against a signed-out account and report success,
+so treat the grant and the delivery as two separate things to confirm.
+
+### 2. Automation → iTerm2  *(creating and inspecting workers)*
+
+**Grant:** Privacy & Security → Automation → your terminal → tick **iTerm2**.
+
+**Without it:** `amux start`, the worker grid and pane discovery cannot see or
+place panes. `worker_create.rs` asks iTerm2 to list panes and gives up after 5s.
+
+### 3. Full Disk Access  *(reading Messages history, Mail, Calendar stores)*
+
+**Grant:** Privacy & Security → Full Disk Access → add your terminal **and**
+`~/.local/bin/amux-server-rs`.
+
+**Without it:** reads of `~/Library/Messages/chat.db` and the Mail/Calendar
+stores fail with `authorization denied`. Anything that reconciles what was
+actually delivered against what amux believes it sent is blind.
+
+### 4. Automation → Mail  *(only if you use a non-Gmail account)*
+
+**Grant:** Privacy & Security → Automation → your terminal → tick **Mail**.
+
+**Without it:** nothing, if your accounts are Gmail or Workspace. Those go through
+the Gmail API and never touch Mail.app. This is the fallback path only.
+
+### 5. Accessibility  *(only if you use keystroke automation)*
+
+**Grant:** Privacy & Security → Accessibility → add your terminal.
+
+**Without it:** anything driving another app through System Events keystrokes
+fails. Core amux does not need this; grant it if a worker of yours does.
+
+### What amux does NOT need
+
+Camera, Microphone, Location, Contacts, Reminders, Photos. If something asks,
+it is a worker's own tooling and not the harness. Browser automation uses a
+dedicated Chrome profile over CDP, so it needs no Screen Recording grant either.
+
+### After granting
+
+macOS caches TCC decisions per binary. The auto-builder replaces
+`amux-server-rs` on every commit, and an ad-hoc-signed rebuild reads as a *new
+program*, so prompts can reappear. Setting a stable signing identity
+(`AMUX_CODESIGN_IDENTITY`) makes an approval stick across rebuilds.
+
+Verify a grant by what it *did*, not by the checkbox:
+
+```bash
+amux alert "permissions test" "verifying Automation for Messages"
+curl -sk $(amux url)/api/alert/owner | head -c 400   # read the channels map
+```
+
+### Evidence this list is real
+
+Measured across ~1.5 GB of fleet logs on 2026-09-01, counting only machine-emitted
+signatures (prose describing an error cannot match these):
+
+| Signature | Count |
+|---|---|
+| `(-1712)` AppleEvent timed out | 166 |
+| `kTCCServiceScreenCapture` | 12 |
+| `Operation not permitted` | 9 |
+| `Not authorized to send Apple events` | 6 |
+| `errAEEventNotPermitted` | 5 |
+
+An earlier pass over the same logs reported far larger numbers. It was matching
+this document's own prose being echoed back through the message log, which is why
+the counts above are restricted to strings a human report would not contain.
+
+## Naming
+
+A **worker** is one agent lane. A **group** is a label shared by several workers; workers see and coordinate with same-group peers. The HTTP API and env vars still carry the older `session`/`tag` spellings (`/api/sessions`, `X-Amux-Session`, `CC_TAGS`); renaming them would break every running worker at once, so the wire names migrate behind aliases. Worker = session, group = tag, wherever you see them in a request.
+
+## Security
+
+Local-first. Auth is a bearer token minted at `~/.amux/auth_token` (localhost callers are exempt). **Never expose port 8824 to the internet** — use [Tailscale](https://amux.io/guides/remote-access-tailscale/) for phone/remote access, or the [amux tunnel](https://amux.io/features/tunnel/) for deliberately-public endpoints (tunneled URLs are unguessable, not authenticated). Report vulnerabilities privately per [SECURITY.md](../SECURITY.md).
+
+---
+
+## LEGACY: the Python server
+
+> The Python predecessor (`amux-server.py`) was **removed at commit `792ce1f`** (2026-08-09) — git history has it, and [docs/rust-migration/](rust-migration/) records how the Rust server replaced it (the Rust binary also answers the legacy 8822, but that bind is a countdown, not an address — `GET /api/debug/legacy-port` reports who still calls it and when it can be dropped. Use 8824).
+> `cloud/` still runs the last-built Python image pending its own Rust migration; do not build anything new on it.
+> Historical install channels that shipped Python (`pipx install amux`, Homebrew) are retired — install with `./install.sh`.

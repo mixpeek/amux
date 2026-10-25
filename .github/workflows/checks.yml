@@ -14,16 +14,28 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20, not 10 (2026-10-24). The job is ~90 serial steps; passing runs took a
+    # median of 9 minutes, so 28 of the last 100 main runs hit the 10-minute
+    # limit and read as "cancelled". The deploy gate needs checks green on the
+    # same commit as rust, and only 7 of those 100 commits had both, so the Mac
+    # stayed 79 commits behind main. checks runs beside rust (16-25 min), so a
+    # longer budget does not slow a deploy. The last step warns at 15 minutes.
+    timeout-minutes: 20
     steps:
       # Full history: the client-version guard below diffs against the push's
       # base, which a shallow clone cannot reach.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Start the job clock
+        run: echo "CHECKS_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: Browser evidence and lifecycle cleanup controls (AF-768, AF-773)
         run: |
           npm ci --ignore-scripts
+          # worker-lifecycle-cleanup.test.mjs launches a real Playwright run, so
+          # the headless shell must be on the runner (it failed 2026-10-23:
+          # "Executable doesn't exist ... chrome-headless-shell").
+          npx playwright install --only-shell chromium
           node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs tests/e2e-plan.test.mjs
           npm run test:project-setup
           npm run test:outbox
@@ -34,6 +46,16 @@ jobs:
       # binary and a false green, so its input classes are pinned here.
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
         run: node --test tests/ci-rust-key.test.mjs
+      # Browser methods: the backend ladder, agent selection, and the OpAgent
+      # adapter against fixtures produced by OpAgent's own Python.
+      # One header on every amux.io page: scripts/site-header.html, /nav.css,
+      # /site.js in <head>. Fix drift with: node scripts/site-header.mjs --fix
+      - name: site header is the same on every page
+        run: node --test tests/site-header.test.mjs
+      - name: site funnel source classifier matches site.js
+        run: python3 scripts/site-funnel.py --self-test
+      - name: browser methods registry and agent adapters
+        run: node --test tests/browser-methods.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only
       # its own workspace; a tunnel answer only from its own org). The real
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.
@@ -205,6 +227,13 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-claude-scratch-report.sh
+      # The tmux watchdog restarts only Claude workers, leaves isolated ones to
+      # their owner, and holds a worker that dies after every restart. Runs the
+      # real script against fake tmux/pgrep/ps/amux, so no tmux is needed here.
+      - name: the tmux watchdog restarts only what it can judge
+        run: |
+          set -uo pipefail
+          ./scripts/test-tmux-watchdog.sh
       # AMUX-4732. The report reaches each lane as a CARD now, because the
       # 2026-09-14 attempt went out as peer MESSAGES and the two lanes that were
       # down never received it: both grew ~6 GB more while the one that was up
@@ -369,14 +398,35 @@ jobs:
           ./scripts/test-mac-cleanup-keep-context.sh
           ./scripts/test-mac-cleanup-user-tmp.sh
           ./scripts/test-mac-cleanup-lane-tmp.sh
+          ./scripts/test-mac-cleanup-vmcpu.sh
+          ./scripts/test-mac-cleanup-vmhog.sh
+          ./scripts/test-mac-cleanup-writers.sh
+      - name: the scheduled disk reclaim moves only idle, unowned build output, through the server (SCHED-783)
+        run: |
+          set -uo pipefail
+          ./scripts/test-disk-reclaim-tick.sh
+          ./scripts/test-pkill-guard-shim.sh
       - name: orch-pace projects the proof rate to its checkpoint
         run: |
           ./scripts/test-orch-pace-proof.sh
           python3 scripts/test-orch-pace-scope.py
+      - name: amux cdp runs the chrome-cdp helper's committed bytes, never a stale working tree (Google sign-out 2026-10-18)
+        run: |
+          set -uo pipefail
+          ./scripts/test-amux-cdp-committed.sh
+      - name: amux sync-checkout --override matches origin and saves what it replaces (/amux-contribute pull)
+        run: |
+          set -uo pipefail
+          ./scripts/test-sync-checkout-override.sh
+      - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
+        run: |
+          set -uo pipefail
+          ./scripts/test-python-grpc-defaults.sh
       - name: the idle cargo-target reaper keeps anything it cannot prove idle and unopened (DESKT-51)
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-targets.sh
+          ./scripts/test-mac-cleanup-superseded.sh
       - name: the Remotion bundle reaper takes only stale, unopened remotion-webpack-bundle dirs (RCA 20261010-211803)
         run: |
           set -uo pipefail
@@ -421,6 +471,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-self.sh
+      - name: the cleanup tick names who is using the CPU and lowers detached trees when busy
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-cleanup-utilization.sh
       - name: the agent scratch volume reports each opt-out from what it can read
         run: |
           set -uo pipefail
@@ -468,6 +522,14 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-cli-reviewer-shepherd-guard.sh
+      - name: amux memory add appends to the worker's own memory
+        run: |
+          set -uo pipefail
+          bash scripts/test-cli-memory.sh
+      - name: amux stop records the stop through the server
+        run: |
+          set -uo pipefail
+          bash scripts/test-cli-stop-recorded.sh
       - name: the commit-intent manifest round-trips
         run: |
           set -uo pipefail
@@ -484,6 +546,14 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-hook-version-marker.sh
+      - name: pre-commit refuses a migration number that is already taken
+        run: |
+          set -uo pipefail
+          bash scripts/test-pre-commit-migration-guard.sh
+      - name: a commit that cites no owner request names the lane's open ones (post-commit)
+        run: |
+          set -uo pipefail
+          bash scripts/test-post-commit-open-requests.sh
       - name: install.sh's hook install references the real source path
         run: |
           set -uo pipefail
@@ -555,7 +625,7 @@ jobs:
       - name: land precheck verdict and attributed cancel
         run: |
           set -uo pipefail
-          bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
+          bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-guards.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
       - name: a lane resumes its own conversation, never whichever peer ran here last
         run: |
           set -uo pipefail
@@ -656,6 +726,7 @@ jobs:
           # file. Cheap (no cargo), so there is no reason it was not here.
           python3 ./scripts/git-hooks/test_remove_correction.py || exit $?
           python3 ./scripts/git-hooks/test_git_shared_guard.py || exit $?
+          python3 ./scripts/git-hooks/test_post_push_verify.py || exit $?
           python3 ./scripts/git-hooks/test_land_push_guard.py
       # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,
       # and they belong HERE rather than in rust.yml because rust.yml is
@@ -778,6 +849,9 @@ jobs:
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh
           python3 scripts/test-claude-rotate.py
+          # Policy unit tests, including opt-in (default off). `|| exit 1`: this
+          # step has no -e, so a middle line's failure would otherwise not count.
+          python3 scripts/tests/test_claude_rotate.py || exit 1
           ./scripts/test-main-ci-watch.sh
           ./scripts/test-board-refusal-why.sh
           # A replacement is complete and signed before its one visible rename;
@@ -873,3 +947,12 @@ jobs:
           # normal checkout, which is exactly how this went unnoticed. Both
           # directions confirmed to fail before wiring in.
           ./scripts/test-install-hooks-worktree.sh
+      # Says when the job is near its budget, before it starts timing out again.
+      - name: Job time against its 20-minute budget
+        if: always()
+        run: |
+          used=$(( $(date +%s) - CHECKS_T0 ))
+          echo "verdict=checks_duration seconds=$used budget=1200 measured=true"
+          if [ "$used" -gt 900 ]; then
+            echo "::warning title=checks_near_timeout::checks took ${used}s of its 1200s budget; split it or speed up its slowest steps"
+          fi

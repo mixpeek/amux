@@ -120,6 +120,27 @@ class RemoveCorrectionTests(unittest.TestCase):
             self.assertEqual(events[0]["command_sha256"], hashlib.sha256(command.encode()).hexdigest())
             self.assertNotIn("$WT", log.read_text())
 
+    def test_refusal_names_each_operand_and_a_form_the_guard_accepts(self):
+        # gs12 review: 306 whole calls rejected; the reason never said which word.
+        cases = {
+            '"$WT/$f"': '"${WT:?}/$f"',
+            '$WT/$f': '${WT:?}/$f',
+            '"${WT}/"*': '"${WT:?}/"*',
+            '"${WT:-}/file"': '"${WT:?}/file"',
+            '"$1/file"': '"${1:?}/file"',
+            '"$WT"/"$f"': '"${WT:?}"/"$f"',
+        }
+        for raw, fixed in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(guard._guarded_operand(raw), fixed)
+                self.assertTrue(guard._dynamic_remove_operands('rm -f ' + raw))
+                self.assertEqual(guard._dynamic_remove_operands('rm -f ' + fixed), [],
+                                 'the suggested form must pass the same scanner')
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_hook(Path(tmp), 'echo a; rm -f "$WT/$f"; rm "$D/x"')
+            reason = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn('Rejected operands: "$WT/$f" -> "${WT:?}/$f"; "$D/x" -> "${D:?}/x".', reason)
+
     def test_corrected_command_is_not_approved_or_executed(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

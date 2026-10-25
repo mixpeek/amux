@@ -108,6 +108,35 @@ else
   skip "swap_used_is_not_empty" "same reason"
 fi
 
+# ---------------------------------------------------------------------------
+# Act tier (every platform; the level is injected): at the warn level the
+# tripwire STARTS the cleanup instead of waiting for the page tier, once per
+# cooldown, and says so when the start fails. The trigger is a stub that
+# records its calls, so a cell counts real starts rather than grepping a label.
+# ---------------------------------------------------------------------------
+act_dir=$(mktemp -d "${TMPDIR:-/tmp}/mpt-act.XXXXXX")
+calls="$act_dir/calls"; : > "$calls"
+stub="$act_dir/stub.sh"
+printf '#!/bin/sh\necho x >> "%s"\necho "${STUB_CODE:-202}"\n' "$calls" > "$stub"; chmod +x "$stub"
+act_run() { # <level> [STUB_CODE]
+  STUB_CODE=${2:-202} AMUX_TRIPWIRE_LEVEL=$1 AMUX_TRIPWIRE_SWAP_FREE_MB=0 \
+    AMUX_TRIPWIRE_STATE="$act_dir/last" AMUX_TRIPWIRE_ACT_STATE="$act_dir/act" \
+    AMUX_TRIPWIRE_ACT_TRIGGER_CMD="$stub" bash "$SUT" 2>&1 || true
+}
+out=$(act_run 1)
+cell "act_level1_no_start" "0" "$(wc -l < "$calls" | tr -d ' ')"
+out=$(act_run 2)
+cell "act_level2_starts_cleanup" "1" "$(wc -l < "$calls" | tr -d ' ')"
+cell "act_level2_verdict" "yes" "$(printf '%s' "$out" | grep -q 'verdict=cleanup_triggered' && echo yes || echo no)"
+out=$(act_run 2)
+cell "act_cooldown_holds" "1" "$(wc -l < "$calls" | tr -d ' ')"
+cell "act_cooldown_verdict" "yes" "$(printf '%s' "$out" | grep -q 'verdict=cleanup_cooldown' && echo yes || echo no)"
+rm -f "$act_dir/act"
+out=$(act_run 2 500)
+cell "act_failure_named" "yes" "$(printf '%s' "$out" | grep -q 'verdict=cleanup_trigger_failed' && echo yes || echo no)"
+cell "act_failure_not_recorded" "no" "$([ -s "$act_dir/act" ] && echo yes || echo no)"
+rm -rf -- "${act_dir:?}"
+
 echo
 echo "ran=$RAN failed=$FAIL skipped=$SKIPPED platform=$(uname -s)"
 [ "$FAIL" -eq 0 ] || exit 1

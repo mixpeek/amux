@@ -45,6 +45,14 @@ const MEMBER_SCOPE_NAME_HEADER: &str = "x-amux-local-member-scope-name";
 const MEMBER_ACTOR_HEADER: &str = "x-amux-local-member-actor";
 const MEMBER_TEAM_ID_HEADER: &str = "x-amux-local-member-team-id";
 const MEMBER_TEAM_NAME_B64_HEADER: &str = "x-amux-local-member-team-name-b64";
+/// Names an automated owner-configured policy (the needs-input auto-approver)
+/// as the actor of an INTERNAL call. Stripped from inbound requests below with
+/// the member markers, so only server code can produce it. Before it existed
+/// the policy's board writes carried no header and logged as `api-anonymous`,
+/// the same name an owner's dashboard click gets on a box with no auth token:
+/// 87 of 201 needsyou exits on GS-12 cards could not say whether Ethan or the
+/// policy decided (MG-2029, a customer price change, was the policy).
+const POLICY_ACTOR_HEADER: &str = "x-amux-internal-policy-actor";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -90,6 +98,22 @@ pub(crate) fn local_member_actor(headers: &HeaderMap) -> Option<&str> {
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+/// The automated policy that made this internal call, if one did.
+pub(crate) fn policy_actor(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(POLICY_ACTOR_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Headers for an internal call made BY an automated policy, never by a person.
+pub(crate) fn policy_headers(actor: &'static str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(POLICY_ACTOR_HEADER, axum::http::HeaderValue::from_static(actor));
+    headers
 }
 
 /// Stamp a verified member identity onto headers for an INTERNAL call made on
@@ -272,6 +296,11 @@ pub(crate) fn authorize_local_member_request(
     // consequence of seeing the whole workspace.
     if path == "/api/org" || path.starts_with("/api/org/") {
         return Some(forbidden(&scope, "organization administration"));
+    }
+    // Moving a whole server (every card, contact and memory out, or rows in)
+    // is the host owner's alone, whatever the member's scope.
+    if path == "/api/move" || path.starts_with("/api/move/") {
+        return Some(forbidden(&scope, "server move (export/import)"));
     }
     if scope.is_global() {
         // Global members created before AMUX-5334 got host-level access by
@@ -505,6 +534,7 @@ pub async fn local_member_identity(
     req.headers_mut().remove(MEMBER_ACTOR_HEADER);
     req.headers_mut().remove(MEMBER_TEAM_ID_HEADER);
     req.headers_mut().remove(MEMBER_TEAM_NAME_B64_HEADER);
+    req.headers_mut().remove(POLICY_ACTOR_HEADER);
     req.headers_mut().remove("x-amux-user-id");
     req.headers_mut().remove("x-amux-user-email");
     let token = match member_cookie(req.headers()).map(str::to_string) {

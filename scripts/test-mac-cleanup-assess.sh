@@ -19,6 +19,7 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expec
 has() { if printf '%s' "$1" | grep -q -- "$2"; then echo yes; else echo no; fi; }
 export AMUX_CLEANUP_SCOPE_FILE=/dev/null   # the live global scope must not configure a test (DESKT-72)
 export AMUX_CLEANUP_SESSIONS_CMD=false        # the VM-reference report must not read the live fleet (AMUX-5491)
+export AMUX_CLEANUP_VM_WRITERS_CMD=false      # the bundle's container writers must not read the live VMs
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 # No end-to-end cell here may prune a real VM (DESKT-69) or reap real build output.
 export AMUX_CLEANUP_VM_LIST_CMD="true"
@@ -30,6 +31,14 @@ check "no previous reading is unmeasured, not zero"   "- -"      "$(disk_trend 0
 check "a disk gaining space has no ETA"              "-10.0 -"  "$(disk_trend 1000 490 4600 500 1)"
 check "burning 10G/h from 100G is full in 10h"       "10.0 10.0" "$(disk_trend 1000 110 4600 100 1)"
 check "under the minimum burn there is no ETA"       "0.5 -"    "$(disk_trend 1000 100.5 4600 100 1)"
+
+echo "1a. a burn that is swap growth is named as swap (disk RCA 20261022-105614)"
+# Swap grew 7G to 59G under memory pressure; no file search names it.
+check "swap growth explaining the burn is named"     "yes" "$(has "$(swap_burn_note 28.9 30000 59392 1)" 'the writer is macOS swap, grown 29.3G to 58.0G since the last run (28.7G/h)')"
+check "swap growth under half the burn is not blamed" ""   "$(swap_burn_note 28.9 50000 59392 1)"
+check "no previous reading names nothing"             ""   "$(swap_burn_note 28.9 0 59392 1)"
+check "no burn names nothing"                         ""   "$(swap_burn_note - 30000 59392 1)"
+check "swap shrinking names nothing"                  ""   "$(swap_burn_note 10 59392 30000 1)"
 
 echo "1b. burn rate from the host history, by least squares"
 mkhist() { # <n> <gb per 5 min> [unmeasured rows]
@@ -51,6 +60,18 @@ check "fewer than 6 samples is unmeasured"                 "- -"  "$(mkhist 5 1 
 check "12 samples (55 min) is under an hour: unmeasured"   "- -"  "$(mkhist 12 1 | burn_from_history 1 | awk '{print $1, $2}')"
 check "unmeasured rows (free 0) do not drag the slope"     "12.0" "$(mkhist 13 1 5 | burn_from_history 1 | awk '{print $1}')"
 check "a filling-up disk has no ETA"                       "-"    "$(mkhist 13 -1 | burn_from_history 1 | awk '{print $2}')"
+# Disk RCA 20261018-135254: history falls 233G -> 206G over 2h, then this run's
+# own prune brings it back to 228.4G. The pre-prune fit alone says full in ~15h.
+sawtooth() { python3 -c '
+import json
+rows=[{"ts":10000+i*300,"disk_free_gb":233-i*27/24,"measured":True} for i in range(25)]
+print(json.dumps({"measured":True,"samples":rows}))'; }
+check "control: history alone (pre-prune) reads a 24h-scale ETA" "yes" "$(sawtooth | burn_from_history 1 | awk '{print ($2!="-" && $2+0<24) ? "yes" : "no"}')"
+check "this run's post-cleanup reading is the newest point: no ETA" "no" "$(sawtooth | burn_from_history 1 17620 228.4 | awk '{print ($2!="-" && $2+0<24) ? "yes" : "no"}')"
+check "the post-cleanup reading is used and marked"      "25 run" "$(sawtooth | burn_from_history 1 17620 228.4 | awk '{print $3, $5}')"
+check "an unmeasured run reading (-1) is not appended"    "-"    "$(sawtooth | burn_from_history 1 17620 -1 | awk '{print $5}')"
+check "a run reading older than the history is not appended" "-" "$(sawtooth | burn_from_history 1 9000 228.4 | awk '{print $5}')"
+check "a run reading hours after the history is not appended" "-" "$(sawtooth | burn_from_history 1 99999 228.4 | awk '{print $5}')"
 check "garbage input is unmeasured, not a crash"           "- -"  "$(echo 'not json' | burn_from_history 1 | awk '{print $1, $2}')"
 
 echo "2. classification"
@@ -120,6 +141,23 @@ bash -c 'sleep 30 & wait' & agent=$!
 sleep 0.5; achild=$(pgrep -P "$agent" sleep | head -1)
 check "a child of a launchd agent is named by its label" "launchd:com.example.agent" "$(lane_for_pid "$achild" "$agent launchd:com.example.agent")"
 kill "$agent" "$achild" 2>/dev/null || true; wait "$agent" 2>/dev/null || true
+# An orphan (parent exited, reparented to launchd) is named by where it runs.
+# Each orphan's pid comes from $! written to a file, never from a pattern
+# match: a pattern kill here once SIGTERMed every process with "-n" in its argv.
+# Not called inside $(...): an orphan started there dies before it is measured.
+orphan() { # <cwd> <pidfile> <argv...>
+  local d=$1 f=$2; shift 2
+  ( ( cd "$d" && exec nohup "$@" >/dev/null 2>&1 ) & echo $! > "$f" )
+}
+mkdir -p "$FIX/lanetmp/gs-under-test/w" "$FIX/repo/.worktrees/wt-lane/x"
+LANE_TMP_ROOT="$FIX/lanetmp"
+orphan "$FIX/lanetmp/gs-under-test/w" "$FIX/o1.pid" sleep 30; orph=$(cat "$FIX/o1.pid"); sleep 0.3
+check "an orphan whose cwd is a lane's tmp is named by path" "gs-under-test (orphan, by path)" "$(lane_for_pid "$orph" "999999 amux-other")"
+orphan / "$FIX/o2.pid" bash -c 'sleep 30; :' "$FIX/repo/.worktrees/wt-lane/x"; warg=$(cat "$FIX/o2.pid"); sleep 0.3
+check "an orphan whose argv names a lane worktree is named by path" "wt-lane (orphan, by path)" "$(lane_for_pid "$warg" "999999 amux-other")"
+orphan "$FIX" "$FIX/o3.pid" sleep 30; plain=$(cat "$FIX/o3.pid"); sleep 0.3
+check "control: an orphan outside any lane path has no lane" "no lane" "$(lane_for_pid "$plain" "999999 amux-other")"
+for p in "$orph" "$warg" "$plain"; do [[ "$p" =~ ^[0-9]+$ ]] && kill "$p" 2>/dev/null; done; true
 
 echo "5. end to end: escalation, cooldown, failure, dry run (macOS only)"
 if [ "$(uname)" = Darwin ]; then
@@ -129,7 +167,7 @@ if [ "$(uname)" = Darwin ]; then
   tick() { AMUX_CLEANUP_STATE_DIR="$FIX/tick" AMUX_CLEANUP_TARGET_ROOTS="$FIX/none" AMUX_CLEANUP_PURGE_CMD=true \
            AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 \
            AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_CPU_SHARE=99 AMUX_CLEANUP_SWAP_FREE_FLOOR_MB=0 \
-           AMUX_CLEANUP_DISK_FLOOR_GB="$1" AMUX_CLEANUP_HISTORY_CMD="cat $FIX/hist.json" AMUX_CLEANUP_CARD_CMD="$CARDREC --data @FILE" AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_ESCALATE_CMD="$2 TARGET FILE" \
+           AMUX_CLEANUP_DISK_FLOOR_GB="$1" AMUX_CLEANUP_HISTORY_CMD="cat $FIX/hist.json" AMUX_CLEANUP_CARD_CMD="$CARDREC --data @FILE" AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="$2 TARGET FILE" \
            bash "$TICK" ${3:-} 2>&1; }
   mkhist 13 0 > "$FIX/hist.json"      # a flat disk: the trend must not fire, only the floor knob
   out=$(tick 0 "$REC"); rm -f "$FIX/sent.log"
@@ -156,6 +194,24 @@ if [ "$(uname)" = Darwin ]; then
   check "the trend line names its source"              "yes" "$(has "$out" 'from history 13 samples over 1.0h')"
   check "with nothing constrained it says none"        "yes" "$(has "$out" 'constraints none')"
   check "and sends nothing"                            "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
+  # A disk constraint starts the scheduled reclaim (SCHED-783) instead of only reporting it.
+  TRIG="$FIX/trig.sh"; printf '#!/bin/bash\necho x >> %s/trig.log\necho "${TRIG_CODE:-204}"\n' "$FIX" > "$TRIG"; chmod +x "$TRIG"
+  ntrig() { [ -f "$FIX/trig.log" ] && grep -c . "$FIX/trig.log" | tr -d ' ' || echo 0; }
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC" --dry-run)
+  check "a dry run says it would start the reclaim"   "yes" "$(has "$out" 'would start the disk reclaim (dry run)')"
+  check "and starts nothing"                          "0"   "$(ntrig)"
+  out=$(TRIG_CODE=500 RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "a refused start is reported with its code"   "yes" "$(has "$out" 'could not start the disk reclaim (http 500)')"
+  check "and does not start the reclaim cooldown"     ""    "$(state_get "$FIX/tick/state" esc_reclaim)"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "a disk constraint starts the reclaim"        "yes" "$(has "$out" 'started the disk reclaim (SCHED-783) (verdict=disk_reclaim_triggered)')"
+  check "the done line counts it"                     "yes" "$(has "$out" 'reclaim_started=1')"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 999999 "$REC")
+  check "inside the cooldown it starts no second one" "yes" "$(has "$out" 'verdict=disk_reclaim_cooldown')"
+  check "two starts were attempted in all (fail, ok)" "2"   "$(ntrig)"
+  out=$(RECLAIM_TRIGGER_STUB="$TRIG" tick 0 "$REC")
+  check "no disk constraint, no start"                "2"   "$(ntrig)"
+  rm -f "$FIX/sent.log" "$FIX/tick/state"   # the escalations above must not shade the cells below
   out=$(tick 999999 "$FAILCMD")
   check "a refused send is reported with its reason"   "yes" "$(has "$out" 'FAILED (1 in a row): target is an isolated worker')"
   check "and does not start the cooldown"              ""    "$(state_get "$FIX/tick/state" esc_disk)"

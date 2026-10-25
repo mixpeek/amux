@@ -1,0 +1,96 @@
+# Builds the native Mac app (desktop/) as one universal zip and publishes it to
+# the `desktop-latest` release, which the README's download link points at.
+# Pull requests build and check it; only main publishes.
+name: desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - desktop/**
+      - scripts/pinned-overlay.swift
+      - scripts/amux-menubar.swift
+      - assets/icon-512.png
+      - .github/workflows/desktop.yml
+  pull_request:
+    paths:
+      - desktop/**
+      - scripts/pinned-overlay.swift
+      - scripts/amux-menubar.swift
+      - assets/icon-512.png
+      - .github/workflows/desktop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal Amux.app
+        run: AMUX_DESKTOP_UNIVERSAL=1 AMUX_DESKTOP_NO_INSTALL=1 ./desktop/build-desktop.sh
+
+      - name: Check the bundle
+        run: |
+          set -euo pipefail
+          archs=$(lipo -archs Amux.app/Contents/MacOS/amux)
+          echo "archs: $archs"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "::error::not universal: $archs"; exit 1; }
+          codesign --verify --deep Amux.app
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Amux.app/Contents/Info.plist
+          # The standalone pin overlay and menu bar readout still build alone.
+          xcrun swiftc -parse-as-library -o /tmp/pinned-overlay scripts/pinned-overlay.swift -framework Cocoa -framework WebKit
+          xcrun swiftc -parse-as-library -o /tmp/amux-menubar scripts/amux-menubar.swift -framework Cocoa -framework WebKit
+
+      - name: Snap zones
+        run: xcrun swiftc -parse-as-library -o /tmp/snapzones desktop/amux-snapzones.swift desktop/test/snapzones-test.swift && /tmp/snapzones
+
+      - name: Pane grid
+        run: xcrun swiftc -parse-as-library -o /tmp/panegrid desktop/amux-panegrid.swift desktop/test/panegrid-test.swift && /tmp/panegrid
+
+      - name: 401 backoff
+        run: xcrun swiftc -parse-as-library -D AMUX_APP -o /tmp/backoff scripts/amux-menubar.swift desktop/test/unauthorized-backoff-test.swift -framework Cocoa -framework WebKit && /tmp/backoff
+
+      - name: Zip
+        run: ditto -c -k --keepParent Amux.app Amux-macOS.zip && ls -l Amux-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Amux-macOS
+          path: Amux-macOS.zip
+          retention-days: 14
+
+      - name: Publish to the desktop-latest release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<NOTES
+          The native amux app for macOS 12 or later (Apple silicon and Intel), built from ${GITHUB_SHA::9}.
+
+          Install (one command; downloads with curl, so macOS does not quarantine it):
+
+              curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/desktop-latest/Amux-macOS.zip -o /tmp/Amux-macOS.zip && ditto -x -k /tmp/Amux-macOS.zip /Applications && open /Applications/Amux.app
+
+          Or download Amux-macOS.zip below, unzip it into Applications, and open it. The app is not notarized yet, so the first time macOS blocks it: open System Settings, Privacy & Security, and click Open Anyway.
+
+          It connects to your amux server (https://localhost:8824 by default, or any URL you enter).
+          NOTES
+          )
+          if ! gh release view desktop-latest >/dev/null 2>&1; then
+            gh release create desktop-latest --target "$GITHUB_SHA" --title "amux for Mac" --notes "$notes" --latest=false
+          else
+            gh release edit desktop-latest --title "amux for Mac" --notes "$notes" --latest=false
+            # Move the tag to this commit so the release names what it ships.
+            git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA:refs/tags/desktop-latest"
+          fi
+          gh release upload desktop-latest Amux-macOS.zip --clobber

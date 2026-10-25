@@ -20,6 +20,16 @@ platform :ios do
       is_key_content_base64: true
     )
 
+    # Sign in with Apple (ServerPickerView) needs the capability on the App ID before match can
+    # mint a profile that carries the entitlement. Idempotent: re-dispatching skips it.
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+    siwa = Spaceship::ConnectAPI::BundleIdCapability::Type::APPLE_ID_AUTH
+    app_id = Spaceship::ConnectAPI::BundleId.find("com.EthanSteininger.nextup")
+    if app_id.get_capabilities.none? { |c| c.capability_type == siwa }
+      app_id.create_capability(siwa, settings: [{ key: "APPLE_ID_AUTH_APP_CONSENT", options: [{ key: "PRIMARY_APP_CONSENT" }] }])
+      UI.message("Enabled Sign in with Apple on com.EthanSteininger.nextup")
+    end
+
     match(
       type: "appstore",
       api_key: api_key,
@@ -41,6 +51,8 @@ platform :ios do
 
     match(type: "appstore", api_key: api_key, readonly: true)
 
+    # Catch-up: a build left processing by the previous run goes out first.
+    distribute_internal
     set_build_number
 
     # NEVER UPLOAD A VERSION APPLE ALREADY APPROVED (2026-09-30). 1.1.0 was
@@ -82,6 +94,53 @@ platform :ios do
       skip_waiting_for_build_processing: true,
       changelog: changelog
     )
+
+    # An upload is not a release to anyone: a build reaches a tester only once
+    # it is in a beta group, and skip_waiting_for_build_processing skips that
+    # step. 1.1.28..1.1.30 sat READY_FOR_BETA_TESTING while the owner's
+    # TestFlight offered 1.1.27 (2026-10-18). Wait for processing, bounded,
+    # then add the build to the internal groups; a build still processing is
+    # picked up by the next run's catch-up below.
+    distribute_internal(wait_minutes: 25)
+  end
+
+  # Add the newest processed build to every INTERNAL beta group, so internal
+  # testers get it in TestFlight. Never touches external groups (those need
+  # Apple's beta review). Prints one verdict line either way.
+  lane :distribute_internal do |options|
+    api_key = app_store_connect_api_key(
+      key_id:        ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id:     ENV["APP_STORE_CONNECT_API_ISSUER_ID"],
+      key_content:   ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true
+    )
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+    bundle_id = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+    app = Spaceship::ConnectAPI::App.find(bundle_id)
+    UI.user_error!("app #{bundle_id} not found") unless app
+    groups = app.get_beta_groups.select(&:is_internal_group)
+    UI.user_error!("no internal beta group") if groups.empty?
+    deadline = Time.now + (options[:wait_minutes] || 0).to_i * 60
+    loop do
+      builds = Spaceship::ConnectAPI.get_builds(filter: { app: app.id }, sort: "-uploadedDate", limit: 5,
+                                                includes: "preReleaseVersion,buildBetaDetail").to_a
+      newest = builds.first
+      UI.user_error!("no builds") unless newest
+      v = newest.pre_release_version ? newest.pre_release_version.version : "?"
+      state = newest.build_beta_detail && newest.build_beta_detail.internal_build_state
+      if newest.processing_state == "VALID" && state == "READY_FOR_BETA_TESTING"
+        newest.add_beta_groups(beta_groups: groups)
+        UI.message("verdict=ios_build_distributed version=#{v} build=#{newest.version} groups=#{groups.map(&:name).join('|')}")
+        break
+      elsif newest.processing_state == "VALID"
+        UI.message("verdict=ios_build_already_distributed version=#{v} build=#{newest.version} internal=#{state}")
+        break
+      elsif Time.now >= deadline
+        UI.important("verdict=ios_build_not_distributed version=#{v} build=#{newest.version} processing=#{newest.processing_state}: still processing; the next run adds it")
+        break
+      end
+      sleep 60
+    end
   end
 
   # Push metadata + screenshots only (no build required)
@@ -135,6 +194,22 @@ platform :ios do
     end
     app.get_review_submissions(filter: { platform: "IOS" }).first(5).each do |sub|
       UI.message("STATUS submission=#{sub.id} state=#{sub.state} submitted=#{sub.submitted_date}")
+    end
+    # TESTFLIGHT, the part a tester actually installs from (2026-10-18: the
+    # nightly uploaded 1.1.28..1.1.30 while the owner's TestFlight offered
+    # only 1.1.27). One line per recent build with the states that decide
+    # whether a tester can see it, then one line per beta group.
+    Spaceship::ConnectAPI.get_builds(filter: { app: app.id }, sort: "-uploadedDate", limit: 12,
+                                     includes: "preReleaseVersion,buildBetaDetail,betaAppReviewSubmission").each do |b|
+      v = b.pre_release_version ? b.pre_release_version.version : "?"
+      d = b.build_beta_detail
+      r = b.beta_app_review_submission
+      UI.message("TESTFLIGHT version=#{v} build=#{b.version} uploaded=#{b.uploaded_date} processing=#{b.processing_state} expired=#{b.expired} " \
+                 "internal=#{d && d.internal_build_state} external=#{d && d.external_build_state} beta_review=#{r ? r.beta_review_state : 'none'}")
+    end
+    app.get_beta_groups.each do |g|
+      testers = (Spaceship::ConnectAPI.get_beta_testers(filter: { betaGroups: g.id }, limit: 50).to_a rescue [])
+      UI.message("TESTFLIGHT group=#{g.name} internal=#{g.is_internal_group} public_link=#{g.public_link_enabled} testers=#{testers.length}")
     end
   end
 

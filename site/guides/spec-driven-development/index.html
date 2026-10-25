@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,23 +20,32 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Spec-Driven Development","item":"https://amux.io/guides/spec-driven-development/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Spec-Driven Development with AI Coding Agents: The Complete Guide (2026)","description":"The practitioner's guide to spec-driven development — writing specs that make AI coding agents produce predictable, reviewable output, especially when running many agents in parallel.","url":"https://amux.io/guides/spec-driven-development/","datePublished":"2026-04-10","dateModified":"2026-08-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Use Spec-Driven Development with AI Coding Agents","description":"Step-by-step guide to writing specs, decomposing them into agent tasks, and running parallel implementation.","step":[{"@type":"HowToStep","name":"Write the spec","text":"Create a markdown file with goal, requirements, constraints, and acceptance criteria. Spend 5-10 minutes per spec. The spec should be complete enough that a competent developer (human or AI) can implement it without asking clarifying questions."},{"@type":"HowToStep","name":"Decompose into independent tasks","text":"Split the spec into tasks that can be implemented in parallel without touching overlapping files. Each task should be completable in 15-45 minutes by one agent."},{"@type":"HowToStep","name":"Push tasks to the board","text":"Create board items linking to each task spec. Each item gets claimed by one agent."},{"@type":"HowToStep","name":"Launch agents in parallel","text":"Start one agent per task, each in its own git worktree. The agent reads the spec and implements against the acceptance criteria."},{"@type":"HowToStep","name":"Review against the spec","text":"Review each agent's output against the spec's acceptance criteria, not against your mental model. If the output meets the criteria, ship it. If not, the spec was incomplete — fix the spec, not the prompt."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is spec-driven development?","acceptedAnswer":{"@type":"Answer","text":"Spec-driven development (SDD) is a workflow where you write a structured specification before any code is written — by you or by an AI agent. The spec defines the goal, requirements, constraints, and acceptance criteria. The agent implements against the spec, and you review against the spec. It replaces the traditional prompt-and-pray approach with a planning-first workflow that produces predictable, reviewable output."}},{"@type":"Question","name":"How is spec-driven development different from prompt engineering?","acceptedAnswer":{"@type":"Answer","text":"A prompt is a one-shot instruction: 'add pagination to the users API.' A spec is a structured document: goal, requirements (cursor-based, keyed on created_at, default 50), constraints (no schema changes, no new dependencies), and acceptance criteria (specific curl commands that must work). Prompts rely on the agent inferring your intent. Specs eliminate inference. The difference in output quality is dramatic."}},{"@type":"Question","name":"How long should a spec be?","acceptedAnswer":{"@type":"Answer","text":"10-30 lines for a typical task. Under 10 lines means you probably left out constraints (and the agent will fill the gaps with guesses). Over 50 lines means you are over-specifying implementation details — let the agent make tactical decisions. The sweet spot: 5-10 minutes of writing that saves 30-60 minutes of back-and-forth and rework."}},{"@type":"Question","name":"What format should specs use?","acceptedAnswer":{"@type":"Answer","text":"Markdown with four sections: Goal (one sentence), Requirements (numbered list of what must be true when done), Constraints (what the agent must NOT do), and Acceptance Criteria (specific commands or tests that prove correctness). Some teams add a fifth section — Context — with pointers to relevant files or docs. The format matters less than completeness."}},{"@type":"Question","name":"Why is spec-driven development important for parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"Without specs, each agent needs human guidance during implementation — questions, clarifications, course corrections. That does not scale to 10 agents. Specs make agents autonomous: each agent gets a complete description of what to build, works independently in its own git worktree, and produces output you can review against objective criteria. Specs are what make the jump from 1 agent to 10 agents possible."}},{"@type":"Question","name":"Should I write specs for small tasks?","acceptedAnswer":{"@type":"Answer","text":"If the task takes less than 10 minutes for a single agent, a spec is overhead. Just describe it in a prompt. Specs pay off when a task is complex enough that the agent might go in the wrong direction — roughly anything that takes more than 15 minutes or touches more than 2-3 files. For parallel fleets, always write specs because unattended agents cannot ask you questions."}},{"@type":"Question","name":"What tools support spec-driven development?","acceptedAnswer":{"@type":"Answer","text":"Any AI coding agent can consume specs — they are just markdown files. Specialized tools include cc-sdd (spec-driven commands for Claude Code), Kiro (spec-driven IDE), and amux (push specs to a kanban board, launch parallel agents, each claims a spec and implements it). The spec format is tool-agnostic; the orchestration layer is where tools differ."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -45,13 +54,6 @@
     <p class="subtitle">Write the spec first. Let agents implement in parallel. Review against acceptance criteria, not vibes. The workflow that makes AI coding predictable.</p>
 
     <!-- EXP-025: top-of-page CTA — spec-driven-development, started 2026-08-11 -->
-    <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.2rem 1.6rem;margin:1.8rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
-      <div>
-        <div style="font-weight:600;margin-bottom:4px;">Run your specs across a fleet of parallel agents tonight</div>
-        <div style="font-size:0.875rem;color:var(--dim);">amux distributes spec tasks to isolated Claude Code, Codex, or Gemini workers — each agent reads the spec, implements in its own worktree, and reports back. Ship 10 specs overnight.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;text-decoration:none;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;font-size:.875rem;white-space:nowrap;flex-shrink:0;" onclick="typeof posthog!=='undefined'&&posthog.capture('exp025_specdriven_topofpage_cta_click')">View amux on GitHub ★</a>
-    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -601,10 +603,12 @@ amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primar
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

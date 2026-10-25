@@ -6,6 +6,7 @@
 // on reconnect. Plus: a new note offline is never lost, and a save is atomic
 // (a concurrent read never sees a half-written file).
 import { test, expect, Page } from './fixtures';
+import { scratchpadDir } from './scratchpad-dir';
 import { boot } from './lifecycle/evidence';
 import { cleanup } from './teardown';
 
@@ -51,9 +52,9 @@ test('a scratchpad edit and a worker send share the offline outbox and both repl
     // Derive the note path by its unique content, robust to same-second name
     // stepping when workers create notes concurrently in the shared Scratchpad.
     const findByMarker = async (m: string) => {
-      const ls = await (await request.get('/api/ls?path=' + encodeURIComponent('~/Vault/Scratchpad') + '&hidden=0', { headers: auth })).json();
+      const ls = await (await request.get('/api/ls?path=' + encodeURIComponent(await scratchpadDir(request, auth)) + '&hidden=0', { headers: auth })).json();
       for (const e of (ls.entries || []).filter((x: any) => String(x.name).endsWith('.md'))) {
-        const path = '~/Vault/Scratchpad/' + e.name;
+        const path = (await scratchpadDir(request, auth)) + '/' + e.name;
         const f = await request.get('/api/file?path=' + encodeURIComponent(path), { headers: auth });
         if (f.ok() && String((await f.json()).content || '').includes(m)) return path;
       }
@@ -128,9 +129,9 @@ test('a new note created offline is queued and lands on disk after reconnect', a
   await page.context().setOffline(false);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect.poll(async () => {
-    const ls = await (await request.get('/api/ls?path=' + encodeURIComponent('~/Vault/Scratchpad') + '&hidden=0', { headers: auth })).json();
+    const ls = await (await request.get('/api/ls?path=' + encodeURIComponent(await scratchpadDir(request, auth)) + '&hidden=0', { headers: auth })).json();
     for (const e of (ls.entries || []).filter((x: any) => String(x.name).endsWith('.md'))) {
-      const f = await request.get('/api/file?path=' + encodeURIComponent('~/Vault/Scratchpad/' + e.name), { headers: auth });
+      const f = await request.get('/api/file?path=' + encodeURIComponent((await scratchpadDir(request, auth)) + '/' + e.name), { headers: auth });
       if (f.ok() && String((await f.json()).content || '').includes(marker)) return true;
     }
     return false;
@@ -142,7 +143,7 @@ test('a save is atomic: a concurrent read never sees a half-written file', async
   test.skip(info.project.name !== 'desktop', 'server-side atomicity holds for all clients; proven once');
   await boot(page);
   const auth = { Authorization: `Bearer ${await token(page)}` };
-  const path = `~/Vault/Scratchpad/atomic-${Date.now()}.md`;
+  const path = (await scratchpadDir(request, auth)) + `/atomic-${Date.now()}.md`;
   const big = (tag: string) => `{"start":"` + tag.repeat(40000) + `","end":"${tag}"}`;
   await request.put('/api/file', { headers: auth, data: { path, content: big('A') } });
   let partial = 0, reads = 0;

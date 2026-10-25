@@ -1579,6 +1579,48 @@ cmd_post() {
   esac
 }
 
+# amux receipts [--keep] [<worker>]: outcomes held so they would not wake you.
+# A clean detached `amux land` writes one here instead of sending a message;
+# the server attaches pending receipts to the next wake it sends anyway (a
+# schedule fire, a goal-keeper continue) and consumes them. Reading them here
+# consumes them too, unless --keep.
+cmd_receipts() {
+  local keep="" who=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep) keep=1 ;;
+      -h|--help) echo "usage: amux receipts [--keep] [<worker>]   (default worker: \$AMUX_WORKER/\$AMUX_SESSION)"; return 0 ;;
+      *) who="$1" ;;
+    esac
+    shift
+  done
+  who="${who:-${AMUX_WORKER:-${AMUX_SESSION:-}}}"
+  [[ -n "$who" ]] || die "amux receipts: name a worker (no AMUX_SESSION in this shell)"
+  local home="${AMUX_HOME:-$HOME/.amux}"
+  RF="$home/receipts/$who.jsonl" KEEP="$keep" python3 - <<'PYEOF'
+import json, os, time
+p = os.environ["RF"]
+if not os.path.exists(p):
+    print("no receipts held")
+    raise SystemExit(0)
+src = p
+if not os.environ.get("KEEP"):
+    src = p + ".reading.%d" % os.getpid()
+    os.rename(p, src)
+lines = [l for l in open(src, errors="replace").read().splitlines() if l.strip()]
+for l in lines:
+    try:
+        d = json.loads(l)
+        when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(d.get("ts", 0)))
+        print("%s %s:\n%s\n" % (when, d.get("from", ""), d.get("text", "").strip()))
+    except Exception:
+        print(l)
+if src != p:
+    os.remove(src)
+print("%d receipt(s)%s" % (len(lines), " (kept)" if os.environ.get("KEEP") else ", now consumed"))
+PYEOF
+}
+
 cmd_send() {
   # --help must not be parsed as a session name (it used to error with
   # "session '--help' not found", so the safe form was undiscoverable).
@@ -1904,7 +1946,7 @@ if d.get("error") or d.get("ok") is False:
     print(f"send to {tgt} FAILED: {d.get('error') or d.get('message') or 'no reason given'}",
           file=sys.stderr)
     sys.exit(2)
-if d.get("held_for_resume"):
+if d.get("held_for_resume") or d.get("held_rate_limited"):
     # AMUX-5237: NOT delivered. Say so first, so a caller skimming for "sent"
     # cannot read a parked message as a landed one.
     print(f"QUEUED for {tgt}, not delivered: {d.get('message', '')}")
@@ -1987,7 +2029,7 @@ if d.get("error") or d.get("ok") is False:
         file=sys.stderr,
     )
     sys.exit(2)
-if d.get("held_for_resume"):
+if d.get("held_for_resume") or d.get("held_rate_limited"):
     print(f"QUEUED for {tgt} (retry {attempt} after {waited}s), not delivered: {d.get('message', '')}")
     sys.exit(0)
 if os.environ.get("_R_PENDING") == "1":
@@ -2071,15 +2113,29 @@ cmd_stop() {
   local tname
   tname=$(tmux_name "$name")
   if is_running "$name"; then
-    tmux kill-session -t "=$tname"
-    echo "${RED}stopped${RESET} $name"
+    # The server's stop records session.stopped/api-stop, which is what
+    # board-drive, auto-resume and the watchdog read as "stopped on purpose".
+    # A bare tmux kill left no record, so board-drive read the dead lane as
+    # idle with eligible work and restarted it 13s later (SCHED-776, MF-4369).
+    # Kill tmux directly only when the server cannot be reached.
+    if _stop_via_api "$name"; then
+      local waited=0
+      while is_running "$name" && (( waited < 30 )); do
+        sleep 1; waited=$((waited + 1))
+      done
+    else
+      tmux kill-session -t "=$tname"
+      echo "${RED}stopped${RESET} $name (tmux killed: server unreachable, the stop is not recorded and board automation may restart it)" >&2
+    fi
   else
     echo "${DIM}$name is not running${RESET}"
   fi
 
   # Clean up worktree if one exists for this session
   local wt_dir="$CC_HOME/worktrees/$name"
-  if [[ -d "$wt_dir" ]]; then
+  if [[ -d "$wt_dir" ]] && is_running "$name"; then
+    echo "  ${DIM}worktree kept: $name is still stopping ($wt_dir)${RESET}"
+  elif [[ -d "$wt_dir" ]]; then
     # Resolve the repo that owns this worktree from the .git file
     local repo_dir=""
     if [[ -f "$wt_dir/.git" ]]; then
@@ -5413,6 +5469,296 @@ USAGE
 }
 
 
+# ── amux export / amux import: the move bundle (cloud-self-service.md 7.1) ──
+# One JSON file carries a whole server: config (the `amux iac` document) plus
+# allowlisted data (board cards and their history, schedules, memories, CRM,
+# messages, skills, calendar, journal). Never secrets: the server's export has
+# no token, credential or env table, and its import refuses any table off the
+# allowlist. Import only ADDS rows (existing ones are left as they are) and
+# always shows a dry run first.
+cmd_export() {
+  local out="" from="${AMUX_API:-https://localhost:8824}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) from="${2:?--from needs a URL}"; shift 2 ;;
+      -h|--help)
+        echo "usage: amux export [file] [--from <url>]"
+        echo "  writes the move bundle (default amux-<host>-<YYYYMMDD>.amuxmove.json)"
+        echo "  then: amux import <file> --to https://<you>.amux.io"
+        return 0 ;;
+      -*) die "amux export: unknown option '$1'" ;;
+      *) out="$1"; shift ;;
+    esac
+  done
+  [[ -n "$out" ]] || out="amux-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d).amuxmove.json"
+  local dir tmp code
+  dir="$(dirname "$out")"
+  [[ -d "$dir" ]] || die "amux export: directory $dir does not exist"
+  # Write beside the target and rename, so a failed export never leaves a
+  # truncated bundle under the real name. 0600: it holds your cards and contacts.
+  tmp="$(mktemp "$dir/.amuxmove.XXXXXX")" || die "amux export: cannot write in $dir"
+  chmod 600 "$tmp"
+  code=$(_curl -sk --max-time 600 -o "$tmp" -w '%{http_code}' "${from%/}/api/move/export") || code="000"
+  if [[ "$code" != "200" ]]; then
+    local why; why=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$tmp" 2>/dev/null) || why=""
+    [[ "$code" == "000" ]] && why="could not reach the server"
+    rm -f "$tmp"
+    die "amux export: ${from%/}/api/move/export answered HTTP $code${why:+: $why}"
+  fi
+  python3 - "$tmp" <<'PY' || { rm -f "$tmp"; die "amux export: the server did not return a move bundle"; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+if d.get("format") != "amuxmove":
+    sys.exit(1)
+counts = d.get("counts") or {k: len(v) for k, v in (d.get("tables") or {}).items()}
+total = sum(counts.values())
+cfg = d.get("config") or {}
+print("exported %d rows (schema %s, commit %s)" % (total, d.get("schema_version"), d.get("source_commit")))
+for k, v in sorted(counts.items()):
+    if v:
+        print("  %-20s %d" % (k, v))
+print("  %-20s %d workers, %d columns" % ("config", len(cfg.get("workers") or []), len(cfg.get("columns") or [])))
+PY
+  mv "$tmp" "$out"
+  echo "wrote $out"
+  echo "Move it to amux Cloud: amux import $out --to https://<you>.amux.io --user <email>"
+}
+
+cmd_import() {
+  local file="" to="" user="" yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --to) to="${2:?--to needs a URL}"; shift 2 ;;
+      --user) user="${2:?--user needs an email}"; shift 2 ;;
+      -y|--yes) yes=1; shift ;;
+      -h|--help)
+        cat <<'USAGE'
+usage: amux import <file> [--to <url>] [--user <email>] [--yes]
+  Shows a dry run (rows new vs already there, config changes), then applies
+  only with --yes or a typed y. Existing rows are never overwritten.
+  --to    another amux server, e.g. https://<you>.amux.io (default: this one)
+  --user  account email for an amux Cloud server; the password is read from
+          AMUX_IMPORT_PASSWORD or prompted for (never passed on the command line)
+USAGE
+        return 0 ;;
+      -*) die "amux import: unknown option '$1'" ;;
+      *) file="$1"; shift ;;
+    esac
+  done
+  [[ -n "$file" ]] || die "usage: amux import <file> [--to <url>] [--user <email>] [--yes]"
+  [[ -r "$file" ]] || die "amux import: cannot read $file"
+  local base="${to:-${AMUX_API:-https://localhost:8824}}"
+  base="${base%/}"
+  # Basic auth goes to curl through a config on stdin (-K -), so the password
+  # is never in argv, the process list or a breadcrumb.
+  local pass="" authcfg=""
+  if [[ -n "$user" ]]; then
+    pass="${AMUX_IMPORT_PASSWORD:-}"
+    if [[ -z "$pass" ]]; then
+      [[ -t 0 ]] || die "amux import: set AMUX_IMPORT_PASSWORD (no terminal to prompt on)"
+      read -rs -p "Password for $user at $base: " pass; echo >&2
+    fi
+    local esc_user="${user//\\/\\\\}"; esc_user="${esc_user//\"/\\\"}"
+    local esc_pass="${pass//\\/\\\\}"; esc_pass="${esc_pass//\"/\\\"}"
+    authcfg="user = \"${esc_user}:${esc_pass}\""
+  fi
+  local resp code
+  resp="$(mktemp "${TMPDIR:-/tmp}/amux-import.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$resp'" EXIT
+  # Sent gzipped: a board with years of history is hundreds of MB of JSON.
+  local gz; gz=$(mktemp -t amuxmove.XXXXXX) || die "amux import: no temp file"
+  # shellcheck disable=SC2064  # expanded now on purpose: the paths are locals
+  # Expanded now on purpose: both paths are locals, gone by the time EXIT fires.
+  # shellcheck disable=SC2064
+  trap "rm -f '$resp' '$gz'" EXIT
+  gzip -c "$file" > "$gz" || die "amux import: could not compress $file"
+  _move_post() {  # $1 = dry_run value
+    printf '%s\n' "$authcfg" | _curl -sk --max-time 1800 -K - -o "$resp" -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' --data-binary "@$gz" \
+      "$base/api/move/import?dry_run=$1"
+  }
+  code=$(_move_post 1) || code="000"
+  case "$code" in
+    200) ;;
+    401) die "amux import: $base refused the sign-in (HTTP 401). Check --user and the password." ;;
+    403) die "amux import: $base refused the import (HTTP 403): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null). Only the server owner can import." ;;
+    *) die "amux import: dry run failed (HTTP $code): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null || head -c 300 "$resp")" ;;
+  esac
+  local new
+  new=$(python3 - "$resp" "$base" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("Dry run against %s (nothing written yet):" % sys.argv[2], file=sys.stderr)
+new = 0
+for name, t in sorted((d.get("tables") or {}).items()):
+    new += t.get("new", 0)
+    print("  %-20s %5d new  %5d already there" % (name, t.get("new", 0), t.get("existing", 0)), file=sys.stderr)
+    for s in t.get("skipped") or []:
+        print("    skipped: %s" % s.get("reason"), file=sys.stderr)
+cfg = d.get("config") or {}
+changes = cfg.get("changed") or []
+print("  config: %s" % cfg.get("summary", ""), file=sys.stderr)
+for c in changes:
+    print("    would change %s" % c, file=sys.stderr)
+if d.get("note"):
+    print("  " + d["note"], file=sys.stderr)
+print(new + len(changes))
+PY
+) || die "amux import: could not read the dry-run answer"
+  if [[ "$new" == "0" ]]; then
+    echo "Nothing to import: everything in $file is already on $base."
+    return 0
+  fi
+  if [[ "$yes" != 1 ]]; then
+    if [[ -t 0 ]]; then
+      local ans; read -r -p "Apply this import to $base? [y/N] " ans
+      [[ "$ans" == y || "$ans" == Y || "$ans" == yes ]] || { echo "Not applied."; return 0; }
+    else
+      echo "Not applied. Re-run with --yes to import."
+      return 0
+    fi
+  fi
+  code=$(_move_post 0) || code="000"
+  [[ "$code" == 200 || "$code" == 207 ]] || die "amux import: apply failed (HTTP $code): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error",""))' "$resp" 2>/dev/null)"
+  python3 - "$resp" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("summary", "imported"))
+for name, t in sorted((d.get("tables") or {}).items()):
+    if t.get("new") or t.get("skipped"):
+        print("  %-20s %5d imported" % (name, t.get("new", 0)))
+    for s in t.get("skipped") or []:
+        print("    skipped: %s" % s.get("reason"))
+cfg = d.get("config") or {}
+print("  config: %s" % cfg.get("summary", ""))
+for e in cfg.get("errors") or []:
+    print("    ERROR %s: %s" % (e.get("item"), e.get("error")))
+if d.get("note"):
+    print(d["note"])
+PY
+}
+
+# Map pins from the command line (2026-10-20), so a worker can add and curate
+# places: `amux map add "Joe's Pizza" place="Joe's Pizza Greenwich Village"
+# group=Pizza status=want`. Pins are rows on the server (map_store.rs); a pin
+# with at=<date> also gets a calendar event.
+cmd_map() {
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  local hdr=(-H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}")
+  case "$sub" in
+    ls|list)
+      _curl -sk "$AMUX_API/api/map" | python3 -c '
+import json, sys
+d = json.load(sys.stdin); args = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
+tags = {t["id"]: t["name"] for t in d.get("tags", [])}
+want_group = args.get("group", "").lower(); want_status = args.get("status", ""); q = args.get("q", "").lower()
+n = 0
+for p in d.get("pins", []):
+    names = [tags.get(t, t) for t in p.get("tags", [])]
+    if want_group and want_group not in [x.lower() for x in names]: continue
+    if want_status and (p.get("status") or "") != want_status: continue
+    if q and q not in " ".join([p.get("name", ""), p.get("desc", ""), p.get("notes", "")] + names).lower(): continue
+    n += 1
+    stars = "*" * (p.get("myRating") or 0)
+    print("%-28s %-9s %-5s %s  [%s]" % (p["id"], p.get("status") or "-", stars, p.get("name", ""), ", ".join(names)))
+print("%d pin(s)" % n, file=sys.stderr)' "$@"
+      ;;
+    add)
+      [ $# -gt 0 ] || die "Usage: amux map add \"Name\" (lat=.. lng=.. | place=\"search text\") [group=A,B] [status=want|been|favorite|closed] [rating=1-5] [desc=..] [note=..] [thumb=IMAGE_URL] [at=YYYY-MM-DD[THH:MM]]"
+      local map_json; map_json=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
+      local place_q; place_q=$(python3 -c 'import sys
+for a in sys.argv[1:]:
+    if a.startswith("place="): print(a[6:])' "$@")
+      local search_json="[]"
+      if [ -n "$place_q" ]; then
+        search_json=$(_curl -sk "$AMUX_API/api/map/search?q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$place_q")")
+      fi
+      local json; json=$(MAP_JSON="$map_json" SEARCH_JSON="$search_json" python3 -c '
+import json, os, sys
+m = json.loads(os.environ["MAP_JSON"]); found = json.loads(os.environ["SEARCH_JSON"] or "[]")
+pin = {"tags": []}; name = []
+by_name = {t["name"].lower(): t["id"] for t in m.get("tags", [])}
+for a in sys.argv[1:]:
+    if "=" not in a or a.startswith("="): name.append(a); continue
+    k, v = a.split("=", 1)
+    if k in ("lat", "lng"): pin[k] = float(v)
+    elif k == "rating": pin["myRating"] = int(v)
+    elif k == "status": pin["status"] = v
+    elif k in ("group", "groups"):
+        for g in [x.strip() for x in v.split(",") if x.strip()]:
+            if g.lower() not in by_name: sys.exit("amux map: no group called %r (groups: %s)" % (g, ", ".join(sorted(t["name"] for t in m.get("tags", [])))))
+            pin["tags"].append(by_name[g.lower()])
+    elif k in ("note", "notes"): pin["notes"] = v
+    elif k == "desc": pin["desc"] = v
+    elif k in ("thumb", "thumbnail"): pin["thumbnail"] = v
+    elif k == "at": pin["eventAt"] = v
+    elif k == "place": pass
+    else: sys.exit("amux map: unknown field %r" % k)
+pin["name"] = " ".join(name)
+if "lat" not in pin:
+    if not found: sys.exit("amux map: give lat= and lng=, or place=\"...\" that the place search can find")
+    r = found[0]; pin["lat"] = float(r["lat"]); pin["lng"] = float(r["lon"])
+    if r.get("place_id"): pin["placeId"] = r["place_id"]
+    if r.get("photo_name"): pin["photoName"] = r["photo_name"]
+    pin.setdefault("desc", r.get("display_name", ""))
+    if not pin["name"]: pin["name"] = r.get("name", "Pin")
+print(json.dumps(pin))' "$@") || exit 1
+      _curl -sk -X POST "${hdr[@]}" -d "$json" "$AMUX_API/api/map/pins" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+p = d["pin"]; print(p["id"], "added:", p.get("name"), "(%s, %s)" % (p["lat"], p["lng"]) + (" calendar " + p["calEventId"] if p.get("calEventId") else ""))'
+      ;;
+    set)
+      local pid="${1:-}"; [ -n "$pid" ] || die "Usage: amux map set PIN_ID status=been rating=5 [note=..] [desc=..] [thumb=IMAGE_URL] [at=..] [name=..]"
+      shift; [ $# -gt 0 ] || die "amux map set: nothing to set. Give key=value pairs."
+      local cur; cur=$(_curl -sk "$AMUX_API/api/map") || die "amux map: the server did not answer"
+      local json; json=$(MAP_JSON="$cur" python3 -c '
+import json, os, sys
+m = json.loads(os.environ["MAP_JSON"]); pid = sys.argv[1]
+p = next((x for x in m.get("pins", []) if x.get("id") == pid), None)
+if not p: sys.exit("amux map: no pin %s" % pid)
+for a in sys.argv[2:]:
+    k, _, v = a.partition("=")
+    if k == "rating": p["myRating"] = int(v) if v else None
+    elif k in ("status", "desc", "name"): p[k] = v
+    elif k in ("note", "notes"): p["notes"] = v
+    elif k in ("thumb", "thumbnail"):
+        if v: p["thumbnail"] = v
+        else: p.pop("thumbnail", None)
+    elif k == "at": p["eventAt"] = v
+    else: sys.exit("amux map: unknown field %r" % k)
+print(json.dumps(p))' "$pid" "$@") || exit 1
+      _curl -sk -X PUT "${hdr[@]}" -d "$json" "$AMUX_API/api/map/pins/$pid" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+print(d["pin"]["id"], d.get("result"))'
+      ;;
+    visits)
+      _curl -sk -X POST "${hdr[@]}" "$AMUX_API/api/map/visits/match" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+print("%s pins have visits, %s updated, %s newly marked been (from %s visits)" % (d.get("pins_with_visits"), d.get("updated"), d.get("marked_been"), d.get("visits_considered")))'
+      ;;
+    dups|duplicates)
+      _curl -sk "$AMUX_API/api/map/duplicates" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+for x in d.get("pairs", []): print("%s | %s  (%s, %sm)  amux map merge %s %s" % (x["a"]["name"], x["b"]["name"], x["reason"], x["distance_m"], x["a"]["id"], x["b"]["id"]))
+print("%d pair(s) among %s pins" % (len(d.get("pairs", [])), d.get("n_considered")), file=sys.stderr)'
+      ;;
+    merge)
+      [ $# -eq 2 ] || die "Usage: amux map merge KEEP_ID DROP_ID"
+      _curl -sk -X POST "${hdr[@]}" -d "$(python3 -c 'import json,sys;print(json.dumps({"keep":sys.argv[1],"drop":sys.argv[2]}))' "$1" "$2")" "$AMUX_API/api/map/pins/merge" | python3 -c '
+import json, sys; d = json.load(sys.stdin)
+if not d.get("ok"): print("error:", d.get("error", d), file=sys.stderr); sys.exit(1)
+print("merged into", d["pin"]["id"])'
+      ;;
+    *) die "Usage: amux map ls [status=..] [group=..] [q=..] | add | set | visits | dups | merge" ;;
+  esac
+}
+
 # ── CRM ──────────────────────────────────────────────────────────────────────
 # AMUX-2932. Global ~/.claude/CLAUDE.md has documented `amux crm add` to every
 # session in every project for months; the verb did not exist and the HTTP API
@@ -5630,6 +5976,9 @@ Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
 Verify the intended page effect after each action; ok means dispatch only.
 If the session cannot accomplish the goal:
 amux browser route advance '{"reason":"describe the unmet goal"}'
+Hand a whole task to a browser agent method (browser-methods.toml), which
+drives this route itself and returns its answer and a trajectory:
+amux browser route goal '{"task":"what to do","agent":"opagent"}'
 Cold CUA provisioning can take up to 30 minutes. Use amux browser route status
 while a background request runs. pending means wait for that task; do not queue
 another state/action request. Never kill processes; route stop cleans your lane.
@@ -6138,6 +6487,9 @@ ${BOLD}Interaction:${RESET}
 
 ${BOLD}Coordination:${RESET}
   amux land [--branch main]      Rebase and push HEAD holding a per-repo lock, so lanes queue instead of racing
+  amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
+  amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
+  amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
@@ -6163,6 +6515,13 @@ ${BOLD}Web Dashboard:${RESET}
                                  installed service 8824, bare default 8823;
                                  8822 is retired — the compat bind is gone)
 
+${BOLD}Move (local and amux Cloud):${RESET}
+  amux export [file]             Write this server's move bundle: config plus cards,
+                                 schedules, memories, CRM, messages. No secrets.
+  amux import <file> [--to <url>] [--user <email>] [--yes]
+                                 Dry run, then add the rows (never overwrites).
+                                 ${DIM}amux import amux-*.amuxmove.json --to https://<you>.amux.io${RESET}
+
 ${BOLD}CRM:${RESET}
   amux crm list [query]          List contacts (search name/company/role)
   amux crm get PPL-1             One contact, with tags and recent interactions
@@ -6170,6 +6529,14 @@ ${BOLD}CRM:${RESET}
   amux crm update PPL-1 k=v      Update whitelisted fields
   amux crm log PPL-1 "notes"     Log an interaction (follow_up_date=YYYY-MM-DD)
   amux crm followups             Pending follow-ups, soonest first
+
+${BOLD}Map pins:${RESET}
+  amux map ls [status=want] [group=Coffee] [q=..]   List pins
+  amux map add "Name" place="search text"           Add a pin found by place search (or lat= lng=)
+                 [group=A,B] [status=want] [rating=4] [note=..] [at=2026-11-01T19:00 adds a calendar event]
+  amux map set PIN status=been rating=5             Change a pin
+  amux map visits                                   Mark pins "been" from location history
+  amux map dups | amux map merge KEEP DROP          Find and merge duplicate pins
 
 ${BOLD}Board:${RESET}
   amux board ls                  List all board issues
@@ -6211,6 +6578,7 @@ ${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${R
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
   amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
+  amux requests [W|--all] [--open] The owner's requests to a worker: open, on main, live, or closed
 
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
   amux alert "message" [reason]  Fire an immediate alert to the amux owner
@@ -6263,8 +6631,9 @@ cmd_resources() {
         cat <<'HELP'
 Usage: amux resources [--worker <name>] [--json]
 
-The machine's capacity and pressure, the heaviest workers, and one worker's own
-CPU and memory (default: $AMUX_SESSION) against its declared resource profile.
+The machine's capacity and pressure, the heaviest workers by CPU, where the CPU
+no worker owns is going (VMs, detached processes, apps, macOS), and one worker's
+own CPU and memory (default: $AMUX_SESSION) against its declared resource profile.
 Declare a profile with AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab.
 Run this before heavy work: builds, test suites, browsers, simulators, containers.
 HELP
@@ -6294,14 +6663,28 @@ if p.get('reasons'):
 if p.get('why_unmeasured'):
     line += '  [%s]' % p['why_unmeasured']
 print(line)
-print('Workers  %d running, %.1f GB between them (of %d registered)' % (d.get('workers_running', 0), d.get('workers_rss_mb', 0) / 1024, d.get('n_considered', 0)))
-for r in d.get('top_by_memory') or []:
-    print('  %-28s %5.1f GB  %5.0f%% CPU  %3d procs' % (r['name'][:28], r['rss_mb'] / 1024, r['cpu_percent'], r['n_processes']))
+m = d.get('machine') or {}
+if m.get('measured'):
+    cap = m.get('capacity_percent') or 100.0
+    print('  cpu     %.0f%% of %.0f%% busy: workers %.0f%%, everything else %.0f%%  (sample %ss old)' % (
+        m['cpu_percent_total'], cap, m['workers_cpu_percent'], m['unattributed_cpu_percent'], m.get('sample_age_s', '?')))
+else:
+    print('  cpu     not attributed: %s' % m.get('why_unmeasured', 'no sample'))
+print('Workers  %d running, %.1f GB between them, heaviest CPU first' % (d.get('workers_running', 0), d.get('workers_rss_mb', 0) / 1024))
+for r in d.get('top_by_cpu') or d.get('top_by_memory') or []:
+    print('  %-28s %5.0f%% CPU  %5.1f GB  %3d procs' % (r['name'][:28], r['cpu_percent'], r['rss_mb'] / 1024, r['n_processes']))
+if m.get('measured') and m.get('unattributed_cpu_percent', 0) > 0:
+    kinds = sorted((m.get('by_kind') or {}).items(), key=lambda kv: -kv[1])
+    print('Rest     ' + ', '.join('%s %.0f%%' % (k, v) for k, v in kinds if v >= 1))
+    for o in (m.get('top_unattributed') or [])[:5]:
+        if o['cpu_percent'] < 10:
+            break
+        print('  %-10s %5.0f%% CPU  %5.1f GB  %3d procs  pid %d %s' % (o['kind'], o['cpu_percent'], o['rss_mb'] / 1024, o['n_processes'], o['root_pid'], o['command'].rsplit('/', 1)[-1][:40]))
 w = d.get('worker')
 if w:
     print('You      %s' % w['name'])
     if w.get('measured'):
-        print('  using   %.0f%% CPU, %.2f GB in %d processes (%.0f%% of all worker memory)' % (w['cpu_percent'], w['rss_mb'] / 1024, w['n_processes'], 100 * w.get('share_of_worker_memory', 0)))
+        print('  using   %.0f%% CPU (%.1f%% of the machine), %.2f GB in %d processes (%.0f%% of all worker memory)' % (w['cpu_percent'], 100 * w.get('share_of_machine_cpu', 0), w['rss_mb'] / 1024, w['n_processes'], 100 * w.get('share_of_worker_memory', 0)))
     else:
         print('  using   unknown: %s' % w.get('why_unmeasured'))
     pr = w.get('profile') or {}
@@ -6425,13 +6808,27 @@ print(json.dumps(d))' 2>/dev/null) || die "amux order: bad --amount (must be a n
   ok=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("1" if d.get("ok") else "0")' 2>/dev/null || echo 0)
   if [[ "$ok" == "1" ]]; then
     filled=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(", ".join(d.get("filled",[])))' 2>/dev/null || echo "?")
+    # GE-1121: an empty fill is not a filled form, whatever the server said.
+    if [[ -z "$filled" ]]; then
+      echo "amux order: the harness filled no field on this page; nothing was filled or submitted" >&2
+      return 1
+    fi
     echo "order form filled by the harness (fields: $filled)"
     local submitted
     submitted=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d.get("submit",{}); print("yes" if s.get("submitted") else "no")' 2>/dev/null || echo "?")
     [[ "$submitted" == "yes" ]] && echo "order submitted"
   else
     local emsg
-    emsg=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error","unknown error"))' 2>/dev/null || echo "$result")
+    emsg=$(echo "$result" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(d.get("error","unknown error"))
+if d.get("filled") is not None: print("  filled:     " + (", ".join(d.get("filled") or []) or "none"))
+if d.get("not_found"): print("  not found:  " + ", ".join(d["not_found"]))
+for m in d.get("mismatched") or []:
+  print("  did not take: %s (field %s, %s)" % (m.get("key"), m.get("field"),
+    "no option selected" if m.get("selected_index") == -1 else "wanted %s chars, holds %s" % (m.get("expected_len"), m.get("actual_len"))))
+if d.get("submitted") is False: print("  nothing was submitted")' 2>/dev/null || echo "$result")
     echo "amux order: $emsg" >&2
     return 1
   fi
@@ -6876,6 +7273,11 @@ cmd_whoami() {
     live_id="${live_id#amux-}"
   fi
   echo "env  AMUX_SESSION : ${env_id:-'(unset)'}"
+  # An isolated worker is launched with AMUX_SESSION unset (it is the hooks'
+  # routing key) and AMUX_ISOLATED_WORKER set to its name, as identity only.
+  if [[ -n "${AMUX_ISOLATED_WORKER:-}" ]]; then
+    echo "isolated worker  : ${AMUX_ISOLATED_WORKER} (identity only; hooks and routing stay off)"
+  fi
   if [[ -n "$live_id" ]]; then
     echo "live tmux pane   : $live_id"
     if [[ -n "$env_id" && "$env_id" != "$live_id" ]]; then
@@ -7125,6 +7527,213 @@ ${BOLD}amux signal${RESET} — wait on, or raise, a named clearance signal
 USAGE
 }
 
+# VERSIONED LAND CONFIG (mxp-gs12 review, 2026-10-18). Every amux.land* key
+# used to be read from the checkout's own .git/config, which no commit can
+# change. On 2026-10-16 a Mixpeek refactor moved server/scripts and its
+# amux.landRegenerate still ran server/scripts/generate_openapi.py, so every
+# land for about 21 hours pushed unrendered while the land logged only a WARN.
+# A repository now declares these keys in `.amux/land.conf` (git-config syntax:
+# an [amux] section with the same key names, e.g. `landRegenerate = ...`), read
+# from COMMITTED bytes: the remote branch for queue keys and the tree being
+# pushed for the regenerate keys, so a commit that moves a generator updates
+# the command in the same commit. A key the file does not declare still falls
+# back to .git/config, with one WARN per key per land
+# (verdict=land_config_unversioned), so a sweep finds the repositories that
+# still depend on unversioned state.
+#
+# _land_cfg [--at <rev>] <git config args...>: like `git config <args>`.
+_land_cfg() {
+  local rev="${remote:-origin}/${branch:-main}" out key
+  if [ "${1:-}" = --at ]; then rev="${2:-}"; shift 2; fi
+  key="${*: -1}"
+  if [ -n "$rev" ] && git cat-file -e "$rev:.amux/land.conf" 2>/dev/null; then
+    if out="$(git config --blob "$rev:.amux/land.conf" "$@" 2>/dev/null)"; then
+      printf '%s\n' "$out"; return 0
+    fi
+  fi
+  out="$(git config "$@" 2>/dev/null)" || return 1
+  # Once per key per land process. Most reads run in a $( ) subshell, where a
+  # shell variable would not survive, so the record is a file named by the
+  # land's pid ($$ is the same in every subshell of one land).
+  local seen="${TMPDIR:-/tmp}/amux-land-cfgwarn.$$"
+  if ! grep -qxF -- "$key" "$seen" 2>/dev/null; then
+    printf '%s\n' "$key" >> "$seen" 2>/dev/null || true
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'amux-land-cfgwarn.*' -mtime +1 -delete 2>/dev/null || true
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" \
+      "WARN verdict=land_config_unversioned key=$key: read from this checkout's .git/config, which no commit can change; declare it in .amux/land.conf (git-config syntax, [amux] section) so the commit that changes what it depends on can change it too" \
+      >> "$HOME/.amux/logs/land.log" 2>/dev/null || true
+    echo "amux land: WARN $key comes from unversioned .git/config; move it into .amux/land.conf (verdict=land_config_unversioned)" >&2
+  fi
+  printf '%s\n' "$out"
+}
+
+# LAND GUARDS (mxp-gs12 review, 2026-10-18), one helper with two modes, run on
+# a lane's own range <base>..<tip> before it queues and again by the holder
+# (the main branch may have moved, and a freeze may have landed, meanwhile).
+#
+# freeze: `.amux/land.conf` on the remote branch may declare
+#     [freeze "gs12-proofs"]
+#         path = proofs/*          (a glob; * also matches /; repeatable)
+#         until = 2026-10-24T00:00:00Z
+#         owner = mxp-gs12
+#         reason = row proofs are pinned to the freeze commit
+# A land whose commits change a frozen path is refused, naming the freeze.
+# GS-12's checker failed every row whose proven paths moved after the proof,
+# and 640 commits moved them because nothing at land time knew they were
+# frozen. The escape is explicit and recorded: a `Freeze-Override: <name>:
+# <why>` trailer on the commit (kept in history), or
+# AMUX_LAND_FREEZE_OVERRIDE='<name>: <why>' for this lane's own land; both log
+# verdict=land_freeze_override. .amux/land.conf itself is never frozen, so a
+# freeze can always be lifted by a land. An expired freeze is ignored and
+# counted.
+#
+# message: a commit whose full message is identical to a commit already on
+# the remote branch, while the two change disjoint files, is refused
+# (verdict=land_message_reused). 812b83ca5d8 (2026-10-12) carried another
+# change's subject and body: the lane's commit had been made from a shared
+# index holding a peer's staged files under a message reused from e487b5d14e3,
+# which had landed two hours earlier, and land pushed it faithfully. Repeated
+# messages over the SAME files (a ledger's "lane lines (auto-land)") pass.
+# AMUX_LAND_ALLOW_REUSED_MESSAGE=1 lands it anyway, logged.
+#
+# Prints one line per finding; rc 1 when refused, 3 when the guard itself crashed (logged as unmeasured, never a refusal), 0 otherwise. The first line
+# is always a verdict with measured/n_considered.
+_LAND_GUARD_PY='
+import fnmatch, os, re, subprocess, sys, time
+from datetime import datetime, timezone
+def _crash(t, v, tb):
+    print("guard error: %s: %s" % (t.__name__, v))
+    sys.stdout.flush(); os._exit(3)
+sys.excepthook = _crash
+mode, conf_rev, base, tip = sys.argv[1:5]
+def git(*a):
+    r = subprocess.run(("git",) + a, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+commits = (git("rev-list", "--reverse", base + ".." + tip) or "").split()
+def files(c):
+    return [f for f in (git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", c) or "").splitlines() if f]
+def body(c):
+    return git("log", "-1", "--format=%B", c) or ""
+if mode == "freeze":
+    raw = git("config", "--blob", conf_rev + ":.amux/land.conf", "--get-regexp", r"^freeze\.") or ""
+    fz = {}
+    for line in raw.splitlines():
+        k, _, v = line.partition(" ")
+        name, _, field = k[len("freeze."):].rpartition(".")
+        fz.setdefault(name, {"path": []})
+        if field == "path":
+            fz[name]["path"].append(v)
+        else:
+            fz[name][field] = v
+    now = time.time(); active = {}; expired = []
+    for n, f in fz.items():
+        u = f.get("until", "")
+        if u:
+            try:
+                t = datetime.fromisoformat(u.replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t.timestamp() <= now:
+                    expired.append(n); continue
+            except ValueError:
+                pass
+        if f["path"]:
+            active[n] = f
+    env_ov = os.environ.get("AMUX_LAND_FREEZE_OVERRIDE", "") if os.environ.get("AMUX_LAND_FREEZE_OWN") == "1" else ""
+    print("verdict=land_freeze_checked measured=true n_considered=%d active=%d expired=%d%s" % (
+        len(commits), len(active), len(expired), (" expired_names=" + ",".join(expired)) if expired else ""))
+    refused = 0
+    for c in commits:
+        msg = body(c)
+        ovs = {m.group(1).strip(): m.group(2).strip() for m in re.finditer(r"(?mi)^Freeze-Override:\s*([^:\n]+):\s*(\S.*)$", msg)}
+        if env_ov and ":" in env_ov:
+            n, _, why = env_ov.partition(":")
+            ovs.setdefault(n.strip(), why.strip() + " (AMUX_LAND_FREEZE_OVERRIDE)")
+        for p in files(c):
+            if p == ".amux/land.conf":
+                continue
+            for n, f in active.items():
+                if not any(fnmatch.fnmatchcase(p, g) for g in f["path"]):
+                    continue
+                if n in ovs and ovs[n]:
+                    print("verdict=land_freeze_override freeze=%s commit=%s path=%s reason=%s" % (n, c[:11], p, ovs[n][:200]))
+                    continue
+                refused += 1
+                print("refused: %s changes %s, frozen by freeze %r (owner %s, until %s: %s)" % (
+                    c[:11], p, n, f.get("owner", "?"), f.get("until", "no end date"), f.get("reason", "no reason given")))
+                break
+    if refused:
+        print("hint: land it after the freeze ends, add a trailer \"Freeze-Override: <freeze>: <why>\" to that commit (recorded in history and land.log), or lift the freeze in .amux/land.conf")
+    sys.exit(1 if refused else 0)
+if mode == "message":
+    n = int(os.environ.get("AMUX_LAND_REUSED_MESSAGE_SCAN", "2000"))
+    log = git("log", "-n", str(n), "--format=%H%x00%B%x01", conf_rev) or ""
+    seen = {}
+    for rec in log.split("\x01"):
+        h, _, b = rec.lstrip("\n").partition("\x00")
+        if h and b.strip():
+            seen.setdefault(b.strip(), h)
+    print("verdict=land_message_checked measured=%s n_considered=%d scanned=%d" % ("true" if log else "false", len(commits), len(seen)))
+    refused = 0
+    for c in commits:
+        b = body(c).strip()
+        o = seen.get(b)
+        if not o or o == c:
+            continue
+        mine, theirs = set(files(c)), set(files(o))
+        if mine and not (mine & theirs):
+            refused += 1
+            print("refused: verdict=land_message_reused %s carries the exact message of %s, already on the remote (%s), but changes none of its files: %s. Its own change has the wrong message; recommit it with a message that describes it" % (
+                c[:11], o[:11], b.splitlines()[0][:80], ", ".join(sorted(mine))[:300]))
+    sys.exit(1 if refused else 0)
+'
+
+# _land_guards <me> <log> <base> <tip> [own]: run both guards on <base>..<tip>
+# against the remote branch, log every verdict line, print refusals to
+# stderr. rc 4 when either refuses. "own" lets AMUX_LAND_FREEZE_OVERRIDE apply
+# (only to the lane's own commits, never to a batched waiter's).
+_land_guards() {
+  local me="$1" log="$2" base="$3" tip="$4" own="${5:-}" out rc=0 m rcm
+  for m in freeze message; do
+    rcm=0
+    out="$(AMUX_LAND_FREEZE_OWN="$([ "$own" = own ] && echo 1 || echo 0)" python3 -c "$_LAND_GUARD_PY" "$m" "${remote:-origin}/${branch:-main}" "$base" "$tip" 2>&1)" || rcm=$?
+    if [ "$m" = message ] && [ "$rcm" = 1 ] && [ "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" = 1 ]; then
+      out="$out
+verdict=land_message_reused_allowed (AMUX_LAND_ALLOW_REUSED_MESSAGE=1)"
+      rcm=0
+    fi
+    [ "$rcm" -gt 1 ] && out="$out
+verdict=land_${m}_unmeasured rc=$rcm (the guard could not run; nothing refused on it)" && rcm=0
+    printf '%s\n' "$out" | while IFS= read -r line; do
+      [ -n "$line" ] && printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$m guard: $line" >> "$log"
+    done
+    if [ "$rcm" = 1 ]; then
+      printf '%s\n' "$out" | grep -E '^(refused|hint):' | sed 's/^/amux land: /' >&2
+      rc=4
+    else
+      printf '%s\n' "$out" | grep -E 'verdict=land_freeze_override|verdict=land_message_reused_allowed' | sed 's/^/amux land: /' >&2 || true
+    fi
+  done
+  return "$rc"
+}
+
+# REGENERATE FAILURE STREAK: a generator that fails on every land is a broken
+# declaration, not a flake, and a WARN per land hid one for 21 hours. The
+# streak is counted per repository and branch beside the land lock. From the
+# second failure in a row every land logs ERROR verdict=land_regenerate_failing
+# with the count; with AMUX_LAND_REGEN_FAIL_REFUSE_AFTER=N (default 3 when the
+# command comes from the versioned .amux/land.conf, which a lane can fix in its
+# own commit; 0, never, when it comes from .git/config, which it cannot) the
+# Nth failure in a row refuses the land instead of pushing unrendered.
+_land_regen_streak() { # <lock> fail|ok -> prints the streak after the update
+  local f="$1.regen-fail" n=0
+  [ -f "$f" ] && n="$(head -1 "$f" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$2" = fail ]; then n=$((n + 1)); printf '%s\n%s\n' "$n" "$(date -u +%FT%TZ)" > "$f" 2>/dev/null || true
+  else n=0; rm -f -- "$f"; fi
+  printf '%s\n' "$n"
+}
+
 # _land_status: the queue as land will serve it, the holder, and an estimate.
 # MO-4104: refuse a doomed ticket at enqueue, in seconds, instead of at the
 # head of the queue after a full gate run that sends a whole batch back. The
@@ -7314,7 +7923,7 @@ _land_pick_tree() {
     # change to those paths, keep the onto side, and replay the rest; the
     # repository's push hook re-renders them from the pushed tree.
     local globs paths p g ok=1 idx tree2 c2
-    globs="$(git config --get-all amux.landRegenerable 2>/dev/null || true)"
+    globs="$(_land_cfg --at "$onto" --get-all amux.landRegenerable 2>/dev/null || true)"
     paths="$(printf '%s\n' "$out" | sed -n '2,/^$/p' | sed '/^$/d')"
     if [ -n "$globs" ] && [ -n "$paths" ]; then
       while read -r p; do
@@ -7422,14 +8031,14 @@ _land_regenerate() {
   # Several generators may be declared (git config --add amux.landRegenerate):
   # they run in order in one extract, so a later one sees an earlier one's
   # output (gen_plane_artifacts reads zero-base's resources.yaml).
-  cmd="$(git config --get-all amux.landRegenerate 2>/dev/null || true)"
+  cmd="$(_land_cfg --at "$tip" --get-all amux.landRegenerate 2>/dev/null || true)"
   [ -n "$cmd" ] || { printf '%s\n' "$tip"; return 0; }
   # Nothing to render when no declared input changed between origin and the
   # stack: the generated files are a function of the inputs, so they cannot
   # move. Measured 2026-10-03: the step cost 275 s of compute's 31-minute
   # pre-gate window (mixpeek-override).
   local _inputs_chk _changed
-  _inputs_chk="$(git config --get-all amux.landRegenerateInput 2>/dev/null || true)"
+  _inputs_chk="$(_land_cfg --at "$tip" --get-all amux.landRegenerateInput 2>/dev/null || true)"
   if [ -n "$_inputs_chk" ] && [ -n "${remote:-}" ] && [ -n "${branch:-}" ]; then
     # shellcheck disable=SC2086  # one pathspec per line on purpose
     _changed="$(git diff --name-only "$remote/$branch" "$tip" -- $_inputs_chk 2>/dev/null | head -1)"
@@ -7438,8 +8047,8 @@ _land_regenerate() {
       printf '%s\n' "$tip"; return 0
     fi
   fi
-  globs="$(git config --get-all amux.landRegenerable 2>/dev/null || true)"
-  inputs="$(git config --get-all amux.landRegenerateInput 2>/dev/null || true)"
+  globs="$(_land_cfg --at "$tip" --get-all amux.landRegenerable 2>/dev/null || true)"
+  inputs="$(_land_cfg --at "$tip" --get-all amux.landRegenerateInput 2>/dev/null || true)"
   # A PERSISTENT EXTRACT, reconciled to <tip> by blob hash, instead of a fresh
   # one per land (fseventsd escalation 20261007-030851: mixpeek's inputs
   # include all of server/, so every land wrote and deleted tens of thousands
@@ -7475,7 +8084,7 @@ _land_regenerate() {
   # failed with rc 127 for gs12-compute at 23:26Z on 2026-10-02. The common
   # git dir's parent is the primary checkout for a plain clone and a worktree.
   local top; top="$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)" || top="$(git rev-parse --show-toplevel)"
-  local one own run_cmd _t1 _times=""
+  local one own run_cmd _t1 _times="" _ran=""
   out=""
   while IFS= read -r one; do
     [ -n "$one" ] || continue
@@ -7496,7 +8105,7 @@ _land_regenerate() {
         fi
       fi
     fi
-    _t1=$(date +%s)
+    _t1=$(date +%s); _ran=1
     out="$out$(cd "$tmp" && AMUX_LAND_REPO="$top" AMUX_LAND_TREE="$tmp" perl -e "$_LAND_PC_TIMEOUT_PL" "$budget" bash -c "$run_cmd" 2>&1)
 " || { rc=$?; cmd="$run_cmd"; break; }
     _times="$_times${_times:+, }$(( $(date +%s) - _t1 ))s ${run_cmd:0:40}"
@@ -7509,6 +8118,9 @@ _land_regenerate() {
     _land_log "regenerate failed (rc $rc after $(( $(date +%s) - t0 ))s: $cmd). Output: $log"
     return 1
   fi
+  # Every declared generator ran and exited 0: the caller resets the failure
+  # streak on this marker ($$ is the land process inside this substitution).
+  [ -n "$_ran" ] && : > "${TMPDIR:-/tmp}/amux-land-regen-ran.$$"
   after="$(cd "$tmp" && find . -type f | sed 's|^\./||' | while read -r p; do _matches "$p" && printf '%s\n' "$p"; done | sort)"
   idx="$(mktemp "${TMPDIR:-/tmp}/amux-land-regen-idx.XXXXXX")"
   GIT_INDEX_FILE="$idx" git read-tree "$tip"
@@ -7758,6 +8370,7 @@ _land_status() {
   else
     echo "holder: none"
   fi
+  [ -f "$lock.regen-fail" ] && echo "regenerate: FAILING, $(head -1 "$lock.regen-fail") land(s) in a row, last at $(sed -n 2p "$lock.regen-fail") (verdict=land_regenerate_failing)"
   # Median minutes from acquired to landed/failed, from today's land.log.
   med=$(awk -v d="$(date -u +%Y-%m-%d)" -v k="[$key]" '
     index($1, d) == 1 && $NF == k {
@@ -8084,10 +8697,580 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-10-08.55"
+LAND_BEHAVIOR_VERSION="2026-10-18.56"
+
+# SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
+# origin and never moves the checkout's branch, so a shared checkout only drifts:
+# measured that day ~/Dev/mixpeek at 352 ahead / 10053 behind and ~/Dev/amux at
+# 75 / 794. A worker asked to "make sure local is up to date" had no sanctioned
+# verb and spent its turn diffing 28,737 paths by hand. This answers in seconds:
+# it fast-forwards only when nothing can be lost, and otherwise names the
+# blockers. It never resets, stashes, rebases or merges.
+#   - staged entries refuse: the shared index may hold a peer's staged work
+#   - local-only commits refuse unless each is patch-equivalent on origin
+#   - `git read-tree -m -u HEAD <origin>` carries uncommitted edits forward and
+#     refuses, touching nothing, when one sits on a path origin changed
+# cmd_requests: every owner request to a worker, and whether it reached main.
+# Ethan, 2026-10-17: "figure out why these messages didnt result in pushes to
+# main e2e and fix the harness". An audit of 304 owner messages to amux-group
+# workers found ~45 requests with no commit on origin/main: parked in backlog
+# cards nobody dispatched, sent to isolated workers that keep no ledger,
+# committed but unpushed, or left in an open PR. Nothing recorded a request as
+# open, so nobody (the worker, Ethan, or a later turn) could see what was owed.
+# A request is LANDED when a commit on origin/main names it (`Amux-Request:
+# MSG-<id>` trailer, or MSG-<id> anywhere in the message), LIVE when that commit
+# is in the running build, CLOSED when someone closed it with a reason. All of
+# it is computed from the message history, git and /health; no model call.
+cmd_requests() {
+  local days=7 only_open="" raw="" all="" workers=()
+  if [[ "${1:-}" == "close" ]]; then
+    shift
+    local sha=""
+    if [[ "${1:-}" == "--sha" ]]; then sha="${2:-}"; shift 2; fi
+    local id="${1:-}" reason="${*:2}"
+    [[ "$id" =~ ^(MSG-)?[0-9]+$ ]] && [[ -n "$reason" ]] || die "usage: amux requests close [--sha <commit>] MSG-<id> <reason>"
+    python3 - "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" "${id#MSG-}" "$reason" "${AMUX_SESSION:-owner}" "$sha" <<'PY'
+import json, os, sys, time, tempfile
+path, mid, reason, who, sha = sys.argv[1:6]
+try:
+    data = json.load(open(path))
+except (OSError, ValueError):
+    data = {}
+data[mid] = {"reason": reason, "by": who, "at": int(time.time())}
+if sha:
+    data[mid]["sha"] = sha  # status stays computed: on-main or live from git
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=1)
+os.replace(tmp, path)
+print(("linked MSG-%s to %s: %s" % (mid, sha, reason)) if sha else ("closed MSG-%s: %s" % (mid, reason)))
+PY
+    return $?
+  fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days)  days="${2:-7}"; shift 2 ;;
+      --open)  only_open=1; shift ;;
+      --json)  raw=1; shift ;;
+      --all)   all=1; shift ;;
+      -h|--help)
+        cat <<'HELP'
+Usage: amux requests [<worker>...|--all] [--days N] [--open] [--json]
+       amux requests close [--sha <commit>] MSG-<id> <reason>
+
+The owner's requests to a worker (default: $AMUX_SESSION) and where each one
+stands: open, on main, live (in the running build), or closed.
+
+A request is landed when a commit on origin/main of the worker's repo names it:
+put `Amux-Request: MSG-<id>` in the commit message (several ids: comma-separated),
+or cite MSG-<id> in the body. A commit that forgot to cite it: link it with
+`close --sha <commit>`; it still shows as on main or live, checked against git.
+Close one that needs no commit (answered, declined, done outside git) with a
+reason. Acks like "continue" or "ok" are not requests.
+
+A landed or closed request also names the task the worker was on when it
+landed or was closed (from the Tasks history; `task` in --json).
+HELP
+        return 0 ;;
+      -*) die "amux requests: unknown option $1" ;;
+      *) workers+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#workers[@]} -eq 0 && -z "$all" ]] && workers=("${AMUX_SESSION:-}")
+  [[ -z "$all" && -z "${workers[0]:-}" ]] && die "amux requests: name a worker (or --all); \$AMUX_SESSION is empty"
+  AMUX_API="$AMUX_API" python3 - "$days" "$only_open" "$raw" "$all" "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" ${workers[@]+"${workers[@]}"} <<'PY'
+import json, os, re, subprocess, sys, time, urllib.parse
+days, only_open, raw, all_, closed_path = sys.argv[1:6]
+days = float(days)
+api = os.environ.get("AMUX_API", "https://localhost:8824")
+def get(path):
+    out = subprocess.run(["curl", "-sk", "--max-time", "30", api + path], capture_output=True, text=True).stdout
+    return json.loads(out) if out.strip() else None
+sessions = {s["name"]: s for s in (get("/api/sessions") or [])}
+workers = sorted(n for n, s in sessions.items() if "ephemeral" not in (s.get("tags") or [])) if all_ else sys.argv[6:]
+try:
+    closed = json.load(open(closed_path))
+except (OSError, ValueError):
+    closed = {}
+build = ((get("/health") or {}).get("commit") or "")
+ACK = re.compile(r"^\s*(continue|go|go on|keep going|ok(ay)?|k|yes|yep|y|no|nope|sure|thanks?( you)?|ty|done|proceed|do it|lgtm|nice|great|cool|good)\W*$", re.I)
+landed_by_repo, stale = {}, []
+def landed(repo):
+    # Keyed by the repository, not the worktree: twelve worktrees of one repo
+    # are one fetch and one log (a fleet-wide run took 13.6 minutes without it).
+    key = repo
+    if repo and os.path.isdir(repo):
+        key = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True).stdout.strip() or repo
+    if key in landed_by_repo:
+        return landed_by_repo[key]
+    m = {}
+    fetched = os.path.join(key, "FETCH_HEAD")
+    fresh = os.path.exists(fetched) and time.time() - os.path.getmtime(fetched) < 600
+    if repo and os.path.isdir(repo) and not fresh:
+        try:
+            subprocess.run(["git", "-C", repo, "fetch", "-q", "origin", "main"], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            stale.append(repo)  # origin/main as last fetched; said in the summary
+    if repo and os.path.isdir(repo):
+        log = subprocess.run(["git", "-C", repo, "log", "origin/main", "--since=%d days ago" % (days + 3),
+                              "--format=%H%x1f%B%x1e"], capture_output=True, text=True).stdout
+        for rec in log.split("\x1e"):
+            if "\x1f" not in rec:
+                continue
+            sha, body = rec.split("\x1f", 1)
+            for mid in re.findall(r"MSG-(\d+)", body):
+                m.setdefault(mid, sha.strip())
+    landed_by_repo[key] = m
+    return m
+def live(repo, sha):
+    if not build or not os.path.isdir(os.path.join(repo, "crates", "amux-server")):
+        return None
+    return subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, build], capture_output=True).returncode == 0
+now = time.time() * 1000
+rows, dropped, unmeasured, lm_sha = [], 0, [], {}
+# Paged: the server clamps a page to 500 rows (x-amux-limit-clamped), which
+# covered 3.2 of 7 days on 2026-10-17 and silently halved the count.
+owner_hist, offset, cutoff = [], 0, time.time() * 1000 - days * 86400000
+while True:
+    page = get("/api/history?sender=owner&kind=human&limit=500&offset=%d" % offset)
+    if not page:
+        break
+    owner_hist += page
+    offset += len(page)
+    if min(h["ts"] for h in page) < cutoff or offset > 50000:
+        break
+by_session = {}
+for h in owner_hist:
+    by_session.setdefault(h.get("session"), []).append(h)
+for w in workers:
+    s = sessions.get(w)
+    hist = by_session.get(w, []) if owner_hist else get("/api/history?session=%s&limit=2000" % w)
+    if s is None or hist is None:
+        unmeasured.append(w)
+        continue
+    # `worktree` is "0" or "" when unset; the top level, not the worker's
+    # subdirectory, decides which repo and whether it is the amux server.
+    cand = [str(c) for c in (s.get("worktree"), s.get("dir")) if c and os.path.isdir(str(c))]
+    repo = cand[0] if cand else ""
+    if repo:
+        repo = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True).stdout.strip() or repo
+    lm = landed(repo)
+    for h in hist:
+        if h.get("session") != w or h.get("sender") != "owner" or h.get("kind") != "human":
+            continue
+        if now - h["ts"] > days * 86400000:
+            continue
+        text = (h.get("text") or "").strip()
+        if len(text) < 4 or ACK.match(text):
+            dropped += 1
+            continue
+        mid = str(h["id"])
+        sha = lm.get(mid) or (closed.get(mid) or {}).get("sha")
+        if sha:
+            ok = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "origin/main"], capture_output=True).returncode == 0
+            if not ok:
+                sha = None  # a linked sha that is not on origin/main lands nothing
+        if mid in closed and not sha:
+            st, ev = "closed", closed[mid]["reason"]
+        elif sha:
+            lv = live(repo, sha)
+            st, ev = ("live" if lv else "on-main") if lv is not None else "on-main", sha[:9]
+        else:
+            st, ev = "open", ""
+        if sha:
+            lm_sha["MSG-" + mid] = sha
+        rows.append({"worker": w, "id": "MSG-" + mid, "age_h": round((now - h["ts"]) / 3600000, 1),
+                     "status": st, "evidence": ev, "repo": repo, "isolated": bool(s.get("isolated")),
+                     "text": re.sub(r"\s+", " ", text)[:200]})
+# WHICH TASK CLOSED IT (Ethan, 2026-10-18): the worker's task at the moment the
+# request landed (its commit's time) or was closed by hand, from the Tasks
+# history. One batched lookup; "" when the worker had no recorded task then.
+when = {}
+for r in rows:
+    mid = r["id"][4:]
+    if r["status"] == "closed" and (closed.get(mid) or {}).get("at"):
+        when[r["id"]] = "%s@%s" % (r["worker"], closed[mid]["at"])
+    elif r["status"] in ("on-main", "live") and r["repo"]:
+        ct = subprocess.run(["git", "-C", r["repo"], "show", "-s", "--format=%ct", lm_sha.get(r["id"], r["evidence"])],
+                            capture_output=True, text=True).stdout.strip()
+        if ct.isdigit():
+            when[r["id"]] = "%s@%s" % (r["worker"], ct)
+tasks_at, tasks_measured = {}, True
+pairs = sorted(set(when.values()))
+for i in range(0, len(pairs), 200):
+    got = get("/api/task-history/at?at=" + ",".join(urllib.parse.quote(p, safe="@") for p in pairs[i:i + 200]))
+    if not got or not got.get("measured"):
+        tasks_measured = False
+        continue
+    tasks_at.update(got.get("tasks") or {})
+for r in rows:
+    t = tasks_at.get(when.get(r["id"], "")) or {}
+    r["task"] = t.get("task") or ""
+    r["task_ts"] = t.get("ts")
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
+summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
+           "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
+# WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
+# keeps the last green image while main is red, and said so only in its log.
+# 14 landed fixes sat unseen for 13 hours and the owner re-asked for one.
+# Only a fresh verdict counts: the builder rewrites it every pass.
+try:
+    gate = json.load(open(os.environ.get("AMUX_ACTIVATION_GATE_STATE") or os.path.expanduser("~/.amux/activation-gate.json")))
+except (OSError, ValueError):
+    gate = {}
+held = [r for r in rows if r["status"] == "on-main" and r["repo"] and os.path.isdir(os.path.join(r["repo"], "crates", "amux-server"))]
+if held and gate.get("verdict") in ("ci_gate_held_back", "ci_gate_no_green", "ci_gate_no_rollback") \
+        and time.time() - (gate.get("at") or 0) < 900:
+    summary["held_by_ci"] = dict(gate, requests=len(held))
+    for r in held:
+        r["held_by_ci"] = True
+if only_open:
+    rows = [r for r in rows if r["status"] == "open"]
+if raw:
+    print(json.dumps(dict(summary, requests=rows), indent=1))
+    sys.exit(0)
+order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
+for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
+    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+    if r.get("task"):
+        print("%59s closed during task: %s" % ("", r["task"][:80]))
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
+    ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
+if summary.get("held_by_ci"):
+    g = summary["held_by_ci"]
+    # The gate's verdict words, said as what they mean. "none" read as nothing
+    # (2026-10-22): it is a tip whose required workflows did not all finish.
+    why = {"red": "red", "pending": "still running CI",
+           "none": "without a full CI verdict (a required workflow was skipped, cancelled or never ran)"}.get(g["tip_state"], g["tip_state"])
+    print("held: %d landed request(s) are not live because main's tip %s is %s; the build stays on %s (%d newer commit(s) waiting). They go live when main is green." % (
+        g["requests"], g["tip"][:9], why, ("green " + g["target"][:9]) if g.get("target") else "its current image", g["held"]))
+PY
+}
+
+cmd_sync_checkout() {
+  local remote=origin branch="" check=0 override=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) check=1; shift ;;
+      --override) override=1; shift ;;
+      --remote) remote="${2:?}"; shift 2 ;;
+      --branch) branch="${2:?}"; shift 2 ;;
+      -h|--help) echo "usage: amux sync-checkout [--check] [--override] [--remote origin] [--branch <current>]"; return 0 ;;
+      *) die "amux sync-checkout: unknown argument $1" ;;
+    esac
+  done
+  git rev-parse --git-dir >/dev/null 2>&1 || die "amux sync-checkout: not inside a git repository"
+  if [ "$override" = 1 ]; then _sync_checkout_override "$remote" "$branch" "$check"; return; fi
+  local cur; cur="$(git symbolic-ref --short -q HEAD)" || die "amux sync-checkout: HEAD is detached; nothing to advance"
+  branch="${branch:-$cur}"
+  [ "$branch" = "$cur" ] || die "amux sync-checkout: on $cur, not $branch"
+  local log="$HOME/.amux/logs/sync-checkout.log" top; top="$(git rev-parse --show-toplevel)"
+  mkdir -p "${log%/*}"
+  _sc_log() { printf '%s %s repo=%s %s\n' "$(date -u +%FT%TZ)" "${AMUX_SESSION:-?}" "$top" "$*" >> "$log"; echo "amux sync-checkout: $*"; }
+  git fetch -q "$remote" "$branch" || { _sc_log "verdict=fetch_failed measured=false"; return 1; }
+  local head up ahead behind staged unlanded
+  head="$(git rev-parse HEAD)"; up="$(git rev-parse "$remote/$branch")"
+  behind="$(git rev-list --count "HEAD..$up")"; ahead="$(git rev-list --count "$up..HEAD")"
+  if [ "$behind" = 0 ]; then _sc_log "verdict=current measured=true behind=0 ahead=$ahead"; return 0; fi
+  staged="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+  unlanded="$(git log --cherry-pick --right-only --no-merges --format='%h %s' "$up...HEAD")"
+  local n_unl=0; [ -n "$unlanded" ] && n_unl="$(printf '%s\n' "$unlanded" | wc -l | tr -d ' ')"
+  if [ "$staged" != 0 ] || [ "$n_unl" != 0 ]; then
+    # Landing by replay can resolve a conflict, so a landed commit is not always
+    # patch-equivalent; one whose subject is on origin probably landed modified.
+    local subj same=0
+    if [ "$n_unl" != 0 ]; then
+      subj="$(git log --format=%s "$(git merge-base HEAD "$up")..$up")"
+      same="$(printf '%s\n' "$unlanded" | cut -d' ' -f2- | grep -cxF -f <(printf '%s\n' "$subj") || true)"
+    fi
+    _sc_log "verdict=blocked measured=true behind=$behind ahead=$ahead staged=$staged unlanded=$n_unl unlanded_same_subject_on_origin=$same"
+    [ "$staged" != 0 ] && echo "  $staged staged path(s): the index is shared, so they may be a peer's. git diff --cached --stat"
+    if [ "$n_unl" != 0 ]; then
+      echo "  $n_unl local commit(s) have no patch-equivalent on $remote/$branch ($same with the same subject there, probably landed modified):"
+      printf '%s\n' "$unlanded" | head -10 | sed 's/^/    /'
+      [ "$n_unl" -gt 10 ] && echo "    ... $((n_unl - 10)) more: git log --cherry-pick --right-only --no-merges --oneline $remote/$branch...HEAD"
+    fi
+    echo "  Nothing was changed. Read committed code with git show $remote/$branch:<path> meanwhile; reconciling this checkout is the owner's call."
+    return 3
+  fi
+  if [ "$check" = 1 ]; then _sc_log "verdict=would_advance measured=true behind=$behind ahead=$ahead"; return 0; fi
+  git update-ref "refs/amux/pre-sync/$(date -u +%Y%m%dT%H%M%SZ)" "$head"
+  local out
+  if ! out="$(git read-tree -m -u "$head" "$up" 2>&1)"; then
+    _sc_log "verdict=blocked_by_local_edits measured=true behind=$behind"
+    printf '%s\n' "$out" | head -10 | sed 's/^/  /'
+    echo "  Uncommitted edits sit on paths $remote/$branch changed. Nothing was changed."
+    return 3
+  fi
+  git update-ref -m "amux sync-checkout" "refs/heads/$branch" "$up" "$head" \
+    || { _sc_log "verdict=raced measured=true (HEAD moved during the sync; tree now matches $up, branch not moved)"; return 1; }
+  _sc_log "verdict=advanced measured=true from=$(git rev-parse --short "$head") to=$(git rev-parse --short "$up") behind=$behind"
+}
+
+# `amux sync-checkout --override`: the "pull from remote, replace what I have"
+# half of /amux-contribute (Ethan, 2026-10-24: "if thats the case it should
+# override what they have locally with remote"). Plain sync-checkout refuses
+# whenever local work would be lost; this one makes the checkout match
+# <remote>/<branch> exactly, after saving EVERYTHING it discards (local commits,
+# staged and unstaged edits, untracked files; ignored files are left alone) as
+# one commit under refs/amux/pre-override/<UTC time>. Nothing is unrecoverable:
+# the line it prints restores the lot. --check only reports what it would drop.
+_sync_checkout_override() { # <remote> <branch|""> <check 0|1>
+  local remote=$1 branch=$2 check=$3 top log cur
+  top="$(git rev-parse --show-toplevel)"; log="$HOME/.amux/logs/sync-checkout.log"
+  mkdir -p "${log%/*}"
+  _so_log() { printf '%s %s repo=%s %s\n' "$(date -u +%FT%TZ)" "${AMUX_SESSION:-?}" "$top" "$*" >> "$log"; echo "amux sync-checkout: $*"; }
+  cur="$(git symbolic-ref --short -q HEAD || true)"
+  branch="${branch:-main}"   # "pull from remote" means main unless --branch says otherwise
+  git fetch -q "$remote" "$branch" || { _so_log "verdict=fetch_failed measured=false override=1"; return 1; }
+  local head up ahead behind dirty
+  head="$(git rev-parse HEAD)"; up="$(git rev-parse "$remote/$branch")"
+  ahead="$(git rev-list --count "$up..HEAD")"; behind="$(git rev-list --count "HEAD..$up")"
+  dirty="$(git -C "$top" status --porcelain --untracked-files=all | wc -l | tr -d ' ')"
+  echo "  local commits not on $remote/$branch: $ahead"
+  [ "$ahead" != 0 ] && git log --format='    %h %s' "$up..HEAD" | head -10
+  echo "  changed or untracked paths: $dirty"
+  [ "$dirty" != 0 ] && git -C "$top" status --porcelain --untracked-files=all | head -10 | sed 's/^/    /'
+  echo "  $remote/$branch commits this checkout lacks: $behind"
+  if [ "$ahead" = 0 ] && [ "$dirty" = 0 ] && [ "$head" = "$up" ]; then
+    _so_log "verdict=current measured=true override=1"; return 0
+  fi
+  if [ "$check" = 1 ]; then _so_log "verdict=would_override measured=true ahead=$ahead dirty=$dirty behind=$behind"; return 0; fi
+  # The backup: HEAD's history plus a snapshot of the whole working tree, built
+  # in a private index so the shared one is not touched until the reset.
+  local idx tree snap ref
+  # The snapshot is a commit, so it needs an identity. A box where git cannot
+  # name the user (a CI runner whose account has no full name, a fresh
+  # machine) gets "amux" for this one commit rather than stopping with
+  # "empty ident name". A configured identity is used as is.
+  local who=()
+  if ! { git var GIT_AUTHOR_IDENT && git var GIT_COMMITTER_IDENT; } >/dev/null 2>&1; then
+    who=(GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost)
+    _so_log "verdict=override_backup_ident_fallback measured=true (git has no usable identity here; the backup commit is authored as amux)"
+  fi
+  # A template with X's: GNU mktemp refuses `-t name` without them (CI, Linux).
+  idx="$(mktemp "${TMPDIR:-/tmp}/amux-override-idx.XXXXXX")"
+  cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true
+  GIT_INDEX_FILE="$idx" git -C "$top" add -A . 2>/dev/null \
+    && tree="$(GIT_INDEX_FILE="$idx" git write-tree)" \
+    && snap="$(env ${who[@]+"${who[@]}"} git commit-tree "$tree" -p "$head" -m "amux sync-checkout --override: local state of $top before matching $remote/$branch ($ahead commit(s), $dirty path(s))")"
+  rm -f "$idx"
+  if [ -z "${snap:-}" ]; then _so_log "verdict=backup_failed measured=true override=1 (nothing was changed)"; return 1; fi
+  ref="refs/amux/pre-override/$(date -u +%Y%m%dT%H%M%SZ)"
+  git update-ref "$ref" "$snap" || { _so_log "verdict=backup_failed measured=true override=1 (nothing was changed)"; return 1; }
+  # A half-finished operation would survive a reset and confuse the next git command.
+  git rebase --quit >/dev/null 2>&1 || true; git merge --abort >/dev/null 2>&1 || true
+  git cherry-pick --quit >/dev/null 2>&1 || true; git revert --quit >/dev/null 2>&1 || true
+  if [ -n "$cur" ] && [ "$cur" = "$branch" ]; then
+    git reset -q --hard "$up"
+  elif [ -n "$cur" ]; then
+    git checkout -q -B "$branch" "$up" 2>/dev/null || git checkout -q -f -B "$branch" "$up"
+  else
+    git checkout -q -f --detach "$up"
+  fi
+  git -C "$top" clean -q -fd
+  if [ "$(git rev-parse HEAD)" != "$up" ] || [ -n "$(git -C "$top" status --porcelain)" ]; then
+    _so_log "verdict=override_incomplete measured=true backup=$ref (the checkout does not match $remote/$branch; git status shows what is left)"
+    return 1
+  fi
+  _so_log "verdict=overridden measured=true from=${head:0:9} to=${up:0:9} ahead=$ahead dirty=$dirty behind=$behind backup=$ref"
+  echo "  This checkout now matches $remote/$branch exactly."
+  echo "  Restore what was replaced: git switch -c restored-local $ref"
+}
+
+# `amux ci wait <run-id> [--repo owner/name] [--timeout S] [--poll S] [--json]`:
+# ONE poller per GitHub Actions run, fleet-wide (mxp-gs12 review, 2026-10-18).
+# On 2026-10-17 the shared GitHub App installation returned 403 rate-limit on
+# every gh call from 15:44Z; the main consumer was one lane's dozens of waiters,
+# each polling `gh` for the same handful of runs. Every waiter on a run now
+# shares one state file under ~/.amux/ci-watch/<repo>-<run>/: the first waiter
+# to take the directory's lock polls GitHub every --poll seconds (default
+# AMUX_CI_WATCH_POLL_S, 60) and writes state.json; every other waiter only
+# reads that file. A poller that exits hands the lock to the next waiter, so
+# the run is still watched while anyone waits on it. Each gh call re-mints the
+# App token with --min-remaining 600 (a token lasts about 35 minutes and a run
+# can outlive it) and is a line in ~/.amux/logs/ci-watch.log naming the
+# worker, so the fleet's GitHub spend per worker is countable.
+#
+# Exit: 0 the run concluded success; 1 it concluded anything else; 2 timeout;
+# 3 UNMEASURED (GitHub could not be read: 401/403/no data). A watcher that
+# cannot see never reports all-clear: a verdict needs a positive conclusion.
+cmd_ci() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    wait) _ci_wait "$@" ;;
+    *) die "usage: amux ci wait <run-id> [--repo owner/name] [--timeout S] [--poll S] [--json]" ;;
+  esac
+}
+
+_ci_wait() {
+  local run="" repo="" timeout=3600 poll="${AMUX_CI_WATCH_POLL_S:-60}" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:?}"; shift 2 ;;
+      --timeout) timeout="${2:?}"; shift 2 ;;
+      --poll) poll="${2:?}"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "amux ci wait: unknown flag $1" ;;
+      *) run="$1"; shift ;;
+    esac
+  done
+  case "$run" in ''|*[!0-9]*) die "amux ci wait: <run-id> must be a number" ;; esac
+  if [ -z "$repo" ]; then
+    repo="$(git remote get-url origin 2>/dev/null | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
+    [ -n "$repo" ] || die "amux ci wait: no --repo and no GitHub origin in this checkout"
+  fi
+  local me="${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}"
+  local dir; dir="${AMUX_HOME:-$HOME/.amux}/ci-watch/$(printf '%s' "$repo" | tr '/' '_')-$run"
+  local state="$dir/state.json" lock="$dir/poller" logf="${AMUX_HOME:-$HOME/.amux}/logs/ci-watch.log"
+  mkdir -p "$dir" "${logf%/*}"
+  local start; start=$(date +%s)
+  local role=reader polls=0
+  # shellcheck disable=SC2064  # expanded now: the lock is a local
+  trap "[ \"\$(cat '$lock/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '$lock'" EXIT
+  while :; do
+    # Take the poller role when nobody live holds it. A run the shared file
+    # already shows as concluded needs no poller: the previous one finished
+    # and freed the lock, and electing again costs a gh call per late reader.
+    if [ "$role" = reader ] && ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "completed" else 1)' "$state" 2>/dev/null; then
+      if mkdir "$lock" 2>/dev/null; then
+        echo $$ > "$lock/pid"; role=poller
+      else
+        local hp; hp="$(cat "$lock/pid" 2>/dev/null || true)"
+        if [ -n "$hp" ] && ! kill -0 "$hp" 2>/dev/null; then rm -rf -- "${lock:?}"; continue; fi
+      fi
+    fi
+    if [ "$role" = poller ]; then
+      local tok_env="" out rc=0
+      if [ -x "$HOME/.amux/github-app/get-token.sh" ]; then
+        tok_env="$("$HOME/.amux/github-app/get-token.sh" --min-remaining 600 --raw 2>/dev/null || true)"
+      fi
+      out="$(GH_TOKEN="${tok_env:-${GH_TOKEN:-}}" gh api "repos/$repo/actions/runs/$run" \
+             --jq '{status: .status, conclusion: .conclusion, url: .html_url, head_sha: .head_sha, name: .name}' 2>&1)" || rc=$?
+      polls=$((polls + 1))
+      printf '%s %s poll repo=%s run=%s rc=%s\n' "$(date -u +%FT%TZ)" "$me" "$repo" "$run" "$rc" >> "$logf"
+      python3 - "$state" "$rc" "$out" <<'PY'
+import json, os, sys, time
+path, rc, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+rec = {"polled_at": time.time(), "rc": rc}
+try:
+    d = json.loads(out) if rc == 0 else None
+except ValueError:
+    d = None
+if d and d.get("status"):
+    rec.update(d, measured=True)
+else:
+    rec.update(measured=False, why_unmeasured=out.strip()[:300] or "gh returned nothing")
+tmp = path + ".%d" % os.getpid()
+json.dump(rec, open(tmp, "w")); os.replace(tmp, path)
+PY
+    fi
+    # Everyone, poller included, decides from the shared file.
+    local verdict
+    verdict="$(python3 - "$state" "$poll" <<'PY'
+import json, sys, time
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print("pending"); sys.exit()
+fresh = time.time() - d.get("polled_at", 0) <= 3 * float(sys.argv[2]) + 30
+if not d.get("measured"):
+    print("unmeasured" if fresh else "pending")
+elif d.get("status") == "completed":
+    print("success" if d.get("conclusion") == "success" else "failure")
+else:
+    print("pending")
+PY
+)"
+    case "$verdict" in
+      success|failure|unmeasured)
+        # Unmeasured is final only after it repeats: one 5xx is a blip.
+        if [ "$verdict" = unmeasured ] && [ "$(( $(date +%s) - start ))" -lt "$(( poll * 3 ))" ]; then :; else
+          printf '%s %s done repo=%s run=%s verdict=%s role=%s polls=%s\n' "$(date -u +%FT%TZ)" "$me" "$repo" "$run" "$verdict" "$role" "$polls" >> "$logf"
+          if [ "$json" = 1 ]; then python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["verdict"]=sys.argv[2]; d["role"]=sys.argv[3]; print(json.dumps(d))' "$state" "$verdict" "$role"
+          else echo "amux ci wait: run $run on $repo: $verdict ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("url") or d.get("why_unmeasured",""))' "$state"))"; fi
+          case "$verdict" in success) return 0 ;; failure) return 1 ;; *) return 3 ;; esac
+        fi ;;
+    esac
+    if [ "$(( $(date +%s) - start ))" -ge "$timeout" ]; then
+      printf '%s %s done repo=%s run=%s verdict=timeout role=%s polls=%s\n' "$(date -u +%FT%TZ)" "$me" "$repo" "$run" "$role" "$polls" >> "$logf"
+      echo "amux ci wait: run $run on $repo still not concluded after ${timeout}s (timeout)" >&2
+      return 2
+    fi
+    if [ "$role" = poller ]; then sleep "$poll"; else sleep "$(( poll < 15 ? poll : 15 ))"; fi
+  done
+}
+
+# `amux land --json` (mxp-gs12 review, 2026-10-18): the land's outcome as ONE
+# JSON object on stdout, everything else on stderr. A window script read a
+# refused land as done (it never checked the exit status) and a CronJob was
+# deleted while its manifest stayed on main (2026-10-15); the lane then built
+# a four-condition check of its own. The object answers the question those
+# scripts were asking, from the remote rather than from land's own claim:
+#   landed        rc 0 AND every commit of the source range has an equal
+#                 change on <remote>/<branch> (git cherry, after a fetch)
+#   on_origin     that second half alone; null when it could not be measured
+#   sha           the pushed tip land reported, if it reported one
+#   queued        the commit is waiting (server queue or --detach), not landed
+#   not_on_origin the source commits with no equal change on the remote yet
+#   rc, reason    land's exit status and its last "amux land:" line
+_land_json() {
+  local remote=origin branch=main src_ref=HEAD a prev="" out rc=0 src
+  for a in "$@"; do
+    case "$prev" in --remote) remote="$a" ;; --branch) branch="$a" ;; --sha) src_ref="$a" ;; esac
+    prev="$a"
+  done
+  src="$(git rev-parse -q --verify "$src_ref^{commit}" 2>/dev/null || true)"
+  out="$(mktemp "${TMPDIR:-/tmp}/amux-land-json.XXXXXX")"
+  ( cmd_land "$@" ) > "$out" 2>&1 || rc=$?
+  cat "$out" >&2
+  AMUX_LJ_RC="$rc" AMUX_LJ_SRC="$src" AMUX_LJ_REMOTE="$remote" AMUX_LJ_BRANCH="$branch" python3 - "$out" <<'PY'
+import json, os, re, subprocess, sys
+text = open(sys.argv[1], errors="replace").read()
+rc = int(os.environ["AMUX_LJ_RC"]); src = os.environ["AMUX_LJ_SRC"]
+remote, branch = os.environ["AMUX_LJ_REMOTE"], os.environ["AMUX_LJ_BRANCH"]
+lines = [l for l in text.splitlines() if l.startswith("amux land:")]
+reason = lines[-1][len("amux land:"):].strip() if lines else ""
+m = re.findall(r"landed (?:in a batch: landed )?([0-9a-f]{7,40}) on ", text)
+sha = m[-1] if m else None
+queued = bool(re.search(r"queued on the server|detached \(pid \d+\)", text))
+on_origin, not_on, why, n_cmp = None, [], None, 0
+if src:
+    f = subprocess.run(["git", "fetch", "-q", remote, branch], capture_output=True, text=True)
+    c = subprocess.run(["git", "cherry", remote + "/" + branch, src], capture_output=True, text=True)
+    if f.returncode != 0:
+        why = "fetch of %s %s failed" % (remote, branch)
+    elif c.returncode != 0:
+        why = "git cherry failed: " + c.stderr.strip()[:160]
+    elif subprocess.run(["git", "merge-base", "--is-ancestor", src, remote + "/" + branch], capture_output=True).returncode == 0:
+        # A fast-forward land puts the source commit itself on the remote, and
+        # git cherry lists nothing for an ancestor: that is one commit, landed.
+        n_cmp, on_origin = 1, True
+    else:
+        rows = [l for l in c.stdout.splitlines() if l[:2] in ("+ ", "- ")]
+        n_cmp = len(rows)
+        not_on = [l[2:] for l in rows if l.startswith("+ ")]
+        on_origin = not not_on
+else:
+    why = "no source commit to compare"
+print(json.dumps({
+    "landed": rc == 0 and on_origin is True,
+    "on_origin": on_origin, "measured": on_origin is not None, "why_unmeasured": why,
+    "sha": sha, "source": src or None, "remote": remote + "/" + branch,
+    "queued": queued and on_origin is not True, "not_on_origin": not_on[:50],
+    "n_considered": n_cmp,
+    "rc": rc, "reason": reason,
+}))
+PY
+  rm -f -- "${out:?}"
+  return "$rc"
+}
 
 cmd_land() {
-  # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] | --cancel | --status
+  # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] [--json] | --cancel | --status
   #
   # Rebase this checkout onto the remote branch and push HEAD there, holding a
   # per-repo, per-branch lock for the whole fetch -> rebase -> push loop, so
@@ -8141,9 +9324,11 @@ cmd_land() {
   #
   # --detach queues and returns at once: land runs in its own session (macOS
   # has no setsid(1); python's os.setsid does it), output goes to a log under
-  # ~/.amux/logs/land/, and the lane gets a message when it lands or stops
-  # (AMUX_LAND_NOTIFY=0 skips the message, for a scheduled caller that checks
-  # the result itself on its next run). `amux land --cancel` stops every
+  # ~/.amux/logs/land/, and the lane gets a message when it stops without
+  # landing. A clean land is held as a receipt (~/.amux/receipts/<lane>.jsonl,
+  # `amux receipts`) that rides on the lane's next wake instead of waking it
+  # (AMUX_LAND_NOTIFY=all messages every outcome; =0 skips the message, for a
+  # scheduled caller that checks the result itself on its next run). `amux land --cancel` stops every
   # detached land of this lane, whole process group, and drops its ticket.
   # Claude Code kills a background command after 2 hours, and with the queue
   # 15 deep a lane lost its ticket that way at position 9 (gs12-templates,
@@ -8157,8 +9342,30 @@ cmd_land() {
   # pushed without a checkout, so the hook gates the pushed tree. A conflict
   # returns 2 with nothing pushed.
   #
+  # --json prints the outcome as one JSON object on stdout (landed, on_origin,
+  # sha, queued, not_on_origin, rc, reason), with `landed` measured against the
+  # remote after the land, never taken from land's own log line.
+  #
+  # Repository config lives in `.amux/land.conf` (git-config syntax, committed):
+  # the [amux] land* keys, read from the remote branch (the regenerate keys from
+  # the tree being pushed), and [freeze "<name>"] sections (path, until, owner,
+  # reason) that refuse any land changing a frozen path unless the commit
+  # carries `Freeze-Override: <name>: <why>`. A key still read from .git/config
+  # logs verdict=land_config_unversioned. Exit 4: refused by a land guard (a
+  # frozen path, or a commit reusing a landed commit's message over other
+  # files). Exit 5: the regenerate step failed too many lands in a row.
+  #
   # Every wait, takeover, batch and outcome is a line in ~/.amux/logs/land.log;
   # a refused push keeps its full output under ~/.amux/logs/land/.
+  # --json anywhere in the arguments: run the land and print its outcome as one
+  # JSON object (see _land_json above). Stripped before parsing, so every other
+  # flag means what it always meant.
+  case " $* " in
+    *" --json "*)
+      local _ja=() _jx
+      for _jx in "$@"; do [ "$_jx" = --json ] || _ja+=("$_jx"); done
+      _land_json ${_ja[@]+"${_ja[@]}"}; return $? ;;
+  esac
   local remote=origin branch=main tries=8 max_hold=3600 batch=1 priority=0 batch_max="${AMUX_LAND_BATCH_MAX:-}" detach=0 land_sha="" prio_reason=""
   local fwd_args=()
   local orig_args=(${1+"$@"})
@@ -8181,9 +9388,26 @@ cmd_land() {
       --to-head) shift; _land_to_head "$@"; return $? ;;
       --status) _land_status; return $? ;;
       -h|--help) sed -n '/^cmd_land()/,/^  local remote/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
-      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
+      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
     esac
   done
+  # LAND GUARDS before anything queues, on either path (the server queue below
+  # or the client queue): a path freeze and a reused message, see _land_guards.
+  # Seconds, so a --detach caller runs them here too and the child skips them.
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && git rev-parse --git-dir >/dev/null 2>&1; then
+    local _g_tip _g_base _g_me
+    _g_me="${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}"
+    git fetch -q "$remote" "$branch" 2>/dev/null || true
+    _g_tip="$(git rev-parse -q --verify "${land_sha:-HEAD}^{commit}" 2>/dev/null || true)"
+    _g_base="$(git merge-base "$remote/$branch" "${_g_tip:-HEAD}" 2>/dev/null || true)"
+    if [ -n "$_g_tip" ] && [ -n "$_g_base" ]; then
+      mkdir -p "$HOME/.amux/logs"
+      _land_guards "$_g_me" "$HOME/.amux/logs/land.log" "$_g_base" "$_g_tip" own || {
+        echo "amux land: refused before queueing by a land guard (details above and in ~/.amux/logs/land.log); nothing queued" >&2
+        return 4
+      }
+    fi
+  fi
   # CONTRACT RULE 5 (AH-380): where the server owns landing for this lane, queue
   # the commit there and return; the lane gets a message when it lands or is
   # refused. A 409 land_queue_off (the rule is off for this lane) or an
@@ -8193,7 +9417,11 @@ cmd_land() {
     local _q_sha _q_out _q_code _q_body
     _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
     if [ -n "$_q_sha" ]; then
-      _q_body=$(python3 -c 'import json,sys; print(json.dumps({"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3]}))' "$_q_sha" "$priority" "$prio_reason")
+      # The server re-runs the land guards and is authoritative, so the
+      # lane's own escapes travel with the request.
+      _q_body=$(python3 -c 'import json,sys; d={"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3], "allow_reused_message": sys.argv[4] == "1"}
+if sys.argv[5]: d["freeze_override"] = sys.argv[5]
+print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}")
       _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
         -H "X-Amux-Session: $AMUX_SESSION" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
       _q_code="${_q_out##*$'\n'}"
@@ -8203,6 +9431,11 @@ cmd_land() {
         # with no reason). Anything else (409 rule off, 404 from a server
         # without the route, unreachable) falls through to the client queue.
         400) echo "amux land: the server queue refused the request: ${_q_out%$'\n'*}" >&2; return 2 ;;
+        # 409 from a land guard on the server (a frozen path or a reused
+        # message): the same refusal as the client guard above, rc 4.
+        409) case "$_q_out" in *'"verdict":"land_refused_'*)
+               echo "amux land: refused by a land guard on the server; nothing queued: ${_q_out%$'\n'*}" >&2; return 4 ;;
+             esac ;;
       esac
     fi
   fi
@@ -8291,7 +9524,7 @@ cmd_land() {
     mkdir -p "${dlog%/*}"
     # The runner re-runs land without --detach, then tells the lane how it
     # ended: the last land.log lines are the outcome, the log the detail.
-    AMUX_LAND_PRIORITY_CHECKED="$priority" AMUX_LAND_ME="$me" AMUX_LAND_DLOG="$dlog" AMUX_LAND_SELF="$0" python3 -c '
+    AMUX_LAND_GUARDED=1 AMUX_LAND_PRIORITY_CHECKED="$priority" AMUX_LAND_ME="$me" AMUX_LAND_DLOG="$dlog" AMUX_LAND_SELF="$0" python3 -c '
 import os, sys, subprocess
 os.setsid()
 me, dlog, amux = os.environ["AMUX_LAND_ME"], os.environ["AMUX_LAND_DLOG"], os.environ["AMUX_LAND_SELF"]
@@ -8303,8 +9536,28 @@ try:
     os.remove(os.path.expanduser(f"~/.amux/locks/detached/{os.getpid()}"))
 except OSError:
     pass
-if os.environ.get("AMUX_LAND_NOTIFY") == "0":
+notify = (os.environ.get("AMUX_LAND_NOTIFY") or "failures").strip().lower()
+if notify == "0":
     sys.exit(0)
+# A clean land is a RECEIPT, not a message: 1,115 "finished with rc 0" sends
+# were 28% of all lane input in GS-12 (2026-10-01..08), each one a full turn.
+# It is written to ~/.amux/receipts/<lane>.jsonl and rides along on the next
+# wake amux sends anyway (a schedule fire, a goal-keeper continue), or is read
+# with `amux receipts`. A failure still wakes. AMUX_LAND_NOTIFY=all restores
+# a message for every outcome.
+if rc == 0 and notify not in ("all", "1", "always"):
+    import json, time
+    home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+    rdir = os.path.join(home, "receipts")
+    try:
+        os.makedirs(rdir, exist_ok=True)
+        with open(os.path.join(rdir, me + ".jsonl"), "a") as f:
+            f.write(json.dumps({"ts": time.time(), "from": "land", "text": msg}) + "\n")
+        with open(os.path.expanduser("~/.amux/logs/land.log"), "a") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " " + me + " land_receipt_held rc=0 (no wake; amux receipts)\n")
+        sys.exit(0)
+    except OSError:
+        pass  # could not hold it: fall back to the message
 p = subprocess.Popen(["bash", amux, "send", me, "--stdin"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 p.communicate(msg.encode())
 ' ${fwd_args[@]+"${fwd_args[@]}"} > /dev/null 2>&1 < /dev/null &
@@ -8316,7 +9569,7 @@ p.communicate(msg.encode())
     mkdir -p "$HOME/.amux/locks/detached"
     printf '%s\n%s\n%s\n' "$me" "$dlog" "$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)" > "$HOME/.amux/locks/detached/$dpid"
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "detached land started (pid $dpid, log $dlog)" >> "$log"
-    echo "amux land: detached (pid $dpid). Output: $dlog. You get a message when it lands or stops; nothing to poll. Stop it with: amux land --cancel"
+    echo "amux land: detached (pid $dpid). Output: $dlog. You get a message if it stops without landing; a clean land is a receipt that rides on your next wake (read it now with: amux receipts). Stop it with: amux land --cancel"
     return 0
   fi
   # Each line ends with the repository's lock key, so per-repository readings
@@ -8352,7 +9605,7 @@ p.communicate(msg.encode())
     # them (gs12-data, 2026-10-02: three "nothing queued" stops on zero-base
     # generated files differing only in their source-digest line).
     local globs p g hit
-    globs="$(git config --get-all amux.landRegenerable 2>/dev/null || true)"
+    globs="$(_land_cfg --get-all amux.landRegenerable 2>/dev/null || true)"
     printf '%s\n' "$out" | sed -n '2,/^$/p' | sed '/^$/d' | while read -r p; do
       hit=0
       # shellcheck disable=SC2053  # $g is a glob on purpose
@@ -8709,7 +9962,7 @@ p.communicate(msg.encode())
     # (amux.landPriorityAgingS), read on every poll, so an operator can park
     # aging for a night without restarting a single waiter (mixpeek-override,
     # 2026-10-03: aged tickets stacked ahead of the one gate fix).
-    local _age_s; _age_s="$(git config --get amux.landPriorityAgingS 2>/dev/null || true)"
+    local _age_s; _age_s="$(_land_cfg --get amux.landPriorityAgingS 2>/dev/null || true)"
     _age_s="${_age_s:-${AMUX_LAND_PRIORITY_AGING_S:-14400}}"
     # TO HEAD: `amux land --to-head <pid>` leaves "$q/.tohead-<pid>" (".head-"
     # is --adopt --head's marker, which consumed it first); the waiter
@@ -8807,7 +10060,7 @@ p.communicate(msg.encode())
   # arrive meanwhile join its batch. Mixpeek pushed every 3 to 5 min against a
   # 17-min Fast Checks run, so every run was superseded and none with shards
   # concluded that day. Priority holders do not wait. Unset or 0: unchanged.
-  local _win; _win="$(git config --get amux.landMinIntervalS 2>/dev/null || true)"
+  local _win; _win="$(_land_cfg --get amux.landMinIntervalS 2>/dev/null || true)"
   case "$_win" in ''|*[!0-9]*) _win=0 ;; esac
   # Which priority holders skip the window: grants and fix-forwards always;
   # a gate-path-only priority too unless `amux.landWindowExemptGatePath` is
@@ -8815,7 +10068,7 @@ p.communicate(msg.encode())
   # priority pushes in one hour went around a 15-minute window).
   local _win_skip=0
   if [ "$priority" = 1 ]; then
-    if [ "$(git config --bool --get amux.landWindowExemptGatePath 2>/dev/null || echo true)" != false ] \
+    if [ "$(_land_cfg --bool --get amux.landWindowExemptGatePath 2>/dev/null || echo true)" != false ] \
        || printf '%s' "${prio_reason:-}" | grep -qiE -- "${AMUX_LAND_PRIORITY_GRANT_RE:-grant}|${AMUX_LAND_PRIORITY_FIXFWD_RE:-fix[- ]?forward}"; then
       _win_skip=1
     else
@@ -8843,7 +10096,7 @@ p.communicate(msg.encode())
     # push, so one command retunes a whole queue without restarting a land;
     # mixpeek-override, 2026-10-02, depth 30), then 6.
     local max="$batch_max"
-    [ -n "$max" ] || max="$(git config --get amux.landBatchMax 2>/dev/null || true)"
+    [ -n "$max" ] || max="$(_land_cfg --get amux.landBatchMax 2>/dev/null || true)"
     case "$max" in ''|*[!0-9]*) max=6 ;; esac
     local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made
     stack_tip="$1"; stack_in=""; stack_map=""
@@ -8894,6 +10147,14 @@ p.communicate(msg.encode())
         echo "excluded: its commits conflict with the batch ahead of it" > "$rdir/$tk"; continue
       fi
       [ "$stack_tip" != "$t0" ] || { _sk "$tk" "replaying ${wsha:0:10} adds nothing to the stack (its changes are already in it)"; continue; }
+      # The land guards on this waiter's replayed commits (a freeze may have
+      # landed after it queued). Left out, never failed by the holder: its own
+      # turn runs the same guards and tells it why.
+      if ! _land_guards "$me" "$log" "$t0" "$stack_tip" >/dev/null 2>&1; then
+        stack_tip="$t0"
+        _sk "$tk" "a land guard stopped its commits (frozen path or reused message; guard lines above)"
+        echo "excluded: a land guard stopped its commits (a frozen path or a reused message, see land.log); they stop again on its own turn" > "$rdir/$tk"; continue
+      fi
       stack_in="${stack_in}${tk} ${who}
 "
       stack_map="${stack_map}${tk}${made}
@@ -9078,7 +10339,7 @@ $f"
         git rebase --abort 2>/dev/null
         # With regenerable paths declared, a rebase conflict may be one the
         # replay can resolve; retry this attempt by replay before giving up.
-        if [ "${_force_replay:-0}" != 1 ] && [ -n "$(git config --get-all amux.landRegenerable 2>/dev/null || true)" ]; then
+        if [ "${_force_replay:-0}" != 1 ] && [ -n "$(_land_cfg --get-all amux.landRegenerable 2>/dev/null || true)" ]; then
           _force_replay=1
           _land_log "rebase onto $remote/$branch conflicted; retrying by replay (regenerable paths are declared)"
           continue
@@ -9096,6 +10357,12 @@ $f"
     # MO-4077 made a --priority holder batch again; 2026-10-02 reverted that
     # to the default above (AMUX_LAND_PRIORITY_BATCH=1 opts back in).
     # Priority TICKETS are never taken into another holder's batch.
+    # Holder-time guards on this lane's own replayed commits: a freeze may have
+    # landed while it waited.
+    if ! _land_guards "$me" "$log" "$remote/$branch" "$stack_tip" own; then
+      _land_log "refused at its turn by a land guard (freeze or reused message, lines above); nothing pushed"
+      return 4
+    fi
     [ "$solo" = 1 ] || _land_stack "$stack_tip"
     lanes="$(printf '%s' "$stack_in" | awk 'NF {printf "%s%s", sep, $2; sep=", "}')"
     [ -z "$lanes" ] || _land_log "batching ${lanes} behind this push (one gate run)"
@@ -9106,8 +10373,8 @@ $f"
     # their own commit can still leave the composed tree stale (gs12-planes'
     # 17:34Z batch on 2026-10-02 refused on generated/MANIFEST.json and two
     # lifecycle files). =conflict renders only after a regenerable replay.
-    local _rg_when; _rg_when="$(git config --get amux.landRegenerateWhen 2>/dev/null || echo always)"
-    if [ -f "${TMPDIR:-/tmp}/amux-land-regen.$$" ] || { [ "$_rg_when" = always ] && [ -n "$(git config --get-all amux.landRegenerate 2>/dev/null || true)" ]; }; then
+    local _rg_when; _rg_when="$(_land_cfg --at "$stack_tip" --get amux.landRegenerateWhen 2>/dev/null || echo always)"
+    if [ -f "${TMPDIR:-/tmp}/amux-land-regen.$$" ] || { [ "$_rg_when" = always ] && [ -n "$(_land_cfg --at "$stack_tip" --get-all amux.landRegenerate 2>/dev/null || true)" ]; }; then
       rm -f "${TMPDIR:-/tmp}/amux-land-regen.$$"
       local _rg
       # A failing generator must never stop the queue: land .27 stopped every
@@ -9115,11 +10382,29 @@ $f"
       # generator read a file outside the declared inputs (20:16Z 2026-10-02).
       # Push unrendered and let the gate judge the render; a stale-render
       # refusal costs one lane, a stopped queue costs all of them.
+      rm -f "${TMPDIR:-/tmp}/amux-land-regen-ran.$$"
       if _rg="$(_land_regenerate "$stack_tip")"; then
         _land_heal_core_worktree "regenerate"
+        # Only a generator that actually RAN resets the failure streak; a
+        # skipped one (no input changed) is no evidence it works.
+        [ -f "${TMPDIR:-/tmp}/amux-land-regen-ran.$$" ] && _land_regen_streak "$lock" ok >/dev/null
+        rm -f "${TMPDIR:-/tmp}/amux-land-regen-ran.$$"
         stack_tip="$_rg"
       else
-        _land_log "WARN regenerate failed on the composed stack; pushing it unrendered, the gate judges the render (see the regenerate log above)"
+        local _rg_n _rg_src=".git/config" _rg_refuse
+        _rg_n="$(_land_regen_streak "$lock" fail)"
+        git config --blob "$stack_tip:.amux/land.conf" --get-all amux.landRegenerate >/dev/null 2>&1 && _rg_src=".amux/land.conf"
+        _rg_refuse="${AMUX_LAND_REGEN_FAIL_REFUSE_AFTER:-$([ "$_rg_src" = .amux/land.conf ] && echo 3 || echo 0)}"
+        case "$_rg_refuse" in ''|*[!0-9]*) _rg_refuse=0 ;; esac
+        if [ "$_rg_n" -ge 2 ]; then
+          _land_log "ERROR verdict=land_regenerate_failing consecutive=$_rg_n source=$_rg_src: the declared regenerate command has failed $_rg_n lands in a row on $branch, so every one pushed an unrendered tree. A command from .amux/land.conf is read from the pushed tree: fix it in a commit and that land renders with the fix"
+        fi
+        if [ "$_rg_refuse" -gt 0 ] && [ "$_rg_n" -ge "$_rg_refuse" ]; then
+          _land_tell "excluded: the holder's regenerate step is failing ($_rg_n lands in a row); landing on your own turn"
+          _land_log "refused: regenerate failed $_rg_n lands in a row (AMUX_LAND_REGEN_FAIL_REFUSE_AFTER=$_rg_refuse, source $_rg_src); nothing pushed. Fix the command in .amux/land.conf in this land's commits, or set AMUX_LAND_REGEN_FAIL_REFUSE_AFTER=0 to push unrendered"
+          return 5
+        fi
+        _land_log "WARN regenerate failed on the composed stack (failure $_rg_n in a row); pushing it unrendered, the gate judges the render (see the regenerate log above)"
       fi
     fi
     # A batch can fail only once COMPOSED (the ops registry goes stale from two
@@ -9133,7 +10418,7 @@ $f"
     # lock (MO-4354). The push path drops a waiter its refusal names (MO-4104)
     # the same way this block does.
     local _fg_on=0
-    { [ "${AMUX_LAND_FAST_GATE:-}" = 1 ] || [ "$(git config --bool --get amux.landFastGate 2>/dev/null)" = true ]; } && _fg_on=1
+    { [ "${AMUX_LAND_FAST_GATE:-}" = 1 ] || [ "$(_land_cfg --bool --get amux.landFastGate 2>/dev/null)" = true ]; } && _fg_on=1
     [ -n "$lanes" ] && [ "$_fg_on" = 1 ] && [ "${AMUX_LAND_PRECHECK_BATCH:-1}" = 1 ] && \
       _land_log "batch precheck skipped: the fast-gate push runs the same legs on this stack"
     if [ -n "$lanes" ] && [ "$_fg_on" = 0 ] && [ "${AMUX_LAND_PRECHECK_BATCH:-1}" = 1 ]; then
@@ -9210,7 +10495,7 @@ $f"
     # build, mirror-tests, repo-state/tree/workflow guards), which CI on main
     # still runs. Off by default; unset the config to restore the full gate.
     local _fg_env=""
-    if [ "${AMUX_LAND_FAST_GATE:-}" = 1 ] || [ "$(git config --bool --get amux.landFastGate 2>/dev/null)" = true ]; then
+    if [ "${AMUX_LAND_FAST_GATE:-}" = 1 ] || [ "$(_land_cfg --bool --get amux.landFastGate 2>/dev/null)" = true ]; then
       _fg_env="LAND_PRECHECK=1 AMUX_LAND_PRECHECK_MODE=batch"
       _land_log "fast gate: pushing with the hook's seconds-cheap legs only (amux.landFastGate); the slow legs run in CI on $branch"
     fi
@@ -9250,6 +10535,9 @@ $f"
       fi
       printf '%s\n' "$out" | tail -3
       date +%s > "$lock.lastpush" 2>/dev/null || true
+      # Land never moves this checkout's branch, so say how far behind it is.
+      local _lb; _lb="$(git rev-list --count "HEAD..$stack_tip" 2>/dev/null || echo 0)"
+      [ "${_lb:-0}" -gt 0 ] && _land_log "verdict=checkout_left_behind behind=$_lb: this checkout's $branch still points at the pre-land HEAD. amux sync-checkout advances it when that loses nothing"
       return 0
     fi
     if printf '%s' "$out" | grep -qE 'non-fast-forward|fetch first|\[rejected\]|cannot lock ref'; then
@@ -9309,12 +10597,44 @@ $f"
 # filed "no CDP port" while Chrome listened on 9333 (2026-10-02: GS-146,
 # GS-159, GS-169, GM-25 sat in needsyou on that). The helper finds the port
 # itself through Chrome's DevToolsActivePort file.
+#
+# It runs the helper's COMMITTED bytes (origin/main of the amux checkout), copied
+# once per tree into ~/.amux/cache/chrome-cdp/<tree>/, never the checkout's
+# working tree. The shared checkout lags origin by hundreds of commits, so the
+# worktree copy ran without 3baba214f ("never copy Google or YouTube logins into
+# a second browser") and copied 113 google.com cookies into profile 'ethan' at
+# 2026-10-18 09:06; Google signed every account in Ethan's Chrome out by 09:09,
+# the fourth time since 10-14. Each run where the worktree copy differs from the
+# committed one appends a line to ~/.amux/logs/cdp-helper.log.
+_cdp_committed_script() { # <checkout>: print a cdp.mjs carrying origin/main's bytes, or fail
+  local repo=$1 tree base dest tmp differs=no
+  tree=$(git -C "$repo" rev-parse -q --verify "origin/main:skills/chrome-cdp/scripts" 2>/dev/null) || return 1
+  base="$HOME/.amux/cache/chrome-cdp"; dest="$base/$tree"
+  if [ ! -f "$dest/cdp.mjs" ]; then
+    mkdir -p "$base" && tmp=$(mktemp -d "$base/.tmp.XXXXXX") || return 1
+    if ! git -C "$repo" archive "$tree" | tar -x -C "$tmp" 2>/dev/null || [ ! -f "$tmp/cdp.mjs" ]; then rm -rf -- "${tmp:?}"; return 1; fi
+    if [ -e "$dest" ]; then rm -rf -- "${tmp:?}"; else mv "$tmp" "$dest" 2>/dev/null || rm -rf -- "${tmp:?}"; fi
+    [ -f "$dest/cdp.mjs" ] || return 1
+  fi
+  git -C "$repo" diff --quiet origin/main -- skills/chrome-cdp/scripts 2>/dev/null || differs=yes
+  if [ "$differs" = yes ]; then
+    mkdir -p "$HOME/.amux/logs" 2>/dev/null
+    printf '{"at":"%s","verdict":"cdp_worktree_helper_differs_ran_committed","tree":"%s","checkout":"%s","session":"%s"}\n' \
+      "$(date -u +%FT%TZ)" "$tree" "$repo" "${AMUX_SESSION:-}" >> "$HOME/.amux/logs/cdp-helper.log" 2>/dev/null
+  fi
+  printf '%s\n' "$dest/cdp.mjs"
+}
+
 cmd_cdp() {
-  local script="${AMUX_CDP_SCRIPT:-}" c
+  local script="${AMUX_CDP_SCRIPT:-}" c repo="${AMUX_REPO_DIR:-$HOME/Dev/amux}"
   if [ -z "$script" ]; then
-    for c in "$HOME/Dev/amux/skills/chrome-cdp/scripts/cdp.mjs" "$HOME/.amux/skills/chrome-cdp/scripts/cdp.mjs"; do
+    script=$(_cdp_committed_script "$repo") || script=""
+  fi
+  if [ -z "$script" ]; then
+    for c in "$repo/skills/chrome-cdp/scripts/cdp.mjs" "$HOME/.amux/skills/chrome-cdp/scripts/cdp.mjs"; do
       [ -f "$c" ] && { script="$c"; break; }
     done
+    [ -n "$script" ] && echo "amux cdp: WARN running $script from a working tree: origin/main of $repo has no chrome-cdp helper to run instead" >&2
   fi
   [ -n "$script" ] || die "amux cdp: the chrome-cdp helper is not on this machine (set AMUX_CDP_SCRIPT to its cdp.mjs)"
   command -v node >/dev/null 2>&1 || die "amux cdp: node is not installed"
@@ -9326,6 +10646,59 @@ cmd_cdp() {
     return 0
   fi
   node "$script" "$@"
+}
+
+# amux memory                       print your worker memory (the Memory tab)
+# amux memory add --stdin | <text>  append a note to it
+# --worker NAME targets another worker (the owner's use).
+cmd_memory() {
+  local sub="show" who="${AMUX_WORKER:-${AMUX_SESSION:-}}" text="" from_stdin=""
+  if [[ "${1:-}" == "add" || "${1:-}" == "show" ]]; then sub="$1"; shift; fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --worker) who="${2:-}"; shift 2 ;;
+      --stdin)  from_stdin=1; shift ;;
+      -h|--help|help) sub="help"; shift ;;
+      *)        text="${text:+$text }$1"; shift ;;
+    esac
+  done
+  if [[ "$sub" == "help" ]]; then
+    echo "Usage: amux memory [show] [--worker NAME]"
+    echo "       amux memory add --stdin | <text> [--worker NAME]"
+    echo "Your amux worker memory is what the owner sees in the Memory tab and what your next launch carries."
+    return 0
+  fi
+  [[ -n "$who" ]] || die "amux memory: no worker (set AMUX_SESSION or pass --worker NAME)"
+  local url="$AMUX_API/api/sessions/$who/memory"
+  if [[ "$sub" == "show" ]]; then
+    _curl -sk -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" "$url" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d.get("content",""); print(c if c.strip() else "(no worker memory yet; add some with: amux memory add --stdin)", end="" if c.endswith("\n") else "\n")' \
+      || die "amux memory: could not read $who's memory"
+    return 0
+  fi
+  [[ -n "$from_stdin" ]] && text="$(cat)"
+  [[ -n "${text//[[:space:]]/}" ]] || die "Usage: amux memory add --stdin | <text>"
+  # `content` is the same result spelled out for a server that predates
+  # `append`, which would otherwise write an empty memory; a current server
+  # ignores it and appends under its own lock.
+  local prior resp
+  prior=$(_curl -sk -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" "$url" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["content"], end="")') || die "amux memory: could not read $who's memory before adding"
+  resp=$(TEXT="$text" PRIOR="$prior" python3 -c 'import json,os
+t, p = os.environ["TEXT"].strip(), os.environ["PRIOR"].rstrip()
+print(json.dumps({"append": t, "content": (p + "\n\n" + t + "\n") if p else t + "\n"}))' \
+    | _curl -sk -X POST -H 'Content-Type: application/json' \
+        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$url") || die "cannot reach the server to save $who's memory"
+  RESP="$resp" WHO="$who" python3 - <<'PY2'
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    print("memory add: unreadable response: " + os.environ["RESP"][:200], file=sys.stderr); sys.exit(1)
+if not d.get("ok") or not d.get("appended", True):
+    print("memory add FAILED: " + str(d.get("error") or d), file=sys.stderr); sys.exit(1)
+print(f"saved to {os.environ['WHO']}'s amux memory ({d.get('bytes', '?')} bytes); it shows in the Memory tab")
+PY2
 }
 
 cmd_signal() {
@@ -9433,6 +10806,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     peek|p)           shift; cmd_peek "$@" ;;
     send)             shift; cmd_send "$@" ;;
     post)             shift; cmd_post "$@" ;;
+    receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;
     resume|unpause)   shift; cmd_resume "$@" ;;
@@ -9448,7 +10822,11 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
+    memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
+    ci)               shift; cmd_ci "$@" ;;
+    sync-checkout)    shift; cmd_sync_checkout "$@" ;;
+    requests)         shift; cmd_requests "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;
     computer|cu)     shift; cmd_computer "$@" ;;
@@ -9456,6 +10834,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     delegate-job|dj) shift; cmd_delegate_job "$@" ;;
     get)              shift; cmd_get "$@" ;;
     crm)              shift; cmd_crm "$@" ;;
+    map)              shift; cmd_map "$@" ;;
     order)            shift; cmd_order "$@" ;;
     resources|res)   shift; cmd_resources "$@" ;;
     boundaries)       shift; cmd_boundaries "$@" ;;
@@ -9463,6 +10842,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     alert)            shift; cmd_alert "$@" ;;
     approvals)        shift; cmd_approvals "$@" ;;
     iac)              shift; cmd_config "$@" ;;
+    export)           shift; cmd_export "$@" ;;
+    import)           shift; cmd_import "$@" ;;
     whoami)           cmd_whoami ;;
     fresh)            shift; cmd_fresh "$@" ;;
     url)              shift; cmd_url "$@" ;;

@@ -35,8 +35,13 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
-      - name: Use the shared dependency target
-        run: echo "CARGO_TARGET_DIR=$HOME/.amux/rust-build-target" >> "$GITHUB_ENV"
+      - name: Use the workspace target, restored from cache
+        # About 2 of this job's 13 minutes were spent compiling unchanged
+        # dependencies on every run. rust-cache restores ./target and the registry.
+        run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harness-recovery
       - name: Real process crash and stateful recovery
         id: recovery
         env:

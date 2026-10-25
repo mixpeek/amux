@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,23 +20,32 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Quality Gates","item":"https://amux.io/guides/ai-agent-quality-gates/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Quality Gates: Done vs Verified, Human-in-the-Loop and Guardrails (2026)","description":"AI agent quality gates prevent coding agents from marking work done before it is verifiably complete. amux implements four gate categories — cost, context, action, and outcome — with board-enforced done vs verified states and phone approval.","url":"https://amux.io/guides/ai-agent-quality-gates/","datePublished":"2026-07-15","dateModified":"2026-07-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Quality Gates for AI Coding Agents","description":"Configure cost, context, action, and outcome gates in amux to prevent AI agents from marking work complete before it is verifiably done in production.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"brew install mixpeek/amux/amux"},{"@type":"HowToStep","position":2,"name":"Register your project in gated mode","text":"amux register myproject --dir ~/Dev/myproject (omit --yolo to require per-action approval)"},{"@type":"HowToStep","position":3,"name":"Set a token kill threshold","text":"Open the amux dashboard, go to Settings > Session Limits, and set a max token budget per session. The watchdog terminates sessions that exceed it."},{"@type":"HowToStep","position":4,"name":"Connect the iOS app for phone approval","text":"Install the amux iOS app (App Store: amux – Agent Multiplexer) and point it at your amux server. Pending approval prompts appear on your phone; tap to approve or deny."},{"@type":"HowToStep","position":5,"name":"Advance board tasks with gate acknowledgment","text":"amux board done TASK-ID --gate \"Implemented and merged,Tests pass\" — agents must acknowledge gate conditions before the board advances the task status."},{"@type":"HowToStep","position":6,"name":"Mark verified only after production confirmation","text":"Move a task to verified only after all four conditions hold: CI pipeline green on the merged commit, change deployed to production, smoke test on real prod behavior passes, zero regressions detected."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Quality Gates for AI Coding Agents","description":"Configure cost, context, action, and outcome gates in amux to prevent AI agents from marking work complete before it is verifiably done in production.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"curl -fsSL https://amux.io/install.sh | bash"},{"@type":"HowToStep","position":2,"name":"Register your project in gated mode","text":"amux register myproject --dir ~/Dev/myproject (omit --yolo to require per-action approval)"},{"@type":"HowToStep","position":3,"name":"Set a token kill threshold","text":"Open the amux dashboard, go to Settings > Session Limits, and set a max token budget per session. The watchdog terminates sessions that exceed it."},{"@type":"HowToStep","position":4,"name":"Connect the iOS app for phone approval","text":"Install the amux iOS app (App Store: amux – Agent Multiplexer) and point it at your amux server. Pending approval prompts appear on your phone; tap to approve or deny."},{"@type":"HowToStep","position":5,"name":"Advance board tasks with gate acknowledgment","text":"amux board done TASK-ID --gate \"Implemented and merged,Tests pass\" — agents must acknowledge gate conditions before the board advances the task status."},{"@type":"HowToStep","position":6,"name":"Mark verified only after production confirmation","text":"Move a task to verified only after all four conditions hold: CI pipeline green on the merged commit, change deployed to production, smoke test on real prod behavior passes, zero regressions detected."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between done and verified for AI agents?","acceptedAnswer":{"@type":"Answer","text":"Done means the agent has finished writing and committing code. Verified means the change has been confirmed working end-to-end in production: CI/CD pipeline passed on the merged commit, the commit is deployed to production, a smoke test on real prod behavior passed, and no regressions were detected. amux board enforces this distinction with explicit gate checkboxes agents must acknowledge before advancing a task's status. Conflating done and verified is one of the most common failure modes in overnight AI agent runs."}},{"@type":"Question","name":"How do I approve AI agent actions from my phone?","acceptedAnswer":{"@type":"Answer","text":"amux's iOS app (available on the App Store) shows pending permission prompts from all active sessions. When an agent reaches a step that requires approval — a destructive file operation, an external API call, a git push — the prompt appears in the iOS app's session peek view. Tap to approve or deny from anywhere. For fully unattended runs where no human approval is needed, enable YOLO mode with --yolo at session start."}},{"@type":"Question","name":"How do I prevent AI agents from running up a huge token bill overnight?","acceptedAnswer":{"@type":"Answer","text":"amux tracks per-session token usage in real time, parsed from JSONL transcripts. Set a per-session token threshold in the dashboard; the watchdog process terminates sessions that exceed the limit and logs the termination event. This prevents runaway loops — a common failure where an agent gets stuck refactoring the same file repeatedly, consuming tokens without making progress."}},{"@type":"Question","name":"What is YOLO mode and when should I use it?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (amux start --yolo or amux register --yolo) auto-approves all per-action permission prompts, letting Claude Code run fully unattended. Use it for trusted batch work in isolated environments: generating tests, writing documentation, refactoring low-risk code on a feature branch. Disable YOLO and use gated mode when agents touch anything irreversible: production systems, external APIs, billing, or shared repositories where a bad push is hard to reverse."}},{"@type":"Question","name":"How does amux detect when a coding agent gets stuck?","acceptedAnswer":{"@type":"Answer","text":"amux's stale-doing detector flags board tasks that have been in doing status without a progress update for longer than a configured interval. The watchdog also detects context overflow before it crashes the session: when context usage exceeds a threshold, amux pauses the agent, runs /compact to summarize and compress the conversation, then resumes. If a session crashes despite this, the watchdog restarts it with --resume so the conversation continues from the last checkpoint."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -197,8 +206,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
     <h2 id="setup">Setting up quality gates in amux</h2>
 
     <p><strong>Step 1: Install amux</strong></p>
-    <pre><code>brew install mixpeek/amux/amux
-# or: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash</pre>
 
     <p><strong>Step 2: Register your project in gated mode</strong></p>
     <pre><code># Gated (default) — each action prompts for approval
@@ -331,10 +339,12 @@ amux serve  # → https://localhost:8824 — open Board tab</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

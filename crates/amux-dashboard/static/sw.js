@@ -19,8 +19,6 @@ const CDN_URLS = [
   'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css',
   'https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js',
   'https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js',
-  'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js',
-  'https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown.js',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
   'https://cdn.jsdelivr.net/npm/motion@11.11.17/dist/motion.min.js',
@@ -97,12 +95,23 @@ self.addEventListener('push', e => {
 
 // Focus the app (or open it) when a notification is tapped — required for the
 // click to do anything on iOS, where notifications are shown via the SW.
+// The notification's own url wins: a card notification carries /#issue=<id>,
+// a worker one /#peek=<name>. An open window is focused and told to go there
+// (a hash change, no reload); with none, a window opens at the url.
 self.addEventListener('notificationclick', e => {
   e.notification.close();
+  const d = e.notification.data || {};
+  let url = d.url && d.url !== '/' ? d.url : (d.card ? '/#issue=' + encodeURIComponent(d.card)
+    : (d.session ? '/#peek=' + encodeURIComponent(d.session) : '/'));
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cl => {
-      for (const c of cl) { if ('focus' in c) return c.focus(); }
-      if (clients.openWindow) return clients.openWindow('/');
+      for (const c of cl) {
+        if ('focus' in c) {
+          if (url !== '/') c.postMessage({ type: 'amux-open-url', url });
+          return c.focus();
+        }
+      }
+      if (clients.openWindow) return clients.openWindow(url);
     })
   );
 });
@@ -133,6 +142,12 @@ self.addEventListener('fetch', e => {
 
   // API requests: network only (app JS handles offline queue)
   if (url.pathname.startsWith('/api/')) return;
+
+  // A dev server reached through /proxy/<port>/ is the owner's app, not an amux asset. Left to
+  // the browser: the static branch below cached its pages and answered its redirects from this
+  // worker, and on WebKit a link that redirects inside the proxy never navigated
+  // (e2e/port-proxy.spec.ts on ios-safari).
+  if (url.pathname.startsWith('/proxy/')) return;
 
   // Main HTML (SPA): network-first, always cache as canonical '/' key
   // Hash fragments (#path=...) are client-side only — SW sees bare '/' regardless

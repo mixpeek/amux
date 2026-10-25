@@ -77,6 +77,19 @@ pub fn routes() -> Router<AppState> {
         .route("/{name}", get(get_signal).post(raise_signal))
 }
 
+pub fn subscription_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_subscriptions).post(create_subscription))
+        .route(
+            "/{id}",
+            get(get_subscription)
+                .patch(update_subscription)
+                .delete(delete_subscription),
+        )
+        .route("/emit", axum::routing::post(emit_custom_signal))
+        .route("/fires", get(list_fires))
+}
+
 /// A signal name: 1-64 chars of `[a-z0-9._-]`, starting with a letter or
 /// digit. Lowercase only, so `MVS-Reflip-Clear` and `mvs-reflip-clear` cannot
 /// be two signals that each think the other was never raised.
@@ -524,6 +537,777 @@ async fn raise_in_store(
         .await?;
     let raised = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
     raised.ok_or_else(|| anyhow::anyhow!("signal raise wrote nothing"))
+}
+
+// ---------------------------------------------------------------------------
+// Signal subscriptions: event-driven worker coordination
+// ---------------------------------------------------------------------------
+
+fn ensure_subscription_tables(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(include_str!(
+        "../../migrations/0130_signal_subscriptions.sql"
+    ))
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct NewSubscription {
+    name: String,
+    pattern: String,
+    #[serde(default)]
+    source_filter: String,
+    #[serde(default)]
+    session_filter: String,
+    action: String,
+    action_target: String,
+    #[serde(default)]
+    action_template: String,
+    #[serde(default = "default_dedupe")]
+    dedupe_window_s: i64,
+}
+
+fn default_dedupe() -> i64 {
+    300
+}
+
+fn valid_action(a: &str) -> bool {
+    matches!(a, "send" | "board" | "schedule" | "shell")
+}
+
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let pat = pattern.to_ascii_lowercase();
+    let txt = text.to_ascii_lowercase();
+    if pat == "*" {
+        return true;
+    }
+    if let Some(prefix) = pat.strip_suffix(".*") {
+        return txt.starts_with(prefix) || txt == prefix;
+    }
+    if let Some(prefix) = pat.strip_suffix('*') {
+        return txt.starts_with(prefix);
+    }
+    pat == txt
+}
+
+fn sub_row_to_json(conn: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+    conn.query_row(
+        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
+         action_template, created_by, created_at, enabled, dedupe_window_s, last_fired_at, \
+         fire_count FROM signal_subscriptions WHERE id = ?1",
+        [id],
+        |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "pattern": r.get::<_, String>(2)?,
+                "source_filter": r.get::<_, String>(3)?,
+                "session_filter": r.get::<_, String>(4)?,
+                "action": r.get::<_, String>(5)?,
+                "action_target": r.get::<_, String>(6)?,
+                "action_template": r.get::<_, String>(7)?,
+                "created_by": r.get::<_, String>(8)?,
+                "created_at": r.get::<_, i64>(9)?,
+                "enabled": r.get::<_, i64>(10)? != 0,
+                "dedupe_window_s": r.get::<_, i64>(11)?,
+                "last_fired_at": r.get::<_, Option<i64>>(12)?,
+                "fire_count": r.get::<_, i64>(13)?,
+            }))
+        },
+    )
+    .optional()
+}
+
+fn all_sub_rows(conn: &Connection) -> rusqlite::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
+         action_template, created_by, created_at, enabled, dedupe_window_s, last_fired_at, \
+         fire_count FROM signal_subscriptions ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(json!({
+            "id": r.get::<_, i64>(0)?,
+            "name": r.get::<_, String>(1)?,
+            "pattern": r.get::<_, String>(2)?,
+            "source_filter": r.get::<_, String>(3)?,
+            "session_filter": r.get::<_, String>(4)?,
+            "action": r.get::<_, String>(5)?,
+            "action_target": r.get::<_, String>(6)?,
+            "action_template": r.get::<_, String>(7)?,
+            "created_by": r.get::<_, String>(8)?,
+            "created_at": r.get::<_, i64>(9)?,
+            "enabled": r.get::<_, i64>(10)? != 0,
+            "dedupe_window_s": r.get::<_, i64>(11)?,
+            "last_fired_at": r.get::<_, Option<i64>>(12)?,
+            "fire_count": r.get::<_, i64>(13)?,
+        }))
+    })?;
+    rows.collect()
+}
+
+use rusqlite::OptionalExtension as _;
+
+async fn list_subscriptions(State(state): State<AppState>) -> Response {
+    let res = state
+        .store
+        .read_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            Ok(all_sub_rows(conn)?)
+        })
+        .await;
+    match res {
+        Ok(subs) => reply(StatusCode::OK, json!({"subscriptions": subs, "count": subs.len()})),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
+}
+
+async fn get_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Response {
+    let res = state
+        .store
+        .read_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            Ok(sub_row_to_json(conn, id)?)
+        })
+        .await;
+    match res {
+        Ok(Some(sub)) => reply(StatusCode::OK, sub),
+        Ok(None) => reply(StatusCode::NOT_FOUND, json!({"error": "subscription not found"})),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
+}
+
+async fn create_subscription(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NewSubscription>,
+) -> Response {
+    if body.name.trim().is_empty() {
+        return reply(StatusCode::BAD_REQUEST, json!({"error": "name is required"}));
+    }
+    if body.pattern.trim().is_empty() {
+        return reply(StatusCode::BAD_REQUEST, json!({"error": "pattern is required"}));
+    }
+    if !valid_action(&body.action) {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "action must be one of: send, board, schedule, shell", "got": body.action}),
+        );
+    }
+    if body.action_target.trim().is_empty() {
+        return reply(StatusCode::BAD_REQUEST, json!({"error": "action_target is required"}));
+    }
+    let creator = actor_of(&headers);
+    let now = chrono::Utc::now().timestamp();
+    let b = body.clone();
+    let slot: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+    let slot_w = slot.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            conn.execute(
+                "INSERT INTO signal_subscriptions \
+                 (name, pattern, source_filter, session_filter, action, action_target, \
+                  action_template, created_by, created_at, dedupe_window_s) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                rusqlite::params![
+                    b.name.trim(),
+                    b.pattern.trim(),
+                    b.source_filter.trim(),
+                    b.session_filter.trim(),
+                    b.action,
+                    b.action_target.trim(),
+                    b.action_template,
+                    creator,
+                    now,
+                    b.dedupe_window_s.max(0),
+                ],
+            )?;
+            *slot_w.lock().unwrap() = Some(conn.last_insert_rowid());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .await;
+    match res {
+        Ok(_) => {
+            let id = slot.lock().unwrap().unwrap();
+            let sub = state
+                .store
+                .read_async(move |conn| Ok(sub_row_to_json(conn, id)?))
+                .await
+                .ok()
+                .flatten();
+            reply(StatusCode::CREATED, sub.unwrap_or(json!({"id": id})))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE") {
+                reply(
+                    StatusCode::CONFLICT,
+                    json!({"error": "a subscription with that name already exists", "name": body.name}),
+                )
+            } else {
+                reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": msg}))
+            }
+        }
+    }
+}
+
+async fn update_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Response {
+    let res = state
+        .store
+        .write_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM signal_subscriptions WHERE id = ?1",
+                    [id],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .unwrap_or(false);
+            if !exists {
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
+            }
+            let mut sets = Vec::new();
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+            let mut idx = 1;
+            macro_rules! maybe_set {
+                ($field:expr, $col:expr, $ty:ty) => {
+                    if let Some(v) = body.get($field) {
+                        if let Some(val) = v.as_str().map(|s| s.to_string()) {
+                            sets.push(format!("{} = ?{idx}", $col));
+                            params.push(Box::new(val));
+                            idx += 1;
+                        }
+                    }
+                };
+            }
+            maybe_set!("pattern", "pattern", String);
+            maybe_set!("source_filter", "source_filter", String);
+            maybe_set!("session_filter", "session_filter", String);
+            maybe_set!("action_target", "action_target", String);
+            maybe_set!("action_template", "action_template", String);
+            if let Some(v) = body.get("enabled") {
+                let on = match v {
+                    Value::Bool(b) => *b,
+                    Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+                    _ => true,
+                };
+                sets.push(format!("enabled = ?{idx}"));
+                params.push(Box::new(if on { 1i64 } else { 0 }));
+                idx += 1;
+            }
+            if let Some(v) = body.get("dedupe_window_s") {
+                if let Some(n) = v.as_i64() {
+                    sets.push(format!("dedupe_window_s = ?{idx}"));
+                    params.push(Box::new(n.max(0)));
+                    idx += 1;
+                }
+            }
+            let _ = idx;
+            if sets.is_empty() {
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
+            }
+            params.push(Box::new(id));
+            let sql = format!(
+                "UPDATE signal_subscriptions SET {} WHERE id = ?{}",
+                sets.join(", "),
+                params.len()
+            );
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            conn.execute(&sql, param_refs.as_slice())?;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .await;
+    match res {
+        Ok(wo) if wo.applied => {
+            let sub = state
+                .store
+                .read_async(move |conn| Ok(sub_row_to_json(conn, id)?))
+                .await
+                .ok()
+                .flatten();
+            reply(StatusCode::OK, sub.unwrap_or(json!({"ok": true})))
+        }
+        Ok(_) => reply(StatusCode::NOT_FOUND, json!({"error": "subscription not found or no changes"})),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
+}
+
+async fn delete_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Response {
+    let res = state
+        .store
+        .write_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            let n = conn.execute("DELETE FROM signal_subscriptions WHERE id = ?1", [id])?;
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
+        })
+        .await;
+    match res {
+        Ok(wo) if wo.applied => reply(StatusCode::OK, json!({"ok": true, "deleted": id})),
+        Ok(_) => reply(StatusCode::NOT_FOUND, json!({"error": "subscription not found"})),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct EmitBody {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    session: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    data: Value,
+}
+
+async fn emit_custom_signal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EmitBody>,
+) -> Response {
+    if body.event_type.trim().is_empty() {
+        return reply(StatusCode::BAD_REQUEST, json!({"error": "type is required"}));
+    }
+    let emitter = actor_of(&headers);
+    let source = if body.source.is_empty() {
+        emitter.clone()
+    } else {
+        body.source.clone()
+    };
+    let session = if body.session.is_empty() {
+        emitter.clone()
+    } else {
+        body.session.clone()
+    };
+    crate::api::session_verbs::emit_event_store(
+        &state.store,
+        &session,
+        &body.event_type,
+        Some(body.data.clone()),
+        None,
+        &source,
+    )
+    .await;
+    let fires = dispatch_subscriptions(
+        &state,
+        &body.event_type,
+        &session,
+        &source,
+        &body.data,
+    )
+    .await;
+    reply(
+        StatusCode::OK,
+        json!({
+            "ok": true,
+            "type": body.event_type,
+            "session": session,
+            "source": source,
+            "subscriptions_fired": fires,
+        }),
+    )
+}
+
+#[derive(serde::Deserialize, Default)]
+struct FiresQuery {
+    limit: Option<i64>,
+    subscription_id: Option<i64>,
+}
+
+async fn list_fires(State(state): State<AppState>, Query(q): Query<FiresQuery>) -> Response {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let sub_id = q.subscription_id;
+    let res = state
+        .store
+        .read_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            fn map_fire(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+                let fired_at: i64 = r.get(5)?;
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "subscription_id": r.get::<_, i64>(1)?,
+                    "subscription_name": r.get::<_, String>(2)?,
+                    "event_type": r.get::<_, String>(3)?,
+                    "event_data": serde_json::from_str::<Value>(&r.get::<_, String>(4).unwrap_or_default()).unwrap_or(Value::Null),
+                    "fired_at": fired_at,
+                    "fired_at_iso": iso(fired_at),
+                    "action": r.get::<_, String>(6)?,
+                    "action_target": r.get::<_, String>(7)?,
+                    "outcome": r.get::<_, String>(8)?,
+                }))
+            }
+            let (sql, p1, p2): (&str, i64, i64) = if let Some(sid) = sub_id {
+                (
+                    "SELECT f.id, f.subscription_id, s.name, f.event_type, f.event_data, f.fired_at, \
+                     f.action, f.action_target, f.outcome \
+                     FROM signal_fires f JOIN signal_subscriptions s ON s.id = f.subscription_id \
+                     WHERE f.subscription_id = ?1 ORDER BY f.fired_at DESC LIMIT ?2",
+                    sid, limit,
+                )
+            } else {
+                (
+                    "SELECT f.id, f.subscription_id, s.name, f.event_type, f.event_data, f.fired_at, \
+                     f.action, f.action_target, f.outcome \
+                     FROM signal_fires f JOIN signal_subscriptions s ON s.id = f.subscription_id \
+                     ORDER BY f.fired_at DESC LIMIT ?2",
+                    0, limit,
+                )
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows: Vec<Value> = stmt
+                .query_map(rusqlite::params![p1, p2], map_fire)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await;
+    match res {
+        Ok(fires) => reply(StatusCode::OK, json!({"fires": fires, "count": fires.len()})),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher: match events against subscriptions and fire actions
+// ---------------------------------------------------------------------------
+
+struct MatchedSub {
+    id: i64,
+    name: String,
+    action: String,
+    action_target: String,
+    action_template: String,
+}
+
+fn matching_subscriptions(
+    conn: &Connection,
+    event_type: &str,
+    session: &str,
+    source: &str,
+) -> rusqlite::Result<Vec<MatchedSub>> {
+    ensure_subscription_tables(conn)?;
+    let now = chrono::Utc::now().timestamp();
+    let mut stmt = conn.prepare(
+        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
+         action_template, dedupe_window_s, last_fired_at \
+         FROM signal_subscriptions WHERE enabled = 1",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+            r.get::<_, i64>(8)?,
+            r.get::<_, Option<i64>>(9)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, name, pattern, src_f, sess_f, action, target, template, dedupe, last) = row?;
+        if !glob_matches(&pattern, event_type) {
+            continue;
+        }
+        if !src_f.is_empty() && !glob_matches(&src_f, source) {
+            continue;
+        }
+        if !sess_f.is_empty() && !glob_matches(&sess_f, session) {
+            continue;
+        }
+        if dedupe > 0 {
+            if let Some(last_ts) = last {
+                if now - last_ts < dedupe {
+                    continue;
+                }
+            }
+        }
+        out.push(MatchedSub {
+            id,
+            name,
+            action,
+            action_target: target,
+            action_template: template,
+        });
+    }
+    Ok(out)
+}
+
+fn render_template(template: &str, event_type: &str, data: &Value) -> String {
+    if template.is_empty() {
+        return format!("[signal] {event_type}: {data}");
+    }
+    let mut out = template.replace("{{type}}", event_type);
+    if let Some(obj) = data.as_object() {
+        for (k, v) in obj {
+            let placeholder = format!("{{{{{k}}}}}");
+            let val = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            out = out.replace(&placeholder, &val);
+        }
+    }
+    out = out.replace("{{data}}", &data.to_string());
+    out
+}
+
+pub(crate) async fn dispatch_subscriptions(
+    state: &AppState,
+    event_type: &str,
+    session: &str,
+    source: &str,
+    data: &Value,
+) -> Vec<Value> {
+    let et = event_type.to_string();
+    let sess = session.to_string();
+    let src = source.to_string();
+    let matched = state
+        .store
+        .read_async(move |conn| Ok(matching_subscriptions(conn, &et, &sess, &src)?))
+        .await;
+    let subs = match matched {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "amux::signals", event_type, error = %e, "subscription dispatch read failed");
+            return vec![];
+        }
+    };
+    let mut fired = Vec::new();
+    for sub in subs {
+        let text = render_template(&sub.action_template, event_type, data);
+        let outcome = match sub.action.as_str() {
+            "send" => {
+                execute_send_action(state, &sub.action_target, &text).await
+            }
+            "board" => {
+                execute_board_action(state, &sub.action_target, event_type, &text).await
+            }
+            "schedule" => {
+                execute_schedule_action(state, &sub.action_target).await
+            }
+            "shell" => {
+                execute_shell_action(&sub.action_target, &text).await
+            }
+            _ => "unsupported_action".to_string(),
+        };
+        let now = chrono::Utc::now().timestamp();
+        let sub_id = sub.id;
+        let et2 = event_type.to_string();
+        let data_s = data.to_string();
+        let action = sub.action.clone();
+        let target = sub.action_target.clone();
+        let outcome_w = outcome.clone();
+        let _ = state
+            .store
+            .write_async(move |conn| {
+                conn.execute(
+                    "INSERT INTO signal_fires (subscription_id, event_type, event_data, fired_at, action, action_target, outcome) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    rusqlite::params![sub_id, et2, data_s, now, action, target, outcome_w],
+                )?;
+                conn.execute(
+                    "UPDATE signal_subscriptions SET last_fired_at = ?1, fire_count = fire_count + 1 WHERE id = ?2",
+                    rusqlite::params![now, sub_id],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await;
+        tracing::info!(target: "amux::signals",
+            subscription = %sub.name, event_type, action = %sub.action,
+            target = %sub.action_target, outcome = %outcome,
+            measured = true, "subscription fired");
+        fired.push(json!({
+            "subscription": sub.name,
+            "action": sub.action,
+            "target": sub.action_target,
+            "outcome": outcome,
+        }));
+    }
+    fired
+}
+
+async fn execute_send_action(state: &AppState, target: &str, text: &str) -> String {
+    let home = crate::config::amux_home();
+    let sessions_dir = home.join("sessions");
+    if !sessions_dir.join(format!("{target}.env")).exists() {
+        return format!("target_not_found:{target}");
+    }
+    match crate::api::session_verbs::steer_enqueue_idempotent(
+        state,
+        target,
+        text,
+        "signal-subscription",
+        "signal-dispatcher",
+        &format!("signal-sub:{}:{}", target, chrono::Utc::now().timestamp()),
+    )
+    .await
+    {
+        Ok(_) => "delivered".to_string(),
+        Err(reason) => format!("refused:{reason}"),
+    }
+}
+
+async fn execute_board_action(
+    state: &AppState,
+    target: &str,
+    event_type: &str,
+    text: &str,
+) -> String {
+    let title: String = format!("[signal] {event_type}").chars().take(200).collect();
+    let desc = text.to_string();
+    let session = target.to_string();
+    let slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let slot_w = slot.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            let row = bs::create_issue(
+                conn,
+                &bs::NewIssue {
+                    title,
+                    desc,
+                    status: "todo".into(),
+                    session: Some(session),
+                    item_type: "signal".into(),
+                    creator: "signal-dispatcher".into(),
+                    owner_type: "agent".into(),
+                    acceptance_criteria: None,
+                    next_action: None,
+                    due: None,
+                    due_time: None,
+                    reviewer: None,
+                    shepherd: None,
+                    gate: vec![],
+                    depends_on: vec![],
+                    tags: vec![],
+                    ask_type: None,
+                    ask_question: None,
+                    ask_unblocks: None,
+                    ask_actor: None,
+                    source: Some("signal-subscription".into()),
+                    requested_by: None,
+                    callback_session: None,
+                    callback_prompt: None,
+                },
+                chrono::Utc::now().timestamp(),
+            )?;
+            let id = row.id.clone();
+            let snap = row.snapshot();
+            *slot_w.lock().unwrap() = Some(id.clone());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![PendingEvent {
+                    entity_type: EntityType::Task,
+                    entity_id: id,
+                    mutation: MutationKind::Created,
+                    payload: Some(snap),
+                }],
+            })
+        })
+        .await;
+    match res {
+        Ok(_) => {
+            let id = slot.lock().unwrap().clone().unwrap_or_default();
+            format!("card_created:{id}")
+        }
+        Err(e) => format!("failed:{e}"),
+    }
+}
+
+async fn execute_schedule_action(state: &AppState, schedule_id: &str) -> String {
+    let url = format!("/api/schedules/{schedule_id}/run");
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(&url)
+        .header("content-type", "application/json")
+        .header("x-amux-session", "signal-dispatcher")
+        .body(axum::body::Body::empty());
+    match req {
+        Ok(r) => {
+            let app = crate::api::router(state.clone());
+            match tower::ServiceExt::oneshot(app, r).await {
+                Ok(resp) => {
+                    let st = resp.status();
+                    if st.is_success() {
+                        "triggered".to_string()
+                    } else {
+                        format!("http_{}", st.as_u16())
+                    }
+                }
+                Err(e) => format!("dispatch_error:{e}"),
+            }
+        }
+        Err(e) => format!("request_build_error:{e}"),
+    }
+}
+
+async fn execute_shell_action(command: &str, _text: &str) -> String {
+    match tokio::process::Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+    {
+        Ok(output) => {
+            let code = output.status.code().unwrap_or(-1);
+            if code == 0 {
+                "ok".to_string()
+            } else {
+                let stderr: String = String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(200)
+                    .collect();
+                format!("exit_{code}:{stderr}")
+            }
+        }
+        Err(e) => format!("spawn_error:{e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook: called from emit_event to check subscriptions
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn on_event(
+    state: &AppState,
+    event_type: &str,
+    session: &str,
+    source: &str,
+    data: Option<&Value>,
+) {
+    let empty = Value::Null;
+    let data = data.unwrap_or(&empty);
+    let _ = dispatch_subscriptions(state, event_type, session, source, data).await;
 }
 
 #[cfg(test)]

@@ -1,9 +1,29 @@
 import SwiftUI
+import AuthenticationServices
 
 /// Where the cloud button sends people. One constant, because the app, the
 /// site and the Cloudflare redirect all have to agree on it.
 enum AmuxCloud {
     static let onboardingURL = URL(string: "https://amux.io/cloud/")!
+    /// Sign in with Apple: cloud.amux.io checks Apple's token and answers with the account's
+    /// servers, each with a two-minute sign-in link (cloud/start/worker.mjs, /api/apple/servers).
+    static let appleServersURL = URL(string: "https://cloud.amux.io/api/apple/servers")!
+
+    struct Server: Decodable { let name: String; let url: String; let login_url: String? }
+    struct Answer: Decodable { let servers: [Server]?; let error: String? }
+
+    static func servers(identityToken: String) async throws -> [Server] {
+        var req = URLRequest(url: appleServersURL)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(["identity_token": identityToken])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let answer = try? JSONDecoder().decode(Answer.self, from: data)
+        if let servers = answer?.servers, !servers.isEmpty { return servers }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        throw NSError(domain: "amux.cloud", code: code, userInfo: [NSLocalizedDescriptionKey:
+            answer?.error ?? "amux Cloud did not answer (HTTP \(code)). Try again in a minute."])
+    }
 }
 
 struct ServerPickerView: View {
@@ -12,6 +32,8 @@ struct ServerPickerView: View {
     @State private var customURL = ""
     @State private var customName = ""
     @State private var urlError = false
+    @State private var appleBusy = false
+    @State private var appleError: String?
 
     var body: some View {
         NavigationStack {
@@ -43,6 +65,24 @@ struct ServerPickerView: View {
                 // an amux server. Loading it in the dashboard WebView would
                 // leave the app pointed at something it cannot talk to.
                 VStack(spacing: 12) {
+                    // Existing amux Cloud customers: Sign in with Apple finds their server and
+                    // signs them in. The Apple ID's email must be the one they signed up with
+                    // (once linked, a private relay address works too).
+                    SignInWithAppleButton(.continue, onRequest: { $0.requestedScopes = [.email] },
+                                          onCompletion: signedInWithApple)
+                        .signInWithAppleButtonStyle(.black)
+                        .frame(height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .disabled(appleBusy)
+                        .overlay { if appleBusy { ProgressView() } }
+
+                    if let appleError {
+                        Text(appleError)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                    }
+
                     Button(action: { openURL(AmuxCloud.onboardingURL) }) {
                         HStack {
                             Image(systemName: "cloud.fill")
@@ -60,7 +100,7 @@ struct ServerPickerView: View {
 
                     // The old caption said "Includes Sign in with Apple", which
                     // described the sign-in this button no longer performs.
-                    Text("Opens amux.io to schedule onboarding")
+                    Text("New to amux Cloud? amux.io sets up your server")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -132,6 +172,32 @@ struct ServerPickerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(uiColor: .systemBackground))
+        }
+    }
+
+    private func signedInWithApple(_ result: Result<ASAuthorization, Error>) {
+        appleError = nil
+        switch result {
+        case .failure(let e):
+            if (e as? ASAuthorizationError)?.code != .canceled { appleError = e.localizedDescription }
+        case .success(let auth):
+            guard let cred = auth.credential as? ASAuthorizationAppleIDCredential,
+                  let data = cred.identityToken, let token = String(data: data, encoding: .utf8) else {
+                appleError = "Apple did not return a sign-in token. Try again."
+                return
+            }
+            appleBusy = true
+            Task { @MainActor in
+                defer { appleBusy = false }
+                do {
+                    let servers = try await AmuxCloud.servers(identityToken: token)
+                    for s in servers { _ = serverManager.addServer(name: s.name, urlString: s.url) }
+                    let first = servers[0]
+                    serverManager.openServer(first.url, signInLink: first.login_url.flatMap(URL.init(string:)))
+                } catch {
+                    appleError = error.localizedDescription
+                }
+            }
         }
     }
 }

@@ -76,8 +76,9 @@ test('Map > Location history lists a day, draws it, and focuses a trip', async (
   const u = new URL(asked);
   expect(Number(u.searchParams.get('to')) - Number(u.searchParams.get('from'))).toBeGreaterThanOrEqual(23 * 3600);
   // Two trips drawn as lines plus the stop and the start/end markers.
-  const layers = await page.evaluate(() => { const g: any = globalThis; const l = g.eval('_locLayer'); return l ? l.getLayers().length : 0; });
-  expect(layers).toBeGreaterThanOrEqual(5);
+  // Leaflet loads on the first Map open, so the drawing can land just after the rows.
+  await expect.poll(() => page.evaluate(() => { const g: any = globalThis; const l = g.eval('_locLayer'); return l ? l.getLayers().length : 0; }),
+    { timeout: 30_000 }).toBeGreaterThanOrEqual(5);
   const box = await rows.nth(1).boundingBox();
   if ((page.viewportSize()?.width || 1200) <= 600) expect(box!.height).toBeGreaterThanOrEqual(44);
   // Focusing a trip must not rewrite the saved map document (it once saved
@@ -287,11 +288,10 @@ test('Map > Location history shows an unrecorded move as a gap row and a dashed 
   await expect(rows.nth(1)).toContainText('Moved, not recorded');
   await expect(rows.nth(1)).toContainText('phone sent no GPS');
   // Drawn as a dashed line, never as a measured trip.
-  const dashed = await page.evaluate(() => {
+  await expect.poll(() => page.evaluate(() => {
     const l = (globalThis as any).eval('_locLayer');
     return l ? l.getLayers().filter((x: any) => x.options && x.options.dashArray).length : -1;
-  });
-  expect(dashed).toBe(1);
+  }), { timeout: 30_000 }).toBe(1);
 });
 
 // 2026-10-04: an overnight stop read "12:10 PM–12:41 PM · 24 h 31 min" with

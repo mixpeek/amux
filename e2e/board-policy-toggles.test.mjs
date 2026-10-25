@@ -11,7 +11,8 @@ test('the worker Board tab has a config container and _peekBoardPolicySync rende
  assert.match(app,/_PEEK_BOARD_ALL_CONFIGS/);
  assert.match(app,/field: 'auto_drain_backlog'/);
  assert.match(app,/field: 'board_force_adherence'/);
- assert.match(app,/togglePeekBoardPolicy/);
+ assert.match(app,/_boardOneSet/);
+ assert.match(sv,/body\.get\("board_enabled"\)/);
  assert.match(sv,/"board_decompose",\s*super::board_lifecycle::DECOMPOSE_KEY/);
  assert.match(sv,/"board_force_adherence",\s*super::board_lifecycle::FORCE_ADHERENCE_KEY/);
 });
@@ -20,7 +21,7 @@ test('withholding an owner message requires force adherence, which defaults off'
 });
 test('an isolated worker shows all toggles disabled with the reason',()=>{
  const fnEnd=(name)=>{const fi=app.indexOf(name);let d=0;for(let k=app.indexOf('{',fi);k<app.length;k++){if(app[k]==='{')d++;else if(app[k]==='}'&&--d===0)return k+1;}};
- const defs=app.slice(app.indexOf('const _BOARD_SWITCHES = ['),fnEnd('function _boardSwitchStates('));
+ const defs=app.slice(app.indexOf('const _BOARD_SWITCHES = ['),fnEnd('function _boardOneSwitchHTML('));
  const ci=app.indexOf('const _PEEK_BOARD_ALL_CONFIGS');
  const snippet=defs+'\n'+app.slice(ci,fnEnd('function _peekBoardPolicySync('));
  const el={style:{},innerHTML:'',querySelector:()=>null};
@@ -35,13 +36,33 @@ test('an isolated worker shows all toggles disabled with the reason',()=>{
       auto_drain_backlog:false,auto_pickup:false,auto_continue:false,standing_orders:false});
  assert.match(el.innerHTML,/pbc-note/);
  assert.match(el.innerHTML,/Isolated worker/);
- assert.match(el.innerHTML,/pbc-disabled/);
- run({name:'w',isolated:false,board_decompose:true,board_force_adherence:false,
+ assert.match(el.innerHTML,/board-one-switch[^>]* disabled/);
+ // One switch (Ethan, 2026-10-17, and 2026-10-24 "one toggle ... disable by
+ // default"): it reads On exactly when the board steers the worker, Off
+ // otherwise, never a third state, and there is exactly one control.
+ run({name:'w',isolated:false,board_decompose:true,board_force_adherence:true,
       auto_drain_backlog:true,auto_pickup:true,auto_continue:true,standing_orders:true});
- assert.doesNotMatch(el.innerHTML,/pbc-disabled/);
- assert.match(el.innerHTML,/Refill To Do from Backlog/);
- assert.match(el.innerHTML,/pbc-help/, 'every switch shows its helper text');
- assert.match(el.innerHTML,/togglePeekBoardPolicy/);
+ assert.equal((el.innerHTML.match(/role="switch"/g)||[]).length,1);
+ assert.match(el.innerHTML,/data-board-mode="on"/);
+ assert.match(el.innerHTML,/pbc-help/, 'the switch shows what it does');
+ assert.match(el.innerHTML,/_boardOneSet\('w',false\)/);
+ assert.doesNotMatch(el.innerHTML,/board-one-switch[^>]* disabled/);
+ run({name:'w',isolated:false,board_decompose:false,board_force_adherence:false,
+      auto_drain_backlog:false,auto_pickup:false,auto_continue:false,standing_orders:false});
+ assert.match(el.innerHTML,/data-board-mode="off"/);
+ assert.match(el.innerHTML,/_boardOneSet\('w',true\)/);
+ // Steering on with the rest off: the board types into the worker, so On.
+ run({name:'w',isolated:false,board_decompose:false,board_force_adherence:true,
+      auto_drain_backlog:false,auto_pickup:false,auto_continue:false,standing_orders:false});
+ assert.match(el.innerHTML,/data-board-mode="on"/);
+ // The fleet default on 2026-10-24: backlog refill set fleet-wide, steering
+ // off. The board does nothing for this worker, so Off (120 of 145 workers
+ // used to read "Partly on" here).
+ run({name:'w',isolated:false,board_decompose:false,board_force_adherence:false,
+      auto_drain_backlog:true,auto_pickup:false,auto_continue:false,standing_orders:false});
+ assert.match(el.innerHTML,/data-board-mode="off"/);
+ assert.match(el.innerHTML,/aria-checked="false"/);
+ assert.doesNotMatch(el.innerHTML,/Partly on|mixed|Inherit/);
 });
 
 test('a switch held back by its parent says so instead of looking active',()=>{

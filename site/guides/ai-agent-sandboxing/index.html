@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{
     "@context":"https://schema.org",
@@ -39,7 +38,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-13",
-    "dateModified":"2026-08-20",
+    "dateModified":"2026-10-20",
     "mainEntityOfPage":"https://amux.io/guides/ai-agent-sandboxing/"
   }</script>
   <script type="application/ld+json">{
@@ -62,6 +61,7 @@
     "@context":"https://schema.org",
     "@type":"FAQPage",
     "mainEntity":[
+      {"@type":"Question","name":"How do I sandbox a whole team of AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Use three layers. Give each agent its own git worktree so parallel agents never edit the same files. Run agents in containers (Docker, optionally with gVisor) or microVMs with networking restricted. Run the fleet on a machine that is not your laptop. amux covers the first and third layers: AMUX_WORKSPACE_ISOLATION=1 gives each worker its own worktree and temp directory, and amux Cloud runs the fleet on a dedicated server at yourname.amux.io from $39/mo. amux does not create containers itself."}},
       {"@type":"Question","name":"Why do AI coding agents need sandboxing?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents execute arbitrary code on your machine — they run terminal commands, install packages, modify files, and make network requests. Without sandboxing, a prompt injection, hallucinated command, or malicious dependency can escalate to full system compromise. Microsoft disclosed CVE-2026-25592 in May 2026 showing how prompt injection in agent frameworks achieved host-level remote code execution. Sandboxing limits the blast radius: even if the agent runs dangerous code, the damage is confined to an isolated environment."}},
       {"@type":"Question","name":"What is the difference between a container and a microVM for AI agent sandboxing?","acceptedAnswer":{"@type":"Answer","text":"Containers (Docker, Podman) share the host kernel and use namespace isolation — they're fast to start (~1s) but have a larger attack surface because a kernel exploit can escape the container. MicroVMs (Firecracker, E2B) run a separate lightweight kernel inside a hardware-virtualized environment — they take slightly longer to start (~150ms for Firecracker, sub-100ms for E2B) but provide near-VM-level isolation. For most AI agent workloads, containers with gVisor (which intercepts syscalls in userspace) offer a strong middle ground: container-speed startup with VM-like isolation."}},
       {"@type":"Question","name":"Which sandboxing approach is best for running Claude Code or Codex CLI?","acceptedAnswer":{"@type":"Answer","text":"For Claude Code, the simplest approach is using its built-in permission modes (plan mode restricts file writes, auto mode requires approval for dangerous commands). For stronger isolation, run Claude Code inside a Docker container or E2B sandbox — Claude Code works in any Linux environment. Codex CLI has the strongest built-in sandboxing of any coding agent: OS-level isolation with filesystem restrictions and network disabled by default. For maximum security, run either agent inside a Firecracker microVM via E2B or a gVisor-sandboxed Docker container."}},
@@ -119,60 +119,59 @@
     .winner-badge{display:inline-block;font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;padding:2px 6px;border-radius:3px;background:oklch(0.80 0.18 145 / .15);color:var(--green);margin-left:0.4rem;vertical-align:middle}
     .threat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;margin:1.5rem 0}
     .threat-card{background:var(--surface);border:1px solid oklch(0.65 0.20 25 / .3);border-radius:8px;padding:1.2rem 1.4rem}
-    .threat-card h4{margin:0 0 0.4rem;font-size:0.9rem;color:oklch(0.75 0.17 25)}
+    .threat-card h4{margin:0 0 0.4rem;font-size:0.9rem;color:light-dark(oklch(0.48 0.150 25.0), oklch(0.75 0.17 25))}
     .threat-card p{font-size:0.85rem;color:var(--dim);margin:0;line-height:1.6}
     .layer-label{display:inline-block;font-family:var(--font-mono);font-size:0.7rem;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;padding:3px 8px;border-radius:4px;margin-bottom:0.8rem}
-    .layer-container{background:oklch(0.65 0.15 250 / .15);color:oklch(0.75 0.15 250)}
-    .layer-microvm{background:oklch(0.65 0.18 145 / .15);color:oklch(0.75 0.18 145)}
-    .layer-kernel{background:oklch(0.65 0.16 310 / .15);color:oklch(0.75 0.16 310)}
-    .layer-cloud{background:oklch(0.65 0.15 55 / .15);color:oklch(0.75 0.15 55)}
-    .layer-builtin{background:oklch(0.65 0.17 25 / .15);color:oklch(0.75 0.17 25)}
+    .layer-container{background:oklch(0.65 0.15 250 / .15);color:light-dark(oklch(0.48 0.150 250.0), oklch(0.75 0.15 250))}
+    .layer-microvm{background:oklch(0.65 0.18 145 / .15);color:light-dark(oklch(0.48 0.150 145.0), oklch(0.75 0.18 145))}
+    .layer-kernel{background:oklch(0.65 0.16 310 / .15);color:light-dark(oklch(0.48 0.150 310.0), oklch(0.75 0.16 310))}
+    .layer-cloud{background:oklch(0.65 0.15 55 / .15);color:light-dark(oklch(0.48 0.150 55.0), oklch(0.75 0.15 55))}
+    .layer-builtin{background:oklch(0.65 0.17 25 / .15);color:light-dark(oklch(0.48 0.150 25.0), oklch(0.75 0.17 25))}
     .cve-callout{background:oklch(0.65 0.20 25 / .08);border:1px solid oklch(0.65 0.20 25 / .25);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0}
     .cve-callout p{font-size:0.88rem;color:var(--dim);margin:0;line-height:1.7}
     .cve-callout a{color:var(--dim);text-decoration:underline;text-decoration-color:var(--border)}
     .cve-callout a:hover{color:var(--text)}
-    .cve-callout strong{color:oklch(0.75 0.17 25)}
+    .cve-callout strong{color:light-dark(oklch(0.48 0.150 25.0), oklch(0.75 0.17 25))}
     @media(max-width:700px){
       .axis-grid{grid-template-columns:1fr}
       .threat-grid{grid-template-columns:1fr}
     }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Sandboxing</span></div>
 
     <h1>AI Agent Sandboxing in 2026: How to Run Coding Agents Without Risking Your System</h1>
-    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated August 2026.</em></p>
+    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated October 2026.</em></p>
 
     <!-- EXP-049: sandboxing top-of-page CTA — updated Aug 2026 -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>Running a fleet of parallel agents?</strong> <span style="color:var(--muted)">amux orchestrates, monitors, and self-heals your entire AI engineering team from one dashboard — sandbox each agent, manage them from your phone. Free, MIT licensed.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp049_sandboxing_topofpage_cta_click')" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
 
     <!-- EXP-007 -->
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
-      <div>
-        <p style="margin:0;font-size:.92rem;color:var(--text);">Considering amux? See it in action before deciding &rarr;</p>
-        <p style="margin:.25rem 0 0;font-size:.8rem;color:var(--muted);">Open-source control plane for AI agent teams &mdash; run dozens of parallel agents with sandboxing, self-healing, and a shared task board.</p>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:var(--accent);color:#fff;padding:.6rem 1.25rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:.9rem;white-space:nowrap;flex-shrink:0;">&#11088; Star amux on GitHub</a>
-    </div>
+
+    <p data-cta-loc="exp142-answer"><strong>Short answer:</strong> to run AI coding agents safely, put each agent in a container or microVM with networking off and only its project directory mounted, and give each agent its own git worktree so parallel agents never edit the same files. Docker plus gVisor covers most teams; E2B or Firecracker is the choice for untrusted code. To keep a whole team of agents running overnight without touching your laptop, run them on a separate machine, such as an <a href="/start/">amux Cloud</a> server dedicated to you.</p>
 
     <!-- ───────── TL;DR ───────── -->
     <div class="tldr">
@@ -182,7 +181,15 @@
       <p><strong>Strongest isolation:</strong> <a href="https://github.com/firecracker-microvm/firecracker" target="_blank" rel="noopener">Firecracker</a> &mdash; hardware-virtualized microVMs, &lt;5MB overhead, powers AWS Lambda</p>
       <p><strong>Best for cloud workloads:</strong> <a href="https://modal.com/" target="_blank" rel="noopener">Modal</a> &mdash; serverless sandboxes with gVisor isolation, sub-second cold starts</p>
       <p><strong>Best built-in sandbox:</strong> <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> &mdash; OS-level isolation with network disabled by default</p>
-      <p><strong>Best for agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> &mdash; per-session containers with git worktree isolation and self-healing</p>
+      <p><strong>Best for agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> &mdash; amux runs and self-heals the fleet with one git worktree per worker; Docker supplies the isolation</p>
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-agent-sandboxing">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -659,16 +666,16 @@
       <h3><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> + Containerized Agents</h3>
       <div class="tool-meta">
         <span>By <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek</a></span>
-        <span>MIT License</span>
-        <span>Free &amp; open source &mdash; 360+ GitHub stars</span>
+        <span>MIT + Commons Clause</span>
+        <span>Free &amp; open source, 540+ GitHub stars</span>
       </div>
-      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> sessions in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> with built-in isolation. For sandboxing at fleet scale:</p>
+      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> sessions in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>. It is one Rust binary plus SQLite. amux does not create containers itself; it handles the parts a container cannot:</p>
       <ul>
-        <li><strong>Git worktree isolation</strong> &mdash; each agent gets its own branch and working directory via <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktrees</a>, preventing merge conflicts between parallel agents</li>
+        <li><strong>Workspace isolation</strong>: set <code>AMUX_WORKSPACE_ISOLATION=1</code> for a worker, a group or everyone, and each worker gets its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktree</a> at <code>origin/main</code> and its own temp directory, so parallel agents never collide on files or scratch paths</li>
         <li><strong>Self-healing</strong> &mdash; auto-compacts context when near the limit, restarts on crash, and replays the last message so agents recover without human intervention</li>
         <li><strong>Atomic task claiming</strong> &mdash; SQLite-backed kanban board with atomic <code>CLAIM</code> operations ensures no two agents work on the same task</li>
         <li><strong>Token tracking</strong> &mdash; per-session daily spend monitoring catches cost runaways before they escalate</li>
-        <li><strong>Container integration</strong> &mdash; run each <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> session inside a <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> container for filesystem/network isolation</li>
+        <li><strong>A separate machine</strong>: <a href="/start/">amux Cloud</a> runs your whole fleet on its own server at <code>yourname.amux.io</code> (from $39/mo), so agents never run on your laptop. Self-hosters can run amux inside a VM or container for the same effect</li>
         <li><strong>REST API</strong> &mdash; programmatic control over session lifecycle, enabling automated sandbox provisioning and teardown</li>
         <li><strong>Mobile dashboard</strong> &mdash; monitor and control your agent fleet from the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> while agents run unattended</li>
       </ul>
@@ -677,15 +684,10 @@
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.6rem;margin:2rem 0;">
       <h3 style="margin:0 0 0.6rem;">Get started with sandboxed agent fleets</h3>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run an AI engineering team from one dashboard &mdash; dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> agents with self-healing, git isolation, and a web dashboard. Learn how to <a href="/guides/claude-code-headless/">run Claude Code headless</a> as part of an agent fleet. Free, open-source, MIT licensed.</p>
-      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;"><code># Homebrew (recommended)
-brew install mixpeek/amux/amux && amux serve
+      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run an AI engineering team from one dashboard &mdash; dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> agents with self-healing, git isolation, and a web dashboard. Learn how to <a href="/guides/claude-code-headless/">run Claude Code headless</a> as part of an agent fleet. Free to self-host (MIT + Commons Clause), or <a href="/start/">run it on amux Cloud</a> on a server of its own.</p>
+      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;">curl -fsSL https://amux.io/install.sh | bash && amux serve
 
-# PyPI
-pipx install amux && amux serve
-
-# Zero-install
-uvx amux serve  # open https://localhost:8824</code></pre>
+</pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--green);color:var(--bg);padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.88rem;">&#11088; Star amux on GitHub</a>
     </div>
 
@@ -695,6 +697,10 @@ uvx amux serve  # open https://localhost:8824</code></pre>
     <h2 id="faq">Frequently Asked Questions</h2>
 
     <div class="compare-grid">
+      <div class="tool-card">
+        <h3>How do I sandbox a whole team of AI coding agents?</h3>
+        <p>Use three layers. Give each agent its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktree</a> so parallel agents never edit the same files. Run agents in containers (<a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a>, optionally with <a href="https://gvisor.dev/" target="_blank" rel="noopener">gVisor</a>) or microVMs with networking restricted. Run the fleet on a machine that is not your laptop. amux covers the first and third layers: <code>AMUX_WORKSPACE_ISOLATION=1</code> gives each worker its own worktree and temp directory, and <a href="/start/">amux Cloud</a> runs the fleet on a dedicated server. amux does not create containers itself.</p>
+      </div>
       <div class="tool-card">
         <h3>Why do AI coding agents need sandboxing?</h3>
         <p>AI agents execute arbitrary code &mdash; shell commands, package installs, file modifications, network requests. Without sandboxing, prompt injection, hallucinated commands, or malicious dependencies can escalate to full system compromise. <a href="https://www.microsoft.com/en-us/security/blog/2026/05/07/prompts-become-shells-rce-vulnerabilities-ai-agent-frameworks/" target="_blank" rel="noopener">Microsoft disclosed CVEs in May 2026</a> showing how prompt injection in <a href="https://github.com/microsoft/semantic-kernel" target="_blank" rel="noopener">Semantic Kernel</a> achieved host-level RCE. Sandboxing confines the blast radius.</p>
@@ -746,6 +752,15 @@ uvx amux serve  # open https://localhost:8824</code></pre>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
 
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-agent-sandboxing">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+    </div>
+
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -784,10 +799,12 @@ uvx amux serve  # open https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

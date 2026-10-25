@@ -40,8 +40,12 @@ test('LC-LATENCY: rapid sends skip retry backoff and render through lightweight 
     await pressSend();
     await expect(page.locator('#peek-cmd-input')).toHaveValue('');
     const released=Date.now();release();
-    await expect.poll(()=>posts.length,{timeout:750,intervals:[20,40,80]}).toBe(2);
-    await expect(page.locator('#peek-body')).toContainText('Second rapid message',{timeout:750});
+    // The claim is "skips retry backoff", and the shortest backoff is 2000ms
+    // (_SYNC_MIN_MS), so a 1500ms budget still fails any send that waited on
+    // one. 750ms failed on a loaded 4-core runner with no backoff involved
+    // (CI 68ade32c3, load 3.16: "Expected: 2 Received: 1").
+    await expect.poll(()=>posts.length,{timeout:1500,intervals:[20,40,80]}).toBe(2);
+    await expect(page.locator('#peek-body')).toContainText('Second rapid message',{timeout:1500});
     const rendered=Date.now();
     expect(posts[0].id).not.toBe(posts[1].id);
     expect(peeks.some(p=>p.live && p.at>=posts[0].at)).toBe(true);

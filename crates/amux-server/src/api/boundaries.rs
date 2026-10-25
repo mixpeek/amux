@@ -9,12 +9,14 @@
 //! - `GET /api/boundaries`: every boundary, whether its hook is actually
 //!   installed and wired, and how often it fired in the last 24h.
 //! - `GET /api/resources[?worker=<name>]`: the machine's capacity and
-//!   pressure, the heaviest workers, and one worker's own usage against the
-//!   resource profile it declared (`AMUX_WORKER_CPUS`, `AMUX_WORKER_MEM_GB`).
+//!   pressure, the heaviest workers by CPU and memory, where the CPU no worker
+//!   owns is going (`machine`), and one worker's own usage (default: the
+//!   caller's `X-Amux-Session`) against the resource profile it declared
+//!   (`AMUX_WORKER_CPUS`, `AMUX_WORKER_MEM_GB`).
 //! - [`boundaries_context_block`] is composed into every non-isolated
 //!   worker's launch context, so the rule text reaches each worker by default.
 
-use axum::{extract::Query, response::IntoResponse, routing::get, Json, Router};
+use axum::{extract::Query, http::HeaderMap, response::IntoResponse, routing::get, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -264,6 +266,45 @@ pub fn profile(worker: &str) -> Value {
     })
 }
 
+/// The worker's scratch-disk reading against its budget (mxp-gs12 review,
+/// 2026-10-18). The boundary guard measures ~/.amux/tmp/<worker> (plus
+/// AMUX_WORKER_DISK_PATHS) with `du` in a detached process and caches it in
+/// ~/.amux/state/disk-usage/<worker>.json; this reads the same file, so the
+/// number here is the number a refusal quotes. The budget is the scoped
+/// AMUX_WORKER_DISK_GB, else the registry's `disk_budget_gb_default`.
+pub fn disk_reading(home: &std::path::Path, worker: &str, profile: &Value) -> Value {
+    let budget_gb = profile["disk_gb"].as_f64().or_else(|| {
+        let t: toml::Table = toml::from_str(DEFAULT_REGISTRY).ok()?;
+        let v = t.get("boundary")?.as_array()?.iter()
+            .find(|b| b.get("id").and_then(|v| v.as_str()) == Some("resources"))?
+            .get("resources")?.get("disk_budget_gb_default")?.clone();
+        v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
+    }).filter(|g| *g > 0.0);
+    let path = home.join("state").join("disk-usage").join(format!("{worker}.json"));
+    let rec: Option<Value> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let Some(rec) = rec else {
+        return json!({
+            "measured": false, "n_considered": 0, "budget_gb": budget_gb,
+            "why_unmeasured": "no reading yet: the boundary guard measures on this worker's next heavy command",
+        });
+    };
+    let measured = rec["measured"].as_bool().unwrap_or(false);
+    let used = rec["bytes"].as_f64();
+    let used_gb = used.map(|b| (b / 1024f64.powi(3) * 100.0).round() / 100.0);
+    let fraction = match (used, budget_gb) {
+        (Some(u), Some(b)) if b > 0.0 => Some((u / (b * 1024f64.powi(3)) * 1000.0).round() / 1000.0),
+        _ => None,
+    };
+    let age = rec["ts"].as_f64().map(|t| (chrono::Utc::now().timestamp() as f64 - t).round());
+    json!({
+        "measured": measured, "n_considered": rec["n_considered"].clone(),
+        "why_unmeasured": rec["why_unmeasured"].clone(),
+        "used_gb": used_gb, "budget_gb": budget_gb, "fraction_of_budget": fraction,
+        "paths": rec["paths"].clone(), "age_s": age,
+        "over_budget": fraction.map(|f| f >= 1.0),
+    })
+}
+
 /// Usage against the profile: which declared limits the worker is over.
 pub fn over_profile(cpu_percent: f64, rss_mb: f64, profile: &Value) -> Vec<String> {
     let mut over = Vec::new();
@@ -280,50 +321,74 @@ pub fn over_profile(cpu_percent: f64, rss_mb: f64, profile: &Value) -> Vec<Strin
     over
 }
 
-async fn resources(Query(q): Query<ResQuery>) -> impl IntoResponse {
-    let (host, sessions) = tokio::task::spawn_blocking(|| {
-        (crate::api::metrics::collect_system_metrics(), crate::api::metrics::collect_session_metrics())
+/// How old the host guard's sample may be before a request takes its own.
+const SAMPLE_MAX_AGE_S: i64 = 90;
+
+async fn resources(headers: HeaderMap, Query(q): Query<ResQuery>) -> impl IntoResponse {
+    // The process census comes from the host guard's tick (one `ps`, one
+    // `tmux list-panes -a`), never from a walk per request. This route used to
+    // spawn `pgrep -P` for every process under every worker: 71s at load 87 on
+    // 2026-10-17, past the CLI's 30s limit, so `amux resources` failed exactly
+    // when the resources boundary told workers to run it.
+    let (host, util) = tokio::task::spawn_blocking(|| {
+        (crate::api::metrics::collect_system_metrics(), crate::runtime_jobs::host_guard::utilization_fresh(SAMPLE_MAX_AGE_S))
     })
     .await
-    .unwrap_or((json!({}), vec![]));
+    .unwrap_or((json!({}), None));
     let pressure = crate::runtime_jobs::host_guard::current();
-    let mut live: Vec<&Value> = sessions.iter().filter(|s| s["rss_mb"].as_f64().unwrap_or(0.0) > 0.0).collect();
-    live.sort_by(|a, b| b["rss_mb"].as_f64().partial_cmp(&a["rss_mb"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
-    let row = |s: &Value| {
-        json!({
-            "name": s["name"], "cpu_percent": s["cpu_percent"], "rss_mb": s["rss_mb"],
-            "n_processes": s["pids"].as_array().map(|a| a.len()).unwrap_or(0),
-        })
+    let now = chrono::Utc::now().timestamp();
+    let workers: Vec<crate::runtime_jobs::host_guard::WorkerUse> = util.as_ref().map(|u| u.workers.clone()).unwrap_or_default();
+    let row = |w: &crate::runtime_jobs::host_guard::WorkerUse| {
+        json!({ "name": w.name, "cpu_percent": w.cpu_percent, "rss_mb": w.rss_mb, "n_processes": w.n_processes })
     };
-    let total_rss: f64 = live.iter().filter_map(|s| s["rss_mb"].as_f64()).sum();
-    let worker = q.worker.as_deref().filter(|w| !w.is_empty()).map(|w| {
-        let prof = profile(w);
-        match sessions.iter().find(|s| s["name"].as_str() == Some(w)) {
-            Some(s) => {
-                let cpu = s["cpu_percent"].as_f64().unwrap_or(0.0);
-                let rss = s["rss_mb"].as_f64().unwrap_or(0.0);
-                json!({
-                    "name": w, "measured": true, "cpu_percent": cpu, "rss_mb": rss,
-                    "n_processes": s["pids"].as_array().map(|a| a.len()).unwrap_or(0),
-                    "share_of_worker_memory": if total_rss > 0.0 { rss / total_rss } else { 0.0 },
-                    "profile": prof.clone(),
-                    "over_profile": over_profile(cpu, rss, &prof),
-                })
-            }
-            None => json!({ "name": w, "measured": false, "why_unmeasured": "no registered worker by that name", "profile": prof }),
+    let mut by_mem: Vec<_> = workers.iter().collect();
+    by_mem.sort_by(|a, b| b.rss_mb.partial_cmp(&a.rss_mb).unwrap_or(std::cmp::Ordering::Equal));
+    let total_rss: f64 = workers.iter().map(|w| w.rss_mb).sum();
+    let capacity = util.as_ref().map(|u| u.capacity_percent).unwrap_or(0.0);
+    let caller = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let worker = q.worker.filter(|w| !w.is_empty()).or(caller).map(|w| {
+        let prof = profile(&w);
+        match workers.iter().find(|x| x.name == w) {
+            Some(x) => json!({
+                "name": w, "measured": true, "cpu_percent": x.cpu_percent, "rss_mb": x.rss_mb,
+                "n_processes": x.n_processes,
+                "share_of_worker_memory": if total_rss > 0.0 { x.rss_mb / total_rss } else { 0.0 },
+                "share_of_machine_cpu": if capacity > 0.0 { x.cpu_percent / capacity } else { 0.0 },
+                "profile": prof.clone(),
+                "over_profile": over_profile(x.cpu_percent, x.rss_mb, &prof),
+                "disk": disk_reading(&home(), &w, &prof),
+            }),
+            None => json!({
+                "name": w, "measured": false,
+                "why_unmeasured": if util.is_some() { "no live tmux pane for that worker in this sample" } else { "ps did not run, so no worker was measured" },
+                "disk": disk_reading(&home(), &w, &prof),
+                "profile": prof,
+            }),
         }
     });
+    let machine = match &util {
+        Some(u) => json!({
+            "measured": true, "why_unmeasured": null,
+            "capacity_percent": u.capacity_percent, "cpu_percent_total": u.cpu_percent_total,
+            "workers_cpu_percent": u.workers_cpu_percent, "unattributed_cpu_percent": u.unattributed_cpu_percent,
+            "by_kind": u.by_kind, "kinds": u.kinds, "top_unattributed": u.top_unattributed,
+            "sample_age_s": now - u.sampled_at, "sample_ms": u.sample_ms,
+        }),
+        None => json!({ "measured": false, "why_unmeasured": "ps did not run, so CPU could not be attributed" }),
+    };
     Json(json!({
-        "measured": host.get("cpu_count").is_some(),
-        "n_considered": sessions.len(),
+        "measured": host.get("cpu_count").is_some() && util.is_some(),
+        "n_considered": util.as_ref().map(|u| u.n_processes).unwrap_or(0),
         "host": host,
         "pressure": pressure.as_ref().map(|p| json!({
             "level": p.level.as_str(), "reasons": p.reasons, "measured": p.measured,
             "why_unmeasured": p.why_unmeasured, "sampled_at": p.sampled_at,
         })),
-        "workers_running": live.len(),
-        "workers_rss_mb": total_rss,
-        "top_by_memory": live.iter().take(8).map(|s| row(s)).collect::<Vec<_>>(),
+        "workers_running": workers.len(),
+        "workers_rss_mb": (total_rss * 10.0).round() / 10.0,
+        "top_by_cpu": workers.iter().take(8).map(row).collect::<Vec<_>>(),
+        "top_by_memory": by_mem.iter().take(8).map(|w| row(w)).collect::<Vec<_>>(),
+        "machine": machine,
         "worker": worker,
     }))
 }
@@ -367,6 +432,28 @@ mod tests {
         assert_eq!(over_profile(350.0, 2048.0, &p).len(), 2);
         assert!(over_profile(150.0, 512.0, &p).is_empty());
         assert!(over_profile(900.0, 9000.0, &json!({"cpus": null, "mem_gb": null})).is_empty());
+    }
+
+    #[test]
+    fn disk_reading_reports_the_guard_cache_against_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = disk_reading(dir.path(), "w", &json!({"disk_gb": 10.0}));
+        assert_eq!(none["measured"], false);
+        assert_eq!(none["budget_gb"], 10.0);
+        let d = dir.path().join("state").join("disk-usage");
+        std::fs::create_dir_all(&d).unwrap();
+        let gb = 1024f64.powi(3);
+        std::fs::write(d.join("w.json"), json!({"measured": true, "bytes": 15.0 * gb, "n_considered": 1,
+            "paths": {"/x": 15.0 * gb}, "ts": chrono::Utc::now().timestamp()}).to_string()).unwrap();
+        let r = disk_reading(dir.path(), "w", &json!({"disk_gb": 10.0}));
+        assert_eq!(r["measured"], true);
+        assert_eq!(r["over_budget"], true);
+        assert_eq!(r["fraction_of_budget"], 1.5);
+        let ok = disk_reading(dir.path(), "w", &json!({"disk_gb": 100.0}));
+        assert_eq!(ok["over_budget"], false);
+        // No scoped budget: the registry default applies.
+        let dflt = disk_reading(dir.path(), "w", &json!({"disk_gb": null}));
+        assert!(dflt["budget_gb"].as_f64().unwrap_or(0.0) > 0.0, "{dflt}");
     }
 
     #[test]

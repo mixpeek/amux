@@ -70,6 +70,10 @@ const post = { method: "POST", body: "{}" };
 t("an mdai run is not queueable", _outboxQueueable(RUN, post) === false);
 t("the absolute-url form is refused too",
   _outboxQueueable("https://localhost:8824" + RUN, post) === false);
+// 1b. A chat edit is a model call past the 15s mutation bound: it must go out
+//     unbounded and never be replayed from the outbox.
+t("an mdai chat is not queueable", _outboxQueueable("/api/files/mdai/chat", post) === false);
+t("_mdaiChatSend consults _isLocallyQueued", /_isLocallyQueued\(\s*r\s*\)/.test(grabFn("_mdaiChatSend")));
 
 // 2. THE CONTROL, load-bearing: the outbox must still ACCEPT ordinary mutations.
 //    A skip regex broadened until it matched everything would pass cell 1 while
@@ -109,6 +113,8 @@ console.log("ALLOK");
 if [ "$out" = "ALLOK" ]; then
   for c in "an mdai run is not queueable" \
            "the absolute-url form is refused too" \
+           "an mdai chat is not queueable" \
+           "_mdaiChatSend consults _isLocallyQueued" \
            "an ordinary board POST is still queueable" \
            "an ordinary session send is still queueable" \
            "mdai connect is still queueable" \

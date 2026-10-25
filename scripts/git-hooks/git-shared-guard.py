@@ -575,6 +575,63 @@ def _lock_holder(lock):
         return ("unmeasured", f"holder probe failed: {e}")
 
 
+def _stale_lock_threshold():
+    try:
+        return int(os.environ.get("AMUX_INDEX_LOCK_STALE_S", "1800") or "1800")
+    except ValueError:
+        return 1800
+
+
+def _recover_stale_lock(lock, st, age):
+    """Remove an index.lock nobody holds once it is past the threshold.
+
+    Returns the one-line note to print when it removed the lock, else "".
+    Every removal (and every refusal to remove on a changed file) is a line in
+    ~/.amux/logs/git-guard-lock-recovery.log with the verdict, the age, the
+    size and the inode, so a sweep can count them.
+    """
+    threshold = _stale_lock_threshold()
+    if threshold <= 0 or age <= threshold:
+        return ""
+    rec = {"ts": round(time.time(), 3), "session": os.environ.get("AMUX_SESSION", ""),
+           "lock": lock, "age_s": age, "size": st.st_size, "inode": st.st_ino,
+           "threshold_s": threshold, "measured": True, "n_considered": 1}
+    try:
+        now = os.stat(lock)
+    except FileNotFoundError:
+        return ""  # someone else cleared it between the stat and here
+    except Exception:
+        return ""
+    if (now.st_ino, now.st_mtime, now.st_size) != (st.st_ino, st.st_mtime, st.st_size):
+        rec["verdict"] = "index_lock_changed_not_removed"
+        _lock_recovery_log(rec)
+        return ""
+    try:
+        os.unlink(lock)
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        rec["verdict"] = "index_lock_remove_failed"
+        rec["error"] = str(e)[:200]
+        _lock_recovery_log(rec)
+        return ""
+    rec["verdict"] = "index_lock_stale_removed"
+    _lock_recovery_log(rec)
+    return (f"amux guard: removed a stale {lock} (age {age}s, {st.st_size} bytes, no process "
+            f"held it; threshold {threshold}s, AMUX_INDEX_LOCK_STALE_S). Logged to "
+            "~/.amux/logs/git-guard-lock-recovery.log (verdict=index_lock_stale_removed).\n")
+
+
+def _lock_recovery_log(rec):
+    try:
+        d = os.path.join(os.path.expanduser("~"), ".amux", "logs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "git-guard-lock-recovery.log"), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
 def _index_lock_note(cmd, run_dir):
     """A verdict on .git/index.lock for a command that would take it."""
     if not re.search(r"\bgit\s+" + GIT_GLOBALS + r"(?:" + "|".join(_INDEX_WRITERS) + r")\b", cmd):
@@ -601,12 +658,31 @@ def _index_lock_note(cmd, run_dir):
              if st.st_size == 0 else f"{st.st_size} bytes, so a writer has been filling it")
     head = ("amux guard: NOTE — .git/index.lock exists and your command writes the index.\n")
     body = (f"  age {age}s · {shape} · holder: {verdict} ({detail})\n")
+    # STALE-LOCK RECOVERY (mxp-gs12 review, 2026-10-18). This note used to stop
+    # at "removing it is YOUR call", and on ~/Dev/mixpeek a lock 290 hours old
+    # was reported 3,482 times (1.7 MB of context across one worker and its
+    # subagents) and never removed: every reader was told it was somebody
+    # else's decision. A lock that no process holds open, past
+    # AMUX_INDEX_LOCK_STALE_S (default 1800; 0 turns removal off), is now
+    # removed here and the removal is logged. A held or UNMEASURED lock is never
+    # touched: `unheld` comes only from an lsof that passed its positive
+    # control. While the stale file exists git's O_EXCL create fails for every
+    # writer, so no live git can own a lock with the same inode we stat'd; the
+    # inode and mtime are re-checked right before the unlink.
+    if verdict == "unheld":
+        removed = _recover_stale_lock(lock, st, age)
+        if removed:
+            return removed
     if verdict == "held":
         tail = "  A live writer holds it. Wait; it will clear when their command finishes.\n"
     elif verdict == "unheld" and age > 900:
-        tail = ("  Older than 15m with no holder: this looks STALE, not contention. Removing it\n"
-                "  is destructive on a shared checkout and is YOUR call, not this guard's:\n"
-                f"    ls -l {lock}   # confirm the mtime is still not advancing\n"
+        _thr = _stale_lock_threshold()
+        tail = ("  Older than 15m with no holder: this looks STALE, not contention. "
+                + (f"The guard removes it\n  itself once it is {_thr}s old and still unheld "
+                   "(AMUX_INDEX_LOCK_STALE_S). Removing it sooner is YOUR call:\n"
+                   if _thr > 0 else
+                   "Automatic removal is off\n  (AMUX_INDEX_LOCK_STALE_S=0), so removing it is YOUR call:\n")
+                + f"    ls -l {lock}   # confirm the mtime is still not advancing\n"
                 f"    rm {lock}\n")
     elif verdict == "unmeasured":
         tail = ("  The holder probe did NOT run, so this is unknown rather than unheld.\n"
@@ -1722,7 +1798,7 @@ def _expanding_remove_word(raw):
     return "".join(out)
 
 
-def _scan_remove_operands(command):
+def _scan_remove_operands(command, every=None):
     """Recognize unchecked variable prefixes and cd-relative globs in direct rm/rmdir calls.
 
     Returns (variable_operands, cd_glob_operands). The second list holds a relative
@@ -1784,8 +1860,11 @@ def _scan_remove_operands(command):
             continue
         if removing:
             operand = _expanding_remove_word(raw)
+            if every is not None and not operand.startswith("-"):
+                every.append(operand)
             match = _REMOVE_PREFIX.match(operand)
-            if match and not re.match(r'^[A-Za-z_][A-Za-z_0-9]*:\?', match.group(1) or ""):
+            # ${1:?} guards a positional the same way ${NAME:?} guards a name.
+            if match and not re.match(r'^(?:[A-Za-z_][A-Za-z_0-9]*|[0-9]):\?', match.group(1) or ""):
                 matched.append(raw)
             elif (changed_dir and re.search(r"(?:^|/)\*+$", operand)
                   and not operand.startswith(("/", "~", "$", "\0"))):
@@ -1826,6 +1905,77 @@ def _worker_identity():
     return "isolated" if os.environ.get("CC_ISOLATED") == "1" else ""
 
 
+def _live_workers():
+    """Names of running amux workers (tmux sessions amux-<name>), or None if unknown."""
+    forced = os.environ.get("AMUX_GUARD_LIVE_WORKERS")
+    if forced is not None:  # tests
+        return {w for w in forced.split(",") if w}
+    import subprocess
+    try:
+        out = subprocess.run(["tmux", "list-sessions", "-F", "#S"], capture_output=True,
+                             text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {s[len("amux-"):] for s in out.split() if s.startswith("amux-")}
+
+
+def _live_scratch_verdict(command):
+    """Refuse rm of a RUNNING worker's ~/.amux/tmp/<worker> (or the whole tmp root).
+
+    2026-10-20 18:45Z: a disk cleanup ("use the amux metrics to clean up my disk")
+    ran rm -rf ~/.amux/tmp/mxp-gs12 while mxp-gs12 was mid-run. 31.6 GB of its
+    scripts, state and clones went; amux-admin restored the 03:03 snapshot and the
+    rest was rebuilt by hand. Disk metrics name a big directory; nothing said its
+    owner was alive. The owner itself, or anyone once the worker is stopped, passes.
+    """
+    words = []
+    _scan_remove_operands(command, every=words)
+    home = str(pathlib.Path.home())
+    root = os.path.normpath(os.path.join(os.environ.get("AMUX_HOME") or os.path.join(home, ".amux"), "tmp"))
+    hits = []
+    for w in words:
+        w = w.replace("\0", "$")
+        if w.startswith("~/") or w == "~":
+            w = home + w[1:]
+        w = re.sub(r'^\$(?:HOME\b|\{HOME(?::\?[^}]*)?\})', lambda m: home, w)
+        if "$" in w or not w.startswith("/"):
+            continue
+        rel = os.path.relpath(os.path.normpath(w), root)
+        if rel.startswith(".."):
+            continue
+        hits.append(rel.split(os.sep)[0])  # "." = the root itself
+    if not hits:
+        return None
+    live = _live_workers()
+    if not live:
+        return None
+    me = _worker_identity()
+    import fnmatch
+    owners = set()
+    for first in hits:
+        owners |= {n for n in live if first in (".", "*") or fnmatch.fnmatchcase(n, first)}
+    owners.discard(me)
+    if not owners:
+        return None
+    names = ", ".join(sorted(owners)[:5]) + (" and %d more" % (len(owners) - 5) if len(owners) > 5 else "")
+    try:
+        log = pathlib.Path(os.environ.get("AMUX_HOME") or pathlib.Path.home() / ".amux") / "logs/tool-corrections.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as stream:
+            stream.write(json.dumps({"ts": time.time(), "event": "live_scratch_remove", "verdict": "deny",
+                                     "session": me or "unmanaged", "owners": sorted(owners),
+                                     "measured": True, "n_considered": len(words)}) + "\n")
+    except OSError:
+        pass
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "amux: this rm deletes the scratch directory of running worker(s) %s under %s. "
+            "It holds their in-flight scripts, state and clones; deleting it mid-run broke mxp-gs12 on "
+            "2026-10-20. None of this Bash call ran. To free disk: ask the owner (amux send <worker>) to "
+            "delete what it no longer needs, or stop the worker first, then delete." % (names, root))}}
+
+
 _REMOVE_VAR_REASON = (
     "amux: rm/rmdir has an unchecked variable directory prefix (for example $WT/$f). "
     "An empty prefix changes the deletion target; Claude may demand interactive approval even in bypass mode. "
@@ -1846,6 +1996,31 @@ _REMOVE_GLOB_REASON = (
     "Never point either at a directory that holds another lane's work. Correct the command and continue; "
     "do not wait for a human to approve this form."
 )
+
+
+_LEADING_VAR = re.compile(r'^(["\']?)\$(?:\{([A-Za-z_][A-Za-z_0-9]*|[0-9])[^}]*\}|([A-Za-z_][A-Za-z_0-9]*|[0-9]))')
+
+
+def _guarded_operand(raw):
+    """The same operand with its leading variable guarded as ${NAME:?}.
+
+    The refusal used to explain the rule and leave the model to find the
+    operand: 306 whole Bash calls were rejected in one lane (gs12 review), and
+    each retry had to re-derive which word tripped it. Naming the operand and
+    its accepted form makes the retry a one-word edit. Only the leading
+    variable decides (`"${WT:?}/$f"` already passes), so only it is rewritten.
+    """
+    return _LEADING_VAR.sub(lambda m: m.group(1) + "${" + (m.group(2) or m.group(3)) + ":?}", raw, count=1)
+
+
+def _operand_fixes(operands, limit=5):
+    shown = []
+    for raw in operands[:limit]:
+        raw = raw if len(raw) <= 160 else raw[:157] + "..."
+        shown.append("%s -> %s" % (raw, _guarded_operand(raw)))
+    more = len(operands) - len(shown)
+    return "Rejected operand%s: %s%s. " % ("" if len(operands) == 1 else "s", "; ".join(shown),
+                                          " (and %d more)" % more if more > 0 else "")
 
 
 def _remove_correction(command):
@@ -1871,7 +2046,10 @@ def _remove_correction(command):
                                     "command_sha256": hashlib.sha256(command.encode()).hexdigest()}) + "\n")
     except OSError:
         pass  # unavailable telemetry must not defeat the correction
-    reason = (_REMOVE_VAR_REASON if operands else "") + (" " if operands and cd_globs else "") + (_REMOVE_GLOB_REASON if cd_globs else "")
+    var_part = (_operand_fixes(operands) + _REMOVE_VAR_REASON) if operands else ""
+    glob_part = ("Rejected glob%s: %s. " % ("" if len(cd_globs) == 1 else "s", "; ".join(cd_globs[:5]))
+                 + _REMOVE_GLOB_REASON) if cd_globs else ""
+    reason = var_part + (" " if var_part and glob_part else "") + glob_part
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
         "permissionDecisionReason": reason}}
@@ -1921,7 +2099,7 @@ def main():
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
     global _LAST_CMD
     _LAST_CMD = cmd
-    correction = _remove_correction(cmd)
+    correction = _remove_correction(cmd) or _live_scratch_verdict(cmd)
     if correction:
         print(json.dumps(correction))
         return 0  # hook JSON deny cancels the call and feeds the reason to Claude
@@ -2149,9 +2327,11 @@ def main():
     # anyone understood the cause. Routing around a blockage is rational and it is
     # also how a 15-minute fleet stall produces no report.
     #
-    # This REPORTS and never blocks or removes. Removing a lock is destructive on
-    # a shared checkout and is the human's call (ethos rule 8); what the guard can
-    # do is turn a generic message into a verdict, which costs one stat.
+    # This REPORTS and never blocks. It removes a lock only when lsof (with its
+    # positive control) says no process holds it and it is past
+    # AMUX_INDEX_LOCK_STALE_S (see _recover_stale_lock): leaving that to "the
+    # human" left a 290-hour lock in place while 3,482 notices said so
+    # (mxp-gs12 review, 2026-10-18). A held or unmeasured lock is never touched.
     try:
         sys.stderr.write(_index_lock_note(cmd, run_dir))
     except Exception:

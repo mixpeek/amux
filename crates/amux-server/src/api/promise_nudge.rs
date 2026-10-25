@@ -263,7 +263,7 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
         if promise_uuid.is_empty() || sv::meta_str(&meta, "promise_nudged_uuid") == promise_uuid {
             continue;
         }
-        if sv::session_is_isolated(name) {
+        if sv::session_is_isolated(name) || crate::api::board_lifecycle::board_unused(name) {
             continue;
         }
         if !enabled(name, PROMISE_KEY) {
@@ -310,6 +310,9 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
                         "promise sweep: not nudging yet");
                 }
             }
+            PromiseGate::Nudge if !super::turn_end::nudges_wanted(name, "promise") => {
+                sv::update_meta(name, &[("promise_uuid", json!(""))]);
+            }
             PromiseGate::Nudge => {
                 let card = card.unwrap_or_default();
                 let text = promise_text(&card, &sv::meta_str(&meta, "promise_text"),
@@ -321,7 +324,7 @@ pub(crate) async fn promise_sweep(state: &AppState) -> usize {
                         nudged += 1;
                         tracing::warn!(session = %name, verdict = "promise_nudged", card = %card, steer_id = %r.id,
                             "promise sweep: lane went idle after promising a next step; re-prompted once (AMUX-5236)");
-                        sv::steer_deliver_for_session(state, name).await;
+                        sv::steer_deliver_at_boundary(state, name, "promise-nudge").await;
                     }
                     Err(e) => tracing::warn!(session = %name, verdict = "promise_nudge_refused", error = e,
                         "promise sweep: nudge could not be queued; not retried for this promise"),

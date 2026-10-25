@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,25 +20,34 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"Claude Code Agent View: What It Shows and What It Misses at Scale","item":"https://amux.io/blog/claude-code-agent-view-2026/"}]}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Claude Code Agent View: What It Shows and What It Misses at Scale","description":"Claude Code's Agent View shows sub-agents inside a single session. This post covers what it does, where it stops, and what you need when running 10 or more independent Claude Code sessions in parallel.","url":"https://amux.io/blog/claude-code-agent-view-2026/","datePublished":"2026-09-11","dateModified":"2026-09-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/claude-code-agent-view-2026/"}}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Agent View is a feature inside the Claude Code terminal that shows the sub-agents spawned by the current session. It gives visibility into what each sub-agent is doing within the scope of one Claude Code parent process. It does not show independent Claude Code sessions running in other terminal windows or tmux panes."}},{"@type":"Question","name":"Can Claude Code manage multiple independent sessions from one interface?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Code Agent View only shows sub-agents spawned by the current session via the Task tool. Independent Claude Code sessions running in separate terminals or tmux panes are not visible to each other. Managing a fleet of independent sessions requires an external control plane like amux."}},{"@type":"Question","name":"How do I monitor multiple Claude Code agents at once?","acceptedAnswer":{"@type":"Answer","text":"Install amux (brew install mixpeek/amux/amux), then launch your Claude Code workers under amux supervision. The amux web dashboard shows every session's live status, output, and kanban tasks on one screen. You can also use the mobile PWA to check in from your phone."}},{"@type":"Question","name":"Does amux replace Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"No. They operate at different layers. Claude Code Agent View shows intra-session sub-agents within one Claude Code process. amux shows and coordinates inter-session agents across many independent Claude Code, Codex, or Gemini CLI processes. You can use both simultaneously."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Agent View is a feature inside the Claude Code terminal that shows the sub-agents spawned by the current session. It gives visibility into what each sub-agent is doing within the scope of one Claude Code parent process. It does not show independent Claude Code sessions running in other terminal windows or tmux panes."}},{"@type":"Question","name":"Can Claude Code manage multiple independent sessions from one interface?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Code Agent View only shows sub-agents spawned by the current session via the Task tool. Independent Claude Code sessions running in separate terminals or tmux panes are not visible to each other. Managing a fleet of independent sessions requires an external control plane like amux."}},{"@type":"Question","name":"How do I monitor multiple Claude Code agents at once?","acceptedAnswer":{"@type":"Answer","text":"Install amux (curl -fsSL https://amux.io/install.sh | bash), then launch your Claude Code workers under amux supervision. The amux web dashboard shows every session's live status, output, and kanban tasks on one screen. You can also use the mobile PWA to check in from your phone."}},{"@type":"Question","name":"Does amux replace Claude Code Agent View?","acceptedAnswer":{"@type":"Answer","text":"No. They operate at different layers. Claude Code Agent View shows intra-session sub-agents within one Claude Code process. amux shows and coordinates inter-session agents across many independent Claude Code, Codex, or Gemini CLI processes. You can use both simultaneously."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -50,7 +59,7 @@
 
     <!-- EXP-089: top-of-page CTA on agent-view post (Sept 2026) -->
     <div style="background:#0d7c42;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-      <span style="font-size:.9rem;color:#fff">Open-source control plane for AI agent teams. Monitor and coordinate dozens of parallel Claude Code sessions from your phone or browser.</span>
+      <span style="font-size:.9rem;color:light-dark(oklch(0.25 0.012 250), #fff)">Open-source control plane for AI agent teams. Monitor and coordinate dozens of parallel Claude Code sessions from your phone or browser.</span>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp089_agentview_topofpage_cta_click')" style="background:#fff;color:#0d7c42;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
     </div>
 
@@ -182,8 +191,7 @@
 
     <h2 id="get-started">Getting Started with amux</h2>
 
-    <pre><code><span class="dim"># Install</span>
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
 <span class="dim"># Register your project and start a fleet</span>
 amux register myproject --dir ~/Dev/myproject
@@ -216,7 +224,7 @@ amux serve  <span class="dim"># https://localhost:8824</span></code></pre>
     <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
       <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">How do I monitor multiple Claude Code agents at once?</summary>
       <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-        <p>Install amux (<code>brew install mixpeek/amux/amux</code>), then launch your Claude Code workers under amux supervision. The amux web dashboard shows every session's live status, output, and kanban tasks on one screen. You can also use the mobile PWA to check in from your phone.</p>
+        <p>Install amux (<code>curl -fsSL https://amux.io/install.sh | bash</code>), then launch your Claude Code workers under amux supervision. The amux web dashboard shows every session's live status, output, and kanban tasks on one screen. You can also use the mobile PWA to check in from your phone.</p>
       </div>
     </details>
 
@@ -271,10 +279,13 @@ amux serve  <span class="dim"># https://localhost:8824</span></code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
+          <a href="/demos/">Demos</a>
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

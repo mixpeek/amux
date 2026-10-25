@@ -1,0 +1,20 @@
+# Imported into the server's site block by cloud/desktop/bootstrap.sh; update.sh installs the
+# current copy every hour. When amux or the sign-in is restarting or down, the customer gets a
+# page that says so and retries by itself, instead of a bare 502. The Cloud monitor emails the
+# operator after two failed checks, so the page can say someone already knows.
+handle_errors 502 503 504 {
+	header Content-Type "text/html; charset=utf-8"
+	header Cache-Control "no-store"
+	header Retry-After "10"
+	respond <<PAGE
+		<!doctype html>
+		<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+		<meta http-equiv="refresh" content="10"><title>amux is restarting</title>
+		<style>body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.25rem;color:#1d1d1f}
+		@media (prefers-color-scheme:dark){body{background:#111;color:#eee}a{color:#8ab4ff}}</style></head>
+		<body><h1>Your amux server is restarting</h1>
+		<p>This usually takes under a minute, after an update or a restart. This page checks again every 10 seconds, and your workers and files are safe.</p>
+		<p>If it stays this way for more than a few minutes, we have already been alerted. You can also email <a href="mailto:hello@amux.io">hello@amux.io</a>.</p>
+		</body></html>
+		PAGE 503
+}

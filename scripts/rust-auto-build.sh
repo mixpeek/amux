@@ -112,8 +112,23 @@ sync_authority_launcher() {
     echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNC SKIPPED sha=$sha verdict=authority_launcher_invalid" >> "$LOG"
     rm -f "$tmp"; return 0
   fi
-  if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return 0; fi
+  if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; printf '%s\n' "$sha" > "${dest}.sha" 2>/dev/null || true; return 0; fi
+  # NEVER INSTALL AN OLDER LAUNCHER (2026-10-24). The elected sha is often an
+  # older green commit held back behind a red main, and its launcher can predate
+  # the installed one. That reverted the 300-deep CI gate to 40 twice in one
+  # morning, after which the gate found no green commit and nothing deployed.
+  # ${dest}.sha records where the installed copy came from; when the elected sha
+  # is an ancestor of it, the installed launcher is the newer one and stays.
+  local have
+  have=$(cat "${dest}.sha" 2>/dev/null || true)
+  if [ -n "$have" ] && [ "$have" != "$sha" ] \
+     && git -C "$REPO" merge-base --is-ancestor "$sha" "$have" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "== $(date '+%F %T') AUTHORITY LAUNCHER KEPT installed=$have is newer than elected sha=$sha verdict=authority_launcher_newer_kept" >> "$LOG"
+    return 0
+  fi
   if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+    printf '%s\n' "$sha" > "${dest}.sha" 2>/dev/null || true
     echo "== $(date '+%F %T') AUTHORITY LAUNCHER SYNCED sha=$sha dest=$dest verdict=authority_launcher_synced" >> "$LOG"
   else
     rm -f "$tmp"

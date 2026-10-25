@@ -22,6 +22,8 @@ test('a worker creates only on its own board and links peers explicitly', async 
         data: { name, dir: '/tmp', tags: ['e2e-board-ownership'] },
       });
       expect(made.status(), `create ${name}`).toBe(201);
+      // New workers start with every Board-tab switch off (no board); turn it on.
+      expect((await request.patch(`/api/sessions/${name}/config`, { headers: auth, data: { board_enabled: true } })).ok()).toBeTruthy();
     }
 
     // Administrative setup creates a real task on the reviewer's board. The
@@ -125,6 +127,7 @@ test('a worker cannot create an unassigned card to escape board ownership', asyn
     expect((await request.post('/api/sessions', {
       headers: auth, data: { name: owner, dir: '/tmp', tags: ['e2e-board-ownership'] },
     })).status()).toBe(201);
+    expect((await request.patch(`/api/sessions/${owner}/config`, { headers: auth, data: { board_enabled: true } })).ok()).toBeTruthy();
     const refused = await request.post('/api/board', {
       headers: { ...auth, 'X-Amux-Worker': owner },
       data: { title: 'Unassigned escape must fail', session: null, status: 'backlog' },

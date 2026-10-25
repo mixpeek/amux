@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,28 +17,32 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do I securely pass API keys to an AI coding agent?","acceptedAnswer":{"@type":"Answer","text":"The safest approach is to inject secrets at agent launch time as environment variables scoped to that specific session, rather than hardcoding them in config files or passing them in prompts. Tools like the amux vault encrypt secrets at rest and deliver them only when a matching agent session starts — the agent sees the variable in its environment but the value is never written to any file the agent can read or commit. Avoid: .env files checked into git, secrets in CLAUDE.md or system prompts, and manually pasting keys into agent conversations."}},{"@type":"Question","name":"Can an AI coding agent leak my secrets?","acceptedAnswer":{"@type":"Answer","text":"Yes, in several ways. If a secret is in a file the agent can read (like .env or a config file), the agent may include it in code it writes, log it to conversation history, or reference it in comments. If passed in a system prompt or CLAUDE.md, it appears in the model's context window and may be reproduced in output. The safest delivery mechanism is environment variable injection at process launch — the agent can USE the variable but cannot easily introspect where it came from or what other secrets exist."}},{"@type":"Question","name":"What is secret scoping for AI agents?","acceptedAnswer":{"@type":"Answer","text":"Secret scoping means assigning credentials to specific agents or groups of agents rather than making them globally available. In a fleet of 10 agents, your Stripe secret key should only be injected into agents working on payment features — not visible to agents doing documentation or tests. amux vault supports three scopes: global (all sessions), group (a named set of workers), and worker (a single named session). This limits blast radius if an agent behaves unexpectedly."}},{"@type":"Question","name":"Should I use .env files with AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Plain .env files are risky with AI coding agents. Unlike a human developer, an AI agent actively reads files in the working directory, writes code that may reference those files, and produces conversation logs that could capture their contents. If your .env is in the agent's working directory, treat it as potentially readable by the agent. Better options: inject secrets as environment variables at launch (not read from files), use a secrets manager (vault, 1Password CLI, AWS Secrets Manager), or use amux vault which encrypts secrets and injects them only at session start without ever writing them to disk in the project."}},{"@type":"Question","name":"How does amux vault work for AI agent secrets?","acceptedAnswer":{"@type":"Answer","text":"amux vault stores secrets encrypted at rest in the amux database (not in your project directory). When you start an agent session, amux injects matching secrets as environment variables into that session's process environment based on scope rules (global, group, or worker). The agent sees the variable value but the encrypted value is never written to any file the agent can access. You manage secrets through the amux dashboard or CLI: amux vault set MY_API_KEY=sk-... --scope global. Secrets can be updated without restarting agents — the new value takes effect on the next session launch."}}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Secure Secrets for AI Coding Agents","description":"Step-by-step guide to managing API keys and credentials for parallel AI coding agent fleets.","step":[{"@type":"HowToStep","name":"Audit your current secret exposure","text":"Check where your secrets currently live. Look for .env files in working directories agents can access, secrets in CLAUDE.md or system prompts, hardcoded values in config files, and keys in conversation history. Any of these are readable by an agent."},{"@type":"HowToStep","name":"Move secrets out of agent-readable files","text":"Remove secrets from .env files and config files in project directories where agents work. Use .gitignore to exclude them at minimum, but prefer moving them to a dedicated secrets store."},{"@type":"HowToStep","name":"Configure vault-level injection","text":"In amux, use 'amux vault set KEY=value --scope [global|group:name|worker:name]' to store encrypted secrets. On next session launch, amux injects them as environment variables scoped to matching sessions."},{"@type":"HowToStep","name":"Verify injection without exposing values","text":"Confirm the agent can use the secret without you exposing the value: ask the agent to call the API using the environment variable name (e.g. os.environ['OPENAI_API_KEY']) and verify it works. Never ask the agent to print or log the secret value."},{"@type":"HowToStep","name":"Apply least-privilege scoping","text":"Narrow each secret's scope to the minimum set of agents that need it. A payment API key should be worker-scoped to the billing agent, not globally available to all 20 workers in your fleet."}]}</script>
   <script src="/site.js" defer></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
 
 <header class="site-header">
-  <nav class="nav-inner">
-    <a href="/" class="nav-logo">
-      <img src="/icon.svg" alt="amux" width="24" height="24">
-      <span>amux</span>
-    </a>
-    <ul class="nav-links">
-      <li><a href="/docs/">Docs</a></li>
-      <li><a href="/guides/">Guides</a></li>
-      <li><a href="/compare/">Compare</a></li>
-      <li><a href="/changelog/">Changelog</a></li>
-      <li><a href="/blog/">Blog</a></li>
-    </ul>
-    <div class="nav-actions">
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
-    </div>
-  </nav>
-</header>
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
 
 <main class="prose-wrap">
   <nav class="breadcrumb" aria-label="Breadcrumb">
@@ -50,10 +54,6 @@
   </nav>
 
   <!-- EXP-113: top-of-page GitHub CTA on secrets-vault guide (Oct 2026) -->
-  <div style="background:#1a4d2e;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-    <span style="font-size:.9rem;color:#fff">Encrypted, scoped secrets for AI agent fleets. Open source, single binary, MIT licensed.</span>
-    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp113_secrets_vault_topofpage_cta_click')" style="background:#fff;color:#1a4d2e;padding:0.45rem 1rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View amux on GitHub &#9733;</a>
-  </div>
 
   <h1>AI Agent Secrets Management: Securely Pass API Keys to Coding Agents</h1>
   <p style="font-family:var(--font-mono);font-size:11px;color:var(--fg-mute);margin:0 0 1.5rem">Updated October 2026</p>
@@ -187,8 +187,7 @@ os.environ['STRIPE_SECRET']  # works in agent code
   <ol>
     <li>
       <strong>Install amux</strong> if you haven't already:
-      <pre><code>brew install mixpeek/amux/amux
-# or
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 curl -fsSL https://amux.io/install.sh | sh</code></pre>
     </li>
     <li>
@@ -215,7 +214,7 @@ amux start docs-agent     # gets global only</code></pre>
 
   <div class="cta-box" style="margin-top:2.5rem">
     <p><strong>Run a fleet with proper secret management</strong></p>
-    <pre><code>brew install mixpeek/amux/amux
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux vault set MY_API_KEY=... --scope worker:my-agent
 amux start my-agent</code></pre>
     <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem">
@@ -252,6 +251,7 @@ amux start my-agent</code></pre>
     <nav class="footer-links">
       <a href="/docs/">Docs</a>
       <a href="/guides/">Guides</a>
+      <a href="/demos/">Demos</a>
       <a href="/compare/">Compare</a>
       <a href="/changelog/">Changelog</a>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>

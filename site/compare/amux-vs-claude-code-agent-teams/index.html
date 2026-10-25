@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -98,18 +97,28 @@
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -130,21 +139,8 @@
     <p style="color:var(--muted);font-size:0.85rem">Last updated: July 2026</p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
-    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
-      <a href="https://github.com/mixpeek/amux"
-         target="_blank"
-         rel="noopener"
-         onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})"
-         style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/>
-        </svg>
-        ⭐ Star amux on GitHub
-      </a>
-    </div>
 
-    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2,var(--panel));border-left:3px solid var(--accent,var(--c-green));padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
       <strong>Quick answer:</strong> If you want to decompose a single complex coding task into
       parallel sub-tasks with one Claude Code parent coordinating the children,
       <strong>Claude Code Agent Teams</strong> is built for that. If you want to run dozens of
@@ -180,7 +176,7 @@
       A built-in kanban board lets agents atomically claim tasks so no two sessions ever duplicate
       work. The self-healing watchdog handles context exhaustion, crashes, and stuck prompts
       automatically, enabling true overnight unattended operation. Install via
-      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+      <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Single Rust binary, zero external dependencies —
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
     </p>
@@ -343,20 +339,13 @@
         </tr>
         <tr>
           <td>Setup complexity</td>
-          <td><code>brew install mixpeek/amux/amux</code> then <code>amux serve</code></td>
+          <td><code>curl -fsSL https://amux.io/install.sh | bash</code> then <code>amux serve</code></td>
           <td>Set <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> — no install beyond Claude Code</td>
         </tr>
       </tbody>
     </table>
 
     <!-- EXP-007 GitHub CTA block -->
-    <div class="exp007-cta" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">Try amux — 304 stars on GitHub</div>
-        <div style="color:var(--fg-dim);font-size:.9rem">Open source, self-hosted, single Rust binary. No cloud account needed.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
-    </div>
 
     <h2>When to use Agent Teams</h2>
 
@@ -523,7 +512,7 @@
     <dl style="display:grid;gap:1.5rem">
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">What is Claude Code Agent Teams?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Claude Code Agent Teams is an experimental Anthropic feature (enabled via the environment
           variable <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code>, requires Claude Code v2.1.32+)
           that lets a parent Claude Code session spawn and coordinate child sub-agents using git
@@ -534,7 +523,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Can I use Claude Code Agent Teams and amux together?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a
           single Claude Code session, while amux manages the fleet of independent top-level sessions
           and provides the dashboard, self-healing, mobile access, kanban, and scheduling layer on
@@ -544,7 +533,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Does amux replace Claude Code Agent Teams?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a
           sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work
           within a single parent session. amux is a fleet-level control plane for long-running,
@@ -554,7 +543,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">How does amux handle agent coordination compared to Agent Teams?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Agent Teams coordinates via a parent Claude Code session: the parent spawns children,
           delegates tasks, and collects results — all within one Claude Code process tree. amux
           coordinates via a shared SQLite kanban board with atomic compare-and-swap claiming: any
@@ -565,7 +554,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Is Claude Code Agent Teams free?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           The Agent Teams feature itself is free and ships with Claude Code (v2.1.32+), but you
           still pay Anthropic API token costs for every sub-agent spawned. Each child agent consumes
           tokens independently, so a fan-out of 5 sub-agents may multiply your token spend
@@ -577,14 +566,9 @@
 
     <h2>Quick start with amux</h2>
 
-    <pre><code># Install via Homebrew (recommended on macOS)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
-# Or via PyPI
-pipx install amux
 
-# Or zero-install trial (no install needed)
-uvx amux serve
 
 # Register a project and launch the dashboard
 amux register myproject --dir ~/Dev/myproject
@@ -617,7 +601,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <div class="cta-box">
       <h3>Get started with amux</h3>
       <p>Run your first parallel agent fleet tonight. Install in 30 seconds.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>
@@ -665,10 +649,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

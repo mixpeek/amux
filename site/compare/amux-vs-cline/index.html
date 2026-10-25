@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -86,24 +85,34 @@
         "name": "Is Cline open source?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000+ GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) as a single Rust binary with zero external dependencies, self-hosted via Homebrew (brew install mixpeek/amux/amux), and an optional cloud tier for teams."
+          "text": "Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000+ GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) as a single Rust binary with zero external dependencies, self-hosted via curl -fsSL https://amux.io/install.sh | bash, and an optional cloud tier for teams."
         }
       }
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -124,35 +133,10 @@
     <p style="color:var(--muted);font-size:0.85rem">Last updated: September 27, 2026</p>
 
     <!-- EXP-064: cline compare top-of-page green CTA -->
-    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
-         data-exp="EXP-064">
-      <div>
-        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Add a fleet layer to your existing Cline setup</div>
-        <div style="color:#a7f3d0;font-size:0.875rem">amux runs dozens of Claude Code, Codex &amp; Gemini CLI agents overnight — open source, MIT licensed, 367+ stars.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
-         onclick="if(window.posthog) posthog.capture('exp064_cline_compare_topofpage_cta_click', {page: window.location.pathname})"
-         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
-        View amux on GitHub ★
-      </a>
-    </div>
 
     <!-- EXP-007: compare pages GitHub CTA -->
-    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
-      <a href="https://github.com/mixpeek/amux"
-         target="_blank"
-         rel="noopener"
-         onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})"
-         style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
-        </svg>
-        ⭐ Star amux on GitHub
-      </a>
-    </div>
 
-    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2,var(--panel));border-left:3px solid var(--accent,var(--c-green));padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
       <strong>Quick answer:</strong> Cline and amux address different parts of the AI coding workflow.
       Cline is a VS Code extension that runs a single AI coding agent with user approval for every step —
       ideal for interactive, iterative feature development where you want to stay in the loop.
@@ -187,7 +171,7 @@
       The iOS app gives you remote monitoring and approval from anywhere. A built-in kanban board
       lets agents atomically claim tasks so no two sessions duplicate work. Self-healing handles
       context exhaustion, crashes, and stuck prompts automatically. Install:
-      <code>brew install mixpeek/amux/amux</code>.
+      <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Open source (MIT + Commons Clause, single Rust binary, zero external dependencies) at
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
     </p>
@@ -313,7 +297,7 @@
         </tr>
         <tr>
           <td>Install</td>
-          <td><code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code></td>
+          <td><code>curl -fsSL https://amux.io/install.sh | bash</code></td>
           <td>VS Code Extensions marketplace — search "Cline" or "Roo Code"</td>
         </tr>
         <tr>
@@ -573,7 +557,7 @@
     <dl style="display:grid;gap:1.5rem">
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Should I use Cline or amux?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Use Cline if you want an interactive AI coding assistant inside VS Code with per-step
           approval and support for 20+ LLM providers. Use amux if you want to run parallel
           Claude Code, Codex CLI, or Gemini CLI agents overnight, unattended, with a web dashboard
@@ -583,7 +567,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Can Cline run multiple agents in parallel?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           No. Cline runs one agent per VS Code window with no shared task board, no inter-agent
           communication, and no self-healing. You can open multiple VS Code windows, but there is
           no coordination layer between them — they are isolated sessions with no way to share tasks
@@ -593,7 +577,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Can I use amux and Cline together?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Yes — they complement each other well. Use Cline for interactive feature development in VS
           Code where you want per-step approval. Use amux to manage parallel Claude Code, Codex, or
           Gemini CLI sessions for batch work: generating tests, writing documentation, building multiple
@@ -603,7 +587,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Does Cline have a mobile app?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           No. Cline is desktop VS Code only — the agent stops the moment VS Code closes. amux's
           <a href="/features/mobile-pwa/">iOS app and installable PWA</a> let you monitor live session
           output, approve pending quality gates, send steering messages, and manage the kanban board
@@ -612,7 +596,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">What is the difference between Cline and Roo Code?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Roo Code (formerly Roo Cline) is a community fork of Cline maintained separately with
           additional features and a different release cadence. Both are VS Code extensions for
           interactive AI coding assistance with per-step approval. amux is unrelated to either —
@@ -622,7 +606,7 @@
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">Is Cline open source?</dt>
-        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+        <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Yes — Apache 2.0 at
           <a href="https://github.com/cline/cline" target="_blank" rel="noopener">github.com/cline/cline</a>,
           approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is
@@ -635,11 +619,8 @@
 
     <h2>Quick start with amux</h2>
 
-    <pre><code># Install via Homebrew (macOS/Linux)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
-# Or zero-install trial (no install needed)
-uvx amux serve
 
 # Register a project and launch agents
 amux register myproject --dir ~/Dev/myproject --yolo
@@ -672,7 +653,7 @@ amux serve  # → https://localhost:8824</code></pre>
         Open source, MIT licensed. Complements Cline for the work that can't wait for you to be
         at your desk.
       </p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -721,10 +702,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

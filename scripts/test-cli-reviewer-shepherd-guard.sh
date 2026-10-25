@@ -22,12 +22,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 AMUX_BIN="${AMUX_BIN:-./amux}"
+# An empty CC_HOME: with the real one, the CLI rewrites this stub's localhost
+# URL to the live server (_amux_heal_url reads ~/.amux/endpoint.json), so a
+# local run wrote to the real board.
+CLI_HOME=$(mktemp -d)
 PASS=0; FAIL=0
 ok(){ echo "  ok   $1"; PASS=$((PASS+1)); }
 bad(){ echo "  FAIL $1"; echo "       $2"; FAIL=$((FAIL+1)); }
 
 CAP=$(mktemp); PORTF=$(mktemp)
-trap 'kill $LPID 2>/dev/null; rm -f "$CAP" "$PORTF"' EXIT
+trap 'kill $LPID 2>/dev/null; rm -rf "$CAP" "$PORTF" "$CLI_HOME"' EXIT
 
 # Serves until killed. GET /api/sessions/<name> answers by name so one
 # listener covers every state; PATCH /api/board/<id> APPENDS the body so a
@@ -78,7 +82,7 @@ PORT=$(cat "$PORTF")
 
 run() {  # run <verb> <args...> -> sets RC and OUT, leaves PATCH bodies in $CAP
   : > "$CAP"
-  if OUT=$(timeout 20 env AMUX_API="http://127.0.0.1:$PORT" AMUX_SESSION=guard-test \
+  if OUT=$(timeout 20 env -u AMUX_WORKER CC_HOME="$CLI_HOME" AMUX_API="http://127.0.0.1:$PORT" AMUX_SESSION=guard-test \
       bash "$AMUX_BIN" board "$@" 2>&1); then RC=0; else RC=$?; fi
 }
 patched() { [ -s "$CAP" ]; }
@@ -137,7 +141,7 @@ done
 # the warning text is the assertion: it must say "could not confirm ...
 # reachable" (unknown, fail-open), never claim the session IS isolated.
 DEAD_PORT=1
-OUT=$(timeout 5 env AMUX_API="http://127.0.0.1:$DEAD_PORT" AMUX_SESSION=guard-test \
+OUT=$(timeout 5 env -u AMUX_WORKER CC_HOME="$CLI_HOME" AMUX_API="http://127.0.0.1:$DEAD_PORT" AMUX_SESSION=guard-test \
     bash "$AMUX_BIN" board reviewer TEST-1 some-unreachable-session 2>&1) && RC=0 || RC=$?
 if [[ "$OUT" == *"could not confirm"*"reachable"*"proceeding anyway"* ]] && [[ "$OUT" != *"is isolated"* ]]; then
   ok "reviewer: a lookup failure warns as unknown and still attempts the write, never fabricates 'isolated'"
@@ -152,7 +156,7 @@ if grep -q "_board_assignee_guard" "$PREFIX_BIN"; then
   echo "  skip pre-fix control: origin/main already carries the fix"
 else
   : > "$CAP"
-  if OUT=$(timeout 20 env AMUX_API="http://127.0.0.1:$PORT" AMUX_SESSION=guard-test \
+  if OUT=$(timeout 20 env -u AMUX_WORKER CC_HOME="$CLI_HOME" AMUX_API="http://127.0.0.1:$PORT" AMUX_SESSION=guard-test \
       bash "$PREFIX_BIN" board reviewer TEST-1 isolated-session 2>&1); then RC=0; else RC=$?; fi
   if [ "$RC" -eq 0 ] && patched; then
     ok "control: pre-fix CLI sets an isolated reviewer with no refusal -- confirms the fix is load-bearing"

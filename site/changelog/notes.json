@@ -1,11 +1,722 @@
 [
   {
+    "hash": "4065457ea47290ae50f59d1ec279983e21055626",
+    "short": "4065457e",
+    "title": "Each worker tab shows that worker's data",
+    "date": "2026-10-24",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "reliability",
+      "workers"
+    ],
+    "description": "Switching from one worker to another on the same tab could paint the first worker's answer onto the second when it arrived late. Ten tabs, including Memory, Git, Steering, Logs and Shell, now check that an answer still belongs to the worker on screen before showing it, so Save and Push always act on the worker you are looking at."
+  },
+  {
+    "hash": "8200abbde258cee8a46fd67afa60e611c01f66f4",
+    "short": "8200abbd",
+    "title": "Drag a tab into the Mac app window to split it",
+    "date": "2026-10-23",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "split view",
+      "desktop"
+    ],
+    "description": "In the amux Mac app, drag a tab over a window and a preview shows which half of the pane it will take. Drop it and the window becomes a grid of up to four panes, each keeping its page state, with dividers you can drag to resize."
+  },
+  {
+    "hash": "de0259901ec8f33cb77129a51c71e7b636e5269a",
+    "short": "de025990",
+    "title": "See how much memory and CPU each worker uses",
+    "date": "2026-10-23",
+    "type": "feat",
+    "tags": [
+      "metrics",
+      "resources",
+      "workers"
+    ],
+    "description": "amux now samples each worker's memory, CPU and process count every 30 seconds and keeps seven days of history. The new Resources tab in Metrics shows live numbers and peaks per worker, and you can cap how many workers run at once and stagger their start after a reboot."
+  },
+  {
+    "hash": "85a71cca3a781b37ab22eafef9834ae452c751e1",
+    "short": "85a71cca",
+    "title": "Claude sign-in on amux Cloud uses your subscription",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude code",
+      "sign-in"
+    ],
+    "description": "Signing in to Claude from the dashboard now runs the same login as /login on a laptop. Your plan usage shows in the dashboard, and workers run on your Claude subscription instead of an API key."
+  },
+  {
+    "hash": "2dc70bcb77c9560bba72bf7f92080003811d9931",
+    "short": "2dc70bcb",
+    "title": "Stuck queued messages can be retried or removed",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "queue",
+      "dashboard"
+    ],
+    "description": "A message saved on your device that never reached its worker used to sit in the Queued list with its buttons disabled. It now says what happened, and you can send it again or remove it."
+  },
+  {
+    "hash": "ee265d768be67d4a1953c22161ebe6d11281b4fc",
+    "short": "ee265d76",
+    "title": "A bigger terminal in the worker view on desktop",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "desktop",
+      "terminal"
+    ],
+    "description": "With a mouse and a wide screen, the header and command bar around a worker's terminal are tighter, so the terminal grows from 532 to 611 pixels tall at 1440 by 900. Touch screens keep the stacked layout."
+  },
+  {
+    "hash": "c5aba6e5eee052d666b7a141ce67c126feab40dd",
+    "short": "c5aba6e5",
+    "title": "More room for messages on your phone",
+    "date": "2026-10-23",
+    "type": "fix",
+    "tags": [
+      "phone",
+      "messages",
+      "dashboard"
+    ],
+    "description": "A worker's Messages tab on a phone used about a third of the screen for search, filters and three header lines per message. The search row now fits, and each message takes far less space, so you read the conversation instead of the chrome around it."
+  },
+  {
+    "hash": "b20e23647eb9ac753cae0893ba5cd38c923f73a4",
+    "short": "b20e2364",
+    "title": "Split view with two to four panes",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "split-view",
+      "workers"
+    ],
+    "description": "Next to a worker's page you can now open one to three more panes, stacked. Each pane shows the same worker page on a view you pick from its dropdown, such as Chat, Terminal, Messages or Files, so you can watch a terminal while reading the conversation."
+  },
+  {
+    "hash": "70adf4bbe77e161fb95cfd9aa3339bcbf051e96a",
+    "short": "70adf4bb",
+    "title": "Fold the worker header to give the terminal room",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "workers",
+      "layout"
+    ],
+    "description": "Drag the grip under a worker's header upward and the header folds in stages: the toolbar moves up beside the name, then the extra lines collapse. In a short window that turns a one-line terminal into a usable one. The fold is saved per worker, so a saved workspace comes back the same way."
+  },
+  {
+    "hash": "1849d2a2428f194373a4d6cf4794fe064e044f59",
+    "short": "1849d2a2",
+    "title": "Refresh keeps you where you were",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "navigation",
+      "mac-app"
+    ],
+    "description": "Reloading the dashboard now returns you to the worker, tab, card, file or view you were on. Before, a page opened from a link went back to that link on refresh, and every Mac app window went back to where it was at launch."
+  },
+  {
+    "hash": "20721db881b494109c1f102437851dd655dd666e",
+    "short": "20721db8",
+    "title": "Update the Mac app from Settings",
+    "date": "2026-10-22",
+    "type": "feat",
+    "tags": [
+      "mac-app",
+      "updates"
+    ],
+    "description": "The Mac app has a new Settings > Updates panel. It checks the latest desktop release on GitHub, downloads it, verifies the bundle and its signature, swaps it in place and relaunches. No more downloading a zip by hand to stay current."
+  },
+  {
+    "hash": "628fe6097f0d47ccac928cf3a23c7458ea6f8c65",
+    "short": "628fe609",
+    "title": "Attachments never block a send",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "attachments",
+      "messages",
+      "reliability"
+    ],
+    "description": "If the browser's local storage stalls while saving an attached screenshot, amux now gives up on the local copy after a few seconds and uploads straight from memory. Before, the attachment could sit at Saving locally and the message could not be sent."
+  },
+  {
+    "hash": "a7e6c828f1ee39a3cf345ac31f6ef5d5f6f32217",
+    "short": "a7e6c828",
+    "title": "A lost message gets sent again",
+    "date": "2026-10-22",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "reliability"
+    ],
+    "description": "If a message you queued for a busy worker never reaches its transcript, amux notices and sends it once more. It used to count an empty message box as proof of delivery. A message still missing after the retry is logged as lost, never as delivered."
+  },
+  {
+    "hash": "6cda247fe740107e99d39732bf7270030a590405",
+    "short": "6cda247f",
+    "title": "Pages: small web apps run by a worker",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "pages",
+      "apps",
+      "workers"
+    ],
+    "description": "The new Pages tab hosts HTML apps at /pages/<name>, each with its own SQLite file and a worker that keeps it up to date. The page runs in a sandboxed frame and can only read and write its own database, ask its worker a question, or open a file. It respects your server's sign-in, Cloud included."
+  },
+  {
+    "hash": "e9a6cf4a7050556b418e9605490af39e83f40de2",
+    "short": "e9a6cf4a",
+    "title": "Snap windows and torn-off tabs into place on the Mac",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "windows"
+    ],
+    "description": "In the Mac app, drag a window or a torn-off tab to a screen edge to snap it: the sides give half the screen, corners a quarter, the top fills it, and the bottom gives a third. A preview shows where it will land. Saved workspaces now keep each window's tab names."
+  },
+  {
+    "hash": "28f73d443ec5e973e18ed53c9fa79ff4cc6889d4",
+    "short": "28f73d44",
+    "title": "Mac windows come back where you left them",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "workspaces"
+    ],
+    "description": "The Mac app remembers each window's display, size, macOS Desktop, tabs and what it was showing, then restores them after a quit, crash, reboot or monitor change. Arrange workers across several Desktops once and keep that layout."
+  },
+  {
+    "hash": "5e6f4842a2df28ac6288dd4b771c8c7264d6e469",
+    "short": "5e6f4842",
+    "title": "A terminal on both sides of split view",
+    "date": "2026-10-21",
+    "type": "feat",
+    "tags": [
+      "terminal",
+      "split view",
+      "dashboard"
+    ],
+    "description": "Split view now offers Terminal beside Files, Messages and Chat, so you can watch two terminals side by side. Each has its own message box, and the choice is remembered per worker."
+  },
+  {
+    "hash": "743b0bb417062f60565b0da05167a2a5e8297161",
+    "short": "743b0bb4",
+    "title": "Copy and paste in the terminal just work in the Mac app",
+    "date": "2026-10-21",
+    "type": "fix",
+    "tags": [
+      "terminal",
+      "mac app",
+      "clipboard"
+    ],
+    "description": "Cmd+V in a worker's terminal now pastes into the message box without asking for clipboard permission, and Cmd+C copies a selection. Before, the Mac app blocked the paste and showed an error."
+  },
+  {
+    "hash": "b975b9fffcbd8cf80be2e4d8d75268a1e69bc86b",
+    "short": "b975b9ff",
+    "title": "Queued messages no longer look delivered",
+    "date": "2026-10-21",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "dashboard"
+    ],
+    "description": "A message still waiting in a worker's queue stays labeled as queued until the worker takes it. Switches such as the Board toggle in worker details now look and act like real on/off switches."
+  },
+  {
+    "hash": "2ab7254c3e754e8ad1bd0e89015fdac36e82a0e6",
+    "short": "2ab7254c",
+    "title": "Mermaid diagrams draw wherever markdown shows",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "markdown",
+      "diagrams",
+      "files"
+    ],
+    "description": "A mermaid code block in a note, a card, chat or the file viewer now draws as a diagram, in light or dark to match the theme. Mermaid loads only on pages that have a diagram. If a block does not parse, its source stays on screen with the reason."
+  },
+  {
+    "hash": "ac4f22aca780dd2897e70e0880cf71aa97578071",
+    "short": "ac4f22ac",
+    "title": "Obsidian notes open in full, with working links",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "files",
+      "obsidian",
+      "markdown"
+    ],
+    "description": "The file viewer renders Obsidian notes the way Obsidian does: wikilinks open the note or jump to the heading, and math and callouts render. Large notes no longer stop at 200,000 characters; text files open up to 5 million characters, and a cut says so."
+  },
+  {
+    "hash": "9a5beacbacb992aef45cdabd4d7b7028614b2c36",
+    "short": "9a5beacb",
+    "title": "Subscribe workers to events",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "automation",
+      "api",
+      "workers"
+    ],
+    "description": "Workers can subscribe to event patterns and act on a match: message a worker, create a board card, run a schedule or run a command. Match by event type, source and worker, with a dedupe window so one burst fires once. Manage subscriptions at /api/subscriptions and read the fire history at /api/subscriptions/fires."
+  },
+  {
+    "hash": "d3024f863ddae4596e4e6c8528f8d367fd43eda4",
+    "short": "d3024f86",
+    "title": "Drag the message box taller",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "mobile",
+      "composer"
+    ],
+    "description": "A grip on the message box's top-left corner lets you drag it taller, up to 70% of the screen, for long prompts. The size is kept per device, and a double-click resets it."
+  },
+  {
+    "hash": "6c649f6739557829f3efa04e1716c2a6e6c19db7",
+    "short": "6c649f67",
+    "title": "The Host strained dialog tells you what to do",
+    "date": "2026-10-20",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "host",
+      "resources"
+    ],
+    "description": "When your machine is under load, the Host dialog now lists the biggest consumers first with one suggested step each: pause a busy worker with one button, or copy a command for a VM or another app. amux only pauses its own workers; for everything else it gives you the command to run."
+  },
+  {
+    "hash": "e98ebbbdb8af78590562d7971d26fa91b9d63a6c",
+    "short": "e98ebbbd",
+    "title": "Notifications open the card they are about",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "notifications",
+      "board",
+      "mobile"
+    ],
+    "description": "Tapping a needs-you notification on the Mac app, the PWA or in the dashboard now opens the board card it names, in the window you already have open. With work pending, tapping the status pill opens the status details too."
+  },
+  {
+    "hash": "21ead245e3c3038a34ef53fb338483a541a8fc8f",
+    "short": "21ead245",
+    "title": "Markdown reads well on a phone",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "files",
+      "mobile",
+      "markdown"
+    ],
+    "description": "Tables in the file viewer wrap only between words and scroll sideways inside their frame, so cells no longer break mid-word. iPhone gets a draggable scroll thumb with a percentage, and diagrams open full screen."
+  },
+  {
+    "hash": "be509590b5f08efcda6f0957feb67d6e2c2861af",
+    "short": "be509590",
+    "title": "Workers resume right after an account switch",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "claude",
+      "usage limits",
+      "self-healing"
+    ],
+    "description": "When a worker hits a usage limit and amux switches to another Claude account, the worker now resumes at once even if a background shell from the old turn is still running. It also reads Claude Code's new Continuing shortly banner."
+  },
+  {
+    "hash": "9370acf06d335b6193c994a06f2f4f74e3b8c0cb",
+    "short": "9370acf0",
+    "title": "amux stop now stays stopped",
+    "date": "2026-10-20",
+    "type": "fix",
+    "tags": [
+      "cli",
+      "workers",
+      "board"
+    ],
+    "description": "Stopping a worker with amux stop is now recorded by the server, so the board's dispatcher no longer restarts it seconds later to pick up queued work. Every start also records who started it."
+  },
+  {
+    "hash": "5b9df03a8e0cd01ab2c47515ae2ec1b5f0c7e98e",
+    "short": "5b9df03a",
+    "title": "A faster dashboard on big fleets",
+    "date": "2026-10-20",
+    "type": "perf",
+    "tags": [
+      "dashboard",
+      "performance"
+    ],
+    "description": "The worker list the dashboard downloads dropped a quarter of its size, and board changes now arrive in one request instead of one per card. On a busy fleet the dashboard re-reads less and updates sooner."
+  },
+  {
+    "hash": "ed09c7cc1d199e6bf34ba29ef9dd378ec3216256",
+    "short": "ed09c7cc",
+    "title": "Cmd-K finds any worker, card or tab by name",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "search",
+      "navigation"
+    ],
+    "description": "Press Cmd-K (Ctrl-K, or the search button on phones and iPads) for a Spotlight-style box that finds workers, groups, projects, tabs, actions, pins, vault entry names, connectors and skills. Type, use the arrow keys, and Enter opens it."
+  },
+  {
+    "hash": "5961f572156a6acddd5af12d4da46200b8218c90",
+    "short": "5961f572",
+    "title": "A native Mac app for amux",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "macos"
+    ],
+    "description": "amux now has a native Mac app: several windows and tabs, a Dock badge and notifications when agents need you, a menu bar CPU and memory readout, pinned notes that float above other apps, and Control-Option-Space to show or hide it. Download Amux-macOS.zip from the GitHub release; it connects to your own server or your amux Cloud address."
+  },
+  {
+    "hash": "0250da1dbc7500c1dd8e88ff756797fb0c34e954",
+    "short": "0250da1d",
+    "title": "Mac app: Settings and saved window layouts",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "macos"
+    ],
+    "description": "The Mac app gains a Settings window (Cmd-,) and named window layouts that save every window, tab group and floating pin, then reopen them with one click. Choose what opens at launch: your last windows, one window, or a layout."
+  },
+  {
+    "hash": "ec93b1112b45413484dc9d05a73ad41942731408",
+    "short": "ec93b111",
+    "title": "Manage billing or delete your Cloud account from Settings",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "cloud",
+      "billing"
+    ],
+    "description": "amux Cloud owners now find \"Manage billing or delete account\" in their server's Settings, instead of having to know the amux.io billing page. Invited members never see it."
+  },
+  {
+    "hash": "175404226e120d9c649f9bcbae06ec06717a018f",
+    "short": "17540422",
+    "title": "Sign in with your Claude subscription on amux Cloud",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude-code",
+      "onboarding"
+    ],
+    "description": "A new amux Cloud server now offers Sign in with Claude, ChatGPT or Gemini on first load, and the \"No model connected\" banner opens the same window. Before, a Cloud customer could only paste an API key."
+  },
+  {
+    "hash": "73be7678bd29ba8fc3a0d90cb3f48174964d7e4e",
+    "short": "73be7678",
+    "title": "The dashboard no longer reloads itself on a first visit",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "onboarding"
+    ],
+    "description": "A fresh browser reloaded the dashboard about five seconds after opening it, which could wipe a sign-in window mid-flow on a new Cloud server. It now reloads only when newer dashboard code replaces older code."
+  },
+  {
+    "hash": "dffcf4870372de344d014e409f33eca792c32903",
+    "short": "dffcf487",
+    "title": "Workers can save notes to their own amux memory",
+    "date": "2026-10-19",
+    "type": "feat",
+    "tags": [
+      "memory",
+      "cli"
+    ],
+    "description": "`amux memory add` appends a note to a worker's amux memory, the one the Memory tab shows, without overwriting what the owner saved. `amux memory` prints it."
+  },
+  {
+    "hash": "a7afc64be7350bb77479e1fe84d7603d82ef827d",
+    "short": "a7afc64b",
+    "title": "Resubscribe within 30 days and get your Cloud server back",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "billing"
+    ],
+    "description": "When you cancel amux Cloud, your server is kept as a snapshot for 30 days. Resubscribing with the same email now restores that server with its data, and the ready email says it was restored."
+  },
+  {
+    "hash": "8e7804608d249b4f04522272a33e833d2a8a9ea8",
+    "short": "8e780460",
+    "title": "Cloud shows a restarting page instead of a blank error",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "reliability"
+    ],
+    "description": "If your amux Cloud server is restarting, you now see a page that says so, refreshes itself every 10 seconds, and gives hello@amux.io, instead of an empty 502."
+  },
+  {
+    "hash": "f99e3d09a3e04cf651544ee57eb4e01be7f83d3c",
+    "short": "f99e3d09",
+    "title": "Claude workers skip the first-run screens when you add a key later",
+    "date": "2026-10-19",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude-code",
+      "onboarding"
+    ],
+    "description": "On amux Cloud, saving an Anthropic key in the Vault after install left a new Claude worker stuck on Claude Code's first-run theme picker. amux now answers those screens at launch, so the first task runs."
+  },
+  {
+    "hash": "5cdc23855e0d670de76475d02a71c04a00da93ac",
+    "short": "5cdc2385",
+    "title": "Describe what you want, and a worker starts on it",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "goal",
+      "workers"
+    ],
+    "description": "The + button opens with one box: describe the outcome you want and press Cmd or Ctrl+Enter. amux starts a worker on a /goal that keeps going until the outcome is met. Group, folder, provider, model and constraints sit in a closed section with sensible defaults, and you can save them as yours."
+  },
+  {
+    "hash": "bc40dea42dfeecc4a5d06a763a49d048ddac4084",
+    "short": "bc40dea4",
+    "title": "Tasks pages link each stretch of work to its messages, cards and commits",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "tasks",
+      "history",
+      "dashboard"
+    ],
+    "description": "Each worker and the fleet as a whole get a Tasks page. A task shows the messages sent during it, the board card it worked, the commits it landed on main and the requests it closed, and you can search across all of them."
+  },
+  {
+    "hash": "502a767ed20bbacc8b4d2bcb20f9140bd8b85bd8",
+    "short": "502a767e",
+    "title": "A log search hit opens the terminal log at that line",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "search",
+      "logs"
+    ],
+    "description": "Clicking a search result that points into a worker's terminal log now shows the lines around it, even from days ago, instead of only the loaded scrollback."
+  },
+  {
+    "hash": "2a4c8107aca0c5e64a3db28b2a432a1fbe220b52",
+    "short": "2a4c8107",
+    "title": "Disk tab recommends what to clean and writes the script for you",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "disk",
+      "cleanup",
+      "dashboard"
+    ],
+    "description": "The Disk tab now shows free space, what is safe to remove, what needs review and what the scan never mapped. Findings are grouped by the tool that owns them, and a copyable cleanup script replaces deleting from the dashboard."
+  },
+  {
+    "hash": "d59e1a7a96faea9ca341ad0b49fd375e8992575d",
+    "short": "d59e1a7a",
+    "title": "Schedules can end: start dates, end dates, run limits and owner locks",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "schedules"
+    ],
+    "description": "A schedule can wait until a start date, stop after an end date or a number of runs, and be locked by the owner so a worker cannot re-enable it. A disabled schedule records why."
+  },
+  {
+    "hash": "050bdc775b58cb77e75f44a22ccfafba54eafefe",
+    "short": "050bdc77",
+    "title": "Cap how many subagents a worker runs at once",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "boundaries",
+      "subagents",
+      "usage"
+    ],
+    "description": "A new subagents boundary refuses another subagent when a worker already runs its limit (4 by default) or the account is nearly out of usage headroom. The refusal says how many are running and when to retry."
+  },
+  {
+    "hash": "0be3b304a4bdaaf773b01f2a3649a5f594702542",
+    "short": "0be3b304",
+    "title": "Messages no longer cancel Claude's automatic continue after a usage limit",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "usage",
+      "claude-code",
+      "reliability"
+    ],
+    "description": "While Claude Code counts down to continue after a usage limit, amux holds incoming messages. Before, the Escape key sent ahead of a message cancelled the countdown and left the worker stopped."
+  },
+  {
+    "hash": "96a084a271ed02e75001a17607ac2e730a77287f",
+    "short": "96a084a2",
+    "title": "Draw: rename and delete drawings, a default folder and safer autosave",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "draw",
+      "library"
+    ],
+    "description": "Drawings and components can be renamed or deleted from the library, the selection bar has Delete with undo, new drawings go to a default folder you choose, and a failed autosave retries on its own."
+  },
+  {
+    "hash": "68b413f5b01d74857a5317d4dc09a45d08de931a",
+    "short": "68b413f5",
+    "title": "Move a whole amux between your machine and amux Cloud",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "cloud",
+      "migration",
+      "cli"
+    ],
+    "description": "amux export writes one bundle with your board, schedules, memories and worker settings. amux import loads it into another amux, local or a Cloud server at yourname.amux.io, so you can start self-hosted and move to an always-on server without rebuilding anything."
+  },
+  {
+    "hash": "a961c655cff8593c6b89cd1b44cfaabe0c124177",
+    "short": "a961c655",
+    "title": "Sign in with Apple finds your Cloud server in the iOS app",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "ios",
+      "cloud",
+      "auth"
+    ],
+    "description": "The iOS app's server picker has a Sign in with Apple button. It looks up the Cloud servers on your account and signs you in to the one you pick, with no URL to type."
+  },
+  {
+    "hash": "976a431758031b54d632c80434b4b341cefaf096",
+    "short": "976a4317",
+    "title": "Open a worker's dev server from your phone with /proxy/<port>/",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": [
+      "proxy",
+      "mobile",
+      "dev-servers"
+    ],
+    "description": "Links like /proxy/3000/ on your amux address now open the dev server a worker started on that port, from any of your devices. If the server only listens on 127.0.0.1, amux shows a page naming the fix (--host 0.0.0.0) instead of a dead link. Owner only."
+  },
+  {
+    "hash": "45a5f0114bdcfdb65685bb6217d59a115d699858",
+    "short": "45a5f011",
+    "title": "Automatic Claude account switching is now opt-in",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "accounts",
+      "rate-limits"
+    ],
+    "description": "Switching a worker to another Claude account when one hits its usage limit is off by default. Turn it on with claude-rotate.py on or CLAUDE_ROTATE_ENABLED=1. Manual switching is unchanged."
+  },
+  {
+    "hash": "6f717a3ecbc6b0247cf35ac707316e82ae71bf42",
+    "short": "6f717a3e",
+    "title": "Worker resource boundaries cover the shared network link",
+    "date": "2026-10-18",
+    "type": "feat",
+    "tags": [
+      "boundaries",
+      "resource-limits"
+    ],
+    "description": "The resources boundary now includes network bandwidth alongside memory and CPU, so one agent pulling a large download cannot starve the rest of the fleet."
+  },
+  {
+    "hash": "30a6d6b8f145a73c8dfdd8014c858757bb424996",
+    "short": "30a6d6b8",
+    "title": "One switch turns the task board on or off for a worker",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "A worker can run without the shared board. Switch it off for a lane that only takes direct instructions; every other worker keeps its board."
+  },
+  {
+    "hash": "356f579b45c00d8ef0a93a3d8dcb68d9d61b63f4",
+    "short": "356f579b",
+    "title": "amux requests lists what you asked for and whether it shipped",
+    "date": "2026-10-17",
+    "type": "feat",
+    "tags": [
+      "cli",
+      "requests"
+    ],
+    "description": "amux requests shows the owner's requests and whether each one has reached main, so you can see at a glance what is done and what is still open."
+  },
+  {
+    "hash": "2f2f148f647e30f21051ca947e96fb096e041907",
+    "short": "2f2f148f",
+    "title": "A saved OpenAI key signs Codex in before the worker starts",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "codex",
+      "credentials"
+    ],
+    "description": "Codex workers no longer stop at a sign-in prompt when an OpenAI API key is already saved in amux. The key is applied before the worker launches."
+  },
+  {
+    "hash": "90e53e42113a3e577c3cb6a920e4471060927237",
+    "short": "90e53e42",
+    "title": "Taps reach the dashboard on iPad",
+    "date": "2026-10-18",
+    "type": "fix",
+    "tags": [
+      "ios",
+      "ipad"
+    ],
+    "description": "Fixed an overlay that swallowed taps in the iPad app, so buttons and cards respond again."
+  },
+  {
     "hash": "a8116aa610000000000000000000000000000000",
     "short": "a8116aa6",
     "title": "Full task name on the card and details page, with a recorded history of task changes",
     "date": "2026-10-17",
     "type": "feat",
-    "tags": ["workers", "task-history", "dashboard"],
+    "tags": [
+      "workers",
+      "task-history",
+      "dashboard"
+    ],
     "description": "Worker cards and the worker details page now show the complete task name rather than a truncated version. Each time a worker's task changes, amux records the previous task in a durable history. Open the task history from the details page to see every task this worker has run, when it changed, and what ran before the current one."
   },
   {
@@ -14,7 +725,10 @@
     "title": "Task history opens as a list in the standard dialog",
     "date": "2026-10-17",
     "type": "feat",
-    "tags": ["workers", "task-history"],
+    "tags": [
+      "workers",
+      "task-history"
+    ],
     "description": "Clicking the task history button on a worker card opens a scrollable list of all past tasks in the standard details dialog. Each entry shows the task name, when it started, and how long it ran. No more losing track of what a long-running worker has done across a session."
   },
   {
@@ -23,7 +737,11 @@
     "title": "Worker boundaries apply to isolated workers too",
     "date": "2026-10-17",
     "type": "feat",
-    "tags": ["boundaries", "isolated-workers", "resource-limits"],
+    "tags": [
+      "boundaries",
+      "isolated-workers",
+      "resource-limits"
+    ],
     "description": "Resource limits declared in boundaries.toml now apply to isolated workers. Previously, workers running in isolated mode (direct owner-to-CLI transport, no harness routing) fell outside the boundaries registry. Now the orchestrator enforces their resource envelope regardless of isolation mode. Useful for long-running isolated sessions left overnight that need a memory ceiling."
   },
   {
@@ -32,7 +750,10 @@
     "title": "A crash loop with no crash in the last 6 hours is reported, not escalated",
     "date": "2026-10-16",
     "type": "fix",
-    "tags": ["cleanup", "crash-detection"],
+    "tags": [
+      "cleanup",
+      "crash-detection"
+    ],
     "description": "The cleanup tick now distinguishes a stale crash loop (no new crash in 6h) from an active one. Stale loops are reported on the dashboard so the operator can investigate and clear them; active loops are escalated. Previously both states triggered the same alert path, causing noise on workers that had recovered."
   },
   {
@@ -41,7 +762,10 @@
     "title": "Scheduler pauses a failing schedule when its assigned worker is gone",
     "date": "2026-10-16",
     "type": "feat",
-    "tags": ["scheduler", "reliability"],
+    "tags": [
+      "scheduler",
+      "reliability"
+    ],
     "description": "If a scheduled task fires repeatedly but fails because its assigned worker session no longer exists, amux now automatically pauses that schedule rather than retrying indefinitely. The Scheduler tab shows a paused badge with the failure reason. Re-enable the schedule once you have restored or replaced the worker."
   },
   {

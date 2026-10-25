@@ -1583,12 +1583,12 @@ mod tests {
         let _g = crate::api::settings::test_env::set_home(home.path());
         let store: crate::db::SharedStore = std::sync::Arc::new(crate::db::Store::open(&home.path().join("q.db")).unwrap());
         let lane = "runner-gate-test-lane-no-pane";
-        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=1\nCC_AUTO_PICKUP=1\n").unwrap();
         let held = crate::api::session_verbs::steer_enqueue_store(&store, lane, "keep going", "board-drive", "harness:test").await;
         assert!(held.as_ref().is_err_and(|e| e.contains("pane is gone")), "{held:?}");
         let owner = crate::api::session_verbs::steer_enqueue_store(&store, lane, "hi", "", "").await;
         assert!(!owner.as_ref().is_err_and(|e| e.contains("contract")), "the owner's send is not gated: {owner:?}");
-        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=0\n").unwrap();
+        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=0\nCC_AUTO_PICKUP=1\n").unwrap();
         let plain = crate::api::session_verbs::steer_enqueue_store(&store, lane, "keep going", "board-drive", "harness:test").await;
         assert!(!plain.as_ref().is_err_and(|e| e.contains("contract")), "switch off: today's behavior: {plain:?}");
     }

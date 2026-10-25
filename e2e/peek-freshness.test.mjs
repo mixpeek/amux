@@ -22,7 +22,7 @@ function fixture() {
     _PEEK_CACHE_KEY:name=>'peek_'+name, _peekVisibleCols:()=>120,   // helpers defined outside the extracted slice
     _peekThin:false, _peekModePainted:null, _peekGeoHold:0, _peekLastFullMs:0, _peekLastFullAttemptMs:0, _peekEtag:null, _peekLiveEtag:null,
     _peekHistoryRaw:'', _peekHistoryHTML:'', _lastPeekRaw:'', _lastLiveHTML:'', lastPeekHTML:'',
-    _peekEarlier:{}, _peekEarlierHTML:()=>'', _trimPeekLiveOverlap:(_history,live)=>live,
+    _peekEarlier:{}, _peekEarlierHTML:()=>'', _peekUnechoedHtml:()=>'', _trimPeekLiveOverlap:(_history,live)=>live,
     _peekLiveHtml:value=>value, _peekHtml:value=>value, hidePeekLoading(){}, _stopPeekPoll(){},
     _peekPollActive:true, _peekPollInFlight:false, _peekPollAgain:false, _peekFullPending:false,
     _peekScrollLocked:false, _peekPressHold:false, _peekTraceBegin(){}, _peekTraceFrame(){}, _peekTraceEnd(){}, _peekTraceCur:null, _peekTraceRegion:'history', _peekFollowBottom:true, _peekBufferedOutput:false, _peekPendingFindScroll:false,

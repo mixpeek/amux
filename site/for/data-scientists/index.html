@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,32 +20,37 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"Data Scientists","item":"https://amux.io/for/data-scientists/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for Data Scientists — Parallel AI Agents for EDA, Modeling & Pipeline Automation (2026)","description":"Data scientists use amux to run parallel Claude Code, Codex, and Gemini CLI agents for exploratory data analysis, model training, notebook automation, and data pipeline generation — with self-healing and phone-first monitoring.","url":"https://amux.io/for/data-scientists/","datePublished":"2026-08-01","dateModified":"2026-09-28","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do data scientists use amux?","acceptedAnswer":{"@type":"Answer","text":"Data scientists use amux to run multiple Claude Code agents simultaneously on different parts of a data workflow. One agent handles exploratory data analysis on dataset A while another writes model training code for experiment B, a third converts a notebook to a production Python script, and a fourth generates documentation. All four run in parallel, self-heal on crash, and report to a shared kanban board monitored from a web browser or iPhone. This multiplies effective output without multiplying headcount."}},{"@type":"Question","name":"Can Claude Code work with Jupyter notebooks?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code can read, modify, and generate Jupyter notebooks (.ipynb) as text files, and can run Python scripts that exercise notebook logic. The standard pattern is to give an amux agent a notebook path and ask it to analyze the code, fix issues, or convert cells to a production script. For interactive work, the agent edits the notebook file and you reload it; for automated runs, the agent generates a .py equivalent that runs headlessly. amux's self-healing watchdog keeps the agent running even if the notebook session drops."}},{"@type":"Question","name":"How can I automate EDA with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Assign one Claude Code agent per dataset or analysis question via amux's kanban board. Each agent receives a task like 'run EDA on sales_q3.csv — describe distributions, flag outliers, suggest feature engineering' and produces a markdown report or a new notebook. With amux's parallel session management, you can run 5–10 EDA agents simultaneously, each on a different dataset or hypothesis, and review their outputs from your phone when they finish. The board tracks which analysis is done, in progress, and blocked."}},{"@type":"Question","name":"How do I run data pipeline code overnight with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Create a workspace with your pipeline code and use amux's scheduler to trigger an agent at a set time. The agent runs the pipeline, writes a summary to the amux board, and amux's self-healing watchdog restarts it if it crashes. You can monitor progress from the iOS app or mobile PWA — no laptop required. If the pipeline fails overnight, the board shows the failed card with the error output so you can diagnose it in the morning. Use amux's CLAUDE.md to give the agent domain-specific instructions (column conventions, naming rules, acceptable data quality thresholds)."}},{"@type":"Question","name":"Can AI agents help with model training code?","acceptedAnswer":{"@type":"Answer","text":"Yes. The standard amux pattern is to run one agent per experiment: each agent implements a model variant (different architecture, hyperparameters, feature set) in parallel, writes training code, and produces evaluation metrics. A coordinator agent can synthesize the results. Because agents run in isolated tmux sessions with separate working directories, experiments don't interfere. amux's kanban board shows which experiments are running, which finished, and which need human review — useful for managing a grid search across many combinations."}},{"@type":"Question","name":"What is the difference between amux and a Jupyter kernel for data science?","acceptedAnswer":{"@type":"Answer","text":"A Jupyter kernel is single-session and interactive. amux manages a fleet of long-running, unattended AI agents. They complement each other: use Jupyter for interactive exploration, then hand off to amux when you need the same analysis repeated on 20 datasets, or when you want an agent to work overnight without your laptop staying open. amux's self-healing ensures the agent finishes even if the network drops or the terminal disconnects — Jupyter's kernel dies when the connection closes."}},{"@type":"Question","name":"Is amux free for data scientists?","acceptedAnswer":{"@type":"Answer","text":"The amux orchestration layer is free and open source (MIT + Commons Clause). You pay only for the AI API tokens your agents consume — Claude Code Max ($100/month for unlimited Opus usage), Codex API by the token, or Gemini CLI via Gemini API. amux itself has no seat fees, usage caps, or subscription. The amux cloud offering ($25/month) adds a public dashboard URL and managed hosting for teams who don't want to self-host."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do data scientists use amux?","acceptedAnswer":{"@type":"Answer","text":"Data scientists use amux to run multiple Claude Code agents simultaneously on different parts of a data workflow. One agent handles exploratory data analysis on dataset A while another writes model training code for experiment B, a third converts a notebook to a production Python script, and a fourth generates documentation. All four run in parallel, self-heal on crash, and report to a shared kanban board monitored from a web browser or iPhone. This multiplies effective output without multiplying headcount."}},{"@type":"Question","name":"Can Claude Code work with Jupyter notebooks?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code can read, modify, and generate Jupyter notebooks (.ipynb) as text files, and can run Python scripts that exercise notebook logic. The standard pattern is to give an amux agent a notebook path and ask it to analyze the code, fix issues, or convert cells to a production script. For interactive work, the agent edits the notebook file and you reload it; for automated runs, the agent generates a .py equivalent that runs headlessly. amux's self-healing watchdog keeps the agent running even if the notebook session drops."}},{"@type":"Question","name":"How can I automate EDA with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Assign one Claude Code agent per dataset or analysis question via amux's kanban board. Each agent receives a task like 'run EDA on sales_q3.csv — describe distributions, flag outliers, suggest feature engineering' and produces a markdown report or a new notebook. With amux's parallel session management, you can run 5–10 EDA agents simultaneously, each on a different dataset or hypothesis, and review their outputs from your phone when they finish. The board tracks which analysis is done, in progress, and blocked."}},{"@type":"Question","name":"How do I run data pipeline code overnight with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Create a workspace with your pipeline code and use amux's scheduler to trigger an agent at a set time. The agent runs the pipeline, writes a summary to the amux board, and amux's self-healing watchdog restarts it if it crashes. You can monitor progress from the iOS app or mobile PWA — no laptop required. If the pipeline fails overnight, the board shows the failed card with the error output so you can diagnose it in the morning. Use amux's CLAUDE.md to give the agent domain-specific instructions (column conventions, naming rules, acceptable data quality thresholds)."}},{"@type":"Question","name":"Can AI agents help with model training code?","acceptedAnswer":{"@type":"Answer","text":"Yes. The standard amux pattern is to run one agent per experiment: each agent implements a model variant (different architecture, hyperparameters, feature set) in parallel, writes training code, and produces evaluation metrics. A coordinator agent can synthesize the results. Because agents run in isolated tmux sessions with separate working directories, experiments don't interfere. amux's kanban board shows which experiments are running, which finished, and which need human review — useful for managing a grid search across many combinations."}},{"@type":"Question","name":"What is the difference between amux and a Jupyter kernel for data science?","acceptedAnswer":{"@type":"Answer","text":"A Jupyter kernel is single-session and interactive. amux manages a fleet of long-running, unattended AI agents. They complement each other: use Jupyter for interactive exploration, then hand off to amux when you need the same analysis repeated on 20 datasets, or when you want an agent to work overnight without your laptop staying open. amux's self-healing ensures the agent finishes even if the network drops or the terminal disconnects — Jupyter's kernel dies when the connection closes."}},{"@type":"Question","name":"Is amux free for data scientists?","acceptedAnswer":{"@type":"Answer","text":"The amux orchestration layer is free and open source (MIT + Commons Clause). You pay only for the AI API tokens your agents consume — Claude Code Max ($100/month for unlimited Opus usage), Codex API by the token, or Gemini CLI via Gemini API. amux itself has no seat fees, usage caps, or subscription. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>Data Scientists</span></div>
 
     <!-- EXP-104 top-of-page CTA -->
-    <div class="cta-box cta-top" id="exp104-top">
-      <strong>Running EDA, model experiments, or pipeline code?</strong> amux lets you run 5–10 Claude Code agents in parallel — one per dataset, experiment, or analysis question — with a shared board, CUA computer use, auto-approve for overnight runs, and self-healing built in.
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="window.amuxEvent&&amuxEvent('exp104_data_scientists_topofpage_cta_click')">View on GitHub ★ 505+</a>
-    </div>
 
     <h1>amux for Data Scientists — Parallel AI Agents for EDA, Modeling &amp; Pipeline Automation</h1>
     <p class="subtitle">Data science work is embarrassingly parallel: multiple datasets, multiple experiments, multiple model variants, multiple pipelines. amux runs one Claude Code agent per task in parallel, self-heals on crash, and lets you monitor everything from your phone. Updated September 2026.</p>
@@ -88,8 +93,7 @@
     <p>All five agents run in isolated tmux sessions. You review results from the amux web dashboard or iPhone app. The board shows which tasks finished, which are in progress, and which failed — with the error output attached so you don't have to dig through terminal logs.</p>
 
     <h2>Setting up a data science agent fleet</h2>
-    <pre><code># Install amux (single Rust binary, Homebrew)
-brew install mixpeek/amux/amux
+    <pre>curl -fsSL https://amux.io/install.sh | bash
 
 # Create a workspace pointing to your project
 amux register ds-project --dir ~/Dev/my-ds-project
@@ -101,7 +105,6 @@ amux start ds-project
 amux serve  # → https://localhost:8824
 
 # Launch your first parallel agents from the dashboard
-# or via CLI:
 amux send ds-project "Run EDA on data/sales_q3.csv — describe all columns, flag outliers (3σ), suggest 3 feature engineering candidates, write report to reports/eda_sales_q3.md"</code></pre>
 
     <p>With <code>--yolo</code> mode, agents run without confirmation prompts — safe for automated analysis and pipeline runs where you're not at the keyboard. Use a <code>CLAUDE.md</code> file to give agents domain context: column naming conventions, acceptable null rates, business definitions of key metrics.</p>
@@ -192,7 +195,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <h2>Get started</h2>
     <pre><code># Install (single Rust binary, zero dependencies)
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # Register your data project
 amux register ds-project --dir ~/Dev/my-project
@@ -206,7 +209,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <div class="cta-box">
       <h3>Run parallel AI agents for your data science workflow</h3>
       <p>EDA, experiment fleets, pipeline automation, notebook conversion. Open source, self-healing, phone-first. Single Rust binary.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★ 505+</a>
     </div>
@@ -278,10 +281,12 @@ amux serve</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

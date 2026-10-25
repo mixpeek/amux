@@ -50,8 +50,10 @@ try {
   check('future ticks keep progressing', runs(slow).some(x => x.status === 'running') && !fs.existsSync(unsafe));
   check('disabled schedule did not acquire a claim', runs(disabled).length === 0);
   await amux.down(); await amux.up();
-  await waitFor('interrupted cron claim is reconciled on restart', () => runs(slow).some(x => x.status === 'error'), 10000);
-  check('interrupted result is explicit and never success', runs(slow).length === 1 && runs(slow)[0].status === 'error'
+  // A run cut off by a restart reads 'interrupted', distinct from a real
+  // failure (gs12 review finding 5).
+  await waitFor('interrupted cron claim is reconciled on restart', () => runs(slow).some(x => x.status === 'interrupted'), 10000);
+  check('interrupted result is explicit and never success', runs(slow).length === 1 && runs(slow)[0].status === 'interrupted'
     && !fs.existsSync(unsafe));
   check('completed receipts adopted without duplicate external effects', [fast, late, pipe].every(id => runs(id).length === 1 && runs(id)[0].status === 'ok')
     && fs.readFileSync(fastDone, 'utf8').trim() === 'completed'

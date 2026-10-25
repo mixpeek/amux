@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Vibe Kanban: A Vibe Kanban Alternative After the Shutdown (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Vibe Kanban&#x27;s company shut down in April 2026 and the project is now community maintained and local only. amux vs Vibe Kanban compared (October 2026): agents, boards, isolation, review, phone access, hosting and price, plus how to choose.">
+  <meta name="keywords" content="vibe kanban alternative, amux vs vibe kanban, vibe kanban shutdown, vibe kanban sunsetting, bloop vibe kanban, kanban for coding agents, ai agent task board">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-vibe-kanban/">
+  <meta property="og:title" content="amux vs Vibe Kanban: A Vibe Kanban Alternative After the Shutdown (2026)">
+  <meta property="og:description" content="Vibe Kanban is now community maintained and local only. How it compares with amux, and how to choose a replacement.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-vibe-kanban/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Vibe Kanban", "item": "https://amux.io/compare/amux-vs-vibe-kanban/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Vibe Kanban: A Vibe Kanban Alternative After the Shutdown", "description": "Vibe Kanban's company shut down in April 2026 and the project is now community maintained and local only. amux vs Vibe Kanban compared (October 2026): agents, boards, isolation, review, phone access, hosting and price, plus how to choose.", "url": "https://amux.io/compare/amux-vs-vibe-kanban/", "datePublished": "2026-10-19", "dateModified": "2026-10-19", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is Vibe Kanban shut down?", "acceptedAnswer": {"@type": "Answer", "text": "bloop, the company behind Vibe Kanban, shut down on April 10, 2026. The project continues as open source and community maintained. Its remote services (cloud kanban issues, comments, projects and organisations) were removed after 30 days, and Vibe Kanban moved to a fully local architecture. Local workspaces keep working."}}, {"@type": "Question", "name": "What is the best Vibe Kanban alternative?", "acceptedAnswer": {"@type": "Answer", "text": "It depends on what you used it for. If you mostly ran one agent per task and reviewed its diff, the community edition of Vibe Kanban still does that locally, and Conductor is a Mac app with a similar flow. If you want a board your agents work from on their own, with atomic task claiming, agent-to-agent messages, schedules, crash recovery and phone access, amux is built for that, on macOS or Linux, self-hosted for free or on amux Cloud."}}, {"@type": "Question", "name": "What is the difference between amux and Vibe Kanban?", "acceptedAnswer": {"@type": "Answer", "text": "Vibe Kanban is a planning and review interface: you create kanban issues, start a coding agent in a workspace for each one, review the diff with inline comments, preview the app and open a pull request. amux is a control plane for an AI engineering team: agents claim cards from a shared board themselves, message each other, run on schedules, restart after crashes, and you supervise from a web dashboard or your phone."}}, {"@type": "Question", "name": "Does amux import Vibe Kanban data?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux does not have a Vibe Kanban importer. Vibe Kanban's latest version includes a data export, and amux board cards can be created from the CLI or the REST API, so a short script can recreate open issues as cards."}}, {"@type": "Question", "name": "Is amux free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux is open source (MIT plus the Commons Clause) and free to self-host with every feature: curl -fsSL https://amux.io/install.sh | bash. amux Cloud, your own always-on amux server at yourname.amux.io, starts at $39 per month for teams that want agents running when laptops are closed."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Vibe Kanban</span></div>
+
+    <h1>amux vs Vibe Kanban</h1>
+    <p class="subtitle">What changed after the shutdown, and how to pick a replacement. Updated October 2026.</p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--accent)">
+      <strong>Quick answer:</strong> bloop, the company behind Vibe Kanban, shut down in April 2026. Vibe Kanban lives on as a community-maintained, local-only open-source project, and its cloud boards, comments and team features are gone. If you used it to plan an issue, run one agent on it and review the diff, the community edition still covers that. If you want a board your agents work from on their own, with messages between agents, schedules, crash recovery and your phone, amux does that on macOS or Linux, free to self-host.
+    </div>
+
+    <h2 id="shutdown">What happened to Vibe Kanban</h2>
+    <p>On April 10, 2026, bloop announced it was shutting down because it could not find a business model for a product whose users were mostly on the free plan. The announcement made four practical changes:</p>
+    <ul>
+      <li>The project continues as open source and community maintained, with a community roadmap promised.</li>
+      <li>The latest version added a data export.</li>
+      <li>Remote services (kanban issues, comments, projects and organisations) stayed up for 30 days, then Vibe Kanban moved to a fully local architecture.</li>
+      <li>Local workspaces keep working, and paid subscriptions were ended and recent invoices refunded.</li>
+    </ul>
+    <p>So the single-developer, local loop survives. Shared team boards hosted by bloop do not.</p>
+
+    <h2 id="table">amux vs Vibe Kanban at a glance</h2>
+    <table>
+      <thead><tr><th></th><th>amux</th><th>Vibe Kanban</th></tr></thead>
+      <tbody>
+        <tr><td>What it is</td><td>Open-source control plane for an AI engineering team</td><td>Kanban planning and review UI for coding agents</td></tr>
+        <tr><td>Status</td><td>Actively developed, ships daily</td><td>Community maintained since April 2026</td></tr>
+        <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>10+ including Claude Code, Codex, Gemini CLI, Copilot, Amp, Cursor, OpenCode</td></tr>
+        <tr><td>Who drives the board</td><td>Agents claim cards atomically and move them with evidence</td><td>You create issues and start an agent per issue</td></tr>
+        <tr><td>Isolation</td><td>Per-worker directories, opt-in git worktree per worker</td><td>Workspace per task with its own branch, terminal and dev server</td></tr>
+        <tr><td>Diff review</td><td>Review on the board and in the file viewer</td><td>Inline diff comments sent back to the agent, a core feature</td></tr>
+        <tr><td>Live app preview</td><td>No built-in preview pane</td><td>Built-in browser with devtools and device emulation</td></tr>
+        <tr><td>Agents message each other</td><td>Yes</td><td>No</td></tr>
+        <tr><td>Schedules and loops</td><td>Yes (daily at 9am, every 15m, cron)</td><td>No</td></tr>
+        <tr><td>Self-healing</td><td>Compacts context, restarts crashes, replays last message</td><td>Not described</td></tr>
+        <tr><td>Phone</td><td>Free PWA and iOS app</td><td>Not described</td></tr>
+        <tr><td>Team or always-on hosting</td><td>amux Cloud: dedicated server at yourname.amux.io from $39/mo</td><td>Hosted cloud removed; self-host guide for a Docker deployment</td></tr>
+        <tr><td>Install</td><td><code>curl -fsSL https://amux.io/install.sh | bash</code></td><td><code>npx vibe-kanban</code></td></tr>
+        <tr><td>License</td><td>MIT + Commons Clause</td><td>Apache-2.0</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.85rem;color:var(--fg-mute)">Vibe Kanban details from its <a href="https://github.com/BloopAI/vibe-kanban" target="_blank" rel="noopener">GitHub README</a> and the <a href="https://www.vibekanban.com/blog/shutdown" target="_blank" rel="noopener">shutdown announcement</a>, October 2026.</p>
+
+    <h2 id="vibe-kanban">What Vibe Kanban does well</h2>
+    <p>Vibe Kanban was built around the idea that engineers now spend most of their time planning and reviewing agent work. You write an issue, start a workspace where an agent gets its own branch, terminal and dev server, then review the diff with inline comments that go straight back to the agent. A built-in browser previews the running app, and it opens the pull request for you. It supports more agent CLIs than almost anything else, and <code>npx vibe-kanban</code> gets you started in one command.</p>
+    <p>If that review loop is what you liked, keep using the community edition locally. Nothing about the shutdown stops it from working on your machine.</p>
+
+    <h2 id="amux">What amux does differently</h2>
+    <p>In amux the board belongs to the agents as much as to you. A worker claims a card atomically, does the work, attaches evidence and moves it on, so ten agents can drain a backlog without two of them taking the same task. Agents message each other to hand off or unblock, schedules start work at set times, and a watchdog compacts context, restarts crashed sessions and replays the last message so runs survive the night.</p>
+    <p>It is open source and self-hosts on macOS or Linux as one Rust binary with SQLite. You supervise from the web dashboard, the free iOS app or the PWA. For a team board that stays up when laptops close, amux Cloud runs your own amux server at <code>yourname.amux.io</code> from $39 a month.</p>
+
+    <h2 id="choose">Which should you choose?</h2>
+    <ul>
+      <li><strong>Stay on Vibe Kanban (community edition)</strong> if you work alone, start each agent yourself, and value inline diff review and live preview most.</li>
+      <li><strong>Choose amux</strong> if you want agents working through a backlog on their own, coordinating with each other, running on a schedule or overnight, or supervised from your phone, or if you lost Vibe Kanban's shared team boards.</li>
+      <li><strong>Use both</strong> if you like Vibe Kanban for hands-on review of a single feature and want amux running the standing fleet.</li>
+    </ul>
+
+    <h2 id="move">Moving open issues to amux</h2>
+    <p>There is no one-click importer. Export your data from the latest Vibe Kanban, install amux, and recreate the open issues as board cards from the CLI (<code>amux board add "title"</code>) or with a short script against the board REST API. Then start a worker and it will pick up cards from <code>todo</code>.</p>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>
+    <p>The installer asks before installing Rust or tmux. You need at least one agent CLI. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="/guides/run-ai-engineering-team/">how to run an AI engineering team</a>.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Is Vibe Kanban shut down?</summary>
+      <p style="color:var(--fg-dim)">bloop, the company behind Vibe Kanban, shut down on April 10, 2026. The project continues as open source and community maintained. Its remote services (cloud kanban issues, comments, projects and organisations) were removed after 30 days, and Vibe Kanban moved to a fully local architecture. Local workspaces keep working.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">What is the best Vibe Kanban alternative?</summary>
+      <p style="color:var(--fg-dim)">It depends on what you used it for. If you mostly ran one agent per task and reviewed its diff, the community edition of Vibe Kanban still does that locally, and Conductor is a Mac app with a similar flow. If you want a board your agents work from on their own, with atomic task claiming, agent-to-agent messages, schedules, crash recovery and phone access, amux is built for that, on macOS or Linux, self-hosted for free or on amux Cloud.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">What is the difference between amux and Vibe Kanban?</summary>
+      <p style="color:var(--fg-dim)">Vibe Kanban is a planning and review interface: you create kanban issues, start a coding agent in a workspace for each one, review the diff with inline comments, preview the app and open a pull request. amux is a control plane for an AI engineering team: agents claim cards from a shared board themselves, message each other, run on schedules, restart after crashes, and you supervise from a web dashboard or your phone.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Does amux import Vibe Kanban data?</summary>
+      <p style="color:var(--fg-dim)">No. amux does not have a Vibe Kanban importer. Vibe Kanban&#x27;s latest version includes a data export, and amux board cards can be created from the CLI or the REST API, so a short script can recreate open issues as cards.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Is amux free?</summary>
+      <p style="color:var(--fg-dim)">Yes. amux is open source (MIT plus the Commons Clause) and free to self-host with every feature: curl -fsSL https://amux.io/install.sh | bash. amux Cloud, your own always-on amux server at yourname.amux.io, starts at $39 per month for teams that want agents running when laptops are closed.</p>
+    </details>
+
+    <h2>Related comparisons</h2>
+    <ul>
+      <li><a href="/compare/amux-vs-conductor/">amux vs Conductor</a></li>
+      <li><a href="/compare/amux-vs-cmux/">amux vs cmux</a></li>
+      <li><a href="/compare/amux-vs-claude-code-agent-teams/">amux vs Claude Code agent teams</a></li>
+      <li><a href="/guides/best-ai-agent-multiplexers-2026/">Best AI agent multiplexers (2026)</a></li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

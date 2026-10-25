@@ -140,6 +140,25 @@ test('LC-OFFLINE-ROUNDTRIP: cold offline reload preserves edits and messages; re
       durable.map((q: any) => ({ id: q.id, body: q.options.body })));
     expect((await uploadQueue()).map((f:any) => ({id:f.id, name:f.name, size:f.size, totalChunks:f.totalChunks}))).toEqual(savedUploads);
     await checkpoint(page, info, 'cold-offline-reload');
+    // The reload brings back the worker the messages were queued in (the URL
+    // keeps #peek= since cdd2f0012), and a reconnect with a terminal open
+    // keeps its progress in the status pill rather than opening the checklist
+    // over it (9b0cb30a1). This case is the home-page reconnect the checklist
+    // is for, so close the worker as a person would first.
+    const peek = page.locator('#peek-overlay');
+    if (await peek.evaluate(e => e.classList.contains('active'))) {
+      await page.getByRole('button', { name: 'Close worker', exact: true }).click();
+      await expect(peek).not.toHaveClass(/active/);
+    }
+    // The checklist closes itself 2s after a clean run (9b0cb30a1), so whether
+    // it is still up after the server checks below depends on how long they
+    // take. Record what it showed as it changed instead.
+    await page.evaluate(() => {
+      const g = window as any, banner = document.getElementById('sync-banner'), title = document.getElementById('sync-title-text');
+      g.__bannerLog = [];
+      const note = () => g.__bannerLog.push({ active: !!banner?.classList.contains('active'), title: title?.textContent || '' });
+      new MutationObserver(note).observe(banner!, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true, characterData: true });
+    });
     // Reconnect through the browser's actual online event; do not call the
     // replay function or click Retry to rescue an automatic pickup failure.
     offlineTransport.setConnected(true);
@@ -172,8 +191,11 @@ test('LC-OFFLINE-ROUNDTRIP: cold offline reload preserves edits and messages; re
     expect(rows.map((r: any) => r.text)).toEqual(durable.filter((q:any) => q.url.endsWith('/steer')).map((q:any) => JSON.parse(q.options.body).text));
     expect(rows.every((r: any) => !r.delivered_at)).toBe(true); // stopped worker: synced does not mean consumed
     await expect(page.locator('#toast')).not.toHaveClass(/visible/);
-    await expect(page.locator('#sync-banner')).toHaveClass(/active/);
+    const bannerLog = await page.evaluate(() => (window as any).__bannerLog);
+    await info.attach('sync-banner-log', { body: JSON.stringify(bannerLog), contentType: 'application/json' });
+    expect(bannerLog.some((b: any) => b.active && b.title === '7 synced'), 'the checklist showed all seven acknowledged').toBe(true);
     await checkpoint(page, info, 'all-seven-acknowledgements');
+    await expect(page.locator('#sync-banner'), 'a clean run closes the checklist on its own').not.toHaveClass(/active/, { timeout: 10_000 });
     // A second online event/reload must not resurrect the settled outbox.
     await page.reload();
     await page.waitForFunction(() => typeof (window as any).runSyncBanner === 'function');

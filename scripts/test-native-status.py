@@ -93,6 +93,66 @@ class NativeStatus(unittest.TestCase):
             self.assertEqual([v['state'] for v in values], ['active','blocked','active'])
             self.assertEqual([v.get('subagent', False) for v in values], [False, True, True])
 
+    def test_stop_failure_carries_its_reason_or_says_it_had_none(self):
+        # gs12 review: 37 StopFailure edges carried no reason field.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            observer.observe({'hook_event_name':'StopFailure','error':'rate_limit','x'*3:1}, root, 'worker', 'abc', 'claude', 1.0)
+            observer.observe({'hook_event_name':'StopFailure','session_id':'s','other':'never copied'}, root, 'worker', 'abc', 'claude', 2.0)
+            observer.observe({'hook_event_name':'StopFailure','error':{'type':'server_error'}}, root, 'worker', 'abc', 'claude', 3.0)
+            values=[json.loads(p.read_text()) for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
+            self.assertEqual((values[0]['failure_field'], values[0]['failure_reason']), ('error','rate_limit'))
+            self.assertTrue(values[1]['failure_reason_missing'])
+            self.assertIsNone(values[1]['failure_reason'])
+            self.assertEqual(values[1]['failure_payload_keys'], ['hook_event_name','other','session_id'])
+            self.assertNotIn('never copied', json.dumps(values[1]))
+            self.assertEqual(values[2]['failure_reason'], 'server_error')
+
+    def test_lock_wait_is_bounded_and_every_overrun_is_counted(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root/'status-events/worker/abc'
+            folder.mkdir(parents=True)
+            saved = observer.LOCK_BUDGET_S
+            observer.LOCK_BUDGET_S = 0.05
+            try:
+                with (folder/'write.lock').open('a') as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    self.assertFalse(observer.observe({'hook_event_name':'PreToolUse'}, root, 'worker', 'abc', 'claude', 1.0))
+            finally:
+                observer.LOCK_BUDGET_S = saved
+            errors=[json.loads(l) for l in (root/'status-observer-errors.jsonl').read_text().splitlines()]
+            self.assertEqual([e['error_type'] for e in errors], ['lock_budget_exceeded'])
+            self.assertEqual(errors[0]['event'], 'PreToolUse')
+            self.assertTrue(observer.observe({'hook_event_name':'PreToolUse'}, root, 'worker', 'abc', 'claude', 2.0))
+
+    def test_a_subagent_active_edge_with_nothing_to_clear_never_takes_the_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            observer.observe({'hook_event_name':'PreToolUse'}, root, 'worker', 'abc', 'claude', 1.0)
+            folder = root/'status-events/worker/abc'
+            saved = observer.LOCK_BUDGET_S
+            observer.LOCK_BUDGET_S = 0.05
+            try:
+                with (folder/'write.lock').open('a') as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    self.assertFalse(observer.observe({'hook_event_name':'PreToolUse','agent_id':'a1'}, root, 'worker', 'abc', 'claude', 2.0))
+            finally:
+                observer.LOCK_BUDGET_S = saved
+            self.assertFalse((root/'status-observer-errors.jsonl').exists(), 'the fast path must not wait for the lock')
+
+    def test_a_held_deliver_lock_is_seen_so_no_second_deliverer_spawns(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self.assertFalse(observer.deliverer_running(folder))
+            with (folder/'deliver.lock').open('a') as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                self.assertTrue(observer.deliverer_running(folder))
+            self.assertFalse(observer.deliverer_running(folder))
+
     def test_installer_preserves_other_hooks_idempotently_without_trust_changes(self):
         for provider in ('claude','codex'):
             other={'type':'command','command':'echo other'}

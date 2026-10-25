@@ -128,6 +128,9 @@ test('the customizer button is reachable without scrolling the tab strip', async
 // position:absolute under a bar with overflow-x:auto. Verifying one menu and
 // reporting "the tab customizer works" is how the wrong control gets cleared.
 test('the GLOBAL tab customizer opens and its rows are visible on screen', async ({ page }, info) => {
+  // Same walkthrough suppression as openPeek (AMUX-4986): CI's empty fleet
+  // opens #wt-overlay over this button too, and the click retries until timeout.
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).toggleTabCustomizer === 'function',
                              { timeout: 20000 });

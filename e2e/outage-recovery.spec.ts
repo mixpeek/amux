@@ -188,7 +188,14 @@ for (const latestFails of [true, false]) test(`the latest board read ${latestFai
     const response = (fails: boolean) => new Response(fails ? 'board read failed' : '[]',
       {status:fails ? 500 : 200, headers:{'Content-Type':'application/json'}});
     w.__restoreBoardFetch = () => { window.fetch = original; };
+    let firstHead = true;
     window.fetch = (input, init) => {
+      // The older read's change-feed head comes back late, as it did under CI
+      // load: its statuses request must still be the one this read issued first.
+      if (String(input).endsWith('/api/board/changes?since_seq=0&limit=1') && firstHead) {
+        firstHead = false;
+        return new Promise<Response>(resolve => setTimeout(() => resolve(original(input, init)), 400));
+      }
       if (String(input).endsWith('/api/board/statuses')) {
         if (first) {
           first = false;

@@ -1,0 +1,28 @@
+name: iOS — add the newest build to internal testers
+
+# The nightly (ios.yml) does this after each upload. This is the manual
+# path: it adds the newest processed TestFlight build to every INTERNAL beta
+# group, so it shows up in internal testers' TestFlight. External groups are
+# never touched (they need Apple's beta review).
+on:
+  workflow_dispatch:
+
+jobs:
+  distribute:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: ios
+      - name: Add the newest build to internal testers
+        run: bundle exec fastlane distribute_internal
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}

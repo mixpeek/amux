@@ -156,11 +156,21 @@ for (const initial of ['', 'obsolete-test-credential']) {
     await expect(page.locator('#session-read-notice')).toBeEmpty();
     // Recovery must display the server's real roster. This project may already
     // contain workers created by earlier scenarios; bootstrap is not a reset.
-    const names = await page.evaluate(async () => {
-      const response = await fetch('/api/sessions');
-      if (!response.ok) throw new Error('recovered roster HTTP ' + response.status);
-      return (await response.json()).map((row: any) => row.name);
-    });
+    // The app's own fetch already reached 200 above; this is a second, bare
+    // probe that can momentarily race the freshly applied credential on webkit
+    // (ios-safari flake that reddened main on an innocent merge, AMUX-6142).
+    // Poll it within the same bootstrap deadline rather than failing on a
+    // sub-second race; a genuinely unrecovered roster still times out and fails.
+    let names: string[] = [];
+    await expect.poll(async () => {
+      const roster = await page.evaluate(async () => {
+        const response = await fetch('/api/sessions');
+        if (!response.ok) return null;
+        return (await response.json()).map((row: any) => row.name);
+      });
+      if (roster) names = roster;
+      return roster !== null;
+    }, {timeout:15000, message:'recovered roster read (credential race)'}).toBe(true);
     if (!names.length) await expect(page.locator('#cards')).toContainText('No workers yet');
     else for (const name of names) await expect(page.locator('#cards')).toContainText(name);
     await expect(page.locator('#conn-status').first()).toHaveText(/Live|Polling/);

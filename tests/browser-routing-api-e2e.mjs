@@ -49,12 +49,12 @@ async function perform(session,name){
 let moved=false,dashboard,ui;
 try{
   const native=await route(sessions[0],'start',{url:url+'/protected',profile});prove('routing API opens allowed Amux even when unused Chrome fallback is outside scope',native.route.backend==='amux');await perform(sessions[0],'api-native');
-  let refused;try{await route('routing-api-refusal','start',{url:url+'/protected',profile});}catch(e){refused=e;}
+  let refused;try{await route('routing-api-refusal','start',{url:url+'/protected',profile,join:false});}catch(e){refused=e;}
   prove('routing API refuses out-of-scope CDP without bypassing into CUA',refused?.status===403&&refused.payload.attempts.some(a=>a.backend==='cdp'&&a.status===403)&&!refused.payload.attempts.some(a=>a.backend==='cua'));
-  let cdp=await route(sessions[1],'start',{url:url+'/protected',profile});prove('routing API reaches CDP after actual native contention',cdp.route.backend==='cdp'&&cdp.route.attempts[0].status===409);await perform(sessions[1],'api-cdp');
+  let cdp=await route(sessions[1],'start',{url:url+'/protected',profile,join:false});prove('routing API reaches CDP after actual native contention',cdp.route.backend==='cdp'&&cdp.route.attempts[0].status===409);await perform(sessions[1],'api-cdp');
   const goneSession='routing-api-gone-target';
   writeFileSync(join(home,'sessions',goneSession+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
-  const gone=await route(goneSession,'start',{url:url+'/protected',profile});
+  const gone=await route(goneSession,'start',{url:url+'/protected',profile,join:false});
   const ownedBrowser=await chromium.connectOverCDP(`http://127.0.0.1:${gone.route.cdp_port}`);
   try {const protocol=await ownedBrowser.newBrowserCDPSession();await protocol.send('Target.closeTarget',{targetId:gone.route.target});} finally {await ownedBrowser.close();}
   const retired=await route(goneSession,'stop');
@@ -62,8 +62,8 @@ try{
   prove('shipped API retires an already-closed owned CDP target and its receipt',retired.cleanup_verdict==='owned_cdp_already_closed'&&retired.cleanup_events.some(e=>e.target===gone.route.target)&&!existsSync(goneReceipt));
   prove('already-closed target cleanup preserves the other worker tab',(await route(sessions[1],'state')).route.target===cdp.route.target);
   writeFileSync(join(home,'sessions',sessions[4]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
-  const peer=await route(sessions[4],'start',{url:url+'/protected',profile});
-  const priorCdp=cdp;cdp=await route(sessions[1],'start',{url:url+'/protected',profile});
+  const peer=await route(sessions[4],'start',{url:url+'/protected',profile,join:false});
+  const priorCdp=cdp;cdp=await route(sessions[1],'start',{url:url+'/protected',profile,join:false});
   const reopenedTabs=await api('http://127.0.0.1:'+cdp.route.cdp_port,'/json/list');
   writeFileSync(join(out,'repeat-start.json'),JSON.stringify({prior:priorCdp.route,current:cdp.route,peer:peer.route,tabs:reopenedTabs},null,2));
   prove('repeated start releases the prior owned CDP target and preserves the peer tab',cdp.route.target!==priorCdp.route.target&&!reopenedTabs.some(t=>t.id===priorCdp.route.target)&&reopenedTabs.some(t=>t.id===peer.route.target));
@@ -106,7 +106,7 @@ try{
   prove('dashboard CDP element click focuses the actual input',true);
   await ui.evaluate(()=>_bwScreenshot(0,true));await ui.waitForFunction(()=>document.querySelector('#bw-img').naturalWidth>0);await ui.screenshot({path:join(out,'dashboard-cdp.png'),fullPage:true});
   renameSync(join(root,chromeProfile),join(root,chromeProfile+'-disabled'));moved=true;
-  const cua=await route(sessions[2],'start',{url:url+'/protected',profile});prove('routing API reaches CUA after native contention and missing Chrome source',cua.route.backend==='cua'&&cua.route.attempts[0].status===409&&cua.route.attempts[1].status===503);
+  const cua=await route(sessions[2],'start',{url:url+'/protected',profile,join:false});prove('routing API reaches CUA after native contention and missing Chrome source',cua.route.backend==='cua'&&cua.route.attempts[0].status===409&&cua.route.attempts[1].status===503);
   const status=await route(sessions[2],'status');prove('CUA route reports an actually running desktop',status.running);
   const fleet=await api(base,'/api/computer/status');const box=fleet.sandboxes.find(b=>b.lane===sessions[2]);
   const browser=await chromium.connectOverCDP(`http://127.0.0.1:${box.chromium_devtools_port}`);
@@ -127,14 +127,14 @@ try{
   }finally{await browser.close();}
   prove('all three endpoint paths submitted exactly once',submissions.length===3);
   renameSync(join(root,chromeProfile+'-disabled'),join(root,chromeProfile));moved=false;
-  const goal=await route(sessions[3],'start',{url:url+'/protected',profile});prove('goal recovery fixture begins on real CDP after native contention',goal.route.backend==='cdp');
+  const goal=await route(sessions[3],'start',{url:url+'/protected',profile,join:false});prove('goal recovery fixture begins on real CDP after native contention',goal.route.backend==='cdp');
   let missingReason;try{await route(sessions[3],'advance');}catch(e){missingReason=e;}
   prove('advance requires an explicit unmet-goal reason',missingReason?.status===400);
   const goalCua=await route(sessions[3],'advance',{reason:'Synthetic functioning browser cannot complete this goal'});
   prove('advance retains the prior CDP target for owned cleanup',goalCua.route.backend==='cua'&&goalCua.route.previous_routes.some(r=>r.backend==='cdp'&&r.target===goal.route.target));
   let exhausted;try{await route(sessions[3],'advance',{reason:'Still cannot complete goal'});}catch(e){exhausted=e;}
   prove('exhausted CUA refuses another route without changing accounts',exhausted?.status===409&&submissions.length===3);
-  const restartedGoal=await route(sessions[3],'start',{url:url+'/protected',profile});
+  const restartedGoal=await route(sessions[3],'start',{url:url+'/protected',profile,join:false});
   const restartFleet=await api(base,'/api/computer/status');
   prove('restarting a CUA route releases its desktop and prior CDP tab without closing a peer desktop',restartedGoal.route.backend==='cdp'&&!restartFleet.sandboxes.some(b=>b.lane===sessions[3])&&restartFleet.sandboxes.some(b=>b.lane===sessions[2])&&!(await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list')).some(t=>t.id===goal.route.target));
   await route(sessions[3],'stop');

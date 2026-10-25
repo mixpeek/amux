@@ -285,3 +285,50 @@ fn the_stderr_check_can_actually_fail() {
          signal here and stderr has to be"
     );
 }
+
+/// `mktemp -t NAME` with no X's works on macOS and fails on Linux ("too few
+/// X's in template"), so it passes every local run and reds CI. It has done so
+/// at least four times: fleet-boot's health probe, test-claude-scratch-report,
+/// and on 2026-10-24 `amux sync-checkout --override` (2fcc84d97), which held
+/// every deploy. A template with X's (`NAME.XXXXXX`) works on both.
+#[test]
+fn every_mktemp_template_carries_xs_for_gnu() {
+    let root = repo_root();
+    let mut files = vec![root.join("amux")];
+    for dir in ["scripts", ".githooks"] {
+        if let Ok(rd) = std::fs::read_dir(root.join(dir)) {
+            files.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_file()));
+        }
+    }
+    let mut bad = Vec::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            // A trailing ` # comment` can mention `mktemp -t` in prose.
+            let mut rest = line.split(" #").next().unwrap_or(line);
+            while let Some(i) = rest.find("mktemp ") {
+                rest = &rest[i + 7..];
+                // Only mktemp's own flags count, so a later `-t` in a comment
+                // or another command is not read as this call's template.
+                let toks: Vec<&str> = rest.split_whitespace().collect();
+                let flags = toks.iter().take_while(|t| t.starts_with('-')).count();
+                if let Some(t) = toks[..flags].iter().position(|t| *t == "-t" || *t == "-dt") {
+                    let tmpl = toks.get(t + 1).copied().unwrap_or("");
+                    if !tmpl.contains("XXX") {
+                        bad.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "mktemp -t templates without X's fail on Linux (GNU mktemp); add .XXXXXX:\n{}",
+        bad.join("\n")
+    );
+}

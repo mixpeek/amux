@@ -42,12 +42,13 @@
     addEventListener('pagehide', flush);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
     setInterval(() => {
-      if (!st.written && !st.skipped_identical && !st.deferred) return;
+      if (!st.written && !st.skipped_identical && !st.deferred && !st.idb_written && !st.idb_coalesced) return;
       const top = Object.entries(st.by_key).sort((a, b) => b[1] - a[1]).slice(0, 5);
       try { fetch('/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
         body: JSON.stringify({ kind: 'localstorage-writes', measured: true, n_considered: st.written + st.skipped_identical + st.deferred, window_s: 600,
-          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top }) }).catch(() => {}); } catch (e) {}
-      st.written = st.written_bytes = st.skipped_identical = st.deferred = 0; st.by_key = {};
+          written: st.written, written_bytes: st.written_bytes, skipped_identical: st.skipped_identical, deferred: st.deferred, top_keys: top,
+          idb_written: st.idb_written || 0, idb_coalesced: st.idb_coalesced || 0, hidden: document.hidden ? 1 : 0 }) }).catch(() => {}); } catch (e) {}
+      st.written = st.written_bytes = st.skipped_identical = st.deferred = st.idb_written = st.idb_coalesced = 0; st.by_key = {};
     }, 600000);
   } catch (e) {}
 })();
@@ -1200,6 +1201,29 @@ function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
   return navigator.locks.request(name, work);
 }
+// A message's delivery lock, taken over from a holder that has stopped.
+// Every window of the Mac app shares one website data store and so one set of
+// web locks, and WebKit suspends a hidden or minimized window's script. A
+// window suspended mid-delivery kept amux-outbox-delivery:<id> forever, so the
+// visible window's message read "Awaiting server" until the app restarted
+// (Ethan, 2026-10-23: "specific to mac app - i try in browser and it works").
+// A delivery is bounded at 15s (_boundedMutationFetch), so a visible window
+// that has waited _DELIVERY_STEAL_MS takes the lock over (steal releases the
+// stalled holder). If that holder ever wakes it re-sends the same msg_id, which
+// the server de-duplicates (send_dedup). A hidden window never steals: it may be
+// the stalled one.
+const _DELIVERY_STEAL_MS = 30000;
+function _outboxDeliveryLock(name, work) {
+  if (!navigator.locks) return _outboxLock(name, work);
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
+  if (!signal) return navigator.locks.request(name, work);
+  return navigator.locks.request(name, {signal}, work).catch(e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    if (document.hidden) return navigator.locks.request(name, work);
+    _outboxDiagnostic('outbox_delivery_lock_stolen', {waited_ms:_DELIVERY_STEAL_MS, lock:name.split(':')[0]});
+    return navigator.locks.request(name, {steal:true}, work);
+  });
+}
 // User intent has priority over reproducible offline caches. Safari's measured
 // 5.19 MB of caches left ~50 KB for the mandatory local send (AMUX-4417).
 // Retry the SAME atomic setItem after reclaiming caches; never prune drafts,
@@ -1303,14 +1327,23 @@ async function _mutateQueue(change) {
     _writeUserStorage('amux_offline_queue', JSON.stringify(current));
     offlineQueue = current;
     if (typeof _idb !== 'undefined') _idb.set('offline_queue', current);
-    try { _peekMessagesBadge(); } catch (_) {}
-    try { if (_peekTab === 'messages') _peekMessagesRender(); } catch (_) {}
+    _outboxViewsRefresh();
     return result;
   });
 }
+// Every view that reads the outbox, repainted together whenever it changes,
+// here or in another window. The Steering list and its tab badge both read it
+// but only Messages was repainted, so the badge kept a sent message's count
+// while the list, drawn fresh when the tab opened, was empty (Ethan,
+// 2026-10-24: "theres race conditions all over the app").
+function _outboxViewsRefresh() {
+  try { _peekMessagesBadge(); } catch (_) {}
+  try { if (_peekTab === 'messages') _peekMessagesRender(); } catch (_) {}
+  try { if (peekSession) { if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge(); } } catch (_) {}
+}
 window.addEventListener('storage', event => {
   if (event.key !== 'amux_offline_queue') return;
-  try { offlineQueue = _readQueue(); updateConnectionStatus(); _scheduleSyncRetry(); }
+  try { offlineQueue = _readQueue(); updateConnectionStatus(); _scheduleSyncRetry(); _outboxViewsRefresh(); }
   catch (error) { _writeError = error.message; updateConnectionStatus(); }
 });
 
@@ -1589,8 +1622,13 @@ async function _initIdentity() {
     _localMemberEmail = d.is_local_member ? (d.email || '') : '';
     _localMemberScope = d.is_local_member ? (d.access_scope || {level:'global', name:''}) : null;
     _localMemberTeam = d.is_local_member ? (d.team || null) : null;
-    if (!d.has_api_key) {
-      if (d.is_cloud) {
+    // has_any_model: any provider (Anthropic, OpenAI/Codex, Gemini key or sign-in). An
+    // OpenAI-only server was told "No Anthropic API key" (amux Cloud e2e, 2026-10-18).
+    if (!(d.has_any_model ?? d.has_api_key)) {
+      // An amux Cloud server's owner (account_url) gets the same first-run screen: it is
+      // the only place with "Sign in with Claude/ChatGPT/Gemini". A dedicated server
+      // showed just the API-key banner, so a subscription could not be connected (2026-10-19).
+      if (d.is_cloud || d.account_url) {
         // Blocking modal for cloud users — must set key before using the app
         const m = document.getElementById('apikey-setup-modal');
         if (m) m.style.display = 'flex';
@@ -1603,7 +1641,14 @@ async function _initIdentity() {
       // Key exists but is invalid — show warning banner
       _showKeyWarning(d.key_error);
     }
+    const acct = document.getElementById('settings-account');
+    const acctLink = document.getElementById('settings-account-link');
+    if (acct && acctLink && typeof d.account_url === 'string' && d.account_url.startsWith('https://')) {
+      acctLink.href = d.account_url;
+      acct.style.display = '';
+    }
     _applyIdentityToSettings();
+    _cloudOfferInit(d);
     // Settings can open before this async identity request returns. Refresh an
     // already-open Team section so a scoped member never keeps the owner's
     // controls from that brief pre-identity render.
@@ -1618,6 +1663,134 @@ async function _initIdentity() {
       _loadGatewayOrgs();
     }
   } catch(e) {}
+}
+
+// ═══════ amux Cloud offer (self-hosted owners only) ═══════
+// The local dashboard is where people who run amux themselves already are, and
+// it never mentioned Cloud. This offers it at the two moments Cloud solves a
+// problem the owner can feel: opening the dashboard on a phone (the server is a
+// computer that sleeps) and a worker still busy hours after it was given work
+// (the job dies if the laptop closes). Each trigger shows at most once, ever,
+// and "No thanks" ends both. Settings keeps a quiet permanent entry.
+//
+// Who sees it is decided from /api/identity, never a build flag: a Cloud
+// server's owner has account_url, a gateway user is_cloud, and an invited
+// member is_local_member. Only a server with none of those is self-hosted and
+// being looked at by its owner.
+const _CLOUD_OFFER_URL = 'https://amux.io/start/';
+const _CLOUD_OFFER_LS = 'amux_cloud_offer';
+const _CLOUD_LONGJOB_MS = 2 * 3600 * 1000;
+let _cloudOfferOwner = false;
+let _cloudOfferState = null;          // {phone, longjob, dismissed}: ms timestamps
+const _cloudActiveSeen = {};          // worker -> first time this page saw it active
+
+function _cloudOfferIsSelfHostedOwner(d) {
+  return !!d && !d.is_cloud && !d.account_url && !d.is_local_member;
+}
+function _cloudOfferLink(source) {
+  return _CLOUD_OFFER_URL + '?source=' + encodeURIComponent(source);
+}
+function _cloudOfferIsPhone() {
+  try {
+    return !!(navigator.standalone
+      || matchMedia('(display-mode: standalone)').matches
+      || matchMedia('(max-width: 600px)').matches);
+  } catch (e) { return false; }
+}
+
+// Server pref first so a dismissal on one device holds on the others; the
+// localStorage copy covers a write that has not reached the server yet. An
+// unreadable pref means "do not show": a missed offer costs nothing, a repeat
+// after a dismissal is the nagging this must never do.
+async function _cloudOfferLoad() {
+  if (_cloudOfferState) return _cloudOfferState;
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem(_CLOUD_OFFER_LS) || '{}') || {}; } catch (e) { st = {}; }
+  try {
+    const r = await fetch(API + '/api/prefs?key=cloud_offer', { headers: _authHeaders() });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d && d.value) Object.assign(st, JSON.parse(d.value) || {});
+  } catch (e) { return null; }
+  _cloudOfferState = st;
+  return st;
+}
+function _cloudOfferMark(field) {
+  const st = _cloudOfferState || (_cloudOfferState = {});
+  st[field] = Date.now();
+  const v = JSON.stringify(st);
+  try { localStorage.setItem(_CLOUD_OFFER_LS, v); } catch (e) {}
+  return fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+    body: JSON.stringify({ key: 'cloud_offer', value: v }) }).catch(() => {});
+}
+
+function _cloudOfferInit(d) {
+  _cloudOfferOwner = !window._peekEmbed && _cloudOfferIsSelfHostedOwner(d);
+  // Published so a check (and a person in devtools) can tell "decided no" from
+  // "never decided": both leave the offer hidden.
+  window._cloudOfferVerdict = { measured: true, owner: _cloudOfferOwner, phone: _cloudOfferIsPhone() };
+  const sec = document.getElementById('settings-cloud-offer');
+  if (sec) sec.style.display = _cloudOfferOwner ? '' : 'none';
+  if (!_cloudOfferOwner) { _cloudOfferHide(); return; }
+  if (_cloudOfferIsPhone()) setTimeout(() => _cloudOfferTry('phone'), 1500);
+  _cloudOfferCheckLongJob();
+  if (!window._cloudOfferTimer) window._cloudOfferTimer = setInterval(_cloudOfferCheckLongJob, 60000);
+}
+
+// A long job: a worker still active 2+ hours after its owner last gave it work
+// (last_human_ts), or, without that, 2+ hours of activity this page has watched.
+function _cloudOfferLongJobSession(list, now) {
+  for (const s of (list || [])) {
+    if (!s || !s.name) continue;
+    if (s.status !== 'active' || s.archived || s.ephemeral) { delete _cloudActiveSeen[s.name]; continue; }
+    if (!_cloudActiveSeen[s.name]) _cloudActiveSeen[s.name] = now;
+    const since = Number(s.last_human_ts) > 0 ? Number(s.last_human_ts) : _cloudActiveSeen[s.name];
+    if (now - since >= _CLOUD_LONGJOB_MS) return s;
+  }
+  return null;
+}
+function _cloudOfferCheckLongJob() {
+  if (!_cloudOfferOwner) return;
+  const s = _cloudOfferLongJobSession(typeof sessions !== 'undefined' ? sessions : [], Date.now());
+  if (s) _cloudOfferTry('longjob', s.name);
+}
+
+async function _cloudOfferTry(trigger, worker) {
+  if (!_cloudOfferOwner || document.getElementById('cloud-offer')) return;
+  const st = await _cloudOfferLoad();
+  if (!st || st.dismissed || st[trigger] || document.getElementById('cloud-offer')) return;
+  const setup = document.getElementById('apikey-setup-modal');
+  if (setup && setup.style.display === 'flex') return;   // first run comes first
+  _cloudOfferMark(trigger);
+  _cloudOfferShow(trigger, worker);
+}
+
+function _cloudOfferShow(trigger, worker) {
+  const copy = trigger === 'phone'
+    ? { title: 'Reach your agents from anywhere, even when this computer sleeps.',
+        text: 'amux Cloud runs your workers on a dedicated server at yourname.amux.io that stays on. From $39/mo.' }
+    : { title: 'Keep long jobs running when your laptop closes.',
+        text: (worker ? worker + ' has been working for over 2 hours. ' : '')
+          + 'amux Cloud runs your workers on a dedicated server that stays on. From $39/mo.' };
+  const el = document.createElement('div');
+  el.id = 'cloud-offer';
+  el.className = 'cloud-offer';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-labelledby', 'cloud-offer-title');
+  el.dataset.trigger = trigger;
+  el.innerHTML = '<div class="cloud-offer-title" id="cloud-offer-title">' + esc(copy.title) + '</div>'
+    + '<div class="cloud-offer-text">' + esc(copy.text) + '</div>'
+    + '<div class="cloud-offer-actions">'
+    + '<a class="btn primary" id="cloud-offer-go" target="_blank" rel="noopener" href="'
+    + esc(_cloudOfferLink(trigger === 'phone' ? 'app-phone' : 'app-longjob')) + '" onclick="_cloudOfferHide()">See amux Cloud</a>'
+    + '<button class="btn" id="cloud-offer-dismiss" onclick="_cloudOfferDismiss()">No thanks</button>'
+    + '</div>';
+  document.body.appendChild(el);
+}
+function _cloudOfferHide() { document.getElementById('cloud-offer')?.remove(); }
+function _cloudOfferDismiss() {
+  _cloudOfferHide();
+  return _cloudOfferMark('dismissed');
 }
 
 function _showKeyWarning(error) {
@@ -1672,6 +1845,238 @@ async function apikeySetupLogin() {
     showToast('Failed to start login session');
     console.error('login setup error:', e);
   }
+}
+
+// ---- Add this server to the owner's tailnet (docs/design/cloud-self-service.md 8.5) ----
+let _tailnetPoll = null;
+
+function _tailnetRender(st) {
+  const el = (id) => document.getElementById(id);
+  if (!el('tailnet-join-status')) return;
+  const link = el('tailnet-join-link'), join = el('tailnet-join-btn'), leave = el('tailnet-leave-btn');
+  if (!st || st.measured === false) {
+    el('tailnet-join-status').textContent = 'Tailscale is not available on this server' + (st && st.why_unmeasured ? ': ' + st.why_unmeasured : '.');
+    link.style.display = 'none'; leave.style.display = 'none'; join.style.display = '';
+    return;
+  }
+  if (st.joined) {
+    el('tailnet-join-status').innerHTML = 'On your tailnet' + (st.tailnet ? ' (' + escHtml(st.tailnet) + ')' : '') +
+      (st.url ? ': <a href="' + escHtml(st.url) + '" target="_blank" rel="noopener">' + escHtml(st.url) + '</a>' : '.');
+    link.style.display = 'none'; join.style.display = 'none'; leave.style.display = '';
+  } else if (st.auth_url) {
+    el('tailnet-join-status').textContent = 'Approve this server in your tailnet to finish.';
+    link.href = st.auth_url; link.style.display = 'inline-flex'; join.style.display = 'none'; leave.style.display = 'none';
+  } else {
+    el('tailnet-join-status').textContent = 'Not on a tailnet.';
+    link.style.display = 'none'; join.style.display = ''; leave.style.display = 'none';
+  }
+}
+
+async function tailnetJoinRefresh() {
+  try { _tailnetRender(await (await fetch(API + '/api/tailnet/status')).json()); }
+  catch (e) { _tailnetRender({ measured: false, why_unmeasured: e.message }); }
+}
+
+async function tailnetJoin() {
+  const err = document.getElementById('tailnet-join-error');
+  const key = (document.getElementById('tailnet-join-key')?.value || '').trim();
+  err.textContent = '';
+  document.getElementById('tailnet-join-status').textContent = 'Asking Tailscale…';
+  try {
+    const r = await fetch(API + '/api/tailnet/join', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(key ? { auth_key: key } : {}) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = (d.error || ('HTTP ' + r.status)) + (d.fix ? ' Fix: ' + d.fix : ''); await tailnetJoinRefresh(); return; }
+    _tailnetRender(d);
+    if (!d.joined) {
+      clearInterval(_tailnetPoll);
+      let n = 0;
+      _tailnetPoll = setInterval(async () => {
+        if (++n > 100) { clearInterval(_tailnetPoll); return; }     // about 5 minutes
+        const st = await (await fetch(API + '/api/tailnet/status')).json().catch(() => null);
+        if (st && st.joined) { clearInterval(_tailnetPoll); await fetch(API + '/api/tailnet/join', { method: 'POST' }); tailnetJoinRefresh(); showToast('This server is on your tailnet'); }
+        else if (st) _tailnetRender(st);
+      }, 3000);
+    }
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function tailnetLeave() {
+  const err = document.getElementById('tailnet-join-error');
+  try {
+    const r = await fetch(API + '/api/tailnet/leave', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || ('HTTP ' + r.status); return; }
+    _tailnetRender(d);
+    showToast('Removed from your tailnet');
+  } catch (e) { err.textContent = e.message; }
+}
+
+// ---- Model sign-in through the coding CLIs (docs/design/cloud-self-service.md 8.4) ----
+// Runs the CLI's own login in a server terminal and shows the link, device code or
+// code box it asks for. Success is read back from /api/identity's model_auth, never
+// assumed from the terminal. Parsing lives in state/cli-login.mjs (tested on fixtures).
+let _modelLogin = null;
+
+function _mlEl(id) { return document.getElementById(id); }
+
+function _mlShow(state) {
+  const panel = _mlEl('model-login-panel'), choices = _mlEl('model-login-choices');
+  if (!panel) return;
+  panel.style.display = state ? '' : 'none';
+  if (choices) choices.style.display = state ? 'none' : 'flex';
+  if (!state) return;
+  _mlEl('model-login-status').textContent = state.status || '';
+  const link = _mlEl('model-login-link');
+  link.style.display = state.url ? 'flex' : 'none';
+  if (state.url) link.href = state.url;
+  _mlEl('model-login-code-wrap').style.display = state.code ? '' : 'none';
+  _mlEl('model-login-code').textContent = state.code || '';
+  _mlEl('model-login-paste-wrap').style.display = state.needsCode ? 'flex' : 'none';
+  _mlEl('model-login-err').textContent = state.error || '';
+}
+
+async function modelLogin(provider, note) {
+  const kit = window.AmuxState && window.AmuxState.cliLogin;
+  const a = kit && kit.CLI_LOGINS[provider];
+  if (!a) { showToast('Sign-in is not available in this build'); return; }
+  modelLoginCancel(true);
+  const run = _modelLogin = { provider, raw: '', id: null, done: false, exited: false, codeSent: false, wasSignedIn: false, note: note || '' };
+  _mlShow({ status: 'Starting ' + a.label + ' sign-in…' });
+  try {
+    // Already signed in means this is "Switch account": the identity check alone would
+    // finish it at once, so it also waits for the CLI to exit (_mlSignedIn).
+    try { run.wasSignedIn = a.done((await (await fetch(API + '/api/identity')).json()).model_auth); } catch (e) {}
+    const r = await fetch(API + '/api/terminal/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols: 400, rows: 40 }) });          // wide, so links are not wrapped
+    const d = await r.json();
+    if (!r.ok || d.error || !d.id) throw new Error(d.error || 'could not open a terminal on this server');
+    run.id = d.id;
+    await _mlInput(run, a.command + '\r');
+  } catch (e) {
+    _mlShow({ status: a.label + ' sign-in could not start.', error: e.message });
+    return;
+  }
+  _mlPollOutput(run);
+  _mlPollIdentity(run);
+}
+
+async function _mlInput(run, text) {
+  const r = await fetch(API + '/api/terminal/' + run.id + '/input', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: btoa(unescape(encodeURIComponent(text))) }) });
+  if (!r.ok) throw new Error('the terminal did not accept input (HTTP ' + r.status + ')');
+}
+
+async function _mlPollOutput(run) {
+  const kit = window.AmuxState.cliLogin, a = kit.CLI_LOGINS[run.provider];
+  while (_modelLogin === run && !run.done) {
+    try {
+      const r = await fetch(API + '/api/terminal/' + run.id + '/output?wait=25');
+      const d = await r.json();
+      if (d.data) run.raw += decodeURIComponent(escape(atob(d.data)));
+      const p = kit.parseLogin(run.provider, run.raw);
+      if (_modelLogin !== run || run.done) return;
+      if (run.codeSent && p.rejected) {
+        // The CLI stops reading after a refused code, so the only way on is a new sign-in.
+        console.warn('[model-login] ' + a.label + ' refused the pasted code; starting a new sign-in');
+        modelLogin(run.provider, a.label + ' did not accept that code, so this is a new sign-in link. Copy the whole code from the page.');
+        return;
+      }
+      if (d.alive === false) {
+        run.exited = true;
+        // The CLI writes its login and then exits; give the files a moment to land.
+        for (let i = 0; i < 4; i++) {
+          if (await _mlSignedIn(run)) return;
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
+        return;
+      }
+      if (run.codeSent) { _mlShow({ status: 'Checking…', url: p.url }); continue; }
+      const status = p.code ? 'Open the page, sign in, and enter the code below.' :
+        p.needsCode ? 'Open the page, sign in, then paste the code it shows you.' :
+        p.url ? 'Open the page and sign in.' : 'Waiting for ' + a.label + '…';
+      _mlShow({ status, url: p.url, code: p.code, needsCode: p.needsCode, error: run.note });
+    } catch (e) {
+      await new Promise(res => setTimeout(res, 1500));
+    }
+  }
+}
+
+async function _mlPollIdentity(run) {
+  const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
+  for (let i = 0; i < 200 && _modelLogin === run && !run.done; i++) {         // about 10 minutes
+    await new Promise(res => setTimeout(res, 3000));
+    if (await _mlSignedIn(run)) return;
+  }
+  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+}
+
+// True once the server reports the provider signed in by THIS run, and then finishes it:
+// clears what the adapter says the new sign-in replaces, closes the window, refreshes usage.
+async function _mlSignedIn(run) {
+  const a = window.AmuxState.cliLogin.CLI_LOGINS[run.provider];
+  if (run.done || _modelLogin !== run || ((run.wasSignedIn || a.waitForExit) && !run.exited)) return false;
+  // An exit without the CLI's success line is a failed sign-in, even while an older login
+  // still makes the identity check pass.
+  if (a.succeeded && !window.AmuxState.cliLogin.parseLogin(run.provider, run.raw).succeeded) return false;
+  let d;
+  try { d = await (await fetch(API + '/api/identity')).json(); } catch (e) { return false; }
+  if (!a.done(d.model_auth) || run.done || _modelLogin !== run) return false;
+  run.done = true;
+  if (a.clearEnv && a.clearEnv.length) {
+    const body = {}; a.clearEnv.forEach(k => { body[k] = ''; });
+    const s = await fetch(API + '/api/settings/env', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    if (!s || !s.ok) console.warn('[model-login] signed in, but clearing ' + a.clearEnv.join(', ') + ' failed (HTTP ' + (s ? s.status : 'network') + ')');
+  }
+  _mlShow(null);
+  modelLoginCancel(true);
+  const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
+  const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
+  showToast(a.label + ' is connected. Your workers can use it now.');
+  if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
+  return true;
+}
+
+// Settings > Account > usage: "Sign in with <provider>" runs the same sign-in as the
+// first-run "Connect a model" window, in that window.
+function usageConnect(provider) {
+  const m = document.getElementById('apikey-setup-modal');
+  if (m) m.style.display = 'flex';
+  modelLogin(provider);
+}
+
+async function modelLoginSubmitCode() {
+  const run = _modelLogin, inp = _mlEl('model-login-paste');
+  const code = (inp && inp.value || '').trim();
+  if (!run || !run.id) return;
+  if (!code) { _mlEl('model-login-err').textContent = 'Paste the code from the sign-in page.'; return; }
+  try {
+    // The code and its Enter go in two writes. Claude Code reads one write holding both as a
+    // paste: the code lands in its box and the Enter never submits it, so the sign-in sat at
+    // "Paste code here" forever (amux Cloud e2e, 2026-10-19).
+    await _mlInput(run, code);
+    await new Promise(res => setTimeout(res, 400));
+    await _mlInput(run, '\r');
+    run.codeSent = true;
+    inp.value = '';
+    _mlEl('model-login-err').textContent = '';
+    _mlEl('model-login-status').textContent = 'Checking…';
+  } catch (e) { _mlEl('model-login-err').textContent = e.message; }
+}
+
+// Leaving the page ends a sign-in in progress; otherwise its CLI waits in a server terminal
+// until the hour-long idle reaper finds it.
+window.addEventListener('pagehide', () => {
+  const run = _modelLogin;
+  if (run && run.id && !run.done) fetch(API + '/api/terminal/' + run.id, { method: 'DELETE', keepalive: true }).catch(() => {});
+});
+
+function modelLoginCancel(silent) {
+  const run = _modelLogin;
+  _modelLogin = null;
+  if (run && run.id) fetch(API + '/api/terminal/' + run.id, { method: 'DELETE' }).catch(() => {});
+  if (!silent) _mlShow(null);
 }
 
 let _oauthPollTimer = null;
@@ -2379,7 +2784,7 @@ function openStyleGuide() {
     <div class="modal-body">
       <section class="ui-guide-section"><h4>One shared visual language</h4><p class="ui-help">Original icons. Clear actions. Compact layouts with room to tap. These examples use the same CSS as the app; preview changes here before applying them across screens.</p><div class="ui-guide-row"><button id="ui-guide-theme" class="btn" onclick="_uiGuideTheme()">Preview other theme</button><span class="ui-help">Theme preview is restored when you close this guide.</span></div></section>
       <section class="ui-guide-section"><h4>Color and surfaces</h4><div class="ui-guide-grid">${['bg','card','text','dim','accent','green','red','yellow'].map(token=>`<div class="ui-guide-swatch"><i style="background:var(--${token})" aria-hidden="true"></i><code>--${token}</code></div>`).join('')}</div><p class="ui-help">Use surface and text tokens in both themes. Pair accent fills with <code>--on-accent</code>. Status colors always have a text label.</p></section>
-      <section class="ui-guide-section"><h4>Actions</h4><div class="ui-guide-row"><button id="ui-guide-primary" class="btn primary" onclick="_uiGuideAction(this)">Primary action</button><button class="btn" onclick="_uiGuideAction(this)">Secondary action</button><button class="btn danger" onclick="_uiGuideAction(this)">Destructive example</button><button class="btn" disabled>Unavailable</button><button class="btn" aria-busy="true" disabled>Working…</button></div><p class="ui-help">Use one primary action per group. Destructive actions keep a clear label and require confirmation when they affect real data. Examples here change no account or worker data.</p><output id="ui-guide-feedback" class="ui-help" role="status" aria-live="polite">Try an action to preview feedback.</output></section>
+      <section class="ui-guide-section"><h4>Actions</h4><div class="ui-guide-row"><button id="ui-guide-primary" class="btn primary" onclick="_uiGuideAction(this)">Primary action</button><button class="btn" onclick="_uiGuideAction(this)">Secondary action</button><button class="btn danger" onclick="_uiGuideAction(this)">Destructive example</button><button class="btn" disabled>Unavailable</button><button class="btn" aria-busy="true" disabled>Working…</button></div><div class="ui-guide-row"><button class="btn" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">On</button><button class="btn" role="switch" aria-checked="false" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">Off</button><button class="btn" role="switch" aria-checked="mixed">Partly on</button><span class="ui-help">A setting that is on or off is a switch: <code>.btn role="switch"</code> with <code>aria-checked</code>.</span></div><p class="ui-help">Use one primary action per group. Destructive actions keep a clear label and require confirmation when they affect real data. Examples here change no account or worker data.</p><output id="ui-guide-feedback" class="ui-help" role="status" aria-live="polite">Try an action to preview feedback.</output></section>
       <section class="ui-guide-section"><h4>Fields and validation</h4><div class="ui-guide-grid"><label class="ui-field">Name<input class="input" placeholder="Example name" autocomplete="off"><span class="ui-help">A label stays visible after typing.</span></label><label class="ui-field">Choice<select class="input"><option>First option</option><option>Second option</option></select><span class="ui-help">Use the native picker on mobile.</span></label><label class="ui-field">Invalid example<input class="input" value="Example" aria-invalid="true" aria-describedby="ui-guide-error"><span id="ui-guide-error" class="ui-error">Explain what to change, beside the field.</span></label><label class="ui-field">Notes<textarea class="input" rows="3" placeholder="An example draft"></textarea><span class="ui-help">Long content scrolls without hiding actions.</span></label></div></section>
       <section class="ui-guide-section"><h4>Icons and status</h4><div class="ui-guide-row"><button class="settings-btn" aria-label="Example settings" onclick="_uiGuideAction(this)">&#x2699;</button><button class="btn" aria-label="Example notifications" onclick="_uiGuideAction(this)">&#x1F514;</button><span class="status-badge active">Working</span><span class="status-badge idle">Idle</span><span class="ui-help"><span style="color:var(--red)">18</span> limited</span></div><p class="ui-help">Keep the original toolbar symbols. Icon-only controls need an accessible label and a 44-pixel touch target. The compact mobile header uses a, a live dot, and counts.</p></section>
       <section class="ui-guide-section"><h4>Dialogs and menus</h4><div class="ui-guide-rule">Use a heading, an obvious Close control, a scrolling body, and an action row that stays reachable above the keyboard. Menus anchor to their trigger and fit inside the viewport.</div><div class="ui-guide-row"><button class="btn" onclick="_uiGuideDialog()">Try confirmation dialog</button><code>.modal-overlay → .modal → .modal-header / .modal-body / .modal-footer</code></div></section>
@@ -2731,15 +3136,15 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
   });
 }
 // Single-line prompt on the same chrome. Resolves the string, or null if cancelled.
-async function showPrompt(msg, placeholder = '') {
+async function showPrompt(msg, placeholder = '', value = '') {
   // Focused, and Enter submits: a prompt you must click into and then click
   // OK on invited pressing OK on an empty box (the bulk-delete "Delete
   // cancelled" report, 2026-09-24).
   const shown = showFormModal(msg,
-    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" style="width:100%"'
+    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" value="' + esc(value) + '" style="width:100%"'
     + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_modalClose(true)}">',
     'OK');
-  setTimeout(() => document.getElementById('modal-prompt-input')?.focus(), 30);
+  setTimeout(() => { const i = document.getElementById('modal-prompt-input'); if (i) { i.focus(); if (value) i.select(); } }, 30);
   const ok = await shown;
   if (!ok) return null;
   return (document.getElementById('modal-prompt-input')?.value || '').trim();
@@ -3383,11 +3788,15 @@ function _toggleOfflineQueue() {
 // This keeps the actual bytes in IDB and replays the upload on reconnect, so a
 // recording made on a phone with no signal survives until it can be sent.
 const _UPQ_KEY = 'upload_queue';
+let _upqLegacyEmpty = false;
 
 async function _upqList() {
   const current = (await _idb.getUploads()).filter(row => row.surface === 'directory');
   // Retain pre-upgrade entries until they have actually been delivered.
-  const legacy = (await _idb.get(_UPQ_KEY)) || [];
+  // Nothing adds to that key any more, so once it reads empty this tab stops
+  // reading it: the read shares the kv store with every cache write.
+  const legacy = _upqLegacyEmpty ? [] : ((await _idb.get(_UPQ_KEY)) || []);
+  if (!legacy.length) _upqLegacyEmpty = true;
   return [...current, ...legacy.map(row => ({...row,
     blob:row.bytes ? new Blob([row.bytes], {type:row.mime}) : row.blob}))];
 }
@@ -3572,15 +3981,110 @@ function _scheduleSyncRetry() {
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
 }
+// A SYNC PASS THAT NEVER SETTLES FREEZES THE OUTBOX (Ethan, 2026-10-21, the
+// Mac app: a message sat "Saved on this device · waiting to sync" for 9 to 67
+// minutes and went out only when he sent another). Every retry tick returned
+// the same pending _syncFlight, and nothing said which await it was on: the
+// cross-window replay lock, IndexedDB, or a delivery lock. Each pass records
+// its phase; one stuck in a phase past _SYNC_STALL_MS is beaconed with that
+// phase (verdict=outbox_flight_stalled) and abandoned so the next tick starts
+// a fresh pass. That is safe: every delivery re-reads the queue under its own
+// per-operation lock, and the server de-duplicates sends by msg_id.
+const _SYNC_STALL_MS = 45000, _SYNC_LOCK_WAIT_MS = 20000;
+let _syncPhase = 'idle', _syncPhaseAt = 0, _syncFlightToken = null;
+function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
+// The outbox reads pending uploads before delivering any message, so an
+// IndexedDB request that never completes (WebKit, after its storage process
+// restarts) must not hold the messages behind it. Past 5s this pass treats the
+// list as empty and says so; the uploads stay stored for the next pass.
+// A timed-out read also drops the IndexedDB connection, so the next pass opens
+// a fresh one instead of waiting 5s on the same dead handle again.
+// after_reset says whether that already happened since the last good read:
+// 1 on a later timeout means reopening did not help.
+let _upqResetSinceOk = false;
+function _upqListBounded(ms = 5000) {
+  let timer;
+  return Promise.race([
+    _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
+    new Promise(resolve => { timer = setTimeout(() => {
+      _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
+      _idb.reset('upload_list_timeout');
+      _upqResetSinceOk = true;
+      resolve([]);
+    }, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+// A FROZEN HOLDER IS PRE-EMPTED, NOT WAITED OUT (Ethan, 2026-10-23: the Mac
+// app is "so much slower than browser"). macOS freezes the JavaScript of a
+// native tab that is not in front, so a background tab that took this lock
+// keeps it for as long as it stays in the back. On 2026-10-23 a shown Mac app
+// tab waited the full 20s for it 115 times (verdict=outbox_replay_lock_stalled,
+// held=1, hidden=0) before sending what the user had just typed. A shown tab
+// now waits _SYNC_LOCK_STEAL_MS and then steals the lock (beaconed as
+// verdict=outbox_replay_lock_stalled action=stole); a hidden tab keeps the
+// long wait and runs beside the holder (action=ran_unlocked). Both
+// are safe for one reason: every delivery re-reads the queue under its own
+// per-operation lock, and the server de-duplicates sends by msg_id. A holder
+// whose lock was stolen finishes its pass; only its lock promise rejects.
+const _SYNC_LOCK_STEAL_MS = 1500;
+function _syncLockRequest(run) {
+  if (!navigator.locks) return run();
+  _syncSetPhase('replay_lock_wait');
+  const hidden = typeof document !== 'undefined' && !!document.hidden;
+  const waitMs = hidden ? _SYNC_LOCK_WAIT_MS : _SYNC_LOCK_STEAL_MS;
+  let granted = false;
+  const held = () => { granted = true; return run(); };
+  const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(waitMs) : undefined;
+  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    // Our own lock was stolen by a shown tab after we started: the pass ran.
+    if (granted) return undefined;
+    let nHeld = -1, pending = -1;
+    try { const q = await navigator.locks.query(); nHeld = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
+    if (hidden) {
+      // Another window holds the replay lock and is not finishing (a suspended
+      // WebKit window keeps it). Per-operation locks still serialise each write.
+      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:1, action:'ran_unlocked'});
+      return run();
+    }
+    // A shown window takes the lock over, so the frozen holder stops blocking
+    // every later pass too.
+    _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:0, action:'stole'});
+    return navigator.locks.request('amux-outbox-replay', {steal:true}, held);
+  });
+}
 function runSyncBanner(quiet = false) {
   if (_syncFlight) return _syncFlight;
   const before = offlineQueue.length, draftsBefore = drafts.length;
   const queuedAtStart = new Set(offlineQueue.map(q => q.id));
-  const run = async () => { await _mutateQueue(() => {}); return _runSyncBanner(quiet); };
-  _syncFlight = (navigator.locks
-    ? navigator.locks.request('amux-outbox-replay', run) : run())
+  const token = {};
+  const run = async () => { _syncSetPhase('queue_read'); await _mutateQueue(() => {}); return _runSyncBanner(quiet, token); };
+  _syncFlightToken = token;
+  // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
+  // only setTimeout (tests/dashboard-outage-recovery.mjs).
+  let watch = null;
+  const check = () => {
+    watch = null;
+    if (_syncFlightToken !== token) return;
+    // Uploads report progress as they go; a long upload is not a stall.
+    if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) { watch = setTimeout(check, 5000); return; }
+    _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
+      queued:offlineQueue.length, hidden:document.hidden ? 1 : 0});
+    _syncFlightToken = null; _syncFlight = null; _syncSetPhase('idle');
+    // The dropped pass's "Syncing x/y" must not stay on the pill: its own
+    // finally returns early once it is no longer the current pass.
+    _syncPillText = ''; updateConnectionStatus();
+    _scheduleSyncRetry();
+  };
+  watch = setTimeout(check, 5000);
+  _syncFlight = _syncLockRequest(run)
     .catch(e => { _writeError = String(e.message || e); showToast('Sync failed: ' + _writeError); })
     .finally(() => {
+      clearTimeout(watch);
+      // An abandoned pass that wakes later must not clear or reschedule the
+      // pass that replaced it.
+      if (_syncFlightToken !== token) return;
+      _syncFlightToken = null; _syncSetPhase('idle');
       _syncFlight = null;
       _syncPillText = '';   // nothing in flight; the pill falls back to "N pending"
       // Progress resets the backoff: an interval earned during an outage must
@@ -3620,10 +4124,15 @@ function _connPillClick() {
   const failed = offlineQueue.some(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
   const pending = offlineQueue.length || drafts.length || _syncPillText;
   if (failed || !pending) return showConnHistory();
+  // Pending work opens BOTH: the status modal (what is queued, connection
+  // history, retry) and the checklist at the bottom. 0ccc6e06c (09-24) made a
+  // pending tap open only the checklist; Ethan 2026-10-20: "it should show me
+  // the modal thing in addition to the thing in the bottom".
   _syncBannerRequested = true;
   const banner = document.getElementById('sync-banner');
   if (banner) banner.classList.add('active');
   if (!_syncFlight) runSyncBanner();
+  showConnHistory();
 }
 // Delivery diagnostics contain identities/timing, never prompt text. The
 // replay may happen long after the original click's fast-peek window expired.
@@ -3640,7 +4149,11 @@ function _outboxMessageProgress(q, phase, startedAt) {
   if (typeof peekSession !== 'undefined' && peekSession === worker) _peekKickFast();
 }
 
-async function _runSyncBanner(quiet = false) {
+async function _runSyncBanner(quiet = false, token = null) {
+  // A pass the stall watchdog dropped keeps delivering when it wakes, but
+  // paints nothing: its "Syncing 2/3" landed over the pass that replaced it
+  // and stuck on the pill (2026-10-24).
+  const current = () => !token || _syncFlightToken === token;
   // A real browser offline switch cannot deliver anything. Keep work durable
   // without painting a failed checklist over the editor on each timer tick.
   // Server reachability still retries freely when the browser is online.
@@ -3651,6 +4164,7 @@ async function _runSyncBanner(quiet = false) {
   const draftCount = drafts.length;
   // Keep every operation durable until its individual acknowledgement. A
   // reload, timeout, or second replay must never erase an in-flight write.
+  _syncSetPhase('queue_settle');
   await _mutateQueue(current => { _outboxSettleDecisions(current); });
   const blockedResources = new Set();
   const queue = offlineQueue.filter(q => {
@@ -3664,7 +4178,8 @@ async function _runSyncBanner(quiet = false) {
     return !blockedResources.has(q.url) && !_outboxActive.has(q.id) && !_outboxManualAction(q.url);
   });
   let skipped = 0;
-  const uploads = await _upqList();
+  _syncSetPhase('read_upload_list');
+  const uploads = await _upqListBounded();
   _uploadSyncPending = uploads.length > 0;
   const totalOps = draftCount + queue.length + uploads.length;
   if (!totalOps) return;
@@ -3688,6 +4203,7 @@ async function _runSyncBanner(quiet = false) {
   _syncChecklistAt = Date.now();
   skipped = items.filter(item => item.status === 'skipped').length;
   function renderBanner() {
+    if (!current()) return;
     const done = items.filter(i => i.status === 'done').length;
     const failed = items.filter(i => i.status === 'failed').length;
     titleEl.textContent = 'Syncing ' + done + '/' + items.length + (failed ? ' (' + failed + ' failed)' : '') + (skipped ? ' (' + skipped + ' skipped)' : '');
@@ -3724,6 +4240,7 @@ async function _runSyncBanner(quiet = false) {
   // prompt identity across failure/reload; never call a failed start "synced".
   for (const item of items.filter(i => i.type === 'draft' && i.replay !== false)) {
     item.status = 'running'; renderBanner();
+    _syncSetPhase('draft');
     try {
       await _syncOneDraft(item.draft);
       removeDraft(item.draft.name); render();
@@ -3748,7 +4265,8 @@ async function _runSyncBanner(quiet = false) {
     if (failedResources.has(q.url)) { item.status = 'waiting'; item.label += ' — waiting for the previous message'; renderBanner(); continue; }
     item.status = 'running';
     renderBanner();
-    await _outboxLock('amux-outbox-delivery:' + q.id, async () => {
+    _syncSetPhase('deliver');
+    await _outboxDeliveryLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
     if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
     Object.assign(q, fresh);
@@ -3868,6 +4386,7 @@ async function _runSyncBanner(quiet = false) {
       item.pct = typeof _uploadPct === 'function' ? _uploadPct(f) : 0;
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderBanner(); });
     };
+    _syncSetPhase('upload');
     try { await _syncOneUpload(item.file, progress); item.status = 'done'; item.progress = ''; }
     catch (error) {
       item.status = 'failed'; item.label += ' — ' + String(error.message || error);
@@ -3879,7 +4398,7 @@ async function _runSyncBanner(quiet = false) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     renderBanner();
   }
-  _uploadSyncPending = (await _upqList()).length > 0;
+  _uploadSyncPending = (await _upqListBounded()).length > 0;
   if (uploads.length) {
     _upqRenderBadge();
     if (typeof loadFiles === 'function' && typeof _filesPath !== 'undefined') loadFiles(_filesPath);
@@ -3896,6 +4415,7 @@ async function _runSyncBanner(quiet = false) {
   const failCount = items.filter(i => i.status === 'failed').length;
   const checkingCount = items.filter(i => i.status === 'checking').length;
   const waitingCount = items.filter(i => i.status === 'waiting').length;
+  if (!current()) { _outboxDiagnostic('sync_dropped_pass_finished', {done: doneCount, failed: failCount}); return; }
   titleEl.textContent = doneCount + ' synced' + (checkingCount ? ', ' + checkingCount + ' awaiting confirmation' : '') + (waitingCount ? ', ' + waitingCount + ' waiting' : '') + (failCount ? ', ' + failCount + ' failed' : '') + (skipped ? ', ' + skipped + ' skipped' : '');
   updateConnectionStatus();
   fetchSessions();
@@ -4102,24 +4622,55 @@ function _outboxSettleDecisions(list, now = Date.now()) {
 async function _outboxRetryNow(id) {
   if (typeof id !== 'string' || !id) return;
   let found = false;
+  let fastConfirm = false;
   await _mutateQueue(current => {
     const q = current.find(entry => entry.id === id);
     if (!q || _outboxActive.has(id)) return;
     found = true;
-    // Same body, same msg_id: a copy the server already holds is deduped.
     const checking = !q.needs_decision && _outboxUncertainMessage(q);
-    // "Check again" on a message still being confirmed re-reads its receipt now;
-    // everything else is sent again. Either way the msg_id is unchanged.
+    fastConfirm = checking;
     Object.assign(q, checking
       ? {state: 'pending', delivery_uncertain: true, checking_since: Date.now(), retried_at: Date.now()}
       : {needs_decision: '', state: 'pending', delivery_uncertain: false, error: '', attempts: 0, checking_since: 0, retried_at: Date.now()});
   });
-  try { amuxTrack('outbox_retry_now', {id, measured: true, n_considered: 1, found}); } catch (_) {}
+  try { amuxTrack('outbox_retry_now', {id, measured: true, n_considered: 1, found, fastConfirm}); } catch (_) {}
   updateConnectionStatus();
   try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
   if (!found) { showToast('That message is no longer queued here.'); return; }
-  showToast('Sending again…');
-  runSyncBanner(true);
+  if (fastConfirm) {
+    showToast('Checking…');
+    _outboxFastConfirm(id).catch(() => {});
+  } else {
+    showToast('Sending again…');
+    runSyncBanner(true);
+  }
+}
+async function _outboxFastConfirm(id) {
+  const q = (offlineQueue || []).find(entry => entry.id === id);
+  if (!q) return;
+  const opts = { method: 'GET', headers: _authHeaders(), cache: 'no-store' };
+  try {
+    const r = await _outboxConfirmMessage(q, opts);
+    if (r.ok) {
+      await _mutateQueue(current => {
+        const at = current.findIndex(entry => entry.id === id);
+        if (at >= 0) current.splice(at, 1);
+      });
+      showToast('Confirmed delivered');
+    }
+  } catch (e) {
+    if (e.outboxExpired) {
+      await _mutateQueue(current => {
+        const at = current.findIndex(entry => entry.id === id);
+        if (at >= 0) current.splice(at, 1);
+      });
+      showToast('Delivery expired; removed');
+    } else {
+      showToast('Still awaiting confirmation');
+    }
+  }
+  updateConnectionStatus();
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
 }
 async function _outboxRemoveMessage(id) {
   if (typeof id !== 'string' || !id) return;
@@ -4455,12 +5006,18 @@ const _origFetch = window.fetch.bind(window);
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
 //
+// `files/mdai/chat` joined for both reasons too (2026-10-18). A chat edit is a
+// model call measured at 17-18s, past the 15s mutation bound, so the page
+// aborted it, said "The server could not be reached" while the server went on
+// to APPLY the edit, and the outbox then replayed the same message, which the
+// server refused as stale. One message, two model calls, and an error for the
+// one that worked (Workstream Resumption.mdai, Ethan's screenshot).
 // `connectors/<id>/(auth|token|test)` joined for the same ANSWER-NEEDED-NOW
 // reason (2026-10-10): a Google reconnect pressed while the server restarted
 // got the synthetic 202, which has no authorize_url, so the button said
 // "Could not start the grant: unknown", and the queued POST would later
 // start a sign-in nobody was there to open.
-const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
 const _outboxManualAction = url => /\/api\/projects\/(?:draft|[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))(?:[?#]|$)/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
@@ -4483,6 +5040,26 @@ function _outboxAccepted() {
                       { status: 202, headers: { 'Content-Type': 'application/json',
                                                 'X-Amux-Outbox': 'queued' } });
 }
+// An mdai run or chat queued before it joined the skip list above stays in the
+// outbox, and the replay can never succeed: a chat comes back 409 (the first
+// copy already changed the node) and sits under Pending operations for good
+// (Ethan's screenshot, 2026-10-18). Its change either landed or is one press
+// away, so the entries are dropped once at load, and the count is reported.
+const _OUTBOX_ANSWER_NOW = /\/api\/files\/mdai\/(?:run|chat)(?:[?#]|$)/;
+function _outboxDropAnswerNow() {
+  let dropped = 0, considered = 0;
+  return _mutateQueue(current => {
+    considered = current.length;
+    for (let i = current.length - 1; i >= 0; i--) {
+      if (_OUTBOX_ANSWER_NOW.test(String(current[i].url || '').split('?')[0])) { current.splice(i, 1); dropped++; }
+    }
+  }).then(() => {
+    if (!dropped) return;
+    _outboxDiagnostic('answer_now_dropped', {dropped, n_considered:considered});
+    try { updateConnectionStatus(); } catch (_) {}
+  }).catch(() => {});
+}
+try { if (_readQueue().some(q => _OUTBOX_ANSWER_NOW.test(String(q.url || '').split('?')[0]))) _outboxDropAnswerNow(); } catch (_) {}
 /** True for a Response this client synthesised for the outbox — i.e. one that
  *  is NOT evidence of anything about the network. */
 function _isLocallyQueued(r) {
@@ -4798,7 +5375,7 @@ async function _outboxFetch(input, init) {
     return queued ? _outboxAccepted() : new Response('Queue unavailable', {status: 507});
   }).finally(() => { if (durableId) _outboxActive.delete(durableId); });
   };
-  return durableId ? _outboxLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
+  return durableId ? _outboxDeliveryLock('amux-outbox-delivery:' + durableId, deliver) : deliver();
 }
 window.fetch = async function(input, init) {
   if (input instanceof Request) {
@@ -4947,7 +5524,21 @@ function amuxNotifyAllowed(kind) {
   return on;
 }
 
-function _notifShowBanner(icon, title, body, session) {
+// Where a notification goes when clicked: its card on the board, else its worker.
+function _notifOpen(session, card) {
+  if (card) { location.hash = '#issue=' + encodeURIComponent(card); return; }
+  if (session) openPeek(session);
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.type !== 'amux-open-url' || typeof d.url !== 'string') return;
+    const i = d.url.indexOf('#');
+    if (i >= 0) location.hash = d.url.slice(i);
+  });
+}
+
+function _notifShowBanner(icon, title, body, session, card) {
   if (!amuxNotifyAllowed('banner')) return;
   const container = document.getElementById('notif-banners');
   if (!container) return;
@@ -4957,30 +5548,31 @@ function _notifShowBanner(icon, title, body, session) {
     + '<div class="notif-banner-body"><div class="notif-banner-title">' + esc(title) + '</div>'
     + '<div class="notif-banner-text">' + esc(body) + '</div></div>'
     + '<button class="notif-banner-close" onclick="event.stopPropagation();this.parentElement.classList.add(\'removing\');setTimeout(()=>this.parentElement.remove(),250)">&times;</button>';
-  el.onclick = () => { el.classList.add('removing'); setTimeout(() => el.remove(), 250); if (session) openPeek(session); };
+  el.onclick = () => { el.classList.add('removing'); setTimeout(() => el.remove(), 250); _notifOpen(session, card); };
   container.appendChild(el);
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('visible')));
   setTimeout(() => { if (el.parentElement) { el.classList.add('removing'); setTimeout(() => el.remove(), 250); } }, 5000);
   if (container.children.length > 4) container.firstElementChild.remove();
 }
 
-function _notifPush(icon, title, body, session) {
-  _notifItems.unshift({ icon, title, body, session: session || '', ts: Date.now(), read: false });
+function _notifPush(icon, title, body, session, card) {
+  _notifItems.unshift({ icon, title, body, session: session || '', card: card || '', ts: Date.now(), read: false });
   _notifSave();
   _notifUpdateBadge();
-  _notifShowBanner(icon, title, body, session);
+  _notifShowBanner(icon, title, body, session, card);
   if (_notifPanelOpen) _notifRenderPanel();
-  _notifFireNative(title, body, session);
+  _notifFireNative(title, body, session, card);
 }
 
-async function _notifFireNative(title, body, session) {
+async function _notifFireNative(title, body, session, card) {
   if (!amuxNotifyAllowed('native')) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const opts = {
     body, icon: '/icon-192.png', badge: '/icon-192.png',
     tag: 'amux-' + (session || Date.now()), renotify: true, silent: false,
     requireInteraction: true,           // stays on screen until dismissed (desktop)
-    data: { session: session || '', url: '/' },
+    data: { session: session || '', card: card || '',
+            url: card ? '/#issue=' + encodeURIComponent(card) : (session ? '/#peek=' + encodeURIComponent(session) : '/') },
   };
   // Prefer the service worker — REQUIRED on iOS (new Notification() is unsupported
   // there) and gives persistent, lock-screen notifications on installed PWAs.
@@ -4994,7 +5586,7 @@ async function _notifFireNative(title, body, session) {
   // Desktop fallback for browsers without an active SW registration.
   try {
     const n = new Notification(title, opts);
-    n.onclick = () => { window.focus(); if (session) openPeek(session); n.close(); };
+    n.onclick = () => { window.focus(); _notifOpen(session, card); n.close(); };
   } catch(e) {}
 }
 
@@ -5219,7 +5811,7 @@ function _notifRenderPanel() {
   list.innerHTML = _notifItems.slice(0, 50).map(n => {
     const ago = _notifTimeAgo(n.ts);
     return '<div class="notif-panel-item' + (n.read ? '' : ' unread') + '"'
-      + (n.session ? ' onclick="toggleNotifPanel();openPeek(\'' + n.session.replace(/'/g, "\\'") + '\')"' : '')
+      + ((n.session || n.card) ? ' onclick="toggleNotifPanel();_notifOpen(\'' + (n.session || '').replace(/'/g, "\\'") + '\',\'' + (n.card || '').replace(/'/g, "\\'") + '\')"' : '')
       + '><span class="npi-icon">' + n.icon + '</span>'
       + '<div class="npi-body"><div class="npi-title">' + esc(n.title) + '</div>'
       + '<div class="npi-text">' + esc(n.body) + '</div></div>'
@@ -5322,9 +5914,8 @@ function _needsYouRenderPanel() {
   const boot = () => _needsYouFetch();
   if (document.body) boot(); else document.addEventListener('DOMContentLoaded', boot);
   // Coarse periodic refresh so the badge count does not go stale across a
-  // long-open tab. Not wired to SSE (.claude/rules/sse-realtime.md would
-  // require adding it to the polling fallback too) -- a scoped choice for
-  // this dashboard-only rollout, not a limitation of the endpoint itself.
+  // long-open tab. Board changes refresh it sooner (_nudgeWorkersOnBoardChange,
+  // which both the realtime stream and the polling fallback call).
   setInterval(_needsYouFetch, 5 * 60 * 1000);
 })();
 
@@ -5351,14 +5942,19 @@ function _fireAmuxAlert(a) {
   const fn = _ALERT_LABELS[a.type];
   if (!fn) return;
   const { icon, title, body } = fn(a);
-  _notifPush(icon, title, body, a.session || '');
+  const card = a.card || a.card_id || a.issue || a.issue_id || '';
+  _notifPush(icon, title, body, a.session || '', /^[A-Za-z0-9_-]+$/.test(card) ? card : '');
 }
 
 function _checkSessionTransitions(newData) {
   if (_initialLoad) return;
   for (const s of newData) {
     const prev = _prevSessionState[s.name];
-    if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running }; continue; }
+    if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state }; continue; }
+    // A /goal reaching met is the finish line a described outcome runs to.
+    if (s.goal?.state === 'met' && prev.goal && prev.goal !== 'met') {
+      _fireSessionNotif(s.name, s.name + ' finished its goal', s.goal.condition || s.task_name || '');
+    }
     const statusChanged = s.status !== prev.status;
     const stoppedNow = prev.running && !s.running;
     if (statusChanged) {
@@ -5378,7 +5974,7 @@ function _checkSessionTransitions(newData) {
       _fireSessionNotif(s.name, s.name + ' stopped', '');
       amuxTrack('session_stopped', { session: s.name, prev_status: prev.status });
     }
-    _prevSessionState[s.name] = { status: s.status, running: s.running };
+    _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state };
   }
 }
 
@@ -5571,11 +6167,12 @@ function fetchSessions() {
 function _scheduleSessionInvalidation() {
   // A busy fleet can emit faster than 400ms indefinitely. Debouncing by
   // resetting this timer starved status/queue reads while SSE looked healthy.
+  if (document.hidden) _sessionChangesWhileHidden++;
   if (_invSessTimer) return;
   _invSessTimer = setTimeout(() => {
     _invSessTimer = null;
     fetchSessions();
-  }, 400);
+  }, document.hidden ? _HIDDEN_SESSIONS_MS : 400);
 }
 async function _fetchSessionsOnce() {
   const snapshotEpoch = _sessionsSnapshotEpoch;
@@ -5583,7 +6180,7 @@ async function _fetchSessionsOnce() {
     // AMUX-3504: conditional fetch — the server hashes the (now byte-stable)
     // payload, so an unchanged fleet answers 304 with no body. That is the
     // whole cost of the reconnect/resume refetches intermittent mobile fires.
-    const r = await _stateQuery.response(['sessions', 'response'], () => fetch(API + '/api/sessions', _sessEtag ? { headers: { 'If-None-Match': _sessEtag } } : undefined));
+    const r = await _stateQuery.response(['sessions', 'response'], () => fetch(API + '/api/sessions', { headers: _sessEtag ? { 'If-None-Match': _sessEtag, 'X-Amux-View': 'dashboard' } : { 'X-Amux-View': 'dashboard' } }));
     if (r.status === 304) {
       consecutiveFailures = 0;
       _lastDataTime = Date.now();
@@ -6015,7 +6612,7 @@ async function _niSend(worker, text, key, action) {
 
 // Record the decision on the card and move it out of needsyou, then READ IT
 // BACK: a 2xx is not proof the board stored what we asked for.
-async function _niCard(card, note, marker, unblock) {
+async function _niCard(card, note, marker, unblock, toStatus = 'todo') {
   const url = API + '/api/board/' + encodeURIComponent(card);
   const g = await fetch(url, { headers: _authHeaders() });
   if (!g.ok) return { ok: false, error: 'could not read ' + card + ': HTTP ' + g.status };
@@ -6025,7 +6622,7 @@ async function _niCard(card, note, marker, unblock) {
   const patch = {};
   if (!already) patch.desc_append = note + ' ' + marker;
   const moving = unblock && before.status === 'needsyou';
-  if (moving) { patch.status = 'todo'; patch.authorized_by = 'owner (needs-input triage)'; }
+  if (moving) { patch.status = toStatus; patch.authorized_by = 'owner (needs-input triage)'; }
   if (!Object.keys(patch).length) return { ok: true, already: true, status: before.status };
   // _skipOutbox: this PATCH is read back and any refusal is shown on the spot,
   // so it must not also linger in the outbox as a blocked change to review.
@@ -6036,7 +6633,7 @@ async function _niCard(card, note, marker, unblock) {
   // only mvs-infra's 20/20 and amux's 78/20 todo queues turned the card away,
   // so the answered cards kept flagging their workers). Retry into backlog:
   // the worker already has the answer.
-  if (!r.ok && moving && d && d.code === 'todo_wip_limit_reached') {
+  if (!r.ok && moving && toStatus === 'todo' && d && d.code === 'todo_wip_limit_reached') {
     patch.status = 'backlog';
     r = await fetch(url, { method: 'PATCH', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(patch), _skipOutbox: true });
     d = await _niJson(r);
@@ -6089,10 +6686,13 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       let text;
       if (action === 'approve' && _niOwnerMustAct(it)) text = 'Done' + ref + ': ' + q + ' I have provided it. Verify it works, then continue.' + (typed ? ' ' + typed : '');
       else if (action === 'approve' || action === 'approve_always') text = 'Approved' + ref + ': ' + q + '. Proceed.' + (typed ? ' ' + typed : '');
-      else if (action === 'dismiss') text = 'Dismissed' + ref + ': ' + q + ' The owner closed this ask without answering. Stop waiting on it and do not ask again; carry on with other work.';
+      // DISMISS SENDS NOTHING (Ethan, 2026-10-21: "when i press X here it
+      // shuld just dismiss it and it shouldnt send anything to the worker").
+      // It is a note on the card and a permanent server-side snooze below.
+      else if (action === 'dismiss') text = '';
       else if (action === 'decline') text = 'Declined' + ref + ': ' + q + '. Do not proceed' + (typed ? '; ' + typed : '') + '.';
       else text = 'Re' + ref + ': ' + typed;
-      if (it.worker) {
+      if (it.worker && text) {
         const s = await _niSend(it.worker, text, it.key, action);
         // A plain send returns on durable local acceptance (the outbox owns
         // delivery and its failures), so say "queued", never "delivered".
@@ -6102,12 +6702,26 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       if (it.card) {
         const verb = action === 'approve' && _niOwnerMustAct(it) ? 'Provided'
           : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply', dismiss: 'Dismissed without an answer' }[action];
-        const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed : '.');
+        const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed
+          : action === 'dismiss' ? ' (nothing sent to the worker).' : '.');
         const marker = '#triage-' + _niHash(it.key + '|' + action + '|' + typed);
-        const c = await _niCard(it.card, note, marker, true);
-        if (c.ok) done.push(c.already ? it.card + ' already recorded' : it.card + ' ' + (c.status === 'todo' ? 'moved to todo' : c.status === 'backlog' ? 'moved to backlog (todo full)' : 'noted'));
+        // A dismissed card leaves needsyou for backlog, not todo: todo is
+        // dispatched, which would hand the ask straight back to the worker.
+        const c = await _niCard(it.card, note, marker, true, action === 'dismiss' ? 'backlog' : 'todo');
+        if (c.ok) done.push(c.already ? it.card + ' already recorded' : it.card + ' ' + (c.status === 'todo' ? 'moved to todo' : c.status === 'backlog' ? (action === 'dismiss' ? 'moved to backlog' : 'moved to backlog (todo full)') : 'noted'));
         else errs.push(c.error);
       }
+    }
+    if (action === 'dismiss' && !errs.length) {
+      // Stays dismissed on every device: a snooze with no end, the same store
+      // the triage queue's Snooze uses. Keyed card:<ID> for a card, so the
+      // worker's other asks still come through.
+      const until = Date.now() / 1000 + 10 * 365 * 86400;
+      const r = await fetch(API + '/api/needs-input/snooze', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: it.key, until }) });
+      const d = await _niJson(r);
+      if (r.ok) { _niServerSnoozed.add(it.key); if (_niQueue) _niQueue = _niQueue.filter(x => x.key !== it.key); done.push('dismissed, nothing sent to ' + (it.worker || 'the worker')); }
+      else errs.push('dismiss: ' + _niErr(d, r));
     }
     if (rule && !errs.length) {
       const r = await fetch(API + '/api/approvals/standing', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -6284,7 +6898,7 @@ function _niAutoHtml(d, level, name) {
         + ' onchange="_niAutoSet(\'' + q + '\',\'' + n + '\',\'money_cap_usd\',Number(this.value))">';
     } else {
       const on = !!cur.value;
-      ctl = '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '" aria-label="' + esc(row.label) + '"'
+      ctl = '<button class="btn" role="switch" aria-checked="' + on + '" aria-label="' + esc(row.label) + '"'
         + ' onclick="_niAutoSet(\'' + q + '\',\'' + n + '\',\'' + row.f + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
     }
     if (own && (level === 'worker' || cur.source === 'global')) {
@@ -7161,6 +7775,12 @@ function _nudgeWorkersOnBoardChange() {
     if (window._boardCountSig === sig) return;
     window._boardCountSig = sig;
     if (activeView === 'sessions') render();
+    // The needs-you bell counts board cards too, and refreshed only every 5
+    // minutes: answering a card left it counted while the board had moved on.
+    // It follows any board change now, a few seconds after the last one. This
+    // runs for live updates and for the polling fallback alike.
+    clearTimeout(window._needsYouSoonTimer);
+    window._needsYouSoonTimer = setTimeout(() => { try { _needsYouFetch(); } catch (_) {} }, 3000);
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
@@ -7312,14 +7932,17 @@ let _peekDecoratedMenuLogged = false;
 function _renderPeekWorkerActions(s) {
   const menu = document.getElementById('peek-more-dropdown');
   if (!menu) return;
-  const html = _renderWorkerActionMenu(s, 'peek')
+  // Focus mode first (Ethan, 2026-10-20): it was below the whole worker action
+  // list, off-screen on a phone, for the control used most from this menu.
+  const html = '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
+    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
+    + '<span class="mi">&#x25B4;</span>Focus mode</div>'
+    + '<div class="peek-more-sep"></div>'
+    + _renderWorkerActionMenu(s, 'peek')
     + '<div class="peek-more-sep"></div>'
     + '<div class="peek-more-item" id="peek-file-browser-btn" data-peek-action="file-browser" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekSplit()">'
     + '<span class="mi">&#x1F4C2;</span>File browser (split)</div>'
-    + '<div class="peek-more-item" id="peek-focus-btn" role="menuitem" '
-    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
-    + '<span class="mi">&#x25B4;</span>Focus mode</div>'
     + '<div class="peek-more-item" id="peek-render-steps-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();_peekShowRenderSteps()">'
     + '<span class="mi">&#x2699;</span>Rendering steps</div>'
@@ -7412,6 +8035,87 @@ function _cardsRenderDefer() {
   }
 }
 
+// The worker's goal, as the server resolved it (goal_keeper::resolve): its own
+// checker decides "met", an error clear reads unknown, never met (mxp-gs12,
+// 2026-10-17). Shown while a goal is pursued, or whenever a checker is set,
+// so progress is legible without asking the worker.
+function _goalTileShown(g) {
+  if (!g) return false;
+  return !!(g.active || g.checker?.configured || g.state === 'unknown');
+}
+function _goalTile(g) {
+  if (!_goalTileShown(g)) return '';
+  const ck = g.checker || {};
+  const state = g.state || (g.active ? 'unmet' : 'none');
+  const progress = (ck.done != null && ck.total != null) ? ` ${ck.done}/${ck.total}` : '';
+  const label = state === 'met' ? 'goal met' : state === 'unknown' ? 'goal ?' : 'goal';
+  const cls = ck.stalled ? 'stalled' : state;
+  const when = (t) => t ? new Date(t * 1000).toLocaleString() : '';
+  const lines = [
+    `Goal: ${state}${g.state_why ? ' (' + g.state_why + ')' : ''}`,
+    g.condition ? `/goal: ${g.condition}` : '',
+    ck.configured ? `Checker: ${ck.measured ? (ck.met ? 'met' : 'not met') : 'no verdict'}${progress}${ck.summary ? ' · ' + ck.summary : ''}` : '',
+    ck.why_unmeasured ? `Checker problem: ${ck.why_unmeasured}` : '',
+    ck.checked_at ? `Checked ${when(ck.checked_at)}; last movement ${when(ck.progress_changed_at)}` : '',
+    ck.stalled ? `STALLED: no movement for over ${Math.round((ck.stall_after_s || 0) / 3600)}h; the owner is alerted once per stall` : '',
+  ].filter(Boolean);
+  return `<span class="badge goal ${esc(cls)}" data-goal-state="${esc(state)}" title="${esc(lines.join('\n'))}">&#9678; ${esc(label)}${esc(progress)}</span>`;
+}
+
+// The card list re-renders on every worker-list change, and most of those
+// produce byte-identical card HTML (7 of 8 in a measured run): the change was
+// in a field no card shows. Re-parsing ~4,500 nodes for nothing cost ~40ms per
+// render on a throttled phone. An identical write is skipped. Every write to
+// #cards in render() goes through here, so the comparison is against what the
+// list actually holds.
+const _cardsRenderStats = { written: 0, skipped: 0 };
+
+// The peek's live tail is re-rendered on every poll, about 3 times a second
+// while a worker runs, and almost every frame differs from the last only in a
+// line or two (the agent's running timer). Replacing #pk-live's innerHTML threw
+// away ~1,400 nodes per frame: 230k nodes a minute, and the desktop app's web
+// view reached 11 GB of WebKit malloc after a day open (Mac memory RCA
+// 20261020-165200). The tail is now patched in place: nodes that did not change
+// are kept, and only what differs is replaced. window._peekLiveStats counts it.
+const _peekLiveStats = { frames: 0, unchanged: 0, nodesReplaced: 0, fullWrites: 0 };
+const _peekLiveTpl = document.createElement('template');
+function _peekMorphChildren(from, to) {
+  let replaced = 0;
+  const a = Array.from(from.childNodes), b = Array.from(to.childNodes);
+  for (let i = 0; i < b.length; i++) {
+    const o = a[i], n = b[i];
+    if (!o) { from.appendChild(n); replaced++; continue; }
+    if (o.isEqualNode(n)) continue;
+    if (o.nodeType === 3 && n.nodeType === 3) { o.nodeValue = n.nodeValue; continue; }
+    if (o.nodeType === 1 && n.nodeType === 1 && o.nodeName === n.nodeName) {
+      for (const at of Array.from(o.attributes)) if (!n.hasAttribute(at.name)) o.removeAttribute(at.name);
+      for (const at of Array.from(n.attributes)) if (o.getAttribute(at.name) !== at.value) o.setAttribute(at.name, at.value);
+      replaced += _peekMorphChildren(o, n);
+      continue;
+    }
+    from.replaceChild(n, o); replaced++;
+  }
+  for (let i = a.length - 1; i >= b.length; i--) { from.removeChild(a[i]); replaced++; }
+  return replaced;
+}
+function _peekSetLiveHtml(el, html) {
+  _peekLiveStats.frames++;
+  if (el._liveHtml === html) { _peekLiveStats.unchanged++; return; }
+  if (!el.childNodes.length) { el.innerHTML = html; _peekLiveStats.fullWrites++; }
+  else {
+    _peekLiveTpl.innerHTML = html;
+    _peekLiveStats.nodesReplaced += _peekMorphChildren(el, _peekLiveTpl.content);
+    _peekLiveTpl.innerHTML = '';
+  }
+  el._liveHtml = html;
+}
+window._peekLiveStats = _peekLiveStats;
+function _setCardsHtml(el, html) {
+  if (el._cardsHtml === html && el.childNodes.length) { _cardsRenderStats.skipped++; return; }
+  el.innerHTML = html;
+  el._cardsHtml = html;
+  _cardsRenderStats.written++;
+}
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
@@ -7431,8 +8135,7 @@ function render() {
   updatePeekStatus();
   _saveListView();
   if (peekSession) {
-    _steeringUpdateBadge();
-    if (_peekTab === 'steering') _steeringRender();
+    if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge();
   }
   // Skip the CARD LIST render if a menu or edit overlay is open, to prevent
   // DOM clobbering.
@@ -7458,7 +8161,12 @@ function render() {
   // be un-hidden. Pruning a vanished group waits for real data: a restored
   // view must not be wiped by the empty list that precedes the first fetch.
   const allTags = [...new Set([...liveTags, ...hiddenTags])].sort();
-  if (activeTag && !_initialLoad && sessions.length && !liveTags.has(activeTag)) activeTag = '';
+  // Pruned only when NO worker has the group. A group whose workers are all
+  // paused or archived still filters the Paused and Archived sections, and
+  // checking live workers only reset that filter on the next render
+  // (worker-section-scope, CI f2bb59c75: "2 paused", then "5 paused").
+  if (activeTag && !_initialLoad && sessions.length && !liveTags.has(activeTag)
+      && !sessions.some(s => (s.tags || []).includes(activeTag))) activeTag = '';
   // Pills FILTER the worker list. Nothing more.
   //
   // The "\u25c9 Global" pill and the group-scope band that used to sit under this
@@ -7515,7 +8223,7 @@ function render() {
   const _nonArchivedCount = sessions.filter(s => !s.project && !s.archived && !_workerLifecycleInactive(s)).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
-      el.innerHTML = ''; // Actionable detail is in the Sync error badge modal.
+      _setCardsHtml(el, ''); // Actionable detail is in the Sync error badge modal.
     } else if (_initialLoad) {
       // A SPINNER THAT NEVER RESOLVES IS A LIE (amux-cloud, AC-275, 2026-08-06).
       // _initialLoad clears on ANY successful /api/sessions fetch, empty list
@@ -7528,17 +8236,17 @@ function render() {
       // show" from "I was never given what I need to show it" — board search on
       // a stale corpus, the co-edit notice, the peek Board, the kanban over 30
       // real issues, and now this. Say which it is.
-      el.innerHTML = consecutiveFailures > 0
+      _setCardsHtml(el, consecutiveFailures > 0
         ? '<div class="empty">Can\u2019t reach the server \u2014 ' + consecutiveFailures +
           ' failed attempt' + (consecutiveFailures === 1 ? '' : 's') + '.<br>' +
           '<span style="color:var(--dim);font-size:0.85rem;">This is a connection problem, not an ' +
           'empty workspace. Workers may exist and be unreachable.</span><br>' +
           '<a href="/api/_clear_sw" style="color:var(--accent);font-size:0.8rem;">Clear cache &amp; reload</a></div>'
         : '<div class="empty"><span class="loading-spinner"></span>Connecting to server…<br>' +
-          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>';
+          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>');
     } else {
-      el.innerHTML = '<div class="empty">' + (sessions.some(s => s.project) ? 'Project workers are grouped below.' : sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
-        (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>';
+      _setCardsHtml(el, '<div class="empty">' + (sessions.some(s => s.project) ? 'Project workers are grouped below.' : sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
+        (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>');
     }
     _renderProjectWorkersSection();
     _renderReviewSection();
@@ -7574,13 +8282,18 @@ function render() {
     s.name.toLowerCase().includes(q) ||
     (s.dir || '').toLowerCase().includes(q) ||
     (s.desc || '').toLowerCase().includes(q) ||
+    // Active task: the task name shown on the card and its board card id, so
+    // "which worker is on the billing bug" matches by what it is doing, not
+    // only by its name/description (Ethan, 2026-10-17).
+    (s.task_name || '').toLowerCase().includes(q) ||
+    _runtimeBoardPresentation(s).cardId.toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q)) ||
     (logSearchMode && s.name in _logMatches)
   ) : list;
   // Filters modal: provider + model-type facets (multi-select, AND across facets)
   if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
   if ((q || activeTag || hiddenTags.size || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
-    el.innerHTML = '<div class="empty">No matching workers.</div>';
+    _setCardsHtml(el, '<div class="empty">No matching workers.</div>');
     _renderProjectWorkersSection();
     _renderReviewSection();
     _renderPausedSection();
@@ -7712,11 +8425,11 @@ function render() {
         const hits = _logMatches[s.name];
         const sq = searchQuery.replace(/'/g,"\\'");
         return hits.slice(0, 2).map((h, hi) =>
-          `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
+          `<div class="card-log-hit" onclick="event.stopPropagation();_peekOpenLogAt('${s.name}',${parseInt(h.line, 10) || 0},'${sq}')"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || s.goal?.active) ? `<div class="badges">
-        ${s.goal?.active ? `<span class="badge goal" title="${esc('/goal active' + (s.goal.since ? ' since ' + new Date(s.goal.since * 1000).toLocaleString() : '') + ': ' + (s.goal.condition || ''))}">&#9678; goal</span>` : ''}
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || _goalTileShown(s.goal)) ? `<div class="badges">
+        ${_goalTile(s.goal)}
         ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
@@ -7777,7 +8490,7 @@ function render() {
   // Freeze mode: flat list locked to captured order — bypasses status grouping and activity re-sort
   if (_frozen && cardOrder.length) {
     const frozenList = _sortByCardOrder(filtered);
-    el.innerHTML = draftCards + frozenList.map(_renderSessionCard).join('');
+    _setCardsHtml(el, draftCards + frozenList.map(_renderSessionCard).join(''));
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
     _renderProjectWorkersSection();
@@ -7794,7 +8507,7 @@ function render() {
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
     sortedFiltered = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = staleWorkerPrefix + draftCards + sortedFiltered.map(_renderSessionCard).join('');
+    _setCardsHtml(el, staleWorkerPrefix + draftCards + sortedFiltered.map(_renderSessionCard).join(''));
     _checkWorkerStatusOrder();
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
@@ -7859,14 +8572,14 @@ function render() {
           ${!col ? `<div class="tag-group-body">${items.map(_renderSessionCard).join('')}</div>` : ''}
         </div>`;
       });
-      el.innerHTML = staleWorkerPrefix + draftCards + groupHtml;
+      _setCardsHtml(el, staleWorkerPrefix + draftCards + groupHtml);
     } else {
-      el.innerHTML = staleWorkerPrefix + draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join('');
+      _setCardsHtml(el, staleWorkerPrefix + draftCards + (nonEmpty.length ? buckets[nonEmpty[0].key] : []).map(_renderSessionCard).join(''));
     }
   } else {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = [...filtered].sort(_sortFnFor(sortMode));
-    el.innerHTML = staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join('');
+    _setCardsHtml(el, staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join(''));
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
   }
   _checkWorkerStatusOrder();
@@ -7961,6 +8674,43 @@ function _uiZoomFactor() {
   } catch (e) { _zProbe = { z: 1, t: performance.now() }; }
   return _zProbe.z;
 }
+// A right-click menu at the pointer, clamped INTO the viewport (a click near
+// the right or bottom edge must not push it off screen).
+//
+// The pointer's coordinates are not always where the pointer is. Under the
+// root UI zoom they are screen pixels while a fixed menu's left/top are CSS
+// pixels, hence /z. Worse, WebKit (the Mac app) scales them by any CSS zoom on
+// the clicked element's ancestors, and the terminal output carries one (its
+// text size): the menu opened far below and right of the click (Ethan,
+// 2026-10-24 screenshot). Rather than guess per engine, check that the point
+// lands on what was clicked; when it does not, open at the element itself.
+function _placeMenuAtPointer(m, e) {
+  const z = _uiZoomFactor();
+  let x = e.clientX / z, y = e.clientY / z;
+  const t = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
+  if (t) {
+    // The menu is already on the page; it must not be what the probe hits.
+    const pe = m.style.pointerEvents;
+    m.style.pointerEvents = 'none';
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    m.style.pointerEvents = pe;
+    if (!hit || !(hit === t || t.contains(hit))) {
+      // A wrapped link has a box per line: open under the first one.
+      const rects = t.getClientRects();
+      const rr = rects.length ? rects[0] : t.getBoundingClientRect();
+      x = rr.left / z; y = rr.bottom / z + 2;
+      try {
+        fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'menu-anchor', verdict: 'pointer_off_target_anchored_to_element', menu: m.id || '',
+            measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      } catch (err) {}
+    }
+  }
+  const r = _cssRect(m);
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  m.style.left = Math.max(6, Math.min(x, vw - r.width - 6)) + 'px';
+  m.style.top = Math.max(6, Math.min(y, vh - r.height - 6)) + 'px';
+}
 function _cssRect(el) {
   const r = el.getBoundingClientRect();
   const z = _uiZoomFactor();
@@ -8008,27 +8758,10 @@ function _activeTaskLink(worker, cardId, title) {
     + esc(cardId) + '</span></button>';
 }
 
-// A worker's task-name history (GET /api/sessions/{name}/task-history) in the
-// standard dialog, as a list (Ethan, 2026-10-16: "it should open a modal which
-// is a list").
-async function _peekTaskHistoryToggle(ev) {
-  if (ev) ev.stopPropagation();
-  const who = peekSession; if (!who) return;
-  const opener = document.getElementById('peek-task-history-btn');
-  const modal = _chipDetailModal('task-history-modal', 'Task history', who, '<p class="ui-help">Loading\u2026</p>', { returnFocus: opener });
-  const body = modal.querySelector('.modal-body');
-  try {
-    const d = await (await fetch(API + '/api/sessions/' + encodeURIComponent(who) + '/task-history?limit=100', { headers: _authHeaders() })).json();
-    if (!modal.isConnected) return;
-    const rows = d.changes || [];
-    body.innerHTML = rows.length
-      ? '<ol class="chip-detail-list task-history-list">' + rows.map(c => '<li><div>' + esc(c.to || '') + '</div><div class="ui-help">'
-          + esc(new Date((c.ts || 0) * 1000).toLocaleString()) + (c.card ? ' \u00b7 ' + esc(c.card) : '') + '</div></li>').join('') + '</ol>'
-      : '<p class="ui-help">No task changes recorded yet.</p>';
-    const foot = modal.querySelector('.modal-footer .ui-help');
-    if (foot) foot.textContent = rows.length ? rows.length + ' change' + (rows.length === 1 ? '' : 's') + ', newest first' : '';
-  } catch (e) { if (modal.isConnected) body.innerHTML = '<p class="ui-help">Could not load the task history.</p>'; }
-}
+// The task-name history button was removed from the worker-details header
+// (Ethan, 2026-10-17: "remove the history button ... since we have a tasks
+// tab"). The GET /api/sessions/{name}/task-history endpoint and the Tasks tab
+// remain; only the redundant header control is gone.
 
 function _bindPeekTaskIdentity(s, identity) {
   const row = document.getElementById('peek-task-row');
@@ -8728,26 +9461,10 @@ function _renderTabCustomizerMenu() {
       ${t.label}
     </label>`;
   }).join('');
-  html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">';
-  html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-  html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
-  html += '<button onclick="saveLayoutPreset()" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>';
-  html += '</div>';
-  html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
-  html += '</div>';
+  html += _layoutPresetSectionHtml('global');
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('tab-cust-search'); if (s) s.focus(); });
-  // Load presets
-  fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
-    const list = document.getElementById('preset-list');
-    if (!list) return;
-    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
-    list.innerHTML = presets.map(p => `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
-      <button onclick="loadLayoutPreset('${p.name.replace(/'/g,"\\'")}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${p.name}</button>
-      <button onclick="shareLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>
-      <button onclick="deleteLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Delete" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
-    </div>`).join('');
-  }).catch(()=>{});
+  _loadLayoutPresetList('global');
   // Init Sortable on menu for drag-to-reorder (only on tab items, not preset
   // section). Destroy any prior instance first — the menu re-renders on every
   // toggle, and stacking a fresh Sortable each time left multiple drag handlers
@@ -8788,6 +9505,8 @@ function _filterPeekTabCustomizer(q) {
     const label = (el.textContent || '').toLowerCase();
     el.style.display = !lc || label.includes(lc) ? '' : 'none';
   });
+  const preset = menu.querySelector('.tab-preset-section');
+  if (preset) preset.style.display = lc ? 'none' : '';
 }
 
 // ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
@@ -8949,7 +9668,7 @@ _loadPeekTabPrefs();
 //                  open, then the tap's own momentum scroll dismissed it. A
 //                  synthetic Playwright click cannot reproduce that, which is
 //                  why every test I write passes.
-function _tabCustBeacon(menu, which) {
+function _tabCustBeacon(menu, which, extra) {
   try {
     if (!menu) return;
     const snap = () => {
@@ -8972,7 +9691,8 @@ function _tabCustBeacon(menu, which) {
             items: menu.querySelectorAll('.tab-customizer-item').length,
             winW: window.innerWidth, winH: window.innerHeight,
             vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0),
-            dpr: window.devicePixelRatio || 0, ua: navigator.userAgent }) });
+            dpr: window.devicePixelRatio || 0, ua: navigator.userAgent,
+            ...(typeof extra === 'function' ? extra() : {}) }) });
       } catch (e) {} }, 600);
     } catch (e) {} });
   } catch (e) {}
@@ -8984,8 +9704,30 @@ function _peekCustOutside(e) {
   const btn = document.getElementById('peek-tab-customize');
   if (menu && !menu.contains(e.target) && !btn?.contains(e.target)) { _peekTabCustomizerOpen = false; menu.style.display = 'none'; btn?.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', _peekCustOutside, true); }
 }
-function togglePeekTabCustomizer() {
+// WHERE IT WAS CLICKED (Ethan, 2026-10-24, Mac app: the menu hung ~200px left
+// of the ⊞). The ⊞ is position:sticky with margin-left:auto inside the scrolling
+// strip, and the Mac app's WebKit reported its box far from where it paints it
+// (a tabcust-geo beacon at winW 1280 implied a right edge of 879). Chromium and
+// Playwright's WebKit report it correctly. A pointer click is ground truth: when
+// it lands outside the reported box, the menu is placed by the click instead,
+// and the beacon says so (verdict=anchor_rect_mismatch).
+let _peekTabAnchorFix = null;
+function _peekTabAnchorFromClick(ev) {
+  _peekTabAnchorFix = null;
+  if (!ev || !ev.detail || !ev.currentTarget || typeof ev.clientX !== 'number') return;
+  // Only without root CSS zoom: under it, engines disagree on whether event
+  // and rect coordinates are scaled, and a spurious correction is worse than
+  // none. The Mac app uses font-size zoom, so it has none.
+  if ((parseFloat(getComputedStyle(document.documentElement).zoom) || 1) !== 1) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX, y = ev.clientY;
+  const outside = x < r.left - 2 || x > r.right + 2 || y < r.top - 2 || y > r.bottom + 2;
+  if (outside) _peekTabAnchorFix = { dx: x - (r.left + r.right) / 2, dy: y - (r.top + r.bottom) / 2,
+    rect: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)], click: [Math.round(x), Math.round(y)] };
+}
+function togglePeekTabCustomizer(ev) {
   _peekTabCustomizerOpen = !_peekTabCustomizerOpen;
+  if (_peekTabCustomizerOpen) _peekTabAnchorFromClick(ev);
   document.getElementById('peek-tab-customize')?.setAttribute('aria-expanded', String(_peekTabCustomizerOpen));
   const menu = document.getElementById('peek-tab-customizer-menu');
   if (!menu) return;
@@ -9002,7 +9744,11 @@ function togglePeekTabCustomizer() {
     _placePeekTabCustomizer();
     menu.style.visibility = '';
     _watchPeekTabAnchor(true);
-    _tabCustBeacon(menu, 'peek');
+    _tabCustBeacon(menu, 'peek', () => {
+      const b = document.getElementById('peek-tab-customize')?.getBoundingClientRect();
+      return { btn: b ? [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)] : null,
+        verdict: _peekTabAnchorFix ? 'anchor_rect_mismatch' : 'anchor_rect_ok', anchor_fix: _peekTabAnchorFix };
+    });
     setTimeout(() => document.addEventListener('click', _peekCustOutside, true), 0);
   } else {
     menu.style.display = 'none';
@@ -9033,7 +9779,10 @@ function _watchPeekTabAnchor(on) {
     const btn = document.getElementById('peek-tab-customize');
     if (btn) {
       const r = btn.getBoundingClientRect();
-      const key = Math.round(r.left) + ':' + Math.round(r.bottom);
+      // The menu's own width is part of the key: the presets list loads after
+      // the menu opens and widens it, which moved its right edge off the ⊞.
+      const mw = document.getElementById('peek-tab-customizer-menu')?.offsetWidth || 0;
+      const key = Math.round(r.left) + ':' + Math.round(r.bottom) + ':' + mw;
       if (key !== _peekTabAnchorLast) { _peekTabAnchorLast = key; _placePeekTabCustomizer(); }
     }
     _peekTabAnchorRAF = requestAnimationFrame(tick);
@@ -9053,7 +9802,9 @@ function _placePeekTabCustomizer() {
   // 1280). Everything below is computed in screen pixels and divided by the
   // zoom only when written.
   const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
-  const r = btn.getBoundingClientRect();
+  const raw = btn.getBoundingClientRect();
+  const fx = _peekTabAnchorFix;
+  const r = fx ? { left: raw.left + fx.dx, right: raw.right + fx.dx, top: raw.top + fx.dy, bottom: raw.bottom + fx.dy } : raw;
   const vw = window.innerWidth, vh = window.innerHeight;
   const PAD = 8;
   // NEUTRALISE `right` FIRST: .tab-customizer-menu sets `right: 0`, and with
@@ -9100,8 +9851,10 @@ function _renderPeekTabCustomizer() {
       + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">\u2807</span>'
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
+  html += _layoutPresetSectionHtml('peek');
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
+  _loadLayoutPresetList('peek');
   if (window.Sortable) {
     if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
     _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
@@ -9134,22 +9887,69 @@ function toggleTabVisibility(id, show) {
 }
 
 // ── Layout presets (save/load/share tab configuration) ──
-async function saveLayoutPreset() {
-  const name = prompt('Preset name:');
+// Two lists share this code and the server table: `global` is the homepage tab
+// bar, `peek` the worker view's tabs (Ethan, 2026-10-24). Presets live server
+// side (/api/layout-presets?scope=), so every device sees the same ones.
+function _layoutPresetSectionHtml(scope) {
+  return '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;">'
+    + '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>'
+    + '<button onclick="saveLayoutPreset(\'' + scope + '\')" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>'
+    + '</div><div class="preset-list" data-scope="' + scope + '"' + (scope === 'global' ? ' id="preset-list"' : '') + ' style="font-size:0.82rem;"></div></div>';
+}
+function _layoutPresetsUrl(scope) {
+  return '/api/layout-presets' + (scope && scope !== 'global' ? '?scope=' + encodeURIComponent(scope) : '');
+}
+function _loadLayoutPresetList(scope) {
+  fetch(_layoutPresetsUrl(scope)).then(r => r.json()).then(presets => {
+    const list = document.querySelector('.preset-list[data-scope="' + scope + '"]');
+    if (!list || !Array.isArray(presets)) return;
+    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
+    list.innerHTML = presets.map(p => {
+      const n = escJs(p.name);
+      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
+      <button onclick="loadLayoutPreset('${n}','${scope}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${esc(p.name)}</button>`
+      + (scope === 'global' ? `<button onclick="shareLayoutPreset('${n}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>` : '')
+      + `<button onclick="deleteLayoutPreset('${n}','${scope}')" title="Delete" aria-label="Delete preset ${esc(p.name)}" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
+    </div>`;
+    }).join('');
+  }).catch(() => {});
+}
+function _rerenderLayoutPresetMenu(scope) {
+  if (scope === 'peek') _renderPeekTabCustomizer(); else _renderTabCustomizerMenu();
+}
+async function saveLayoutPreset(scope = 'global') {
+  const name = ((await showPrompt('Preset name:', scope === 'peek' ? 'e.g. Review' : '')) || '').trim();
   if (!name) return;
-  await fetch('/api/layout-presets', {
+  const body = scope === 'peek'
+    ? {name, scope, hidden: [...peekHiddenTabs], tab_order: peekTabOrder}
+    : {name, hidden: [...hiddenTabs], tab_order: tabOrder};
+  const r = await fetch('/api/layout-presets', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, hidden: [...hiddenTabs], tab_order: tabOrder})
-  });
-  _renderTabCustomizerMenu();
+    body: JSON.stringify(body)
+  }).catch(() => null);
+  if (!r || !r.ok) { showToast('Could not save the preset'); return; }
+  showToast('Preset "' + name + '" saved');
+  _rerenderLayoutPresetMenu(scope);
 }
 
-async function loadLayoutPreset(name) {
-  const r = await fetch('/api/layout-presets');
+async function loadLayoutPreset(name, scope = 'global') {
+  const r = await fetch(_layoutPresetsUrl(scope));
   const presets = await r.json();
   const p = presets.find(x => x.name === name);
   if (!p) return;
+  if (scope === 'peek') {
+    const all = PEEK_TABS.map(t => t.id);
+    const saved = (p.tab_order || []).filter(id => all.includes(id));
+    peekTabOrder = [...new Set([...saved, ...all.filter(id => !saved.includes(id))])];
+    peekHiddenTabs = new Set((p.hidden || []).filter(id => !PEEK_REQUIRED_TABS.has(id)));
+    if (peekHiddenTabs.has(_peekTab)) setPeekTab('terminal');
+    _savePeekTabPrefs();
+    _applyPeekTabVisibility();
+    _renderPeekTabCustomizer();
+    return;
+  }
   hiddenTabs = _honourBoardHide(new Set(p.hidden));
   tabOrder = p.tab_order.length ? p.tab_order : ALL_TABS.map(t => t.id);
   _saveHiddenTabs();
@@ -9158,11 +9958,11 @@ async function loadLayoutPreset(name) {
   _renderTabCustomizerMenu();
 }
 
-async function deleteLayoutPreset(name) {
-  if (!confirm('Delete preset "' + name + '"?')) return;
-  await fetch('/api/layout-presets/' + encodeURIComponent(name), {method:'DELETE'});
+async function deleteLayoutPreset(name, scope = 'global') {
+  if (!(await showConfirm('Delete preset "' + name + '"?', 'Delete', true))) return;
+  await fetch('/api/layout-presets/' + encodeURIComponent(name) + (scope !== 'global' ? '?scope=' + encodeURIComponent(scope) : ''), {method:'DELETE'});
   showToast('Preset "' + name + '" deleted');
-  _renderTabCustomizerMenu();
+  _rerenderLayoutPresetMenu(scope);
 }
 
 async function shareLayoutPreset(name) {
@@ -9252,7 +10052,9 @@ function _embedFitZoom() {
   // The peek side panel (?peekTab=messages|chat) shows a panel, not a scaled
   // terminal tile: the chat renders into this same body and came out at
   // tile zoom, unreadably small (Ethan, 2026-10-09, side-panel check).
-  if (new URLSearchParams(location.search).get('peekTab')) { body.style.zoom = '1'; return; }
+  // A split-pane TERMINAL is still a terminal: it keeps the fit zoom below.
+  const embedTab = new URLSearchParams(location.search).get('peekTab');
+  if (embedTab && embedTab !== 'terminal') { body.style.zoom = '1'; return; }
   // widest source line (textContent keeps source newlines, unaffected by wrap)
   let cols = 0;
   for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
@@ -9389,6 +10191,8 @@ function _renderReviewSection() {
   if (!el) return;
   const allReview = sessions.filter(s => s.lifecycle === 'review' && !s.archived && !s.project).filter(_workerListFilterPass);
   if (!allReview.length) { el.innerHTML = ''; return; }
+  const _q = searchQuery.toLowerCase().trim();
+  if (_q && !allReview.some(s => s.name.toLowerCase().includes(_q) || (s.dir||'').toLowerCase().includes(_q) || (s.desc||'').toLowerCase().includes(_q) || (s.task_name||'').toLowerCase().includes(_q) || (s.tags||[]).some(t=>t.toLowerCase().includes(_q)))) { el.innerHTML = ''; return; }
   const q = searchQuery.toLowerCase().trim();
   const review = q ? allReview.filter(s =>
     s.name.toLowerCase().includes(q) ||
@@ -9450,6 +10254,7 @@ function _renderPausedSection() {
     (s.desc || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q))
   ) : allPaused;
+  if (q && !paused.length) { el.innerHTML = ''; return; }
   const showExpanded = pausedExpanded;
   const label = q && paused.length !== allPaused.length
     ? `${paused.length} of ${allPaused.length} paused`
@@ -9566,6 +10371,7 @@ function _renderExpiredSection() {
     w.parent.toLowerCase().includes(q) ||
     w.cards.some(c => (c.title || '').toLowerCase().includes(q))
   ) : workers;
+  if (q && !filtered.length) { el.innerHTML = ''; return; }
   const label = q && filtered.length !== workers.length
     ? `${filtered.length} of ${workers.length} expired`
     : `${workers.length} expired`;
@@ -9640,6 +10446,7 @@ function _renderArchivedSectionBody() {
     (s.creator || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q))
   ) : allArchived;
+  if (q && !archived.length) { el.innerHTML = ''; return; }
   // Only expand when the user has explicitly toggled it open — never auto-expand
   // on search. The footer still shows "N of M archived" so matches are discoverable.
   const showExpanded = archivedExpanded;
@@ -9792,13 +10599,56 @@ async function refreshHostPressure() {
   pill.setAttribute('aria-label', 'Host ' + level + ': ' + (p.reasons || []).join(', '));
   pill.classList.add('show');
 }
+// What to do about it (Ethan, 2026-10-17, MSG-90406: "this should give me a
+// suggested action to run to fix it"). Built from the same sample the dialog
+// shows: the biggest consumers first, each with the one step that addresses
+// it. Workers get a Pause button; anything outside amux gets a command to
+// copy, because amux does not stop processes it does not own.
+function _hostPressureSuggestions(p) {
+  const u = p.utilization || {};
+  const cores = x => (x / 100).toFixed(1) + ' cores';
+  const out = [];
+  (u.workers || []).filter(w => w.cpu_percent >= 150).sort((a, b) => b.cpu_percent - a.cpu_percent).slice(0, 2).forEach(w => out.push({
+    cpu: w.cpu_percent, text: 'Worker ' + w.name + ' is using ' + cores(w.cpu_percent) + '. Pause it if it can wait.',
+    cmd: 'amux pause ' + w.name, pause: w.name }));
+  (u.top_unattributed || []).filter(o => o.cpu_percent >= 100).slice(0, 3).forEach(o => {
+    const prog = (o.command || '').split('/').pop().slice(0, 60) || 'pid ' + o.root_pid;
+    if (o.kind === 'vm') out.push({ cpu: o.cpu_percent, text: 'A virtual machine (Docker or another VM) is using ' + cores(o.cpu_percent)
+      + '. Stop the containers you are not using.', cmd: 'docker ps --format "{{.Names}}  {{.Status}}"   # then: docker stop <name>' });
+    else if (o.kind === 'detached' || o.kind === 'apps') out.push({ cpu: o.cpu_percent, text: (o.kind === 'apps' ? 'The app ' : 'A process no worker owns, ')
+      + prog + ', is using ' + cores(o.cpu_percent) + '. Lower its priority, or quit it if you do not need it.', cmd: 'renice -n 10 -p ' + o.root_pid });
+  });
+  out.sort((a, b) => b.cpu - a.cpu);
+  if (!out.length && p.level && p.level !== 'ok') out.push({ text: 'Nothing single stands out: the load is spread across many small processes. See the full split.', cmd: 'amux resources' });
+  return out;
+}
+
 function showHostPressure() {
   const p = _hostPressure || {};
   const r = p.readings || {};
   let html = '<ul class="chip-detail-list">' + ((p.reasons || []).map(x => '<li>' + esc(x) + '</li>').join('') || '<li>No pressure.</li>') + '</ul>';
+  const fixes = _hostPressureSuggestions(p);
+  if (fixes.length) html += '<h4>Suggested fix</h4><ul class="chip-detail-list host-fix-list">' + fixes.map(f =>
+    '<li><p>' + esc(f.text) + '</p><div class="host-fix-row"><code class="host-fix-cmd">' + esc(f.cmd) + '</code>'
+    + '<button class="btn btn-sm" data-host-fix-copy="' + esc(f.cmd) + '">Copy</button>'
+    + (f.pause ? '<button class="btn btn-sm primary" data-host-fix-pause="' + esc(f.pause) + '">Pause worker</button>' : '')
+    + '</div></li>').join('') + '</ul>';
   html += '<p class="ui-help">Load ' + (r.load5 != null ? r.load5.toFixed(1) : '?') + ' on ' + (r.ncpu || '?') + ' cores · memory level '
     + (r.mem_level ?? '?') + ' · ' + (r.disk_free_gb != null ? Math.round(r.disk_free_gb) + ' GiB free' : 'disk ?') + '</p>';
   if (p.level === 'critical') html += '<p>Automated dispatch, schedules and worker starts are paused until this eases. Your own actions are not affected.</p>';
+  // Who is using the CPU: workers, and where the rest is, so the remainder is
+  // never read as zero (host_guard::utilization).
+  const u = p.utilization;
+  if (u) {
+    const pct = x => Math.round(x) + '%';
+    html += '<h4>Who is using the CPU</h4><p class="ui-help">' + esc(pct(u.cpu_percent_total) + ' of ' + pct(u.capacity_percent) + ' busy · workers '
+      + pct(u.workers_cpu_percent) + ' · everything else ' + pct(u.unattributed_cpu_percent)) + '</p><ul class="chip-detail-list">'
+      + (u.workers || []).filter(w => w.cpu_percent >= 10).slice(0, 8).map(w => '<li><div class="chip-detail-row"><strong>' + esc(w.name)
+        + '</strong><span class="ui-help">' + esc(pct(w.cpu_percent) + ' · ' + (w.rss_mb / 1024).toFixed(1) + ' GB · ' + w.n_processes + ' procs') + '</span></div></li>').join('')
+      + (u.top_unattributed || []).filter(o => o.cpu_percent >= 10).slice(0, 5).map(o => '<li title="' + esc((u.kinds || {})[o.kind] || '') + '"><div class="chip-detail-row"><strong>'
+        + esc(o.kind.replaceAll('_', ' ')) + '</strong><span class="ui-help">' + esc(pct(o.cpu_percent) + ' · pid ' + o.root_pid + ' ' + (o.command || '').split('/').pop()) + '</span></div></li>').join('')
+      + '</ul>';
+  }
   const run = p.runaways || [];
   if (run.length) html += '<h4>Long-running worker processes</h4><ul class="chip-detail-list">' + run.map(x =>
     '<li><div class="chip-detail-row"><strong>' + esc(x.worker) + '</strong><span class="ui-help">' + esc((x.command || '').split('/').pop()) + '</span></div>'
@@ -9807,6 +10657,18 @@ function showHostPressure() {
   if (held.length) html += '<h4>Deferred automated ticks</h4><p class="ui-help">' + held.map(([k, v]) => esc(k) + ' ' + v).join(' · ') + '</p>';
   _chipDetailModal('host-pressure-detail', 'Host ' + (p.level || 'unknown'), p.measured === false ? (p.why_unmeasured || 'not measured') : '', html);
 }
+document.addEventListener('click', e => {
+  const copy = e.target.closest?.('[data-host-fix-copy]');
+  if (copy) {
+    e.stopPropagation();
+    const cmd = copy.dataset.hostFixCopy;
+    (navigator.clipboard ? navigator.clipboard.writeText(cmd) : Promise.reject())
+      .then(() => showToast('Copied: ' + cmd), () => showToast('Copy failed; select the command and copy it'));
+    return;
+  }
+  const pause = e.target.closest?.('[data-host-fix-pause]');
+  if (pause) { e.stopPropagation(); pause.disabled = true; pauseWorker(pause.dataset.hostFixPause); }
+});
 setInterval(refreshHostPressure, 60000);
 setTimeout(refreshHostPressure, 3000);
 // STATUS COVERAGE CHIP (MSG-69352 item 1). How many running workers have a
@@ -9956,30 +10818,145 @@ function closeAddMenu() {
   addMenuOpen = false;
 }
 
+// ── Describe what you want (Ethan, 2026-10-18) ──
+// One box: describe the outcome. Everything else is a default under a closed
+// "Defaults and constraints" section, remembered in prefs (outcome_defaults)
+// so the next one needs only the description. The worker starts on
+// `/goal <outcome + constraints>`: Claude Code's own evaluator decides when it
+// is done, the goal keeper keeps it going until then, and the dashboard (and
+// the goal keeper's push) say when it is met. Nothing here calls a model: the
+// name and description are computed from the text, and the worker does the
+// judging.
+const _OUTCOME_DEFAULT_CONSTRAINTS = 'Do not spend money or contact anyone outside the company. '
+  + 'Ask before deleting or overwriting data you did not create. Commit finished work. '
+  + 'When only steps that need the owner remain, stop and list them.';
+const _OUTCOME_STOP = new Set(['a','an','the','and','or','to','of','for','in','on','with','my','our','me','i','we',
+  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by']);
+
+function _outcomeName(text, taken) {
+  const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !_OUTCOME_STOP.has(w));
+  let base = words.slice(0, 4).join('-').slice(0, 32).replace(/-+$/, '') || 'outcome';
+  let name = base, n = 2;
+  while (taken.has(name)) name = base + '-' + n++;
+  return name;
+}
+function _outcomeDesc(text) {
+  const first = text.trim().split(/(?<=[.!?])\s|\n/)[0] || text.trim();
+  return first.length > 140 ? first.slice(0, 137) + '...' : first;
+}
+// The first prompt. A Claude worker gets it as a /goal, so it keeps going
+// until the condition is met; other providers get the same text as a task.
+function _outcomePrompt(text, constraints, goal) {
+  const flat = (t) => t.replace(/\s*\n+\s*/g, ' ').trim();
+  const body = flat(text) + (constraints.trim() ? ' Constraints: ' + flat(constraints) : '')
+    + ' Done when this outcome is achieved and verified.';
+  return (goal ? '/goal ' : '') + body.slice(0, 4000);
+}
+async function _outcomeDefaults() {
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem('amux_outcome_defaults') || '{}'); } catch (_) {}
+  try {
+    const r = await fetch(API + '/api/prefs?key=outcome_defaults', { headers: _authHeaders() });
+    if (r.ok) { const v = (await r.json()).value; if (v) d = JSON.parse(v); }
+  } catch (_) { /* offline: the cached copy stands */ }
+  return {
+    group: d.group ?? ((typeof activeTag === 'string' && activeTag) ? activeTag : ''),
+    dir: d.dir || ((_filesCwd && _filesCwd !== '/') ? _filesCwd : ''),
+    provider: d.provider || 'claude',
+    model: d.model || '',
+    goal: d.goal !== false,
+    isolated: d.isolated !== false,
+    constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
+  };
+}
+async function openOutcome() {
+  const d = await _outcomeDefaults();
+  const draft = localStorage.getItem('amux_outcome_draft') || '';
+  const groups = [...new Set((sessions || []).flatMap(s => s.tags || []))].sort();
+  const chk = (id, on, label) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${label}</label>`;
+  const html = `<div class="outcome-form">
+    <textarea id="outcome-text" class="input outcome-text" rows="4"
+      placeholder="e.g. Add a dark mode toggle to settings and ship it"
+      onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
+    <details class="outcome-settings">
+      <summary>Defaults and constraints</summary>
+      <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
+      <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
+      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="~/Dev/project"></label>
+      <label class="outcome-field">Provider<select id="outcome-provider" class="input">
+        ${['claude', 'codex', 'gemini'].map(p => `<option value="${p}"${p === d.provider ? ' selected' : ''}>${p}</option>`).join('')}
+      </select></label>
+      <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
+      <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
+      ${chk('outcome-goal', d.goal, 'Keep going until done (/goal, Claude)')}
+      ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
+      ${chk('outcome-remember', true, 'Remember these as my defaults')}
+    </details>
+  </div>`;
+  const shown = showFormModal('Describe what you want', html, 'Start');
+  setTimeout(() => document.getElementById('outcome-text')?.focus(), 30);
+  const ok = await shown;
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  const on = (id) => !!document.getElementById(id)?.checked;
+  const text = v('outcome-text');
+  if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
+  if (!ok || !text) return;
+  const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
+    model: v('outcome-model'), goal: on('outcome-goal'), isolated: on('outcome-isolated'),
+    constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  if (on('outcome-remember')) {
+    const val = JSON.stringify(cfg);
+    localStorage.setItem('amux_outcome_defaults', val);
+    fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ key: 'outcome_defaults', value: val }) }).catch(() => {});
+  }
+  await _outcomeStart(text, cfg);
+}
+async function _outcomeStart(text, cfg) {
+  const name = _outcomeName(text, new Set((sessions || []).map(s => s.name)));
+  const goal = cfg.goal && cfg.provider === 'claude';
+  const body = { name, dir: cfg.dir || (window._cloudEmail ? '/root' : ''), creator: _getDeviceName(),
+    desc: _outcomeDesc(text), prompt: _outcomePrompt(text, cfg.constraints || '', goal) };
+  if (cfg.provider !== 'claude') body.provider = cfg.provider;
+  if (cfg.model) body.model = cfg.model;
+  const groups = _createGroupsFrom(cfg.group);
+  if (groups.length) body.tags = groups;
+  if (cfg.isolated) body.isolated = true;
+  if (_yoloDefault) body.yolo = true;
+  let r;
+  try {
+    r = await fetch(API + '/api/sessions', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body) });
+  } catch (_) { showToast('Not started: server unreachable. Your description is kept.'); return; }
+  // The outbox holds this create durably and replays it once (a 5xx is queued
+  // too). Keeping the draft here invited a second press: two workers, one goal.
+  if (_isLocallyQueued(r)) {
+    localStorage.removeItem('amux_outcome_draft');
+    showToast('Queued: ' + name + ' starts on its own when the server is reachable. See Pending operations.');
+    return;
+  }
+  if (!r.ok) {
+    let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+    showToast('Not started: ' + (e || 'error ' + r.status) + '. Your description is kept.');
+    return;
+  }
+  localStorage.removeItem('amux_outcome_draft');
+  showToast(goal ? 'Started ' + name + ': it keeps going until done and tells you when it is'
+                 : 'Started ' + name);
+  await fetchSessions();
+  document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 // ── Set default model label from server config ──
 if (window._AMUX_DEFAULT_MODEL) {
   const defOpt = document.getElementById('model-default-opt');
   if (defOpt) defOpt.textContent = 'Default (' + window._AMUX_DEFAULT_MODEL + ')';
 }
 
-// Append a picked group to the comma list without clobbering what is typed,
-// and without adding it twice — the picker is an aid to the field, not a second
-// source of truth for it.
-function _editAddGroup(sel) {
-  const g = sel.value;
-  sel.selectedIndex = 0;
-  if (!g) return;
-  const inp = document.getElementById('edit-input');
-  const cur = (inp.value || '').split(',').map(x => x.trim()).filter(Boolean);
-  if (cur.some(x => x.toLowerCase() === g.toLowerCase())) return;
-  cur.push(g);
-  inp.value = cur.join(', ');
-  inp.focus();
-}
-
 // ── Edit modal ──
 let editState = null;  // {session, field, current}
 function editField(session, field, current, provider) {
+  document.getElementById('eg-groups').style.display = 'none';
   closeAllMenus();
   const titles = { name: 'Rename worker', provider: 'Change provider', model: 'Change model', effort: 'Reasoning effort', dir: 'Change directory', desc: 'Set description', tags: 'Edit groups', task: 'Edit task label', branch: 'Set worker branch', mcp: 'Browser tooling', send_allow: 'Cross-group messaging', duplicate: 'Duplicate worker', clone: 'Clone & continue' };
   const placeholders = { name: 'Worker name', model: 'e.g. opus, sonnet, haiku', dir: window._cloudEmail ? '/root' : '/path/to/project', desc: 'Brief description...', tags: 'e.g. work, frontend, urgent', task: 'e.g. Fix login bug (blank to auto-generate)', branch: 'Branch name; blank = detected branch; none = main', send_allow: 'Comma-separated groups, * for all, blank to refuse', duplicate: 'New worker name', clone: 'New worker name' };
@@ -10042,43 +11019,26 @@ function editField(session, field, current, provider) {
     sel.style.display = 'block';
     sel.value = current || '';
   } else if (field === 'tags') {
-    // GROUPS GET A DROPDOWN (Ethan, 2026-08-06: "groups isnt working it should be
-    // a dropdown when I create it"). It was a bare text box, so joining an
-    // existing group meant retyping its name from memory and matching the
-    // spelling exactly — one typo silently created a new single-worker group
-    // instead of joining "customers". There was no list to pick from because
-    // GET /api/groups 404'd; that endpoint is added in this same change.
-    //
-    // Dropdown ALONGSIDE the input rather than replacing it, because a worker
-    // belongs to zero or more groups and new groups have to be creatable. The
-    // select is a picker that appends; the field stays the source of truth. A
-    // pure <select> would have made "dropdown" true and "create a group"
-    // impossible.
-    inpWrap.style.display = '';
+    // GROUPS ARE A MULTISELECT (Ethan, 2026-10-20: "i can remove groups and
+    // it'll update. also make groups multiselect not just comma separated").
+    // Each group is a chip with a remove button; typing filters the existing
+    // groups and Enter adds one, existing or new. It replaces the comma field
+    // and its second autocomplete, whose open list took the Enter that should
+    // have saved. The chips are the widget the board's card form already uses.
+    inpWrap.style.display = 'none';
     sel.style.display = 'none';
-    inp.value = current || '';
-    inp.placeholder = placeholders[field] || '';
-    const gw = document.getElementById('edit-group-picker');
-    if (gw) {
-      gw.style.display = '';
-      gw.innerHTML = '<option value="">+ Add existing group…</option>';
-      fetch(API + '/api/groups', { headers: _authHeaders() })
-        .then(r => r.json())
-        .then(d => {
-          (d.groups || []).forEach(g => {
-            const o = document.createElement('option');
-            o.value = g.name;
-            o.textContent = g.name + '  (' + g.workers + ')';
-            gw.appendChild(o);
-          });
-        })
-        .catch(() => {});   // picker is an aid; the text field still works
-    }
+    _tagState.eg = String(current || '').split(',').map(x => x.trim()).filter(Boolean);
+    document.getElementById('eg-groups').style.display = '';
+    document.getElementById('eg-tag-input').value = '';
+    _beTagRenderChips('eg');
+    _beTagInputUpdate('eg');
+    fetch(API + '/api/groups', { headers: _authHeaders() })
+      .then(r => r.json())
+      .then(d => { _egGroups = (d.groups || []).map(g => ({ name: g.name, workers: g.workers })); _beTagInputUpdate('eg'); })
+      .catch(() => {});   // suggestions are an aid; typing a name still adds it
   } else {
     inpWrap.style.display = '';
     sel.style.display = 'none';
-    const _gw0 = document.getElementById('edit-group-picker');
-    if (_gw0) _gw0.style.display = 'none';
     inp.value = current || '';
     inp.placeholder = placeholders[field] || '';
   }
@@ -10088,12 +11048,12 @@ function editField(session, field, current, provider) {
 }
 function closeEdit() {
   document.getElementById('edit-overlay').classList.remove('active');
+  document.getElementById('eg-groups').style.display = 'none';
   document.getElementById('edit-ac-list').classList.remove('open');
   document.getElementById('edit-input-wrap').style.display = '';
   document.getElementById('edit-select').style.display = 'none';
   const _effW = document.getElementById('edit-effort-wrap');
   if (_effW) _effW.style.display = 'none';
-  tagAcItems = []; tagAcSelected = -1;
   editState = null;
 }
 // edit-select auto-submits for quick single-select fields (provider), but the
@@ -10119,6 +11079,12 @@ async function submitEdit() {
     : document.getElementById('edit-input').value.trim();
   if (editState.field === 'model' && val === '__custom__') {
     val = document.getElementById('edit-input').value.trim();
+  }
+  let groups = null;
+  if (editState.field === 'tags') {
+    const typed = document.getElementById('eg-tag-input').value.trim().replace(/,/g, '');
+    if (typed) _beTagAdd('eg', typed);
+    groups = [..._tagState.eg];
   }
   if (!val && !['desc','tags','model','task','effort','branch','mcp','send_allow'].includes(editState.field)) return;
   const { session, field } = editState;
@@ -10183,10 +11149,19 @@ async function submitEdit() {
       body: JSON.stringify({ task_summary: val })
     });
   } else if (field === 'tags') {
-    await apiCall(API + '/api/sessions/' + session + '/config', {
+    const r = await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ tags: val })
+      body: JSON.stringify({ tags: groups })
     });
+    // Show the change at once rather than after the next sessions poll.
+    if (r && r.ok) {
+      const s = (sessions || []).find(x => x.name === session);
+      if (s) { s.tags = groups; render(); }
+      showToast(groups.length ? session + ' groups: ' + groups.join(', ') : session + ' is in no groups');
+    } else if (r && !_isLocallyQueued(r)) {
+      let e = ''; try { e = (await r.json()).error || ''; } catch (_) {}
+      showToast('Groups not saved: ' + (e || 'error ' + r.status));
+    }
   } else if (field === 'branch') {
     await apiCall(API + '/api/sessions/' + session + '/config', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
@@ -10240,35 +11215,26 @@ function editAcPick(i) {
 }
 function editAcKeydown(e) {
   const el = document.getElementById('edit-ac-list');
-  const isTagField = editState && editState.field === 'tags';
-  const acItems = isTagField ? tagAcItems : editAcItems;
-  const pickFn = isTagField ? tagAcPick : editAcPick;
-  const highlightFn = isTagField ? (() => {
-    const items = el.querySelectorAll('.ac-item');
-    items.forEach((item, i) => item.classList.toggle('selected', i === tagAcSelected));
-    if (items[tagAcSelected]) items[tagAcSelected].scrollIntoView({ block: 'nearest' });
-  }) : editAcHighlight;
+  const acItems = editAcItems;
   if (!el.classList.contains('open')) {
     if (e.key === 'Enter') { e.preventDefault(); submitEdit(); }
     return;
   }
   if (e.key === 'ArrowDown') {
     e.preventDefault();
-    if (isTagField) { tagAcSelected = Math.min(tagAcSelected + 1, acItems.length - 1); highlightFn(); }
-    else { editAcSelected = Math.min(editAcSelected + 1, acItems.length - 1); highlightFn(); }
+    editAcSelected = Math.min(editAcSelected + 1, acItems.length - 1); editAcHighlight();
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
-    if (isTagField) { tagAcSelected = Math.max(tagAcSelected - 1, 0); highlightFn(); }
-    else { editAcSelected = Math.max(editAcSelected - 1, 0); highlightFn(); }
+    editAcSelected = Math.max(editAcSelected - 1, 0); editAcHighlight();
   } else if (e.key === 'Enter') {
     e.preventDefault();
-    const sel = isTagField ? tagAcSelected : editAcSelected;
-    if (sel >= 0) pickFn(sel);
+    const sel = editAcSelected;
+    if (sel >= 0) editAcPick(sel);
     else { el.classList.remove('open'); submitEdit(); }
   } else if (e.key === 'Tab' && acItems.length) {
     e.preventDefault();
-    const sel = isTagField ? tagAcSelected : editAcSelected;
-    pickFn(sel >= 0 ? sel : 0);
+    const sel = editAcSelected;
+    editAcPick(sel >= 0 ? sel : 0);
   } else if (e.key === 'Escape') {
     el.classList.remove('open');
   }
@@ -10279,48 +11245,6 @@ function editAcHighlight() {
   if (items[editAcSelected]) items[editAcSelected].scrollIntoView({ block: 'nearest' });
 }
 
-// ── Tag autocomplete ──
-let tagAcItems = [];
-let tagAcSelected = -1;
-let _tagBrowse = false;
-// Focus/click → browse mode: show every unused tag right away so you can just
-// click one (no typing needed). Typing → filter by the token.
-function tagAcFocus(val) { _tagBrowse = true; tagAcUpdate(val); }
-function tagAcType(val) { _tagBrowse = false; tagAcUpdate(val); }
-function tagAcUpdate(val) {
-  const el = document.getElementById('edit-ac-list');
-  const parts = val.split(',');
-  // Browse mode (just focused): treat ALL non-empty parts as already-chosen and
-  // show the rest; typing mode: the last part is the token being filtered on.
-  const token = _tagBrowse ? '' : parts[parts.length - 1].trim().toLowerCase();
-  const usedParts = _tagBrowse ? parts : parts.slice(0, -1);
-  const used = usedParts.map(p => p.trim().toLowerCase()).filter(Boolean);
-  const allTags = [...new Set(sessions.flatMap(s => s.tags || []))].sort();
-  tagAcItems = allTags.filter(t => { const tl = t.toLowerCase(); return !used.includes(tl) && (!token || tl.startsWith(token)); });
-  tagAcSelected = -1;
-  if (!tagAcItems.length) { el.classList.remove('open'); return; }
-  el.innerHTML = tagAcItems.map((t, i) =>
-    `<div class="ac-item" onmousedown="tagAcPick(${i})">${esc(t)}</div>`
-  ).join('');
-  el.classList.add('open');
-}
-function tagAcPick(i) {
-  const inp = document.getElementById('edit-input');
-  const tag = tagAcItems[i];
-  if (_tagBrowse) {
-    // Append as a new tag; keep browsing so you can click several in a row.
-    const cur = inp.value.replace(/,\s*$/, '').trim();
-    inp.value = cur ? (cur + ', ' + tag) : tag;
-    tagAcUpdate(inp.value);
-  } else {
-    const parts = inp.value.split(',');
-    parts[parts.length - 1] = (parts.length > 1 ? ' ' : '') + tag;
-    inp.value = parts.join(',');
-    document.getElementById('edit-ac-list').classList.remove('open');
-    tagAcItems = [];
-  }
-  inp.focus({ preventScroll: true });
-}
 
 async function toggleYolo(session) {
   closeAllMenus();
@@ -10936,6 +11860,54 @@ function autoGrow(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
+// A COMPOSER YOU CAN SIZE BY HAND (Ethan, 2026-10-20: "i want to be able to
+// drag this input box by a corner and manually make it bigger"). The box sits
+// on the bottom edge, so the native bottom-right resize handle could only push
+// it off screen; the grip is on its top-left corner and dragging it up raises
+// the box's minimum height. Text still grows the box past that, up to 70% of
+// the screen. The height is kept per device; a double-click on the grip goes
+// back to sizing by content.
+const _COMPOSER_H_KEY = 'amux_peek_composer_h';
+function _composerSetHeight(ta, h) {
+  if (!ta) return;
+  if (!h) { ta.classList.remove('user-sized'); ta.style.removeProperty('--composer-h'); return; }
+  const max = Math.round(innerHeight * 0.7);
+  h = Math.max(44, Math.min(max, Math.round(h)));
+  ta.style.setProperty('--composer-h', h + 'px');
+  ta.classList.add('user-sized');
+  return h;
+}
+function _composerGripInit(gripId, taId, key) {
+  const grip = document.getElementById(gripId), ta = document.getElementById(taId);
+  if (!grip || !ta || grip._wired) return;
+  grip._wired = true;
+  const saved = parseInt(localStorage.getItem(key) || '', 10);
+  if (saved > 0) _composerSetHeight(ta, saved);
+  let startY = 0, startH = 0, last = 0;
+  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  const up = () => {
+    grip.classList.remove('dragging');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
+  };
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    grip.classList.add('dragging');
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+  grip.addEventListener('dblclick', () => {
+    _composerSetHeight(ta, 0);
+    try { localStorage.removeItem(key); } catch (e) {}
+    autoGrow(ta);
+  });
+}
+_composerGripInit('peek-composer-grip', 'peek-cmd-input', _COMPOSER_H_KEY);
+
 async function gitPush(name, e) {
   if (!name) return;
   const ok = await showConfirm(`Deploy ${name} to main?\n\nThis will tell Claude to commit and push to main.`, 'Deploy', false);
@@ -11155,10 +12127,11 @@ async function sendFromInput(name) {
   if (_blockedByAttachment(_cf)) return;
   const _files = _cf.filter(f => f.path);
   if (!text && _files.length === 0) {
-    // Empty send = extract + submit the suggested prompt from the session
+    // Empty send = extract + submit the suggested prompt from the session.
+    // Once per press: a double tap raced a second submit that found no
+    // suggestion and pressed a stray Enter in the worker.
     inp.value = '';
-    _submitSuggestion(name, false, 'Enter');
-    return;
+    return _onlyOnce('empty-send:' + name, () => _submitSuggestion(name, false, 'Enter'));
   }
   // No newlines: tmux treats \n as Enter, which would split the message and
   // submit the path as its own line.
@@ -11734,6 +12707,59 @@ function _boardSwitchStates(s, pending) {
 }
 const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 
+// ONE BOARD SWITCH (Ethan, 2026-10-17: "update the board settings on worker
+// page to just have a single toggle enable/disable board. that should do all
+// the board stuff"; 2026-10-24: "we should have had one toggle for
+// enable/disable board where disable by default"). The worker pages show this
+// one switch; it PATCHes `board_enabled`, which writes every board key at once.
+// It reads On exactly when the board steers the worker: every other board key
+// is gated on steering, so with steering off they do nothing and the switch is
+// Off. It used to read "Partly on" whenever any key was set, and the fleet-wide
+// AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1 made that 120 of 145 workers, all of them
+// with the board doing nothing.
+function _boardOneState(s) {
+  if (!s || s.isolated) return { mode: 'off', on: false, label: 'Off' };
+  if ('board_enabled' in _pbcPending) return _pbcPending.board_enabled ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
+  const st = _boardSwitchStates(s, _pbcPending);
+  return st.board_force_adherence.effective ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
+}
+const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards when it is idle, keeps it going on unfinished cards, refills To Do from Backlog, turns task-like messages into cards, and nudges and reminds it. Off: the board only keeps records and never types into this worker.';
+function _boardOneSwitchHTML(name, s, cls) {
+  const b = _boardOneState(s);
+  const dis = s && s.isolated ? ' disabled' : '';
+  return '<button type="button" class="btn board-one-switch' + (cls ? ' ' + cls : '') + '" role="switch"'
+    + ' aria-checked="' + String(b.on) + '" data-board-mode="' + b.mode + '"' + dis
+    + ' onclick="event.stopPropagation();_boardOneSet(\'' + escJs(name) + '\',' + (!b.on) + ')"'
+    + ' aria-label="Board for ' + esc(name) + '">' + esc(b.label) + '</button>';
+}
+async function _boardOneSet(name, on) {
+  if (!name) return;
+  const inherit = on === null;
+  if (!inherit) _pbcPending.board_enabled = !!on;
+  if (peekSession === name) _peekBoardPolicySync();
+  try {
+    const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ board_enabled: inherit ? null : !!on })
+    });
+    if (r) {
+      let d = {};
+      try { d = await r.json(); } catch (e) {}
+      showToast(d.message || (inherit ? 'Board follows the group or fleet setting' : 'Board ' + (on ? 'on' : 'off')));
+      const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
+      if (s && !inherit) for (const c of _BOARD_SWITCHES) { s[c.value] = !!on; if (c.active) s[c.active] = !!on; if (c.own) s[c.own] = true; }
+      if (!inherit && d.board_enabled !== undefined && d.board_enabled !== !!on) {
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+          body: JSON.stringify({ kind: 'board-one-switch-not-effective', session: name, requested: !!on, effective: d.board_enabled, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      }
+    }
+    await fetchSessions().catch(() => {});
+  } finally {
+    delete _pbcPending.board_enabled;
+    if (peekSession === name) _peekBoardPolicySync();
+  }
+}
+
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
     + '<div class="worker-config-copy"><div class="worker-config-label">'
@@ -11820,8 +12846,8 @@ function _workerPrimaryConfigurationsHTML(name) {
   const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
     + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
-  const sw = (on, fn, label) => '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="'
-    + !!on + '" style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+  const sw = (on, fn, label) => '<button class="btn" role="switch" aria-checked="'
+    + !!on + '" style="font-size:0.68rem;min-height:32px;"'
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
@@ -11887,8 +12913,8 @@ async function _workerTypeSet(name, id) {
 function _workerEmailPermissionControls(name, s) {
   const on = !!s.external_email_allowed;
   const own = !!s.external_email_allowed_own;
-  const set = '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
-    + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
+  const set = '<button class="btn" role="switch" aria-checked="' + on + '"'
+    + ' style="font-size:0.68rem;min-height:32px;"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
   const inherit = own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',null)">Inherit</button>' : '';
@@ -11911,28 +12937,9 @@ async function _workerExternalEmailSet(name, value) {
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
-  const states = _boardSwitchStates(s);
-  const rows = _WORKER_BOARD_CONFIGS.map(c => {
-    const on = states[c.field].own;
-    const own = !!(c.own && s[c.own]);
-    return '<div class="worker-config-row">'
-      + '<div class="worker-config-copy"><div class="worker-config-label">'
-      + esc(c.label) + (own ? ' <span style="font-size:0.62rem;color:var(--accent);">worker override</span>'
-                              : ' <span style="font-size:0.62rem;color:var(--dim);">inherited/default</span>')
-      + '</div><div class="worker-config-note">' + esc(c.note)
-      + (states[c.field].why ? '<span class="pbc-why" style="display:block;">' + esc(states[c.field].why) + '</span>' : '')
-      + '</div></div><div class="worker-config-actions">'
-      + '<button class="btn' + (on ? ' primary' : '') + '" role="switch" aria-checked="' + on + '"'
-      + ' style="font-size:0.68rem;min-height:32px;min-width:48px;padding:4px 8px;"'
-      + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
-      + escJs(c.field) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>'
-      + (own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
-          + ' onclick="event.stopPropagation();_workerBoardConfigurationSet(\'' + escJs(name) + '\',\''
-          + escJs(c.field) + '\',null)">Inherit</button>' : '')
-      + '</div></div>';
-  }).join('');
-  return '<div class="worker-config-grid worker-config-grid-board">'
-    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'The same switches as the worker\u2019s Board tab. A switch that is on but held back by the one above it says so. Status availability and Board gates below define transition requirements.', [rows])
+  const row = _workerConfigurationRow('board_enabled', 'Board', '', _BOARD_ONE_NOTE, _boardOneSwitchHTML(name, s));
+  return '<div class="worker-config-grid worker-config-grid-board" data-session="' + esc(name) + '">'
+    + _workerConfigurationSection('task-lifecycle', 'Board and this worker', 'Status availability and Board gates below define transition requirements.', [row])
     + '</div>';
 }
 
@@ -12573,9 +13580,12 @@ function _peekChatMenuItem(s) {
 
 function setPeekTab(tab) {
   _peekTab = tab;
+  // CSS reads this to drop chrome a tab does not use (phone real estate).
+  const _po = document.getElementById('peek-overlay'); if (_po) _po.dataset.peekTab = tab;
   // Persist so an app-switch away and back lands on this tab, not the default.
   try { _savePeekState(); } catch(e) {}
   try { _peekViewRemember(); } catch(e) {}
+  _syncUrlHash();
   // The notes tab is gone; this flushed its pending save and called
   // _peekNotesSave(), which went with it. The branch never fired only because
   // _peekNotesSaveTimer is now never assigned non-null — so a single line
@@ -12653,6 +13663,12 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
+  const tasksP = document.getElementById('peek-tasks-panel');
+  if (tasksP) {
+    if (tab === 'tasks') { tasksP.classList.add('active'); _tasksLoad('peek', true); }
+    else tasksP.classList.remove('active');
+  }
   const messages = document.getElementById('peek-messages-panel');
   if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
   else { messages.classList.remove('active'); }
@@ -12681,6 +13697,8 @@ function setPeekTab(tab) {
   const logsP = document.getElementById('peek-logs-panel');
   if (tab === 'logs') { logsP.classList.add('active'); _peekLogsLoad(); }
   else { logsP.classList.remove('active'); }
+  // The toolbar's Find, filter and up/down follow the tab (_peekTabActivate).
+  try { _peekTabActivate(tab); } catch (e) {}
 
   requestAnimationFrame(() => {
     const selected=document.getElementById('peek-tab-'+tab);
@@ -12694,21 +13712,58 @@ function setPeekTab(tab) {
 }
 
 // ── Standing instructions (autonomy config) ──
+// A worker tab's answer belongs to the worker it asked about. Switching
+// workers while a request was out painted worker A's memory, instructions,
+// git state or logs into worker B's tab, and Save or Push then acted on B with
+// A's content (2026-10-24, Ethan: "theres race conditions all over the app").
+// Each loader captures the worker and drops a late answer here, which counts
+// the drop and reports it, so a loader that misses the check shows in the logs.
+const _peekStaleDrops = {};
+function _peekStale(sess, where) {
+  if (peekSession === sess) return false;
+  const n = (_peekStaleDrops[where] = (_peekStaleDrops[where] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('peek-stale-response', {verdict: 'peek_stale_response_dropped', measured: true, n_considered: n,
+      where, asked: sess, now: peekSession || ''}); } catch (_) {}
+  }
+  return true;
+}
+// The same for a view's own reloads: an older answer than one already
+// applied is dropped, counted per place and reported.
+const _olderAnswerDrops = {};
+function _olderAnswerDropped(where) {
+  const n = (_olderAnswerDrops[where] = (_olderAnswerDrops[where] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('stale-answer', {verdict: 'older_answer_dropped', measured: true, n_considered: n, where}); } catch (_) {}
+  }
+}
+// An editor holding another worker's text must not be saved into this one.
+function _peekEditorIsFor(el, where) {
+  if (!el || el.dataset.sess === peekSession) return true;
+  try { window._clientDebug?.('peek-stale-response', {verdict: 'peek_save_refused_other_worker', measured: true, n_considered: 1,
+    where, holds: el.dataset.sess || '', now: peekSession || ''}); } catch (_) {}
+  showToast('This editor was showing another worker. Reloaded; save again.');
+  return false;
+}
+
 async function loadPeekInstructions() {
   if (!peekSession) return;
+  const sess = peekSession;
   const ta = document.getElementById('peek-instructions');
   const status = document.getElementById('peek-instructions-status');
   if (!ta) return;
   if (status) status.textContent = '';
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/instructions');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/instructions');
     const d = await r.json();
-    if (peekSession && document.getElementById('peek-instructions'))
-      document.getElementById('peek-instructions').value = d.instructions || '';
+    if (_peekStale(sess, 'instructions')) return;
+    const el = document.getElementById('peek-instructions');
+    if (el) { el.value = d.instructions || ''; el.dataset.sess = sess; }
   } catch(e) {}
 }
 async function savePeekInstructions(apply) {
   if (!peekSession) return;
+  if (!_peekEditorIsFor(document.getElementById('peek-instructions'), 'instructions')) { loadPeekInstructions(); return; }
   const ta = document.getElementById('peek-instructions');
   const status = document.getElementById('peek-instructions-status');
   const body = { instructions: ta.value };
@@ -12741,7 +13796,9 @@ function _steerQueueFor(sess) {
       const body = JSON.parse(q.options.body);
       if (body.msg_id && known.has(body.msg_id)) return [];
       return [{id:q.id, transport_id:body.msg_id, text:body.text, queued_at:q.timestamp/1000,
-        pending:true, local:true, error:q.error || '', guard:''}];
+        pending:true, local:true, error:q.error || '', guard:'',
+        attempted: !!(q.attempted_at || q.attempts || !q.not_attempted),
+        decision: q.needs_decision || '', checking: !q.needs_decision && _outboxUncertainMessage(q)}];
     } catch (_) { return []; }
   });
   return server.concat(local);
@@ -12749,6 +13806,18 @@ function _steerQueueFor(sess) {
 
 function _steerHumanCount(sess) {
   return _steerQueueFor(sess).filter(m => !m.system).length;
+}
+
+// A message saved on this device that has sat in the Queued list for 10+
+// minutes is reported once per message, so a sweep sees stuck sends before
+// the owner screenshots them (2026-10-23: one sat 4h as "Needs review").
+const _steerStuckReported = new Set();
+function _steerReportStuck(m, ps) {
+  const age_ms = Date.now() - (m.queued_at || 0) * 1000;
+  if (age_ms < 600000 || _steerStuckReported.has(m.id)) return;
+  _steerStuckReported.add(m.id);
+  try { window._clientDebug?.('steer-pending-stuck', {verdict: 'steer_pending_stuck', measured: true, n_considered: 1,
+    age_ms, state: ps.label, decision: m.decision || '', error: String(m.error || '').slice(0, 200), session: peekSession}); } catch (_) {}
 }
 
 function _steeringRender() {
@@ -12766,13 +13835,27 @@ function _steeringRender() {
   const sys = queue.filter(m => m.system);
   countEl.textContent = (human.length ? human.length + ' queued' : 'No queued messages')
     + (sys.length ? ' · ' + sys.length + ' system' : '');
+  countEl.dataset.n = String(human.length);
+  countEl.dataset.sess = peekSession;
+  // The tab badge from the same reading as this list.
+  _steeringUpdateBadge();
   const row = m => {
     const ago = timeAgo(m.queued_at);
     const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
     const hasDelay = m.deliver_at > Date.now() / 1000 && !m.system;
     const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border:0;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
-    const pendTag = m.pending ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${m.error ? 'Needs review' : online ? 'Awaiting server' : 'Saved offline'}</span>` : '';
-    const dis = m.pending ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    const ps = m.local ? _pendingMsgState(m) : null;
+    const pendTag = ps ? `<span class="steer-pending-state" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${esc(ps.label)}</span><span class="steer-pending-note" style="font-size:0.7rem;color:var(--dim);">${esc(ps.note)}${m.error && m.decision ? ': ' + esc(m.error) : ''}</span>` : '';
+    if (ps) _steerReportStuck(m, ps);
+    // A server row that is still pending has nothing to act on yet; a row saved
+    // on this device always does (send again, or remove it).
+    const dis = m.pending && !m.local ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    const sendBtn = m.local
+      ? `<button class="btn primary steer-pending-retry" ${dis} onclick="_outboxRetryNow('${escJs(m.id)}')">${esc(ps.retry)}</button>`
+      : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`;
+    const cancelBtn = m.local
+      ? `<button class="btn steer-pending-remove" ${dis} onclick="_outboxRemoveMessage('${escJs(m.id)}')" title="Remove from this device" aria-label="Remove from this device">✕</button>`
+      : `<button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>`;
     const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
     return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
@@ -12783,9 +13866,9 @@ function _steeringRender() {
         ${m.waiting_for ? `<div class="steer-waiting" style="font-size:0.75rem;color:var(--yellow,#d29922);margin-top:2px;">Waiting for ${esc(m.waiting_for)}</div>` : ''}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;">
-        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`}
+        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : sendBtn}
         ${delayBtn}
-        <button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>
+        ${cancelBtn}
       </div>
     </div>`;
   };
@@ -12847,6 +13930,14 @@ function _steeringUpdateBadge() {
   if (!badge) return;
   if (n > 0) { badge.textContent = n; badge.classList.add('has-count'); }
   else { badge.textContent = ''; badge.classList.remove('has-count'); }
+  // With Steering open, its list must say the same. A list showing another
+  // count was not repainted when the queue changed: report it and redraw.
+  const listed = document.getElementById('peek-steering-count');
+  if (_peekTab === 'steering' && listed && listed.dataset.sess === peekSession && Number(listed.dataset.n) !== n) {
+    try { window._clientDebug?.('steer-list-stale', {verdict: 'steer_list_stale', measured: true, n_considered: 1,
+      list: Number(listed.dataset.n), badge: n, session: peekSession}); } catch (_) {}
+    _steeringRender();
+  }
 }
 
 // "Delivers 6:15 PM", with the day when it is not today.
@@ -12913,7 +14004,10 @@ function _steeringDelayPrompt(msgId) {
 
 async function _steeringSendNow(msgId) {
   if (!peekSession) return;
-  const sess = sessions.find(s => s.name === peekSession);
+  // The worker this message is queued on, kept through the send: the queue
+  // row is removed from THIS worker even if the peek moves on meanwhile.
+  const name = peekSession;
+  const sess = sessions.find(s => s.name === name);
   const msg = _steerQueueFor(sess).find(m => m.id === msgId);
   if (!msg) return;
   if (msg.guard === 'project-steering') {
@@ -12922,9 +14016,9 @@ async function _steeringSendNow(msgId) {
   }
   const btn = document.querySelector(`[onclick*="_steeringSendNow('${msgId}')"]`);
   if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; btn.style.opacity = '0.6'; }
-  showToast('Sending now to ' + peekSession + '…');
+  showToast('Sending now to ' + name + '…');
   try {
-    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({text: msg.text, deliver_now: true}),
       signal: AbortSignal.timeout(90000)
@@ -12935,16 +14029,14 @@ async function _steeringSendNow(msgId) {
       showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
       return;
     }
-    await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
+    await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
     });
     if (sess && sess.steering) sess.steering = sess.steering.filter(m => m.id !== msgId);
-    _steeringRender();
-    _steeringLoadHistory();
-    _steeringUpdateBadge();
+    if (!_peekStale(name, 'steering_send_now')) { _steeringRender(); _steeringLoadHistory(); }
     render();
-    showToast('Sent now to ' + peekSession);
+    showToast('Sent now to ' + name);
     fetchSessions();
   } catch(e) { if (btn) { btn.textContent = 'Send now'; btn.disabled = false; btn.style.opacity = ''; } showToast('Failed to send'); }
 }
@@ -13004,8 +14096,10 @@ async function _commitsLoad() {
   const list = document.getElementById('commits-list');
   list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">Loading commits…</div>';
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/commits?count=15');
+    const asked = peekSession;
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/git/commits?count=15');
     const d = await r.json();
+    if (_peekStale(asked, 'commits')) return;
     _commitsData = d.commits || [];
     _commitsRenderList();
   } catch(e) {
@@ -13124,15 +14218,18 @@ function toggleGitFilter() {
 
 async function loadPeekGit() {
   if (!peekSession) return;
+  const asked = peekSession;
   document.getElementById('peek-git-loading').style.display = '';
   document.getElementById('peek-git-content').style.display = 'none';
   try {
     const [r, tr] = await Promise.all([
-      fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git?detail=1'),
-      fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/tracked-files')
+      fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/git?detail=1'),
+      fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/tracked-files')
     ]);
     const d = await r.json();
     const td = await tr.json();
+    if (_peekStale(asked, 'git')) return;
+    d._sess = asked;   // whose branch this is: Push reads it
     if (td.files && td.files.length) {
       // Normalize tracked files to relative paths (tracked-files returns absolute, git diff returns relative)
       const prefix = d.repo ? d.repo.replace(/\/$/, '') + '/' : '';
@@ -13146,6 +14243,7 @@ async function loadPeekGit() {
     _peekGitData = d;
     _renderPeekGit(d);
   } catch(e) {
+    if (_peekStale(asked, 'git')) return;
     document.getElementById('peek-git-loading').textContent = 'Failed to load git info.';
   }
 }
@@ -13431,10 +14529,12 @@ async function peekGitPush() {
   if (!peekSession) return;
   const btn = document.getElementById('peek-git-push-btn');
   btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; btn.textContent = 'Pushing…';
-  const branch = _peekGitData && _peekGitData.branch;
+  const name = peekSession;
+  // Another worker's branch never goes into this worker's terminal.
+  const branch = _peekGitData && _peekGitData._sess === name && _peekGitData.branch;
   const text = branch ? `git push -u origin ${branch}` : 'git push';
-  await doSend(peekSession, text);
-  setTimeout(() => loadPeekGit(), 3000);
+  await doSend(name, text);
+  setTimeout(() => { if (peekSession === name) loadPeekGit(); }, 3000);
   btn.style.opacity = ''; btn.style.pointerEvents = '';
 }
 
@@ -13641,11 +14741,6 @@ const _PEEK_BOARD_ALL_CONFIGS = _BOARD_SWITCHES;
 // save and the session refetch came back, so an unchecked box flipped back
 // (Ethan, 2026-10-04: "when I uncheck these they revert back").
 const _pbcPending = {};
-// The switches sit in the shared settings-fold accordion, collapsed by default
-// (Ethan, 2026-10-16: "make this an accordion collapsed by default"). Open/closed
-// is remembered per worker so a board refresh, which rebuilds the panel, does
-// not snap it shut under the owner's cursor.
-const _pbcFoldOpen = {};
 function _peekBoardPolicySync() {
   const el = document.getElementById('peek-board-config');
   if (!el) return;
@@ -13654,38 +14749,15 @@ function _peekBoardPolicySync() {
   el.style.display = show ? '' : 'none';
   if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  const q = escJs(peekSession);
-  let h = '';
-  if (iso) {
-    h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
-  }
-  // The DOM is the truth for open/closed: `toggle` fires a task after the click,
-  // so a rebuild landing in between would otherwise read the old value and snap
-  // the panel shut (CI caught it on dd7d2b635). Only this worker's fold counts.
-  const curFold = el.querySelector('details.pbc-fold');
-  if (curFold && curFold.dataset.session === peekSession) _pbcFoldOpen[peekSession] = curFold.open;
-  const states = _boardSwitchStates(s, _pbcPending);
-  const nOn = iso ? 0 : _PEEK_BOARD_ALL_CONFIGS.filter(c => states[c.field].own).length;
-  h += '<details class="settings-fold pbc-fold" data-session="' + esc(peekSession) + '"' + (_pbcFoldOpen[peekSession] ? ' open' : '')
-    + ' ontoggle="_pbcFoldOpen[\'' + q + '\']=this.open"><summary><span class="pbc-fold-title">Board settings</span>'
-    + '<span class="ui-help">' + nOn + ' of ' + _PEEK_BOARD_ALL_CONFIGS.length + ' on</span></summary>';
-  let group = '';
-  for (const c of _PEEK_BOARD_ALL_CONFIGS) {
-    if (c.group && c.group !== group) { group = c.group; h += '<div class="pbc-group">' + esc(group) + '</div>'; }
-    const on = !iso && states[c.field].own;
-    const isOwn = c.own ? !!s[c.own] : false;
-    const dis = iso ? ' disabled' : '';
-    const why = states[c.field].why;
-    h += '<label class="pbc-row' + (c.parents ? ' pbc-child' : '') + (iso ? ' pbc-disabled' : '') + (why ? ' pbc-blocked' : '') + '" data-field="' + esc(c.field) + '">'
-      + '<input type="checkbox"' + (on ? ' checked' : '') + dis
-      + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
-      + '<span class="pbc-text"><span class="pbc-label">' + esc(c.label)
-      + (isOwn ? ' <span class="pbc-own" title="Set on this worker, overriding its group or global setting">override</span>' : '')
-      + '</span><span class="pbc-help">' + esc(c.note) + '</span>'
-      + (why ? '<span class="pbc-why">' + esc(why) + '</span>' : '')
-      + '</span></label>';
-  }
-  h += '</details>';
+  // One control row per tab: the switch sits in the Board toolbar, and what it
+  // does (plus why it is off for an isolated worker) opens from the info button.
+  const why = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.' : '';
+  const h = '<span class="pbc-one" data-session="' + esc(peekSession) + '">'
+    + '<span class="pbc-label">Board</span>' + _boardOneSwitchHTML(peekSession, s)
+    + '<details class="row-note' + (why ? ' warn' : '') + '"><summary class="btn" aria-label="What the Board switch does" title="What the Board switch does">'
+    + (why ? '&#x26A0;' : '&#x24D8;') + '</summary><div class="row-note-body">'
+    + (why ? '<p class="pbc-note pbc-why"><b>' + esc(why) + '</b></p>' : '')
+    + '<p class="pbc-help">' + esc(_BOARD_ONE_NOTE) + '</p></div></details></span>';
   // Rebuild only when something changed: the panel was replaced on every board
   // refresh, several times a second, so a click could land on a box that was
   // about to be thrown away (an e2e click saw the node replaced 13 times).
@@ -13947,9 +15019,13 @@ async function _peekShellLoad() {
   _peekShellStop();
   const list = document.getElementById('peek-shell-list');
   if (!list || !peekSession) return;
+  const asked = peekSession;
   let d;
-  try { d = await (await fetch(API + '/api/schedules/shell?session=' + encodeURIComponent(peekSession), { headers: _authHeaders() })).json(); }
-  catch (e) { list.innerHTML = '<div class="peek-shell-empty">Could not load: ' + esc(e.message || e) + '</div>'; return; }
+  try { d = await (await fetch(API + '/api/schedules/shell?session=' + encodeURIComponent(asked), { headers: _authHeaders() })).json(); }
+  catch (e) { if (_peekStale(asked, 'shell')) return; list.innerHTML = '<div class="peek-shell-empty">Could not load: ' + esc(e.message || e) + '</div>'; return; }
+  if (_peekStale(asked, 'shell')) return;
+  // A new worker's runs, not the last worker's offsets.
+  for (const k of Object.keys(_shellView)) if (_shellView[k].sess !== asked) delete _shellView[k];
   const scheds = d.schedules || [];
   if (!scheds.length) { list.innerHTML = '<div class="peek-shell-empty">This worker has no shell schedules.</div>'; return; }
   list.innerHTML = scheds.map(s => {
@@ -13967,16 +15043,18 @@ async function _peekShellLoad() {
       + '<pre class="peek-shell-out" id="shell-out-' + esc(s.id) + '">' + (opts ? 'Loading…' : 'No output recorded yet. Runs from now on are captured here.') + '</pre></div>';
   }).join('');
   for (const s of scheds) {
-    _shellView[s.id] = { log: (s.logs && s.logs[0] && s.logs[0].name) || '', offset: 0, running: s.running };
+    _shellView[s.id] = { sess: asked, log: (s.logs && s.logs[0] && s.logs[0].name) || '', offset: 0, running: s.running };
     if (_shellView[s.id].log) await _peekShellFetch(s.id, true);
   }
   _peekShellSchedule();
 }
 function _peekShellSchedule() {
   _peekShellStop();
-  if (Object.values(_shellView).some(v => v.running)) _shellTimer = setTimeout(_peekShellTick, 1500);
+  // Only while the Shell tab shows: it kept polling logs after you left it.
+  if (_peekTab === 'shell' && Object.values(_shellView).some(v => v.running)) _shellTimer = setTimeout(_peekShellTick, 1500);
 }
 async function _peekShellTick() {
+  if (_peekTab !== 'shell') return;
   for (const [id, v] of Object.entries(_shellView)) if (v.running) await _peekShellFetch(id, false);
   if (Object.values(_shellView).some(v => v.running)) _peekShellSchedule();
   else _peekShellLoad();   // a run just finished: refresh statuses and the log list
@@ -14069,11 +15147,13 @@ let _peekLogsTimer = null;
 
 async function _peekLogsLoad() {
   if (!peekSession) return;
-  const params = ['limit=500', 'worker=' + encodeURIComponent(peekSession)];
+  const asked = peekSession;
+  const params = ['limit=500', 'worker=' + encodeURIComponent(asked)];
   try {
     const r = await fetch(API + '/api/logs?' + params.join('&'));
     if (!r.ok) return;
     const d = await r.json();
+    if (_peekStale(asked, 'logs')) return;
     _peekLogsEvents = (d.events || []).map(e => ({
       ...e, type: e.type || 'http',
       status: e.status || 200,
@@ -14231,9 +15311,11 @@ async function _peekLoadInherited() {
   const box = document.getElementById('peek-memory-inherited');
   if (!box) return;
   box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">Loading…</div>';
+  const asked = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory-inherited');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/memory-inherited');
     const d = await r.json();
+    if (_peekStale(asked, 'memory_inherited')) return;
     const found = d.found || [], missing = d.missing || [];
     if (!found.length) {
       box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">No ' +
@@ -14331,7 +15413,15 @@ function peekMemoryTab(tab) {
 // how tubescience displayed "# custom-plugins session memory".
 function _peekMemorySharedBanner(data) {
   const el = document.getElementById('peek-memory-shared');
-  if (!el) return;
+  const note = document.getElementById('peek-memory-note');
+  if (!el || !note) return;
+  // The note is an info button at the end of the Memory row (one control row
+  // per tab); an isolated worker's is a warning, since its text goes nowhere.
+  const show = (html, warn, label) => {
+    el.innerHTML = html; note.hidden = false; note.classList.toggle('warn', warn);
+    const sum = note.querySelector('summary');
+    sum.innerHTML = warn ? '&#x26A0;' : '&#x24D8;'; sum.title = label; sum.setAttribute('aria-label', label);
+  };
   const me = (sessions || []).find(x => x.name === peekSession) || {};
   const others = (data && data.shared_with) || [];
   // Two true statements replace one false one. This file is PER WORKER: it
@@ -14339,16 +15429,16 @@ function _peekMemorySharedBanner(data) {
   // e2e proved a peer in the same directory never received it. What IS shared
   // by directory is Claude Code's own auto-memory, which amux does not scope.
   if (me.isolated) {
-    el.style.display = '';
-    el.innerHTML = '<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
-      + 'but the worker does not receive it. Turn isolation off and restart to apply it.';
+    show('<b>Isolated worker.</b> Scoped memory and rules never reach it, so this text is saved '
+      + 'but the worker does not receive it. Turn isolation off and restart to apply it.', true,
+      'Isolated worker: this memory does not reach it');
     return;
   }
-  if (!others.length) { el.style.display = 'none'; el.textContent = ''; return; }
-  el.style.display = '';
-  el.innerHTML = '<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
+  if (!others.length) { note.hidden = true; note.open = false; el.textContent = ''; return; }
+  show('<b>Per worker.</b> Only ' + esc(peekSession || '') + ' receives this memory. Claude Code’s '
     + 'own auto-memory for <code>' + esc(data.work_dir || '') + '</code> is separate and is shared with '
-    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.';
+    + others.map(n => '<b>' + esc(n) + '</b>').join(', ') + ', so anything a worker writes there reaches them too.', false,
+    'Who receives this memory');
 }
 
 
@@ -14374,13 +15464,16 @@ async function loadPeekMemory() {
   const inp = document.getElementById('peek-memory-input');
   const save = document.getElementById('peek-memory-save');
   peekMemoryTab('edit'); // always start on edit tab
-  inp.value = 'Loading...'; inp.disabled = true; save.disabled = true;
+  const sess = peekSession;
+  inp.value = 'Loading...'; inp.disabled = true; save.disabled = true; inp.dataset.sess = '';
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/memory');
     const data = await r.json();
+    if (_peekStale(sess, 'memory')) return;   // the newer load for the shown worker fills it
     inp.value = data.content || '';
+    inp.dataset.sess = sess;
     _peekMemorySharedBanner(data);
-  } catch(e) { inp.value = ''; }
+  } catch(e) { if (_peekStale(sess, 'memory')) return; inp.value = ''; inp.dataset.sess = sess; }
   inp.disabled = false; save.disabled = false;
   inp.focus();
 }
@@ -14390,11 +15483,11 @@ async function pullPeekMemory() {
   const save = document.getElementById('peek-memory-save');
   btn.disabled = true; btn.textContent = '…';
   inp.disabled = true; save.disabled = true;
+  const sess = peekSession;
   try {
-    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory?pull=1');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/memory?pull=1');
     const data = await r.json();
-    inp.value = data.content || '';
-    showToast('Pulled latest from Claude');
+    if (!_peekStale(sess, 'memory_pull')) { inp.value = data.content || ''; inp.dataset.sess = sess; showToast('Pulled latest from Claude'); }
   } catch(e) { showToast('Pull failed'); }
   btn.disabled = false; btn.textContent = '↻';
   inp.disabled = false; save.disabled = false;
@@ -14402,6 +15495,7 @@ async function pullPeekMemory() {
 async function savePeekMemory() {
   const inp = document.getElementById('peek-memory-input');
   const save = document.getElementById('peek-memory-save');
+  if (!_peekEditorIsFor(inp, 'memory')) { loadPeekMemory(); return; }
   save.disabled = true; save.textContent = 'Saving...';
   try {
     // SAVE SAVES. It used to follow every save with a prompt asking the worker
@@ -14461,6 +15555,15 @@ async function saveGlobalMemory() {
 }
 
 const APP_VER = '__AMUX_ASSET_VER__';   // derived: the server stamps a content hash of static/ here (amux-dashboard build.rs)
+// One structured client beacon, `window._clientDebug(kind, fields)`. Six call
+// sites used it and nothing defined it, so each one was a silent no-op
+// (found 2026-10-17 while fixing a git-check race).
+window._clientDebug = function (kind, fields) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify(Object.assign({ kind: kind, ver: APP_VER }, fields || {})) }).catch(() => {});
+  } catch (e) {}
+};
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14692,13 +15795,47 @@ function _prefetchOrder() {
   return running.sort((a, b) => rank(a) - rank(b) || (b.last_activity || 0) - (a.last_activity || 0));
 }
 
+// AUTOMATIC PASSES RUN AT MOST ONCE PER _PREFETCH_MIN_GAP_MS, ACROSS WINDOWS.
+// The schedule says every 10 minutes, plus 8s after load and 4s after an
+// `online` event. On 2026-10-23 the Mac app's window ran a full pass (a 200-line
+// peek of all 43 workers) every 10-60s and twelve more windows ran their own,
+// 9,005 peeks in 15 minutes, which held amux-server-rs over 300% CPU on two
+// cleanup ticks. Live terminals change, so the 304 that made a re-sync "~free"
+// almost never happens. The saved copies live in shared IndexedDB, so one
+// window's pass serves them all: the last automatic pass is shared through
+// localStorage. A skipped trigger is counted by name and beaconed
+// (offline_prefetch_throttled), so a trigger that keeps firing is visible.
+const _PREFETCH_MIN_GAP_MS = 10 * 60 * 1000;
+const _PREFETCH_LAST_KEY = 'amux_offline_prefetch_last';
+const _prefetchSkipped = {};
+function _prefetchThrottled(trigger) {
+  let last = 0;
+  try { last = Number(localStorage.getItem(_PREFETCH_LAST_KEY)) || 0; } catch (_) {}
+  const age = Date.now() - last;
+  // 30s of slack, so the 10-minute interval itself is never skipped for a pass
+  // that started a few seconds late.
+  if (age >= _PREFETCH_MIN_GAP_MS - 30000 || age < 0) return false;
+  const n = (_prefetchSkipped[trigger] = (_prefetchSkipped[trigger] || 0) + 1);
+  if (n === 1 || n % 20 === 0) {
+    try { window._clientDebug?.('offline-prefetch', {verdict: 'offline_prefetch_throttled', measured: true, n_considered: n,
+      trigger, skipped: n, last_pass_age_ms: age}); } catch (_) {}
+  }
+  return true;
+}
+
 // Sync every running session's scrollback. Unchanged sessions cost 0 bytes
 // (304). Throttled so a weak link isn't hit with 49 parallel requests.
-async function _offlinePrefetch(manual) {
+async function _offlinePrefetch(manual, trigger = 'manual') {
   if (_prefetchRunning) return;
+  if (!manual && _prefetchThrottled(trigger)) return;
   if (typeof online !== 'undefined' && !online) { if (manual) showToast('Offline — connect to sync'); return; }
   if (!manual && !_linkIsCheap()) return;    // never auto-blast on 2g/3g/saveData
+  // A HIDDEN TAB NEVER STARTS ONE (2026-10-23). The copies live in IndexedDB,
+  // shared by every tab, so the shown tab's pass serves them all; ten Mac app
+  // tabs each fetched ~46 workers' scrollback on a host already at load 20+.
+  if (!manual && typeof document !== 'undefined' && document.hidden) return;
   _prefetchRunning = true; _prefetchAbort = false;
+  if (!manual) { try { localStorage.setItem(_PREFETCH_LAST_KEY, String(Date.now())); } catch (_) {} }
   await _peekIndexLoad();
   const list = _prefetchOrder();
   let fetched = 0, unchanged = 0, bytes = 0, done = 0;
@@ -15626,6 +16763,7 @@ function openPeek(name, opts) {
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
   _lastLiveHTML = '';
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
+  _peekLogAt = null;
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
     searchInp.value = prefillQuery;
@@ -15758,6 +16896,7 @@ function openPeek(name, opts) {
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _peekViewApply(name);   // bring this worker's own tab + split back
   _savePeekState();
+  _syncUrlHash();
 }
 
 // Read-only terminal navigation. Never send terminal keys to choose a child:
@@ -15779,11 +16918,19 @@ function _peekAgentsPaint() {
   nav.hidden = isChat || (!state.items.length && !state.error);
   const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const label = document.getElementById('peek-agent-label');
-  label.textContent = state.error ? 'Agents unavailable' : (index ? 'Agent '+index : 'Main') + ' · '+(index+1)+'/'+(state.items.length+1);
-  label.title = state.error ? 'Use either arrow to retry' : state.selected?.description || state.selected?.id || 'Main worker';
+  const silent = state.items.filter(s => s.state === 'silent').length;
+  const sel = state.selected;
+  const quiet = sel?.state === 'silent' ? ' · silent '+_peekAgentSilentFor(sel.silent_s) : (!index && silent ? ' · '+silent+' silent' : '');
+  label.textContent = state.error ? 'Agents unavailable' : (index ? 'Agent '+index : 'Main') + ' · '+(index+1)+'/'+(state.items.length+1) + quiet;
+  label.title = state.error ? 'Use either arrow to retry'
+    : (sel?.description || sel?.id || 'Main worker') + (sel?.state === 'silent' ? ' (no transcript writes, waiting on '+(sel.waiting_on||'unknown')+')' : '');
   nav.querySelectorAll('button').forEach(b=>b.disabled=state.loading);
   const input=document.getElementById('peek-cmd-input');
   if (input) { input.placeholder = 'Message…'; input.setAttribute('aria-label', state.selected ? 'Message the main worker' : 'Message the worker'); }
+}
+function _peekAgentSilentFor(sec) {
+  const s = Number(sec) || 0;
+  return s >= 3600 ? Math.floor(s/3600)+'h' : Math.max(1, Math.floor(s/60))+'m';
 }
 async function _peekAgentsLoad(force=false) {
   const name = peekSession;
@@ -15802,7 +16949,8 @@ async function _peekAgentsLoad(force=false) {
     const known=new Set(ordered.map(ids));
     const all = ordered.concat(data.subagents.filter(s=>!known.has(ids(s))));
     const cutoff = Date.now() / 1000 - 300;
-    state.items = all.filter(s => s.last_active > cutoff);
+    // A silent subagent stays listed: Claude Code can show it running for hours (MSG-90283).
+    state.items = all.filter(s => s.last_active > cutoff || s.state === 'silent');
     state.error=false; state.loadedAt=Date.now();
     _peekAgentsLog('list',{count:state.items.length});
   } catch(e) {
@@ -15922,6 +17070,7 @@ function closePeek() {
   // localStorage copy exists only for eviction restore, and leaving it here
   // meant close -> background -> relaunch reopened what the user dismissed.
   try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
+  _syncUrlHash();
 }
 
 // ── Peek split pane (file browser) ──
@@ -15953,13 +17102,230 @@ function _savePeekState() {
   }
 }
 
+// Owns only '', #view= and #peek=. Any other hash (#issue=, #browser=, ...) is
+// a deeplink still being opened or a state its own view owns: switchView runs
+// inside those handlers, and replacing the hash there made the handler's
+// `location.hash !== hash` check abandon the open (#issue= links landed on the
+// board with no card, 2026-10-23).
+function _syncUrlHash() {
+  if (window._peekSplitChild || window._peekEmbed) return;
+  const cur = location.hash;
+  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur)) return;
+  try {
+    let hash = '';
+    if (peekSession) {
+      hash = '#peek=' + encodeURIComponent(peekSession);
+      if (_peekTab && _peekTab !== 'terminal') hash += '&tab=' + encodeURIComponent(_peekTab);
+    } else if (activeView && activeView !== 'sessions') {
+      hash = '#view=' + encodeURIComponent(activeView);
+    }
+    history.replaceState(null, '', location.pathname + location.search + hash);
+  } catch (_) {}
+}
+
 // SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
 // a split view and i get to choose which split view to do: file directory,
 // messages, chat"). Closed: the button offers the three; open: it closes.
 // Messages and Chat are a real peek of the same worker in an iframe
 // (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
 // exactly as its tab does with no shared state with the terminal beside it.
+// Terminal too (Ethan, 2026-10-21: "add terminal as an option here, so i can
+// have terminal in both sides"): the same embedded peek, opened on its
+// terminal tab, so a second terminal of the worker sits beside the first.
+//
+// 2-4 PANES (Ethan, 2026-10-22: "make split view the ability to have 2-4
+// panes. each pane should just be the worker details page ... each pane should
+// have a dropdown of a particular view"). The main pane is the worker page
+// itself; beside it sit 1-3 more, each the same worker page embedded on one tab
+// (?peekEmbed=<name>&peekTab=<tab>) or the Files view (?embed=files#path=), with
+// its own dropdown. Nothing is re-implemented for a pane: it is the tab.
+const _PEEK_SPLIT_MAX = 3;   // panes beside the main one
 let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+let _peekSplitPanes = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('amux_peek_split_panes') || 'null');
+    if (Array.isArray(v) && v.length) return v.filter(x => typeof x === 'string' && x).slice(0, _PEEK_SPLIT_MAX);
+  } catch (e) {}
+  return null;
+})() || [_peekSplitView];
+// Every view a pane can show: Files, then the worker's own tabs as its tab bar
+// lists them, so a new tab is a pane option with no list to keep here.
+function _peekSplitViewOptions() {
+  const out = [['files', 'Files']];
+  document.querySelectorAll('#peek-overlay .peek-tab[id^="peek-tab-"]').forEach(b => {
+    const id = b.id.slice('peek-tab-'.length);
+    if (!id || /-count$/.test(id) || id === 'customizer-menu' || id === 'customize') return;
+    if (b.hidden || getComputedStyle(b).display === 'none') return;
+    const lbl = ((b.querySelector('.tab-lbl') || b).textContent || '').trim();
+    if (!out.some(o => o[0] === id)) out.push([id, lbl || id]);
+  });
+  return out;
+}
+// "Open in split view" on a file: the file gets a pane of its own (view
+// 'file:<path>'), so several files sit side by side (Ethan, 2026-10-24). The
+// split opens on it; an open split adds it as another pane; with every pane in
+// use it takes the last one's place. A file already shown is not added twice.
+function _peekSplitOpenFile(path) {
+  const view = 'file:' + path;
+  const wrap = document.getElementById('peek-split-wrap');
+  let how;
+  if (!wrap || !wrap.classList.contains('split-active')) {
+    _peekSplitPanes = [view]; how = 'opened';
+    _peekSplitOpen(view);
+  } else {
+    if (_peekSplitPanes.includes(view)) how = 'already_shown';
+    else if (_peekSplitPanes.length < _PEEK_SPLIT_MAX) { _peekSplitPanes.push(view); how = 'added'; }
+    else { _peekSplitPanes[_peekSplitPanes.length - 1] = view; how = 'replaced_last'; }
+    _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
+    _peekSplitPersist();
+    _peekSplitRenderPanes();
+  }
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'file-split-pane', how, panes: _peekSplitPanes.length, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+}
+function _peekSplitSrc(view) {
+  if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(peekSessionDir || '/');
+  if (view.startsWith('file:')) return '/?embed=files#path=' + _encodeHashPath(view.slice(5));
+  return '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
+}
+function _peekSplitPersist() {
+  _peekSplitView = _peekSplitPanes[0] || 'files';
+  try {
+    localStorage.setItem('amux_peek_split_view', _peekSplitView);
+    localStorage.setItem('amux_peek_split_panes', JSON.stringify(_peekSplitPanes));
+  } catch (e) {}
+  _peekViewRemember();
+}
+// Builds or updates the panes in place: a pane whose view did not change keeps
+// its iframe, so a terminal in pane 2 survives adding pane 3.
+function _peekSplitRenderPanes() {
+  const host = document.getElementById('psp-panes');
+  if (!host || !peekSession) return;
+  const opts = _peekSplitViewOptions();
+  const optHtml = opts.map(([v, l]) => '<option value="' + esc(v) + '">' + esc(l) + '</option>').join('');
+  host.querySelectorAll('.psp-drag-handle').forEach(h => h.remove());
+  while (host.children.length > _peekSplitPanes.length) host.lastElementChild.remove();
+  _peekSplitPanes.forEach((view, i) => {
+    let pane = host.children[i];
+    if (!pane) {
+      pane = document.createElement('div');
+      pane.className = 'psp-pane';
+      pane.innerHTML = '<div class="psp-pane-bar"><select class="input psp-pane-view" aria-label="Pane view"></select>'
+        + '<span class="psp-pane-spacer"></span>'
+        + '<button type="button" class="btn psp-pane-add" title="Add a pane" aria-label="Add a pane">+</button>'
+        + '<button type="button" class="btn psp-pane-close" title="Close this pane" aria-label="Close this pane">&#x2715;</button></div>'
+        + '<iframe class="psp-frame" title="Split pane" allow="clipboard-write; clipboard-read"></iframe>';
+      host.appendChild(pane);
+    }
+    pane.dataset.paneI = String(i);
+    pane.dataset.view = view;
+    const sel = pane.querySelector('.psp-pane-view');
+    if (sel.dataset.opts !== optHtml) { sel.innerHTML = optHtml; sel.dataset.opts = optHtml; }
+    if (!opts.some(o => o[0] === view)) sel.insertAdjacentHTML('beforeend', '<option value="' + esc(view) + '">'
+      + esc(view.startsWith('file:') ? view.slice(view.lastIndexOf('/') + 1) : view) + '</option>');
+    sel.value = view;
+    sel.onchange = () => _peekSplitSetPane(i, sel.value);
+    const add = pane.querySelector('.psp-pane-add');
+    add.hidden = _peekSplitPanes.length >= _PEEK_SPLIT_MAX || i !== _peekSplitPanes.length - 1;
+    add.onclick = (e) => { e.stopPropagation(); _peekSplitAddPane(); };
+    pane.querySelector('.psp-pane-close').onclick = (e) => { e.stopPropagation(); _peekSplitClosePane(i); };
+    const frame = pane.querySelector('.psp-frame');
+    if (i === 0) frame.id = 'psp-frame'; else frame.removeAttribute('id');
+    const src = _peekSplitSrc(view);
+    if (frame.dataset.src !== src) {
+      // Same worker, tab to tab: ask the pane's own page to switch, no reload.
+      const prev = frame.dataset.src || '';
+      let switched = false;
+      if (view !== 'files' && prev.indexOf('peekEmbed=' + encodeURIComponent(peekSession) + '&') >= 0) {
+        try { frame.contentWindow.setPeekTab(view); switched = true; } catch (e) {}
+      }
+      frame.dataset.src = src;
+      if (!switched) frame.src = src;
+    }
+  });
+  // Insert drag handles between panes and apply saved sizes
+  const allPanes = [...host.querySelectorAll('.psp-pane')];
+  for (let j = 1; j < allPanes.length; j++) {
+    const h = document.createElement('div');
+    h.className = 'psp-drag-handle';
+    host.insertBefore(h, allPanes[j]);
+    _pspDragInit(h, j - 1, j, allPanes);
+  }
+  _pspApplySizes(allPanes);
+  host.dataset.panes = String(_peekSplitPanes.length);
+}
+
+let _pspFlexGrow = null;
+function _pspApplySizes(panes) {
+  if (!_pspFlexGrow || _pspFlexGrow.length !== _peekSplitPanes.length) {
+    try { _pspFlexGrow = JSON.parse(localStorage.getItem('amux_psp_sizes')); } catch (_) {}
+    if (!Array.isArray(_pspFlexGrow) || _pspFlexGrow.length !== _peekSplitPanes.length) _pspFlexGrow = null;
+  }
+  if (!_pspFlexGrow) return;
+  panes.forEach((p, i) => { p.style.flex = (_pspFlexGrow[i] || 1) + ' 1 0px'; });
+}
+function _pspDragInit(handle, aboveIdx, belowIdx, panes) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+    const host = document.getElementById('psp-panes');
+    const aboveH = panes[aboveIdx].getBoundingClientRect().height;
+    const belowH = panes[belowIdx].getBoundingClientRect().height;
+    const pairH = aboveH + belowH;
+    const startY = e.clientY;
+    if (!_pspFlexGrow) _pspFlexGrow = panes.map(() => 1);
+    const pairGrow = _pspFlexGrow[aboveIdx] + _pspFlexGrow[belowIdx];
+    host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = 'none'; });
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      const newAboveH = Math.max(60, Math.min(pairH - 60, aboveH + dy));
+      const ratio = newAboveH / pairH;
+      _pspFlexGrow[aboveIdx] = ratio * pairGrow;
+      _pspFlexGrow[belowIdx] = (1 - ratio) * pairGrow;
+      panes[aboveIdx].style.flex = _pspFlexGrow[aboveIdx] + ' 1 0px';
+      panes[belowIdx].style.flex = _pspFlexGrow[belowIdx] + ' 1 0px';
+    };
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      host.querySelectorAll('.psp-frame').forEach(f => { f.style.pointerEvents = ''; });
+      try { localStorage.setItem('amux_psp_sizes', JSON.stringify(_pspFlexGrow)); } catch (_) {}
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
+}
+function _peekSplitSetPane(i, view) {
+  if (!view || i < 0 || i >= _peekSplitPanes.length) return;
+  _peekSplitPanes[i] = view;
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
+function _peekSplitAddPane() {
+  if (_peekSplitPanes.length >= _PEEK_SPLIT_MAX) return;
+  const used = new Set(_peekSplitPanes);
+  const next = ['files', 'messages', 'chat', 'terminal'].find(v => !used.has(v)) || 'terminal';
+  _peekSplitPanes.push(next);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
+function _peekSplitClosePane(i) {
+  if (_peekSplitPanes.length <= 1) {   // the last pane: close the split
+    togglePeekSplit();
+    return;
+  }
+  _peekSplitPanes.splice(i, 1);
+  _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
+}
 // Place a position:fixed element so its box lands at viewport (x, y) as
 // getBoundingClientRect reports it. On the Mac app the Split menu opened ~500px
 // right of its button (Ethan, 2026-10-14): the style coordinates and the rect
@@ -15985,7 +17351,7 @@ function _peekSplitMenu(btn) {
   _peekSplitMenuClose();
   const m = document.createElement('div');
   m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
-  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat']]) {
+  for (const [v, label] of _peekSplitViewOptions()) {
     const b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
     b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
@@ -16004,22 +17370,12 @@ function _peekSplitOpen(view) {
   if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
   _peekSplitShow(view);
 }
+// The first pane's view (the Split menu and saved views name one view).
 function _peekSplitShow(view) {
-  if (!['files', 'messages', 'chat'].includes(view)) view = 'files';
-  _peekSplitView = view;
-  try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
-  _peekViewRemember();
-  const panel = document.getElementById('peek-split-files');
-  const frame = document.getElementById('psp-frame');
-  document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
-  const embed = view !== 'files';
-  panel?.classList.toggle('psp-embed', embed);
-  if (!frame) return;
-  frame.style.display = embed ? '' : 'none';
-  if (embed && peekSession) {
-    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view) + '&peekSplitChild=1';
-    if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
-  }
+  if (typeof view !== 'string' || !view) view = 'files';
+  if (!_peekSplitPanes.length) _peekSplitPanes = [view]; else _peekSplitPanes[0] = view;
+  _peekSplitPersist();
+  _peekSplitRenderPanes();
 }
 // Open or close the split with no menu and no persistence. Every path that
 // changes the split goes through here, so the nesting gate has one place.
@@ -16032,12 +17388,12 @@ function _peekSplitSetActive(active, path) {
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = path || peekSessionDir || '/';
-    _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
   } else {
-    const frame = document.getElementById('psp-frame');
-    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
+    // Closing the split unloads every pane.
+    const host = document.getElementById('psp-panes');
+    if (host) host.innerHTML = '';
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
     if (tp) tp.style.flex = '';
@@ -16055,7 +17411,7 @@ function togglePeekSplit(ev, force) {
   const btn = document.getElementById('peek-split-toggle');
   if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
   const active = _peekSplitSetActive(force ? true : !wrap.classList.contains('split-active'));
-  if (active && !force) _peekSplitShow(_peekSplitView);
+  if (active && !force) _peekSplitRenderPanes();
   _peekViewRemember();
   _savePeekState();
 }
@@ -16084,16 +17440,18 @@ function _peekViewRemember() {
   const all = _peekViewsLoad();
   const prev = all[peekSession] || {};
   const wrap = document.getElementById('peek-split-wrap');
-  const entry = { tab: (typeof _peekTab === 'string' && _peekTab) || 'terminal', ts: Date.now() };
+  const entry = { tab: (typeof _peekTab === 'string' && _peekTab) || 'terminal', head: _peekHeadLevel(), ts: Date.now() };
   if (window.innerWidth <= 600) {
     // A phone has no split (the button opens the file explorer), so a narrow
     // window keeps whatever split the wide one chose.
     entry.split = !!prev.split;
     if (prev.splitView) entry.splitView = prev.splitView;
+    if (Array.isArray(prev.splitViews)) entry.splitViews = prev.splitViews;
     if (prev.ratio) entry.ratio = prev.ratio;
   } else {
     entry.split = !!(wrap && wrap.classList.contains('split-active'));
     entry.splitView = _peekSplitView;
+    entry.splitViews = _peekSplitPanes.slice();
     const tp = document.getElementById('peek-terminal-panel');
     const ratio = (entry.split && tp && tp.style.flex) || prev.ratio;
     if (ratio) entry.ratio = ratio;
@@ -16112,12 +17470,16 @@ function _peekViewApply(name) {
   const v = _peekViewGet(name);
   _peekViewApplying = true;
   try {
+    // The header stage this worker was left at, else the last one chosen.
+    const head = v && Number.isInteger(v.head) ? v.head : Number(localStorage.getItem('amux_peek_head') || 0);
+    _peekHeadSet(head, false);
     const wrap = document.getElementById('peek-split-wrap');
     const wantSplit = !!(v && v.split) && window.innerWidth > 600;
     if (wantSplit) {
-      if (['files', 'messages', 'chat'].includes(v.splitView)) _peekSplitView = v.splitView;
+      if (Array.isArray(v.splitViews) && v.splitViews.length) _peekSplitPanes = v.splitViews.filter(x => typeof x === 'string' && x).slice(0, _PEEK_SPLIT_MAX);
+      else if (typeof v.splitView === 'string' && v.splitView) _peekSplitPanes = [v.splitView];
       _peekSplitSetActive(true);
-      _peekSplitShow(_peekSplitView);
+      _peekSplitRenderPanes();
     } else if (wrap && wrap.classList.contains('split-active')) {
       _peekSplitSetActive(false);
     }
@@ -16861,7 +18223,10 @@ function _detectTextLinks(plain) {
   while ((m = url.exec(plain))) {
     const v = trim(m[0]);
     if (/[:${]/.test(plain[m.index + m[0].length] || '')) continue;   // a template like 127.0.0.1:$PORT
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.slice(8))) add(m.index, m.index + v.length, 'url', v);
+    // The host after the scheme. `slice(8)` assumed `https://` and cut the
+    // first letter off an http host, so http://localhost:3077 was never a
+    // link (owner, 2026-10-17: the port proxy links in the peek were dead).
+    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
@@ -17120,6 +18485,90 @@ function _resolveOutputPath(p) {
 // was dim text with no handler (ethos rule 6 — a claim that justifies a design
 // and is not implemented). It is a real button now, so the round trip the
 // comment promised is one click and the folder is never more than that away.
+// The full path an output link names: the blind join against the worker's cwd,
+// then the server's check of cwd and its ancestors (AMUX-3511, below).
+async function _resolveLinkedPath(p) {
+  let full = _resolveOutputPath(p);
+  try {
+    const raw = String(p || '').replace(/:\d+$/, '');
+    const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
+    if (!raw.startsWith('/') && !raw.startsWith('~/') && cwd) {
+      const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
+        + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.resolved) full = d.resolved;
+      }
+    }
+  } catch (e) {}
+  return full;
+}
+
+// Right-click a file link, in worker output or a rendered markdown link, to
+// open it here, beside the worker in the split view, or in a new window (Ethan,
+// 2026-10-24). A new window is window.open on the file's #path= link: the Mac
+// app opens that as another amux window, a browser as a tab. The path is
+// resolved when the menu opens, so the click still counts as a user gesture
+// for window.open.
+let _fileCtx = null;
+function _fileCtxClose() { document.getElementById('file-ctx-menu')?.remove(); _fileCtx = null; }
+function _fileCtxCanSplit() {
+  return typeof peekSession !== 'undefined' && !!peekSession && window.innerWidth > 600
+    && !window._peekSplitChild && !!document.getElementById('peek-split-wrap')
+    && document.getElementById('peek-overlay')?.classList.contains('active');
+}
+function _fileCtxMenu(e, link) {
+  e.preventDefault(); e.stopPropagation();
+  _fileCtxClose();
+  // Worker output names paths relative to the worker; a markdown link, a Files
+  // row and a board artifact already carry the full path.
+  const output = !link.matches('.md-file-link, .fe-row, .board-artifact-file');
+  const raw = link.classList.contains('md-file-link') ? (link.dataset.file || '')
+    : (link.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
+  if (!raw) return;
+  const ctx = { raw, output, full: output ? _resolveOutputPath(raw) : raw };
+  if (output) ctx.ready = _resolveLinkedPath(raw).then(f => { ctx.full = f; });
+  _fileCtx = ctx;
+  const item = (act, icon, label) => '<div class="card-menu-item" role="menuitem" data-act="' + act + '"><span class="mi">' + icon + '</span> ' + label + '</div>';
+  let h = item('open', '&#x2197;', 'Open');
+  if (_fileCtxCanSplit()) h += item('split', '&#x25EB;', 'Open in split view');
+  h += item('window', '&#x29C9;', 'Open in new window');
+  h += '<div class="card-menu-sep"></div>' + item('copy', '&#x2398;', 'Copy path');
+  const m = document.createElement('div');
+  m.className = 'card-menu open'; m.id = 'file-ctx-menu'; m.setAttribute('role', 'menu');
+  m.innerHTML = h;
+  m.addEventListener('click', ev => {
+    const it = ev.target.closest('[data-act]');
+    if (it) { ev.stopPropagation(); _fileCtxRun(it.dataset.act); }
+  });
+  document.body.appendChild(m);
+  _placeMenuAtPointer(m, e);
+}
+async function _fileCtxRun(act) {
+  const c = _fileCtx; _fileCtxClose();
+  if (!c) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'file-link-menu', action: act, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+  } catch (e) {}
+  if (act === 'window') {
+    // Synchronous on purpose: after an await the browser no longer treats this
+    // as the user's click and blocks the window.
+    window.open(location.origin + location.pathname + '#path=' + _encodeHashPath(c.full), '_blank');
+    return;
+  }
+  if (c.ready) await c.ready;
+  if (act === 'open') return c.output ? _openPathFromOutput(c.raw) : openFilePreview(c.full);
+  if (act === 'split') return _peekSplitOpenFile(c.full);
+  if (act === 'copy') return _copyFilePath(c.full);
+}
+document.addEventListener('contextmenu', (e) => {
+  const link = e.target.closest && e.target.closest('.file-link[data-path], .md-link[data-path], .md-file-link[data-file]:not([data-dir]), .fe-row[data-type="file"][data-path]');
+  if (link) _fileCtxMenu(e, link); else _fileCtxClose();
+});
+document.addEventListener('click', () => { if (_fileCtx) _fileCtxClose(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _fileCtx) _fileCtxClose(); });
+
 async function _openPathFromOutput(p) {
   if (window.getSelection && String(window.getSelection()) !== '') return;  // a drag-select is not a click
   let full = _resolveOutputPath(p);
@@ -17148,18 +18597,7 @@ async function _openPathFromOutput(p) {
   // .../NYC/NYC/Events and a dead "not a directory". The server can CHECK:
   // /api/fs/resolve walks cwd then its ancestors and returns the first
   // spelling that exists. The blind join stays as the offline fallback.
-  try {
-    const raw = String(p || '').replace(/:\d+$/, '');
-    const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
-    if (!raw.startsWith('/') && !raw.startsWith('~/') && cwd) {
-      const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
-        + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
-      if (r.ok) {
-        const d = await r.json();
-        if (d && d.resolved) full = d.resolved;
-      }
-    }
-  } catch (e) {}
+  full = await _resolveLinkedPath(p);
   const lastSeg = full.slice(full.lastIndexOf('/') + 1);
   const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(lastSeg);
   if (looksLikeFile) {
@@ -17255,7 +18693,8 @@ function _linkifyPaths(safeHtml) {
       if (!p.startsWith('/') && !p.startsWith('~/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
       const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
       const shown = p + (line || '');
-      return pre + at + '<span class="' + cls + '" title="Open in the file browser: '
+      // data-path is what the right-click menu reads (_fileCtxMenu).
+      return pre + at + '<span class="' + cls + '" data-path="' + esc(p) + '" title="Open in the file browser: '
         + esc(_resolveOutputPath(p)) + '" onclick="event.preventDefault();event.stopPropagation();'
         + "_openPathFromOutput('" + escJs(p) + "')" + '">' + esc(shown) + '</span>'
         + (dot ? '.' : '');
@@ -17588,7 +19027,10 @@ function _draftEchoesSteering(input) {
 }
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
-function _peekLiveHtml(raw) {
+// `taken` is the mid-turn messages block (_peekUnechoedHtml). It goes ABOVE the
+// input box, where Claude Code prints a prompt it took, and never under the
+// footer: drawn there it read as an unsent draft (Ethan, 2026-10-22 16:41).
+function _peekLiveHtml(raw, taken = '') {
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -17602,11 +19044,11 @@ function _peekLiveHtml(raw) {
     if (cut < lines.length) _peekTraceFrame('split-composer', 'input box kept as terminal UI, not a message');
     const head = cut > 0 ? _peekRun('thin', lines.slice(0, cut).join('\n')) : '';
     const tail = cut < lines.length ? _peekRun('thin-composer', lines.slice(cut).join('\n')) : '';
-    return head + (head && tail ? '\n' : '') + tail;
+    return head + taken + (head && tail ? '\n' : '') + tail;
   }
   // Claude Code's input box: ❯ between two rules, then its ⏵/shift+tab footer.
   // Other providers' composers are recognised inside tag-prompts.
-  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw);
+  if (_peekPipelines(_peekProviderNow()).composer !== 'claude') return _peekHtml(raw) + taken;
   for (let i = plain.length - 1; i > 0; i--) {
     if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
     const end = plain.findIndex((line, n) => n > i && rule(line));
@@ -17623,10 +19065,10 @@ function _peekLiveHtml(raw) {
     if (showDraft) _peekTraceFrame('show-draft', input.length + ' characters typed, not sent');
     else if (input) _peekTraceFrame('hide-steering-echo', 'matches a queued Steering message');
     const draft = showDraft ? '<div class="peek-queued-msg"><span class="peek-queued-prompt">❯</span> ' + esc(input) + '</div>' : '';
-    return _peekHtml(lines.slice(0, i - 1).join('\n')) + draft
+    return _peekHtml(lines.slice(0, i - 1).join('\n')) + taken + draft
       + '<div class="peek-worker-footer">' + _peekRun('footer', lines.slice(end + 1).join('\n')) + '</div>';
   }
-  return _peekHtml(raw);
+  return _peekHtml(raw) + taken;
 }
 
 // The MARKERS amux stamps on everything it injects into a pane. Structural, not
@@ -17725,6 +19167,78 @@ function _peekPromptNormalized(text) {
 // additive — the tab's full page still replaces it.
 let _peekKindHints = [];
 let _peekKindHintsFor = '';
+
+// DELIVERED BUT NOT IN THE TERMINAL. Claude Code takes a message that arrives
+// mid-turn as input to the running turn and never prints a ❯ prompt for it,
+// so the peek showed nothing although the ledger said delivered and the
+// worker answered it (Ethan, 2026-10-20: amux-helper, MSG-92352). Anchor on
+// the NEWEST recent ledger row the terminal does show; every newer row it
+// does not show was taken by the turn that prompt started. An older unprinted
+// row belonged to an earlier turn and is not listed (Ethan, 2026-10-22 16:41:
+// they piled up under later prompts, out of order). With no anchor nothing is
+// claimed. They are drawn as ❯ prompts above the input box, so search, message
+// navigation and the kind colours treat them like any prompt.
+const _PEEK_UNECHOED_GRACE_MS = 8000;   // a prompt sent at idle takes a moment to draw
+let _peekUnechoedReported = '';
+function _peekUnechoedHtml(output, historyRaw) {
+  if (!peekSession) return '';
+  const canon = t => String(t || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '');
+  // Letters and digits only. The recorded text and the drawn prompt differ in
+  // markup: Ethan, 2026-10-22 11:47, mixpeek-ops-server printed "can you tell
+  // @mixpeek-cicd" as its prompt while the record read "can you tell
+  // `@mixpeek-cicd`", so a printed message was listed as taken without one.
+  const squash = t => String(t || '').replace(/[^\p{L}\p{N}]+/gu, '');
+  const frame = squash(_stripAnsi((historyRaw || '') + '\n' + (output || '')));
+  if (!frame) return '';
+  const rows = [];
+  for (const row of [..._peekKindHints, ...(Array.isArray(_cmdHistory) ? _cmdHistory : [])]) {
+    if (!row || typeof row === 'string' || row.session !== peekSession || !row.text) continue;
+    if (row.type && row.type !== 'user') continue;
+    rows.push({ text: canon(row.text), ts: Number(row.ts || row.time || 0), kind: row.kind || '' });
+  }
+  // ONLY THIS PROCESS'S MESSAGES (Ethan, 2026-10-21 11:08, "this is buggy
+  // too"): after the 10:54 fleet kill amux-helper was relaunched at 10:55, and
+  // the pane's scrollback still held the dead process's output. Messages the
+  // old process took mid-turn (10:26-10:35) were listed as taken by the new
+  // one. A message sent before this worker's session was (re)created went to
+  // a process that no longer exists, so it is neither anchor nor candidate.
+  const w = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
+  const bornMs = w && Number(w.session_created) > 0 ? Number(w.session_created) * 1000 : 0;
+  // STILL QUEUED IS NOT DELIVERED (Ethan, 2026-10-21, amux-homepage: "put
+  // the demos link in the header and footer too" sat in Steering as 1 queued
+  // while this banner said Claude Code had taken it). A queued send writes its
+  // ledger row at enqueue, so the row alone cannot say it reached the worker;
+  // whatever the worker's queue still holds is excluded.
+  let pending = new Set();
+  try { pending = new Set(_steerQueueFor(w).map(m => squash(canon(m.text || '')).slice(0, 40)).filter(Boolean)); } catch (_) {}
+  const now = Date.now(), seen = new Set(), recent = [];
+  let held = 0;
+  for (const row of rows.sort((a, b) => a.ts - b.ts)) {
+    const key = squash(row.text).slice(0, 40);
+    if (!key || seen.has(key) || now - row.ts > 12 * 3600 * 1000 || row.ts < bornMs) continue;
+    if (pending.has(key)) { seen.add(key); held++; continue; }
+    seen.add(key);
+    // A long paste draws as "[Pasted text ...]", so its absence proves nothing.
+    if (row.text.length > 1000 || row.text.split('\n').length > 12) continue;
+    recent.push({ ...row, shown: frame.includes(key) });
+  }
+  let anchor = -1;
+  for (let i = recent.length - 1; i >= 0; i--) if (recent[i].shown) { anchor = i; break; }
+  if (anchor < 0) return '';
+  const out = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS).slice(-5);
+  if (!out.length) return '';
+  const tag = peekSession + ':' + out.map(r => r.ts).join(',');
+  if (_peekUnechoedReported !== tag) {
+    _peekUnechoedReported = tag;
+    try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, shown: out.length,
+      verdict: 'delivered_message_not_in_terminal', still_queued: held, measured: true, n_considered: rows.length }); } catch (_) {}
+  }
+  return '<div class="peek-unechoed">'
+    + out.map(r => '<div class="peek-unechoed-row"><span class="peek-prompt" data-msg-kind="unknown">❯ ' + esc(r.text)
+      + '</span><span class="peek-unechoed-time" title="Delivered while the worker was busy: Claude Code took it into the running turn without printing it">taken mid-turn · '
+      + esc(new Date(r.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+      + '</span></div>').join('') + '</div>';
+}
 async function _peekLoadKindHints(sess) {
   if (_peekKindHintsFor === sess) return;
   _peekKindHintsFor = sess;
@@ -17736,6 +19250,7 @@ async function _peekLoadKindHints(sess) {
     if (peekSession !== sess) return;
     _peekKindHints = rows;
     _peekReclassifyPrompts();
+    _lastPeekRaw = null;   // repaint once so messages the terminal never echoed can show
   } catch (e) { /* markers still classify; the tab's page may still arrive */ }
 }
 
@@ -17880,6 +19395,16 @@ function _peekUnwrapPaste(blockLines) {
   }
   return kept;
 }
+// One box-drawing line (a table border or row), on tag-free text. Shared by
+// highlightPrompts and wrapBoxBlocks so a message boundary never falls inside
+// a box run: wrapBoxBlocks wraps the run in a <div>, and a run that straddled
+// a message's closing tag left that message open to the end of the terminal
+// (Ethan, 2026-10-18: a pasted table turned every later line blue).
+function _isBoxLine(text) {
+  if (!/[\u2500-\u257f]/.test(text)) return false;
+  if (/[\u2500\u2501\u2550]/.test(text)) return true;              // a border/rule line
+  return (text.match(/[\u2502\u2503\u250c-\u257f]/g) || []).length >= 2;  // a content row
+}
 function highlightPrompts(html, opts) {
   const thin = !!(opts && opts.thin);
   const gemini = _peekGeminiPrompts();
@@ -17900,6 +19425,15 @@ function highlightPrompts(html, opts) {
     while (end < lines.length) {
       if (promptStart.test(plain[end])) break;
       if (/^\s*(?:gpt-[\w.-]+|o[1-9][\w.-]*)\s.*(?:·|context left)/i.test(plain[end])) break;
+      // A box is atomic: an indented table pasted into the message is taken
+      // whole, and any other box run ends the message before it starts.
+      if (_isBoxLine(plain[end])) {
+        let run = end;
+        while (run < lines.length && _isBoxLine(plain[run])) run++;
+        const indented = plain.slice(end, run).every(l => /^[ \t]{2,}\S/.test(l));
+        if (indented && /^[ \t]{2,}[┌╭]/.test(plain[end]) && /^[ \t]{2,}[└╰]/.test(plain[run - 1])) { end = run; continue; }
+        break;
+      }
       if (/^[ \t]{2,}\S/.test(plain[end]) && !/^\s*[│┃⏵]/.test(plain[end])) { end++; continue; }
       // Paragraph breaks belong to a message only when followed by another
       // indented paragraph, not by assistant output or terminal chrome.
@@ -17931,9 +19465,18 @@ function highlightPrompts(html, opts) {
   }
   return out.join('\n');
 }
+let _peekNestedReported = '';
 function _peekReclassifyPrompts() {
   const body = document.getElementById('peek-body');
   if (!body) return;
+  // A message inside another means a block was left open (unbalanced markup
+  // from a later render stage), and everything after it takes its colour.
+  // Reported once per worker so a sweep of the server log finds it.
+  const nested = body.querySelectorAll('.peek-prompt .peek-prompt').length;
+  if (nested && _peekNestedReported !== peekSession) {
+    _peekNestedReported = peekSession;
+    try { window._clientDebug && window._clientDebug('peek-prompt-nested', { measured: true, n_considered: body.querySelectorAll('.peek-prompt').length, nested, session: peekSession }); } catch (_) {}
+  }
   for (const el of body.querySelectorAll('.peek-prompt')) {
     const kind = _classifyPromptKind(el.textContent);
     for (const previous of _MSG_KIND_ORDER) el.classList.remove('peek-prompt-' + previous);
@@ -17949,16 +19492,7 @@ function _peekReclassifyPrompts() {
 // in a horizontal-scroll container so monospace alignment survives on narrow
 // screens instead of wrapping — which shredded tables and detached their borders.
 function wrapBoxBlocks(html) {
-  const BOX   = /[─-╿]/;              // any box-drawing char (U+2500–257F)
-  const HRULE = /[─━═]/;         // ─ ━ ═ → structural border line
-  const VERT  = /[│┃┌-╿]/g; // │┃ + corners/junctions/rounded/diagonals
-  const stripTags = s => s.replace(/<[^>]*>/g, '');
-  const isBoxLine = raw => {
-    const t = stripTags(raw);
-    if (!BOX.test(t)) return false;
-    if (HRULE.test(t)) return true;                 // a border/rule line
-    return (t.match(VERT) || []).length >= 2;       // a content row: │ a │ b │
-  };
+  const isBoxLine = raw => _isBoxLine(raw.replace(/<[^>]*>/g, ''));
   // Emoji render WIDER than the 2 monospace cells the terminal (and Claude's
   // table layout) reserve for them (e.g. ✅ = 2.13ch), so every emoji row's right
   // border drifts out of alignment. Force each emoji cluster to exactly 2ch —
@@ -18007,8 +19541,16 @@ function _peekPressRelease() {
     if (window.getSelection && String(window.getSelection()) !== '') return;   // selecting: keep the nodes
     const body = document.getElementById('peek-body');
     if (!body) return;
-    const follow = _peekFollowBottom || _isScrolledToBottom(body);
+    // Following decides, never proximity: a reader who just released following
+    // with a small drag is still within a few pixels of the bottom, and pinning
+    // them there re-armed following through the scroll handler (main rust run
+    // 39072007559, terminal-product-contract.spec.ts:214 [ios-safari]).
+    const follow = _peekFollowBottom;
     const top = body.scrollTop;
+    if (!follow && _isScrolledToBottom(body)) {
+      _peekPollBeacon('press-release-kept-position', peekSession, { verdict: 'reader_not_following',
+        gap_px: Math.round(body.scrollHeight - body.scrollTop - body.clientHeight), measured: true, n_considered: 1 });
+    }
     _peekBufferedOutput = false;
     applyPeekSearch(false, false);
     body.scrollTop = follow ? body.scrollHeight : top;
@@ -18303,7 +19845,79 @@ function _peekLeaseStart() { /* removed — no more resize-on-peek to lease (AMU
 let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
+// A search hit names a line of the terminal log ("mixpeek-general.log:337458"),
+// usually far older than the loaded scrollback. Opening one shows the lines
+// around it above the live view, scrolled to the hit (Ethan, 2026-10-18:
+// "these should go to that location in the terminal/log").
+let _peekLogAt = null;   // {name, line, rotated, first, last, total, lines}
+function _peekLogAtHTML() {
+  const w = _peekLogAt;
+  if (!w.lines) return '<div class="peek-earlier-bar">Loading line ' + w.line.toLocaleString() + '\u2026</div>';
+  const file = esc(w.name) + '.log' + (w.rotated ? '.1' : '');
+  const head = '<div class="peek-earlier-bar peek-logat-bar">'
+    + (w.first > 1 ? '<button class="btn btn-sm" onclick="_peekLogAtMore(-1)">\u25B2 Earlier</button>' : '<span>start of log</span>')
+    + '<span>' + file + ' \u00b7 line ' + w.line.toLocaleString() + ' of ' + w.total.toLocaleString() + '</span>'
+    + '<button class="btn btn-sm" onclick="_peekLogAtClose()">Back to live</button></div>';
+  const at = w.line - w.first;
+  const block = _peekHtml(w.lines.slice(0, at).join('\n'))
+    + '<div class="peek-logat-hit">' + _peekHtml(w.lines[at] || ' ') + '</div>'
+    + _peekHtml(w.lines.slice(at + 1).join('\n'));
+  const foot = '<div class="peek-earlier-bar peek-logat-bar">'
+    + (w.last < w.total ? '<button class="btn btn-sm" onclick="_peekLogAtMore(1)">\u25BC Later</button>' : '<span>end of log</span>')
+    + '<span>live view below</span></div>';
+  return head + '<div class="peek-earlier-block peek-logat-block">' + block + '</div>' + foot;
+}
+async function _peekLogAtLoad(before, after) {
+  const w = _peekLogAt;
+  if (!w) return 'closed';
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(w.name) + '/log?at_line=' + w.line
+    + '&before=' + before + '&after=' + after + (w.rotated ? '&rotated=1' : ''), { headers: _authHeaders() });
+  const d = await r.json().catch(() => ({}));
+  if (_peekLogAt !== w) return 'stale';
+  if (!r.ok) { _peekLogAt = null; showToast(d.error || 'Could not open the log at that line'); return 'error'; }
+  Object.assign(w, { first: d.first, last: d.last, total: d.total, lines: d.lines, before, after });
+  return 'loaded';
+}
+function _peekLogAtPaint(jump) {
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch(true, false);
+  if (!jump) return;
+  _peekPendingFindScroll = false;
+  const hit = document.querySelector('#peek-body .peek-logat-hit');
+  if (!hit) return;
+  const m = hit.querySelector('.peek-highlight');
+  if (m) { peekSearchIndex = Number(m.dataset.idx); _peekScrollTo(peekSearchIndex, true, true); }
+  else _peekJumpTo(hit);
+}
+async function _peekOpenLogAt(name, line, query, rotated) {
+  line = parseInt(line, 10);
+  if (!name || !(line > 0)) return;
+  _peekDeepClose();
+  if (peekSession !== name || !document.getElementById('peek-overlay').classList.contains('active')) openPeek(name, { query: query || '' });
+  else if (query && query !== peekSearchQuery) { const inp = document.getElementById('peek-search'); if (inp) inp.value = query; peekSearchQuery = query; }
+  const w = _peekLogAt = { name, line, rotated: !!rotated };
+  _peekFollowBottom = false;
+  _peekLogAtPaint(false);
+  if (await _peekLogAtLoad(120, 120) === 'loaded' && _peekLogAt === w) _peekLogAtPaint(true);
+  else _peekLogAtPaint(false);
+}
+async function _peekLogAtMore(dir) {
+  const w = _peekLogAt;
+  if (!w || !w.lines) return;
+  if (await _peekLogAtLoad(dir < 0 ? w.before + 300 : w.before, dir > 0 ? w.after + 300 : w.after) !== 'loaded') return;
+  // Earlier lines grow the block upward; bring the hit back into view.
+  _peekLogAtPaint(true);
+}
+function _peekLogAtClose() {
+  _peekLogAt = null;
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch(true, false);
+  _peekFollowBottom = true;
+  const body = document.getElementById('peek-body');
+  if (body) body.scrollTop = body.scrollHeight;
+}
 function _peekEarlierHTML() {
+  if (_peekLogAt && _peekLogAt.name === peekSession) return _peekLogAtHTML();
   // Thin mode: tmux's scrollback is already the whole history; the bar would
   // page in the transcript re-render this mode exists to drop.
   if (_peekEarlier.hidden || _peekThin) return '';
@@ -18638,7 +20252,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Prepare both regions before committing the raw-frame dedupe keys. A
     // failed conversion must remain retryable just like a failed body read.
     _peekTraceRegion = 'live';
-    const newHTML = _peekLiveHtml(output);
+    const newHTML = _peekLiveHtml(output, _peekUnechoedHtml(output, histRaw === null ? _peekHistoryRaw : histRaw));
     _peekTraceRegion = 'history';
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
@@ -18696,7 +20310,7 @@ async function _refreshPeekFrame(liveOnly, request) {
       }
     } else if (!_peekScrollLocked && !_peekPressHold) {
       const _liveEl = document.getElementById('pk-live');
-      if (!histChanged && _liveEl) { _liveEl.innerHTML = _lastLiveHTML; _peekReclassifyPrompts(); }   // live tick → swap the small region only
+      if (!histChanged && _liveEl) { _peekSetLiveHtml(_liveEl, _lastLiveHTML); _peekReclassifyPrompts(); }   // live tick → patch the small region only
       else applyPeekSearch(false);
     }
     if (_peekPressHold) {
@@ -18767,11 +20381,53 @@ function _paintPeekRegions(body) {
   if (!hist && !_lastLiveHTML && lastPeekHTML) { body.innerHTML = lastPeekHTML; _peekReclassifyPrompts(); return; }  // IDB cached open paint
   body.innerHTML = '<div id="pk-hist">' + hist + '</div><div id="pk-live">' + _lastLiveHTML + '</div>';
   _peekReclassifyPrompts();
+  // The first search on this paint can reuse it rather than rebuild.
+  _peekSearchDom = { hist, live: _lastLiveHTML, first: body.firstChild };
+}
+// The DOM a search pass built, so the next pass can reuse it.
+let _peekSearchDom = { hist: null, live: null, first: null };
+const _peekSearchStats = { reused: 0, rebuilt: 0 };
+function _peekClearHighlights(body) {
+  const parents = new Set();
+  for (const mark of body.querySelectorAll('span.peek-highlight')) {
+    parents.add(mark.parentNode);
+    mark.replaceWith(document.createTextNode(mark.textContent));
+  }
+  for (const parent of parents) parent.normalize();
+}
+// Typing waits for a pause before searching; Enter runs a pending search first.
+let _peekSearchTimer = 0;
+function _peekSearchTyped(value) {
+  peekSearchQuery = value;
+  document.getElementById('peek-search-wrap')?.classList.toggle('has-value', !!value);
+  clearTimeout(_peekSearchTimer);
+  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? 120 : 0);
+}
+// A typed search that blocks the page for over 100ms says so in the server log.
+function _peekSearchTimed() {
+  const t0 = performance.now();
+  applyPeekSearch();
+  const ms = Math.round(performance.now() - t0);
+  if (ms <= 100 || !peekSearchQuery.trim()) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'peek-search-slow', session: peekSession, ver: APP_VER, ms,
+        nodes: document.getElementById('peek-body')?.getElementsByTagName('*').length || 0,
+        reused: _peekSearchStats.reused, rebuilt: _peekSearchStats.rebuilt,
+        verdict: 'peek_search_slow', measured: true, n_considered: 1 }) }).catch(() => {});
+  } catch (e) {}
+}
+function _peekSearchFlush() {
+  if (!_peekSearchTimer) return;
+  clearTimeout(_peekSearchTimer);
+  _peekSearchTimer = 0;
+  _peekSearchTimed();
 }
 function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
   const countEl = document.getElementById('peek-search-count');
   if (!body) return;
+  if (_peekTabMode()) { _peekTabApply(true); return; }
   if (body.classList.contains('peek-chat')) { _peekChatPaintSkips++; return; }
   const q = peekSearchQuery.trim();
   if (!q) {
@@ -18784,8 +20440,36 @@ function applyPeekSearch(keepIndex, doScroll) {
   }
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
-  body.innerHTML = lastPeekHTML;
-  _peekReclassifyPrompts();
+  // Rebuilding the DOM costs a full relayout plus two prompt reclassifies
+  // (~280ms on a 6,000-line worker, paid per keystroke: Ethan, 2026-10-20,
+  // "very slow to find the terms"). When the body is still the DOM this
+  // search built, unwrap the old highlights instead. A busy worker's live
+  // frame changes every second (its status timer), so a new frame swaps only
+  // #pk-live and keeps the scrollback DOM, exactly as an unsearched tick does.
+  const hist = _peekAgents.selected ? null : _peekEarlierHTML() + _peekHistoryHTML;
+  // Only the standard composition (scrollback + live frame) is split; a
+  // cached paint, a selected subagent or any other writer of lastPeekHTML
+  // is rebuilt from lastPeekHTML exactly as before.
+  const standard = hist !== null && lastPeekHTML === hist + _lastLiveHTML;
+  const liveEl = document.getElementById('pk-live');
+  const reuse = standard && _peekSearchDom.hist === hist && !!liveEl
+    && _peekSearchDom.first === body.firstChild && body.contains(liveEl);
+  if (reuse) {
+    _peekClearHighlights(body);
+    if (_peekSearchDom.live !== _lastLiveHTML) {
+      _peekSetLiveHtml(liveEl, _lastLiveHTML);
+      _peekReclassifyPrompts();
+      _peekSearchDom.live = _lastLiveHTML;
+    }
+  } else if (standard) {
+    _paintPeekRegions(body);
+    _peekSearchDom = { hist: document.getElementById('pk-live') ? hist : null, live: _lastLiveHTML, first: body.firstChild };
+  } else {
+    body.innerHTML = lastPeekHTML;
+    _peekReclassifyPrompts();
+    _peekSearchDom = { hist: null, live: null, first: null };
+  }
+  _peekSearchStats[reuse ? 'reused' : 'rebuilt']++;
   const roots = !_peekFiltersActive() ? [body]
     : [...body.querySelectorAll('.peek-prompt')].filter(el => _peekPromptMatchesFilters(el));
   _peekMatches = [];
@@ -18819,7 +20503,7 @@ function applyPeekSearch(keepIndex, doScroll) {
       entry.node.replaceWith(fragment);
     }
   }
-  _peekReclassifyPrompts();
+  if (!reuse) _peekReclassifyPrompts();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
   // Typed Find has the same late-history race as Locate: an empty live frame
   // is not proof that the requested text is absent from the arriving history.
@@ -18833,6 +20517,8 @@ function applyPeekSearch(keepIndex, doScroll) {
 // transcripts and every message sent to it, ranked (/api/search opt-in types).
 let _peekDeepAbort = null;
 async function _peekDeepSearch() {
+  // Older terminal history is the terminal's; another tab steps through its own matches.
+  if (_peekTabMode()) { _peekTabStep(1); return; }
   const box = document.getElementById('peek-deep-results');
   const q = (peekSearchQuery || '').trim();
   if (!box || !q || !peekSession) return;
@@ -18856,7 +20542,7 @@ async function _peekDeepSearch() {
           + Math.round(d.index_lag_bytes / 1048576).toLocaleString() + ' MB not indexed yet</span>' : '')
       + '</span>'
       + '<a href="#" onclick="event.preventDefault();_peekDeepClose()">close</a></div>'
-      + (hits.length ? hits.map(h => '<div class="peek-deep-hit"><div class="peek-deep-meta">'
+      + (hits.length ? hits.map(h => '<div class="peek-deep-hit"' + _peekDeepHitOpen(h, q) + '><div class="peek-deep-meta">'
           + esc(label[h.type] || h.type) + ' \u00b7 ' + esc(h.id || '') + '</div>'
           // The server HTML-escapes the snippet and adds only <mark> (search.rs render_snippet).
           + '<div class="peek-deep-snip">' + (h.snippet || '') + '</div></div>').join('')
@@ -18865,6 +20551,14 @@ async function _peekDeepSearch() {
     if (e.name === 'AbortError') return;
     box.innerHTML = '<div class="peek-deep-head">Search failed: ' + esc(String(e.message || e)) + '</div>';
   }
+}
+// A terminal-log hit's id is "<worker>.log:<line>" (or ".log.1" when it is in
+// the rotated generation); tapping it opens the log at that line.
+function _peekDeepHitOpen(h, q) {
+  const m = h.type === 'log' && /^(.+?)\.log(\.1)?:(\d+)$/.exec(h.id || '');
+  if (!m) return '';
+  return ' role="button" tabindex="0" title="Open the log at this line" onclick="_peekOpenLogAt(' + esc(JSON.stringify(m[1]))
+    + ',' + m[3] + ',' + esc(JSON.stringify(q)) + ',' + (m[2] ? 'true' : 'false') + ')"';
 }
 function _peekDeepClose() {
   if (_peekDeepAbort) _peekDeepAbort.abort();
@@ -18891,11 +20585,15 @@ function togglePeekFind(open) {
   else { clearPeekSearch(); btn.focus(); }
 }
 function peekSearchNext() {
+  _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(1); return; }
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex + 1) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
 }
 function peekSearchPrev() {
+  _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(-1); return; }
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex - 1 + _peekMatches.length) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
@@ -19044,6 +20742,7 @@ function _peekFiltersReset() {
   _peekFiltersChanged();
 }
 function _peekFiltersChanged() {
+  if (_peekTabMode()) { _peekFilterSync(); _peekTabIdx = -1; _peekTabApply(true); return; }
   _peekMsgIndex = -1;
   document.querySelectorAll('#peek-body .peek-msg-current').forEach(p => p.classList.remove('peek-msg-current'));
   if (peekSearchQuery.trim()) applyPeekSearch(false, true);
@@ -19089,6 +20788,7 @@ function _peekMsgPrompts() {
     _peekPromptMatchesFilters(el));
 }
 function _peekMsgCount(prompts) {
+  if (_peekTabMode()) return;   // another tab owns the count (_peekTabCount)
   const searching = !!peekSearchQuery.trim();
   const selectedKind = _peekFilterSummary();
   const label = searching ? selectedKind + ' matches' : selectedKind;
@@ -19263,6 +20963,8 @@ async function _peekLoadEarlierUntil(found) {
   return verdict;
 }
 async function _peekMsgMove(direction, event) {
+  _peekSearchFlush();
+  if (_peekTabMode()) { _peekTabStep(direction); return; }
   if (!_peekMsgNavIsExplicit(event)) {
     const prompts = _peekMsgPrompts();
     _peekNavBeacon('suppressed-scroll-gesture', prompts, null);
@@ -19327,6 +21029,138 @@ async function _peekMsgMove(direction, event) {
 }
 function peekMsgNext(event) { _peekMsgMove(1, event); }
 function peekMsgPrev(event) { _peekMsgMove(-1, event); }
+
+// ── The toolbar on every worker tab (Ethan, 2026-10-24: "the header should
+// work on every tab. like schedule i should be able to search across runs") ──
+// The filter, up/down and Find above drive the terminal's prompts. On any
+// other tab they drive that tab's own items: a search highlights the words and
+// hides the items without them, the content filters (board references, files,
+// links) keep the items that have one, up/down steps through what is left, and
+// the count says how many. A tab not listed here still gets Find: its matches
+// are highlighted and up/down steps between them.
+const _PEEK_TAB_ITEMS = {
+  chat: '.chat-msg', schedules: '.sx-row, .sx-fleet-run', messages: '.pm-row', logs: '.wlog-row',
+  commits: '.commits-item', shell: '.peek-shell-card', issues: '.peek-issue-item', dictation: '.dict-row',
+  scope: '.worker-config-row', cost: '.cost-row, .cost-day', tasks: '.board-card, .peek-issue-item',
+};
+const _PEEK_TAB_LABELS = { chat: 'chat', schedules: 'schedules and runs', messages: 'messages', logs: 'logs',
+  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks' };
+let _peekTabIdx = -1, _peekTabObs = null, _peekTabObsRoot = null, _peekTabApplying = false, _peekTabTimer = 0;
+function _peekTabName() { return document.getElementById('peek-overlay')?.dataset.peekTab || 'terminal'; }
+function _peekTabRoot(tab = _peekTabName()) {
+  if (tab === 'terminal') return null;
+  if (tab === 'chat') { const b = document.querySelector('#peek-body.peek-chat'); if (b) return b; }
+  return document.getElementById('peek-' + tab + '-panel');
+}
+function _peekTabMode() { return !!_peekTabRoot(); }
+// The tab's items and, of those, the ones the search and filters keep.
+function _peekTabMatches() {
+  const root = _peekTabRoot(), sel = _PEEK_TAB_ITEMS[_peekTabName()];
+  if (!root) return [];
+  if (!sel) return [...root.querySelectorAll('span.peek-highlight')];
+  return [...root.querySelectorAll(sel)].filter(el => !el.classList.contains('peek-tab-miss'));
+}
+function _peekTabItemKeeps(el, q) {
+  if (q && !el.textContent.toLowerCase().includes(q)) return false;
+  if (_peekMsgNavKind !== 'all' && el.dataset.msgKind && el.dataset.msgKind !== _peekMsgNavKind) return false;
+  if (_peekMsgNavContent === 'board') return _peekHasBoardRef(el.textContent);
+  if (_peekMsgNavContent === 'files') return !!el.querySelector('.file-link, .md-link, .md-file-link');
+  if (_peekMsgNavContent === 'links') return !!el.querySelector('a[href^="https://"], a[href^="http://"]');
+  return true;
+}
+function _peekTabHighlight(root, q) {
+  if (!q) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n =>
+    n.nodeValue.toLowerCase().includes(q) && !n.parentElement.closest('script,style,textarea,input,.peek-tab-miss')
+      ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue, low = text.toLowerCase(), frag = document.createDocumentFragment();
+    let at = 0, i;
+    while ((i = low.indexOf(q, at)) >= 0) {
+      if (i > at) frag.appendChild(document.createTextNode(text.slice(at, i)));
+      const mark = document.createElement('span'); mark.className = 'peek-highlight'; mark.textContent = text.slice(i, i + q.length);
+      frag.appendChild(mark); at = i + q.length;
+    }
+    if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+    node.replaceWith(frag);
+  }
+}
+// Re-run on the current tab: after a search or filter change, after a tab
+// switch, and when the tab repaints its own content (a poll, a new message).
+function _peekTabApply(report) {
+  const root = _peekTabRoot(), tab = _peekTabName();
+  if (!root) return;
+  const q = peekSearchQuery.trim().toLowerCase(), sel = _PEEK_TAB_ITEMS[tab];
+  _peekTabApplying = true;
+  try {
+    _peekClearHighlights(root);
+    root.querySelectorAll('.peek-tab-current').forEach(el => el.classList.remove('peek-tab-current'));
+    if (sel) for (const el of root.querySelectorAll(sel)) el.classList.toggle('peek-tab-miss', !_peekTabItemKeeps(el, q));
+    _peekTabHighlight(root, q);
+    // A match inside a collapsed section (Schedules' Recent Runs) is opened
+    // to, or the search finds runs nobody can see.
+    if (q) for (const d of root.querySelectorAll('details:not([open])'))
+      if (d.querySelector(sel ? sel.split(',').map(x => x.trim() + ':not(.peek-tab-miss)').join(',') : 'span.peek-highlight')) d.open = true;
+  } finally { _peekTabApplying = false; }
+  const matches = _peekTabMatches();
+  if (_peekTabIdx >= matches.length) _peekTabIdx = -1;
+  if (_peekTabIdx >= 0) matches[_peekTabIdx].classList.add(_PEEK_TAB_ITEMS[tab] ? 'peek-tab-current' : 'current');
+  _peekTabCount(matches);
+  _peekTabObserve(root);
+  if (report) {
+    try {
+      fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'peek-tab-find', tab, session: peekSession, searching: !!q, content_filter: _peekMsgNavContent,
+          source_filter: _peekMsgNavKind, matches: matches.length, items: sel ? root.querySelectorAll(sel).length : null,
+          verdict: matches.length ? 'matches' : 'no-matches', measured: true, n_considered: sel ? root.querySelectorAll(sel).length : 1, ver: APP_VER }) }).catch(() => {});
+    } catch (e) {}
+  }
+}
+function _peekTabCount(matches) {
+  const count = document.getElementById('peek-msg-count'), found = document.getElementById('peek-search-count');
+  const value = _peekTabIdx >= 0 ? (_peekTabIdx + 1) + '/' + matches.length : String(matches.length);
+  if (count) count.textContent = value;
+  if (found) found.textContent = peekSearchQuery.trim() ? value : '';
+}
+function _peekTabStep(direction) {
+  const matches = _peekTabMatches(), tab = _peekTabName();
+  if (!matches.length) { _peekTabCount(matches); return; }
+  const cls = _PEEK_TAB_ITEMS[tab] ? 'peek-tab-current' : 'current';
+  if (_peekTabIdx >= 0 && matches[_peekTabIdx]) matches[_peekTabIdx].classList.remove(cls);
+  _peekTabIdx = _peekTabIdx < 0 ? (direction > 0 ? 0 : matches.length - 1)
+    : (_peekTabIdx + direction + matches.length) % matches.length;
+  const el = matches[_peekTabIdx];
+  el.classList.add(cls);
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  _peekTabCount(matches);
+}
+// A tab repaints its own content (logs poll, chat stream, schedule runs); the
+// search and filters are put back on what it drew.
+function _peekTabObserve(root) {
+  if (_peekTabObsRoot === root) return;
+  if (_peekTabObs) _peekTabObs.disconnect();
+  _peekTabObsRoot = root;
+  _peekTabObs = new MutationObserver(() => {
+    if (_peekTabApplying || (!peekSearchQuery.trim() && !_peekFiltersActive() && _peekTabIdx < 0)) return;
+    clearTimeout(_peekTabTimer);
+    _peekTabTimer = setTimeout(() => { if (_peekTabRoot() === root) _peekTabApply(false); }, 150);
+  });
+  _peekTabObs.observe(root, { childList: true, subtree: true });
+}
+// On a tab switch: say what Find searches, and apply what is set to the new tab.
+function _peekTabActivate(tab) {
+  _peekTabIdx = -1;
+  const label = tab === 'terminal' ? 'terminal' : (_PEEK_TAB_LABELS[tab] || (document.querySelector('#peek-tab-' + tab + ' .tab-lbl')?.textContent || tab).trim().toLowerCase());
+  const input = document.getElementById('peek-search'), btn = document.getElementById('peek-find-toggle');
+  if (input) { input.placeholder = 'Find in ' + label + '…'; input.setAttribute('aria-label', 'Find in ' + label); }
+  if (btn) { btn.title = 'Find in ' + label; btn.setAttribute('aria-label', 'Find in ' + label); }
+  if (_peekTabObs && tab === 'terminal') { _peekTabObs.disconnect(); _peekTabObs = null; _peekTabObsRoot = null; }
+  if (tab === 'terminal') { applyPeekSearch(); return; }
+  // Tabs fill in after their own fetch; apply now and once the first paint lands.
+  _peekTabApply(false);
+  setTimeout(() => { if (_peekTabName() === tab) _peekTabApply(false); }, 600);
+}
 function _peekMsgNavSelect(kind) {
   if (!Object.hasOwn(_PEEK_SOURCE_LABELS, kind)) return;
   _peekMsgNavKind = kind;
@@ -19362,6 +21196,84 @@ function togglePeekFocus() {
     _peekCmdBeforeFocus = null;
   }
 }
+
+// HEADER GRIP (Ethan, 2026-10-22: "i want to be able to drag this up and down
+// and it reorientates/shrinks/collapses/moves the contents as its
+// expanded/contracted"). A short window gave the terminal one line under the
+// name, the ask, the task, the toolbar, the tabs and the folder bar. Dragging
+// the grip up steps the header down, live:
+//   0 full
+//   1 compact: the toolbar beside the name; the ask and task one line each
+//   2 minimal: the ask, task and folder bar fold away (the badge still says
+//     NEEDS INPUT); the tabs stay
+//   3 folded: one slim bar with the name, Expand and close
+// Remembered per worker with its tab, split and panes, and as the default.
+const _PEEK_HEAD_STEP_PX = 36;
+function _peekHeadLevel() {
+  const v = Number(document.getElementById('peek-overlay')?.dataset.head || 0);
+  return v >= 0 && v <= 3 ? v : 0;
+}
+function _peekHeadSet(level, remember = true) {
+  level = Math.max(0, Math.min(3, Math.round(Number(level) || 0)));
+  const ov = document.getElementById('peek-overlay');
+  if (!ov) return;
+  ov.dataset.head = String(level);
+  // Stage 2 shows the slim name bar too on a desktop (app.css, WORKER VIEW,
+  // COMPACT ON DESKTOP), so its title is filled from stage 2 up.
+  if (level >= 2) {
+    const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
+    const t = document.getElementById('peek-focus-title');
+    if (t) t.textContent = s && s.task_name ? peekSession + ' \u2014 ' + s.task_name : (peekSession || '');
+  }
+  const g = document.getElementById('peek-head-grip');
+  if (g) g.setAttribute('aria-valuenow', String(3 - level));
+  if (remember) {
+    if (level) _peekHeadLastFolded = level;
+    try { localStorage.setItem('amux_peek_head', String(level)); } catch (e) {}
+    _peekViewRemember();
+  }
+}
+let _peekHeadLastFolded = 2;
+function _peekFocusBarExpand() {
+  const ov = document.getElementById('peek-overlay');
+  if (ov && ov.classList.contains('peek-focus')) { togglePeekFocus(); return; }
+  _peekHeadSet(0);
+}
+(function _peekHeadGripInit() {
+  const init = () => {
+    const g = document.getElementById('peek-head-grip');
+    if (!g || g._wired) return;
+    g._wired = true;
+    let startY = 0, startLevel = 0, dragging = false;
+    g.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true; startY = e.clientY; startLevel = _peekHeadLevel();
+      g.classList.add('drag');
+      try { g.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+    });
+    g.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // Up is smaller: every step of travel folds one stage, live.
+      const lvl = startLevel + Math.trunc((startY - e.clientY) / _PEEK_HEAD_STEP_PX);
+      if (lvl !== _peekHeadLevel()) _peekHeadSet(lvl, false);
+    });
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false; g.classList.remove('drag');
+      try { g.releasePointerCapture(e.pointerId); } catch (_) {}
+      if (_peekHeadLevel() !== startLevel) _peekHeadSet(_peekHeadLevel());
+    };
+    g.addEventListener('pointerup', end);
+    g.addEventListener('pointercancel', end);
+    g.addEventListener('dblclick', () => _peekHeadSet(_peekHeadLevel() ? 0 : _peekHeadLastFolded));
+    g.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') { e.preventDefault(); _peekHeadSet(_peekHeadLevel() + 1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); _peekHeadSet(_peekHeadLevel() - 1); }
+    });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();
+})();
 
 function togglePeekMenu() {
   const m = document.getElementById('peek-menu');
@@ -19887,7 +21799,7 @@ async function _queueAttachment(f, sink) {
   try {
     await _persistAttachment(f);
     if (f.cancelled) return;
-    f.status = 'Queued';
+    f.status = f.noLocalCopy ? 'Queued (no local copy)' : 'Queued';
     if (f.interactionId) _interactionSet(f.interactionId, {phase:'queued', feedback:{message:'File saved on this device; queued for upload'}});
     _uploadQueue.push({ f, sink });
     sink.render();
@@ -19924,22 +21836,44 @@ function _storedUploadFile(row) {
       return new Blob([bytes], {type:row.mime}).slice(start % CHUNK_SIZE, start % CHUNK_SIZE + end - start);
     }};
 }
+// A local save that stops making progress (WebKit's IndexedDB after its storage
+// process restarts: the request never completes) must not hold the attachment.
+// MSG-92727 (2026-10-22): a screenshot sat at "Saving locally…" and the message
+// could not be sent. Past this window with no progress the save is abandoned, the
+// attachment uploads from the file in memory, and a beacon says so.
+const _ATTACH_SAVE_STALL_MS = 8000;
 function _persistAttachment(f) {
   if (!f.id) return Promise.resolve();
   // The local save already failed once; do not re-read the whole file per chunk.
   if (f.noLocalCopy) return Promise.resolve();
-  f.persistence = (f.persistence || Promise.resolve()).catch(() => {}).then(async () => {
+  let lastProgress = Date.now();
+  const run = (f.persistence || Promise.resolve()).catch(() => {}).then(async () => {
     if (f.cancelled) return _idb.deleteUpload(f.id);
     if (f.stored) return _idb.updateUpload(f.id, {path:f.path, url:f.url, uploadId:f.uploadId, nextChunk:f.nextChunk, uploadChunkSize:f.uploadChunkSize});
     await _idb.putUpload({id:f.id, session:f.session, surface:f.surface, name:f.name, file:f.file,
       dir:f.dir, path:f.path, url:f.url, isImage:f.isImage, sizeMB:f.sizeMB, totalChunks:f.totalChunks}, (done, total) => {
+        lastProgress = Date.now();
         f.status = 'Saving locally ' + Math.round(done / total * 100) + '%';
         if (f.interactionId) _interactionSet(f.interactionId, {phase:'running', progress:{completed:done,total}, feedback:{message:'Saving file on this device'}});
         _durableAttachments.get(f.id)?.sink.render();
       });
     f.stored = true;
   });
-  return f.persistence;
+  f.persistence = run;
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const check = () => {
+      if (Date.now() - lastProgress < _ATTACH_SAVE_STALL_MS) { timer = setTimeout(check, 1000); return; }
+      f.noLocalCopy = true; f.persistence = null;
+      if (!f.stored && !f.cancelled) f.status = 'Queued (no local copy)';
+      _uploadDiagnostic(f, 'attachment-save-stalled', Object.assign(new Error('local save made no progress'),
+        {reason:'local_save_stalled', waited_ms:_ATTACH_SAVE_STALL_MS}));
+      _durableAttachments.get(f.id)?.sink.render();
+      resolve();
+    };
+    timer = setTimeout(check, 1000);
+    run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+  });
 }
 function _restoreAttachments() {
   if (_attachmentRestorePromise) return _attachmentRestorePromise;
@@ -20152,9 +22086,15 @@ async function _uploadRequest(f, phase, url, options) {
     }, timeoutMs);
   });
   try {
+    // Same binding as _uploadChunkXHR: finish is POST /api/upload/<id>/finish,
+    // so a restart under a new upload id is a new path and needs a new id.
+    // "_finish_1" without it 409'd every retry of an upload that once got a
+    // 404, and the message waiting on it never sent (Mac app, 2026-10-22).
+    // start always posts to one path, so its id stays per attachment.
+    const scope = phase === 'start' || !f.uploadId ? '' : f.uploadId + '_';
     return await Promise.race([deadline, cancelled, (async () => {
       const response = await fetch(url, {...options, _interactionWorkflow:true,
-        headers:_authHeaders({...options.headers, 'X-Amux-Interaction-Id':f.interactionId + '_' + phase + '_' + (f.chunk || 0), 'X-Amux-Command-Kind':'filesystem.upload'}), signal:controller.signal});
+        headers:_authHeaders({...options.headers, 'X-Amux-Interaction-Id':f.interactionId + '_' + scope + phase + '_' + (f.chunk || 0), 'X-Amux-Command-Kind':'filesystem.upload'}), signal:controller.signal});
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) {
         const status = response.status;
@@ -20621,8 +22561,8 @@ async function steerSession(name, text, identity = {}, opts = {}) {
       if (!r.ok) return false;
       _validateMessageAcknowledgement(await r.clone().json(), '/steer');
     }
-    if (peekSession === name && _peekTab === 'steering') _steeringRender();
-    _steeringUpdateBadge(); render();
+    if (peekSession === name && _peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge();
+    render();
     return true;
   } catch (e) { _outboxDiagnostic('steering_accept_failed', {session:name}); return false; }
 }
@@ -23547,7 +25487,7 @@ function _msgDeliveryChip(e) {
     label = 'direct?'; color = 'var(--dim)'; bg = 'rgba(139,148,158,0.12)';
     title = 'Delivery path not recorded for this message (predates delivery metadata) — inferred from its type';
   }
-  return '<span title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
+  return '<span' + (label === 'direct' ? ' class="msg-deliv-direct"' : '') + ' title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
        + 'padding:1px 6px;border-radius:3px;background:' + bg + ';color:' + color + ';margin-right:6px;">'
        + label + '</span>';
 }
@@ -23772,7 +25712,7 @@ function _msgCardChips(message) {
 // so nothing downstream has to know which surface it came from.
 function _msgCtxPeek() {
   return { sel: _pmSel, key: _pmKey, toggle: '_pmSelToggle', resend: '_pmResend',
-           searchId: 'peek-messages-search', rowClass: '',
+           searchId: 'peek-messages-search', rowClass: 'pm-row', ownTab: true,
            target: () => (typeof peekSession !== 'undefined' ? peekSession : '') };
 }
 function _msgCtxHistory() {
@@ -23974,12 +25914,16 @@ function _cmdHistItemHTML(e, ctx) {
   const originTxt = (kind === 'human' || sender)
     ? ''   // delivery chip below carries direct/queued for every kind now
     : (origin ? ' &middot; ' + _linkifyScheduleIds(origin.replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,32)) : '');
-  const senderTag = _msgSenderTag(sender, origin, !!session);
-  const tag = `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
+  // In a worker's own Messages tab every row is "-> this worker", and under a
+  // kind filter every row wears that kind's badge: both repeat the screen.
+  const _ownTarget = !!(ctx.ownTab && session && typeof peekSession !== 'undefined' && session === peekSession);
+  const _kindIsFilter = !!(ctx.ownTab && typeof _peekMsgFilter !== 'undefined' && _peekMsgFilter === kind && !originTxt);
+  const senderTag = _msgSenderTag(sender, origin, !!session && !_ownTarget);
+  const tag = _kindIsFilter ? '' : `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
   // On the global Messages page the worker name OPENS THAT WORKER and does
   // nothing else; the row's own click inserts the text into its composer, and
   // a click on the name used to fall through to that (Ethan, 2026-10-11).
-  const sessTag = !session ? '' : ctx.onOpen
+  const sessTag = (!session || _ownTarget) ? '' : ctx.onOpen
     ? `<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek('${escJs(session)}')" title="Open ${esc(session)}">${esc(session)}</button>`
     : `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
@@ -24004,7 +25948,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu"><button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -24044,6 +25988,20 @@ function _pendingSendsFor(session) {
   });
   return out;
 }
+// One wording for a message saved on this device, wherever it is listed (the
+// Messages tab and the Queued list). Every such row can be sent again or
+// removed (Ethan, 2026-10-03); the Queued list used to say "Needs review" or
+// "Awaiting server" and disable both buttons (2026-10-23).
+function _pendingMsgState(p) {
+  const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
+    : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
+    : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
+    : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
+    : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
+    : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
+  const retry = p.checking ? 'Check again' : p.decision || p.attempted ? 'Send again' : 'Send now';
+  return {label, note, retry};
+}
 function _pendingMessageProjection(history, pending) {
   const grouped = pending.map(p => ({...p, local_notes:[]}));
   const normalized = text => String(text || '').replace(/^\[\d{1,2}:\d{2} [AP]M\]\s*/, '').trim();
@@ -24080,7 +26038,11 @@ function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');
   if (!badge) return;
   const projection = _pendingMessageProjection(_peekMessagesFor(), _pendingSendsFor(peekSession));
-  const n = projection.items.length;
+  // The same number as the filter chip that is lit: the server's count for
+  // this worker. The rows loaded are one page (60), so the badge read "60"
+  // beside "Human 300" and moved when you paged.
+  const counted = _peekMsgCounts && _peekMsgCountsFor === peekSession && _peekMsgCounts[_peekMsgFilter] != null;
+  const n = counted ? +_peekMsgCounts[_peekMsgFilter] : projection.items.length;
   const p = projection.pending.length;
   badge.textContent = p ? (n + '+' + p) : (n ? n : '');
   badge.classList.toggle('has-count', (n + p) > 0);
@@ -24093,6 +26055,7 @@ function _peekMessagesBadge() {
 // 753 schedule vs 2784 human across the fleet, but concentrated on a handful
 // of sessions where they bury everything you typed).
 let _peekMsgFilter = 'human';   // all | human | session | schedule
+let _pmBarReported = '';        // worker whose wrapped toolbar was already beaconed
 function _peekMsgSetFilter(k) {
   if (_peekMsgFilter === k) return;
   _peekMsgFilter = k;
@@ -24125,6 +26088,11 @@ function _peekMsgRenderChips(items) {
   // reads as "this kind does not exist" rather than "none here".
   const chips = [['all','All']].concat(
     _MSG_KIND_ORDER.map(k => [k, (_MSG_KIND[k]||{}).label || k]));
+  const pick = document.getElementById('peek-msgs-kind');
+  if (pick) {
+    pick.innerHTML = chips.map(([k,lbl]) => `<option value="${k}"${_peekMsgFilter === k ? ' selected' : ''}>${esc(lbl)} ${_n(k)}</option>`).join('');
+    pick.value = _peekMsgFilter;
+  }
   bar.innerHTML = chips.map(([k,lbl]) => {
     const on = _peekMsgFilter === k;
     const km = _MSG_KIND[k];
@@ -24152,13 +26120,7 @@ function _peekMessagesRender() {
     const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
     const safe = _hlSearch(p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'), q);
     // Every pending row can be sent again or removed (Ethan, 2026-10-03).
-    const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
-      : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
-      : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
-      : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
-      : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
-      : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
-    const retryLabel = p.checking ? 'Check again' : p.decision || p.attempted ? 'Send again' : 'Send now';
+    const {label, note, retry: retryLabel} = _pendingMsgState(p);
     const id = escJs(p.id);
     return `<div class="pending-msg" data-pending-id="${esc(p.id)}" data-decision="${esc(p.decision || '')}" style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);">
       <div style="min-width:0;word-break:break-word;line-height:1.45;">
@@ -24170,6 +26132,20 @@ function _peekMessagesRender() {
       </div>
     </div>`;
   }).join('');
+  // Phone real estate (2026-10-23): search, kind and menu share one row, and
+  // the row does not wrap, so a control that comes back into it squeezes the
+  // search field (a date trigger losing its class did: "Search messages ser").
+  // Say so once per worker so a sweep sees it before the owner's screenshot.
+  try {
+    const bar = document.querySelector('#peek-messages-panel .peek-tasks-add');
+    const srch = document.getElementById('peek-messages-search');
+    if (bar && srch && window.innerWidth <= 600 && bar.offsetWidth && _pmBarReported !== peekSession) {
+      const w = srch.offsetWidth, share = w / bar.offsetWidth;
+      if (share < 0.4) { _pmBarReported = peekSession; window._clientDebug && window._clientDebug('peek-msgs-search-squeezed',
+        { measured: true, n_considered: Array.from(bar.children).filter(c => c.offsetWidth).length, search_px: w,
+          bar_px: bar.offsetWidth, session: peekSession, verdict: 'peek_msgs_search_squeezed' }); }
+    }
+  } catch (_) {}
   const cnt = document.getElementById('peek-messages-count');
   if (cnt) {
     const isFallback = !_peekMsgRows || _peekMsgRowsFor !== peekSession;
@@ -24205,6 +26181,7 @@ function _peekMessagesRender() {
   const _pmKeys = items.map(_pmKey);
   const _pmSelVis = _pmKeys.filter(k => _pmSel.has(k));
   const pbar = document.getElementById('pm-selbar');
+  document.getElementById('peek-messages-panel')?.classList.toggle('pm-selecting', _pmSelVis.length > 0);
   if (pbar) {
     if (_pmSelVis.length) {
       pbar.innerHTML =
@@ -24244,6 +26221,7 @@ function _peekMessagesRender() {
   list.innerHTML = (_body || _placeholder)
     + (!_body && !_loaded ? '' : moreHTML);
   _peekMessagesBadge();
+  _msgTaskChipsFill(list);
 }
 // Jump the per-worker Messages list to a chosen day. Unlike the global timeline
 // this view loads one 500-row session window at once (no paging), so the jump is
@@ -24359,7 +26337,12 @@ function _mergeUnechoed(serverRows, session) {
   // Project steering adds a display timestamp before the server records the
   // message. The optimistic local row keeps the original text; exact-text
   // comparison rendered one human send twice, once falsely labeled "direct?".
-  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '').trim();
+  // The server records a message with its attachments appended as @/path
+  // mentions; the local row keeps only what was typed. Compared as typed text,
+  // MSG-92727 (two screenshots) never matched its echo and showed a second,
+  // ghost "queued" row beside the delivered one (2026-10-22).
+  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
+    .replace(/(?:\s+@\/\S+)+\s*$/, '').trim();
   const echoed = local => serverRows.some(row =>
     (row.session || '') === (local.session || '')
     && canonical(row.text) === canonical(local.text)
@@ -24385,12 +26368,17 @@ async function _peekMsgFetch(scope, offset, pageSize) {
   const r = await fetch(API + '/api/history?limit=' + page + '&offset=' + (offset || 0) + q, { headers: _authHeaders() });
   if (!r.ok) throw new Error('history ' + r.status);
   const _t = r.headers && r.headers.get('x-amux-total');
-  _peekMsgTotal = _t === null || _t === undefined || _t === '' ? null : +_t;
   // Raw server page (newest-first). The pending-unechoed merge and the time sort
   // happen ONCE in _peekMessagesLoad, on the full accumulated set — merging
   // per-page would prepend the same locally-queued sends to every page.
-  return (await r.json()).map(_msgNorm);
+  const rows = (await r.json()).map(_msgNorm);
+  // The total travels with its page. This wrote _peekMsgTotal itself, so a
+  // late answer for another worker, or the kind-hint fetches (50 and 200 rows),
+  // reset the Messages tab's page count.
+  rows.total = _t === null || _t === undefined || _t === '' ? null : +_t;
+  return rows;
 }
+let _peekMsgGen = 0;   // the newest Messages load; an older answer is dropped
 
 // The Messages tab's Export button (added in 91b29ba2 with no function behind
 // it, so every click threw). Pages through this worker's WHOLE history from the
@@ -24438,9 +26426,14 @@ async function _peekMessagesLoad(more) {
   _peekMsgLoading = true;
   _peekMsgError = '';
   _peekMessagesRender();                        // paint what we have instantly (with loading indicator)
+  // Two quick filter or page taps start two loads; the slower first answer
+  // used to land last and show its rows under the second tap's filter.
+  const gen = ++_peekMsgGen;
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, _peekMsgOffset);
-    if (peekSession !== sess) { _peekMsgLoading = false; return; }
+    if (peekSession !== sess) { _peekMsgLoading = false; _peekStale(sess, 'messages'); return; }
+    if (gen !== _peekMsgGen) { _olderAnswerDropped('messages'); return; }
+    _peekMsgTotal = rows.total;
     // AMUX-4661 (Ethan's screenshot, mixpeek-cicd: the filter chips read "2"
     // beside a freshly-loaded list of 3). `_peekMsgCountsFor !== sess` only
     // catches a SESSION SWITCH. The SSE `messages` invalidation handler
@@ -24468,6 +26461,7 @@ async function _peekMessagesLoad(more) {
       : _peekMsgPage >= Math.max(1, Math.ceil(_peekMsgTotal / size));
     _peekMsgRows = _mergeUnechoed(_peekMsgServerRows, sess); // pending merge + time sort, once, on the full set
   } catch(e) {
+    if (gen !== _peekMsgGen) return;   // a newer load owns the view, and its own error state
     // A FAILED LOAD IS ITS OWN STATE. Without this the view can only say
     // "loading" or "empty", and a fetch that died leaves it claiming one of
     // them forever — the first cut of this fix replaced a false "no messages"
@@ -24491,12 +26485,14 @@ let _dictItems = [], _dictWords = [], _dictTotalWords = 0, _dictCfg = null;
 let _dictCount = 0;   // history rows for peekSession — drives the tab badge without opening the tab
 
 async function _dictLoad() {
+  const asked = peekSession || '';
   try {
     const [h, d, c] = await Promise.all([
-      fetch(API + '/api/dictation/history?session=' + encodeURIComponent(peekSession || ''), { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/dictation/history?session=' + encodeURIComponent(asked), { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
     ]);
+    if ((peekSession || '') !== asked) { _peekStale(asked, 'dictation'); return; }
     _dictItems = h.items || []; _dictTotalWords = h.total_words || 0;
     _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
     _dictCount = _dictItems.length;
@@ -25329,7 +27325,7 @@ function setLogSearchMode(on) {
   const btn = document.getElementById('log-search-btn');   // legacy toolbar button (may be absent)
   if (btn) btn.classList.toggle('active', logSearchMode);
   const si = document.getElementById('search-input');
-  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search workers...';
+  if (si) si.placeholder = logSearchMode ? 'Search worker logs...' : 'Search name, description, task...';
   _logMatches = {};
   if (logSearchMode && searchQuery) {
     clearTimeout(_logSearchTimer);
@@ -25689,6 +27685,7 @@ function _attachImageZoom(wrap, img) {
     }
   }, { passive: false });
   wrap.addEventListener('touchend', e => { if (e.touches.length < 2) { lastDist = 0; lastMid = null; } });
+  return { zoomAt, reset };
 }
 
 // Mobile file-preview header: collapse all actions into a ⋮ dropdown so the title
@@ -26423,6 +28420,45 @@ function _loadScriptOnce(src) {
   });
 }
 
+function _loadStyleOnce(href) {
+  if (document.querySelector('link[href="' + href + '"]')) return;
+  const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.crossOrigin = 'anonymous';
+  document.head.appendChild(l);
+}
+// View-only libraries, loaded on first use rather than on every page load.
+// Scripts within one entry load in order. The service worker still precaches
+// every URL here, so a lazy load works offline once the app is installed.
+const _LAZY_LIBS = {
+  chart: { js: ['https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'], ready: () => typeof Chart !== 'undefined' },
+  xlsx: { js: ['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'], ready: () => !!window.XLSX },
+  gridstack: { css: ['https://cdn.jsdelivr.net/npm/gridstack@7/dist/gridstack.min.css'],
+    js: ['https://cdn.jsdelivr.net/npm/gridstack@7/dist/gridstack-all.js'], ready: () => !!window.GridStack },
+  leaflet: { css: ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+      'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css'],
+    js: ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'],
+    ready: () => typeof L !== 'undefined' },
+  fullcalendar: { js: ['https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'], ready: () => !!window.FullCalendar },
+};
+const _lazyLibLoads = {};
+function _lazyLib(name) {
+  const lib = _LAZY_LIBS[name];
+  if (lib.ready()) return Promise.resolve();
+  if (_lazyLibLoads[name]) return _lazyLibLoads[name];
+  const t0 = performance.now();
+  (lib.css || []).forEach(_loadStyleOnce);
+  return _lazyLibLoads[name] = Promise.all(lib.js.map(_loadScriptOnce)).then(() => {
+    if (!lib.ready()) throw new Error(name + ' loaded but did not define its global');
+  }).catch(e => {
+    // A failed load must be retryable on the next open and visible to a sweep.
+    delete _lazyLibLoads[name];
+    lib.js.forEach(src => document.querySelector('script[data-src="' + src + '"]')?.remove());
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'lazy-lib', verdict: 'lazy_lib_failed', lib: name, measured: true, n_considered: 1,
+        ms: Math.round(performance.now() - t0), error: String(e && e.message || e), ver: APP_VER }) }).catch(() => {});
+    throw e;
+  });
+}
+
 function _univerShimReact() {
   const g = window;
   if (g.ReactDOM && !g.ReactDOM.createRoot) g.ReactDOM.createRoot = c => ({ render: e => g.ReactDOM.render(e, c) });
@@ -26915,6 +28951,7 @@ async function _openXlsxPreview(path) {
     // browser and preserves merged cells, number formats and multi-sheet
     // structure via sheet_to_html (AMUX-3343, Ethan). Falls back to the
     // server-side (calamine) parse if the CDN library is unavailable (offline).
+    await _lazyLib('xlsx').catch(() => {});
     if (window.XLSX) {
       const buf = await (await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path))).arrayBuffer();
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
@@ -27312,7 +29349,21 @@ async function _fileDownload() {
   }
 }
 
-async function _fileSave() {
+// Saves of the open file run one after another. Two at once both saw a new
+// note as new, and the second stepped to "note-2" and wrote a duplicate. A
+// press during a save queues one more save after it (the first gives the note
+// its path, so the next one overwrites it), and holds text typed since.
+let _fileSaveChain = null, _fileSaveWaiting = 0;
+function _fileSave() {
+  if (_fileSaveWaiting >= 2) return _fileSaveChain;   // one running and one queued cover every later press
+  _fileSaveWaiting++;
+  if (_fileSaveWaiting === 2) {
+    try { window._clientDebug?.('double-submit', {verdict: 'double_submit_queued', measured: true, n_considered: 1, key: 'file-save'}); } catch (_) {}
+  }
+  _fileSaveChain = (_fileSaveChain || Promise.resolve()).catch(() => {}).then(_fileSaveOnce).finally(() => { _fileSaveWaiting--; });
+  return _fileSaveChain;
+}
+async function _fileSaveOnce() {
   if (_xlsxEd) { await _xlsxSave(); return; }
   if (!_fileData || _fileData.readOnly || (!_fileData.is_markdown && !_fileData._isNew)) return;
   const ta = document.getElementById('file-edit-ta');
@@ -28129,7 +30180,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
     : `<span class="fe-expand-spacer"></span>`;
   const indentStyle = depth ? ` style="padding-left:${depth * 16}px"` : '';
   row.innerHTML =
-    `<div class="fe-cell-name"${indentStyle}>${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
+    `<div class="fe-cell-name"${indentStyle}>${_feCheckHtml(entryPath)}${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
     `<div class="fe-cell-size">${sizeStr}</div>` +
     `<div class="fe-cell-date">${dateStr}</div>` +
     `<div class="fe-cell-date fe-cell-opened">${openedStr}</div>` +
@@ -28172,8 +30223,77 @@ function _feSelectRow(row) { _fselClick(row, {}); }
 // Esc clears; on touch, long-press enters selection and taps then toggle. One
 // selection at a time, in whichever list it was made. A bar at the bottom
 // carries the commands: Copy paths, Download, Move to..., Delete.
-const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body';
+const _FSEL_ROOTS = '#files-body, #psf-body, #explore-body, #scratchpad-body';
+// Each list body and the Name header that carries its "select all" checkbox.
+const _FSEL_HEADERS = [
+  { head: '#fe-col-headers', body: '#files-body' },
+  { head: '#psf-col-headers', body: '#psf-body' },
+  { head: '#sp-col-headers', body: '#scratchpad-body' },
+];
 const _fsel = { root: null, paths: new Set(), anchor: null, mode: false, suppressClick: false };
+// A leading selection checkbox for a file/scratchpad row — the one reusable
+// affordance every fe-row list shares (Files, Split view, and the Scratchpad
+// note list). It sits INSIDE the shared `fe-cell-name` cell, so it needs no
+// per-grid column and every list gets it for free (Ethan, 2026-10-17: "add a
+// checkbox/select all standard thing ... re-usable for all file list views ...
+// same component for both ... and scratchpad list"). The click is stopped from
+// reaching the row's own open/navigate; selection is driven on `change`.
+function _feCheckHtml(path) {
+  return '<input type="checkbox" class="fe-check" tabindex="-1" aria-label="Select row"'
+    + ' onclick="event.stopPropagation()"'
+    + (_fsel.paths.has(path) ? ' checked' : '') + '>';
+}
+// Toggle one row from its own checkbox. A checked box shows the action bar even
+// for a single item (standard data-table behaviour), so it sets selection mode.
+function _fselCheckRow(row, checked) {
+  const root = row.closest(_FSEL_ROOTS);
+  if (!root) return;
+  if (_fsel.root !== root) { _fsel.root = root; _fsel.paths.clear(); _fsel.anchor = null; }
+  const p = row.dataset.path;
+  if (checked) { _fsel.paths.add(p); _fsel.mode = true; }
+  else { _fsel.paths.delete(p); if (!_fsel.paths.size) _fsel.mode = false; }
+  _fsel.anchor = p;
+  _fselApply();
+}
+// The header "select all" checkbox: check selects every row in that list, clear
+// empties it. `bodySel` identifies which list this header belongs to.
+function _fselHeaderToggle(cb, bodySel) {
+  const root = bodySel && document.querySelector(bodySel);
+  if (!root) return;
+  if (cb.checked) { _fsel.mode = true; _fselSelectAll(root); }
+  else if (_fsel.root === root) { _fselClear(); }
+}
+// Mirror the current selection onto every checkbox after any re-render or
+// selection change: row boxes reflect membership, each header box reflects
+// all/some/none of its own list (indeterminate = some).
+function _fselSyncChecks() {
+  document.querySelectorAll('.fe-check').forEach(cb => {
+    const row = cb.closest('[data-path][data-type]');
+    cb.checked = !!(row && row.closest(_FSEL_ROOTS) === _fsel.root && _fsel.paths.has(row.dataset.path));
+  });
+  _FSEL_HEADERS.forEach(h => {
+    const head = document.querySelector(h.head);
+    const all = head && head.querySelector('.fe-check-all');
+    if (!all) return;
+    const root = document.querySelector(h.body);
+    const rows = _fselRowsIn(root);
+    const sel = (root && root === _fsel.root) ? rows.filter(r => _fsel.paths.has(r.dataset.path)).length : 0;
+    all.checked = rows.length > 0 && sel === rows.length;
+    all.indeterminate = sel > 0 && sel < rows.length;
+  });
+}
+// A checkbox toggle (row or header) anywhere in a list. `change` is separate
+// from the `click` the row-open uses, so this never opens a file.
+document.addEventListener('change', (e) => {
+  const cb = e.target;
+  if (!cb || cb.tagName !== 'INPUT' || cb.type !== 'checkbox') return;
+  if (cb.classList.contains('fe-check')) {
+    const row = cb.closest('[data-path][data-type]');
+    if (row) _fselCheckRow(row, cb.checked);
+  } else if (cb.classList.contains('fe-check-all')) {
+    _fselHeaderToggle(cb, cb.dataset.fselBody || '');
+  }
+}, true);
 function _fselRowsIn(root) { return root ? [...root.querySelectorAll('[data-path][data-type]')] : []; }
 function _fselClick(row, ev) {
   const root = row.closest(_FSEL_ROOTS);
@@ -28214,6 +30334,7 @@ function _fselApply() {
   _fselRowsIn(root).forEach(r => { if (_fsel.paths.has(r.dataset.path)) { r.classList.add('fsel-selected'); present.add(r.dataset.path); } });
   _fsel.paths = present;
   document.querySelectorAll(_FSEL_ROOTS).forEach(el => el.classList.toggle('fsel-mode', el === root && (_fsel.mode || present.size > 1)));
+  _fselSyncChecks();
   _fselRenderBar();
 }
 function _fselSelected() {
@@ -28225,6 +30346,7 @@ function _fselRefreshView() {
   if (id === 'files-body') _fileViewRefresh();
   else if (id === 'psf-body') _psfLoad(_peekSplitPath || '/');
   else if (id === 'explore-body') loadExplore(_explorePath);
+  else if (id === 'scratchpad-body') _scratchpadLoad();
 }
 function _fselRenderBar() {
   let bar = document.getElementById('fsel-bar');
@@ -28307,7 +30429,7 @@ async function _fselDelete() {
 // whose rows open on a plain click (Split view, Explore): caught in capture so
 // the row's own open never runs for a selection gesture.
 document.addEventListener('click', (e) => {
-  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+  const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type], #scratchpad-body [data-path][data-type]');
   if (!row || e.target.closest('button, a, input')) return;
   if (_fsel.suppressClick) { _fsel.suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
   const inMode = _fsel.mode && _fsel.root === row.closest(_FSEL_ROOTS);
@@ -28320,7 +30442,7 @@ document.addEventListener('click', (e) => {
   let timer = null, startX = 0, startY = 0;
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'touch') return;
-    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type]');
+    const row = e.target.closest && e.target.closest('#psf-body [data-path][data-type], #explore-body [data-path][data-type], #files-body [data-path][data-type], #scratchpad-body [data-path][data-type]');
     if (!row || e.target.closest('button, a, input')) return;
     startX = e.clientX; startY = e.clientY;
     clearTimeout(timer);
@@ -28566,7 +30688,9 @@ async function _filesFtsRun() {
 }
 
 async function _filesNewFolder() {
-  const name = prompt('Folder name:');
+  // showPrompt, not prompt(): the iOS app's web view skipped native panels
+  // (prompt() returned null with no box), so New folder did nothing there.
+  const name = await showPrompt('Folder name:', 'new-folder');
   if (!name || !name.trim()) return;
   const fname = name.trim();
   if (/[\/\0]/.test(fname) || fname === '.' || fname === '..') { showToast('Invalid folder name'); return; }
@@ -28581,8 +30705,8 @@ async function _filesNewFolder() {
     else showToast(d.error || 'Could not create folder');
   } catch (e) { showToast('Could not create folder'); }
 }
-function _filesNewFile() {
-  const name = prompt('File name (e.g. notes.txt, script.py, data.json):');
+async function _filesNewFile() {
+  const name = await showPrompt('File name:', 'notes.txt, script.py, data.json');
   if (!name || !name.trim()) return;
   const fname = name.trim();
   const fpath = (_filesPath || '/').replace(/\/$/, '') + '/' + fname;
@@ -28609,9 +30733,37 @@ function _filesNewFile() {
 
 // ═══════ SCRATCHPAD ═══════
 // Ethan, 2026-10-08: the scratchpad's default home is the Vault, beside his
-// other notes. Created on first open.
-const _SP_ROOT = '~/Vault/Scratchpad';
+// other notes. Created on first open. The folder is the `dir` of
+// GET /api/scratchpad/config, read before the first listing; this constant
+// is only the fallback. Hardcoding it meant a configured folder was ignored,
+// and every e2e server wrote its test notes into the owner's real
+// ~/Vault/Scratchpad (150 of them, cleaned by hand 2026-10-18).
+let _SP_ROOT = '~/Vault/Scratchpad';
 let _spPath = _SP_ROOT;
+let _spRootRead = null;   // the in-flight or finished read, shared by every caller
+function _spUseRoot(dir) {
+  dir = String(dir || '').trim().replace(/\/+$/, '');
+  if (!dir || dir === _SP_ROOT) return;
+  if (_spPath === _SP_ROOT) _spPath = dir;
+  else if (_spPath.startsWith(_SP_ROOT + '/')) _spPath = dir + _spPath.slice(_SP_ROOT.length);
+  _SP_ROOT = dir;
+}
+// Every path that WRITES into the scratchpad awaits this first: a note made
+// the moment the tab opened went to the fallback folder while the config read
+// was still in flight (two CI failures on #359). Offline, the folder last read
+// is used, so an offline note still lands where the online ones do.
+function _spLoadRoot() {
+  if (_spRootRead) return _spRootRead;
+  try { _spUseRoot(localStorage.getItem('amux_sp_root')); } catch (e) {}
+  _spRootRead = (async () => {
+    try {
+      const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+      if (d && d.dir) { _spUseRoot(d.dir); try { localStorage.setItem('amux_sp_root', _SP_ROOT); } catch (e) {} }
+    } catch (e) { _spRootRead = null; }
+  })();
+  return _spRootRead;
+}
+
 let _spLastData = null;
 let _spLoadGen = 0;
 let _spSort = { col: 'modified', dir: -1 };
@@ -28635,6 +30787,8 @@ function _spUpdateSortHeaders() {
 async function _scratchpadLoad() {
   _spWireCapture();
   const gen = ++_spLoadGen;
+  await _spLoadRoot();
+  if (gen !== _spLoadGen) return;
   const body = document.getElementById('scratchpad-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
   const bc = document.getElementById('sp-breadcrumb');
@@ -28727,6 +30881,10 @@ function _spMakeRow(path, entry) {
   const row = document.createElement('div');
   row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
   row.dataset.path = ep;
+  // data-type makes the row selectable by the shared _fsel engine (checkbox,
+  // select-all, bulk bar) — the same component the file views use.
+  row.dataset.type = entry.type === 'dir' ? 'dir' : 'file';
+  if (_fsel.paths.has(ep)) row.classList.add('fsel-selected');
   const icon = _fileTypeIcon(entry.name, entry.type);
   const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
   const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
@@ -28736,7 +30894,7 @@ function _spMakeRow(path, entry) {
   const displayName = title || entry.name;
   const showSubName = title && entry.type !== 'dir';
   row.innerHTML =
-    '<div class="fe-cell-name">' + icon +
+    '<div class="fe-cell-name">' + _feCheckHtml(ep) + icon +
     '<div style="min-width:0;overflow:hidden;">' +
     '<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayName) + slash + '</span>' +
     (showSubName ? '<span style="display:block;font-size:0.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(entry.name) + '</span>' : '') +
@@ -28776,24 +30934,47 @@ function _spSlug(content) {
     .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
     .substring(0, 60).replace(/^-+|-+$/g, '');
 }
-function _spUniqueName(base, ext) {
+function _spUniqueName(base, ext, also) {
   const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
+  for (const n of also || []) taken.add(n);
   let name = base + ext, n = 2;
   while (taken.has(name)) name = base + '-' + (n++) + ext;
   return name;
 }
 async function _spCaptureSave(text) {
+  await _spLoadRoot();
   if (!text || !text.trim()) return false;
   // Name the note from its own first line (no LLM), timestamp only if blank.
-  const name = _spUniqueName(_spSlug(text) || _spStamp(), '.md');
-  const path = _spPath.replace(/\/$/, '') + '/' + name;
+  // The cached listing _spUniqueName reads can be missing or stale (a phone
+  // saving right after opening the tab), and a plain PUT then replaced an
+  // older note with the same first line. So read the folder fresh when online,
+  // and save with create_only: the server refuses an existing path with 409
+  // file_exists (verdict file_create_exists) and the name steps once more.
+  const base = _spSlug(text) || _spStamp();
+  const dir = _spPath.replace(/\/$/, '');
+  let fresh = [];
+  if (online) {
+    try {
+      const ls = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir) + '&hidden=0', { headers: _authHeaders() });
+      if (ls.ok) fresh = ((await ls.json()).entries || []).map(e => e.name);
+    } catch (e) {}
+  }
+  let name = _spUniqueName(base, '.md', fresh);
   const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
   if (_spLastData && _spLastData.path === _spPath) {
     _spLastData.data.entries = [entry, ...(_spLastData.data.entries || [])];
     _spRender(_spPath, _spLastData.data);
   }
-  const r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content: text }) });
+  let r = null;
+  for (let tries = 0; tries < 20; tries++) {
+    let exists = false;
+    r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dir + '/' + name, content: text, create_only: true }),
+      _onRefused: (status, body) => { exists = status === 409 && body && body.code === 'file_exists'; } });
+    if (r || !exists) break;
+    fresh.push(name);
+    name = entry.name = _spUniqueName(base, '.md', fresh);
+  }
   if (!r) { showToast(online ? 'Could not save ' + name : 'Saved offline: ' + name + ' syncs when you reconnect'); return !online; }
   const d = await r.json().catch(() => ({}));
   if (!d.ok) { showToast('Could not save ' + name + (d.error ? ': ' + d.error : '')); _scratchpadLoad(); return false; }
@@ -28815,6 +30996,7 @@ function _spNamed(file) {
   return new File([file], _spUniqueName(_spStamp(), '.' + ext), {type: file.type});
 }
 async function _spUploadFiles(list) {
+  await _spLoadRoot();
   const files = [...(list || [])].map(_spNamed);
   if (!files.length) return;
   const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
@@ -28915,6 +31097,7 @@ function _spWireCapture() {
 }
 
 async function _scratchpadNewNote() {
+  await _spLoadRoot();
   const existing = (_spLastData?.data?.entries || []).map(e => e.name);
   let fname = 'untitled.md';
   let n = 1;
@@ -29096,7 +31279,8 @@ async function _spCleanArchive() {
 }
 
 async function _scratchpadNewFolder() {
-  const name = prompt('Folder name:');
+  await _spLoadRoot();
+  const name = await showPrompt('Folder name:', 'new-folder');
   if (!name || !name.trim()) return;
   const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
   try {
@@ -29624,7 +31808,12 @@ function _cxGoogleSvcState(c, a) {
   const can = a.canary || {};
   const leg = _CONN_LEG[c.id];
   if (!leg || (!fam.google && !fam.gmail)) return null;
-  if (fam.google === 'needs_reauth' || fam.gmail === 'needs_reauth') return ['Expired', 'bad', 'reconnect'];
+  // Gmail runs on its own grant when the account has one; Calendar and Drive
+  // run on the connector grant. Judging each service by the grant it uses keeps
+  // a dead Calendar grant from marking a working Gmail as Expired (2026-10-24:
+  // three accounts showed ✗ Gmail while /api/gmail/accounts read two "ok").
+  const grant = leg === 'gmail' && fam.gmail ? fam.gmail : fam.google;
+  if (grant === 'needs_reauth') return ['Expired', 'bad', 'reconnect'];
   if (!fam.google && leg !== 'gmail') return ['Not granted', 'warn', 'grant'];
   const l = can[leg] || {};
   return l.status === 'ok' ? ['Active', 'ok', '']
@@ -30290,13 +32479,16 @@ function _mdaiMsgParse(path) {
   let days = q.get('days');
   if (days == null) days = (limit || offset) ? 'all' : '14';
   if (/^(none|0)$/.test(days)) days = 'all';
-  return { days, limit, offset, kb };
+  return { days, limit, offset, kb, q: q.get('q') || '', session: q.get('session') || '' };
 }
 function _mdaiMsgPath(b) {
   const q = ['days=' + (b.days || '14')];
   if (b.limit) q.push('limit=' + b.limit);
   if (b.offset && String(b.offset) !== '0') q.push('offset=' + b.offset);
   if (b.kb) q.push('kb=' + b.kb);
+  // Words to match (q) and one worker (session); a chat edit can add these.
+  if (b.q) q.push('q=' + encodeURIComponent(b.q).replace(/%7C/gi, '|'));
+  if (b.session) q.push('session=' + encodeURIComponent(b.session));
   return 'amux:messages?' + q.join('&');
 }
 function _mdaiSrcKind(path) {
@@ -30314,7 +32506,7 @@ function _mdaiSrcSync(prefix) {
     if (!g('prompt')) return;
     s.prompt = g('prompt').value;
     if (s.kind === 'messages') {
-      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim() });
+      s.path = _mdaiMsgPath({ days: g('days').value, limit: g('limit').value.trim(), offset: g('offset').value.trim(), kb: g('kb').value.trim(), q: g('q') ? g('q').value.trim() : '', session: g('session') ? g('session').value.trim() : '' });
     } else s.path = g('path').value.trim();
   });
   return list;
@@ -30347,7 +32539,7 @@ function _mdaiSrcHtml(prefix) {
     const label = s.kind === 'messages' ? 'Amux message history' : s.kind === 'mdai' ? 'Another .mdai node' : 'File or folder';
     let fields = '';
     if (s.kind === 'messages') {
-      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '' };
+      const b = _mdaiMsgParse(s.path) || { days: '30', limit: '', offset: '', kb: '', q: '', session: '' };
       const dayOpt = (v, t) => '<option value="' + v + '"' + (String(b.days) === v ? ' selected' : '') + '>' + t + '</option>';
       const known = ['7', '14', '30', '90', 'all'];
       fields = '<div class="mdai-msg-bounds">'
@@ -30355,7 +32547,9 @@ function _mdaiSrcHtml(prefix) {
         + (known.includes(String(b.days)) ? '' : dayOpt(String(b.days), 'Last ' + esc(b.days) + ' days')) + '</select></label>'
         + '<label class="mdai-lbl">Newest messages<input class="input" type="number" min="1" max="4000" inputmode="numeric" id="' + id('limit') + '" value="' + esc(b.limit) + '" placeholder="4000 (max)"></label>'
         + '<label class="mdai-lbl">Skip newest<input class="input" type="number" min="0" max="20000" inputmode="numeric" id="' + id('offset') + '" value="' + esc(b.offset) + '" placeholder="0"></label>'
-        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label></div>'
+        + '<label class="mdai-lbl">Max size (KB)<input class="input" type="number" min="1" max="600" inputmode="numeric" id="' + id('kb') + '" value="' + esc(b.kb) + '" placeholder="120"></label>'
+        + '<label class="mdai-lbl">Only messages with<input class="input" id="' + id('q') + '" value="' + esc(b.q || '') + '" placeholder="any word, e.g. lifecycle|restart" autocomplete="off"></label>'
+        + '<label class="mdai-lbl">Only worker<input class="input" id="' + id('session') + '" value="' + esc(b.session || '') + '" placeholder="any worker" autocomplete="off"></label></div>'
         + '<div class="mdai-hint">Your own messages across every worker, newest kept first. At most 4000 messages and the size above (default 120 KB, up to 600 KB) reach the model; anything older is cut and the prompt says so. Skip newest pages back through older history.</div>';
     } else {
       fields = '<label class="mdai-lbl">Path<input class="input" id="' + id('path') + '" value="' + esc(s.path) + '" placeholder="' + (s.kind === 'mdai' ? 'other.mdai' : 'notes/ or plan.md') + '"' + (s.kind === 'mdai' ? ' list="' + prefix + '-mdai-list"' : '') + ' autocomplete="off"></label>'
@@ -30581,6 +32775,7 @@ async function openMdaiNode(path, opts) {
   _mdaiCur = { abs, rel: (path && path.charAt(0) !== '/') ? path : null, doc: null, model: null, sources: [], body: '', content: '', parseOk: true, mtime: null };
   _mdaiHist = []; _mdaiHistIdx = 0; _mdaiRunError = null; _mdaiRunCycle = null; _mdaiLastRun = null;
   _mdaiShown = null; _mdaiGraph = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null; _mdaiFormErr = null; _mdaiPendingDoc = null; _mdaiPendingName = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null; _mdaiChatLoadErr = null;
   _mdaiEditMode = opts.raw ? 'raw' : 'write';
   _mdaiTab = opts.tab || 'preview';
   document.getElementById('mdai-title').textContent = abs.split('/').pop();
@@ -30593,7 +32788,7 @@ async function openMdaiNode(path, opts) {
   await _mdaiLoadDoc();
   if (_mdaiCur !== node) return;
   if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
-  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive()]);
+  await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive(), _mdaiLoadChat()]);
   if (_mdaiCur !== node) return;
   if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status === 'ok') || _mdaiHist[0], true);
   _mdaiRender();
@@ -30633,6 +32828,7 @@ function closeMdaiNode() {
   _mdaiStopPoll();
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
+  _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null;
   if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
 }
 async function _mdaiLoadHistory() {
@@ -30776,7 +32972,19 @@ function _mdaiHistNav(delta) {
 }
 // Save a structured change. `patch` is merged over the current doc; the server
 // validates, writes the canonical file and answers with what it now holds.
-async function _mdaiSaveDoc(patch, extra) {
+// ONE SAVE AT A TIME. A save's request is built from _mdaiCur (the doc and its
+// mtime), which only the previous save's response brings up to date. A second
+// save started while the first was in flight was built from the stale doc: the
+// server refused it as changed on disk, and had it not, it would have put back
+// what the first save removed. Each save waits for the one before it.
+let _mdaiSaveChain = Promise.resolve();
+function _mdaiSerial(fn) {
+  const p = _mdaiSaveChain.then(fn, fn);
+  _mdaiSaveChain = p.catch(() => {});
+  return p;
+}
+function _mdaiSaveDoc(patch, extra) { return _mdaiSerial(() => _mdaiSaveDocNow(patch, extra)); }
+async function _mdaiSaveDocNow(patch, extra) {
   if (!_mdaiCur || !_mdaiCur.doc) { showToast('Fix the file in Edit → Raw file first; it does not parse'); return false; }
   const doc = Object.assign({}, _mdaiCur.doc, patch || {});
   const req = Object.assign({ path: _mdaiCur.abs, doc, base_mtime_ms: _mdaiCur.mtime }, extra || {});
@@ -30795,6 +33003,14 @@ async function _mdaiPutDoc(req) {
     _mdaiKeptEdits = [];
   }
   if (_mdaiCur && _mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return false; }
+  // The drafts as this save began. The file on disk changes before this
+  // response arrives, so the owner can already be typing the next change; a
+  // draft that moved while the save was in flight is not the one it saved.
+  const draft0 = _mdaiDraft, body0 = _mdaiBodyDraft;
+  // The same holds for form fields: one cleared or retyped while this save is
+  // in flight can look untouched against the value it was drawn with, and the
+  // save's own render would then put the saved value back over it.
+  const fields0 = _mdaiFieldValues();
   try {
     const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
     if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
@@ -30805,7 +33021,10 @@ async function _mdaiPutDoc(req) {
       return false;
     }
     _mdaiApplyDoc(d);
-    _mdaiDraft = null; _mdaiBodyDraft = null;
+    _mdaiInflightEdits = Object.entries(_mdaiFieldValues()).filter(([id, v]) => id in fields0 && fields0[id] !== v)
+      .map(([id, cur]) => ({ id, cur, sent: fields0[id] }));
+    if (_mdaiDraft === draft0) _mdaiDraft = null; else _mdaiKeptEdits.push('raw-draft-in-flight');
+    if (_mdaiBodyDraft === body0) _mdaiBodyDraft = null; else _mdaiKeptEdits.push('body-draft-in-flight');
     // The graph reload lands after the save's own render, possibly while the
     // owner is typing the next change; _mdaiRender keeps that typing.
     _mdaiLoadGraph().then(() => { if (_mdaiCur) _mdaiRender(); });
@@ -30818,10 +33037,11 @@ function _mdaiDirty() {
 }
 async function _mdaiSave() {
   if (!_mdaiCur) return false;
+  _mdaiCaptureDrafts();   // the text on screen is what the owner means to save
   const btn = document.getElementById('mdai-save-btn');
   if (btn) btn.disabled = true;
   let ok = true;
-  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) ok = await _mdaiPutDoc({ path: _mdaiCur.abs, raw: _mdaiDraft, base_mtime_ms: _mdaiCur.mtime });
+  if (_mdaiDraft !== null && _mdaiDraft !== _mdaiCur.content) ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: _mdaiDraft, base_mtime_ms: _mdaiCur.mtime }));
   else if (_mdaiBodyDraft !== null && _mdaiBodyDraft !== _mdaiCur.body) ok = await _mdaiSaveDoc({ body: _mdaiBodyDraft });
   if (btn) btn.disabled = false;
   if (ok) showToast('Saved');
@@ -31029,6 +33249,7 @@ function _mdaiRender() {
   document.querySelectorAll('#mdai-overlay .mdai-tab').forEach(b => {
     const on = b.dataset.tab === _mdaiTab; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
     if (b.dataset.tab === 'runs') b.querySelector('.mdai-tab-n').textContent = _mdaiCur.runsTotal ? String(_mdaiCur.runsTotal) : '';
+    if (b.dataset.tab === 'chat') b.querySelector('.mdai-tab-n').textContent = _mdaiChat.length ? String(_mdaiChat.length) : '';
     if (b.dataset.tab === 'sources') { const n = (_mdaiCur.sources || []).length + (_mdaiCur.doc && _mdaiCur.doc.fetch ? 1 : 0); b.querySelector('.mdai-tab-n').textContent = n ? String(n) : ''; }
   });
   let html = _mdaiBannerHtml();
@@ -31044,14 +33265,18 @@ function _mdaiRender() {
   else if (_mdaiTab === 'sources') html += _mdaiSourcesHtml();
   else if (_mdaiTab === 'runs') html += _mdaiRunsHtml();
   else if (_mdaiTab === 'settings') html += _mdaiSettingsHtml();
+  else if (_mdaiTab === 'chat') html += _mdaiChatHtml();
   else html += _mdaiPreviewHtml();
   const kept = _mdaiTypedFields(el);
   el.innerHTML = html;
   _mdaiRestoreTyped(el, kept);
+  _mdaiRestoreInflight(el);
   el.dataset.tab = _mdaiTab;
   if (_mdaiTab === 'edit') { const ta = document.getElementById('mdai-body-ta'); if (ta) _mdaiGutter(ta); }
   _mdaiRenderRunState();
   _mdaiRenderSide();
+  _mdaiChatSyncBar();
+  if (_mdaiTab === 'chat') { const log = document.getElementById('mdai-chat-log'); if (log && log.lastElementChild) log.lastElementChild.scrollIntoView({ block: 'nearest' }); }
 }
 // A render rebuilds the form from the saved node, and renders arrive from
 // saves, graph reloads and run polls at any moment. A field the owner has
@@ -31066,6 +33291,25 @@ function _mdaiFieldState(f) {
   return { cur: f.value, base: f.defaultValue };
 }
 let _mdaiKeptEdits = [];   // field ids a render kept; reported with the next save
+// Fields changed while a save was in flight, kept by the next render when the
+// value it draws is the one that save sent.
+let _mdaiInflightEdits = [];
+function _mdaiFieldValues() {
+  const out = {};
+  const root = document.getElementById('mdai-body');
+  if (root) root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => { out[f.id] = _mdaiFieldState(f).cur; });
+  return out;
+}
+function _mdaiRestoreInflight(root) {
+  const edits = _mdaiInflightEdits;
+  _mdaiInflightEdits = [];
+  edits.forEach(k => {
+    const f = document.getElementById(k.id);
+    if (!f || !root.contains(f) || _mdaiFieldState(f).cur !== k.sent) return;
+    if (f.type === 'checkbox' || f.type === 'radio') f.checked = k.cur === 'true'; else f.value = k.cur;
+    _mdaiKeptEdits.push(k.id + ':in-flight');
+  });
+}
 function _mdaiTypedFields(root) {
   const kept = [];
   root.querySelectorAll('input[id], textarea[id], select[id]').forEach(f => {
@@ -31120,6 +33364,174 @@ function _mdaiPreviewHtml() {
   if (run.status !== 'ok') h += '<div class="mdai-err"><b>' + esc(st.label) + '.</b> ' + esc(run.error || '') + '</div>';
   else h += '<div class="mdai-output md-content">' + renderMarkdown(run.output || '', _mdaiCur.abs) + '</div>';
   return h;
+}
+// ---- Chat: change the node by telling it what you want ---------------------------
+// POST /api/files/mdai/chat hands the model this file, the latest output and the
+// message; the server validates and writes the revised node and answers with the
+// file before and after. The page shows the exchange with the changed lines, then
+// starts a run through the ordinary run flow so the output catches up.
+let _mdaiChat = [];          // turns for the open node, oldest first
+let _mdaiChatBusy = false;   // a message is with the model
+let _mdaiChatPending = null; // the message being worked on (shown while busy)
+let _mdaiChatErr = null;     // last failure, shown in the Chat tab
+let _mdaiChatLoadErr = null; // the history could not be read
+function _mdaiChatAutoRun() { try { return localStorage.getItem('mdai-chat-autorun') !== '0'; } catch (e) { return true; } }
+function _mdaiChatSetAutoRun(on) { try { localStorage.setItem('mdai-chat-autorun', on ? '1' : '0'); } catch (e) {} }
+async function _mdaiLoadChat() {
+  const node = _mdaiCur;
+  if (!node) return;
+  _mdaiChatLoadErr = null;
+  try {
+    const r = await fetch(API + '/api/files/mdai/chat?path=' + encodeURIComponent(node.abs));
+    const d = await r.json().catch(() => ({}));
+    if (_mdaiCur !== node) return;
+    if (!r.ok || d.error) { _mdaiChat = []; _mdaiChatLoadErr = d.error || ('HTTP ' + r.status); return; }
+    _mdaiChat = d.turns || [];
+    if (d.unreadable) _mdaiChatLoadErr = d.unreadable + ' earlier message(s) could not be read and are not shown.';
+  } catch (e) { if (_mdaiCur === node) { _mdaiChat = []; _mdaiChatLoadErr = 'Could not load the chat history.'; } }
+}
+function _mdaiChatGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; }
+function _mdaiChatKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _mdaiChatSend(); }
+}
+function _mdaiChatSyncBar() {
+  const bar = document.getElementById('mdai-chatbar');
+  if (!bar) return;
+  const ro = !_mdaiCur || !!_mdaiCur.readOnly || !_mdaiCur.doc;
+  bar.hidden = !_mdaiCur || !!_mdaiCur.readOnly;
+  bar.dataset.tab = _mdaiTab;
+  const ta = document.getElementById('mdai-chat-input'), b = document.getElementById('mdai-chat-send');
+  if (ta) { ta.disabled = ro; ta.placeholder = _mdaiCur && !_mdaiCur.doc ? 'Fix the file in Edit, Raw file first' : 'Ask for a change, e.g. add a column for lifecycle work'; }
+  if (b) { b.disabled = ro || _mdaiChatBusy; b.textContent = _mdaiChatBusy ? 'Working…' : 'Send'; }
+}
+async function _mdaiChatSend(text) {
+  if (!_mdaiCur || _mdaiChatBusy) return;
+  const ta = document.getElementById('mdai-chat-input');
+  const msg = (text != null ? String(text) : (ta ? ta.value : '')).trim();
+  if (!msg) { if (ta) ta.focus(); return; }
+  if (_mdaiCur.readOnly) { showToast(_mdaiCur.readOnly); return; }
+  // Unsaved typing would be overwritten by the edit, so it is saved first.
+  if (_mdaiDirty() && !(await _mdaiSave())) return;
+  const node = _mdaiCur;
+  _mdaiChatBusy = true; _mdaiChatPending = msg; _mdaiChatErr = null;
+  if (ta) { ta.value = ''; _mdaiChatGrow(ta); }
+  if (_mdaiTab === 'edit') _mdaiCaptureDrafts();
+  _mdaiTab = 'chat';
+  _mdaiRender();
+  let ok = false, changed = false;
+  try {
+    const { r, d } = await _mdaiJson('/api/files/mdai/chat', 'POST', { path: node.abs, message: msg, base_mtime_ms: node.mtime });
+    if (_mdaiCur !== node) return;
+    if (_isLocallyQueued(r)) {
+      _mdaiChatErr = 'The server could not be reached, so the message was not sent. Nothing changed.';
+    } else if (!r.ok || d.error) {
+      _mdaiChatErr = d.error || ('The edit failed (HTTP ' + r.status + ')');
+      if (d.turn) _mdaiChat.push(d.turn);
+    } else {
+      ok = true; changed = !!d.changed;
+      _mdaiChat.push(d.turn);
+      if (d.doc) _mdaiApplyDoc(d.doc);
+      _mdaiLoadGraph().then(() => { if (_mdaiCur === node) _mdaiRender(); });
+    }
+  } catch (e) {
+    if (_mdaiCur === node) _mdaiChatErr = 'The edit failed: ' + ((e && e.message) || 'network error');
+  } finally {
+    if (_mdaiCur === node) { _mdaiChatBusy = false; _mdaiChatPending = null; }
+  }
+  if (_mdaiCur !== node) return;
+  // A failed edit keeps what was typed, so it can be sent again.
+  if (!ok && ta && !ta.value) { ta.value = msg; _mdaiChatGrow(ta); }
+  if (_mdaiChatErr) showToast(_mdaiChatErr);
+  try { window._clientDebug && window._clientDebug('mdai-chat', { ok, changed, verdict: ok ? (changed ? 'applied' : 'no_change') : 'failed', measured: true, n_considered: 1 }); } catch (e) {}
+  _mdaiRender();
+  if (ok && changed && _mdaiChatAutoRun() && !_mdaiRunning) _mdaiRun();
+}
+async function _mdaiChatUndo(i) {
+  const t = _mdaiChat[i];
+  if (!_mdaiCur || !t || !t.changed || t.truncated || t.undone) return;
+  if (!confirm('Put the node back to how it was before this change?')) return;
+  const ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: t.before, base_mtime_ms: _mdaiCur.mtime }));
+  if (!ok) return;
+  t.undone = true;
+  showToast('Change undone. Run again to refresh the output.');
+  _mdaiRender();
+}
+// Line diff (longest common subsequence). Files here are a few hundred lines;
+// past the cap the turn says the diff is too large instead of freezing the page.
+function _mdaiLineDiff(a, b) {
+  const A = String(a || '').split('\n'), B = String(b || '').split('\n');
+  if (A.length * B.length > 4000000) return null;
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: ' ', s: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push({ t: '-', s: A[i++] });
+    else out.push({ t: '+', s: B[j++] });
+  }
+  while (i < n) out.push({ t: '-', s: A[i++] });
+  while (j < m) out.push({ t: '+', s: B[j++] });
+  return out;
+}
+function _mdaiDiffHtml(before, after) {
+  const ops = _mdaiLineDiff(before, after);
+  if (!ops) return '<div class="mdai-dim">The file is too large to show line by line.</div>';
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => { if (o.t !== ' ') for (let x = Math.max(0, k - 2); x <= Math.min(ops.length - 1, k + 2); x++) keep[x] = true; });
+  let h = '', gap = false, add = 0, del = 0;
+  ops.forEach((o, k) => {
+    if (o.t === '+') add++; else if (o.t === '-') del++;
+    if (!keep[k]) { gap = true; return; }
+    if (gap && h) h += '<div class="mdai-diff-gap">⋯</div>';
+    gap = false;
+    h += '<div class="mdai-diff-l ' + (o.t === '+' ? 'add' : o.t === '-' ? 'del' : 'ctx') + '"><span aria-hidden="true">' + (o.t === ' ' ? '' : o.t) + '</span>' + (esc(o.s) || '&#8203;') + '</div>';
+  });
+  return { html: '<div class="mdai-diff mdai-code" role="region" aria-label="Changed lines">' + h + '</div>', add, del };
+}
+function _mdaiChatHtml() {
+  let h = '<div class="mdai-chat" id="mdai-chat-log" aria-live="polite">';
+  if (_mdaiChatLoadErr) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatLoadErr) + '</div>';
+  if (!_mdaiChat.length && !_mdaiChatBusy) {
+    h += '<div class="mdai-empty"><div class="mdai-empty-title">Talk to this node</div><div>Say what you want the output to show. The model rewrites the instruction (and adds a source if it needs one), you see the changed lines, and the node runs again.</div>'
+      + '<button type="button" class="btn" onclick="_mdaiChatExample()">Try: look at the messages about lifecycle work and include that in the table</button></div>';
+  }
+  const lastApplied = (() => { for (let k = _mdaiChat.length - 1; k >= 0; k--) if (_mdaiChat[k].changed) return k; return -1; })();
+  _mdaiChat.forEach((t, i) => {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(t.message || '') + '</div><div class="mdai-msg-meta">' + (t.ts ? timeAgo(Math.floor(t.ts / 1000)) : '') + '</div></div>';
+    if (t.error) {
+      h += '<div class="mdai-msg ai"><div class="mdai-bubble bad" role="alert"><b>Not changed.</b> ' + esc(t.error) + '</div></div>';
+      return;
+    }
+    const d = t.changed && !t.truncated ? _mdaiDiffHtml(t.before, t.after) : null;
+    const what = [t.body_changed ? 'instruction' : '', t.sources_changed ? 'sources' : ''].filter(Boolean).join(' and ');
+    h += '<div class="mdai-msg ai"><div class="mdai-bubble">' + esc(t.reply || '')
+      + '<div class="mdai-msg-meta">'
+      + (t.changed ? '<span class="mdai-pill ok">' + (t.undone ? 'undone' : 'changed ' + esc(what || 'file')) + '</span>' : '<span class="mdai-pill">no change</span>')
+      + (d && d.html ? ' <span class="mdai-dim">+' + d.add + ' / -' + d.del + ' lines</span>' : '')
+      + (t.model ? ' <span class="mdai-dim">' + esc(t.model) + '</span>' : '') + (t.dur_ms ? ' <span class="mdai-dim">' + _mdaiDur(t.dur_ms) + '</span>' : '') + '</div>'
+      + (d ? (d.html ? '<details class="mdai-diff-wrap"' + (i === lastApplied ? ' open' : '') + '><summary>Changed lines</summary>' + d.html + '</details>' : d) : '')
+      + (t.changed && t.truncated ? '<div class="mdai-dim">This file is too large to keep a copy for the diff or undo.</div>' : '')
+      + (i === lastApplied && !t.undone ? '<div class="mdai-row-end mdai-chat-acts">'
+        + '<button type="button" class="btn" onclick="_mdaiSetTab(\'preview\')">See output</button>'
+        + (_mdaiRunning ? '' : '<button type="button" class="btn" onclick="_mdaiRun({show:true})">Run again</button>')
+        + (t.truncated ? '' : '<button type="button" class="btn" onclick="_mdaiChatUndo(' + i + ')">Undo</button>') + '</div>' : '')
+      + '</div></div>';
+  });
+  if (_mdaiChatBusy) {
+    h += '<div class="mdai-msg me"><div class="mdai-bubble">' + esc(_mdaiChatPending || '') + '</div></div>'
+      + '<div class="mdai-msg ai"><div class="mdai-bubble mdai-chat-wait" role="status"><span class="mdai-spin"></span> Rewriting the node. This can take a minute.</div></div>';
+  }
+  if (_mdaiChatErr && !(_mdaiChat.length && _mdaiChat[_mdaiChat.length - 1].error === _mdaiChatErr)) h += '<div class="mdai-err" role="alert">' + esc(_mdaiChatErr) + '</div>';
+  h += '</div><label class="mdai-check mdai-chat-opt"><input type="checkbox" id="mdai-chat-autorun"' + (_mdaiChatAutoRun() ? ' checked' : '') + ' onchange="_mdaiChatSetAutoRun(this.checked)"> Run the node after each change</label>';
+  return h;
+}
+function _mdaiChatExample() {
+  const ta = document.getElementById('mdai-chat-input');
+  if (!ta) return;
+  ta.value = 'look at the messages responsible for lifecycle work, and include that in the table';
+  _mdaiChatGrow(ta); ta.focus();
 }
 function _mdaiSrcIcon(kind) { return { amux: '&#128488;', mdai: '&#9672;', folder: '&#128193;', file: '&#128196;', url: '&#127760;', missing: '&#9888;' }[kind] || '&#128196;'; }
 function _mdaiSourcesHtml() {
@@ -32545,11 +34957,23 @@ function _toggleWorktree(on) {
   }
 }
 let _gitCheckTimer = null;
+// Only the newest check may set the box. openCreate checks the default
+// directory without waiting, so when the owner picks a repository right away
+// the default's slower answer used to land last and hide the box again, and
+// the create then omitted worktree:false (create-worktree-optout.spec.ts,
+// ios-safari on 5eb4d629c, 4bd34bf43, d56938bdb and 253e5d4f0).
+let _gitCheckSeq = 0;
 async function _checkDirGit(dir) {
+  const seq = ++_gitCheckSeq;
   if (!dir) { _createDirIsGit = false; document.getElementById('create-worktree-field').style.display = 'none'; return; }
   try {
     const r = await fetch(API + '/api/git-check?dir=' + encodeURIComponent(dir));
     const d = await r.json();
+    if (seq !== _gitCheckSeq) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+        body: JSON.stringify({ kind: 'git-check-stale-dropped', verdict: 'stale_git_check_dropped', measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+      return;
+    }
     _createDirIsGit = !!d.is_git;
     document.getElementById('create-worktree-field').style.display = _createDirIsGit ? '' : 'none';
     _loadWorktreeProfiles();
@@ -32558,6 +34982,7 @@ async function _checkDirGit(dir) {
       document.getElementById('create-worktree-info').style.display = 'none';
     }
   } catch(e) {
+    if (seq !== _gitCheckSeq) return;
     _createDirIsGit = false;
     document.getElementById('create-worktree-field').style.display = 'none';
   }
@@ -33310,7 +35735,15 @@ function _pasteTextInto(target) {
     target.selectionStart = target.selectionEnd = s + text.length;
     target.dispatchEvent(new Event('input', { bubbles: true }));
     if (typeof autoGrow === 'function') autoGrow(target);
-  }).catch(() => showToast('Paste failed — clipboard blocked?'));  // user action: never fail silently
+  }).catch(() => { showToast('Paste failed — clipboard blocked?'); _clipBeacon('paste', 'clipboard_read_refused'); });  // user action: never fail silently
+}
+// Clipboard failures used to reach only a toast, so a broken paste on one
+// engine was invisible to every sweep (2026-10-21).
+function _clipBeacon(op, verdict) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ kind: 'clipboard', op, verdict, measured: true, n_considered: 1, ver: typeof APP_VER !== 'undefined' ? APP_VER : '' }) }).catch(() => {});
+  } catch (e) {}
 }
 function _pwaCb(e) {
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return false;
@@ -33351,7 +35784,13 @@ function _pwaCb(e) {
       const sel = window.getSelection()?.toString();
       if (sel) {
         e.preventDefault();
-        navigator.clipboard.writeText(sel).then(() => showToast('Copied'), () => showToast('Copy failed'));
+        // The native copy (the 'copy' listener below fills it from the
+        // selection) works without permission on every engine; writeText is
+        // refused in some WebKit contexts.
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (err) {}
+        if (ok) { showToast('Copied'); return true; }
+        navigator.clipboard.writeText(sel).then(() => showToast('Copied'), () => { showToast('Copy failed'); _clipBeacon('copy', 'clipboard_write_refused'); });
         return true;
       }
     }
@@ -33374,6 +35813,25 @@ function _pwaCb(e) {
 
     // If the target is already focused, let the browser handle Cmd+V natively.
     if (target === document.activeElement) return false;
+    // Move focus to the target and let the NATIVE paste land there. It needs
+    // no clipboard permission. WebKit (the amux desktop app, Safari) refuses
+    // clipboard.readText() from a key handler, so the old path always toasted
+    // "Paste failed" when the terminal output had focus (Ethan, 2026-10-21:
+    // "i can't copy/paste it gets error"). readText stays as the fallback for
+    // a shell that fires no paste event at all.
+    target.focus({ preventScroll: true });
+    if (document.activeElement === target) {
+      let landed = false;
+      const seen = () => { landed = true; };
+      document.addEventListener('paste', seen, { capture: true, once: true });
+      setTimeout(() => {
+        document.removeEventListener('paste', seen, { capture: true });
+        if (landed) return;
+        _clipBeacon('paste', 'native_paste_missing');
+        if (navigator.clipboard?.readText) _pasteTextInto(target);
+      }, 120);
+      return true;
+    }
     if (!navigator.clipboard?.readText) return false;
     e.preventDefault();
     // Try clipboard.read() first for image/file paste support in peek
@@ -34007,6 +36465,9 @@ function _renderReportChart(id, data, period) {
 
   const _isCount = (_reportTypes[rtype]?.display === 'count');
   const _yFmt = _isCount ? (v => v.toLocaleString()) : (v => '$' + v.toFixed(0));
+  if (typeof Chart === 'undefined' && labels.length) {
+    _lazyLib('chart').then(() => _renderReportChart(id, data, period), () => {});
+  }
   if (typeof Chart !== 'undefined' && labels.length) {
     _reportCharts[id] = new Chart(canvas, {
       type: 'bar',
@@ -34618,9 +37079,14 @@ function statusStyle(id) {
 // ═══════ CHROME TABS ═══════
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// The Mac app has real windows and tabs (Cmd-N, Cmd-T), so the in-page strip
+// is hidden there and the page always shows its own first tab (Ethan,
+// 2026-10-19: "this is much cleaner, you can get rid of this now").
+const _nativeTabs = /Amux-Desktop/.test(navigator.userAgent || '');
+if (_nativeTabs) document.body.classList.add('native-tabs');
 
 let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null') || [{id:1, name:'Tab 1'}];
-let _chromeActiveId = parseInt(localStorage.getItem('amux_chrome_active2')) || _chromeTabs[0]?.id || 1;
+let _chromeActiveId = (_nativeTabs ? null : parseInt(localStorage.getItem('amux_chrome_active2'))) || _chromeTabs[0]?.id || 1;
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -34759,7 +37225,7 @@ function _chromeUpdateOffsets() {
     if (ctb) {
       // Phones hide the tab strip entirely (CSS) — its height must not leak
       // into layout offsets (it pushed the peek 54px down on mobile).
-      const h = (_chromeCollapsed || window.innerWidth <= 700) ? 0 : ctb.offsetHeight;
+      const h = (_chromeCollapsed || _nativeTabs || window.innerWidth <= 700) ? 0 : ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
     }
     // --sticky-nav-top no longer used (tab-bar-outer is position:relative)
@@ -34811,6 +37277,7 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
+  if (!peekSession) _syncUrlHash();
   // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
   // ARRAYS that had to stay index-aligned, and the alignment had already failed
   // once — the old comment recorded 18 display entries for 19 ids, so 'graph'
@@ -34827,9 +37294,10 @@ function switchView(view) {
     ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
-    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
+    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
-    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'],
+    ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
+    ['pages', 'pages', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -34844,7 +37312,7 @@ function switchView(view) {
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
-  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
+  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
   if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
@@ -34857,6 +37325,8 @@ function switchView(view) {
   if (view === 'draw') _drawEnter(); else _drawLeave();
   if (view === 'vault') _vaultEnter(); else if (typeof _vaultLeave === 'function') _vaultLeave();
   if (view === 'sql') _sqlInit();
+  if (view === 'pages') _pagesEnter(); else if (typeof _pagesLeave === 'function' && _pagesCur) _pagesLeave();
+  if (view === 'tasks') _tasksLoad('main', true);
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
   // so tapping Messages showed one session's history scoped by whichever peek
@@ -34864,7 +37334,7 @@ function switchView(view) {
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
-  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); }
+  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); try { const m = localStorage.getItem('amux_msg_mode'); if (m && ['messages','trends','ask'].includes(m)) _msgSetMode(m); } catch(e) {} }
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
@@ -35063,6 +37533,16 @@ let _mapMobileSidebarInited = false; // mobile: show the map (not the pin list) 
 let _mapServerLoaded = false; // true once we've synced from the server — guards against empty overwrites
 let _mapEditingPin = null;
 let _mapEditingTag = null;
+// Pins live in the server's database, one row each (map_store.rs, 2026-10-20):
+// a pin is saved alone (PUT /api/map/pins/{id}) and the rest of the map
+// (groups, settings, trials, lists, categories) through PUT /api/map/meta.
+let _mapTagGroups = [];          // categories of groups: [{id, name}]
+let _mapLists = [];              // saved filters: [{id, name, filter:{tags, status, q}}]
+let _mapStatusFilter = new Set();
+let _mapActiveList = '';
+let _mapView = localStorage.getItem('amux_map_view') === 'table' ? 'table' : 'list';
+let _mapSelected = new Set();
+const _MAP_STATUS = { want: 'Want to go', been: 'Been', favorite: 'Favorite', closed: 'Closed' };
 
 // STOPWATCH FOR TIME TRIALS (AMUX-6114; Ethan, 2026-10-16: "add a stopwatch
 // thing to the maps tab and that fulfills our time trial use case"). Elapsed
@@ -35181,6 +37661,23 @@ function _mapSwRoute(id) {
   setTimeout(() => { if (_map) _map.invalidateSize(); }, 60);
 }
 
+// A map load replaces pins, tags and lists wholesale. Edits made while it is
+// out are kept (2026-10-24: a pin dropped right after opening the map vanished
+// when the server answer landed, and a tag added before it was never sent),
+// and an older load never lands over a newer one.
+let _mapLoadGen = 0, _mapLoadingGen = 0;
+const _mapPinsEditedInLoad = new Map();   // id -> pin, put while a load was out
+let _mapMetaUnsent = false;               // tags/lists changed before the first load
+let _mapMetaSaving = null;                // the newest meta PUT, so a call that needs it stored can wait
+function _mapKeepLocalEdits() {
+  for (const pin of _mapPinsEditedInLoad.values()) {
+    const i = _mapPins.findIndex(p => p.id === pin.id);
+    if (i >= 0) _mapPins[i] = pin; else _mapPins.push(pin);
+  }
+  const kept = _mapPinsEditedInLoad.size;
+  _mapPinsEditedInLoad.clear();
+  return kept;
+}
 function _mapLoad() {
   // Load from localStorage immediately for instant render
   try { var cp = localStorage.getItem('amux_map_pins'); if (cp) _mapPins = JSON.parse(cp); } catch(e) {}
@@ -35188,16 +37685,26 @@ function _mapLoad() {
   try { var cs = localStorage.getItem('amux_map_settings'); if (cs) _mapSettings = Object.assign(_mapSettings, JSON.parse(cs)); } catch(e) {}
   if (_mapPins.length || _mapTags.length) { _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers(); }
   // Then fetch fresh from server
+  const gen = _mapLoadingGen = ++_mapLoadGen;
+  const localTags = _mapTags.slice();
   fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
     if (!data) return;
+    if (gen !== _mapLoadGen) { _olderAnswerDropped('map'); return; }
+    _mapLoadingGen = 0;
     var firstLoad = _mapPins.length === 0;
-    var needsSave = false;
-    _mapPins = (data.pins || []).map(function(pin, i) {
-      if (!pin.id) { pin.id = 'pin_' + Date.now() + '_' + i; needsSave = true; }
-      return pin;
-    });
-    if (needsSave) _mapSave();
+    // The server gives every pin its id and rev (map_store.rs).
+    _mapPins = data.pins || [];
+    const keptPins = _mapKeepLocalEdits();
     _mapTags = data.tags || [];
+    if (_mapMetaUnsent) {   // tags made before the server answered: keep them, and send them below
+      const ids = new Set(_mapTags.map(t => t.id));
+      for (const t of localTags) if (!ids.has(t.id)) _mapTags.push(t);
+    }
+    if (keptPins || _mapMetaUnsent) {
+      try { window._clientDebug?.('map-race', {verdict: 'map_edits_kept_over_load', measured: true, n_considered: keptPins, meta: _mapMetaUnsent ? 1 : 0}); } catch (_) {}
+    }
+    _mapTagGroups = Array.isArray(data.tagGroups) ? data.tagGroups : [];
+    _mapLists = Array.isArray(data.lists) ? data.lists : [];
     _mapTrials = Array.isArray(data.trials) ? data.trials : [];
     _mapSwRenderPast();
     // Whether the sidebar is open is this device's state, not the document's:
@@ -35211,6 +37718,7 @@ function _mapLoad() {
     _mapApplyBase();
     _mapGoogleKey = (data.settings || {}).googleMapsKey || '';
     _mapServerLoaded = true; // safe to persist now that client mirrors server
+    if (_mapMetaUnsent) { _mapMetaUnsent = false; _mapSave(); }
     // Cache for offline
     try {
       localStorage.setItem('amux_map_pins', JSON.stringify(_mapPins));
@@ -35218,6 +37726,8 @@ function _mapLoad() {
       localStorage.setItem('amux_map_settings', JSON.stringify(_mapSettings));
     } catch(e) {}
     _mapRenderTags();
+    _mapRenderStatus();
+    _mapRenderLists();
     _mapRenderPins();
     _mapRenderMarkers();
     if (firstLoad && _map && _mapPins.length > 0) {
@@ -35228,6 +37738,7 @@ function _mapLoad() {
       else if (coords.length > 1) { _map.fitBounds(coords, { padding: [40, 40], maxZoom: 15 }); }
     }
   }).catch(function() {
+    if (gen === _mapLoadGen) { _mapLoadingGen = 0; _mapPinsEditedInLoad.clear(); }   // they are in _mapPins already
     // Already loaded from cache above; render if not done
     if (_mapPins.length || _mapTags.length) { _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers(); }
   });
@@ -35242,20 +37753,110 @@ function _mapSave() {
   } catch(e) {}
   // Don't push to the server until we've synced FROM it this session — prevents
   // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
-  // the map is merely panned or zoomed.
-  if (!_mapServerLoaded) return;
-  var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings, trials: _mapTrials };
-  // ?replace=1 — the dashboard holds the full set (guarded by _mapServerLoaded),
-  // so it's authorized to replace the whole document, including deletions.
-  apiCall(API + '/api/map?replace=1', {
-    method: 'POST',
+  // the map is merely panned or zoomed. The first load sends what was changed
+  // meanwhile (_mapMetaUnsent).
+  if (!_mapServerLoaded) { _mapMetaUnsent = true; return; }
+  // Pins are saved one at a time (_mapPutPin); this writes the rest of the map.
+  var meta = Object.assign({}, _mapSettings); delete meta.googleMapsKey;
+  _mapMetaSaving = apiCall(API + '/api/map/meta', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ tags: _mapTags, settings: meta, trials: _mapTrials, lists: _mapLists, tagGroups: _mapTagGroups })
   });
+}
+
+function _mapCacheLocal() {
+  try { localStorage.setItem('amux_map_pins', JSON.stringify(_mapPins)); } catch(e) {}
+}
+
+function _mapRerender() { _mapRenderTags(); _mapRenderStatus(); _mapRenderLists(); _mapRenderPins(); _mapRenderMarkers(); }
+
+// Save one pin. It carries the rev it was loaded with, so an edit made on
+// another device since then comes back as 409 with the current pin instead of
+// being overwritten; the list then shows the server's copy.
+async function _mapPutPin(pin) {
+  if (_mapLoadingGen) _mapPinsEditedInLoad.set(pin.id, pin);   // the load in flight must not drop it
+  var i = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+  if (i >= 0) _mapPins[i] = pin; else _mapPins.push(pin);
+  _mapCacheLocal(); _mapRerender();
+  var r = await apiCall(API + '/api/map/pins/' + encodeURIComponent(pin.id), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pin),
+    _onRefused: function(status, body) {
+      if (status === 409 && body && body.pin) {
+        var j = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+        if (j >= 0) _mapPins[j] = body.pin;
+        _mapCacheLocal(); _mapRerender();
+      }
+    }
+  });
+  if (!r) return null;
+  var d = await r.json().catch(function() { return null; });
+  if (d && d.pin) {
+    var k = _mapPins.findIndex(function(p) { return p.id === pin.id; });
+    if (k >= 0) _mapPins[k] = d.pin;
+    _mapCacheLocal(); _mapRerender();
+    return d.pin;
+  }
+  return null;
+}
+
+async function _mapRemovePin(id) {
+  _mapPins = _mapPins.filter(function(p) { return p.id !== id; });
+  _mapSelected.delete(id);
+  _mapCacheLocal(); _mapRerender();
+  await apiCall(API + '/api/map/pins/' + encodeURIComponent(id), { method: 'DELETE' });
+}
+
+// One change for many pins (status, rating, add_tags, remove_tags, delete),
+// then reload so every pin shows the server's copy.
+async function _mapBulk(ids, op, value) {
+  if (!ids.length) return;
+  var r = await apiCall(API + '/api/map/pins/bulk', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids, op: op, value: value })
+  });
+  if (r) {
+    var d = await r.json().catch(function() { return {}; });
+    showToast((op === 'delete' ? 'Deleted ' : 'Updated ') + (d.changed || 0) + ' pin' + (d.changed === 1 ? '' : 's'));
+  }
+  if (op === 'delete') ids.forEach(function(id) { _mapSelected.delete(id); });
+  _mapLoad();
 }
 
 function _mapInit() {
   if (!document.getElementById('map-container')) return;
+  // Leaflet loads on the first Map open. The sidebar, pins list and history
+  // panes do not need it, so they set up now; only the map itself waits, and
+  // it then draws whatever the user has opened meanwhile.
+  const leafletPending = typeof L === 'undefined';
+  if (!leafletPending) _mapCreate();
+  // On mobile the sidebar overlays the entire map; default to showing the MAP
+  // on first open this session (otherwise an empty pin list hides the map).
+  // Desktop keeps its persisted side-by-side preference.
+  if (window.innerWidth <= 600 && !_mapMobileSidebarInited) {
+    _mapMobileSidebarInited = true;
+    _mapSettings.sidebarOpen = false;
+  }
+  _mapApplySidebarState();
+  const tb = document.getElementById('map-table-btn');
+  if (tb) tb.setAttribute('aria-pressed', _mapView === 'table' ? 'true' : 'false');
+  const sb = document.getElementById('map-sidebar');
+  if (sb) sb.classList.toggle('map-sidebar-wide', _mapView === 'table');
+  _mapRerender();
+  _mapMeAuto();
+  // Location history (AMUX-5458): the tab may have been left open; draw it now
+  // that the map exists.
+  if (typeof _mapTab !== 'undefined' && _mapTab === 'history') _mapSidebarTab('history');
+  if (leafletPending) _lazyLib('leaflet').then(() => {
+    if (_map) return;
+    _mapCreate();
+    _mapRenderMarkers();
+    _mapMeAuto();
+    _locDraw(true);
+    _locHeatDraw();
+  }, () => {});
+}
+function _mapCreate() {
   if (!_map) {
     _map = L.map('map-container', {
       center: [_mapSettings.defaultLat, _mapSettings.defaultLng],
@@ -35277,21 +37878,6 @@ function _mapInit() {
   } else {
     setTimeout(function() { _map.invalidateSize(); }, 50);
   }
-  // On mobile the sidebar overlays the entire map; default to showing the MAP
-  // on first open this session (otherwise an empty pin list hides the map).
-  // Desktop keeps its persisted side-by-side preference.
-  if (window.innerWidth <= 600 && !_mapMobileSidebarInited) {
-    _mapMobileSidebarInited = true;
-    _mapSettings.sidebarOpen = false;
-  }
-  _mapApplySidebarState();
-  _mapRenderTags();
-  _mapRenderPins();
-  _mapRenderMarkers();
-  _mapMeAuto();
-  // Location history (AMUX-5458): the tab may have been left open; draw it now
-  // that the map exists.
-  if (typeof _mapTab !== 'undefined' && _mapTab === 'history') _mapSidebarTab('history');
 }
 
 function _mapTagColor(tagId) {
@@ -35305,7 +37891,9 @@ function _mapPinColor(pin) {
 }
 
 function _mapMakeIcon(pin) {
-  const color = _mapPinColor(pin);
+  // A closed place is grey; a favorite gets a gold outline.
+  const color = pin.status === 'closed' ? '#6e7681' : _mapPinColor(pin);
+  const stroke = pin.status === 'favorite' ? '#f2b705' : '#fff';
   // Second tag (if any) colors the inner dot, so a Coffee+Girls pin reads as
   // two-tone instead of hiding its secondary tag (AMUX-1865 #3).
   const second = (pin.tags && pin.tags.length > 1) ? (_mapTagColor(pin.tags[1]) || '') : '';
@@ -35313,7 +37901,7 @@ function _mapMakeIcon(pin) {
     ? '<circle cx="12" cy="12" r="5" fill="' + second + '" stroke="#fff" stroke-width="1.5"/>'
     : '<circle cx="12" cy="12" r="4.5" fill="rgba(255,255,255,0.55)"/>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">' +
-    '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="#fff" stroke-width="1.5"/>' +
+    '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="' + stroke + '" stroke-width="' + (pin.status === 'favorite' ? 2.5 : 1.5) + '"' + (pin.status === 'closed' ? ' opacity="0.6"' : '') + '/>' +
     inner +
   '</svg>';
   return L.divIcon({
@@ -35325,18 +37913,27 @@ function _mapMakeIcon(pin) {
   });
 }
 
+// With categories, a filter matches ANY selected group within a category and
+// EVERY category at once (Korean BBQ or Ramen, and Date spots). Without
+// categories the AND/OR switch decides. map_store::matches is the same rule
+// on the server, for shared lists.
+function _mapTagMatch(pt) {
+  if (_mapFilterTags.size === 0) return true;
+  const sel = Array.from(_mapFilterTags);
+  if (_mapTagGroups.length) {
+    const byCat = {};
+    sel.forEach(function(t) { const tag = _mapTags.find(function(x) { return x.id === t; }); const c = (tag && tag.category) || ''; (byCat[c] = byCat[c] || []).push(t); });
+    return Object.keys(byCat).every(function(c) { return byCat[c].some(function(t) { return pt.indexOf(t) !== -1; }); });
+  }
+  return _mapSettings.tagMode === 'and'
+    ? sel.every(function(t) { return pt.indexOf(t) !== -1; })
+    : pt.some(function(t) { return _mapFilterTags.has(t); });
+}
+
 function _mapVisiblePins() {
-  const andMode = _mapSettings.tagMode === 'and';
   return _mapPins.filter(function(pin) {
-    if (_mapFilterTags.size > 0) {
-      const pt = pin.tags || [];
-      // OR: pin has ANY selected tag. AND: pin has EVERY selected tag
-      // (intersection, e.g. Girls × Coffee).
-      const match = andMode
-        ? Array.from(_mapFilterTags).every(function(t) { return pt.indexOf(t) !== -1; })
-        : pt.some(function(t) { return _mapFilterTags.has(t); });
-      if (!match) return false;
-    }
+    if (!_mapTagMatch(pin.tags || [])) return false;
+    if (_mapStatusFilter.size > 0 && !_mapStatusFilter.has(pin.status || '')) return false;
     if (_mapSearchQ) {
       const q = _mapSearchQ;
       const nameMatch = (pin.name||'').toLowerCase().includes(q);
@@ -35357,15 +37954,27 @@ function _mapRenderTags() {
   if (!el) return;
   const allActive = _mapFilterTags.size === 0;
   let html = '<button class="map-tag-chip' + (allActive ? ' all-active' : '') + '" onclick="_mapFilterByTag(null)">All</button>';
-  _mapTags.forEach(function(tag) {
+  const chip = function(tag) {
     const active = _mapFilterTags.has(tag.id);
     const chipStyle = active
       ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:#fff;'
       : 'color:' + tag.color + ';border-color:' + tag.color + '88;';
-    html += '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
-  });
-  // AND/OR toggle — only meaningful (and only shown) with 2+ tags selected.
-  if (_mapFilterTags.size >= 2) {
+    return '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
+  };
+  if (_mapTagGroups.length) {
+    // Grouped by category; a category label on each row.
+    const cats = _mapTagGroups.concat([{ id: '', name: 'Other' }]);
+    cats.forEach(function(c) {
+      const tags = _mapTags.filter(function(t) { return (t.category || '') === c.id; });
+      if (!tags.length) return;
+      html += '<div class="map-tag-cat" data-category="' + escHtml(c.id) + '"><span class="map-tag-cat-name">' + escHtml(c.name) + '</span>' + tags.map(chip).join('') + '</div>';
+    });
+  } else {
+    _mapTags.forEach(function(tag) { html += chip(tag); });
+  }
+  // AND/OR toggle — only meaningful (and only shown) with 2+ tags selected and
+  // no categories (categories decide the rule themselves).
+  if (_mapFilterTags.size >= 2 && !_mapTagGroups.length) {
     const andMode = _mapSettings.tagMode === 'and';
     html += '<button class="map-tag-chip map-tag-mode" onclick="_mapToggleTagMode()" title="' +
       (andMode ? 'Matching pins with ALL selected groups — click for ANY' : 'Matching pins with ANY selected group — click for ALL') +
@@ -35421,7 +38030,13 @@ function _mapRenderPins() {
     visible = visible.slice().sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
   } else if (sortBy === 'distance' && ref) {
     visible = visible.slice().sort(function(a,b){ return _mapDist(ref.lat,ref.lng,a.lat,a.lng) - _mapDist(ref.lat,ref.lng,b.lat,b.lng); });
+  } else if (sortBy === 'rating') {
+    visible = visible.slice().sort(function(a,b){ return (b.myRating||0) - (a.myRating||0) || (b.rating||0) - (a.rating||0) || (a.name||'').localeCompare(b.name||''); });
+  } else if (sortBy === 'visited') {
+    visible = visible.slice().sort(function(a,b){ return String((b.visits||{}).last||'').localeCompare(String((a.visits||{}).last||'')); });
   }
+  _mapRenderBulkBar();
+  if (_mapView === 'table') { el.innerHTML = _mapTableHtml(visible); return; }
   el.innerHTML = visible.map(function(pin) {
     const color = _mapPinColor(pin);
     const tagChips = (pin.tags||[]).map(function(tid) {
@@ -35430,11 +38045,14 @@ function _mapRenderPins() {
     }).join('');
     const preview = pin.desc || pin.notes || '';
     const hasNotes = !!(pin.notes);
+    const thumb = _mapPinThumbUrl(pin, 120);
     const distLabel = (sortBy === 'distance' && ref) ? '<span class="map-pin-dist"> \u00B7 ' + _mapFmtDist(_mapDist(ref.lat,ref.lng,pin.lat,pin.lng)) + '</span>' : '';
     return '<div class="map-pin-item" onclick="_mapFlyToPin(\x27' + pin.id + '\x27)" ondblclick="_mapOpenPinModal(\x27' + pin.id + '\x27)">' +
       '<div class="map-pin-dot" style="background:' + color + '"></div>' +
+      (thumb ? '<img class="map-pin-thumb" src="' + escHtml(thumb) + '" alt="" loading="lazy" onerror="this.remove()">' : '') +
       '<div class="map-pin-info">' +
         '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
+        _mapStatusLine(pin) +
         (tagChips ? '<div class="map-pin-tagrow">' + tagChips + '</div>' : '') +
         (preview ? '<div class="map-pin-desc">' + escHtml(preview.substring(0,80)) + (preview.length>80?'\u2026':'') + '</div>' : '') +
       '</div>' +
@@ -35527,11 +38145,12 @@ function _mapRenderMarkers() {
       return tag ? '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;background:' + tag.color + ';color:#fff;">' + escHtml(tag.name) + '</span>' : '';
     }).join(' ');
     const notesPreview = pin.notes ? (pin.notes.length > 150 ? pin.notes.substring(0, 150) + '\u2026' : pin.notes) : '';
-    var _photo = _mapPhotoUrl(pin.photoName, 400);
+    var _photo = _mapPinThumbUrl(pin, 400);
     marker.bindPopup(
       '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:13px">' +
-        (_photo ? '<img src="' + _photo + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
+        (_photo ? '<img src="' + escHtml(_photo) + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
         '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
+        _mapStatusLine(pin) +
         _mapMetaRow(pin) +
         (pin.desc ? '<div style="font-size:12px;color:#888;margin-bottom:4px">' + escHtml(pin.desc) + '</div>' : '') +
         (notesPreview ? '<div style="font-size:11.5px;color:#aaa;margin-bottom:4px;white-space:pre-wrap;line-height:1.4;border-left:2px solid #444;padding-left:6px;">' + escHtml(notesPreview) + '</div>' : '') +
@@ -35759,10 +38378,9 @@ function _mapImportFile(input) {
       if (typeof n.rating==='number') pin.rating=n.rating;
       if (typeof n.priceLevel==='number') pin.priceLevel=n.priceLevel;
       if (n.placeId) pin.placeId=n.placeId;
-      _mapPins.push(pin); added++;
+      _mapPutPin(pin); added++;
     });
     input.value='';
-    if (added){ _mapSave(); _mapRenderPins(); _mapRenderMarkers(); }
     showToast('Imported ' + added + ' pin' + (added===1?'':'s') + (skipped?(' · ' + skipped + ' skipped (dupe/invalid)'):''));
   };
   reader.readAsText(file);
@@ -35803,6 +38421,7 @@ function _mapOpenPinModal(id, latlng) {
   document.getElementById('map-pin-name').value = pin ? (pin.name||'') : '';
   document.getElementById('map-pin-desc').value = pin ? (pin.desc||'') : '';
   document.getElementById('map-pin-notes').value = pin ? (pin.notes||'') : '';
+  document.getElementById('map-pin-thumb').value = pin ? (pin.thumbnail||'') : '';
   document.getElementById('map-pin-lat').value = pin ? pin.lat : (latlng ? latlng.lat.toFixed(6) : '');
   document.getElementById('map-pin-lng').value = pin ? pin.lng : (latlng ? latlng.lng.toFixed(6) : '');
   const hint = document.getElementById('map-pin-coords-hint');
@@ -35824,6 +38443,12 @@ function _mapOpenPinModal(id, latlng) {
         '<span>' + escHtml(tag.name) + '</span></label>';
     }).join('');
   }
+  document.getElementById('map-pin-status').value = pin ? (pin.status || '') : '';
+  document.getElementById('map-pin-rating').value = pin && pin.myRating ? String(pin.myRating) : '';
+  document.getElementById('map-pin-event').value = pin && pin.eventAt ? String(pin.eventAt).slice(0, 16) : '';
+  document.getElementById('map-pin-facts').innerHTML = pin ? _mapPinFactsHtml(pin) : '';
+  document.getElementById('map-pin-place-row').style.display = pin ? '' : 'none';
+  const hist = document.getElementById('map-pin-history'); hist.hidden = true; hist.innerHTML = '';
   document.getElementById('map-pin-delete-btn').style.display = pin ? '' : 'none';
   const modal = document.getElementById('map-pin-modal');
   modal.style.display = 'flex';
@@ -35860,27 +38485,38 @@ function _mapSavePin() {
   const name = document.getElementById('map-pin-name').value.trim();
   const desc = document.getElementById('map-pin-desc').value.trim();
   const notes = document.getElementById('map-pin-notes').value.trim();
+  const thumbnail = document.getElementById('map-pin-thumb').value.trim();
   const lat = parseFloat(document.getElementById('map-pin-lat').value);
   const lng = parseFloat(document.getElementById('map-pin-lng').value);
   if (!name) { document.getElementById('map-pin-name').focus(); return; }
   if (isNaN(lat) || isNaN(lng)) { alert('Please enter valid coordinates.'); return; }
   const tags = Array.from(document.querySelectorAll('#map-pin-tags-row input[type=checkbox]:checked')).map(function(cb) { return cb.value; });
+  const status = document.getElementById('map-pin-status').value;
+  const ratingV = document.getElementById('map-pin-rating').value;
+  const eventAt = document.getElementById('map-pin-event').value;
+  var pin;
   if (_mapEditingPin) {
-    const pin = _mapPins.find(function(p) { return p.id === _mapEditingPin; });
-    if (pin) { pin.name=name; pin.desc=desc; pin.notes=notes; pin.lat=lat; pin.lng=lng; pin.tags=tags; }
+    const old = _mapPins.find(function(p) { return p.id === _mapEditingPin; });
+    if (!old) return;
+    pin = Object.assign({}, old);
   } else {
-    var np = { id: 'pin_'+Date.now(), name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, createdAt: Date.now() };
-    if (window._mapPendingPlace) { Object.assign(np, window._mapPendingPlace); }
-    _mapPins.push(np);
+    pin = { id: 'pin_'+Date.now(), createdAt: Date.now() };
+    if (window._mapPendingPlace) { Object.assign(pin, window._mapPendingPlace); }
   }
+  Object.assign(pin, { name: name, desc: desc, notes: notes, lat: lat, lng: lng, tags: tags, status: status,
+    myRating: ratingV ? parseInt(ratingV, 10) : null, eventAt: eventAt });   // `rating` is Google's; keep it
+  if (status && pin.statusSource) delete pin.statusSource;   // set by hand now
+  if (thumbnail) pin.thumbnail = thumbnail; else delete pin.thumbnail;
   window._mapPendingPlace = null;
-  _mapSave(); _mapClosePinModal(); _mapRenderPins(); _mapRenderMarkers();
+  _mapClosePinModal();
+  _mapPutPin(pin);
 }
 
 function _mapDeletePin() {
   if (!_mapEditingPin || !confirm('Delete this pin?')) return;
-  _mapPins = _mapPins.filter(function(p) { return p.id !== _mapEditingPin; });
-  _mapSave(); _mapClosePinModal(); _mapRenderPins(); _mapRenderMarkers();
+  const id = _mapEditingPin;
+  _mapClosePinModal();
+  _mapRemovePin(id);
 }
 
 function _mapAddTag() { _mapOpenTagModal(null); }
@@ -35892,6 +38528,10 @@ function _mapOpenTagModal(id) {
   document.getElementById('map-tag-modal-title').textContent = tag ? 'Edit Group' : 'New Group';
   document.getElementById('map-tag-name').value = tag ? tag.name : '';
   document.getElementById('map-tag-color').value = tag ? tag.color : '#' + Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0');
+  const catSel = document.getElementById('map-tag-category');
+  catSel.innerHTML = '<option value="">No category</option>' + _mapTagGroups.map(function(c) { return '<option value="' + escHtml(c.id) + '">' + escHtml(c.name) + '</option>'; }).join('');
+  catSel.value = tag ? (tag.category || '') : '';
+  document.getElementById('map-tag-category-new').value = '';
   document.getElementById('map-tag-delete-btn').style.display = tag ? '' : 'none';
   document.getElementById('map-tag-modal').style.display = 'flex';
   setTimeout(function() { document.getElementById('map-tag-name').focus(); }, 50);
@@ -35906,21 +38546,346 @@ function _mapSaveTag() {
   const name = document.getElementById('map-tag-name').value.trim();
   const color = document.getElementById('map-tag-color').value;
   if (!name) { document.getElementById('map-tag-name').focus(); return; }
+  // A new category typed in wins over the picker.
+  var category = document.getElementById('map-tag-category').value;
+  const newCat = document.getElementById('map-tag-category-new').value.trim();
+  if (newCat) {
+    const found = _mapTagGroups.find(function(c) { return c.name.toLowerCase() === newCat.toLowerCase(); });
+    if (found) category = found.id;
+    else { category = 'cat_' + Date.now(); _mapTagGroups.push({ id: category, name: newCat }); }
+  }
   if (_mapEditingTag) {
     const tag = _mapTags.find(function(t) { return t.id === _mapEditingTag; });
-    if (tag) { tag.name=name; tag.color=color; }
+    if (tag) { tag.name=name; tag.color=color; tag.category=category; }
   } else {
-    _mapTags.push({ id: 'tag_'+Date.now(), name: name, color: color });
+    _mapTags.push({ id: 'tag_'+Date.now(), name: name, color: color, category: category });
   }
   _mapSave(); _mapCloseTagModal(); _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers();
 }
 
 function _mapDeleteTag() {
   if (!_mapEditingTag || !confirm('Delete this group? It will be removed from all pins.')) return;
-  _mapPins.forEach(function(pin) { pin.tags = (pin.tags||[]).filter(function(t) { return t !== _mapEditingTag; }); });
-  _mapTags = _mapTags.filter(function(t) { return t.id !== _mapEditingTag; });
-  _mapFilterTags.delete(_mapEditingTag);
-  _mapSave(); _mapCloseTagModal(); _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers();
+  const tagId = _mapEditingTag;
+  const ids = _mapPins.filter(function(p) { return (p.tags||[]).indexOf(tagId) !== -1; }).map(function(p) { return p.id; });
+  _mapTags = _mapTags.filter(function(t) { return t.id !== tagId; });
+  _mapFilterTags.delete(tagId);
+  _mapSave(); _mapCloseTagModal();
+  if (ids.length) _mapBulk(ids, 'remove_tags', [tagId]); else _mapRerender();
+}
+
+// ── Map: status, lists, table + bulk edits, duplicates, places (2026-10-20) ──
+function _mapStars(n) { return n ? '★'.repeat(n) + '<span style="opacity:.3">' + '★'.repeat(5 - n) + '</span>' : ''; }
+
+// One line under a pin's name: status, your rating, visits, a closed warning.
+function _mapStatusLine(pin) {
+  const bits = [];
+  if (pin.status && _MAP_STATUS[pin.status]) bits.push('<span class="map-status-pill map-status-' + pin.status + '">' + _MAP_STATUS[pin.status] + '</span>');
+  if (pin.myRating) bits.push('<span class="map-stars" aria-label="' + pin.myRating + ' of 5">' + _mapStars(pin.myRating) + '</span>');
+  const v = pin.visits || {};
+  if (v.count) bits.push('<span class="map-visit-note">' + v.count + ' visit' + (v.count === 1 ? '' : 's') + (v.last ? ', last ' + escHtml(String(v.last).slice(0, 10)) : '') + '</span>');
+  if (pin.place && pin.place.businessStatus === 'CLOSED_TEMPORARILY') bits.push('<span class="map-visit-note">temporarily closed</span>');
+  return bits.length ? '<div class="map-pin-statusline">' + bits.join(' ') + '</div>' : '';
+}
+
+function _mapRenderStatus() {
+  const el = document.getElementById('map-status-list');
+  if (!el) return;
+  const counts = {};
+  _mapPins.forEach(function(p) { counts[p.status || ''] = (counts[p.status || ''] || 0) + 1; });
+  el.innerHTML = Object.keys(_MAP_STATUS).map(function(k) {
+    const on = _mapStatusFilter.has(k);
+    return '<button type="button" class="map-tag-chip map-status-chip' + (on ? ' tag-active' : '') + '" data-status="' + k + '" aria-pressed="' + on + '" onclick="_mapToggleStatus(\x27' + k + '\x27)">' + _MAP_STATUS[k] + ' <span class="map-chip-n">' + (counts[k] || 0) + '</span></button>';
+  }).join('');
+}
+
+function _mapToggleStatus(k) {
+  if (_mapStatusFilter.has(k)) _mapStatusFilter.delete(k); else _mapStatusFilter.add(k);
+  _mapActiveList = '';
+  _mapRerender();
+}
+
+// Saved lists: a name for the groups, statuses and search selected now.
+function _mapCurrentFilter() {
+  return { tags: Array.from(_mapFilterTags), status: Array.from(_mapStatusFilter), q: _mapSearchQ || '' };
+}
+
+function _mapRenderLists() {
+  const sel = document.getElementById('map-list-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">All pins</option>' +
+    _mapLists.map(function(l) { return '<option value="' + escHtml(l.id) + '">' + escHtml(l.name) + '</option>'; }).join('') +
+    '<option value="__new">Save current filter as a list…</option>';
+  sel.value = _mapActiveList || '';
+  const bar = document.getElementById('map-list-bar');
+  if (bar) bar.hidden = !_mapActiveList;
+  const share = document.getElementById('map-list-share-status');
+  if (share && !_mapActiveList) share.textContent = '';
+}
+
+function _mapListPick(v) {
+  if (v === '__new') { _mapRenderLists(); return _mapOpenListModal(); }
+  _mapActiveList = v;
+  const l = _mapLists.find(function(x) { return x.id === v; });
+  _mapFilterTags = new Set(l ? (l.filter.tags || []) : []);
+  _mapStatusFilter = new Set(l ? (l.filter.status || []) : []);
+  _mapSearchQ = l ? (l.filter.q || '') : '';
+  const s = document.getElementById('map-search'); if (s) s.value = _mapSearchQ;
+  _mapRerender();
+  if (v) _mapShareStatus(v);
+}
+
+function _mapOpenListModal() {
+  document.getElementById('map-list-name').value = '';
+  const f = _mapCurrentFilter();
+  const parts = [];
+  if (f.tags.length) parts.push(f.tags.map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? x.name : t; }).join(', '));
+  if (f.status.length) parts.push(f.status.map(function(k) { return _MAP_STATUS[k]; }).join(', '));
+  if (f.q) parts.push('“' + f.q + '”');
+  document.getElementById('map-list-summary').textContent = parts.length ? 'Saves: ' + parts.join(' · ') : 'Nothing is filtered, so this list will show every pin.';
+  document.getElementById('map-list-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('map-list-name').focus(); }, 50);
+}
+
+function _mapSaveList() {
+  const name = document.getElementById('map-list-name').value.trim();
+  if (!name) { document.getElementById('map-list-name').focus(); return; }
+  const l = { id: 'list_' + Date.now(), name: name, filter: _mapCurrentFilter() };
+  _mapLists.push(l);
+  _mapActiveList = l.id;
+  _mapSave();
+  _mapCloseModal('map-list-modal');
+  _mapRenderLists();
+  showToast('Saved list “' + name + '”');
+}
+
+function _mapDeleteList() {
+  const l = _mapLists.find(function(x) { return x.id === _mapActiveList; });
+  if (!l || !confirm('Delete the list “' + l.name + '”? Its pins stay.')) return;
+  apiCall(API + '/api/map/lists/' + encodeURIComponent(l.id) + '/share', { method: 'DELETE' });
+  _mapLists = _mapLists.filter(function(x) { return x.id !== l.id; });
+  _mapActiveList = '';
+  _mapSave();
+  _mapListPick('');
+}
+
+async function _mapShareStatus(id) {
+  const el = document.getElementById('map-list-share-status');
+  const btn = document.getElementById('map-list-share-btn');
+  if (!el || !btn) return;
+  const r = await fetch(API + '/api/map/lists/' + encodeURIComponent(id) + '/share').then(function(x) { return x.ok ? x.json() : null; }).catch(function() { return null; });
+  if (id !== _mapActiveList) return;
+  if (r && r.shared) {
+    const url = location.origin + r.url;
+    el.innerHTML = 'Shared: <a href="' + escHtml(url) + '" target="_blank" rel="noopener" id="map-list-share-link">' + escHtml(url) + '</a>';
+    btn.textContent = 'Stop sharing';
+    btn.dataset.shared = '1';
+  } else {
+    el.textContent = 'Not shared';
+    btn.textContent = 'Share link';
+    btn.dataset.shared = '';
+  }
+}
+
+async function _mapShareToggle() {
+  const id = _mapActiveList; if (!id) return;
+  const btn = document.getElementById('map-list-share-btn');
+  if (btn.dataset.shared) {
+    await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'DELETE' });
+    showToast('Link turned off');
+  } else {
+    if (!confirm('Anyone with the link will see this list’s pins: names, descriptions, groups, status and rating. Notes and visits stay private. Create the link?')) return;
+    // A list saved a moment ago may still be on its way to the server; sharing
+    // before it lands answers "no saved list" (CI, 2026-10-24).
+    if (_mapMetaSaving) await Promise.resolve(_mapMetaSaving).catch(function() {});
+    const r = await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'POST' });
+    const d = r ? await r.json().catch(function() { return null; }) : null;
+    if (d && d.url) {
+      const url = location.origin + d.url;
+      try { await navigator.clipboard.writeText(url); showToast('Link copied'); } catch (e) { showToast('Link created'); }
+    }
+  }
+  _mapShareStatus(id);
+}
+
+// Table view: every visible pin with a checkbox; the bar above edits the
+// selected pins together.
+function _mapToggleTable() {
+  _mapView = _mapView === 'table' ? 'list' : 'table';
+  try { localStorage.setItem('amux_map_view', _mapView); } catch (e) {}
+  const b = document.getElementById('map-table-btn');
+  if (b) b.setAttribute('aria-pressed', _mapView === 'table' ? 'true' : 'false');
+  const sb = document.getElementById('map-sidebar');
+  if (sb) sb.classList.toggle('map-sidebar-wide', _mapView === 'table');
+  _mapRenderPins();
+  if (_map) setTimeout(function() { _map.invalidateSize(); }, 310);
+}
+
+function _mapTableHtml(pins) {
+  const all = pins.length > 0 && pins.every(function(p) { return _mapSelected.has(p.id); });
+  return '<table class="map-table"><thead><tr>' +
+    '<th><input type="checkbox" aria-label="Select all shown" ' + (all ? 'checked ' : '') + 'onclick="_mapSelectAll(this.checked)"></th>' +
+    '<th>Name</th><th>Status</th><th>Rating</th><th>Groups</th><th>Last visit</th></tr></thead><tbody>' +
+    pins.map(function(p) {
+      const tags = (p.tags || []).map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? '<span class="map-pin-tag" style="background:' + x.color + ';border-color:' + x.color + ';color:#fff">' + escHtml(x.name) + '</span>' : ''; }).join('');
+      return '<tr data-pin="' + escHtml(p.id) + '"' + (_mapSelected.has(p.id) ? ' class="selected"' : '') + '>' +
+        '<td><input type="checkbox" aria-label="Select ' + escHtml(p.name || '') + '" ' + (_mapSelected.has(p.id) ? 'checked ' : '') + 'onclick="_mapSelect(\x27' + p.id + '\x27,this.checked)"></td>' +
+        '<td><a href="#" onclick="event.preventDefault();_mapFlyToPin(\x27' + p.id + '\x27)">' + escHtml(p.name || 'Unnamed') + '</a></td>' +
+        '<td>' + (p.status ? _MAP_STATUS[p.status] || p.status : '') + '</td>' +
+        '<td class="map-stars">' + _mapStars(p.myRating || 0) + '</td>' +
+        '<td>' + tags + '</td>' +
+        '<td>' + escHtml(String((p.visits || {}).last || '').slice(0, 10)) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function _mapSelect(id, on) { if (on) _mapSelected.add(id); else _mapSelected.delete(id); _mapRenderPins(); }
+function _mapSelectAll(on) {
+  _mapVisiblePins().forEach(function(p) { if (on) _mapSelected.add(p.id); else _mapSelected.delete(p.id); });
+  _mapRenderPins();
+}
+
+function _mapRenderBulkBar() {
+  const bar = document.getElementById('map-bulk-bar');
+  if (!bar) return;
+  // Selections survive filtering, but only pins that still exist count.
+  _mapSelected.forEach(function(id) { if (!_mapPins.some(function(p) { return p.id === id; })) _mapSelected.delete(id); });
+  const n = _mapSelected.size;
+  bar.hidden = _mapView !== 'table' || n === 0;
+  if (bar.hidden) return;
+  const tagOpts = _mapTags.map(function(t) { return '<option value="' + escHtml(t.id) + '">' + escHtml(t.name) + '</option>'; }).join('');
+  bar.innerHTML = '<span class="map-bulk-n">' + n + ' selected</span>' +
+    '<select class="input" aria-label="Set status" onchange="if(this.value){_mapBulkApply(\x27status\x27,this.value===\x27none\x27?\x27\x27:this.value)}"><option value="">Status…</option>' +
+      Object.keys(_MAP_STATUS).map(function(k) { return '<option value="' + k + '">' + _MAP_STATUS[k] + '</option>'; }).join('') + '<option value="none">No status</option></select>' +
+    '<select class="input" aria-label="Set rating" onchange="if(this.value){_mapBulkApply(\x27rating\x27,this.value===\x27none\x27?null:parseInt(this.value,10))}"><option value="">Rating…</option>' +
+      [5,4,3,2,1].map(function(r) { return '<option value="' + r + '">' + '★'.repeat(r) + '</option>'; }).join('') + '<option value="none">No rating</option></select>' +
+    '<select class="input" aria-label="Add group" onchange="if(this.value){_mapBulkApply(\x27add_tags\x27,[this.value])}"><option value="">Add group…</option>' + tagOpts + '</select>' +
+    '<select class="input" aria-label="Remove group" onchange="if(this.value){_mapBulkApply(\x27remove_tags\x27,[this.value])}"><option value="">Remove group…</option>' + tagOpts + '</select>' +
+    (n === 2 ? '<button type="button" class="btn" onclick="_mapMergeSelected()">Merge</button>' : '') +
+    '<button type="button" class="btn danger" onclick="_mapBulkDelete()">Delete</button>' +
+    '<button type="button" class="btn" onclick="_mapSelected.clear();_mapRenderPins()">Clear</button>';
+}
+
+function _mapBulkApply(op, value) { _mapBulk(Array.from(_mapSelected), op, value); }
+function _mapBulkDelete() {
+  const n = _mapSelected.size;
+  if (!n || !confirm('Delete ' + n + ' pin' + (n === 1 ? '' : 's') + '? Each one stays in the pin history.')) return;
+  _mapBulk(Array.from(_mapSelected), 'delete');
+}
+
+async function _mapMerge(keep, drop) {
+  const r = await apiCall(API + '/api/map/pins/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep: keep, drop: drop }) });
+  if (r) showToast('Merged');
+  _mapSelected.delete(drop);
+  _mapLoad();
+  return !!r;
+}
+
+function _mapMergeSelected() {
+  const ids = Array.from(_mapSelected);
+  if (ids.length !== 2) return;
+  const a = _mapPins.find(function(p) { return p.id === ids[0]; }), b = _mapPins.find(function(p) { return p.id === ids[1]; });
+  if (!a || !b || !confirm('Merge “' + b.name + '” into “' + a.name + '”? Groups and notes are combined.')) return;
+  _mapMerge(a.id, b.id);
+}
+
+// Duplicates: pairs the server thinks are one place. Merge either way, or
+// mark "not a duplicate" so the pair stops showing.
+async function _mapOpenDuplicates() {
+  const el = document.getElementById('map-dup-list');
+  el.innerHTML = '<p class="ui-help">Checking…</p>';
+  document.getElementById('map-dup-modal').style.display = 'flex';
+  const d = await fetch(API + '/api/map/duplicates').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; });
+  if (!d) { el.innerHTML = '<p class="ui-help">Could not check for duplicates.</p>'; return; }
+  const ignored = new Set((_mapSettings.dupIgnored || []));
+  const pairs = (d.pairs || []).filter(function(x) { return !ignored.has([x.a.id, x.b.id].sort().join('|')); });
+  if (!pairs.length) { el.innerHTML = '<p class="ui-help">No likely duplicates among ' + (d.n_considered || 0) + ' pins.</p>'; return; }
+  el.innerHTML = pairs.map(function(x) {
+    const key = [x.a.id, x.b.id].sort().join('|');
+    return '<div class="map-dup-pair" data-pair="' + escHtml(key) + '">' +
+      '<div><b>' + escHtml(x.a.name || '') + '</b> and <b>' + escHtml(x.b.name || '') + '</b></div>' +
+      '<div class="ui-help">' + escHtml(x.reason) + ', ' + Math.round(x.distance_m) + ' m apart</div>' +
+      '<div class="map-dup-actions">' +
+        '<button type="button" class="btn" onclick="_mapDupMerge(\x27' + x.a.id + '\x27,\x27' + x.b.id + '\x27)">Keep first</button>' +
+        '<button type="button" class="btn" onclick="_mapDupMerge(\x27' + x.b.id + '\x27,\x27' + x.a.id + '\x27)">Keep second</button>' +
+        '<button type="button" class="btn" onclick="_mapDupIgnore(\x27' + escHtml(key) + '\x27)">Not a duplicate</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+async function _mapDupMerge(keep, drop) { if (await _mapMerge(keep, drop)) _mapOpenDuplicates(); }
+function _mapDupIgnore(key) {
+  _mapSettings.dupIgnored = (_mapSettings.dupIgnored || []).concat([key]);
+  _mapSave();
+  _mapOpenDuplicates();
+}
+
+function _mapCloseModal(id) { const m = document.getElementById(id); if (m) m.style.display = 'none'; }
+
+// What the pin editor shows that you did not type: visits from location
+// history and what Google last said about the place.
+function _mapPinFactsHtml(pin) {
+  const out = [];
+  const v = pin.visits || {};
+  if (v.count) out.push('Visited ' + v.count + ' time' + (v.count === 1 ? '' : 's') + (v.first ? ', first ' + escHtml(String(v.first).slice(0, 10)) : '') + (v.last ? ', last ' + escHtml(String(v.last).slice(0, 10)) : '') + ' (from location history)');
+  const pl = pin.place;
+  if (pl) {
+    const st = pl.businessStatus === 'CLOSED_PERMANENTLY' ? 'Permanently closed' : pl.businessStatus === 'CLOSED_TEMPORARILY' ? 'Temporarily closed' : 'Open for business';
+    out.push('Google: ' + st + (pl.rating ? ', ' + pl.rating + '★ (' + (pl.ratingCount || 0) + ')' : '') + (pl.refreshedAt ? ', checked ' + escHtml(String(pl.refreshedAt).slice(0, 10)) : ''));
+    if (pl.hours && pl.hours.length) out.push('<details><summary>Hours</summary>' + pl.hours.map(escHtml).join('<br>') + '</details>');
+  } else if (pin.placeLink && pin.placeLink.status === 'no_match') {
+    out.push('Google: no matching place found nearby');
+  } else if (!pin.placeId) {
+    out.push('Not linked to a Google place yet');
+  }
+  if (pin.calEventId) out.push('On your calendar (' + escHtml(pin.calEventId) + ')');
+  return out.map(function(x) { return '<div>' + x + '</div>'; }).join('');
+}
+
+async function _mapPlaceCall(kind) {
+  const id = _mapEditingPin; if (!id) return;
+  const r = await apiCall(API + '/api/map/places/' + kind, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
+  const d = r ? await r.json().catch(function() { return null; }) : null;
+  if (d) showToast(kind === 'link' ? (d.linked ? 'Linked to Google' : 'No matching Google place nearby') : (d.refreshed ? 'Refreshed from Google' : 'Google did not answer'));
+  await new Promise(function(res) { _mapLoadThen(res); });
+  const pin = _mapPins.find(function(p) { return p.id === id; });
+  if (pin && _mapEditingPin === id) document.getElementById('map-pin-facts').innerHTML = _mapPinFactsHtml(pin);
+}
+function _mapPlaceLink() { _mapPlaceCall('link'); }
+function _mapPlaceRefresh() { _mapPlaceCall('refresh'); }
+
+// Reload the map, then run cb.
+function _mapLoadThen(cb) {
+  const gen = _mapLoadingGen = ++_mapLoadGen;
+  fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
+    if (d && gen === _mapLoadGen) { _mapLoadingGen = 0; _mapPins = d.pins || []; _mapKeepLocalEdits(); _mapCacheLocal(); _mapRerender(); }
+    cb();
+  }).catch(function() { cb(); });
+}
+
+async function _mapPinHistory() {
+  const id = _mapEditingPin; if (!id) return;
+  const el = document.getElementById('map-pin-history');
+  el.hidden = false; el.innerHTML = 'Loading…';
+  const d = await fetch(API + '/api/map/pins/' + encodeURIComponent(id) + '/history').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; });
+  if (!d) { el.textContent = 'Could not load the history.'; return; }
+  el.innerHTML = (d.history || []).map(function(h) {
+    const changed = [];
+    if (h.before && h.after) Object.keys(Object.assign({}, h.before, h.after)).forEach(function(k) {
+      if (JSON.stringify(h.before[k]) !== JSON.stringify(h.after[k])) changed.push(k);
+    });
+    return '<div class="map-hist-row"><span>' + escHtml(String(h.at).replace('T', ' ').slice(0, 16)) + '</span> <b>' + escHtml(h.action) + '</b> by ' + escHtml(h.actor) + (changed.length ? ': ' + escHtml(changed.join(', ')) : '') + '</div>';
+  }).join('') || 'No changes recorded yet.';
+}
+
+// Link every unlinked pin to Google. Each pin is one billed Google request,
+// so the count goes in the question.
+async function _mapLinkAllPlaces() {
+  const n = _mapPins.filter(function(p) { return !p.placeId && !(p.placeLink && p.placeLink.status === 'no_match'); }).length;
+  if (!n) { showToast('Every pin is already linked or checked'); return; }
+  if (!confirm('Look up ' + n + ' pin' + (n === 1 ? '' : 's') + ' on Google? Each is one Google Places request on your API key.')) return;
+  const r = await apiCall(API + '/api/map/places/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: n }) });
+  const d = r ? await r.json().catch(function() { return null; }) : null;
+  if (d) showToast('Linked ' + d.linked + ', no match ' + d.no_match + (d.failed ? ', failed ' + d.failed : ''));
+  _mapLoad();
 }
 
 function _mapToggleSidebar() {
@@ -36514,6 +39479,14 @@ function _mapPhotoUrl(photoName, maxW) {
   return 'https://places.googleapis.com/v1/' + photoName + '/media?maxWidthPx=' + (maxW || 400) + '&key=' + _mapGoogleKey;
 }
 
+// A pin's picture: its own `thumbnail` URL when set (amux map set ID thumb=...
+// or the editor's Thumbnail field), else the linked Google place's photo.
+function _mapPinThumbUrl(pin, maxW) {
+  var t = String(pin.thumbnail || '').trim();
+  if (/^https?:\/\//i.test(t)) return t;
+  return _mapPhotoUrl(pin.photoName, maxW);
+}
+
 // One-line rich metadata badge row (rating · price · open-now) for popups.
 function _mapMetaRow(pin) {
   var parts = [];
@@ -36588,10 +39561,7 @@ function _mapGeoQuickSave(idx) {
   var lat = parseFloat(r.lat), lng = parseFloat(r.lon);
   if (isNaN(lat) || isNaN(lng)) return;
   var pin = Object.assign({ id: 'pin_'+Date.now(), name: name, desc: r.display_name || '', lat: lat, lng: lng, tags: [], createdAt: Date.now() }, _mapPlaceFields(r));
-  _mapPins.push(pin);
-  _mapSave();
-  _mapRenderPins();
-  _mapRenderMarkers();
+  _mapPutPin(pin);
   var res = document.getElementById('map-geocoder-results');
   if (res) res.style.display = 'none';
   if (_map) _map.flyTo([lat, lng], Math.max(_map.getZoom(), 14), { duration: 0.8 });
@@ -36733,6 +39703,28 @@ async function fetchLogs() {
   } catch(e) {}
 }
 
+// Export what the open Logs tab shows. Raw Logs re-reads the server's largest
+// tail (5,000 lines) so the file is more than the 300 on screen; the line
+// filter still applies.
+async function logsExport() {
+  const day = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  if (_logsSubtab === 'raw') {
+    let lines = _logsRawLines;
+    try {
+      const r = await fetch(API + '/api/logs/raw?lines=5000');
+      if (r.ok) lines = (await r.json()).lines || lines;
+    } catch (e) {}
+    const filt = (document.getElementById('raw-filter')?.value || '').toLowerCase();
+    const out = lines.map(_stripAnsi).filter(l => !filt || l.toLowerCase().includes(filt));
+    _mdaiSaveBlob(out.join('\n') + '\n', 'text/plain;charset=utf-8', 'amux-logs-' + day + '.log');
+  } else if (_logsSubtab === 'activity') {
+    _mdaiSaveBlob(JSON.stringify(_logsActivityVisible(), null, 2), 'application/json', 'amux-activity-' + day + '.json');
+  } else {
+    const el = document.getElementById('logs-' + _logsSubtab + '-body');
+    _mdaiSaveBlob((el?.innerText || '') + '\n', 'text/plain;charset=utf-8', 'amux-' + _logsSubtab + '-' + day + '.txt');
+  }
+}
+
 async function fetchRawLogs() {
   try {
     const r = await fetch(API + '/api/logs/raw?lines=300');
@@ -36745,8 +39737,11 @@ async function fetchRawLogs() {
   } catch(e) {}
 }
 
+// An OSC (hyperlinks, titles) ends with BEL or ST (ESC \). Ending it only at
+// BEL let one ST-terminated OSC 8 link swallow the rest of the text: 620 KB of
+// amux-helper's scrollback, owner prompts included, stripped to 29 KB.
 function _stripAnsi(s) {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*(\x07|$)/g, '');
+  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, '');
 }
 
 function renderRawLogs() {
@@ -36783,9 +39778,8 @@ function _togglePayload(rowEl) {
   if (caret) caret.textContent = pay.classList.contains('open') ? '\u25be' : '\u25b8';
 }
 
-function renderActivity() {
-  const el = document.getElementById('logs-activity-body');
-  if (!el) return;
+// The events the Activity tab shows: its filter and search applied.
+function _logsActivityVisible() {
   let evts = _logsEvents.slice();
   // Hide pure GET reads unless http filter is active
   if (_logsFilter !== 'http') evts = evts.filter(e => !(e.type === 'http' && e.action === 'get'));
@@ -36802,6 +39796,13 @@ function renderActivity() {
       e.type.toLowerCase().includes(q)
     );
   }
+  return evts;
+}
+
+function renderActivity() {
+  const el = document.getElementById('logs-activity-body');
+  if (!el) return;
+  const evts = _logsActivityVisible();
   if (!evts.length) {
     el.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">' +
       (_logsFilter || logsSearchQuery ? 'No matching events' : 'No events yet \u2014 activity will appear as you use amux') + '</div>';
@@ -37371,10 +40372,11 @@ function _sxGroupOf(s) {
   if (!s.enabled) return 'inactive';
   const c = _sxClass(s);
   if (c === 'loop') return 'loop';
-  if (c === 'weekly' || c === 'once') return 'weekly';
+  if (c === 'weekly' || c === 'once' || c === 'yearly') return 'weekly';   // yearly: a fixed-date cron (0125)
   return 'routine';   // routine, and unknown (flagged "Unparsed" on the row)
 }
 function _sxNextMs(s) {
+  if (s && s.next_run_ms) return s.next_run_ms;   // the server's own instant; the string is its wall clock
   if (!s || !s.next_run) return 0;
   const v = String(s.next_run);
   const ms = /^\d+$/.test(v) ? (+v > 2e9 ? +v : +v * 1000) : new Date(v.replace(' ', 'T')).getTime();
@@ -37392,7 +40394,10 @@ function _sxIsFail(r) { return !!r && (r.status === 'error' || r.status === 'ref
 function _sxStatus(s, runs) {
   const latest = runs && runs[0];
   if (latest && latest.status === 'running') return { key: 'running', label: 'Running' };
-  if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused' };
+  // disabled_reason / lock_reason (0125): say WHY it is off, and that a
+  // worker cannot turn an owner-locked schedule back on.
+  if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused',
+    why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || '')) : (s.disabled_reason || '') };
   if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
   if (_sxIsFail(latest)) return { key: 'failing', label: 'Failing' };
   const nx = _sxNextMs(s);
@@ -37408,7 +40413,7 @@ function _sxStatusPill(st) {
     paused: 'Disabled: this schedule does not fire',
     unparsed: 'The scheduler cannot parse this expression, so it will not fire. Edit it.',
   }[st.key] || '';
-  return `<span class="sx-pill sx-pill-${st.key}" title="${esc(why)}">${esc(st.label)}</span>`;
+  return `<span class="sx-pill sx-pill-${st.key}" title="${esc(st.why || why)}">${esc(st.label)}</span>`;
 }
 
 // ── Time and frequency labels ───────────────────────────────────────────────
@@ -37725,7 +40730,7 @@ async function _sxBulk(action) {
       ? await apiCall(API + '/api/schedules/' + encodeURIComponent(id) + '?by=dashboard', { method: 'DELETE' })
       : await apiCall(API + '/api/schedules/' + encodeURIComponent(id), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: action === 'resume' ? 1 : 0, by: 'dashboard' }) });
+          body: JSON.stringify(action === 'resume' ? { enabled: 1, by: 'dashboard' } : { enabled: 0, by: 'dashboard', reason: 'paused from the dashboard (bulk)' }) });
     if (r) done++;
   }
   const verb = { pause: 'Paused', resume: 'Resumed', delete: 'Deleted' }[action];
@@ -38084,7 +41089,7 @@ function _sxRenderDetail() {
         : '<span class="sx-type-line">' + _sxTypeIcon(s) + ' Trigger a worker <span class="sx-dim">(tmux, a full model turn per run)</span></span>'],
       ['Frequency', `${esc(_sxFreq(s))}<div class="sx-dim sx-sub">${esc(_sxDescribe(s.schedule_expr, s.sched_type, s.run_at))}</div>`
         + (s.schedule_expr ? `<code class="sx-expr">${esc(s.schedule_expr)}</code>` : '')],
-      ['Next run', s.enabled ? _sxFmtWhen(s.next_run) : '<span class="sx-dim">paused</span>'],
+      ['Next run', s.enabled ? _sxFmtWhen(s.next_run_ms || s.next_run) : '<span class="sx-dim">paused</span>'],
       ['Runs per day', rs
         ? `${rs.runs} in the last 24h <span class="sx-dim">(counted from run history${s.planned_fires_day != null ? '; planned about ' + esc(_sxFmtRate(s.planned_fires_day)) + '/day' : ''}${s.fleet_share ? '; ' + esc(String(s.fleet_share)) + '% of fleet runs' : ''})</span>`
         : (s.fires_day != null ? esc(String(s.fires_day)) + ' in the last 24h' : '<span class="sx-dim">not reported</span>')],
@@ -38384,10 +41389,15 @@ function _stopSysJobsTimer() {
 // too when it's the active peek tab (otherwise a toggle/run/delete there goes stale).
 function _peekRefreshSchedIfActive() {
   const panel = document.getElementById('peek-schedules-panel');
-  if (typeof peekSession !== 'undefined' && peekSession && panel && panel.classList.contains('active')) _peekRenderSchedules();
+  if (typeof peekSession === 'undefined' || !peekSession) return;
+  if (panel && panel.classList.contains('active')) _peekRenderSchedules();
+  // The tab badge counts the same schedules as the list. Pausing one here
+  // redrew the list and left the badge at the old active/inactive count.
+  try { _peekColorSchedBadge((schedules || []).filter(x => x.session === peekSession && !x.deleted)); } catch (_) {}
 }
 
-async function runScheduleNow(id) {
+function runScheduleNow(id) { return _onlyOnce('schedule-run:' + id, () => _runScheduleNowOnce(id)); }
+async function _runScheduleNowOnce(id) {
   // Ethan pressed Run three times in 63 seconds on SCHED-99 and reported
   // "nothing happens". All three RAN and all three succeeded — `exit 0 [noop]
   // quiet: CACHED 0.54s`. The button did its job and said nothing, so a
@@ -38448,8 +41458,8 @@ async function skipSchedule(id) {
   // that can be checked against the card.
   if (d.next_run) {
     showToast(d.skipped
-      ? 'Skipped ' + _schedWhen(d.skipped) + ' — next ' + _schedWhen(d.next_run)
-      : 'Skipped → next ' + relTime(d.next_run));
+      ? 'Skipped ' + _schedWhen(d.skipped_ms || d.skipped) + ' — next ' + _schedWhen(d.next_run_ms || d.next_run)
+      : 'Skipped → next ' + relTime(d.next_run_ms || d.next_run));
   } else {
     showToast('Skip returned no next occurrence');
   }
@@ -38459,7 +41469,7 @@ async function skipSchedule(id) {
 // time. `relTime` alone collapses today and next Tuesday into "in 3h"-ish
 // shapes; the clock time is what a user matches against the schedule.
 function _schedWhen(s) {
-  const d = new Date(String(s).replace(' ', 'T'));
+  const d = typeof s === 'number' ? new Date(s) : new Date(String(s).replace(' ', 'T'));
   if (isNaN(d)) return String(s);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
@@ -38484,7 +41494,7 @@ async function toggleSchedEnabled(id, enabled) {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
     // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
     // (the recurring-disabler mystery, AMUX-1765 — it was this control).
-    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' }),
+    body: JSON.stringify(enabled ? { enabled: 1, by: 'dashboard' } : { enabled: 0, by: 'dashboard', reason: 'paused from the dashboard' }),
     _onRefused: () => { if (s0) s0.enabled = prev; },
   });
   await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
@@ -38497,7 +41507,7 @@ async function toggleSchedEnabled(id, enabled) {
   if (r) {
     const s = (schedules || []).find(x => x.id === id);
     showToast((enabled ? 'Resumed ' : 'Paused ') + id
-      + (enabled && s && s.next_run ? ', next run ' + _schedWhen(s.next_run) : ''));
+      + (enabled && s && s.next_run ? ', next run ' + _schedWhen(s.next_run_ms || s.next_run) : ''));
   }
 }
 
@@ -38511,6 +41521,20 @@ async function fetchBoard() {
   // phone. Fetched once, not on every board poll.
   if (!_boardViewsLoaded) { _boardViewsLoaded = true; await _boardViewsLoad(); }
   const snapshotEpoch = _boardSnapshotEpoch;
+  // The change-feed head is read BEFORE the board, so the board it seeds is at
+  // least as new. Read after (as it was), a card created between the two reads
+  // was in neither: missing from this data and behind the cursor, so no later
+  // invalidation brought it back (golden_realtime_convergence, 2 of 5 cards).
+  // Changes between the two reads are replayed instead, and a patch is idempotent.
+  // Statuses and gates do not depend on the cursor, so they start at once, in
+  // the order this read began; only the board list waits for the head.
+  const sideReads = [fetch(API + '/api/board/statuses'), fetch(API + '/api/board/session-gates')];
+  sideReads.forEach(p => p.catch(() => {}));
+  let cdcHead = 0;
+  try {
+    const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
+    if (cr.ok) cdcHead = (await cr.json()).cursor || 0;
+  } catch (e2) {}
   try {
     const boardHeaders = {};
     if (_boardEtag) boardHeaders['If-None-Match'] = _boardEtag;
@@ -38531,8 +41555,7 @@ async function fetchBoard() {
       // textarea from the list item and saved that back, so flipping this line
       // first would have blanked the description of every card anyone opened.
       _stateQuery.response(['board', 'response', {archived:0, slim:1, quota:1}], () => fetch(API + '/api/board?archived=0&slim=1&quota=1', _boardEtag ? { headers: boardHeaders } : undefined)),
-      fetch(API + '/api/board/statuses'),
-      fetch(API + '/api/board/session-gates'),
+      ...sideReads,
     ]);
     for (const response of [r, rs, rsg]) {
       if (!response.ok && response.status !== 304) throw new Error(await _apiErrText(response));
@@ -38617,11 +41640,8 @@ async function fetchBoard() {
       renderBoard();
       _nudgeWorkersOnBoardChange();
     }
-    // Seed CDC cursor so subsequent invalidations can use granular updates
-    try {
-      const cr = await fetch(API + '/api/board/changes?since_seq=0&limit=1');
-      if (cr.ok) { const cd = await cr.json(); if (cd.cursor && readGeneration === _boardReadAppliedGeneration) _cdcSeq = cd.cursor; }
-    } catch (e2) {}
+    // Seed the CDC cursor so later invalidations patch instead of re-reading.
+    if (cdcHead && readGeneration === _boardReadAppliedGeneration) _cdcSeq = cdcHead;
   } catch(e) {
     if (readGeneration < _boardReadAppliedGeneration) {
       amuxTrack('board_read_superseded', {read_generation:readGeneration, current_generation:_boardReadAppliedGeneration, outcome:'error', measured:true, n_considered:1});
@@ -38650,6 +41670,205 @@ async function fetchBoard() {
 // API token — so unsanitized HTML = stored XSS → RCE. DOMPurify strips
 // scripts, event handlers, and javascript: URLs while keeping normal
 // formatting. If it failed to load, fall back to a conservative strip.
+// MERMAID IN MARKDOWN (Ethan, 2026-10-20: a "Course map" flowchart showed as
+// its source: "this should render"). marked emits ```mermaid fences as
+// <pre><code class="language-mermaid">; one observer finds them wherever
+// markdown is rendered (file viewer, scratchpad, chat, MDAI, cards), loads
+// Mermaid once, from the CDN the other libraries use, only when a page has a
+// diagram, and swaps in the SVG. Until then, offline, or on a diagram that
+// does not parse, the source stays visible; a parse error says why.
+const _mermaidCache = new Map();   // theme + source -> svg
+let _mermaidLib = null, _mermaidSeq = 0;
+function _mermaidLoad() {
+  if (!_mermaidLib) {
+    _mermaidLib = import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs').then(m => m.default)
+      .catch(e => { _mermaidLib = null; throw e; });
+  }
+  return _mermaidLib;
+}
+async function _mermaidHydrate(root) {
+  const codes = [...(root.querySelectorAll ? root.querySelectorAll('pre > code.language-mermaid') : [])]
+    .filter(c => !c.closest('[data-mermaid-done]'));
+  if (!codes.length) return;
+  const theme = document.body.classList.contains('light') ? 'default' : 'dark';
+  let mermaid;
+  try { mermaid = await _mermaidLoad(); } catch (e) {
+    console.warn('[amux] mermaid could not load; diagrams stay as source', e);
+    return;
+  }
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme, fontFamily: 'inherit' });
+  for (const code of codes) {
+    const pre = code.parentElement;
+    if (!pre || !pre.isConnected || pre.hasAttribute('data-mermaid-done')) continue;
+    pre.setAttribute('data-mermaid-done', '1');
+    const src = code.textContent || '';
+    const key = theme + '\n' + src;
+    let svg = _mermaidCache.get(key);
+    if (!svg) {
+      try {
+        svg = (await mermaid.render('amux-mermaid-' + (++_mermaidSeq), src)).svg;
+        _mermaidCache.set(key, svg);
+      } catch (e) {
+        const note = document.createElement('div');
+        note.className = 'md-mermaid-error';
+        note.textContent = 'Diagram not drawn: ' + String((e && e.message) || e).split('\n')[0];
+        pre.after(note);
+        continue;
+      }
+    }
+    const fig = document.createElement('div');
+    fig.className = 'md-mermaid';
+    fig.setAttribute('data-mermaid-done', '1');
+    fig.innerHTML = svg;   // Mermaid's own output, rendered with securityLevel strict
+    fig.title = 'Mermaid diagram: tap to zoom';
+    fig.setAttribute('role', 'button');
+    fig.setAttribute('tabindex', '0');
+    fig.addEventListener('click', () => _mdDiagramOpen(fig));
+    fig.addEventListener('keydown', e => { if (e.key === 'Enter') _mdDiagramOpen(fig); });
+    pre.replaceWith(fig);
+  }
+}
+// Full-screen diagram viewer. A wide Mermaid graph fitted to a phone column
+// draws its labels a few pixels tall (engine.md's funnel: ~2,170px natural,
+// 2.5px labels at 360px). Tapping opens it on its own screen at a readable
+// scale; pinch or double-tap zooms out to the whole graph, drag pans.
+function _mdDiagramOpen(fig) {
+  const src = fig.querySelector('svg');
+  if (!src) return;
+  _mdDiagramClose();
+  const ov = document.createElement('div');
+  ov.id = 'md-diagram-viewer';
+  ov.className = 'md-dv';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-label', 'Diagram');
+  ov.innerHTML = '<div class="md-dv-bar"><span class="md-dv-hint">Pinch or double-tap to zoom, drag to pan</span>'
+    + '<button class="btn md-dv-close" aria-label="Close diagram">&#x2715;</button></div><div class="md-dv-wrap"><div class="md-dv-img"></div></div>';
+  // The clone keeps Mermaid's id: its <style> and arrow markers are scoped to it.
+  const svg = src.cloneNode(true);
+  const holder = ov.querySelector('.md-dv-img');
+  holder.append(svg);
+  ov.querySelector('.md-dv-close').addEventListener('click', _mdDiagramClose);
+  document.body.append(ov);
+  document.addEventListener('keydown', _mdDiagramKey);
+  const wrap = ov.querySelector('.md-dv-wrap');
+  const r = wrap.getBoundingClientRect();
+  const vb = svg.viewBox && svg.viewBox.baseVal;
+  const natW = parseFloat(src.style.maxWidth) || (vb && vb.width) || src.getBoundingClientRect().width;
+  const natH = vb && vb.width ? natW * vb.height / vb.width : src.getBoundingClientRect().height;
+  // Fit the whole graph on screen; that is zoom 1, the overview.
+  const fit = Math.min(r.width / natW, r.height / natH, 1);
+  svg.style.maxWidth = 'none';
+  svg.setAttribute('width', Math.round(natW * fit));
+  svg.setAttribute('height', Math.round(natH * fit));
+  const z = _attachImageZoom(wrap, holder);
+  // Open at 60% of natural size so labels read (~10-12px text),
+  // focused on the top of the graph where a flowchart starts.
+  const start = Math.min(8, 0.6 / fit);
+  if (z && start > 1.05) {
+    const top = holder.getBoundingClientRect().top;
+    z.zoomAt(start, r.left + r.width / 2, top);
+  }
+}
+function _mdDiagramKey(e) { if (e.key === 'Escape') { e.stopPropagation(); _mdDiagramClose(); } }
+function _mdDiagramClose() {
+  document.getElementById('md-diagram-viewer')?.remove();
+  document.removeEventListener('keydown', _mdDiagramKey);
+}
+
+// A markdown table's prose columns get a reading width so a phone scrolls the
+// table sideways rather than wrapping each cell to a word per line. Short
+// columns (#, stage names) keep their natural size.
+function _mdFitTables(root) {
+  for (const t of (root.querySelectorAll ? root.querySelectorAll('.md-content table:not([data-fit])') : [])) {
+    t.setAttribute('data-fit', '1');
+    const rows = [...t.rows];
+    const n = rows.reduce((m, r) => Math.max(m, r.cells.length), 0);
+    for (let c = 0; c < n; c++) {
+      let longest = 0;
+      for (const r of rows) if (r.cells[c]) longest = Math.max(longest, r.cells[c].textContent.trim().length);
+      const em = longest > 80 ? 15 : longest > 30 ? 10 : longest > 16 ? 7 : 0;
+      if (em) for (const r of rows) if (r.cells[c]) r.cells[c].style.minWidth = em + 'em';
+    }
+  }
+}
+let _mermaidPending = false, _mdTablePending = false;
+new MutationObserver(records => {
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (!_mermaidPending && (n.matches?.('code.language-mermaid') || n.querySelector?.('code.language-mermaid'))) {
+      _mermaidPending = true;
+      requestAnimationFrame(() => { _mermaidPending = false; _mermaidHydrate(document.body); });
+    }
+    if (!_mdTablePending && (n.matches?.('table') || n.querySelector?.('table'))) {
+      _mdTablePending = true;
+      requestAnimationFrame(() => { _mdTablePending = false; _mdFitTables(document.body); });
+    }
+    if (_mermaidPending && _mdTablePending) return;
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+
+// Reading progress for the file viewer. iOS draws no scrollbar on a scrolling
+// div, so a long note gave no sense of where you were (Ethan, 2026-10-20). A
+// thumb sized to the visible fraction tracks the scroll, can be dragged, and a
+// percentage shows while it moves.
+function _fileRailInit() {
+  const ov = document.getElementById('file-overlay'), body = document.getElementById('file-body');
+  if (!ov || !body || ov.querySelector('.file-scroll-rail')) return;
+  const rail = document.createElement('div'); rail.className = 'file-scroll-rail'; rail.setAttribute('aria-hidden', 'true');
+  const thumb = document.createElement('div'); thumb.className = 'file-scroll-thumb';
+  const pct = document.createElement('div'); pct.className = 'file-scroll-pct';
+  rail.append(thumb); ov.append(rail, pct);
+  let raf = 0, hideT = 0, drag = null;
+  const geom = () => {
+    const view = body.clientHeight, max = body.scrollHeight - view;
+    return { view, max, h: Math.max(40, view * view / Math.max(1, body.scrollHeight)) };
+  };
+  const update = () => {
+    raf = 0;
+    const g = geom();
+    const show = g.max > 8 && body.offsetParent !== null;
+    rail.classList.toggle('on', show);
+    if (!show) { pct.classList.remove('on'); return; }
+    const frac = Math.min(1, Math.max(0, body.scrollTop / g.max));
+    rail.style.top = body.offsetTop + 'px';
+    rail.style.height = g.view + 'px';
+    thumb.style.height = g.h + 'px';
+    thumb.style.transform = 'translateY(' + Math.round(frac * (g.view - g.h)) + 'px)';
+    pct.textContent = Math.round(frac * 100) + '%';
+    pct.style.top = (body.offsetTop + g.view - 30) + 'px';
+  };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(update); };
+  body.addEventListener('scroll', () => {
+    schedule();
+    pct.classList.add('on');
+    clearTimeout(hideT);
+    hideT = setTimeout(() => { if (!drag) pct.classList.remove('on'); }, 1200);
+  }, { passive: true });
+  new ResizeObserver(schedule).observe(body);
+  new MutationObserver(schedule).observe(body, { childList: true, subtree: true });
+  new MutationObserver(schedule).observe(ov, { attributes: true, attributeFilter: ['class'] });
+  thumb.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    drag = { y: e.clientY, top: body.scrollTop };
+    rail.classList.add('drag'); pct.classList.add('on');
+    thumb.setPointerCapture(e.pointerId);
+  });
+  thumb.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const g = geom();
+    body.scrollTop = drag.top + (e.clientY - drag.y) * g.max / Math.max(1, g.view - g.h);
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null; rail.classList.remove('drag');
+    clearTimeout(hideT); hideT = setTimeout(() => pct.classList.remove('on'), 900);
+  };
+  thumb.addEventListener('pointerup', end);
+  thumb.addEventListener('pointercancel', end);
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _fileRailInit);
+else _fileRailInit();
+
 function _sanitizeHtml(html) {
   if (html == null) return '';
   if (typeof DOMPurify !== 'undefined' && DOMPurify.sanitize) {
@@ -38689,6 +41908,13 @@ function _bindMdFileLinks(container) {
   if (!container || container._mdLinksBound) return;
   container._mdLinksBound = true;
   container.addEventListener('click', (e) => {
+    const jump = e.target.closest && e.target.closest('.md-anchor-link');
+    if (jump && container.contains(jump)) {
+      e.preventDefault();
+      e.stopPropagation();
+      _mdScrollToAnchor(container, jump.dataset.anchor || '');
+      return;
+    }
     const a = e.target.closest && e.target.closest('.md-file-link');
     if (!a || !container.contains(a) || !a.dataset.file) return;
     e.preventDefault();
@@ -38703,7 +41929,10 @@ function _bindMdFileLinks(container) {
         || (typeof peekSession !== 'undefined' && peekSession) || null;
       openExplore(a.dataset.file, sess);
     } else {
-      openFilePreview(a.dataset.file);
+      const slug = a.dataset.anchor;
+      const opened = openFilePreview(a.dataset.file);
+      // [[Note#Heading]]: open the note, then scroll to the heading.
+      if (slug) Promise.resolve(opened).then(() => setTimeout(() => _mdScrollToAnchor(document.getElementById('file-body'), slug), 80));
     }
   });
 }
@@ -38732,6 +41961,137 @@ function _renderFrontmatterBlock(entries) {
     + '<table style="border-collapse:collapse;margin:4px 0 12px;">' + rows + '</table></details>';
 }
 
+// A heading's id, and the anchor a link to it uses: one function for both, so
+// [[#Heading]] always lands on the heading it names.
+function _mdSlug(text) {
+  return String(text || '').replace(/<[^>]+>/g, '').toLowerCase().trim()
+    .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+}
+
+// OBSIDIAN WIKILINKS (Ethan, 2026-10-20: a lesson table of [[#Lesson 1 ...|1. ...]]
+// links showed as text, "these should link"). [[#Heading]] scrolls to that
+// heading in the same note; [[Note]], [[Note|label]] and [[Note#Heading]] open
+// the note beside the current file (".md" added when there is no extension).
+// Rendered as data-attribute links, handled by _bindMdFileLinks: a bare "#"
+// href would reach the dashboard's hash routing.
+let _mdWikiBase = '';
+function _mdUseWikiLinks() {   // and math (the same marked.use call)
+  if (typeof marked === 'undefined' || marked._amuxWikiLinks) return;
+  marked._amuxWikiLinks = true;
+  marked.use({ extensions: [{
+    // $$...$$ on its own lines: a display formula.
+    name: 'blockMath', level: 'block',
+    start(src) { const i = src.indexOf('$$'); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = /^\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+      if (m) return { type: 'blockMath', raw: m[0], text: m[1].trim() };
+    },
+    renderer(t) { return '<div class="md-math md-math-display">' + esc(t.text) + '</div>\n'; },
+  }, {
+    // $...$ inline (and $$...$$ inside a line). Obsidian's rules keep prices
+    // as text: no space just inside either $, no digit right after the
+    // closing $, and \$ is a literal dollar sign.
+    name: 'inlineMath', level: 'inline',
+    start(src) {
+      for (let i = src.indexOf('$'); i >= 0; i = src.indexOf('$', i + 1)) if (i === 0 || src[i - 1] !== '\\') return i;
+      return undefined;
+    },
+    tokenizer(src) {
+      let m = /^\$\$([^$\n]+?)\$\$/.exec(src);
+      if (m) return { type: 'inlineMath', raw: m[0], text: m[1].trim(), display: true };
+      m = /^\$(?![\s$])((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)/.exec(src);
+      if (m) return { type: 'inlineMath', raw: m[0], text: m[1], display: false };
+    },
+    renderer(t) { return '<span class="md-math' + (t.display ? ' md-math-display' : '') + '">' + esc(t.text) + '</span>'; },
+  }, {
+    name: 'wikilink', level: 'inline',
+    start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = /^\[\[([^\[\]|\n]+?)(?:\|([^\[\]\n]+?))?\]\]/.exec(src);
+      if (m) return { type: 'wikilink', raw: m[0], target: m[1].trim(), alias: (m[2] || '').trim() };
+    },
+    renderer(t) {
+      const hash = t.target.indexOf('#');
+      const note = (hash < 0 ? t.target : t.target.slice(0, hash)).trim();
+      const heading = hash < 0 ? '' : t.target.slice(hash + 1).trim();
+      const label = esc(t.alias || (note ? note + (heading ? ' > ' + heading : '') : heading));
+      const anchor = heading ? ' data-anchor="' + esc(_mdSlug(heading)) + '"' : '';
+      if (!note) return '<a href="#" class="md-anchor-link"' + anchor + '>' + label + '</a>';
+      const file = _resolveFileLink(_mdWikiBase, /\.[a-z0-9]{1,6}$/i.test(note) ? note : note + '.md');
+      if (!file) return label;
+      return '<a href="#" class="md-file-link" data-file="' + esc(file) + '"' + anchor + ' title="' + esc(file) + '">' + label + '</a>';
+    },
+  }] });
+}
+
+// Obsidian's callout types, grouped by the colour they share there.
+function _mdCalloutFamily(type) {
+  const fam = { note: 'note', info: 'note', todo: 'note', abstract: 'abstract', summary: 'abstract', tldr: 'abstract',
+    tip: 'tip', hint: 'tip', important: 'tip', success: 'success', check: 'success', done: 'success',
+    question: 'question', help: 'question', faq: 'question', warning: 'warning', caution: 'warning', attention: 'warning',
+    failure: 'danger', fail: 'danger', missing: 'danger', danger: 'danger', error: 'danger', bug: 'danger',
+    example: 'example', quote: 'quote', cite: 'quote' };
+  return fam[type] || 'note';
+}
+
+// Math placeholders (.md-math) become KaTeX wherever markdown renders. KaTeX
+// loads once, only on a page with math; until then, or offline, the TeX
+// source shows, and a formula that does not parse shows its source in red.
+let _katexLib = null;
+function _katexLoad() {
+  if (!_katexLib) {
+    const base = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/';
+    if (!document.getElementById('katex-css')) {
+      const l = document.createElement('link');
+      l.id = 'katex-css'; l.rel = 'stylesheet'; l.crossOrigin = 'anonymous'; l.href = base + 'katex.min.css';
+      document.head.appendChild(l);
+    }
+    _katexLib = import(base + 'katex.mjs').then(m => m.default).catch(e => { _katexLib = null; throw e; });
+  }
+  return _katexLib;
+}
+async function _mathHydrate(root) {
+  const els = [...root.querySelectorAll('.md-math:not([data-math-done])')];
+  if (!els.length) return;
+  let katex;
+  try { katex = await _katexLoad(); } catch (e) { console.warn('[amux] KaTeX could not load; math stays as source', e); return; }
+  // Visible formulas first, then the rest in small batches with a yield
+  // between them: a 512-formula note drawn in one loop held the main thread
+  // for a quarter of a second.
+  const vh = innerHeight;
+  const dist = el => { const r = el.getBoundingClientRect(); return r.bottom < 0 ? -r.bottom + vh : Math.max(0, r.top - vh); };
+  els.sort((a, b) => dist(a) - dist(b));
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    if (el.hasAttribute('data-math-done') || !el.isConnected) continue;
+    el.setAttribute('data-math-done', '1');
+    const tex = el.textContent || '';
+    try { katex.render(tex, el, { displayMode: el.classList.contains('md-math-display'), throwOnError: false, trust: false, output: 'html' }); }
+    catch (e) { el.textContent = tex; el.classList.add('md-math-error'); }
+    if (i % 25 === 24) await new Promise(r => setTimeout(r, 0));
+  }
+}
+let _mathPending = false;
+new MutationObserver(records => {
+  if (_mathPending) return;
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType === 1 && (n.classList?.contains('md-math') || n.querySelector?.('.md-math:not([data-math-done])'))) {
+      _mathPending = true;
+      requestAnimationFrame(() => { _mathPending = false; _mathHydrate(document.body); });
+      return;
+    }
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+
+function _mdScrollToAnchor(root, slug) {
+  const el = root && slug ? root.querySelector('#' + CSS.escape(slug)) : null;
+  if (!el) { showToast('No heading "' + slug.replace(/-/g, ' ') + '" in this note'); return false; }
+  el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  el.classList.add('md-anchor-target');
+  setTimeout(() => el.classList.remove('md-anchor-target'), 1600);
+  return true;
+}
+
 function renderMarkdown(raw, basePath) {
   if (!raw) return '';
   // Use marked.js for full GFM support (tables, task lists, strikethrough, etc.)
@@ -38741,9 +42101,7 @@ function renderMarkdown(raw, basePath) {
       // Add id to headings so #anchor links work (TOC, cross-refs)
       renderer.heading = function({ tokens, depth }) {
         const text = this.parser.parseInline(tokens);
-        const slug = text.replace(/<[^>]+>/g, '').toLowerCase().trim()
-          .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
-        return '<h' + depth + ' id="' + slug + '">' + text + '</h' + depth + '>\n';
+        return '<h' + depth + ' id="' + _mdSlug(text) + '">' + text + '</h' + depth + '>\n';
       };
       // A link to ANOTHER FILE opens IN the viewer (Ethan 2026-08-13: click a
       // link in a .md and go to that file — the tubescience master absorption
@@ -38776,6 +42134,23 @@ function renderMarkdown(raw, basePath) {
         if (/\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(href || ''))
           return '<audio controls preload="metadata" src="' + h + '"' + t + '></audio>';
         return '<img src="' + h + '" alt="' + esc(text || '') + '"' + t + ' loading="lazy">';
+      };
+      _mdUseWikiLinks();
+      _mdWikiBase = basePath || '';
+      // OBSIDIAN CALLOUTS: "> [!type] Title" is a coloured box, "[!type]-"
+      // and "[!type]+" fold (closed / open). Anything else stays a quote.
+      renderer.blockquote = function({ tokens }) {
+        const body = this.parser.parse(tokens);
+        const m = /^\s*<p>\[!([a-z][\w-]*)\]([+-]?)[ \t]*([^\n<]*(?:<(?!\/p>)[^\n<]*)*)(?:\n|(?=<\/p>))/i.exec(body);
+        if (!m) return '<blockquote>\n' + body + '</blockquote>\n';
+        const type = m[1].toLowerCase();
+        const title = m[3].trim() || type[0].toUpperCase() + type.slice(1);
+        let rest = body.slice(m[0].length).replace(/^\s*<\/p>/, '').trimStart();
+        if (rest && !rest.startsWith('<')) rest = '<p>' + rest;
+        const cls = 'md-callout md-callout-' + _mdCalloutFamily(type);
+        return m[2]
+          ? '<details class="' + cls + '"' + (m[2] === '+' ? ' open' : '') + ' data-callout="' + esc(type) + '"><summary class="md-callout-title">' + title + '</summary><div class="md-callout-body">' + rest + '</div></details>\n'
+          : '<div class="' + cls + '" data-callout="' + esc(type) + '"><div class="md-callout-title">' + title + '</div><div class="md-callout-body">' + rest + '</div></div>\n';
       };
       let html = marked.parse(raw, { gfm: true, breaks: false, renderer });
       html = html.replace(/<table>/g, '<div class="table-scroll"><table>').replace(/<\/table>/g, '</table></div>');
@@ -38823,7 +42198,17 @@ function renderMarkdown(raw, basePath) {
 }
 
 // ── Tag input widget (shared by add-modal "be" and detail view "bd") ──
-const _tagState = { be: [], bd: [] };
+const _tagState = { be: [], bd: [], eg: [] };
+let _egGroups = [];   // the edit modal's group list, from /api/groups
+// Worker groups: every existing group not already chosen, filtered by what is
+// typed, and the typed name itself when it is new.
+function _egGroupSuggestions(q) {
+  const mine = new Set(_tagState.eg.map(t => t.toLowerCase()));
+  const out = _egGroups.filter(g => !mine.has(g.name.toLowerCase()) && (!q || g.name.toLowerCase().includes(q)))
+    .map(g => ({ tag: g.name, note: g.workers + (g.workers === 1 ? ' worker' : ' workers') }));
+  if (q && !mine.has(q) && !_egGroups.some(g => g.name.toLowerCase() === q)) out.push({ tag: q, note: 'new group' });
+  return out;
+}
 
 function _beTagRenderChips(prefix) {
   const tags = _tagState[prefix];
@@ -39021,9 +42406,15 @@ function _beTagInputUpdate(prefix) {
   // to dump twelve fleet-wide suggestions into every card and visually bury
   // its source message, epic, gate and output. Suggestions are autocomplete:
   // they exist only after the user asks by typing.
-  if (!q) { el.innerHTML = ''; return; }
-  _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
-  const suggestions = _tagSuggestions(prefix, q);
+  let suggestions;
+  if (prefix === 'eg') {
+    // A worker's groups are a multiselect: the whole list shows before typing.
+    suggestions = _egGroupSuggestions(q);
+  } else {
+    if (!q) { el.innerHTML = ''; return; }
+    _themesRefresh(prefix);   // once per TTL; re-renders itself when it lands
+    suggestions = _tagSuggestions(prefix, q);
+  }
   // Data attributes + a delegated listener, NOT an inline onclick.
   //
   // The inline version was silently dead. `JSON.stringify(t)` emits DOUBLE
@@ -39072,6 +42463,9 @@ function _beTagRemove(prefix, tag) {
 }
 
 function _beTagKeydown(e, prefix) {
+  // In the groups editor, Enter on an empty field saves the dialog.
+  if (prefix === 'eg' && e.key === 'Enter' && !e.target.value.trim()) { e.preventDefault(); submitEdit(); return; }
+  if (prefix === 'eg' && e.key === 'Escape') { e.preventDefault(); closeEdit(); return; }
   if (e.key === 'Enter' || e.key === ',') {
     e.preventDefault();
     const val = e.target.value.trim().replace(/,/g, '');
@@ -40051,9 +43445,7 @@ function _colMenu(e, st, lane) {
   m.id = 'board-col-menu';
   m.innerHTML = h;
   document.body.appendChild(m);
-  const r = m.getBoundingClientRect();
-  m.style.left = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6)) + 'px';
-  m.style.top = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6)) + 'px';
+  _placeMenuAtPointer(m, e);
   return false;
 }
 // The SAME canon `deleteBoardStatus` counts with, so the number in the dialog
@@ -40186,13 +43578,7 @@ function _boardCtxMenu(e, id) {
   m.id = 'board-ctx-menu';
   m.innerHTML = h;
   document.body.appendChild(m);
-  // Clamp INTO the viewport rather than off the bottom-right edge, which is
-  // where a right-click near the last column of a full board lands.
-  const r = m.getBoundingClientRect();
-  const x = Math.max(6, Math.min(e.clientX, window.innerWidth - r.width - 6));
-  const y = Math.max(6, Math.min(e.clientY, window.innerHeight - r.height - 6));
-  m.style.left = x + 'px';
-  m.style.top = y + 'px';
+  _placeMenuAtPointer(m, e);
   return false;
 }
 function _boardCtxMove(id, st) {
@@ -40982,10 +44368,19 @@ function _boardEnsureFull() {
   const hasText = q && _bqParse(q).text.length > 0;
   if (!hasText || _boardFullLoading || Date.now() - _boardFullTs < 60000) return;
   _boardFullLoading = true;
+  // The full set replaces the list, so it must not land over an edit, move
+  // or create made while it loaded (it wiped them until the next refresh).
+  const epoch = _boardSnapshotEpoch;
   fetch(API + '/api/board?done_limit=0&full=1', { headers: _authHeaders() })
     .then(r => r.json())
     .then(d => {
-      if (Array.isArray(d)) { boardItems = d; _boardFullTs = Date.now(); renderBoard(); _nudgeWorkersOnBoardChange(); }
+      if (!Array.isArray(d)) return;
+      if (epoch !== _boardSnapshotEpoch) {   // the board changed meanwhile: load again later
+        _boardFullTs = 0;
+        try { window._clientDebug?.('board-race', {verdict: 'board_full_load_superseded', measured: true, n_considered: d.length}); } catch (_) {}
+        return;
+      }
+      boardItems = d; _boardFullTs = Date.now(); renderBoard(); _nudgeWorkersOnBoardChange();
     })
     .catch(() => {})
     .finally(() => { _boardFullLoading = false; });
@@ -42141,7 +45536,7 @@ function _bdArtifactRef(a, item) {
     try {
       const url = new URL(target);
       if (url.hostname && url.hostname !== 'localhost') throw new Error('remote file host');
-      return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+      return '<button type="button" class="file-link board-artifact-file" data-path="' + esc(decodeURIComponent(url.pathname)) + '" onclick="event.stopPropagation();openFilePreview(\''
         + escJs(decodeURIComponent(url.pathname)) + '\')">' + esc(ref) + '</button>';
     } catch (error) { _bdAudit('board-artifact-navigation', { verdict: 'invalid-file-url', ref }); return '<code>' + esc(ref) + '</code>'; }
   }
@@ -42160,7 +45555,7 @@ function _bdArtifactRef(a, item) {
     || (!/\s/.test(refPath) && (refPath.includes('/') || /\.[a-z0-9]{1,12}$/i.test(refPath)));
   const serverResolvedPath = target !== ref && /^(?:\/|\.\.?\/)/.test(targetPath);
   if (explicitPath || serverResolvedPath) {
-    return '<button type="button" class="file-link board-artifact-file" onclick="event.stopPropagation();openFilePreview(\''
+    return '<button type="button" class="file-link board-artifact-file" data-path="' + esc(targetPath) + '" onclick="event.stopPropagation();openFilePreview(\''
       + escJs(targetPath) + '\')" title="Open ' + esc(targetPath) + '">' + esc(ref) + '</button>';
   }
   return '<code>' + esc(ref) + '</code>';
@@ -42359,7 +45754,11 @@ function _bdRenderMeta(item) {
       + (activity.length > 8 ? '<button class="bd-activity-all" onclick="boardDetailTab(\'history\')">View all '
         + activity.length + ' worker actions</button>' : '') + '</section>';
   }
+  // Worker tasks that came from this card: task names, kept apart from the
+  // card's own facts and filled after the card renders (_bdTasksLoad).
+  html += '<section class="bd-card-section" id="bd-worker-tasks" data-card="' + esc(item.id || '') + '" hidden></section>';
   meta.innerHTML = html;
+  _bdTasksLoad(item.id);
   _bdEnhanceRecord(item);
 }
 
@@ -42571,7 +45970,7 @@ async function _bdAnswerCancel() {
   const card = boardDetailId;
   const it = _bdAnswerItem(card);
   const ok = await showConfirm('Dismiss this ask for good? ' + card + ' stops waiting on you'
-    + (it.worker ? ' and ' + it.worker + ' is told to carry on without an answer.' : '.'), 'Dismiss', true);
+    + (it.worker ? '. Nothing is sent to ' + it.worker + '.' : '.'), 'Dismiss', true);
   if (!ok || boardDetailId !== card) return;
   await _bdAnswer('dismiss');
 }
@@ -42943,6 +46342,7 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
   const now = Math.floor(Date.now() / 1000);
   const tempItem = { id: tempId, title, desc, status, session: worker || '', tags: groups || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
   boardItems.push(tempItem);
+  _boardSnapshotEpoch++;   // a board read in flight predates this card
   saveBoardCache();
   renderBoard();
   let refused = false;
@@ -42977,13 +46377,35 @@ async function addBoardItem(title, desc, status, worker, groups, due, ownerType,
 // next poll silently undid it. "Tons of board items are not moving" is what
 // that looks like from the outside: the card moves, the card comes back, and
 // no one ever sees the reason the server gave.
+// Edits to one card go to the server one after another. Two quick edits both
+// carried the rev the card had before either, so the server refused the
+// second (rev conflict) and the client rolled it back: change status, then
+// owner, within a second, and the owner change silently reverted.
+const _boardPatchChain = new Map();
 async function updateBoardItem(id, changes) {
   const idx = boardItems.findIndex(i => i.id === id);
   const prev = idx >= 0 ? { ...boardItems[idx] } : null;
   if (idx >= 0) { boardItems[idx] = { ...boardItems[idx], ...changes, updated: Math.floor(Date.now() / 1000) }; }
+  _boardSnapshotEpoch++;   // a board read in flight predates this edit
   saveBoardCache();
   renderBoard();
-  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: prev.rev };
+  const before = _boardPatchChain.get(id);
+  // The earlier edit's reply is the card it saved, so its rev is the one this
+  // edit must carry. Read from boardItems instead, a board refresh landing
+  // between the two (a snapshot without the card, or from before the reply)
+  // sent the stale rev and the second edit drew a 409 (dashboard-race-guards).
+  const turn = (before || Promise.resolve()).catch(() => {}).then(res => _updateBoardItemSend(id, changes, prev, !!before, res && res.rev));
+  _boardPatchChain.set(id, turn);
+  turn.finally(() => { if (_boardPatchChain.get(id) === turn) _boardPatchChain.delete(id); });
+  return turn;
+}
+async function _updateBoardItemSend(id, changes, prev, queued, savedRev) {
+  // The rev the card has NOW: the earlier edit's reply when there was one,
+  // else what this tab holds.
+  const cur = boardItems.find(i => i.id === id);
+  const queuedRev = savedRev != null ? savedRev : (cur && cur.rev != null ? cur.rev : null);
+  if (prev && changes.expect_rev === undefined) changes = { ...changes, expect_rev: (queued && queuedRev != null) ? queuedRev : prev.rev };
+  if (queued) { try { window._clientDebug?.('board-race', {verdict: 'board_edit_serialized', measured: true, n_considered: 1, id}); } catch (_) {} }
   const r = await apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(changes)
@@ -43012,6 +46434,7 @@ async function deleteBoardItem(id) {
   const prev = boardItems.find(i => i.id === id);
   const prevIdx = boardItems.findIndex(i => i.id === id);
   boardItems = boardItems.filter(i => i.id !== id);
+  _boardSnapshotEpoch++;   // a board read in flight still has this card
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board/' + id, { method: 'DELETE' });
@@ -43286,7 +46709,15 @@ function editSessionGate(worker, statusId) {
   box.querySelector('#_sgate-edit-save').onclick = () => persist(ta.value.split('\n').map(x => x.trim()).filter(Boolean));
 }
 
+// The newest move of each card: a reply to an older move is not applied.
+const _boardMoveSeq = new Map();
 function moveBoardItem(id, newStatus, newPos, gateAck) {
+  // A board read already in flight carries the card's old column; applied
+  // after the drag it jumped the card back (2026-10-24). Fence those reads,
+  // as clearDone does, before and after the write.
+  _fenceBoardMutationReads();
+  const seq = (_boardMoveSeq.get(id) || 0) + 1;
+  _boardMoveSeq.set(id, seq);
   // Optimistic: update in-memory + cache immediately; Sortable already moved the DOM
   const idx = boardItems.findIndex(i => i.id === id);
   if (idx >= 0) {
@@ -43303,13 +46734,18 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
-  }).then(r => {
+  }).then(async r => {
     if (!r) return;
-    r.json().then(updated => {
-      const i = boardItems.findIndex(b => b.id === id);
-      if (i >= 0) boardItems[i] = updated;
-      saveBoardCache();
-    });
+    const updated = await r.json().catch(() => null);
+    if (!updated || updated.id !== id) return;
+    if (_boardMoveSeq.get(id) !== seq) {   // a newer move of this card owns it now
+      try { window._clientDebug?.('board-race', {verdict: 'board_move_reply_superseded', measured: true, n_considered: 1, id}); } catch (_) {}
+      return;
+    }
+    await _fenceBoardMutationReads();
+    const i = boardItems.findIndex(b => b.id === id);
+    if (i >= 0) boardItems[i] = updated;
+    saveBoardCache();
   });
 }
 
@@ -43454,7 +46890,9 @@ let _fcInstance = null;
 let calEvents = [];
 let gcalEvents = [];
 let _calShowEvents = localStorage.getItem('amux_cal_show_events') !== '0';   // default on
-let _calShowSched  = localStorage.getItem('amux_cal_show_sched')  !== '0';   // default on
+// No schedules layer (Ethan, 2026-10-24: "i dont want schedulers on the amux
+// calendar - its too bloated"). Every schedule's next run was drawn as an
+// event; schedules live in the Scheduler tab.
 let _calShowIssues = localStorage.getItem('amux_cal_show_issues') === '1';   // default off (noisy)
 let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // default on
 
@@ -43465,7 +46903,6 @@ let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // 
 // was correctly hiding a currently-empty layer next to a populated one).
 const _CAL_LAYERS = {
   events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Local',           btn: 'eventsToggle' },
-  sched:  { get: () => _calShowSched,  ls: 'amux_cal_show_sched',  label: 'Tasks',           btn: 'schedToggle'  },
   issues: { get: () => _calShowIssues, ls: 'amux_cal_show_issues', label: 'Issues',          btn: 'issuesToggle' },
   gcal:   { get: () => _calShowGcal,   ls: 'amux_cal_show_gcal',   label: 'Google',          btn: 'gcalToggle'   },
 };
@@ -43480,7 +46917,6 @@ function _fcLayerLabel(key) {
 function _fcToggleLayer(key) {
   const on = !_CAL_LAYERS[key].get();
   if (key === 'events') _calShowEvents = on;
-  else if (key === 'sched') _calShowSched = on;
   else if (key === 'issues') _calShowIssues = on;
   else if (key === 'gcal') _calShowGcal = on;
   localStorage.setItem(_CAL_LAYERS[key].ls, on ? '1' : '0');
@@ -43605,7 +47041,6 @@ function _calPanelHtml() {
   let h = '<div class="cal-panel-head"><b>Calendars</b><button class="cal-x" aria-label="Close" onclick="_calPanelClose()">&#x2715;</button></div>';
   h += '<div class="cal-group">amux</div>';
   h += row(_calShowEvents, '#7c4dff', 'Local events', "_fcToggleLayer('events');_calPanelRefresh()", 'synced out via the iCal feed');
-  h += row(_calShowSched, '#8a6d3b', 'Scheduled tasks', "_fcToggleLayer('sched');_calPanelRefresh()");
   h += row(_calShowIssues, '#5f6368', 'Board due dates', "_fcToggleLayer('issues');_calPanelRefresh()");
   h += row(_calShowGcal, '#4285f4', 'Google calendars', "_fcToggleLayer('gcal');_calPanelRefresh()");
   const byAcct = new Map();
@@ -43667,21 +47102,6 @@ function _fcGetEvents() {
       });
     });
   }
-  if (_calShowSched) {
-    (schedules || []).forEach(s => {
-      if (s.deleted || !s.enabled || !s.next_run) return;
-      out.push({
-        id: 'sched-' + s.id,
-        title: '⏰ ' + s.title,
-        start: s.next_run,
-        allDay: !s.next_run.includes('T'),
-        backgroundColor: 'rgba(163,113,247,0.15)',
-        borderColor: '#a855f7',
-        textColor: '#c084fc',
-        extendedProps: { _type: 'schedule', schedId: s.id },
-      });
-    });
-  }
   if (_calShowIssues) {
     (boardItems || []).forEach(i => {
       if (!i.due) return;
@@ -43702,7 +47122,8 @@ function _fcGetEvents() {
 
 function _fcInit() {
   const el = document.getElementById('fc-container');
-  if (!el || !window.FullCalendar) return;
+  if (!el) return;
+  if (!window.FullCalendar) { _lazyLib('fullcalendar').then(_fcInit, () => {}); return; }
   if (_fcInstance) { _fcInstance.destroy(); _fcInstance = null; }
   // Map old view names to FullCalendar view names
   let savedView = localStorage.getItem('amux_cal_view') || 'dayGridMonth';
@@ -43747,7 +47168,6 @@ function _fcInit() {
         click: showIcalInfo,
       },
       eventsToggle: { text: _fcLayerLabel('events'), click: () => _fcToggleLayer('events') },
-      schedToggle:  { text: _fcLayerLabel('sched'),  click: () => _fcToggleLayer('sched')  },
       issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
       gcalToggle:   { text: _fcLayerLabel('gcal'),   click: () => _fcToggleLayer('gcal')   },
     },
@@ -43781,7 +47201,6 @@ function _fcInit() {
     eventClick: function(info) {
       const props = info.event.extendedProps;
       if (props._type === 'event') openEventModal(props.evId);
-      else if (props._type === 'schedule') openSchedModal(props.schedId);
       else if (props._type === 'issue') { switchView('board'); }
       else if (props._type === 'gcal') openGcalEventModal(info.event);
     },
@@ -43817,7 +47236,6 @@ function _fcInit() {
   }
   const _titles = {
     events: 'Real calendar events — the only layer that syncs to Google Calendar',
-    sched:  'Scheduled tasks (in-app only — never synced to Google Calendar)',
     issues: 'Board issues with a due date (in-app only)',
   };
   Object.keys(_CAL_LAYERS).forEach(key => {
@@ -43989,7 +47407,31 @@ function _evCompose(dateId, timeId, allDay) {
   const t = document.getElementById(timeId).value || '00:00';
   return d + 'T' + t + ':00';
 }
-async function saveEvent(id) {
+// One run of an action at a time. A second press (a double click, Cmd+S
+// then Close, Run tapped twice in Safari where a click does not focus the
+// button) shares the run already in flight instead of starting another: two
+// calendar events, a note saved as "note" and "note-2", a schedule run twice
+// (Ethan, 2026-10-24: "theres race conditions all over the app"). The shared
+// run is counted and reported as double_submit_joined, so a control that is
+// pressed twice shows in the logs.
+const _onlyOnceRuns = new Map();
+const _onlyOnceJoined = {};
+function _onlyOnce(key, run) {
+  const live = _onlyOnceRuns.get(key);
+  if (live) {
+    const n = (_onlyOnceJoined[key] = (_onlyOnceJoined[key] || 0) + 1);
+    if (n === 1 || n % 20 === 0) {
+      try { window._clientDebug?.('double-submit', {verdict: 'double_submit_joined', measured: true, n_considered: n, key}); } catch (_) {}
+    }
+    return live;
+  }
+  const p = Promise.resolve().then(run).finally(() => _onlyOnceRuns.delete(key));
+  _onlyOnceRuns.set(key, p);
+  return p;
+}
+
+function saveEvent(id) { return _onlyOnce('cal-event-save:' + (id || 'new'), () => _saveEventOnce(id)); }
+async function _saveEventOnce(id) {
   const title = document.getElementById('ev-title').value.trim();
   if (!title) { document.getElementById('ev-title').focus(); return; }
   const allDay = document.getElementById('ev-allday').checked;
@@ -44037,12 +47479,17 @@ async function _tunnelStatus() {
 let _proxiesTimer = null;
 function _startProxiesTimer() { if (!_proxiesTimer) _proxiesTimer = setInterval(loadProxies, 3000); }
 function _stopProxiesTimer() { if (_proxiesTimer) { clearInterval(_proxiesTimer); _proxiesTimer = null; } }
+// The list reloads every 3s; an older, slower answer must not repaint a
+// started tunnel as stopped, and a start in flight keeps its button disabled.
+let _proxiesGen = 0;
 async function loadProxies() {
   const wrap = document.getElementById('proxies-list');
   if (!wrap) return;
+  const gen = ++_proxiesGen;
   try {
     const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
     const d = await r.json();
+    if (gen !== _proxiesGen) { _olderAnswerDropped('proxies'); return; }
     document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
     const rl = document.getElementById('proxies-rate');
     if (rl && d.rate_per_min) rl.textContent = ' Limit: ' + d.rate_per_min + ' req/min, ' + d.max_concurrent + ' concurrent.';
@@ -44072,7 +47519,9 @@ async function loadProxies() {
         +   '<div style="display:flex;gap:6px;flex-shrink:0;">'
         +     (live
               ? '<button class="btn" onclick="_proxyStop(\'' + p.id + '\')">Stop</button>'
-              : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
+              : _onlyOnceRuns.has('proxy-start:' + p.id)   // a start in flight stays disabled across the 3s redraw
+                ? '<button class="btn primary" disabled>Starting…</button>'
+                : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
         +     '<button class="btn" onclick="_proxyEdit(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\',' + p.port + ',\'' + esc(p.scheme) + '\')">Edit</button>'
         +     '<button class="btn" style="color:var(--red);" onclick="_proxyDelete(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\')">Delete</button>'
         +   '</div>'
@@ -44122,7 +47571,8 @@ async function _proxySaveForm(btn) {
   } catch (e) { showToast('Save failed'); }
   finally { btn.disabled = false; }
 }
-async function _proxyStart(id, btn) {
+function _proxyStart(id, btn) { return _onlyOnce('proxy-start:' + id, () => _proxyStartOnce(id, btn)); }
+async function _proxyStartOnce(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   try {
     const r = await fetch(API + '/api/proxies/' + id + '/start', { method: 'POST', headers: _authHeaders() });
@@ -44280,6 +47730,7 @@ function _gpSafeId(name) {
 }
 
 function enterGridMode() {
+  if (!window.GridStack) { _lazyLib('gridstack').then(enterGridMode, () => showToast('Could not load the grid layout library')); return; }
   const view = document.getElementById('grid-view');
   // Position below the tab bar so both header and tabs remain visible
   const tabBar = document.querySelector('.tab-bar-outer');
@@ -45160,9 +48611,68 @@ const _idb = (() => {
     tx.objectStore('uploads').delete(id);
     tx.objectStore('uploadChunks').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]));
   }));
+  // CACHE WRITES ARE COALESCED (Ethan, 2026-10-23: the Mac app "is still so
+  // much slower than browser"). Every tab wrote the whole sessions list (~2MB)
+  // on each change and a worker's peek history on every poll. WebKit runs an
+  // origin's IndexedDB transactions through one storage process, so ten native
+  // tabs queued megabytes of structured clones ahead of the outbox's read of
+  // pending uploads, which then hit its 5s timeout on 903 passes in one day
+  // (verdict=outbox_upload_list_timeout). A rebuildable cache key is now
+  // written at most once per 30s with its latest value, never while the tab is
+  // hidden (it flushes on hide), and get() returns the pending value meanwhile.
+  // Pending work (offline_queue, drafts, uploads) is written at once. Counts
+  // ride the kind=localstorage-writes beacon as idb_written / idb_coalesced.
+  const _CACHE_KEY = /^(sessions_cache|schedules_all|peek_index|peek_|chat_)/;
+  const _CACHE_MS = 30000;
+  const cachePending = new Map(), cacheLast = new Map();
+  const st = (typeof window !== 'undefined' && window._lsWrites) || {};
+  st.idb_written = st.idb_written || 0; st.idb_coalesced = st.idb_coalesced || 0;
+  const putNow = (key, val) => { st.idb_written++; cacheLast.set(key, Date.now());
+    return transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)); };
+  let cacheTimer = null;
+  const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  const flushCache = force => {
+    clearTimeout(cacheTimer); cacheTimer = null;
+    const now = Date.now();
+    let wait = _CACHE_MS;
+    for (const [key, val] of [...cachePending]) {
+      const due = (cacheLast.get(key) || 0) + _CACHE_MS - now;
+      if (force || due <= 0) { cachePending.delete(key); putNow(key, val); }
+      else wait = Math.min(wait, due);
+    }
+    if (cachePending.size && !isHidden()) cacheTimer = setTimeout(flushCache, wait);
+  };
+  const setCache = (key, val) => {
+    const hidden = isHidden();
+    if (hidden || cachePending.has(key) || Date.now() - (cacheLast.get(key) || 0) < _CACHE_MS) st.idb_coalesced++;
+    cachePending.set(key, val);
+    // A hidden tab holds its value until it is shown or unloads.
+    if (!hidden) { clearTimeout(cacheTimer); cacheTimer = setTimeout(flushCache, 0); }
+    return Promise.resolve();
+  };
+  if (typeof document !== 'undefined' && typeof addEventListener === 'function') {
+    addEventListener('pagehide', () => { if (cachePending.size) flushCache(true); });
+    document.addEventListener('visibilitychange', () => {
+      if (!cachePending.size) return;
+      if (isHidden()) flushCache(true); else flushCache();
+    });
+  }
   return {
+    // Drop the connection so the next call opens a fresh one. A connection
+    // whose storage process went away can hang every request without an
+    // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
+    // in a day, every outbox pass after the first one on the same handle).
+    reset: (reason) => {
+      const had = !!db;
+      try { if (db) db.close(); } catch (_) {}
+      db = null;
+      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+      return had;
+    },
     // Cache callers are best-effort; pending work uses the strict methods below.
-    set: (key, val) => transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
+    set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
+      : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
     update: (key, mutate) => transaction('kv', os => {
       const request = os.get(key);
       request.onsuccess = () => {
@@ -45203,7 +48713,7 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => withDb(d => new Promise((resolve) => {
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
       const tx = d.transaction('kv', 'readonly');
       const req = tx.objectStore('kv').get(key);
       req.onsuccess = () => resolve(req.result);
@@ -45472,6 +48982,28 @@ let _sseFallback = false;
 let _pollTimer = null;
 
 let _invBoardTimer = null;
+// What a hidden tab skipped. Every Mac app tab and every background browser
+// tab runs this whole page, and each one used to re-read the board and the
+// worker list on every change (2026-10-22: one Mac app with ten tabs sent 590
+// requests a minute, four identical 3.8s board reads at once). A hidden tab now
+// counts board changes and reads them once when shown, and reads the worker
+// list at most every _HIDDEN_SESSIONS_MS so notifications still arrive while
+// the whole app is in the background.
+let _boardChangesWhileHidden = 0;
+let _sessionChangesWhileHidden = 0;
+const _HIDDEN_SESSIONS_MS = 15000;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  const board = _boardChangesWhileHidden, workers = _sessionChangesWhileHidden;
+  if (!board && !workers) return;
+  _boardChangesWhileHidden = 0;
+  _sessionChangesWhileHidden = 0;
+  if (board) _cdcBoardUpdate();
+  if (_invSessTimer) { clearTimeout(_invSessTimer); _invSessTimer = null; fetchSessions(); }
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'hidden-tab-catchup', verdict: 'reads_deferred_while_hidden',
+      measured: true, n_considered: board + workers, board_changes: board, session_changes: workers, ver: APP_VER }) }).catch(() => {});
+});
 let _invSessTimer = null;
 let _invMessagesTimer = null;
 let _cdcSeq = 0;
@@ -45484,33 +49016,40 @@ async function _cdcBoardUpdate() {
     const changes = data.changes || [];
     if (data.cursor) _cdcSeq = data.cursor;
     if (!changes.length) return;
-    // For each changed row_id, refetch that single card and patch boardItems
+    // `cursor` is the log's head, so a page cut at the limit would skip the
+    // rest. A burst that big is cheaper as one full read anyway.
+    if (changes.length >= 500) { fetchBoard(); return; }
+    // Patch the changed cards from ONE list read per 100 ids. This used to GET
+    // each card in sequence, so a busy minute cost a round trip per card. The
+    // ids read runs the board poll's own filters, so a card that does not come
+    // back has left this view (archived, deleted) and is dropped here too.
     const ids = [...new Set(changes.map(c => c.row_id))];
-    let needsFullFetch = false;
-    for (const id of ids) {
-      const op = changes.filter(c => c.row_id === id).pop();
-      if (op && op.operation === 'DELETE') {
-        boardItems = boardItems.filter(item => item.id !== id);
-        _boardSnapshotEpoch++;
-        continue;
-      }
-      try {
-        const cr = await fetch(API + '/api/board/' + encodeURIComponent(id));
-        if (cr.status === 404) {
-          boardItems = boardItems.filter(item => item.id !== id);
-          _boardSnapshotEpoch++;
-          continue;
-        }
-        if (!cr.ok) { needsFullFetch = true; continue; }
-        const card = await cr.json();
-        if (!card || !card.id) { needsFullFetch = true; continue; }
-        const idx = boardItems.findIndex(item => item.id === card.id);
-        if (idx >= 0) { boardItems[idx] = card; }
-        else { boardItems.push(card); }
-        _boardSnapshotEpoch++;
-      } catch (e) { needsFullFetch = true; }
+    const t0 = performance.now();
+    const gone = new Set(ids.filter(id => (changes.filter(c => c.row_id === id).pop() || {}).operation === 'DELETE'));
+    const want = ids.filter(id => !gone.has(id));
+    const fresh = new Map();
+    for (let i = 0; i < want.length; i += 100) {
+      const chunk = want.slice(i, i + 100);
+      const cr = await fetch(API + '/api/board?archived=0&slim=1&ids=' + chunk.map(encodeURIComponent).join(','));
+      // An older server drops the param and answers with the whole board.
+      if (!cr.ok || !cr.headers.get('x-amux-ids-asked')) { fetchBoard(); return; }
+      const rows = await cr.json();
+      if (!Array.isArray(rows)) { fetchBoard(); return; }
+      for (const row of rows) if (row && row.id) fresh.set(row.id, row);
+      for (const id of chunk) if (!fresh.has(id)) gone.add(id);
     }
-    if (needsFullFetch) { fetchBoard(); return; }
+    if (gone.size) boardItems = boardItems.filter(item => !gone.has(item.id));
+    for (const [id, card] of fresh) {
+      const idx = boardItems.findIndex(item => item.id === id);
+      if (idx >= 0) boardItems[idx] = card; else boardItems.push(card);
+    }
+    _boardSnapshotEpoch++;
+    const ms = Math.round(performance.now() - t0);
+    if (ms > 2000) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ kind: 'board-cdc-patch', verdict: 'board_cdc_patch_slow', ms, n_considered: ids.length,
+          measured: true, ver: APP_VER }) }).catch(() => {});
+    }
     lastBoardJSON = JSON.stringify(boardItems);
     _cacheBoardJSON(lastBoardJSON);
     if (activeView === 'board') renderBoard();
@@ -45518,6 +49057,34 @@ async function _cdcBoardUpdate() {
     _nudgeWorkersOnBoardChange();
   } catch (e) { fetchBoard(); }
 }
+
+// A hidden tab waits for its reload until it is shown: every Mac app tab and
+// background browser tab reloaded at once on each server build, and each
+// reload re-reads the board and the fleet (2026-10-22: 24 page loads in ten
+// minutes from one laptop). Shown, it reloads at once, before you act on it.
+let _verReloadWhenShown = '';
+function _reloadForServerVersion(v, delayMs) {
+  if (document.hidden) { _verReloadWhenShown = v; return; }
+  const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
+  if (Date.now() - last <= 600000) return;
+  sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+  console.warn('amux: server is v' + v + ', client is v' + APP_VER + ' — updating');
+  // Nudge the SW first (it skipWaiting()s + claims on install), so the
+  // reload serves the NEW shell in one cycle instead of two.
+  const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
+    ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
+    : Promise.resolve();
+  _upd.finally(() => setTimeout(() => location.reload(), delayMs));
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_verReloadWhenShown) return;
+  const v = _verReloadWhenShown;
+  _verReloadWhenShown = '';
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'version-reload', verdict: 'reload_deferred_until_shown', measured: true,
+      n_considered: 1, server_ver: v, ver: APP_VER }) }).catch(() => {});
+  _reloadForServerVersion(v, 0);
+});
 
 function connectSSE() {
   if (_sseFallback || _sse) return;
@@ -45606,7 +49173,7 @@ function connectSSE() {
       } else if (msg.type === 'alerts') {
         for (const a of (msg.payload || [])) {
           _fireAmuxAlert(a);
-          if (a.type === 'steering_delivered' && a.session === peekSession) _steeringUpdateBadge();
+          if (a.type === 'steering_delivered' && a.session === peekSession) { if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge(); }
         }
       } else if (msg.type === 'typing') {
         _typingOnEvent(msg);
@@ -45629,7 +49196,8 @@ function connectSSE() {
           // Coalesced per key so an event burst is one fetch.
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
-            _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
+            if (document.hidden) _boardChangesWhileHidden++;
+            else _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
           }
           if (key === 'sessions') {
             _scheduleSessionInvalidation();
@@ -45666,20 +49234,7 @@ function connectSSE() {
         // code (SW app shells live for DAYS in PWAs / Chrome app-mode windows and
         // old poll loops have hammered the server before) — reload to pick up the
         // new shell. Rate-limited so a broken SW can't cause a reload storm.
-        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) {
-          const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
-          if (Date.now() - last > 600000) {
-            sessionStorage.setItem('amux_ver_reload', String(Date.now()));
-            console.warn('amux: server is v' + msg.v + ', client is v' + APP_VER + ' — updating');
-            // Nudge the SW first (it skipWaiting()s + claims on install), so the
-            // reload serves the NEW shell in one cycle instead of two.
-            const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
-              ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
-              : Promise.resolve();
-            _upd.finally ? _upd.finally(() => setTimeout(() => location.reload(), 2500))
-                         : setTimeout(() => location.reload(), 2500);
-          }
-        }
+        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) _reloadForServerVersion(msg.v, 2500);
       }
     } catch(err) { console.error('SSE parse:', err); }
   };
@@ -45953,6 +49508,11 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  // A first visit has no controller yet: the new worker claiming this page fires
+  // controllerchange, and reloading then threw away whatever the visitor had started.
+  // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
+  // into their first load (2026-10-19). Only a REPLACED worker means stale code.
+  let _swHadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
     // Store full page HTML in localStorage as fallback if iOS evicts SW cache
     if (navigator.onLine !== false) {
@@ -45964,6 +49524,11 @@ if ('serviceWorker' in navigator) {
     }
   // Auto-reload when a new SW takes control (ensures fresh HTML after update)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!_swHadController) {
+      _swHadController = true;
+      console.info('[amux] service worker installed on first visit; no reload needed');
+      return;
+    }
     // Rescue in-progress peek input from the reload
     try {
       const inp = document.getElementById('peek-cmd-input');
@@ -46032,10 +49597,10 @@ _idb.get('drafts').then(val => {
 // then top up on a good link. Re-syncs are ~free (304s), so this is cheap.
 _peekIndexLoad().then(() => {
   try { render(); } catch(e) {}
-  setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 8000);
+  setTimeout(() => { try { _offlinePrefetch(false, 'boot'); } catch(e) {} }, 8000);
 });
-setInterval(() => { try { _offlinePrefetch(false); } catch(e) {} }, 10 * 60 * 1000);
-window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false); } catch(e) {} }, 4000));
+setInterval(() => { try { _offlinePrefetch(false, 'interval'); } catch(e) {} }, 10 * 60 * 1000);
+window.addEventListener('online', () => setTimeout(() => { try { _offlinePrefetch(false, 'online'); } catch(e) {} }, 4000));
 
 _idb.get('offline_queue').then(async val => {
   if (val && localStorage.getItem('amux_offline_queue') === null && val.length) {
@@ -46619,6 +50184,7 @@ function openAbout() {
     if (v) v.innerHTML = 'v' + APP_VER + ' &#x21BB;';
   } catch (e) {}
   document.getElementById('about-overlay').classList.add('active');
+  _loadServerDeployStatus();
   document.getElementById('add-server-form').style.display = 'none';
   renderServerList();
   renderDebugInfo();
@@ -47141,6 +50707,37 @@ function _offlineSettingsHTML() {
 function _vaultIdBadge(id) {
   return '<button type="button" class="vault-id" title="Id: click to copy" aria-label="Copy id ' + esc(id) + '" onclick="event.stopPropagation();_copyTextWithToast(\'' + escJs(id) + '\',\'' + escJs(id) + ' copied\')">' + esc(id) + '</button>';
 }
+// Payment methods (vault.rs + vault_spend.rs). Each card carries an approval
+// threshold and optional daily / monthly / yearly spending limits, which the
+// server enforces at the fill itself: a charge that would take a window over
+// its limit is refused there, and no approval lifts it.
+const _VAULT_WINDOWS = [['daily', 'Daily', 'today'], ['monthly', 'Monthly', 'this month'], ['yearly', 'Yearly', 'this year']];
+function _vaultMoney(n) { return '$' + Number(n || 0).toFixed(2).replace(/\.00$/, ''); }
+function _vaultLimitInputs(i, idp) {
+  const lim = i?.rules?.spend_limits_usd || {}, spent = i?.spent_usd || {};
+  return '<fieldset class="vault-limits"><legend>Spending limits <span class="ui-help">(USD, optional)</span></legend>'
+    + _VAULT_WINDOWS.map(([w, label, when]) => {
+      const has = lim[w] !== undefined && lim[w] !== null;
+      const used = i ? '<span class="ui-help vault-spent" data-window="' + w + '">' + _vaultMoney(spent[w]) + ' spent ' + when + (has ? ' of ' + _vaultMoney(lim[w]) : '') + '</span>' : '';
+      return '<label class="ui-field vault-limit-field">' + label
+        + '<input type="number" inputmode="decimal" min="0" step="0.01" class="input vault-spend-limit" data-window="' + w + '" id="' + idp + '-' + w + '" placeholder="No limit" value="' + (has ? esc(String(lim[w])) : '') + '">'
+        + used + '</label>';
+    }).join('') + '</fieldset>';
+}
+// Read the three limit inputs under `root`: a number sets the window, blank
+// clears it (null). Returns null and marks the field when one is invalid.
+function _vaultReadLimits(root) {
+  const out = {};
+  for (const el of root.querySelectorAll('.vault-spend-limit')) {
+    const raw = el.value.trim();
+    if (!raw) { out[el.dataset.window] = null; el.removeAttribute('aria-invalid'); continue; }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) { el.setAttribute('aria-invalid', 'true'); el.focus(); return null; }
+    el.removeAttribute('aria-invalid');
+    out[el.dataset.window] = n;
+  }
+  return out;
+}
 async function _vaultLoad() {
   const el = document.getElementById('vault-items');
   if (!el) return;
@@ -47148,31 +50745,97 @@ async function _vaultLoad() {
     const r = await fetch(API + '/api/vault', { headers: _authHeaders() });
     const d = await r.json();
     const items = d.items || [];
-    if (!items.length) { el.innerHTML = '<p class="connection-help">No items yet.</p>'; return; }
+    if (!items.length) { el.innerHTML = '<div class="vault-empty"><b>No payment methods yet</b><p>Add a card and set what workers may spend with it.</p></div>'; return; }
     el.innerHTML = items.map(i => {
       const pending = i.status !== 'active';
+      if (i.kind === 'login') {
+        return '<div class="vault-item" data-id="' + esc(i.id) + '">'
+          + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · sign-in ' + esc(i.username_hint || '') + ' · ' + esc((i.origins || []).join(', '))
+          + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
+          + '<div class="vault-actions">' + (pending ? '<button class="btn primary" onclick="_vaultSave(\'' + escJs(i.id) + '\', true)">Activate</button>' : '')
+          + '<button class="btn danger" onclick="_vaultRemove(\'' + escJs(i.id) + '\')">Remove</button></div></div>';
+      }
       return '<div class="vault-item" data-id="' + esc(i.id) + '">'
         + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> ' + _vaultIdBadge(i.id) + ' · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
         + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
-        + '<label class="connection-control">Approval needed above $'
-        + '<input type="number" min="0" step="1" class="search-input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
+        + '<label class="ui-field vault-limit-field">Approval needed above $'
+        + '<input type="number" min="0" step="1" class="input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
+        + _vaultLimitInputs(i, 'vault-l-' + i.id)
         + '<div class="vault-actions">'
         + (pending ? '<button class="btn primary" onclick="_vaultSave(\'' + escJs(i.id) + '\', true)">Activate</button>' : '')
-        + '<button class="btn" onclick="_vaultSave(\'' + escJs(i.id) + '\', false)">Save limit</button>'
+        + '<button class="btn vault-save-limits" onclick="_vaultSave(\'' + escJs(i.id) + '\', false)">Save limits</button>'
         + '<button class="btn danger" onclick="_vaultRemove(\'' + escJs(i.id) + '\')">Remove</button></div></div>';
     }).join('');
   } catch (e) { el.textContent = 'Vault unavailable: ' + (e.message || e); }
 }
 async function _vaultSave(id, activate) {
   const row = document.querySelector('.vault-item[data-id="' + CSS.escape(id) + '"]');
-  const limit = Number(row?.querySelector('.vault-limit')?.value);
-  if (!Number.isFinite(limit) || limit < 0) { showToast('Enter a limit of 0 or more'); return; }
-  const body = { rules: { max_usd_without_approval: limit } };
+  const body = {};
+  const limitEl = row?.querySelector('.vault-limit');
+  if (limitEl) {
+    const limit = Number(limitEl.value);
+    if (!Number.isFinite(limit) || limit < 0) { showToast('Enter an approval threshold of 0 or more'); return; }
+    const spend = _vaultReadLimits(row);
+    if (!spend) { showToast('A spending limit must be a number of 0 or more, or blank for no limit'); return; }
+    body.rules = { max_usd_without_approval: limit, spend_limits_usd: spend };
+  }
   if (activate) body.activate = true;
   const r = await fetch(API + '/api/vault/' + encodeURIComponent(id), { method: 'PATCH',
     headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const d = await r.json().catch(() => ({}));
-  showToast(r.ok ? (activate ? 'Activated' : 'Limit saved') : ('Vault: ' + (d.error || r.status)));
+  showToast(r.ok ? (activate ? 'Activated' : 'Limits saved') : ('Vault: ' + (d.error || r.status)));
+  _vaultLoad();
+}
+// Add a card. The values go to the server once, are cleared from the form on
+// save or close, and never come back: the list shows brand, last 4 and expiry.
+function _vaultCardAdd() {
+  const f = (id, label, attrs, help) => '<label class="ui-field">' + label + '<input id="' + id + '" class="input" ' + attrs + '>' + (help ? '<span class="ui-help">' + help + '</span>' : '') + '</label>';
+  const body = '<form id="vault-card-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultCardSave()">'
+    + f('vault-c-name', 'Label', 'autocomplete="off" maxlength="80" placeholder="Company Visa"', 'How you and workers refer to it (amux order --item)')
+    + f('vault-c-number', 'Card number', 'data-secret="1" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="23" placeholder="1234 5678 9012 3456"')
+    + '<div class="vault-form-row">'
+    + f('vault-c-exp', 'Expiry', 'autocomplete="off" maxlength="7" placeholder="MM/YY"')
+    + f('vault-c-cvc', 'CVC', 'type="password" data-secret="1" inputmode="numeric" autocomplete="off" maxlength="4"')
+    + '</div>'
+    + f('vault-c-holder', 'Name on card', 'data-secret="1" autocomplete="off" maxlength="120"')
+    + f('vault-c-zip', 'Billing ZIP / postcode', 'data-secret="1" autocomplete="off" maxlength="16"')
+    + f('vault-c-approval', 'Approval needed above $', 'type="number" min="0" step="1" value="100"', 'A charge above this waits for your approval')
+    + _vaultLimitInputs(null, 'vault-c')
+    + '<p class="ui-help">A charge that would take a card past a limit is refused at the fill, whatever was approved. Leave a limit blank for none.</p>'
+    + '<p class="ui-error" id="vault-c-err" role="alert"></p><button type="submit" hidden></button></form>';
+  const foot = '<button class="btn" type="button" onclick="_vaultSubClose(\'vault-card\')">Cancel</button>'
+    + '<button class="btn primary" type="submit" form="vault-card-form" id="vault-c-save">Add payment method</button>';
+  _vaultSub('vault-card', 'Add Payment Method', body, foot);
+  document.getElementById('vault-c-name').focus();
+}
+async function _vaultCardSave() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const err = document.getElementById('vault-c-err'), save = document.getElementById('vault-c-save');
+  err.textContent = '';
+  const number = v('vault-c-number').replace(/\D/g, '');
+  if (!v('vault-c-name')) { err.textContent = 'A label is required.'; document.getElementById('vault-c-name').focus(); return; }
+  if (number.length < 12 || number.length > 19) { err.textContent = 'Enter the full card number (12 to 19 digits).'; document.getElementById('vault-c-number').focus(); return; }
+  if (!v('vault-c-exp')) { err.textContent = 'Enter the expiry as MM/YY.'; document.getElementById('vault-c-exp').focus(); return; }
+  const approval = Number(v('vault-c-approval') || '100');
+  if (!Number.isFinite(approval) || approval < 0) { err.textContent = 'The approval threshold must be 0 or more.'; return; }
+  const spend = _vaultReadLimits(document.getElementById('vault-card-form'));
+  if (!spend) { err.textContent = 'A spending limit must be a number of 0 or more, or blank for no limit.'; return; }
+  for (const k of Object.keys(spend)) if (spend[k] === null) delete spend[k];
+  const fields = { number, exp: v('vault-c-exp') };
+  if (v('vault-c-cvc')) fields.cvc = v('vault-c-cvc');
+  if (v('vault-c-holder')) fields.name = v('vault-c-holder');
+  if (v('vault-c-zip')) fields.zip = v('vault-c-zip');
+  save.disabled = true; save.setAttribute('aria-busy', 'true');
+  let r, d;
+  try {
+    r = await fetch(API + '/api/vault', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ name: v('vault-c-name'), kind: 'card', fields, rules: { max_usd_without_approval: approval, spend_limits_usd: spend } }) });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { d = { error: e.message || String(e) }; }
+  finally { save.disabled = false; save.removeAttribute('aria-busy'); }
+  if (!r || !r.ok) { err.textContent = d.error || ('Not saved (' + (r ? r.status : 'network') + ')'); return; }
+  _vaultSubClose('vault-card');
+  showToast('Added ' + (d.item?.brand || 'card') + ' ending ' + (d.item?.last4 || ''));
   _vaultLoad();
 }
 async function _vaultRemove(id) {
@@ -47237,8 +50900,14 @@ async function _chatgptPublish(btn) {
 // No list response carries a value. Reveal is the one call that does: owner
 // only, audited server-side, and masked again here after `remask_after_s`.
 function _vaultScopeLabel(i) {
-  return i.scope === 'global' ? 'Global' : (i.scope === 'group' ? 'Group ' : 'Worker ') + i.target;
+  if (i.scope === 'global') return 'Global';
+  if (i.scope === 'worker') return 'Worker ' + i.target;
+  const gs = _vaultGroupsOf(i);
+  return (gs.length > 1 ? 'Groups ' : 'Group ') + gs.join(', ');
 }
+// A group secret's target is one group or a comma set ("mixpeek,amux"); a
+// worker in ANY listed group receives it.
+function _vaultGroupsOf(i) { return String(i.target || '').split(',').map(g => g.trim()).filter(Boolean); }
 const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
   worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
 const _VAULT_ICONS = {
@@ -47272,7 +50941,7 @@ function _vaultWorkerGroups() {
 }
 function _vaultProvisionedTo(i) {
   const n = i.effective_for ?? 0, o = i.overridden_for ?? 0;
-  const who = i.scope === 'global' ? 'All workers' : esc(i.target);
+  const who = i.scope === 'global' ? 'All workers' : esc(i.scope === 'group' ? _vaultGroupsOf(i).join(', ') : i.target);
   const count = '<span class="ui-help">' + n + ' worker' + (n === 1 ? '' : 's')
     + (o ? ' · overridden for ' + o : '') + '</span>';
   return '<div class="vault-prov"><span>' + who + '</span>' + count + '</div>';
@@ -47311,10 +50980,17 @@ function _vaultEnsurePage() {
           <p id="vault-count" class="ui-help" role="status"></p>
         </div>
         <div id="vault-panel-payments" role="tabpanel" aria-labelledby="vault-tab-payments" hidden>
-          <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner. Workers stage new cards with <code>amux order</code>; you activate them here.</p>
+          <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above a card's approval threshold waits for your approval in the approvals banner. A charge that would pass a daily, monthly or yearly spending limit is refused outright.</p>
+          <div class="vault-actions-row"><button class="btn primary" id="vault-card-add-btn" onclick="_vaultCardAdd()">${_vaultIcon('plus')}Add Payment Method</button></div>
           <div id="vault-items">Loading…</div>
         </div>
-        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden></div>
+        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden>
+          <div id="vault-apikeys-custom">
+            <p class="ui-help">API keys are key/value secrets: encrypted, scoped to everyone, chosen groups or one worker, and injected as environment variables when a worker starts. They follow the same scope, reveal, rotation and audit rules as every other secret.</p>
+            <div class="vault-actions-row"><button class="btn primary" id="vault-apikey-add-btn" onclick="_vaultEdit(null,'add',{kind:'api_key'})">${_vaultIcon('plus')}Add API Key</button></div>
+            <div id="vault-apikeys-table" aria-live="polite"></div>
+          </div>
+        </div>
       </div>
     </section>`;
     view.onkeydown = event => {
@@ -47381,6 +51057,7 @@ function _vaultTab(name) {
     const panel = document.getElementById('vault-panel-apikeys');
     if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
     loadApiKeys();
+    _vaultApiKeysRender();
   }
 }
 // Return the borrowed API Keys section before the overlay is removed, or the
@@ -47410,7 +51087,7 @@ async function _vaultSecretsLoad() {
 function _vaultFillFilters() {
   const g = document.getElementById('vault-f-group'), w = document.getElementById('vault-f-worker');
   if (!g || !w) return;
-  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').map(i => i.target)])].sort();
+  const groups = [...new Set([..._vault.groups, ..._vault.items.filter(i => i.scope === 'group').flatMap(_vaultGroupsOf)])].sort();
   const workers = [...new Set([..._vault.workers, ...Object.keys(_vaultWorkerGroups())])].sort();
   g.innerHTML = '<option value="">All Groups</option>' + groups.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
   w.innerHTML = '<option value="">All Workers</option>' + workers.map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
@@ -47468,7 +51145,7 @@ function _vaultVisible() {
   let list = _vault.items.slice();
   if (q) list = list.filter(i => (i.key + ' ' + (i.note || '') + ' ' + (i.target || '')).toLowerCase().includes(q));
   if (_vault.scope) list = list.filter(i => i.scope === _vault.scope);
-  if (_vault.group) list = list.filter(i => i.scope === 'group' && i.target === _vault.group);
+  if (_vault.group) list = list.filter(i => i.scope === 'group' && _vaultGroupsOf(i).includes(_vault.group));
   if (_vault.worker && _vault.prov) {
     const ids = new Set();
     for (const x of _vault.prov.resolved || []) { ids.add(x.id); for (const s of x.shadows || []) ids.add(s.id); }
@@ -47485,6 +51162,7 @@ function _vaultVisible() {
 }
 function _vaultRender() {
   _vaultWorkerPanel();
+  _vaultApiKeysRender();
   const table = document.getElementById('vault-secrets-table');
   if (!table) return;
   if (_vault.loadErr) {
@@ -47499,14 +51177,19 @@ function _vaultRender() {
     return;
   }
   if (!list.length) { table.innerHTML = '<div class="vault-empty"><b>No secrets match</b><p>Change the search or filters.</p></div>'; return; }
+  table.innerHTML = _vaultTableHtml(list, 'vault-val-');
+}
+// One table markup for every list of secrets (the Secrets tab and the API
+// Keys tab), so a row action works the same wherever the row is shown.
+function _vaultTableHtml(list, idPrefix) {
   const effective = new Map((_vault.prov?.resolved || []).map(x => [x.id, x]));
-  table.innerHTML = '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
+  return '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
     + list.map(i => {
       const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
       const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
-        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
-        + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="vault-val-' + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.kind === 'api_key' ? '<span class="vault-chip vault-chip-apikey">API key</span>' : '') + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="' + idPrefix + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
         + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
         + '<td data-label="Provisioned to">' + _vaultProvisionedTo(i) + forWorker + '</td>'
@@ -47514,6 +51197,16 @@ function _vaultRender() {
         + '<td data-label="Actions" class="vault-actions-cell"><button class="vault-icon-btn vault-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(i.key) + '" onclick="_vaultMenu(event,\'' + escJs(i.id) + '\')">' + _vaultIcon('more') + '</button></td>'
         + '</tr>';
     }).join('') + '</tbody></table>';
+}
+// API Keys tab: the secrets filed as kind api_key. Same store, same scope,
+// same reveal, rotate, access and audit actions as any secret.
+function _vaultApiKeysRender() {
+  const el = document.getElementById('vault-apikeys-table');
+  if (!el) return;
+  if (_vault.loadErr) { el.innerHTML = '<div class="vault-empty" role="alert"><b>API keys unavailable</b><p>' + esc(_vault.loadErr) + '</p></div>'; return; }
+  const list = _vault.items.filter(i => i.kind === 'api_key').sort((a, b) => a.key.localeCompare(b.key));
+  el.innerHTML = list.length ? _vaultTableHtml(list, 'vault-akval-')
+    : '<div class="vault-empty"><b>No API keys yet</b><p>Add a key name and value, then choose which workers receive it.</p></div>';
 }
 function _vaultMenuClose() {
   document.querySelectorAll('.vault-menu').forEach(m => m.remove());
@@ -47589,19 +51282,28 @@ function _vaultSubClose(id) {
 }
 // Add, Edit and Rotate share one dialog. Edit never shows the stored value:
 // leaving Value blank keeps it, typing one rotates (version + 1).
-function _vaultEdit(id, mode) {
+function _vaultEdit(id, mode, opts) {
   const it = id ? _vault.items.find(x => x.id === id) : null;
   mode = it ? (mode || 'edit') : 'add';
+  const kind = it ? (it.kind || 'secret') : (opts?.kind === 'api_key' ? 'api_key' : 'secret');
+  const noun = kind === 'api_key' ? 'API Key' : 'Secret';
   const wg = _vaultWorkerGroups();
   const groups = [...new Set([..._vault.groups, ...Object.values(wg).flat()])].sort();
   const workers = Object.keys(wg).sort();
   const scope = it ? it.scope : 'global';
   const opt = (list, sel) => list.length ? list.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(n) + '</option>').join('') : '<option value="" disabled selected>None yet</option>';
+  const picked = new Set(scope === 'group' ? _vaultGroupsOf(it) : groups.slice(0, 1));
+  // Groups are a searchable multi-select: chips for what is picked, a filter
+  // box, and the checkbox list it narrows (the checkboxes stay the source of truth).
+  const checks = groups.length ? '<div class="vault-ms-chips" id="vault-e-group-chips" aria-live="polite"></div>'
+    + '<input id="vault-e-group-q" class="input vault-ms-q" type="search" autocomplete="off" spellcheck="false" placeholder="Search groups" aria-label="Search groups" aria-controls="vault-e-group-list" oninput="_vaultGroupFilter()" onkeydown="_vaultGroupKey(event)">'
+    + '<div class="vault-checks" id="vault-e-group-list">' + groups.map(n => '<label class="vault-check" data-group="' + esc(n) + '"><input type="checkbox" value="' + esc(n) + '"' + (picked.has(n) ? ' checked' : '') + ' onchange="_vaultEditScope()"><span>' + esc(n) + '</span></label>').join('')
+    + '<span class="ui-help" id="vault-e-group-none" hidden>No groups match</span></div>' : '<span class="ui-help">No groups yet</span>';
   const radio = (v, label, help, extra) => '<label class="vault-radio"><input type="radio" name="vault-e-scope" value="' + v + '"' + (scope === v ? ' checked' : '') + ' onchange="_vaultEditScope()">'
     + '<span class="vault-radio-text">' + _vaultIcon(v) + '<span><b>' + label + '</b><span class="ui-help">' + help + '</span></span></span></label>' + (extra || '');
   const rotate = mode === 'rotate';
-  const title = mode === 'add' ? 'Add Secret' : rotate ? 'Rotate ' + it.key : 'Edit Secret';
-  const body = '<form id="vault-edit-form" class="vault-form" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
+  const title = mode === 'add' ? 'Add ' + noun : rotate ? 'Rotate ' + it.key : 'Edit ' + noun;
+  const body = '<form id="vault-edit-form" class="vault-form" data-kind="' + kind + '" novalidate onsubmit="event.preventDefault();_vaultSecretSave(' + (it ? '\'' + escJs(it.id) + '\'' : 'null') + ',\'' + mode + '\')">'
     + (rotate ? '<p class="ui-help">Workers that start or restart after this get the new value. Running workers keep the previous one until they restart; you will be offered a restart.</p>' : (
       '<label class="ui-field">Name<input id="vault-e-key" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="128" placeholder="OPENAI_API_KEY" value="' + esc(it ? it.key : '') + '" aria-describedby="vault-e-key-help vault-e-key-err" oninput="_vaultKeyInput(this)"><span class="ui-help" id="vault-e-key-help">Use uppercase letters, numbers, and underscores</span><span class="ui-error" id="vault-e-key-err" role="alert"></span></label>'
       + '<label class="ui-field"><span>Description <span class="ui-help">(optional)</span></span><textarea id="vault-e-note" class="input" rows="2" maxlength="200" aria-describedby="vault-e-note-count" oninput="_vaultNoteCount()">' + esc(it ? it.note || '' : '') + '</textarea><span class="ui-help vault-counter" id="vault-e-note-count" aria-live="polite"></span></label>'))
@@ -47610,13 +51312,13 @@ function _vaultEdit(id, mode) {
     + '<span class="ui-error" id="vault-e-value-err" role="alert"></span></label>'
     + (rotate ? '' : '<fieldset class="vault-scope"><legend>Scope</legend><p class="ui-help">Control which workers can access this secret.</p>'
       + radio('global', 'Global', 'Available to all workers')
-      + radio('group', 'Group', 'Available to workers in a specific group', '<select id="vault-e-group" class="input vault-target" aria-label="Group" onchange="_vaultEditScope()">' + opt(groups, scope === 'group' ? it.target : groups[0]) + '</select>')
+      + radio('group', 'Groups', 'Available to workers in any of the checked groups', '<div id="vault-e-group" class="vault-target vault-ms" role="group" aria-label="Groups">' + checks + '</div>')
       + radio('worker', 'Worker', 'Available to a single worker', '<select id="vault-e-worker" class="input vault-target" aria-label="Worker" onchange="_vaultEditScope()">' + opt(workers, scope === 'worker' ? it.target : workers[0]) + '</select>')
       + '<p class="ui-help" id="vault-e-reach" role="status"></p></fieldset>')
     + '<p class="ui-error" id="vault-e-err" role="alert"></p>'
     + '<button type="submit" hidden></button></form>';
   const foot = '<button class="btn" type="button" onclick="_vaultSubClose(\'vault-edit\')">Cancel</button>'
-    + '<button class="btn primary" type="submit" form="vault-edit-form" id="vault-e-save">' + (mode === 'add' ? 'Add Secret' : rotate ? 'Rotate' : 'Save Changes') + '</button>';
+    + '<button class="btn primary" type="submit" form="vault-edit-form" id="vault-e-save">' + (mode === 'add' ? 'Add ' + noun : rotate ? 'Rotate' : 'Save Changes') + '</button>';
   const o = _vaultSub('vault-edit', title, body, foot);
   if (!rotate) { _vaultNoteCount(); _vaultEditScope(); }
   (o.querySelector(rotate ? '#vault-e-value' : '#vault-e-key')).focus();
@@ -47642,9 +51344,35 @@ function _vaultEye() {
   b.setAttribute('aria-pressed', String(show)); b.setAttribute('aria-label', show ? 'Hide value' : 'Show value');
   b.innerHTML = _vaultIcon(show ? 'eyeOff' : 'eye');
 }
+function _vaultGroupFilter() {
+  const q = (document.getElementById('vault-e-group-q')?.value || '').trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#vault-e-group-list .vault-check').forEach(l => { const hit = !q || l.dataset.group.toLowerCase().includes(q); l.hidden = !hit; shown += hit; });
+  const none = document.getElementById('vault-e-group-none'); if (none) none.hidden = shown > 0;
+}
+// Enter toggles the first visible match so the picker works from the keyboard.
+function _vaultGroupKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const box = [...document.querySelectorAll('#vault-e-group-list .vault-check')].find(l => !l.hidden)?.querySelector('input');
+  if (!box) return;
+  box.checked = !box.checked; _vaultEditScope();
+  e.target.value = ''; _vaultGroupFilter();
+}
+function _vaultGroupUnpick(name) {
+  const box = [...document.querySelectorAll('#vault-e-group-list input')].find(c => c.value === name);
+  if (box) { box.checked = false; _vaultEditScope(); }
+  document.getElementById('vault-e-group-q')?.focus();
+}
+function _vaultGroupChips() {
+  const el = document.getElementById('vault-e-group-chips');
+  if (!el) return;
+  const on = [...document.querySelectorAll('#vault-e-group-list input:checked')].map(c => c.value);
+  el.innerHTML = on.length ? on.map(n => '<span class="vault-ms-chip"><span class="vault-ms-name">' + esc(n) + '</span><button type="button" class="vault-ms-x" aria-label="Remove ' + esc(n) + '" onclick="_vaultGroupUnpick(\'' + escJs(n) + '\')">&#x2715;</button></span>').join('') : '<span class="ui-help">No groups selected</span>';
+}
 function _vaultEditTarget() {
   const scope = document.querySelector('input[name="vault-e-scope"]:checked')?.value || 'global';
-  const target = scope === 'group' ? (document.getElementById('vault-e-group')?.value || '') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
+  const target = scope === 'group' ? [...document.querySelectorAll('#vault-e-group input:checked')].map(c => c.value).join(',') : scope === 'worker' ? (document.getElementById('vault-e-worker')?.value || '') : '';
   return { scope, target };
 }
 // Live reach preview: who gets this, and whether a more specific secret with
@@ -47656,12 +51384,13 @@ function _vaultEditScope() {
   for (const [s, id] of [['group', 'vault-e-group'], ['worker', 'vault-e-worker']]) {
     const el = document.getElementById(id); if (el) el.hidden = scope !== s;
   }
+  _vaultGroupChips();
   const wg = _vaultWorkerGroups();
-  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && wg[w].includes(target)) || (scope === 'worker' && w === target)).sort();
+  const names = Object.keys(wg).filter(w => scope === 'global' || (scope === 'group' && target.split(',').some(g => wg[w].includes(g))) || (scope === 'worker' && w === target)).sort();
   const key = (document.getElementById('vault-e-key')?.value || '').trim();
   const rank = { global: 0, group: 1, worker: 2 };
   const over = key ? _vault.items.filter(i => i.key === key && rank[i.scope] > rank[scope]).map(_vaultScopeLabel) : [];
-  reach.textContent = (scope !== 'global' && !target) ? 'Pick a ' + scope + '.'
+  reach.textContent = (scope !== 'global' && !target) ? (scope === 'group' ? 'Check at least one group.' : 'Pick a worker.')
     : 'Reaches ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + (names.length && names.length <= 6 ? ': ' + names.join(', ') : '')
       + '. Precedence is worker, then group, then global.' + (over.length ? ' Overridden by ' + over.join(', ') + ' where those apply.' : '');
 }
@@ -47680,8 +51409,9 @@ async function _vaultSecretSave(id, mode) {
       keyEl.setAttribute('aria-invalid', 'true'); keyEl.focus(); return;
     }
     const { scope, target } = _vaultEditTarget();
-    if (scope !== 'global' && !target) { err.textContent = 'Pick a ' + scope + ' for this secret.'; return; }
+    if (scope !== 'global' && !target) { err.textContent = (scope === 'group' ? 'Check at least one group for this secret.' : 'Pick a worker for this secret.'); return; }
     Object.assign(body, { key, scope, target, description: document.getElementById('vault-e-note').value });
+    if (mode === 'add') body.kind = document.getElementById('vault-edit-form')?.dataset.kind || 'secret';
   }
   if (mode !== 'edit' && !value) {
     document.getElementById('vault-e-value-err').textContent = 'A value is required.';
@@ -48035,15 +51765,32 @@ async function loadUsage() {
       // provider with no readable quota (muse) must not borrow ollama's "Unlimited" or
       // the "No active limits" that means "we looked and there were none". It means we
       // could not look.
-      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account')
+      // A signed-in provider whose usage reply was empty (codex: cause
+      // unexpected_shape) is not an account to connect.
+      const status = !provider.available ? (pending ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported'
+          : provider.cause === 'unexpected_shape' ? 'Usage not reported' : 'Connect account')
         : provider.metered === false ? 'Unlimited'
         : provider.usage_unknown ? 'Usage unknown'
         : minimum === null ? 'No active limits' : (provider.stale ? 'Last known · ' : '') + usagePercent(minimum) + '% left';
       const meta = usageProviderMeta(provider);
-      const detail = !provider.available
+      // "Connect account" used to be a label with nothing behind it (2026-10-21): the row said
+      // to connect and offered no way to. Providers with a CLI sign-in get the button here.
+      // Every provider with a CLI sign-in offers it on its row, in every state
+      // (Ethan, 2026-10-21: "the same cli login flow for each"): "Sign in" while
+      // it has no account, "Switch account" once it reports one. Gemini on an
+      // API key reads "Not reported" and used to get no button at all.
+      const login = window.AmuxState && window.AmuxState.cliLogin && window.AmuxState.cliLogin.CLI_LOGINS[provider.id];
+      // signed_in: a Claude subscription token is an account that reports no usage.
+      const signedIn = provider.available || provider.cause === 'unexpected_shape' || provider.signed_in === true;
+      const connect = login && !pending
+        ? '<button type="button" class="btn' + (signedIn ? '' : ' primary') + ' usage-connect" data-provider="' + esc(provider.id) + '" onclick="event.stopPropagation();usageConnect(this.dataset.provider)">'
+          + (signedIn ? 'Switch ' + esc(login.label) + ' account' : 'Sign in with ' + esc(login.label)) + '</button>'
+        : provider.metered === false || login ? ''
+        : '<div class="usage-reset usage-no-login">No dashboard sign-in for ' + esc(provider.label || provider.id) + ' yet: sign in with its own CLI on this server.</div>';
+      const detail = (!provider.available
         ? '<div class="usage-unavailable">' + esc(pending ? 'Waiting for the provider’s usage report.' : provider.reason || 'Connect this provider to see usage.') + '</div>'
         : windows.length ? windows.map(w => usageWindowRow(w, provider.stale === true)).join('')
-        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>';
+        : '<div class="usage-unavailable">' + esc(provider.summary || 'No active limits reported') + '</div>') + connect;
       return '<details class="usage-provider" data-provider="' + esc(provider.id || '') + '"'
         + ((openProviders.length ? openProviders.includes(provider.id) : constrained && constrained.id === provider.id) ? ' open' : '') + '>'
         + '<summary><span class="usage-provider-name">' + esc(provider.label || provider.id || 'Provider') + '</span>'
@@ -48328,10 +52075,11 @@ function saveSettingsNewServer() {
   showToast('Server saved');
 }
 
-// Close settings on outside click
+// Close settings on outside click. A confirm dialog opened FROM Settings is
+// not outside: answering it used to close Settings under the user.
 document.addEventListener('click', function(e) {
   const wrap = document.querySelector('.settings-wrap');
-  if (wrap && !wrap.contains(e.target)) closeSettings();
+  if (wrap && !wrap.contains(e.target) && !e.target.closest?.('#modal-backdrop')) closeSettings();
 });
 
 // ── Default Model ────────────────────────────────────────────────────────────
@@ -48506,6 +52254,7 @@ async function loadPeekCommitGuard(sessionName) {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sessionName) + '/commit-guard');
     if (!r.ok) return;
     const d = await r.json();
+    if (_peekStale(sessionName, 'commit_guard')) return;
     _peekCommitGuardOverride = d.override;
     _renderPeekCommitGuardBtn(d.enabled, d.override, d.global);
   } catch(e) {}
@@ -48621,6 +52370,15 @@ function _wireHostAccess(modal, isGlobal, ...controls) {
   update();
   return () => !!modal.querySelector('#host-access-ack')?.checked && isGlobal();
 }
+// The Global box is shown but not ticked: say so in the form before the server refuses with API
+// wording ("send grant_host_access"), which a person cannot act on (amux Cloud e2e C8-2).
+function _hostAccessUnconfirmed(modal) {
+  const wrap = modal.querySelector('#host-access-wrap');
+  if (!wrap || wrap.style.display === 'none' || modal.querySelector('#host-access-ack')?.checked) return false;
+  _teamScopeError(modal, 'Tick the box above to grant host-level access, or choose a team with a narrower scope.');
+  modal.querySelector('#host-access-ack')?.focus();
+  return true;
+}
 function _teamIsGlobal(id) {
   return (_workspaceTeams.find(t => t.id === id) || {}).scope_level === 'global';
 }
@@ -48708,6 +52466,7 @@ async function loadTeamSection() {
             <span style="display:flex;align-items:center;gap:7px;color:var(--dim);font-size:0.7rem;">
               ${esc(m.team_name || 'Legacy access')}
               <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:0.64rem;padding:1px 6px;">change</button>
+              ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:0.64rem;padding:1px 6px;">remove</button>`}
             </span>
           </div>`).join('');
       }
@@ -48730,6 +52489,16 @@ async function deleteInvite(token) {
   const r = await fetch('/api/org/invites/' + token, {method: 'DELETE'}).catch(() => null);
   if (!r || !r.ok) { showToast('Failed to revoke invite'); return; }
   showToast('Invite revoked');
+  loadTeamSection();
+}
+
+// Revoking a teammate was API-only: People offered "change" and nothing else
+// (codex e2e round 3, C8-3). The DELETE also ends their signed-in sessions.
+async function removeMember(id, email) {
+  if (!await showConfirm(`Remove ${email}? They are signed out and can no longer sign in.`, 'Remove', true)) return;
+  const r = await fetch('/api/org/members/' + encodeURIComponent(id), {method: 'DELETE'}).catch(() => null);
+  if (!r || !r.ok) { showToast('Failed to remove member'); return; }
+  showToast('Member removed');
   loadTeamSection();
 }
 
@@ -48774,6 +52543,7 @@ async function openTeamInvite() {
     const email = (modal.querySelector('#team-invite-email')?.value || '').trim();
     const team_id = teamSel.value;
     if (!team_id) { _teamScopeError(modal, 'Choose a team'); return; }
+    if (_hostAccessUnconfirmed(modal)) return;
     submit.disabled = true;
     submit.textContent = 'Creating…';
     let res;
@@ -48826,6 +52596,7 @@ function openTeamEditor(teamId) {
   const levelSel = modal.querySelector('#team-scope-level');
   const teamAck = _wireHostAccess(modal, () => levelSel.value === 'global', levelSel);
   modal.querySelector('#team-scope-submit').onclick = async () => {
+    if (_hostAccessUnconfirmed(modal)) return;
     const scope_level = levelSel.value;
     const scope_name = scope_level === 'global' ? '' : modal.querySelector('#team-scope-name').value;
     const name = modal.querySelector('#team-name').value.trim();
@@ -48924,6 +52695,7 @@ async function openMemberScope(id, email, teamId) {
   const memberAck = _wireHostAccess(modal, () => _teamIsGlobal(memberSel.value), memberSel);
   submit.addEventListener('click', async () => {
     const team_id = memberSel.value;
+    if (_hostAccessUnconfirmed(modal)) return;
     submit.disabled = true;
     const response = await fetch('/api/org/members/' + encodeURIComponent(id), {
       method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({team_id, grant_host_access: memberAck()})
@@ -49123,6 +52895,23 @@ async function _handleDeeplink(hash) {
     tryMenu(0);
     return;
   }
+  // #task=<worker>@<unix s> — one worker task, opened in the Tasks view (the
+  // task detail's "Copy link"). Ethan, 2026-10-18: "shareable links to a
+  // single task".
+  if (hash && hash.startsWith('#task=')) {
+    const raw = decodeURIComponent(hash.slice(6));
+    const at = raw.lastIndexOf('@');
+    const sess = at > 0 ? raw.slice(0, at) : '', ts = at > 0 ? Number(raw.slice(at + 1)) : NaN;
+    if (sess && Number.isFinite(ts)) {
+      const tryOpen = (attempt) => {
+        if (location.hash !== hash) return;
+        if (document.getElementById('tasks-list') && typeof switchView === 'function') { _tasksReveal(sess, ts); return; }
+        if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
+      };
+      setTimeout(() => tryOpen(0), 0);
+    }
+    return;
+  }
   // #issue=<id> — open a board card directly from anywhere (AMUX-2165), the
   // shareable twin of the task-label id chip.
   if (hash && hash.startsWith('#issue=')) {
@@ -49144,7 +52933,12 @@ async function _handleDeeplink(hash) {
       if (typeof boardItems !== 'undefined' && document.getElementById('board-detail-overlay')) {
         switchView('board');
         setTimeout(async () => {
-          if (location.hash !== hash) return;
+          if (location.hash !== hash) {
+            // Someone replaced the hash mid-open; say so rather than land silently on the board.
+            try { window._clientDebug?.('deeplink', {verdict: 'deeplink_hash_replaced', measured: true, n_considered: 1,
+              wanted: hash.slice(0, 80), found: location.hash.slice(0, 80)}); } catch (_) {}
+            return;
+          }
           try {
             await openBoardDetail(id);
             if (tab) boardDetailTab(tab);
@@ -49217,7 +53011,7 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
-function _restoreScreen() {
+function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
   // (setTimeout 0) null-derefs and throws. The app never calls switchView on
@@ -49226,7 +53020,14 @@ function _restoreScreen() {
   // (#view= / ?view=, the rig entry). The saved-tab restore silently beat the
   // view deeplink on 2026-08-08 — the rig asked for ?view=groups, got last
   // session's Workers tab, and the deeplink looked broken while working fine.
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)
+  // Decide from the hash the page BOOTED with. The deeplink handler runs
+  // first and may already have rewritten it: on WebKit #view=files opens the
+  // Files view synchronously, loadFiles replaces the hash with the folder (or
+  // clears it), and this check then saw no deeplink and reopened the last
+  // peek over the view the link named. In the Mac app, where every window
+  // shares localStorage, that peek was another window's worker (2026-10-21).
+  const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -49251,7 +53052,10 @@ function _restoreScreen() {
   //    it made the rig land on whichever session was peeked before (verified
   //    2026-08-08: #peek=amux opened amux-frustrations), and a shared link
   //    would misdirect the same way.
-  if (/^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) return;
+  if (_hasDeeplink) {
+    amuxTrack('peek_restore_skipped_deeplink', {kind:(_bootHash.match(/^#(\w+)=/) || [,'view'])[1], measured:true, n_considered:1});
+    return;
+  }
   // The split side panel opens only what its URL names. Restoring the outer
   // page's peek here (split included) is how it nested itself.
   if (window._peekSplitChild) return;
@@ -49270,7 +53074,7 @@ function _restoreScreen() {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|browser|bq)=/.test(location.hash)) {
+          || /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
@@ -49301,8 +53105,9 @@ function _restoreScreen() {
   }
 }
 function _restoreAppScreen() {
-  _handleDeeplink(location.hash);
-  _restoreScreen();
+  const bootHash = location.hash;
+  _handleDeeplink(bootHash);
+  _restoreScreen(bootHash);
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _restoreAppScreen, {once:true});
 else queueMicrotask(_restoreAppScreen);
@@ -49333,6 +53138,26 @@ function forceUpdate() {
   });
 }
 
+// What the server runs against main (GET /api/pull). Ethan, 2026-10-24: "i
+// should easily keep the mac server up to date". The sentence is the server's;
+// this only colours it, so the card can never claim more than was measured.
+function _renderServerDeployStatus(d) {
+  const el = document.getElementById('server-deploy-status');
+  if (!el || !d || !d.summary) return;
+  el.textContent = d.summary;
+  el.dataset.state = d.state || '';
+  el.style.color = d.state === 'current' ? 'var(--green)'
+    : (d.state === 'off_main' || d.state === 'unmeasured') ? 'var(--red)' : 'var(--dim)';
+}
+async function _loadServerDeployStatus() {
+  const el = document.getElementById('server-deploy-status');
+  if (!el || window._cloudEmail) return;
+  try {
+    const r = await fetch(API + '/api/pull');
+    if (r.ok) _renderServerDeployStatus(await r.json());
+  } catch (e) { /* the card keeps its last line; the button still works */ }
+}
+
 async function pullFromRemote(btn) {
   const el = document.getElementById('pull-status');
   btn.disabled = true; btn.textContent = '⏳ Pulling...';
@@ -49351,8 +53176,10 @@ async function pullFromRemote(btn) {
     try { d = JSON.parse(body); } catch (_) { /* handled below, with the status */ }
 
     if (d) {
-      el.textContent = d.output || (d.ok ? 'Up to date' : 'Failed');
-      el.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+      if (d.deploy) _renderServerDeployStatus(d.deploy);
+      el.textContent = (d.output || (d.ok ? 'Fetched' : 'Failed'))
+        + (d.builder ? (d.builder.kicked ? '\nBuilder started.' : '\nBuilder not started: ' + (d.builder.why || 'unknown')) : '');
+      el.style.color = d.ok ? 'var(--dim)' : 'var(--red)';
       if (d.ok && !(d.output || '').includes('Already up to date')) {
         setTimeout(() => forceUpdate(), 1500);
       }
@@ -49932,6 +53759,14 @@ async function pullFromRemote(btn) {
       return void setTimeout(_wtMaybeStart, 250);
     }
     if (typeof sessions !== 'undefined' && sessions && sessions.length > 0) return;
+    // One first-run thing at a time. A new amux Cloud server opens "Get started" (connect a
+    // model) and this walkthrough together, and the window covered the walkthrough's Skip
+    // (fresh server e2e, 2026-10-21). Connecting a model comes first; the tour waits.
+    var gs = document.getElementById('apikey-setup-modal');
+    if (gs && getComputedStyle(gs).display !== 'none') {
+      if (++_wtTries > 26 + 1200) return;          // about 20 minutes, then let it go
+      return void setTimeout(_wtMaybeStart, 1000);
+    }
     _wtShow();
   }
   setTimeout(_wtMaybeStart, 1500);
@@ -50052,6 +53887,7 @@ const _TREND_THEMES = [
 ];
 function _msgSetMode(mode) {
   _msgMode = mode;
+  try { localStorage.setItem('amux_msg_mode', mode); } catch(e) {}
   document.getElementById('msgmode-messages')?.classList.toggle('active', mode === 'messages');
   document.getElementById('msgmode-trends')?.classList.toggle('active', mode === 'trends');
   document.getElementById('msgmode-ask')?.classList.toggle('active', mode === 'ask');
@@ -50768,6 +54604,154 @@ const _RECLAIM_CATS = {
   snapshot:  { label: 'APFS snapshots',  hint: 'Holds deleted blocks. Not deletable from here.', safe: false },
 };
 
+// Recommendations: the scan's findings grouped the way a person cleans up, by
+// the tool that owns them, each with that tool's own cleanup command where one
+// exists (it knows what is still referenced; rm does not). Pure client-side
+// arithmetic over the findings the scan already returned. Selecting builds a
+// shell script to read and run, beside the existing quarantine action: nothing
+// here deletes anything.
+const _RECLAIM_TOOLS = [
+  { re: /\/(Library\/pnpm\/store|\.pnpm-store|\.local\/share\/pnpm\/store)(\/|$)/, key: 'pnpm', label: 'pnpm store', cmd: 'pnpm store prune', safe: true },
+  { re: /\/\.npm(\/_cacache)?(\/|$)/, key: 'npm', label: 'npm cache', cmd: 'npm cache clean --force', safe: true },
+  { re: /\/(Library\/Caches\/Yarn|\.yarn\/berry\/cache|\.cache\/yarn)(\/|$)/, key: 'yarn', label: 'Yarn cache', cmd: 'yarn cache clean', safe: true },
+  { re: /\/(Library\/Caches\/uv|\.cache\/uv)(\/|$)/, key: 'uv', label: 'uv cache', cmd: 'uv cache clean', safe: true },
+  { re: /\/(Library\/Caches\/pip|\.cache\/pip)(\/|$)/, key: 'pip', label: 'pip cache', cmd: 'python3 -m pip cache purge', safe: true },
+  { re: /\/(Library\/Caches\/ms-playwright|\.cache\/ms-playwright)(\/|$)/, key: 'playwright', label: 'Playwright browsers', cmd: 'npx playwright uninstall --all', safe: true },
+  { re: /\/go\/pkg\/mod(\/|$)/, key: 'gomod', label: 'Go module cache', cmd: 'go clean -modcache', safe: true },
+  { re: /\/Library\/Caches\/go-build(\/|$)/, key: 'gobuild', label: 'Go build cache', cmd: 'go clean -cache', safe: true },
+  { re: /\/Library\/Caches\/Homebrew(\/|$)/, key: 'brew', label: 'Homebrew downloads', cmd: 'brew cleanup -s', safe: true },
+  // No tool owns DerivedData, so it goes through quarantine like any path.
+  { re: /\/Library\/Developer\/Xcode\/DerivedData(\/|$)/, key: 'deriveddata', label: 'Xcode DerivedData', cmd: null, safe: true },
+  { re: /\/Library\/Developer\/CoreSimulator(\/|$)/, key: 'simulators', label: 'Unavailable simulators', cmd: 'xcrun simctl delete unavailable', safe: true },
+  { re: /\/\.cache\/huggingface(\/|$)/, key: 'hf', label: 'Hugging Face models', cmd: 'huggingface-cli delete-cache', safe: false },
+  { re: /\/\.ollama\/models(\/|$)/, key: 'ollama', label: 'Ollama models', cmd: 'ollama list   # then: ollama rm <model>', safe: false },
+  { re: /\/(\.colima|\.lima|Library\/Containers\/com\.docker\.docker)(\/|$)/, key: 'docker', label: 'Docker and VM disks', cmd: 'docker system prune', safe: false },
+  { re: /\/\.codex(\/|$)/, key: 'codex', label: 'Codex history', cmd: null, safe: false },
+  { re: /\/\.claude\/projects(\/|$)/, key: 'claude', label: 'Claude Code transcripts', cmd: null, safe: false },
+];
+// Rebuildable output that lives in many projects: one row for all of them.
+const _RECLAIM_BUILD_DIRS = new Set(['node_modules', '.next', 'target', '.venv', 'venv', '__pycache__', '.turbo', '.gradle', 'dist', '.parcel-cache', '.terraform']);
+
+
+// A finding the server marked owned: a running worker's scratch, git-tracked
+// files, a worktree with uncommitted or unpushed work, or a check that could
+// not run. It is shown with its reason and can never be selected.
+function _reclaimProtected(f) { return !!(f && f.protected); }
+function _reclaimIsProtectedPath(path) {
+  return (_reclaimScan?.findings || []).some(f => f.path === path && _reclaimProtected(f));
+}
+
+function _reclaimRecs(findings) {
+  const groups = new Map();
+  const prot = [];
+  (findings || []).forEach(f => {
+    if (!f || !f.path || f.category === 'snapshot' || !(f.bytes > 0)) return;
+    if (_reclaimProtected(f)) { prot.push(f); return; }
+    const tool = _RECLAIM_TOOLS.find(t => t.re.test(f.path));
+    const base = f.path.split('/').pop();
+    let key, label, cmd = null, safe;
+    if (tool) { key = 'tool:' + tool.key; label = tool.label; cmd = tool.cmd; safe = tool.safe; }
+    else if (_RECLAIM_BUILD_DIRS.has(base) && (f.regenerable || _RECLAIM_CATS[f.category]?.safe)) { key = 'build:' + base; label = base; safe = true; }
+    else { key = 'path:' + f.path; label = f.path.replace(/^\/Users\/[^/]+/, '~'); safe = !!(f.regenerable || _RECLAIM_CATS[f.category]?.safe); }
+    const g = groups.get(key) || { key, label, cmd, safe, bytes: 0, paths: [], detail: f.detail || '' };
+    g.bytes += f.bytes; g.paths.push(f.path);
+    groups.set(key, g);
+  });
+  const all = [...groups.values()].map(g => {
+    if (g.key.startsWith('build:') && g.paths.length > 1) g.label = `${g.label} in ${g.paths.length} projects`;
+    return g;
+  }).sort((a, b) => b.bytes - a.bytes);
+  return { safe: all.filter(g => g.safe), review: all.filter(g => !g.safe), protected: prot };
+}
+
+function _reclaimRecState(rec) {
+  const n = rec.paths.filter(p => _reclaimSel.has(p)).length;
+  return n === 0 ? 'none' : (n === rec.paths.length ? 'all' : 'some');
+}
+
+function _reclaimToggleRec(key) {
+  const recs = _reclaimRecs(_reclaimScan?.findings);
+  const rec = [...recs.safe, ...recs.review].find(r => r.key === key);
+  if (!rec) return;
+  const on = _reclaimRecState(rec) !== 'all';
+  rec.paths.forEach(p => on ? _reclaimSel.add(p) : _reclaimSel.delete(p));
+  _reclaimRender();
+}
+
+function _reclaimSelectSafe() {
+  _reclaimRecs(_reclaimScan?.findings).safe.forEach(r => r.paths.forEach(p => _reclaimSel.add(p)));
+  _reclaimRender();
+}
+
+// The script for the current selection. It NEVER emits `rm` for a path.
+//
+// 2026-10-20: a cleanup script built from these findings rm -rf'd a running
+// worker's ~/.amux/tmp/<name>, git-tracked customer test data, and every
+// "clean" worktree regardless of owner. Raw rm lines bypass every guard the
+// server has. So a tool's own command stays when its whole group is selected
+// (the tool knows what is still referenced), and every path becomes part of
+// ONE POST to /api/reclaim/quarantine. The server applies guard_path and the
+// ownership guard (reclaim_owner.rs) to each path, refuses what is owned with
+// a reason, and moves the rest aside where Disk Cleanup can restore it.
+// Review items are written commented out: selecting them puts them in front
+// of you, not in a script that runs on paste.
+function _reclaimQuarantineCall(paths, scanId) {
+  const body = JSON.stringify({ paths, scan_id: scanId || null }, null, 1).split('\n');
+  return [
+    'curl -sk -X POST "$(amux url)/api/reclaim/quarantine" \\',
+    "  -H 'Content-Type: application/json' \\",
+    '  -H "X-Amux-Session: ${AMUX_SESSION:-disk-cleanup-script}" \\',
+    "  --data-binary @- <<'JSON'",
+    ...body,
+    'JSON',
+    'echo',
+  ];
+}
+
+function _reclaimScript() {
+  const recs = _reclaimRecs(_reclaimScan?.findings);
+  const scanId = _reclaimScan?.scan?.id;
+  const lines = ['#!/bin/bash',
+    `# amux disk cleanup, generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from the latest Disk scan.`,
+    '# Nothing has run. Read it, then run it yourself. Sizes are the scan\'s estimates.',
+    '#',
+    '# This script deletes no path with rm. Paths go to the amux quarantine API,',
+    '# which refuses anything a running worker, a git repo or an unpushed worktree',
+    '# still owns (the reply lists each refusal and why), and moves the rest to',
+    '# ~/.amux/quarantine. Restore or purge them in Metrics > Disk Cleanup.',
+    '# Space comes back when you purge. Tool commands below are the tools\' own.',
+    'set -u', ''];
+  let n = 0;
+  const safePaths = [], safeLabels = [], reviewPaths = [], reviewLabels = [];
+  const emit = (rec, review) => {
+    const sel = rec.paths.filter(p => _reclaimSel.has(p) && !_reclaimIsProtectedPath(p));
+    if (!sel.length) return;
+    n++;
+    const label = `#   ${rec.label} (${_fmtBytes(rec.bytes)})`;
+    if (rec.cmd && sel.length === rec.paths.length) {
+      lines.push(`# ${rec.label} (${_fmtBytes(rec.bytes)})${review ? ': review first, uncomment to run' : ''}`);
+      lines.push((review ? '# ' : '') + rec.cmd, '');
+    } else if (review) { reviewPaths.push(...sel); reviewLabels.push(label); }
+    else { safePaths.push(...sel); safeLabels.push(label); }
+  };
+  recs.safe.forEach(r => emit(r, false));
+  recs.review.forEach(r => emit(r, true));
+  if (safePaths.length) {
+    lines.push(`# Move ${safePaths.length} path${safePaths.length === 1 ? '' : 's'} to quarantine:`, ...safeLabels);
+    lines.push(..._reclaimQuarantineCall(safePaths, scanId), '');
+  }
+  if (reviewPaths.length) {
+    lines.push(`# Review first, uncomment to run. Move ${reviewPaths.length} path${reviewPaths.length === 1 ? '' : 's'} to quarantine:`, ...reviewLabels);
+    lines.push(..._reclaimQuarantineCall(reviewPaths, scanId).map(l => '# ' + l), '');
+  }
+  if (!n) lines.push('# Nothing selected. Tick items under Recommendations first.');
+  return lines.join('\n');
+}
+
+function _reclaimCopyScript() {
+  _copyTextWithToast(_reclaimScript(), 'Cleanup script copied. Nothing has run.');
+}
+
 const _KIND_COLORS = {
   model: '#a371f7', media: '#f0883e', image: '#3fb950', archive: '#e3b341',
   data: '#58a6ff', code: '#6e7681', build: '#f85149', doc: '#39c5cf', other: '#484f58',
@@ -50782,27 +54766,154 @@ const _KIND_COLORS = {
 
 function _metricsSetMode(mode) {
   _metricsMode = mode;
+  try { localStorage.setItem('amux_metrics_mode', mode); } catch(e) {}
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
   document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
+  document.getElementById('metricsmode-resources')?.classList.toggle('active', mode === 'resources');
   document.getElementById('metricsmode-disk')?.classList.toggle('active', mode === 'disk');
   const mc = document.getElementById('metrics-content');
   const hc = document.getElementById('host-content');
+  const rc = document.getElementById('resources-content');
   if (mc) mc.style.display = mode === 'system' ? '' : 'none';
-  // #reclaim-content is NOT toggled here (AMUX-4634). It lives in #disk-view
-  // since Disk Cleanup became its own tab (1a2963c8), and switchView('disk')
-  // never resets it, so hiding it from the Host or System mode left Disk
-  // Cleanup blank when opened from the Host panel's card.
   if (hc) hc.style.display = mode === 'host' ? '' : 'none';
-  // The worker sidebar only pairs with the System view; Host and Disk are host-wide.
+  if (rc) rc.style.display = mode === 'resources' ? '' : 'none';
   const sb = document.getElementById('metrics-sidebar');
   if (sb) sb.style.display = (mode === 'system') ? '' : 'none';
   if (mode === 'disk') _reclaimLoad(); else _reclaimStopPolling();
   if (mode === 'host') _hostLoad();
+  if (mode === 'resources') _resourcesLoad();
 }
 
-// ── Host analysis (Metrics ▸ Host) ──────────────────────────────────────────
+// ── Worker Resources (Metrics > Resources) ─────────────────────────────────
+let _resourcesData = null;
+let _resourcesLive = null;
+let _resourcesPoll = null;
+let _resourcesHours = 6;
+
+function _resourcesLoad() {
+  const el = document.getElementById('resources-content');
+  if (!el) return;
+  if (!_resourcesLive) el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Loading worker resources…</div>';
+  Promise.all([
+    fetch(API + '/api/metrics/workers/live').then(r => r.ok ? r.json() : null),
+    fetch(API + '/api/metrics/workers?since_h=' + _resourcesHours).then(r => r.ok ? r.json() : null),
+  ]).then(([live, hist]) => {
+    _resourcesLive = live;
+    _resourcesData = hist;
+    _resourcesRender();
+  }).catch(() => {
+    el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load worker resources.</div>';
+  });
+  clearInterval(_resourcesPoll);
+  _resourcesPoll = setInterval(() => {
+    if (_metricsMode !== 'resources') { clearInterval(_resourcesPoll); _resourcesPoll = null; return; }
+    fetch(API + '/api/metrics/workers/live').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { _resourcesLive = d; _resourcesRender(); }
+    }).catch(() => {});
+  }, 30000);
+}
+
+function _resourcesRender() {
+  const el = document.getElementById('resources-content');
+  if (!el) return;
+  const live = _resourcesLive || {};
+  const hist = _resourcesData || {};
+  const workers = (live.workers || []).slice().sort((a, b) => b.rss_kb - a.rss_kb);
+  const config = {
+    max_concurrent_active: hist.max_concurrent_active || live.max_concurrent_active || null,
+    max_rss_mb: hist.max_rss_mb || null,
+  };
+  const summaries = hist.workers || [];
+
+  const rssLimit = config.max_rss_mb ? config.max_rss_mb * 1024 : 0;
+  let h = '';
+
+  // Header with totals
+  const totalRssMb = live.total_rss_mb || 0;
+  const totalCpu = live.total_cpu_pct || 0;
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;">';
+  h += '<div style="display:flex;align-items:baseline;gap:16px;">';
+  h += '<span style="font-weight:600;font-size:0.95rem;">Worker Resources</span>';
+  h += '<span style="font-size:0.8rem;color:var(--dim);">' + workers.length + ' workers</span>';
+  h += '</div>';
+  h += '<div style="display:flex;align-items:center;gap:12px;">';
+  h += '<span style="font-size:0.8rem;">Total: <b>' + totalRssMb.toFixed(0) + ' MB</b> RSS, <b>' + totalCpu.toFixed(1) + '%</b> CPU</span>';
+  if (config.max_concurrent_active) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">cap: ' + config.max_concurrent_active + ' concurrent</span>';
+  if (config.max_rss_mb) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">RSS limit: ' + config.max_rss_mb + ' MB</span>';
+  h += '<select style="font-size:0.75rem;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;" onchange="_resourcesHours=+this.value;_resourcesLoad()">';
+  [1, 6, 24, 72, 168].forEach(v => {
+    const lbl = v < 24 ? v + 'h' : (v / 24) + 'd';
+    h += '<option value="' + v + '"' + (v === _resourcesHours ? ' selected' : '') + '>' + lbl + '</option>';
+  });
+  h += '</select>';
+  h += '<button class="btn" style="font-size:0.8rem;padding:4px 10px;" onclick="_resourcesLoad()">↻</button>';
+  h += '</div></div>';
+
+  // Live worker table
+  if (workers.length) {
+    h += '<div style="overflow-x:auto;padding:0 16px;">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+    h += '<th style="padding:6px 8px;">Worker</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">CPU %</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Processes</th>';
+    h += '<th style="padding:6px 8px;width:200px;">RSS</th>';
+    h += '</tr></thead><tbody>';
+
+    const maxRss = Math.max(...workers.map(w => w.rss_kb), 1);
+    workers.forEach(w => {
+      const rssMb = w.rss_kb / 1024;
+      const pct = (w.rss_kb / maxRss) * 100;
+      const over = rssLimit && w.rss_kb > rssLimit;
+      const barColor = over ? 'var(--red)' : rssMb > 512 ? 'var(--yellow)' : 'var(--green)';
+      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
+      h += '<td style="padding:5px 8px;font-weight:500;white-space:nowrap;">' + esc(w.session) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);font-weight:600;' : '') + '">' + rssMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + w.cpu_pct.toFixed(1) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + w.n_procs + '</td>';
+      h += '<td style="padding:5px 8px;"><div style="height:10px;background:var(--border);border-radius:3px;overflow:hidden;"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + barColor + ';border-radius:3px;"></div></div></td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+  } else {
+    h += '<div style="color:var(--dim);padding:40px;text-align:center;font-size:0.85rem;">No workers detected. The sampling job runs every 30s.</div>';
+  }
+
+  // Historical summaries (peak usage over the selected window)
+  if (summaries.length) {
+    h += '<div style="padding:16px 16px 4px;font-weight:600;font-size:0.85rem;">Historical (past ' + _resourcesHours + 'h)</div>';
+    h += '<div style="overflow-x:auto;padding:0 16px 16px;">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+    h += '<th style="padding:6px 8px;">Worker</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Peak RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Avg RSS (MB)</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Peak CPU %</th>';
+    h += '<th style="padding:6px 8px;text-align:right;">Samples</th>';
+    h += '</tr></thead><tbody>';
+
+    summaries.slice().sort((a, b) => (b.peak_rss_kb || 0) - (a.peak_rss_kb || 0)).forEach(s => {
+      const peakMb = (s.peak_rss_kb || 0) / 1024;
+      const avgMb = (s.avg_rss_kb || 0) / 1024;
+      const over = rssLimit && s.peak_rss_kb > rssLimit;
+      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
+      h += '<td style="padding:5px 8px;font-weight:500;">' + esc(s.session) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);' : '') + '">' + peakMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + avgMb.toFixed(0) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + (s.peak_cpu_pct || 0).toFixed(1) + '</td>';
+      h += '<td style="padding:5px 8px;text-align:right;">' + (s.sample_count || 0) + '</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+
+  el.innerHTML = h;
+}
+
+// ── Host analysis (Metrics > Host) ──────────────────────────────────────────
 // Renders GET /api/metrics/host, which runs the embedded, re-runnable
-// scripts/host-analysis.sh — one cross-platform source of truth for the host the
+// scripts/host-analysis.sh -- one cross-platform source of truth for the host the
 // server runs on (this Mac in dev, the Linux LXC in cloud).
 let _hostData = null;
 
@@ -51026,7 +55137,8 @@ async function _reclaimLoadTree(path) {
 }
 
 function _reclaimToggle(path) {
-  if (_reclaimSel.has(path)) _reclaimSel.delete(path); else _reclaimSel.add(path);
+  if (_reclaimSel.has(path)) _reclaimSel.delete(path);
+  else if (!_reclaimIsProtectedPath(path)) _reclaimSel.add(path);
   _reclaimRender();
 }
 
@@ -51038,14 +55150,14 @@ function _reclaimSetCat(cat) {
 function _reclaimSelectCategory(cat) {
   // Only regenerable categories are bulk-selectable. Stale/duplicate/large are
   // judgment calls and stay one-at-a-time on purpose (ethos rule 8).
-  const rows = (_reclaimScan?.findings || []).filter(f => f.category === cat && f.regenerable);
+  const rows = (_reclaimScan?.findings || []).filter(f => f.category === cat && f.regenerable && !_reclaimProtected(f));
   const allOn = rows.length && rows.every(f => _reclaimSel.has(f.path));
   rows.forEach(f => allOn ? _reclaimSel.delete(f.path) : _reclaimSel.add(f.path));
   _reclaimRender();
 }
 
 async function _reclaimQuarantineSelected() {
-  const paths = [..._reclaimSel];
+  const paths = [..._reclaimSel].filter(p => !_reclaimIsProtectedPath(p));
   if (!paths.length) return;
   const est = (_reclaimScan?.findings || []).filter(f => _reclaimSel.has(f.path))
     .reduce((a, f) => a + (f.bytes || 0), 0);
@@ -51063,9 +55175,9 @@ async function _reclaimQuarantineSelected() {
   const d = await r.json().catch(() => ({}));
   if (d.refused && d.refused.length) {
     alert('Staged ' + (d.moved || 0) + ' item(s).\n\nRefused ' + d.refused.length + ':\n'
-      + d.refused.map(x => x.path + ' — ' + x.reason).join('\n'));
+      + d.refused.map(x => x.path + ': ' + x.reason).join('\n'));
   } else {
-    showToast('Staged ' + (d.moved || 0) + ' item(s) — ' + _fmtBytes(d.bytes || 0));
+    showToast('Staged ' + (d.moved || 0) + ' item(s) · ' + _fmtBytes(d.bytes || 0));
   }
   _reclaimSel = new Set();
   _reclaimLoad();
@@ -51103,6 +55215,46 @@ async function _reclaimPurge(batchId, bytes) {
   // Report the REAL delta, and say so when it disappoints.
   showToast('Purged · free space +' + _fmtBytes(d.actually_freed || 0));
   if (d.note) alert(d.note);
+  _reclaimLoad();
+}
+
+const _RECLAIM_PURGE_AGE_DAYS = 7;
+function _reclaimOldBatches() {
+  const cutoff = Date.now() / 1000 - _RECLAIM_PURGE_AGE_DAYS * 86400;
+  return (_reclaimQuarantine?.batches || []).filter(b => b.status === 'staged' && b.created_at < cutoff);
+}
+
+// Bulk purge of staged batches older than a week. One DELETE per batch, each
+// naming its own id in ?confirm=, so the server's per-batch gate still holds.
+// The total shown is the sum of the server's own df deltas, never file sizes.
+async function _reclaimPurgeOld() {
+  const old = _reclaimOldBatches();
+  if (!old.length) { showToast('No staged batches older than ' + _RECLAIM_PURGE_AGE_DAYS + ' days'); return; }
+  const est = old.reduce((a, b) => a + (b.bytes || 0), 0);
+  const msg = 'PERMANENTLY DELETE ' + old.length + ' quarantine batch' + (old.length === 1 ? '' : 'es')
+    + ' staged more than ' + _RECLAIM_PURGE_AGE_DAYS + ' days ago?\n\n'
+    + 'Staged size: ' + _fmtBytes(est) + '\n\n'
+    + 'This cannot be undone. Restore will no longer be possible for these batches.';
+  if (!confirm(msg)) return;
+  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  let freed = 0, ok = 0;
+  const failed = [], notes = new Set();
+  for (const b of old) {
+    try {
+      const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(b.id)
+        + '?confirm=' + encodeURIComponent(b.id), { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { failed.push(b.id + ': ' + (d.error || ('HTTP ' + r.status))); continue; }
+      ok++;
+      freed += Math.max(0, d.actually_freed || 0);
+      if (d.note) notes.add(d.note);
+    } catch (e) { failed.push(b.id + ': ' + String(e)); }
+  }
+  showToast('Purged ' + ok + ' of ' + old.length + ' batches · free space +' + _fmtBytes(freed));
+  if (failed.length || notes.size) {
+    alert((failed.length ? 'Not purged (' + failed.length + '):\n' + failed.join('\n') + '\n\n' : '')
+      + [...notes].join('\n'));
+  }
   _reclaimLoad();
 }
 
@@ -51163,21 +55315,72 @@ function _reclaimTreemapSvg(nodes, w, h) {
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="display:block;border-radius:8px;overflow:hidden;">${body}</svg>`;
 }
 
+function _reclaimRecsPanel(findings) {
+  const recs = _reclaimRecs(findings);
+  const sum = arr => arr.reduce((a, r) => a + r.bytes, 0);
+  const row = r => {
+    const st = _reclaimRecState(r);
+    return `<label class="reclaim-rec${st !== 'none' ? ' on' : ''}" title="${esc(r.paths.length > 1 ? r.paths.length + ' paths' : r.paths[0])}">
+      <input type="checkbox"${st === 'all' ? ' checked' : ''}${st === 'some' ? ' data-partial="1"' : ''} onchange="_reclaimToggleRec('${escJs(r.key)}')">
+      <span class="reclaim-rec-main"><span class="reclaim-rec-label">${esc(r.label)}</span>
+        <code class="reclaim-rec-cmd">${esc(r.cmd || (r.paths.length > 1 ? 'quarantine ' + r.paths.length + ' paths' : 'quarantine ' + r.paths[0].replace(/^\/Users\/[^/]+/, '~')))}</code></span>
+      <span class="reclaim-rec-size">${_fmtBytes(r.bytes)}</span>
+    </label>`;
+  };
+  const protRow = f => `<div class="reclaim-rec reclaim-protected" title="${esc(f.path)}">
+      <input type="checkbox" disabled aria-label="Protected, cannot be selected">
+      <span class="reclaim-rec-main"><span class="reclaim-rec-label">${esc(f.path.replace(/^\/Users\/[^/]+/, '~'))}</span>
+        <span class="reclaim-protected-why">${esc(f.protected.reason || f.protected.class || 'protected')}</span></span>
+      <span class="reclaim-rec-size">${_fmtBytes(f.bytes)}</span>
+    </div>`;
+  const list = (arr, cap) => arr.slice(0, cap).map(row).join('') +
+    (arr.length > cap ? `<div class="reclaim-rec-more">${arr.length - cap} more in Findings below</div>` : '');
+  const selBytes = (findings || []).filter(f => _reclaimSel.has(f.path)).reduce((a, f) => a + (f.bytes || 0), 0);
+  return `<aside class="reclaim-recs">
+    <div class="reclaim-recs-hdr"><div class="reclaim-recs-title">Recommendations</div>
+      <div class="reclaim-recs-sub">Tick items to build a cleanup script. Nothing runs from here.</div></div>
+    <div class="reclaim-recs-body">
+      <div class="reclaim-recs-group"><span class="reclaim-chip safe">Safe to remove</span><span>${_fmtBytes(sum(recs.safe))}</span></div>
+      ${recs.safe.length ? list(recs.safe, 12) : '<div class="reclaim-rec-more">Nothing regenerable found.</div>'}
+      <div class="reclaim-recs-group"><span class="reclaim-chip review">Review first</span><span>${_fmtBytes(sum(recs.review))}</span></div>
+      ${recs.review.length ? list(recs.review, 10) : '<div class="reclaim-rec-more">Nothing large needs review.</div>'}
+      ${recs.protected.length ? `<div class="reclaim-recs-group"><span class="reclaim-chip protected" title="Owned by a running worker, a git repo or a worktree with unsaved work. Never selectable.">Protected</span><span>${_fmtBytes(recs.protected.reduce((a, f) => a + (f.bytes || 0), 0))}</span></div>
+      ${recs.protected.slice(0, 8).map(protRow).join('')}${recs.protected.length > 8 ? `<div class="reclaim-rec-more">${recs.protected.length - 8} more in Findings below</div>` : ''}` : ''}
+    </div>
+    <div class="reclaim-recs-foot">
+      <span class="reclaim-recs-sel"><b>${_fmtBytes(selBytes)}</b> selected · ${_reclaimSel.size} item${_reclaimSel.size === 1 ? '' : 's'}</span>
+      <span class="reclaim-recs-btns">
+        <button class="btn" onclick="_reclaimSelectSafe()" data-repeatable>Select safe</button>
+        <button class="btn primary" onclick="_reclaimCopyScript()" data-repeatable${_reclaimSel.size ? '' : ' disabled'}>Copy script</button>
+      </span>
+      ${_reclaimSel.size ? `<details class="reclaim-script"><summary>Show script</summary><pre>${esc(_reclaimScript())}</pre></details>` : ''}
+    </div>
+  </aside>`;
+}
+
 function _reclaimRender() {
   const el = document.getElementById('reclaim-content');
   if (!el) return;
   const scan = _reclaimScan?.scan;
   const findings = _reclaimScan?.findings || [];
   const totals = _reclaimScan?.totals || [];
+  // A path that became protected since it was ticked (its worker started, its
+  // worktree got a commit) leaves the selection rather than lingering in it.
+  findings.forEach(f => { if (_reclaimProtected(f)) _reclaimSel.delete(f.path); });
   let html = '';
 
-  // Header + volume state
-  const freePct = scan?.df_total ? (scan.df_free / scan.df_total * 100) : null;
+  // Header + volume state. Free space is read NOW (volume_now), not at the last
+  // scan: a 6-day-old "4.67 GB free, 0.3%" was shown on 2026-10-20 while the
+  // disk had 284 GB free.
+  const vol = _reclaimVolumeNow();
+  const hdrFree = vol?.measured ? vol.df_free : scan?.df_free;
+  const hdrTotal = vol?.measured ? vol.df_total : scan?.df_total;
+  const freePct = hdrTotal ? (hdrFree / hdrTotal * 100) : null;
   const critical = freePct !== null && freePct < 10;
   html += `<div class="metrics-hdr">
     <div class="metrics-hdr-left">
       <span class="metrics-hdr-title">Disk Cleanup</span>
-      ${scan?.df_total ? `<span class="metrics-hostname">${_fmtBytes(scan.df_free)} free of ${_fmtBytes(scan.df_total)}</span>` : ''}
+      ${hdrTotal ? `<span class="metrics-hostname" id="reclaim-free-now">${_fmtBytes(hdrFree)} free of ${_fmtBytes(hdrTotal)}${vol?.measured ? ' now' : ' at last scan'}</span>` : ''}
       ${critical ? `<span style="color:var(--red);font-size:0.72rem;font-weight:600;">${freePct.toFixed(1)}% free</span>` : ''}
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
@@ -51186,6 +55389,8 @@ function _reclaimRender() {
         : `<button class="btn" id="reclaim-scan-btn" onclick="_reclaimStartScan()" style="font-size:0.8rem;padding:5px 12px;">${scan ? 'Rescan' : 'Run scan'}</button>`}
     </div>
   </div>`;
+
+  if (!scan) html += _reclaimActionsPanel(findings);
 
   if (!scan) {
     html += `<div class="reclaim-empty">
@@ -51284,6 +55489,39 @@ function _reclaimRender() {
     </div>`;
   }
 
+  // After the scan's own status and warnings (those must stay in the first
+  // screen on a phone), before the numbers.
+  html += _reclaimActionsPanel(findings);
+
+  // Headline: what is free, what the scan can vouch for, what needs a person,
+  // and what it never looked at. "Not mapped" is the used space the scan did not
+  // walk (system, apps, other volumes' clones): showing it keeps the other
+  // three numbers from reading as the whole disk.
+  {
+    const recs = _reclaimRecs(findings);
+    const sum = arr => arr.reduce((a, r) => a + r.bytes, 0);
+    const used = scan.df_total && scan.df_free != null ? scan.df_total - scan.df_free : null;
+    const unmapped = used != null && scan.bytes_seen != null ? Math.max(0, used - scan.bytes_seen) : null;
+    // Every number here is as of the scan, which can be days old: say when, so a
+    // stale free figure is not read as today's (a 10-13 scan showed 4.67 GB free
+    // on 10-18 with ~250 GB actually free).
+    const scanAt = scan.finished_at || scan.started_at || null;
+    html += `<div class="metrics-cards reclaim-summary">
+      <div class="metrics-card"><div class="metrics-card-title">Free at last scan</div>
+        <div class="metrics-card-value">${scan.df_free != null ? _fmtBytes(scan.df_free) : '—'}</div>
+        <div class="metrics-card-sub">${scan.df_total ? 'of ' + _fmtBytes(scan.df_total) : 'volume size unknown'}${scanAt ? ' · scanned ' + _metricsRelTime(new Date(scanAt * 1000).toISOString()) : ''}</div></div>
+      <div class="metrics-card"><div class="metrics-card-title"><i class="reclaim-dot safe"></i>Safe to remove</div>
+        <div class="metrics-card-value">${_fmtBytes(sum(recs.safe))}</div>
+        <div class="metrics-card-sub">${recs.safe.length} item${recs.safe.length === 1 ? '' : 's'} · regenerable</div></div>
+      <div class="metrics-card"><div class="metrics-card-title"><i class="reclaim-dot review"></i>Needs review</div>
+        <div class="metrics-card-value">${_fmtBytes(sum(recs.review))}</div>
+        <div class="metrics-card-sub">${recs.review.length} item${recs.review.length === 1 ? '' : 's'} · your data</div></div>
+      <div class="metrics-card"><div class="metrics-card-title">Not mapped</div>
+        <div class="metrics-card-value">${unmapped != null ? _fmtBytes(unmapped) : '—'}</div>
+        <div class="metrics-card-sub">${unmapped != null ? 'system, apps and what the scan skipped' : 'not measured by this scan'}</div></div>
+    </div>`;
+  }
+
   // Category totals
   const actionable = totals.filter(t => t.category !== 'snapshot');
   if (actionable.length) {
@@ -51300,6 +55538,8 @@ function _reclaimRender() {
     html += '</div>';
   }
 
+  // Treemap beside the recommendations (stacked on narrow screens).
+  html += '<div class="reclaim-split"><div class="reclaim-split-main">';
   // Treemap
   if (_reclaimTree) {
     const rootPath = _reclaimTree.root?.path || _reclaimTreePath || '~';
@@ -51315,12 +55555,14 @@ function _reclaimRender() {
     // the box agree and nothing is letterboxed. Measured from the scroll pane
     // (minus its 16px padding either side) rather than assumed.
     const _mapW = Math.round(Math.max(300, Math.min(1200,
-      (document.getElementById('disk-view')?.clientWidth || document.getElementById('metrics-main')?.clientWidth || 900) - 32)));
+      (document.getElementById('disk-view')?.clientWidth || document.getElementById('metrics-main')?.clientWidth || 900) - 32
+        - (window.innerWidth > 900 ? 376 : 0))));
     const _mapH = window.innerWidth < 600 ? 300 : 340;
     html += '<div class="reclaim-map">' + _reclaimTreemapSvg(_reclaimTree.children || [], _mapW, _mapH) + '</div>';
     html += '<div class="reclaim-legend">' + Object.entries(_KIND_COLORS).map(([k, c]) =>
       `<span class="reclaim-legend-item"><i style="background:${c}"></i>${k}</span>`).join('') + '</div>';
   }
+  html += '</div>' + _reclaimRecsPanel(findings) + '</div>';
 
   // Findings table
   const shown = _reclaimCat ? findings.filter(f => f.category === _reclaimCat) : findings.filter(f => f.category !== 'snapshot');
@@ -51353,9 +55595,13 @@ function _reclaimRender() {
     shown.slice(0, 400).forEach(f => {
       const meta = _RECLAIM_CATS[f.category] || { label: f.category };
       const checked = _reclaimSel.has(f.path) ? ' checked' : '';
-      html += `<tr class="${_reclaimSel.has(f.path) ? 'row-selected' : ''}">
-        <td><input type="checkbox"${checked} onchange="_reclaimToggle('${escJs(f.path)}')"></td>
-        <td style="font-family:var(--mono,monospace);font-size:0.74rem;word-break:break-all;">${esc(f.path)}</td>
+      const prot = _reclaimProtected(f);
+      html += `<tr class="${prot ? 'reclaim-row-protected' : (_reclaimSel.has(f.path) ? 'row-selected' : '')}"${prot ? ` data-protected="${esc(f.protected.class || '')}"` : ''}>
+        <td>${prot
+          ? `<input type="checkbox" disabled title="${esc(f.protected.reason || 'protected')}" aria-label="Protected, cannot be selected">`
+          : `<input type="checkbox"${checked} onchange="_reclaimToggle('${escJs(f.path)}')">`}</td>
+        <td style="font-family:var(--mono,monospace);font-size:0.74rem;word-break:break-all;">${esc(f.path)}${prot
+          ? `<div class="reclaim-protected-why"><span class="reclaim-chip protected">Protected</span> ${esc(f.protected.reason || f.protected.class || '')}</div>` : ''}</td>
         <td style="font-size:0.74rem;">${esc(meta.label)}${f.regenerable ? '' : ' <span style="color:var(--yellow,#e3b341);" title="Not regenerable. Review before removing.">⚠</span>'}</td>
         <td style="font-weight:600;">${_fmtBytes(f.bytes)}</td>
         <td style="font-size:0.74rem;color:var(--dim);">${(f.file_count||0).toLocaleString()}</td>
@@ -51371,7 +55617,10 @@ function _reclaimRender() {
   // Quarantine ledger
   const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status !== 'purged' || b.item_count);
   if (batches.length) {
-    html += '<div class="metrics-section-title" style="margin-top:20px;">Quarantine</div>';
+    const old = _reclaimOldBatches();
+    html += `<div class="metrics-section-title" id="reclaim-quarantine-title" style="margin-top:20px;">Quarantine
+      ${old.length ? `<button class="btn reclaim-minibtn reclaim-danger" id="reclaim-purge-old" onclick="_reclaimPurgeOld()" title="Permanently delete every staged batch older than ${_RECLAIM_PURGE_AGE_DAYS} days, one confirmed batch at a time">Purge ${old.length} batch${old.length === 1 ? '' : 'es'} older than ${_RECLAIM_PURGE_AGE_DAYS} days (${_fmtBytes(old.reduce((a, b) => a + (b.bytes || 0), 0))})</button>` : ''}
+    </div>`;
     html += '<div class="metrics-table-wrap"><table class="metrics-table"><thead><tr>';
     html += '<th>Staged</th><th>Items</th><th>Size</th><th>Actually freed</th><th>Status</th><th></th>';
     html += '</tr></thead><tbody>';
@@ -51399,6 +55648,175 @@ function _reclaimRender() {
   }
 
   el.innerHTML = html;
+  el.querySelectorAll('.reclaim-rec input[data-partial]').forEach(i => { i.indeterminate = true; });
+}
+
+function _reclaimVolumeNow() {
+  return _reclaimScan?.volume_now || _reclaimQuarantine?.volume_now || null;
+}
+
+// The top of the tab: what still holds disk, and the cleanups that are safe in
+// one click. Ethan, 2026-10-20: "make sure i can actually do disk cleanup from
+// the disk cleanup tab ... there should be easy ways of cleaning up host in safe
+// ways". That day 105 GB sat staged in quarantine, freeing nothing, with the
+// only Purge buttons at the bottom of a 400-row page.
+// The daily disk reclaim (scripts/disk-reclaim-tick.sh, Ethan 2026-10-21:
+// "regular cleanups of data that has not been accessed in a while ... baked
+// into the metrics"). One card per class: its rule, what it holds in
+// quarantine now, and when that is purged. The rules are RECLAIM_* keys in the
+// global Environment capability, so "Change rules" opens that editor.
+function _reclaimScheduledPanel() {
+  const s = _reclaimQuarantine?.scheduled;
+  if (!s) return '';
+  let h = '<div class="metrics-section-title" style="margin-top:12px;" id="reclaim-scheduled-title">Scheduled cleanup</div>';
+  if (!s.measured) {
+    return h + `<div class="metrics-card reclaim-safe-text" id="reclaim-scheduled-unmeasured">Not measured: ${esc(s.why_unmeasured || 'no status')}</div>`;
+  }
+  const keys = { build: 'RECLAIM_IDLE_H, RECLAIM_RETAIN_H, RECLAIM_MIN_MB',
+                 stale: 'RECLAIM_STALE_DAYS, RECLAIM_STALE_RETAIN_D, RECLAIM_STALE_MIN_MB, RECLAIM_STALE (0 = off)' };
+  h += `<div class="reclaim-safe-text" style="margin-bottom:8px;">Runs daily at 4am. Last run ${esc(timeAgo(s.last_run_at))}${s.dry ? ' (dry run)' : ''}, purged ${s.purged || 0} expired batch${s.purged === 1 ? '' : 'es'}.
+    Files are moved to quarantine first and can be restored below until their purge date.</div><div class="reclaim-safe-grid">`;
+  for (const c of (s.classes || [])) {
+    const days = Math.round((c.retain_s || 0) / 86400 * 10) / 10;
+    const due = c.next_purge_at ? new Date(c.next_purge_at * 1000).toLocaleDateString() : '';
+    const off = c.enabled === false;
+    h += `<div class="metrics-card reclaim-safe-card" data-reclaim-class="${esc(c.key || '')}">
+      <div class="reclaim-safe-head">${esc(c.label || c.key || '')}${off ? ' · off' : ''}</div>
+      <div class="reclaim-safe-text">${esc(c.rule || '')}. Restorable for ${days} day${days === 1 ? '' : 's'}.</div>
+      <div class="reclaim-safe-text"><b>${_fmtBytes(c.staged_bytes || 0)}</b> in quarantine (${c.staged_batches || 0} batch${c.staged_batches === 1 ? '' : 'es'})${due ? `, oldest purged ${esc(due)}` : ''}.
+        Last run moved ${c.moved || 0} of ${c.picked || 0} picked${c.refused ? `, ${c.refused} refused by the server` : ''}${c.kept_recently_used ? `, kept ${c.kept_recently_used} opened recently` : ''}${c.kept_open ? `, ${c.kept_open} open now` : ''}.</div>
+      <button class="btn" title="${esc(keys[c.key] || 'RECLAIM_* keys')}" onclick="_scopeEditOpen('global','','env')">Change rules</button>
+    </div>`;
+  }
+  return h + '</div>';
+}
+
+function _reclaimActionsPanel(findings) {
+  const v = _reclaimVolumeNow();
+  const staged = v?.staged_bytes || 0;
+  const safe = _reclaimRecs(findings).safe;
+  const safeBytes = safe.reduce((a, r) => a + (r.bytes || 0), 0);
+  const safeN = safe.reduce((a, r) => a + r.paths.length, 0);
+  let h = '<div class="reclaim-actions" id="reclaim-actions">';
+  if (staged > 0) {
+    h += `<div class="reclaim-staged-banner" id="reclaim-staged-banner">
+      <div><b>${_fmtBytes(staged)}</b> is in quarantine (${v.staged_batches} batch${v.staged_batches === 1 ? '' : 'es'}) and still uses the disk.
+      Quarantine only moves files; the space comes back when you delete them.</div>
+      <div class="reclaim-actions-row">
+        <button class="btn reclaim-danger" id="reclaim-purge-all" onclick="_reclaimPurgeAllStaged()">Delete quarantined files (${_fmtBytes(staged)})</button>
+        <button class="btn" onclick="document.getElementById('reclaim-quarantine-title')?.scrollIntoView({behavior:'smooth'})">Review or restore</button>
+      </div></div>`;
+  }
+  h += _reclaimScheduledPanel();
+  h += `<div class="metrics-section-title" style="margin-top:12px;">Safe cleanup</div>
+    <div class="reclaim-safe-grid">
+      <div class="metrics-card reclaim-safe-card">
+        <div class="reclaim-safe-head">Rebuildable files</div>
+        <div class="reclaim-safe-text">Build output (node_modules, target, .venv and the like) and tool caches the last scan found.
+          They are rebuilt or downloaded again on next use. Anything a running worker, a git repo or an open file owns is refused by the server.</div>
+        <button class="btn primary" id="reclaim-clean-safe" ${safeN ? '' : 'disabled'} onclick="_reclaimCleanSafe()">${safeN ? `Clean ${safeN} item${safeN === 1 ? '' : 's'} (${_fmtBytes(safeBytes)})` : 'Nothing rebuildable found'}</button>
+      </div>
+      <div class="metrics-card reclaim-safe-card">
+        <div class="reclaim-safe-head">Host cleanup</div>
+        <div class="reclaim-safe-text">The hourly host check, run now: idle build targets, old session scratch, leftover test processes,
+          VM build cache and the like. It only removes what has been idle past its threshold and reports everything else.</div>
+        <button class="btn" id="reclaim-host-cleanup" onclick="_reclaimRunHostCleanup()">Run host cleanup now</button>
+      </div>
+    </div>
+    <div id="reclaim-host-result">${_reclaimHostResult ? _reclaimHostResult : ''}</div>`;
+  h += '</div>';
+  return h;
+}
+
+async function _reclaimPurgeAllStaged() {
+  const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status === 'staged' && b.item_count > 0);
+  const total = batches.reduce((a, b) => a + (b.bytes || 0), 0);
+  if (!batches.length) { showToast('Nothing is staged'); return; }
+  if (!confirm('PERMANENTLY DELETE every quarantined file?\n\n' + batches.length + ' batch(es), ' + _fmtBytes(total)
+    + '\n\nThis cannot be undone. Use "Review or restore" first if anything in there is still needed.')) return;
+  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  let freed = 0, failed = 0;
+  for (const b of batches) {
+    const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(b.id)
+      + '?confirm=' + encodeURIComponent(b.id), { method: 'DELETE' }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok) failed++; else freed += d.actually_freed || 0;
+  }
+  showToast('Deleted ' + (batches.length - failed) + ' batch(es) · free space +' + _fmtBytes(freed)
+    + (failed ? ' · ' + failed + ' failed' : ''));
+  _reclaimLoad();
+}
+
+// Quarantine the rebuildable groups, then purge that one batch. Rebuildable
+// means a later build or download recreates it, so one confirmation is enough;
+// the server still refuses anything owned (reclaim_owner.rs) and says why.
+async function _reclaimCleanSafe() {
+  const safe = _reclaimRecs(_reclaimScan?.findings).safe;
+  const paths = [...new Set(safe.flatMap(r => r.paths))].filter(p => !_reclaimIsProtectedPath(p));
+  if (!paths.length) { showToast('Nothing rebuildable to clean'); return; }
+  const est = safe.reduce((a, r) => a + (r.bytes || 0), 0);
+  if (!confirm('Delete ' + paths.length + ' rebuildable item(s), about ' + _fmtBytes(est) + '?\n\n'
+    + 'Build output and caches only; they come back on the next build or download.\n\n'
+    + safe.slice(0, 10).map(r => '· ' + r.label + ' (' + _fmtBytes(r.bytes) + ')').join('\n'))) return;
+  const btn = document.getElementById('reclaim-clean-safe');
+  if (btn) { btn.disabled = true; btn.textContent = 'Cleaning…'; }
+  const r = await fetch(API + '/api/reclaim/quarantine', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths, scan_id: _reclaimScan?.scan?.id }),
+  }).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok || !d.batch_id) {
+    showToast('Could not clean: ' + (d.error || 'request failed'));
+    _reclaimLoad();
+    return;
+  }
+  let freed = 0;
+  if ((d.moved || 0) > 0) {
+    const pr = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(d.batch_id)
+      + '?confirm=' + encodeURIComponent(d.batch_id), { method: 'DELETE' }).catch(() => null);
+    const pd = pr ? await pr.json().catch(() => ({})) : {};
+    freed = pd.actually_freed || 0;
+  }
+  const refused = (d.refused || []).length;
+  showToast('Cleaned ' + (d.moved || 0) + ' item(s) · free space +' + _fmtBytes(freed)
+    + (refused ? ' · ' + refused + ' kept (owned or gone)' : ''));
+  _reclaimLoad();
+}
+
+let _reclaimHostResult = '';
+async function _reclaimRunHostCleanup() {
+  const btn = document.getElementById('reclaim-host-cleanup');
+  const setResult = (html) => {
+    _reclaimHostResult = html;
+    const el = document.getElementById('reclaim-host-result');
+    if (el) el.innerHTML = html;
+  };
+  const scheds = await fetch(API + '/api/schedules').then(r => r.json()).catch(() => null);
+  const list = Array.isArray(scheds) ? scheds : (scheds?.schedules || []);
+  const s = list.find(x => /mac-cleanup-tick\.sh/.test(x.command || '') && !x.deleted);
+  if (!s) { setResult('<div class="reclaim-host-note">No host cleanup schedule is installed on this machine.</div>'); return; }
+  const before = await fetch(API + '/api/schedules/runs?limit=200').then(r => r.json()).catch(() => []);
+  const prevIds = new Set((Array.isArray(before) ? before : before.runs || []).filter(x => x.schedule_id === s.id).map(x => x.id));
+  const r = await fetch(API + '/api/schedules/' + encodeURIComponent(s.id) + '/run', { method: 'POST' }).catch(() => null);
+  if (!r || !r.ok) { setResult('<div class="reclaim-host-note">Could not start the host cleanup (' + esc(s.id) + ').</div>'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Running… (a few minutes)'; }
+  setResult('<div class="reclaim-host-note">Host cleanup is running (' + esc(s.id) + '). The result appears here when it finishes.</div>');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15 * 60 * 1000) {
+    await new Promise(res => setTimeout(res, 10000));
+    const runs = await fetch(API + '/api/schedules/runs?limit=200').then(r => r.json()).catch(() => null);
+    const mine = (Array.isArray(runs) ? runs : runs?.runs || []).filter(x => x.schedule_id === s.id && !prevIds.has(x.id));
+    if (!mine.length) continue;
+    const run = mine[0];
+    const text = String(run.output_tail || run.note || '').split('\n').filter(l => /removed|reaped|freed|pruned|reclaimed|stopped|done /i.test(l)).slice(-14).join('\n');
+    setResult('<div class="reclaim-host-note">Host cleanup finished, exit ' + esc(String(run.exit_code ?? '?')) + '.</div>'
+      + (text ? '<pre class="reclaim-host-out">' + esc(text) + '</pre>' : ''));
+    if (btn) { btn.disabled = false; btn.textContent = 'Run host cleanup now'; }
+    _reclaimLoad();
+    return;
+  }
+  setResult('<div class="reclaim-host-note">Still running after 15 minutes; see Scheduler → ' + esc(s.id) + ' for its log.</div>');
+  if (btn) { btn.disabled = false; btn.textContent = 'Run host cleanup now'; }
 }
 
 // ── Torrents tab ─────────────────────────────────────────────────────────────
@@ -51828,7 +56246,13 @@ function _termLayout() {
   if (activeView !== 'terminal') return;
   const view = document.getElementById('terminal-view');
   if (!view) return;
-  const top = view.getBoundingClientRect().top;
+  // The view's offset from the top of the DOCUMENT. Its viewport top shrinks
+  // as the page scrolls, and sizing from that made each resize taller than the
+  // last: the page grew by ~96px a step (Ethan, 2026-10-21, "weird infinite
+  // height thing"). The view was also shown as display:block, so the
+  // container's flex:1 never applied and xterm's fit read back its own
+  // content height; it is a flex column now (the _svViews row above).
+  const top = view.getBoundingClientRect().top + window.scrollY;
   view.style.height = Math.max(240, Math.round(window.innerHeight - top - 12)) + 'px';
   if (_term && _termFit) { try { _termFit.fit(); } catch (e) {} }
 }
@@ -52477,9 +56901,555 @@ function _messagesRender() {
     _prevTs = _ts;
     return dateHdr + burst + _cmdHistItemHTML(m, _msgCtxMessages());
   }).join('');
+  _msgTaskChipsFill(list);
 }
 
 // Calendar/time review helpers for the Messages timeline (Ethan 2026-08-13).
+// ── Tasks ─────────────────────────────────────────────────────────────────
+// Every task a worker took on: one row per recorded task name (GET
+// /api/task-history, the task.renamed rows the fleet snapshot writes when the
+// "Task:" line on a worker changes). These are the model's own names for its
+// work and NOT board issues; a task links to a board card only when the worker
+// took it from one (Ethan, 2026-10-18: "indicate these aren't board issues").
+//
+// Two scopes share this code: `main` is the top-bar Tasks view (every worker,
+// oldest first and numbered, with a List and a Timeline) and `peek` is a
+// worker's own Tasks tab (fixed to peekSession, newest first). Each scope's
+// DOM ids carry its prefix.
+//
+// Every connection is clickable and lands on that thing on its own page: a
+// message opens in Messages, a card on the Board, a worker in its details, and
+// a board card's detail lists the tasks that worked on it (_bdTasksLoad), which
+// open back here (_tasksReveal). Search covers task names, card ids and the
+// text of the messages each task received (`in=all`), and says where it hit.
+const _TASKS_PAGE = 100;
+const _TASKS_KINDS = 'human,chat,session,schedule';
+// A task's name is recorded a moment after the message that set it, so its
+// message window opens this much earlier (the server's window matches).
+const _TASKS_LEAD_S = 120;
+const _tasksScopes = {
+  main: { prefix: 'tasks-', order: 'asc', offset: 0, total: 0, rows: [], worker: '', q: '', searchIn: 'all', mode: 'list', open: new Set(), loading: false, err: '', seq: 0 },
+  peek: { prefix: 'peek-tasks-', order: 'desc', offset: 0, total: 0, rows: [], worker: '', q: '', searchIn: 'all', mode: 'list', open: new Set(), loading: false, err: '', seq: 0, fixed: true },
+};
+const _tasksSel = new Set();
+const _tasksEl = (sc, name) => document.getElementById(_tasksScopes[sc].prefix + name);
+const _taskKey = (t) => (t.session || '') + '@' + t.ts;
+function _tasksParams(sc, extra) {
+  const s = _tasksScopes[sc], p = new URLSearchParams();
+  p.set('order', s.order);
+  if (s.worker) p.set('session', s.worker);
+  if (s.q) { p.set('q', s.q); p.set('in', s.searchIn); }
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, String(v));
+  return p.toString();
+}
+// toEnd: an oldest-first list opens on its newest page (it still reads oldest
+// first). A newer load supersedes an older one still in flight (seq).
+async function _tasksLoad(sc, toEnd) {
+  sc = sc || 'main';
+  const s = _tasksScopes[sc];
+  if (sc === 'peek') {
+    const w = (typeof peekSession !== 'undefined' && peekSession) || '';
+    if (w !== s.worker) { s.open.clear(); s.offset = 0; }
+    s.worker = w;
+  }
+  if (!_tasksEl(sc, 'list') || (s.fixed && !s.worker)) return;
+  if (s.mode === 'timeline') return _tasksTimelineLoad(sc);
+  const seq = ++s.seq;
+  s.loading = true; s.err = '';
+  _tasksRenderHead(sc);
+  try {
+    if (toEnd !== false) {
+      if (s.order === 'asc') {
+        const d0 = await (await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: 1, offset: 0 }), { headers: _authHeaders() })).json();
+        const total = (d0 && d0.total) || 0;
+        s.offset = Math.max(0, Math.floor(Math.max(0, total - 1) / _TASKS_PAGE) * _TASKS_PAGE);
+      } else s.offset = 0;
+    }
+    const r = await fetch(API + '/api/task-history?' + _tasksParams(sc, { limit: _TASKS_PAGE, offset: s.offset }), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (seq !== s.seq) return;
+    if (d.measured === false) throw new Error(d.why_unmeasured || 'not measured');
+    s.total = d.total || 0;
+    s.rows = Array.isArray(d.tasks) ? d.tasks : [];
+  } catch (e) {
+    if (seq !== s.seq) return;
+    s.err = (e && e.message) || String(e);
+    s.rows = [];
+    try { window._clientDebug && window._clientDebug('tasks-load-failed', { scope: sc, error: s.err, measured: false }); } catch (_) {}
+  }
+  s.loading = false;
+  _tasksRender(sc);
+}
+function _tasksWorkerOptions() {
+  const sel = _tasksEl('main', 'worker');
+  if (!sel || sel.dataset.filled) return;
+  const names = [...new Set((typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions : []).map(x => x && x.name).filter(Boolean))].sort();
+  if (!names.length) return;
+  const cur = _tasksScopes.main.worker;
+  if (cur && !names.includes(cur)) names.unshift(cur);
+  sel.innerHTML = '<option value="">All workers</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+  sel.dataset.filled = '1';
+}
+function _tasksRenderHead(sc) {
+  const s = _tasksScopes[sc], el = _tasksEl(sc, 'count');
+  if (!el) return;
+  if (s.loading) { el.textContent = 'Loading tasks…'; return; }
+  if (s.err) { el.textContent = 'Could not load tasks: ' + s.err; return; }
+  const where = s.q ? (s.searchIn === 'names' ? ' whose name matches' : ' matching in their name, card or messages') : '';
+  if (!s.total) { el.textContent = s.q ? 'No tasks match' : 'No tasks recorded yet'; return; }
+  el.textContent = (s.order === 'desc' ? s.total + ' task' + (s.total === 1 ? '' : 's') + where + ', newest first'
+    : 'Tasks ' + (s.offset + 1) + '–' + (s.offset + s.rows.length) + ' of ' + s.total + where)
+    + (s.worker && !s.fixed ? ' for ' + s.worker : '');
+}
+// The messages inside a task's detail use the Messages tab's row builder.
+function _tasksCtx(sc) {
+  return { sel: _tasksSel, key: _msgKey, toggle: '_tasksSelToggle', resend: '_tasksResend',
+           searchId: _tasksScopes[sc].prefix + 'search', rowClass: 'msg-row', taskChip: false,
+           title: 'Open this message in Messages',
+           target: (e) => (typeof e === 'string' ? '' : (e.session || '')),
+           onOpen: (e) => `_tasksOpenMessage('${escJs(String(e.id || ''))}')` };
+}
+function _tasksSelToggle(key, ev) {
+  if (ev) ev.stopPropagation();
+  if (_tasksSel.has(key)) _tasksSel.delete(key); else _tasksSel.add(key);
+  Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true)));
+}
+async function _tasksResend(keys) {
+  const all = Object.values(_tasksScopes).flatMap(s => Object.values(s.msgs || {}).flat());
+  const rows = all.filter(m => keys.includes(_msgKey(m)) && (m.session || '')).map(m => ({ session: m.session, text: m.text || '' }));
+  if (await _resendRows(rows)) { _tasksSel.clear(); Object.keys(_tasksScopes).forEach(sc => _tasksScopes[sc].open.forEach(k => _tasksFillDetail(sc, k, true))); }
+}
+function _tasksDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  const m = Math.round(sec / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + 'h ' + (m % 60) + 'm' : Math.round(h / 24) + 'd';
+}
+function _tasksWhen(sec) {
+  return sec ? new Date(sec * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+}
+// Escaped text with the search term marked.
+function _tasksHl(text, q) {
+  const t = String(text || '');
+  if (!q) return esc(t);
+  const i = t.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return esc(t);
+  return esc(t.slice(0, i)) + '<mark>' + esc(t.slice(i, i + q.length)) + '</mark>' + esc(t.slice(i + q.length));
+}
+// The link chips on a row: its messages, its card (or why there is none).
+function _tasksChips(sc, t, key) {
+  const n = Number(t.messages || 0);
+  let html = '<button type="button" class="task-link task-link-msgs' + (n ? '' : ' none') + '" onclick="event.stopPropagation();_tasksShowMsgs(\'' + sc + '\',\'' + escJs(key) + '\')"'
+    + ' title="' + (n ? n + ' message' + (n === 1 ? '' : 's') + ' this worker received while on this task' : 'No messages while on this task') + '">'
+    + '<span aria-hidden="true">&#x2709;</span> ' + n + '</button>';
+  if (t.card) {
+    html += '<button type="button" class="task-link task-link-card task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Board card this task came from: ' + esc(t.card_title || t.card) + '">'
+      + '<span aria-hidden="true">&#x25A3;</span> <code>' + esc(String(t.card)) + '</code>'
+      + (t.card_status ? ' <span class="task-card-status">' + esc(t.card_status) + '</span>' : '') + '</button>';
+  } else if (t.board_off) {
+    html += '<span class="task-link none" title="Every Board switch is off for this worker, so its tasks have no cards">board off</span>';
+  }
+  return html;
+}
+function _tasksRender(sc) {
+  const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
+  if (!list) return;
+  _tasksRenderHead(sc);
+  if (sc === 'main') _tasksWorkerOptions();
+  if (s.err) { list.innerHTML = '<div class="tasks-empty">Could not load tasks. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; _tasksRenderPager(sc); return; }
+  if (!s.rows.length) { list.innerHTML = '<div class="tasks-empty">' + (s.loading ? 'Loading…' : s.q ? 'No tasks match.' : 'No tasks recorded yet. A task is recorded when the worker\'s "Task:" line changes.') + '</div>'; _tasksRenderPager(sc); return; }
+  let day = '', html = '';
+  s.rows.forEach((t, i) => {
+    const k = _msgDayKey(t.ts * 1000);
+    if (k !== day) { day = k; html += '<div class="tasks-day">' + esc(_msgDayLabel(t.ts * 1000)) + '</div>'; }
+    const key = _taskKey(t), open = s.open.has(key);
+    const n = s.order === 'asc' ? s.offset + i + 1 : s.total - s.offset - i;
+    const ran = t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current';
+    const sess = t.session || '';
+    const m = t.match || null;
+    const snip = m && m.message_id && m.snippet
+      ? '<button type="button" class="task-hit" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(m.message_id)) + '\')" title="Open the matching message in Messages">'
+        + '<span aria-hidden="true">&#x2709;</span> ' + _tasksHl(m.snippet, s.q) + '</button>' : '';
+    html += '<div class="task-item' + (open ? ' open' : '') + '" id="' + s.prefix + 'item-' + esc(key) + '" data-task-key="' + esc(key) + '">'
+      + '<div class="task-num" title="Task ' + n + ' in sequence">#' + n + '</div>'
+      + '<div class="task-main"><div class="task-row' + (t.ended ? '' : ' is-current') + '" role="button" tabindex="0" aria-expanded="' + open + '" title="Show when this task ran, its card and its messages"'
+      + ' onclick="_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();_tasksToggle(\'' + sc + '\',\'' + escJs(key) + '\')}">'
+      + '<div class="task-title">' + _tasksHl(t.task || '(untitled)', s.q) + '</div>'
+      + '<div class="task-meta">'
+      + (s.fixed ? '' : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
+      + '<span>' + esc(_tasksWhen(t.ts)) + '</span>'
+      + '<span class="msg-tag' + (t.ended ? '' : ' task-current') + '">' + esc(ran) + '</span>'
+      + _tasksChips(sc, t, key)
+      + '</div>' + snip + '</div>'
+      + '<div class="task-detail" id="' + s.prefix + 'detail-' + esc(key) + '"' + (open ? '' : ' hidden') + '></div></div></div>';
+  });
+  list.innerHTML = html;
+  s.open.forEach(k => _tasksFillDetail(sc, k));
+  _tasksRenderPager(sc);
+}
+function _tasksRenderPager(sc) {
+  const s = _tasksScopes[sc], el = _tasksEl(sc, 'pager');
+  if (!el) return;
+  if (s.mode === 'timeline') { el.innerHTML = ''; return; }
+  const pages = Math.max(1, Math.ceil(s.total / _TASKS_PAGE));
+  const page = Math.floor(s.offset / _TASKS_PAGE) + 1;
+  const asc = s.order === 'asc';
+  const btn = (label, p, dis, title) => '<button class="btn" style="min-height:44px;"' + (dis ? ' disabled' : ' onclick="_tasksGoPage(\'' + sc + '\',' + p + ')"') + ' title="' + title + '">' + label + '</button>';
+  el.innerHTML = s.total <= _TASKS_PAGE ? '' : btn('&laquo; First', 1, page <= 1, asc ? 'Oldest tasks' : 'Newest tasks')
+    + btn('&lsaquo;', page - 1, page <= 1, asc ? 'Earlier tasks' : 'Later tasks')
+    + '<span class="tasks-page">Page ' + page + ' of ' + pages + '</span>'
+    + btn('&rsaquo;', page + 1, page >= pages, asc ? 'Later tasks' : 'Earlier tasks')
+    + btn((asc ? 'Latest' : 'Oldest') + ' &raquo;', pages, page >= pages, asc ? 'Newest tasks' : 'Oldest tasks');
+}
+function _tasksGoPage(sc, p) {
+  const s = _tasksScopes[sc];
+  const pages = Math.max(1, Math.ceil(s.total / _TASKS_PAGE));
+  s.offset = (Math.min(Math.max(1, p), pages) - 1) * _TASKS_PAGE;
+  _tasksLoad(sc, false).then(() => { const l = _tasksEl(sc, 'list'); if (l) l.scrollTop = 0; });
+}
+function _tasksFilter(sc) {
+  sc = sc || 'main';
+  const s = _tasksScopes[sc];
+  if (!s.fixed) s.worker = (_tasksEl(sc, 'worker') || {}).value || '';
+  s.q = ((_tasksEl(sc, 'search') || {}).value || '').trim();
+  s.open.clear();
+  _tasksLoad(sc, true);
+}
+const _tasksSearchT = {};
+function _tasksSearchInput(sc) { clearTimeout(_tasksSearchT[sc]); _tasksSearchT[sc] = setTimeout(() => _tasksFilter(sc), 300); }
+// Search names only, or names, cards and messages (the default).
+// A .row-note panel (app.css) floats over the tab's content, so a click
+// elsewhere or Escape closes it, as any popover does.
+document.addEventListener('click', e => {
+  document.querySelectorAll('.row-note[open]').forEach(d => { if (!d.contains(e.target)) d.open = false; });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.querySelectorAll('.row-note[open]').forEach(d => { d.open = false; });
+});
+
+function _tasksSetSearchIn(sc, where) {
+  const s = _tasksScopes[sc];
+  s.searchIn = where === 'names' ? 'names' : 'all';
+  document.querySelectorAll('#' + s.prefix + 'in button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.in === s.searchIn)));
+  const inp = _tasksEl(sc, 'search');
+  if (inp) inp.placeholder = s.searchIn === 'names' ? 'Search task names' : (s.fixed ? "Search this worker's tasks, cards and messages" : 'Search tasks, cards and messages');
+  if (s.q) _tasksFilter(sc);
+}
+function _tasksSetMode(sc, mode) {
+  const s = _tasksScopes[sc];
+  s.mode = mode === 'timeline' ? 'timeline' : 'list';
+  document.querySelectorAll('#' + s.prefix + 'mode button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === s.mode)));
+  const range = _tasksEl(sc, 'range'); if (range) range.hidden = s.mode !== 'timeline';
+  _tasksLoad(sc, true);
+}
+// From anywhere: the Tasks view narrowed to one worker.
+function _tasksByWorker(name) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  if (activeView !== 'tasks') switchView('tasks');
+  const sel = _tasksEl('main', 'worker');
+  if (sel) { if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name)); sel.value = name; }
+  _tasksFilter('main');
+}
+// From anywhere (a timeline bar, a board card): the Tasks list at one task,
+// opened and flashed. The server says where it sits (locate_index), so this
+// lands on the right page however long the worker's history is.
+async function _tasksReveal(session, ts) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  if (typeof closeBoardDetail === 'function' && document.getElementById('board-detail-overlay')?.classList.contains('active')) closeBoardDetail();
+  if (activeView !== 'tasks') switchView('tasks');
+  const s = _tasksScopes.main;
+  s.mode = 'list';
+  document.querySelectorAll('#tasks-mode button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === 'list')));
+  const range = _tasksEl('main', 'range'); if (range) range.hidden = true;
+  s.worker = session; s.q = '';
+  const sel = _tasksEl('main', 'worker');
+  if (sel) { if (![...sel.options].some(o => o.value === session)) sel.add(new Option(session, session)); sel.value = session; }
+  const inp = _tasksEl('main', 'search'); if (inp) inp.value = '';
+  try {
+    const d = await (await fetch(API + '/api/task-history?' + _tasksParams('main', { limit: 1, locate: ts }), { headers: _authHeaders() })).json();
+    const idx = Number(d.locate_index || 0);
+    s.offset = Math.floor(idx / _TASKS_PAGE) * _TASKS_PAGE;
+  } catch (e) { s.offset = 0; }
+  const key = session + '@' + ts;
+  s.open = new Set([key]);
+  await _tasksLoad('main', false);
+  const item = _tasksEl('main', 'item-' + key);
+  if (item) { item.scrollIntoView({ block: 'center' }); item.classList.add('task-flash'); setTimeout(() => item.classList.remove('task-flash'), 1600); }
+}
+function _tasksToggle(sc, key) {
+  if (!key) return;
+  const s = _tasksScopes[sc];
+  if (s.open.has(key)) s.open.delete(key); else s.open.add(key);
+  const item = _tasksEl(sc, 'item-' + key), det = _tasksEl(sc, 'detail-' + key);
+  if (item) { item.classList.toggle('open', s.open.has(key)); const row = item.querySelector('.task-row'); if (row) row.setAttribute('aria-expanded', String(s.open.has(key))); }
+  if (det) { det.hidden = !s.open.has(key); if (s.open.has(key)) _tasksFillDetail(sc, key); }
+}
+// The ✉ chip: open the task and bring its messages into view.
+async function _tasksShowMsgs(sc, key) {
+  const s = _tasksScopes[sc];
+  if (!s.open.has(key)) _tasksToggle(sc, key);
+  await _tasksFillDetail(sc, key);
+  const m = _tasksEl(sc, 'detail-' + key)?.querySelector('.task-msgs');
+  if (m) m.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function _tasksOpenCard(id) {
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  switchView('board'); setTimeout(() => openBoardDetail(id), 250);
+}
+function _tasksOpenMessage(id) {
+  if (!id) return;
+  if (typeof closePeek === 'function' && document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+  _bdOpenMessage(id);
+}
+// A tick on the connection track: scroll to that message and flash it.
+function _tasksFocusMsg(sc, key, i) {
+  const row = _tasksEl(sc, 'detail-' + key)?.querySelector('[data-task-msg="' + i + '"]');
+  if (!row) return;
+  row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  row.classList.add('task-flash'); setTimeout(() => row.classList.remove('task-flash'), 1600);
+}
+// The task's connections on one line, start to end: where it was named, every
+// message it received as a tick, and its card. A tick opens that message.
+function _tasksTrack(sc, key, t, msgs, commits) {
+  const start = t.ts - _TASKS_LEAD_S, end = t.ended || Date.now() / 1000;
+  const span = Math.max(1, end - start);
+  const pct = (sec) => Math.min(100, Math.max(0, (sec - start) / span * 100)).toFixed(2) + '%';
+  const ticks = msgs.map((m, i) => {
+    const sec = (m.ts || 0) / 1000;
+    const label = _tasksWhen(sec) + ' · ' + String(m.text || '').replace(/\s+/g, ' ').slice(0, 90);
+    return '<button type="button" class="task-tick" style="left:' + pct(sec) + '" onclick="event.stopPropagation();_tasksFocusMsg(\'' + sc + '\',\'' + escJs(key) + '\',' + i + ')" title="' + esc(label) + '" aria-label="Message at ' + esc(_tasksWhen(sec)) + '"></button>';
+  }).join('');
+  return '<div class="task-track-wrap"><div class="tasks-dim">Connections over the task\'s run: <span aria-hidden="true">&#x25CF;</span> messages, <span aria-hidden="true">&#x25C6;</span> commits</div>'
+    + '<div class="task-track-row"><div class="task-track-col">'
+    + '<div class="task-track" role="group" aria-label="This task\'s messages over time">'
+    + '<span class="task-track-bar"></span>'
+    + '<span class="task-track-start" style="left:' + pct(t.ts) + '" title="Named ' + esc(_tasksWhen(t.ts)) + '"></span>'
+    + ticks
+    + (commits || []).map(c => '<a class="task-tick-commit" style="left:' + pct(c.ts) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + ' onclick="event.stopPropagation()" title="' + esc(_tasksWhen(c.ts) + ' · ' + c.sha.slice(0, 9) + ' ' + (c.subject || '')) + '" aria-label="Commit ' + esc(c.sha.slice(0, 9)) + '"></a>').join('')
+    + '</div><div class="task-track-ends"><span>' + esc(_tasksWhen(t.ts)) + '</span><span>' + (t.ended ? esc(_tasksWhen(t.ended)) : 'now') + '</span></div></div>'
+    // Beside the track, not on it: at its right end it covered the newest tick.
+    + (t.card ? '<button type="button" class="task-track-card" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open card ' + esc(t.card) + '">' + esc(t.card) + '</button>' : '')
+    + '</div></div>';
+}
+// Commits the worker pushed during the task, and the owner requests it closed
+// or landed then. Both come from GET /api/task-history/links; each says when
+// it could not be measured rather than reading as "none".
+function _tasksLinksHtml(links) {
+  if (!links || links.measured === false) return '<div class="task-commits tasks-dim">Commits and requests could not be loaded' + (links && links.why_unmeasured ? ': ' + esc(links.why_unmeasured) : '') + '.</div>';
+  let html = '';
+  const reqs = links.requests || [];
+  if (reqs.length) {
+    html += '<div class="task-reqs"><div class="tasks-dim">Owner requests closed during this task (' + reqs.length + ')</div>'
+      + reqs.map(r => '<div class="task-req"><button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(r.id)) + '\')" title="Open the request in Messages">' + esc(r.id) + '</button> '
+        + '<span class="tasks-dim">' + (r.how === 'landed' ? 'landed in <code>' + esc(String(r.sha || '').slice(0, 9)) + '</code>' : 'closed: ' + esc(String(r.reason || '').slice(0, 120))) + '</span> '
+        + '<span>' + esc(String(r.text || '').slice(0, 140)) + '</span></div>').join('') + '</div>';
+  }
+  if (links.commits_measured === false) {
+    html += '<div class="task-commits tasks-dim">Commits not read: ' + esc(String(links.commits_why_unmeasured || 'unknown')) + '</div>';
+  } else {
+    const cs = links.commits || [];
+    html += '<div class="task-commits"><div class="tasks-dim" title="' + esc(links.commits_note || '') + '">' + (cs.length ? 'Commits pushed during this task (' + cs.length + ')' : 'No commits from this worker on main during this task') + '</div>'
+      + cs.map(c => '<div class="task-commit">' + (c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()"><code>' + esc(c.sha.slice(0, 9)) + '</code></a>' : '<code>' + esc(c.sha.slice(0, 9)) + '</code>')
+        + ' <span>' + esc(c.subject || '') + '</span> <span class="tasks-dim">' + esc(_tasksWhen(c.ts)) + '</span>'
+        + (c.requests || []).map(id => ' <button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(id) + '\')">' + esc(id) + '</button>').join('') + '</div>').join('') + '</div>';
+  }
+  return html;
+}
+async function _tasksFillDetail(sc, key, rerender) {
+  const s = _tasksScopes[sc];
+  const det = _tasksEl(sc, 'detail-' + key);
+  const t = s.rows.find(r => _taskKey(r) === key);
+  if (!det || !t || (det.dataset.filled === '1' && !rerender)) return;
+  s.msgs = s.msgs || {};
+  const sess = t.session || '';
+  if (!s.msgs[key]) {
+    det.innerHTML = '<div class="tasks-dim">Loading details…</div>';
+    const p = new URLSearchParams({ session: sess, kind: _TASKS_KINDS, order: 'asc', limit: '50', since: String(Math.floor((t.ts - _TASKS_LEAD_S) * 1000)) });
+    // Milliseconds, and the server's bound is exclusive: the message that
+    // started the next task belongs to that task, not this one.
+    if (t.ended) p.set('until', String(Math.floor(t.ended * 1000)));
+    let msgs = [], card = null, msgErr = '', links = null;
+    await Promise.all([
+      fetch(API + '/api/history?' + p.toString(), { headers: _authHeaders() }).then(async r => {
+        if (!r.ok) { msgErr = 'HTTP ' + r.status; return; }
+        const d = await r.json(); msgs = (Array.isArray(d) ? d : []).map(_msgNorm);
+      }).catch(e => { msgErr = (e && e.message) || String(e); }),
+      t.card ? fetch(API + '/api/board/' + encodeURIComponent(t.card), { headers: _authHeaders() }).then(async r => { if (r.ok) card = await r.json(); }).catch(() => {}) : null,
+      fetch(API + '/api/task-history/links?' + new URLSearchParams({ session: sess, ts: String(t.ts) }), { headers: _authHeaders() })
+        .then(async r => { links = r.ok ? await r.json() : { measured: false, why_unmeasured: 'HTTP ' + r.status }; })
+        .catch(e => { links = { measured: false, why_unmeasured: (e && e.message) || String(e) }; }),
+    ]);
+    s.msgs[key] = msgs; s.cards = s.cards || {}; s.cards[key] = card; s.msgErr = s.msgErr || {}; s.msgErr[key] = msgErr;
+    s.links = s.links || {}; s.links[key] = links;
+  }
+  const msgs = s.msgs[key], card = (s.cards || {})[key], msgErr = (s.msgErr || {})[key], links = (s.links || {})[key] || {};
+  let html = '<div class="task-facts">'
+    + '<div><span class="tasks-dim">Worker</span> ' + (sess ? (s.fixed ? esc(sess) : '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();_tasksByWorker(\'' + escJs(sess) + '\')" title="Show only this worker\'s tasks">' + esc(sess) + '</button>')
+      + ' <button type="button" class="btn" onclick="event.stopPropagation();openPeek(\'' + escJs(sess) + '\')">Open worker</button>'
+      + ' <button type="button" class="btn" onclick="event.stopPropagation();_tasksCopyLink(this,\'' + escJs(sess) + '\',' + t.ts + ')" title="Copy a link that opens this task">Copy link</button>' : '-') + '</div>'
+    + '<div><span class="tasks-dim">Started</span> ' + esc(_tasksWhen(t.ts)) + '</div>'
+    + '<div><span class="tasks-dim">' + (t.ended ? 'Ended' : 'Status') + '</span> ' + (t.ended ? esc(_tasksWhen(t.ended)) + ' after ' + esc(_tasksDur(t.ended - t.ts)) : 'Current task, running ' + esc(_tasksDur(Date.now() / 1000 - t.ts))) + '</div>'
+    + (t.previous ? '<div><span class="tasks-dim">Before this</span> ' + esc(t.previous) + '</div>' : '')
+    + (t.source ? '<div><span class="tasks-dim">Named from</span> ' + esc(String(t.source).replace(/_/g, ' ')) + '</div>' : '')
+    + '</div>';
+  if (links.handoff && links.handoff.from) {
+    html += '<div class="task-handoff"><span class="tasks-dim">Started by</span> a message from '
+      + '<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek(\'' + escJs(links.handoff.from) + '\')">' + esc(links.handoff.from) + '</button> '
+      + '<button type="button" class="task-link" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(links.handoff.message_id)) + '\')" title="Open the handoff message in Messages">MSG-' + esc(String(links.handoff.message_id)) + '</button></div>';
+  }
+  if (!msgErr) html += _tasksTrack(sc, key, t, msgs, links.commits || []);
+  if (t.card) {
+    html += '<div class="task-card"><span class="tasks-dim">Board card</span> <button type="button" class="task-card-open" onclick="event.stopPropagation();_tasksOpenCard(\'' + escJs(String(t.card)) + '\')" title="Open this card on the board">'
+      + '<code>' + esc(String(t.card)) + '</code> ' + esc((card && card.title) || t.card_title || '') + '</button>'
+      + ((card && card.status) || t.card_status ? '<span class="msg-tag">' + esc((card && card.status) || t.card_status) + '</span>' : '') + '</div>';
+  } else {
+    html += '<div class="task-card tasks-dim">' + (t.board_off ? 'No board card: every Board switch is off for this worker.' : 'No board card: the worker named this task itself.') + '</div>';
+  }
+  html += _tasksLinksHtml(links);
+  html += '<div class="task-msgs"><div class="tasks-dim">' + (msgErr ? 'Could not load this task\'s messages: ' + esc(msgErr)
+    : msgs.length ? 'Messages ' + esc(sess) + ' received while on this task (' + msgs.length + (msgs.length >= 50 ? '+' : '') + '). Click one to open it in Messages.'
+    : 'No messages to ' + esc(sess) + ' while on this task.') + '</div>';
+  const ctx = _tasksCtx(sc);
+  html += msgs.map((m, i) => '<div class="task-msg" data-task-msg="' + i + '">' + _cmdHistItemHTML(m, ctx) + '</div>').join('') + '</div>';
+  det.innerHTML = html;
+  det.dataset.filled = '1';
+}
+// ── Tasks timeline: one lane per worker, a bar per task over the chosen
+// window. A bar opens its task in the list; a ▣ on a bar means it came from a
+// board card. Same filters as the list (worker, search).
+const _TASKS_TL_MAX = 1000;
+async function _tasksTimelineLoad(sc) {
+  const s = _tasksScopes[sc], list = _tasksEl(sc, 'list');
+  if (!list) return;
+  const hours = Number((_tasksEl(sc, 'range') || {}).value || 24);
+  const now = Date.now() / 1000, since = now - hours * 3600;
+  const seq = ++s.seq;
+  s.loading = true; s.err = '';
+  _tasksRenderHead(sc);
+  let rows = [];
+  try {
+    const p = new URLSearchParams(_tasksParams(sc, { limit: _TASKS_TL_MAX, offset: 0, since: Math.floor(since), handoffs: 1 }));
+    p.set('order', 'desc');
+    const r = await fetch(API + '/api/task-history?' + p.toString(), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.measured === false) throw new Error(d.why_unmeasured || 'not measured');
+    rows = Array.isArray(d.tasks) ? d.tasks : [];
+    s.total = d.total || 0;
+  } catch (e) { s.err = (e && e.message) || String(e); }
+  if (seq !== s.seq) return;
+  s.loading = false;
+  _tasksRenderPager(sc);
+  const head = _tasksEl(sc, 'count');
+  if (s.err) { if (head) head.textContent = 'Could not load tasks: ' + s.err; list.innerHTML = '<div class="tasks-empty">Could not load the timeline. <button class="btn" onclick="_tasksLoad(\'' + sc + '\')">Retry</button></div>'; return; }
+  const lanes = new Map();
+  rows.forEach(t => { const w = t.session || ''; if (!lanes.has(w)) lanes.set(w, []); lanes.get(w).push(t); });
+  if (head) head.textContent = rows.length + ' task' + (rows.length === 1 ? '' : 's') + ' across ' + lanes.size + ' worker' + (lanes.size === 1 ? '' : 's') + ' in the last ' + (hours < 48 ? hours + 'h' : Math.round(hours / 24) + 'd')
+    + (s.total > rows.length ? ' (showing the newest ' + rows.length + ' of ' + s.total + ')' : '');
+  if (!rows.length) { list.innerHTML = '<div class="tasks-empty">No tasks ran in this window.</div>'; return; }
+  const span = now - since;
+  const pct = (sec) => Math.min(100, Math.max(0, (sec - since) / span * 100));
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => '<span class="tl-tick" style="left:' + (f * 100) + '%">' + esc(_tasksWhen(since + f * span)) + '</span>').join('');
+  let html = '<div class="tl" role="list"><div class="tl-axis"><span class="tl-name"></span><span class="tl-lane">' + ticks + '</span></div>';
+  for (const [w, ts] of lanes) {
+    const bars = ts.map(t => {
+      const a = pct(t.ts), b = pct(t.ended || now);
+      const label = (t.task || '(untitled)') + (t.handoff && t.handoff.from ? ' · started by a message from ' + t.handoff.from : '') + ' · ' + _tasksWhen(t.ts) + ' · ' + (t.ended ? 'ran ' + _tasksDur(t.ended - t.ts) : 'current') + ' · ' + (t.messages || 0) + ' messages' + (t.card ? ' · ' + t.card : '');
+      const h = t.handoff && t.handoff.from ? t.handoff : null;
+      const hAttr = h ? ' data-from="' + esc(h.from) + '" data-from-x="' + pct(h.ts).toFixed(3) + '" data-msg="' + esc(String(h.message_id)) + '"' : '';
+      return '<button type="button" class="tl-bar' + (t.ended ? '' : ' is-current') + (t.match ? ' is-hit' : '') + '"' + hAttr + ' style="left:' + a.toFixed(2) + '%;width:max(6px,' + (b - a).toFixed(2) + '%)"'
+        + ' onclick="_tasksReveal(\'' + escJs(w) + '\',' + t.ts + ')" title="' + esc(label) + '" aria-label="' + esc(label) + '">'
+        + (h ? '<span class="tl-from" aria-hidden="true">&#x21B3;</span>' : '') + (t.card ? '<span class="tl-card" aria-hidden="true">&#x25A3;</span>' : '') + '<span class="tl-label">' + esc(t.task || '') + '</span></button>';
+    }).join('');
+    html += '<div class="tl-row" role="listitem" data-lane="' + esc(w) + '"><button type="button" class="tl-name msg-sess-link" onclick="_tasksByWorker(\'' + escJs(w) + '\')" title="Show only ' + esc(w) + '\'s tasks">' + esc(w) + '</button><span class="tl-lane">' + bars + '</span></div>';
+  }
+  list.innerHTML = html + '<svg class="tl-arrows" aria-hidden="true"></svg></div>';
+  _tasksDrawHandoffs(list);
+}
+// Handoff arrows: from the sender's lane, at the moment it sent the message,
+// to the start of the task that message began in the receiver's lane. Drawn
+// only when both lanes are on screen; the bar's tooltip names the sender either
+// way. An arrow opens its message.
+function _tasksDrawHandoffs(list) {
+  const tl = list && list.querySelector('.tl'), svg = tl && tl.querySelector('.tl-arrows');
+  if (!svg) return;
+  const box = tl.getBoundingClientRect();
+  svg.setAttribute('width', box.width); svg.setAttribute('height', box.height);
+  let paths = '<defs><marker id="tl-arrow-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>';
+  let drawn = 0;
+  tl.querySelectorAll('.tl-bar[data-from]').forEach(bar => {
+    const from = tl.querySelector('.tl-row[data-lane="' + CSS.escape(bar.dataset.from) + '"] .tl-lane');
+    if (!from) return;
+    const fb = from.getBoundingClientRect(), bb = bar.getBoundingClientRect();
+    const x1 = fb.left - box.left + fb.width * Number(bar.dataset.fromX) / 100, y1 = fb.top - box.top + fb.height / 2;
+    const x2 = bb.left - box.left, y2 = bb.top - box.top + bb.height / 2;
+    const mid = (y1 + y2) / 2;
+    paths += '<path class="tl-arrow" d="M' + x1.toFixed(1) + ',' + y1.toFixed(1) + ' C' + x1.toFixed(1) + ',' + mid.toFixed(1) + ' ' + x2.toFixed(1) + ',' + mid.toFixed(1) + ' ' + x2.toFixed(1) + ',' + y2.toFixed(1) + '" marker-end="url(#tl-arrow-head)"'
+      + ' data-msg="' + esc(bar.dataset.msg) + '" onclick="event.stopPropagation();_tasksOpenMessage(\'' + escJs(String(bar.dataset.msg || '')) + '\')"><title>Handoff from ' + esc(bar.dataset.from) + ' (MSG-' + esc(bar.dataset.msg) + ')</title></path>';
+    drawn++;
+  });
+  svg.innerHTML = paths;
+  svg.dataset.arrows = String(drawn);
+}
+window.addEventListener('resize', () => {
+  if (_tasksScopes.main.mode !== 'timeline') return;
+  clearTimeout(_tasksDrawHandoffs._t);
+  _tasksDrawHandoffs._t = setTimeout(() => _tasksDrawHandoffs(_tasksEl('main', 'list')), 150);
+});
+// "During: <task>" on a message row, in Messages and a worker's Messages tab:
+// the task the receiving worker was on when it arrived (GET
+// /api/task-history/at, batched, cached per worker@second). A chip opens that
+// task in the Tasks view. Rows with no recorded task stay without a chip.
+const _msgTaskCache = new Map();
+async function _msgTaskChipsFill(root) {
+  if (!root) return;
+  const chips = [...root.querySelectorAll('.msg-task-chip[data-task-at]')];
+  const want = [...new Set(chips.map(c => c.dataset.taskAt))].filter(k => !_msgTaskCache.has(k));
+  for (let i = 0; i < want.length; i += 200) {
+    const part = want.slice(i, i + 200);
+    try {
+      const r = await fetch(API + '/api/task-history/at?at=' + part.map(encodeURIComponent).join(','), { headers: _authHeaders() });
+      const d = r.ok ? await r.json() : null;
+      if (!d || d.measured === false) { try { window._clientDebug && window._clientDebug('msg-task-chips-unmeasured', { measured: false, n_considered: part.length, status: r.status }); } catch (_) {} continue; }
+      part.forEach(k => _msgTaskCache.set(k, (d.tasks || {})[k] || null));
+    } catch (e) { /* the chips stay hidden; the message row is unchanged */ }
+  }
+  chips.forEach(c => {
+    const t = _msgTaskCache.get(c.dataset.taskAt);
+    if (!t || !t.task) return;
+    c.innerHTML = '<button type="button" class="msg-task-link" onclick="event.stopPropagation();_tasksReveal(\'' + escJs(t.session) + '\',' + t.ts + ')" title="The task ' + esc(t.session) + ' was on when this arrived. Open it in Tasks">'
+      + '<span aria-hidden="true">&#x2611;</span> during: ' + esc(String(t.task).slice(0, 80)) + '</button>';
+    c.hidden = false;
+  });
+}
+function _tasksLink(session, ts) {
+  return location.origin + location.pathname + '#task=' + encodeURIComponent(session + '@' + ts);
+}
+function _tasksCopyLink(btn, session, ts) {
+  const url = _tasksLink(session, ts);
+  const done = () => { showToast('Task link copied'); if (btn) { const p = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = p; }, 1200); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => showToast(url));
+  else showToast(url);
+}
+// A board card's detail: the worker tasks that came from it, each opening its
+// place in the Tasks list. Hidden when no task came from the card.
+async function _bdTasksLoad(id) {
+  const el = document.getElementById('bd-worker-tasks');
+  if (!el || !id) return;
+  el.hidden = true;
+  let d = null;
+  try { d = await (await fetch(API + '/api/task-history?' + new URLSearchParams({ card: id, order: 'desc', limit: '20' }), { headers: _authHeaders() })).json(); } catch (e) { return; }
+  const cur = document.getElementById('bd-worker-tasks');
+  if (!cur || cur.dataset.card !== id || !d || !Array.isArray(d.tasks) || !d.tasks.length) return;
+  cur.innerHTML = '<h4>Worker tasks from this card (' + d.total + ')</h4><p class="ui-help">What the worker said it was doing while on this card. These are task names, not cards.</p>'
+    + d.tasks.map(t => '<div class="board-detail-meta-row"><button type="button" class="task-id-chip bd-link-chip" onclick="event.stopPropagation();_tasksReveal(\'' + escJs(t.session || '') + '\',' + t.ts + ')" title="Open this task in Tasks">'
+      + esc(t.task || '(untitled)') + '</button> <span>' + esc(t.session || '') + ' · ' + esc(_tasksWhen(t.ts)) + ' · ' + (t.ended ? 'ran ' + esc(_tasksDur(t.ended - t.ts)) : 'current')
+      + ' · ' + Number(t.messages || 0) + ' messages</span></div>').join('');
+  cur.hidden = false;
+}
 function _msgDayKey(ts) {
   if (!ts) return 'unknown';
   const d = new Date(ts);
@@ -52594,7 +57564,195 @@ let _dbMode = 'data';
 let _dbLimit = 50, _dbOffset = 0, _dbSort = '', _dbDir = 'asc';
 let _sqlSchemaLoaded = false;
 
-function _sqlInit() { if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); } }
+// ── Pages (api/pages.rs, pages-host.js, docs/research/pages.md) ──
+// An HTML app whose backend is a worker and its own SQLite file. The page
+// runs in a sandboxed frame mounted by pages-host.js, the same host the
+// standalone /pages/<name> uses, so the tab and the link behave alike.
+let _pagesCur = null, _pagesMounted = null, _pagesMeta = null;
+function _pagesHostReady() {
+  if (window.AmuxPages) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/pages-host.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('pages-host.js did not load'));
+    document.head.appendChild(s);
+  });
+}
+function _pagesEnter() {
+  if (_pagesCur) return;
+  _pagesList();
+}
+function _pagesLeave() {
+  if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
+  _pagesCur = null;
+  const open = document.getElementById('pages-open'), list = document.getElementById('pages-list-wrap');
+  if (open) open.style.display = 'none';
+  if (list) list.style.display = '';
+}
+async function _pagesFetch(path, init) {
+  const r = await fetch(API + '/api/pages' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
+  let d = null;
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+async function _pagesList() {
+  const el = document.getElementById('pages-list');
+  if (!el) return;
+  el.innerHTML = '<div class="ui-help">Loading…</div>';
+  let d;
+  try { d = await _pagesFetch(''); } catch (e) {
+    el.innerHTML = '<div class="ui-error">Pages could not be loaded: ' + esc(e.message) + '</div>';
+    return;
+  }
+  const pages = d.pages || [];
+  if (!pages.length) {
+    el.innerHTML = '<div class="pages-empty">No pages yet. A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.</div>';
+    return;
+  }
+  const ago = iso => iso ? timeAgo(Date.parse(iso) / 1000) : '';
+  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}"
+      onclick="_pagesOpen('${escJs(p.name)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pagesOpen('${escJs(p.name)}')}">
+      <div class="pages-row-main"><b>${esc(p.title)}</b><span class="ui-help">/pages/${esc(p.name)} · worker ${esc(p.worker)}</span></div>
+      <span class="ui-help pages-row-when">${p.data_updated_at ? 'Data changed ' + esc(ago(p.data_updated_at)) : ''}</span></div>`).join('');
+}
+async function _pagesNew() {
+  const ok = await showFormModal('New page',
+    '<label class="ui-field">Name<input id="pages-new-name" class="input" placeholder="e.g. lead-research" autocomplete="off" autocapitalize="off" spellcheck="false">'
+    + '<span class="ui-help">Lowercase letters, digits and dashes. The page opens at /pages/&lt;name&gt;.</span></label>'
+    + '<label class="ui-field">What the page is for<textarea id="pages-new-instructions" class="input" rows="4" placeholder="Instructions for its worker, e.g. A CRM for my leads. Enrich a contact when I ask."></textarea></label>'
+    + '<label class="ui-field">HTML (optional)<textarea id="pages-new-html" class="input" rows="5" placeholder="Paste a page, or leave empty and ask the worker to build one."></textarea></label>',
+    'Create');
+  if (!ok) return;
+  const name = (document.getElementById('pages-new-name')?.value || '').trim().toLowerCase();
+  const instructions = document.getElementById('pages-new-instructions')?.value || '';
+  const html = document.getElementById('pages-new-html')?.value || '';
+  if (!name) { showToast('Not created: a page needs a name.'); return; }
+  try {
+    const p = await _pagesFetch('', { method: 'POST', body: JSON.stringify({ name, instructions, html }) });
+    showToast(p.worker_created ? 'Created ' + name + ' and its worker ' + p.worker : 'Created ' + name + '. Its worker was not created (HTTP ' + p.worker_status + ').');
+    _pagesOpen(name);
+  } catch (e) { showToast('Not created: ' + e.message); }
+}
+async function _pagesOpen(name) {
+  _pagesCur = name;
+  document.getElementById('pages-list-wrap').style.display = 'none';
+  document.getElementById('pages-open').style.display = 'flex';
+  document.getElementById('pages-title').textContent = name;
+  document.getElementById('pages-standalone').href = '/pages/' + encodeURIComponent(name);
+  document.getElementById('pages-status').textContent = '';
+  try { await _pagesHostReady(); } catch (e) { document.getElementById('pages-status').textContent = e.message; return; }
+  if (_pagesMounted) _pagesMounted.destroy();
+  _pagesMounted = AmuxPages.mount(document.getElementById('pages-frame'), name, {
+    headers: () => _authHeaders({}),
+    onTitle: t => { if (_pagesCur === name && t) document.getElementById('pages-title').textContent = t; },
+    onLoad: p => { _pagesMeta = p; _pagesAskCount(); },
+    onChange: () => _pagesAskCount(),
+    onPageError: e => { document.getElementById('pages-status').textContent = 'Page script error: ' + (e && e.message || ''); },
+  });
+  _pagesFit();
+}
+// The page frame fills the window below it. The views sit in a block body, so
+// flex:1 never stretched it and an open page got its 320px minimum (MTP page,
+// 2026-10-21). The root zoom on Chromium scales rects, not the height we set.
+function _pagesFit() {
+  const el = document.getElementById('pages-frame');
+  if (!el || !_pagesCur) return;
+  const zoom = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const bottom = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  const h = Math.max(320, (bottom - el.getBoundingClientRect().top) / zoom - 12);
+  el.style.height = Math.round(h) + 'px';
+}
+window.addEventListener('resize', () => { if (_pagesCur) _pagesFit(); });
+function _pagesClose() {
+  _pagesLeave();
+  _pagesList();
+}
+async function _pagesAskCount() {
+  const name = _pagesCur;
+  if (!name) return;
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/sql', { method: 'POST',
+      body: JSON.stringify({ sql: "SELECT COUNT(*) AS n FROM asks WHERE status='new'" }) });
+    const n = r.rows && r.rows[0] ? r.rows[0].n : 0;
+    if (_pagesCur === name) document.getElementById('pages-status').textContent = n ? n + ' ask' + (n === 1 ? '' : 's') + ' with the worker' : '';
+  } catch (_) {}
+}
+function _pagesWorker() {
+  if (!_pagesMeta || !_pagesMeta.worker) return;
+  if (!(sessions || []).some(s => s.name === _pagesMeta.worker)) { showToast('No worker named ' + _pagesMeta.worker); return; }
+  openPeek(_pagesMeta.worker);
+}
+async function _pagesAsks() {
+  const name = _pagesCur;
+  if (!name) return;
+  let rows = [];
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/sql', { method: 'POST',
+      body: JSON.stringify({ sql: 'SELECT id, kind, status, text, result, created_at, done_at FROM asks ORDER BY id DESC LIMIT 50' }) });
+    rows = r.rows || [];
+  } catch (e) { showToast('Asks could not be read: ' + e.message); return; }
+  const body = rows.length ? '<div class="pages-asks">' + rows.map(a => `<div class="pages-ask">
+      <div class="pages-ask-head"><b>#${a.id}</b> <span class="ui-help">${esc(a.kind || '')}</span>
+      <span class="status-badge ${a.status === 'done' ? 'active' : a.status === 'new' ? 'waiting' : 'idle'}">${esc(a.status)}</span>
+      <span class="ui-help">${esc(a.created_at || '')}</span></div>
+      <div class="pages-ask-text">${esc(a.text || '')}</div>
+      ${a.result ? `<div class="ui-help">${esc(a.result)}</div>` : ''}</div>`).join('') + '</div>'
+    : '<p class="ui-help">No asks yet. Page code adds one with amux.ask(text), and the worker is woken for it.</p>';
+  showFormModal('Asks · ' + name, body, 'Close');
+}
+async function _pagesVersions() {
+  const name = _pagesCur;
+  if (!name) return;
+  let snaps = [];
+  try { snaps = (await _pagesFetch('/' + encodeURIComponent(name) + '/snapshots')).snapshots || []; }
+  catch (e) { showToast('Versions could not be read: ' + e.message); return; }
+  const label = r => ({ 'before-asks': 'Before the worker answered', 'before-html-edit': 'Before an HTML edit',
+    'before-restore': 'Before a restore', manual: 'Saved by hand' }[r] || r);
+  const when = ts => { const m = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/.exec(ts); return m ? new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString() : ts; };
+  const body = '<p class="ui-help">amux saves the page\'s data and HTML before each delivery to its worker. Restoring saves the current state first, so a restore can be undone.</p>'
+    + '<div class="ui-guide-row"><button class="btn" onclick="_pagesSnapshotNow()">Save a version now</button></div>'
+    + (snaps.length ? '<div class="pages-asks">' + snaps.map(s => `<div class="pages-ask pages-version">
+        <span><b>${esc(when(s.ts))}</b> <span class="ui-help">${esc(label(s.reason))}</span></span>
+        <button class="btn" onclick="_pagesRestore('${escJs(s.id)}')">Restore</button></div>`).join('') + '</div>'
+      : '<p class="ui-help">No versions yet.</p>');
+  showFormModal('Versions · ' + name, body, 'Close');
+}
+async function _pagesSnapshotNow() {
+  try { await _pagesFetch('/' + encodeURIComponent(_pagesCur) + '/snapshots', { method: 'POST', body: '{}' }); showToast('Version saved'); _modalClose(false); _pagesVersions(); }
+  catch (e) { showToast('Not saved: ' + e.message); }
+}
+async function _pagesRestore(id) {
+  const name = _pagesCur;
+  _modalClose(false);
+  if (!await showConfirm('Restore ' + name + ' to this version? Its data and HTML go back to that point; the current state is saved first.', 'Restore')) return;
+  try {
+    const r = await _pagesFetch('/' + encodeURIComponent(name) + '/restore', { method: 'POST', body: JSON.stringify({ id }) });
+    showToast('Restored. The previous state is saved as ' + r.undo);
+    if (_pagesMounted) _pagesMounted.reload();
+  } catch (e) { showToast('Not restored: ' + e.message); }
+}
+async function _pagesEditHtml() {
+  const name = _pagesCur;
+  if (!name) return;
+  let page;
+  try { page = await _pagesFetch('/' + encodeURIComponent(name)); } catch (e) { showToast(e.message); return; }
+  const ok = await showFormModal('Edit HTML · ' + name,
+    '<textarea id="pages-edit-html" class="input pages-edit-html" rows="18" spellcheck="false">' + esc(page.html || '') + '</textarea>'
+    + '<p class="ui-help">Saving keeps a version of the old HTML.</p>', 'Save');
+  if (!ok) return;
+  try {
+    await _pagesFetch('/' + encodeURIComponent(name) + '/html', { method: 'PUT', body: JSON.stringify({ html: document.getElementById('pages-edit-html').value }) });
+    showToast('Saved');
+    if (_pagesMounted) _pagesMounted.reload();
+  } catch (e) { showToast('Not saved: ' + e.message); }
+}
+
+function _sqlInit() {
+  if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); }
+  try { const m = localStorage.getItem('amux_db_mode'); if (m && ['data','structure','query','ask'].includes(m)) _dbSetMode(m); } catch(e) {}
+}
 
 async function _sqlFetchJson(url, options) {
   const response = await fetch(url, options);
@@ -52652,15 +57810,20 @@ function _dbSelectTable(name) {
 
 function _dbSetMode(mode) {
   _dbMode = mode;
-  ['data', 'structure', 'query'].forEach(m => {
+  try { localStorage.setItem('amux_db_mode', mode); } catch(e) {}
+  ['data', 'structure', 'query', 'ask'].forEach(m => {
     const pane = document.getElementById('db-pane-' + m);
     if (pane) pane.style.display = m === mode ? '' : 'none';
-    document.getElementById('db-mode-' + m).classList.toggle('active', m === mode);
+    const btn = document.getElementById('db-mode-' + m);
+    if (btn) btn.classList.toggle('active', m === mode);
   });
   if (mode === 'query') {
     const ta = document.getElementById('sql-editor');
     if (ta && !ta.value.trim() && _dbTable) ta.value = 'SELECT * FROM ' + _dbTable + ' LIMIT 100;';
     setTimeout(() => ta && ta.focus(), 30);
+  }
+  if (mode === 'ask') {
+    setTimeout(() => { const inp = document.getElementById('db-ask-input'); if (inp) inp.focus(); }, 30);
   }
 }
 
@@ -52812,6 +57975,210 @@ async function _sqlRun() {
     status.classList.add('err'); status.textContent = 'Request failed: ' + e.message;
     results.innerHTML = '<div style="padding:16px;color:#f85149;font-size:0.82rem;font-family:var(--mono);white-space:pre-wrap;">' + esc(e.message) + '</div>';
   }
+}
+
+// ── Text-to-SQL (Ask pane) ────────────────────────────────────────────────────
+let _dbAskTurns = [];
+let _dbAskBusy = false;
+
+async function _dbAskRun() {
+  if (_dbAskBusy) return;
+  const inp = document.getElementById('db-ask-input');
+  const question = (inp ? inp.value : '').trim();
+  if (!question) return;
+  _dbAskBusy = true;
+  const sendBtn = document.getElementById('db-ask-send');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '…'; }
+  if (inp) { inp.value = ''; inp.style.height = 'auto'; }
+
+  const hist = document.getElementById('db-ask-history');
+  const empty = hist ? hist.querySelector('.db-ask-empty') : null;
+  if (empty) empty.remove();
+
+  // Show loading indicator
+  const loadId = 'db-ask-load-' + Date.now();
+  if (hist) hist.insertAdjacentHTML('beforeend',
+    '<div id="' + loadId + '" class="db-ask-turn"><div class="db-ask-q"><div class="db-ask-q-icon">Q</div><span>' +
+    esc(question) + '</span></div><div class="db-ask-loading"><span class="dot">●</span> ' +
+    '<span class="dot">●</span> <span class="dot">●</span> Generating SQL…</div></div>');
+  const loadEl = document.getElementById(loadId);
+  if (hist) hist.scrollTop = hist.scrollHeight;
+
+  const history = _dbAskTurns.map(t => ({
+    question: t.question, sql: t.sql,
+    rowcount: t.rowcount, error: t.error
+  }));
+
+  try {
+    const resp = await fetch(API + '/api/sql/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, history }),
+    });
+    const d = await resp.json();
+    if (!resp.ok && !d.sql) throw new Error(d.error || ('HTTP ' + resp.status));
+    const turn = { question, sql: d.sql || '', columns: d.columns, rows: d.rows,
+      rowcount: d.rowcount, error: d.error, via: d.via, ms: d.ms, model_ms: d.model_ms, query_ms: d.query_ms,
+      truncated: d.truncated };
+    _dbAskTurns.push(turn);
+    if (loadEl) loadEl.remove();
+    _dbAskRenderTurn(turn, _dbAskTurns.length - 1);
+  } catch (e) {
+    const turn = { question, sql: '', error: e.message };
+    _dbAskTurns.push(turn);
+    if (loadEl) loadEl.remove();
+    _dbAskRenderTurn(turn, _dbAskTurns.length - 1);
+  } finally {
+    _dbAskBusy = false;
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Ask'; }
+    if (hist) hist.scrollTop = hist.scrollHeight;
+  }
+}
+
+function _dbAskRenderTurn(turn, idx) {
+  const hist = document.getElementById('db-ask-history');
+  if (!hist) return;
+  const id = 'db-ask-turn-' + idx;
+  let html = '<div class="db-ask-turn" id="' + id + '">';
+  html += '<div class="db-ask-q"><div class="db-ask-q-icon">Q</div><span>' + esc(turn.question) + '</span></div>';
+
+  if (turn.sql) {
+    html += '<div class="db-ask-sql-wrap">' +
+      '<pre class="db-ask-sql-code" id="db-ask-sql-pre-' + idx + '" onclick="_dbAskEditSql(' + idx + ')">' +
+      '<code class="language-sql">' + esc(turn.sql) + '</code></pre>' +
+      '<textarea class="db-ask-sql-edit" id="db-ask-sql-edit-' + idx +
+      '" spellcheck="false" style="display:none;" onblur="_dbAskFinishEdit(' + idx + ')">' +
+      esc(turn.sql) + '</textarea>';
+    html += '<div class="db-ask-sql-actions">' +
+      '<button class="btn" onclick="_dbAskCopySql(' + idx + ')" title="Copy SQL">Copy</button>' +
+      '<button class="btn" onclick="_dbAskRerun(' + idx + ')" title="Edit and re-run">Re-run</button>' +
+      '<button class="btn" onclick="_dbAskToQuery(' + idx + ')" title="Open in Query pane">Query</button>' +
+      '</div></div>';
+  }
+
+  if (turn.error && !turn.columns) {
+    html += '<div class="db-ask-err">' + esc(turn.error) + '</div>';
+  } else if (turn.columns && turn.rows) {
+    html += '<div class="db-ask-result-grid" id="db-ask-grid-' + idx + '"></div>';
+    html += '<div class="db-ask-meta">';
+    html += '<span>' + turn.rowcount + (turn.truncated ? '+ (capped)' : '') + ' row' + (turn.rowcount === 1 ? '' : 's') + '</span>';
+    if (turn.ms != null) html += '<span>' + turn.ms + 'ms total</span>';
+    if (turn.model_ms != null) html += '<span>model ' + turn.model_ms + 'ms</span>';
+    if (turn.query_ms != null) html += '<span>query ' + turn.query_ms + 'ms</span>';
+    if (turn.via) html += '<span>via ' + esc(turn.via) + '</span>';
+    if (turn.error) html += '<span style="color:#f85149;">' + esc(turn.error) + '</span>';
+    html += '</div>';
+  }
+  html += '</div>';
+  hist.insertAdjacentHTML('beforeend', html);
+
+  if (turn.columns && turn.rows) {
+    const grid = document.getElementById('db-ask-grid-' + idx);
+    if (grid) _dbRenderGrid(grid, turn.columns, turn.rows, false);
+  }
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  if (pre && typeof hljs !== 'undefined') {
+    hljs.highlightElement(pre.querySelector('code'));
+  }
+}
+
+function _dbAskEditSql(idx) {
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!pre || !ta) return;
+  pre.style.display = 'none';
+  ta.style.display = '';
+  ta.focus();
+}
+
+function _dbAskFinishEdit(idx) {
+  const pre = document.getElementById('db-ask-sql-pre-' + idx);
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!pre || !ta) return;
+  ta.style.display = 'none';
+  pre.style.display = '';
+  const code = pre.querySelector('code');
+  if (code) {
+    code.textContent = ta.value;
+    code.removeAttribute('data-highlighted');
+    if (typeof hljs !== 'undefined') hljs.highlightElement(code);
+  }
+}
+
+function _dbAskCopySql(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  navigator.clipboard.writeText(ta.value).then(() => {
+    if (typeof showToast === 'function') showToast('SQL copied');
+  });
+}
+
+function _dbAskRerun(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  ta.removeAttribute('readonly');
+  ta.focus();
+  const sql = ta.value.trim();
+  if (!sql) return;
+  const status = document.getElementById('sql-status');
+  if (status) { status.classList.remove('err'); status.textContent = 'Re-running…'; }
+  _sqlFetchJson(API + '/api/sql', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, write: false }),
+  }).then(d => {
+    _dbAskTurns[idx].sql = sql;
+    _dbAskTurns[idx].columns = d.columns;
+    _dbAskTurns[idx].rows = d.rows;
+    _dbAskTurns[idx].rowcount = d.rowcount;
+    _dbAskTurns[idx].error = null;
+    const grid = document.getElementById('db-ask-grid-' + idx);
+    if (grid) _dbRenderGrid(grid, d.columns, d.rows, false);
+    const turnEl = document.getElementById('db-ask-turn-' + idx);
+    if (turnEl) {
+      const meta = turnEl.querySelector('.db-ask-meta');
+      if (meta) meta.innerHTML = '<span>' + d.rowcount + ' row' + (d.rowcount === 1 ? '' : 's') + '</span><span>' + d.ms + 'ms</span><span>manual re-run</span>';
+      const errEl = turnEl.querySelector('.db-ask-err');
+      if (errEl) errEl.remove();
+      if (!grid) {
+        const wrap = turnEl.querySelector('.db-ask-sql-wrap');
+        if (wrap) {
+          wrap.insertAdjacentHTML('afterend', '<div class="db-ask-result-grid" id="db-ask-grid-' + idx + '"></div>');
+          const newGrid = document.getElementById('db-ask-grid-' + idx);
+          if (newGrid) _dbRenderGrid(newGrid, d.columns, d.rows, false);
+        }
+      }
+    }
+    if (status) status.textContent = d.rowcount + ' row' + (d.rowcount === 1 ? '' : 's') + ' · ' + d.ms + 'ms';
+  }).catch(e => {
+    _dbAskTurns[idx].error = e.message;
+    if (status) { status.classList.add('err'); status.textContent = e.message; }
+    const turnEl = document.getElementById('db-ask-turn-' + idx);
+    if (turnEl) {
+      let errEl = turnEl.querySelector('.db-ask-err');
+      if (!errEl) {
+        const wrap = turnEl.querySelector('.db-ask-sql-wrap');
+        if (wrap) wrap.insertAdjacentHTML('afterend', '<div class="db-ask-err"></div>');
+        errEl = turnEl.querySelector('.db-ask-err');
+      }
+      if (errEl) errEl.textContent = e.message;
+    }
+  });
+}
+
+function _dbAskToQuery(idx) {
+  const ta = document.getElementById('db-ask-sql-edit-' + idx);
+  if (!ta) return;
+  const editor = document.getElementById('sql-editor');
+  if (editor) editor.value = ta.value;
+  _dbSetMode('query');
+}
+
+function _dbAskClear() {
+  _dbAskTurns = [];
+  const hist = document.getElementById('db-ask-history');
+  if (hist) hist.innerHTML = '<div class="db-ask-empty">Ask a question about your data in plain English.<br>' +
+    'e.g. <code>How many board cards were created this week?</code><br>' +
+    'or <code>Show the top 10 sessions by message count</code></div>';
 }
 
 // ── Notes tab ─────────────────────────────────────────────────────────────────
@@ -55615,15 +60982,7 @@ function _jrnlRenderMap() {
   const container = document.getElementById('jrnl-map-container');
   if (!window.L) {
     container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Loading map...</div>';
-    // Leaflet should already be loaded for the Map tab
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.onload = () => _jrnlRenderMap();
-    document.head.appendChild(script);
+    _lazyLib('leaflet').then(_jrnlRenderMap, () => { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Could not load the map.</div>'; });
     return;
   }
   if (_jrnlMap) { _jrnlMap.remove(); _jrnlMap = null; }
@@ -55758,6 +61117,10 @@ function _dpEnhance(input) {
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'amux-dp-trigger';
+  // Carry the input's layout classes (pm-wide, ...) so a rule that hides or
+  // places the field still reaches the button that stands in for it. Without
+  // this the phone's "Pick a date" sat in the Messages search row (2026-10-23).
+  input.classList.forEach(c => { if (c !== 'amux-dp' && c !== 'input' && c !== 'amux-dp-native') trigger.classList.add(c); });
   trigger.setAttribute('aria-haspopup', 'dialog');
   // Copy layout sizing so the trigger occupies the same slot as the input it
   // replaced (appearance itself is uniform, from .amux-dp-trigger CSS).
@@ -58232,7 +63595,10 @@ function _cvEnter() {
   const lp = document.getElementById('msgs-log-pane');
   if (lp && !lp.querySelector('.cv-back')) {
     const b = document.createElement('button'); b.className = 'btn cv-back'; b.innerHTML = '&#x2039; Conversations';
-    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack; lp.prepend(b);
+    b.setAttribute('aria-label', 'Back to conversations');
+    b.style.alignSelf = 'flex-start'; b.style.marginBottom = '8px'; b.onclick = _cvBack;
+    // Inside the top bar, so on a phone it is the first control of its one row.
+    (document.getElementById('msgs-topbar') || lp).prepend(b);
   }
   _cvFit();
   _cv.picked = false;
@@ -59908,7 +65274,9 @@ function _vxOnPeekOpen(name) {
 //   <folder>/<name>.excalidraw              the drawing itself (user's folder)
 //   <amux data dir>/draw/library.excalidrawlib   shared component library
 //   <amux data dir>/draw/recents.json        recent drawings + PNG thumbnails
-//   pref draw_settings / draw_dir / draw_last   snap toggles, folder, last file
+//   pref draw_settings / draw_dir / draw_last   snap toggles, default folder, last file
+//   localStorage amux_draw_draft:<path>      unsaved edits, written when the page
+//                                            hides or a save fails; restored on open
 //
 // The editor bundle (static/vendor/draw, scripts/build-draw.mjs) is imported
 // the first time the tab opens, so app boot never pays for it.
@@ -59930,7 +65298,7 @@ function _drawS() {
   if (!_draw) {
     _draw = {
       lib: null, loading: null, api: null, root: null, mounted: false,
-      path: '', dir: '', etag: null, savedVersion: null, curVersion: null,
+      path: '', dir: '', defaultDir: '', etag: null, retryMs: 0, retryTimer: null, savedVersion: null, curVersion: null,
       saving: false, saveAgain: false, saveTimer: null, status: 'idle', statusMsg: '',
       pollTimer: null, pollTick: 0, applying: false, conflict: null, opening: false, openSeq: 0, savedCount: 0,
       libItems: [], libHash: null, libEtag: null, libSaveTimer: null, libLoaded: false,
@@ -60095,6 +65463,19 @@ async function _drawEnter() {
     addEventListener('resize', () => { if (activeView === 'draw') { _drawFit(); _drawSyncOffsetsSoon('resize'); } });
     document.addEventListener('fullscreenchange', () => { if (activeView === 'draw') _drawSyncOffsetsSoon('fullscreen'); });
     addEventListener('scroll', () => _drawPinPage('scroll'), { passive: true });
+    // Unsaved strokes survive a closed tab, a killed phone browser or a server
+    // that is down: the page writes them to a local draft as it hides and
+    // saves at once, and the next open of the file restores the draft.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) _drawOnHide('hidden'); });
+    addEventListener('pagehide', () => _drawOnHide('pagehide'));
+    addEventListener('online', () => _drawRetryNow('online'));
+    addEventListener('beforeunload', e => {
+      const dd = _draw;
+      if (!dd || !_drawDirty()) return;
+      _drawWriteDraft('beforeunload');
+      // A save that is failing is the only case worth stopping the close for.
+      if (dd.status === 'error' || dd.status === 'conflict') { e.preventDefault(); e.returnValue = ''; }
+    });
     // Anything above the view changing height (a banner, the header wrapping)
     // moves the space the view has to fit in.
     if (typeof ResizeObserver === 'function') {
@@ -60143,7 +65524,8 @@ async function _drawLoadSettings() {
   if (server) raw = server;
   try { if (raw) Object.assign(d.settings, JSON.parse(raw)); } catch (e) {}
   const dir = await _drawPrefGet('draw_dir');
-  d.dir = dir || d.dir || _drawDefaultDir();
+  d.defaultDir = dir || _drawDefaultDir();
+  d.dir = d.dir || d.defaultDir;
   d.settingsLoaded = true;
 }
 
@@ -60246,6 +65628,7 @@ async function _drawOnApi() {
   _drawRenderPenbar();
   _drawLoadLibrary();
   _drawLoadRecents();
+  _drawPruneDrafts();
   // A file requested before the editor existed (Files tab, path link) wins;
   // then the last drawing; otherwise a fresh untitled one in the folder.
   if (d.pendingOpen) { const p = d.pendingOpen; d.pendingOpen = null; await _drawOpen(p); return; }
@@ -60340,7 +65723,7 @@ async function _drawSave(opts) {
   // While a drawing opens, d.path already names the file being opened but the
   // canvas still holds the previous one. A save now would write the previous
   // drawing into the file being opened.
-  if (d.opening) return false;
+  if (d.opening || (d.deleting && d.deleting === d.path)) return false;
   // In a shared room only the saver writes; this tab's edits reach it live.
   if (_drawRtFollower()) { d.savedVersion = _drawSceneVersion(); _drawSetStatus('synced', _drawRtSaverLabel()); return true; }
   if (d.saving) { d.saveAgain = true; return false; }
@@ -60379,21 +65762,22 @@ async function _drawSave(opts) {
       await _drawShowConflict('save');
     } else if (!r.ok || res.error || !res.ok || res.queued || !res.etag) {
       const msg = res.error || (res.queued ? 'the server did not confirm the write' : 'HTTP ' + r.status);
-      _drawSetStatus('error', msg);
-      _drawBeacon('save-failed', { status: r.status, error: msg });
+      _drawSaveFailed(msg, { status: r.status });
     } else {
       d.etag = res.etag || null;
       d.savedVersion = version;
       d.savedCount = live.length;
       ok = true;
+      d.retryMs = 0;
+      if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+      if (d.curVersion === version) _drawDropDraft(path);
       _drawRtAfterSave(d.etag);
       _drawSetStatus(d.curVersion === version ? 'saved' : 'dirty');
       _drawRememberRecent(false);
     }
   } catch (e) {
     const msg = (e && e.name === 'TimeoutError') ? 'the server did not answer in 20s' : String(e && e.message || e);
-    _drawSetStatus('error', msg);
-    _drawBeacon('save-failed', { error: msg });
+    if (path === d.path) _drawSaveFailed(msg, {});
   } finally {
     d.saving = false;
   }
@@ -60402,6 +65786,104 @@ async function _drawSave(opts) {
   return ok;
 }
 function _drawSaveNow() { return _drawSave(); }
+
+// A failed write keeps the strokes in a local draft and tries again on its
+// own, backing off from 2s to 30s, and at once when the browser comes back
+// online. The status line says when the next try is.
+function _drawSaveFailed(msg, extra) {
+  const d = _draw;
+  _drawWriteDraft('save-failed');
+  d.retryMs = Math.min(30000, d.retryMs ? d.retryMs * 2 : 2000);
+  _drawSetStatus('error', msg + ' · retrying in ' + Math.round(d.retryMs / 1000) + 's');
+  _drawBeacon('save-failed', Object.assign({ error: msg, retry_ms: d.retryMs }, extra || {}));
+  if (d.retryTimer) clearTimeout(d.retryTimer);
+  d.retryTimer = setTimeout(() => {
+    d.retryTimer = null;
+    if (d.status === 'error' && !d.conflict && _drawDirty()) _drawSave({ background: true });
+  }, d.retryMs);
+}
+function _drawRetryNow(why) {
+  const d = _draw;
+  if (!d || d.status !== 'error' || d.conflict || !_drawDirty()) return;
+  if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+  _drawBeacon('save-retry', { why });
+  _drawSave({ background: true });
+}
+function _drawOnHide(why) {
+  const d = _draw;
+  if (!d || !d.api || !_drawDirty()) return;
+  _drawWriteDraft(why);
+  if (!d.saving) _drawSave({ background: true });
+}
+
+// ── Local draft of unsaved edits ──
+const _DRAW_DRAFT_PREFIX = 'amux_draw_draft:';
+const _DRAW_DRAFT_MAX_AGE_MS = 30 * 86400000;
+function _drawWriteDraft(why) {
+  const d = _draw;
+  if (!d || !d.api || !d.path || d.opening || d.deleting || !_drawDirty() || _drawSceneLost()) return;
+  if (_drawRtFollower()) return;   // the room's saver holds these edits
+  try {
+    const api = d.api;
+    const content = d.lib.X.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), 'local');
+    localStorage.setItem(_DRAW_DRAFT_PREFIX + d.path, JSON.stringify({ path: d.path, base: d.etag || null, ts: Date.now(), content }));
+  } catch (e) {
+    _drawBeacon('draft-write-failed', { why, error: String(e && e.message || e) });
+  }
+}
+function _drawDraftGet(path) {
+  try {
+    const raw = localStorage.getItem(_DRAW_DRAFT_PREFIX + path);
+    const dr = raw ? JSON.parse(raw) : null;
+    return dr && typeof dr.content === 'string' ? dr : null;
+  } catch (e) { return null; }
+}
+function _drawDropDraft(path) {
+  try { localStorage.removeItem(_DRAW_DRAFT_PREFIX + path); } catch (e) {}
+}
+// Drafts of files never reopened would pile up; a month is the limit.
+function _drawPruneDrafts() {
+  let dropped = 0, n = 0;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(_DRAW_DRAFT_PREFIX)) continue;
+      n++;
+      let ts = 0;
+      try { ts = JSON.parse(localStorage.getItem(k)).ts || 0; } catch (e) {}
+      if (Date.now() - ts > _DRAW_DRAFT_MAX_AGE_MS) { localStorage.removeItem(k); dropped++; }
+    }
+  } catch (e) {}
+  if (dropped) _drawBeacon('drafts-pruned', { dropped, measured: true, n_considered: n });
+}
+// Called while a file opens, after its disk copy is on the canvas. A draft
+// written on the same disk version is put back and saved; one written on an
+// older version is put on the canvas with the conflict bar, so the user picks.
+async function _drawRecoverDraft(path, diskText, diskEtag, stillWanted) {
+  const d = _draw;
+  const dr = _drawDraftGet(path);
+  if (!dr) return;
+  if (diskText !== null && dr.content === diskText) { _drawDropDraft(path); return; }
+  try {
+    if (!(await _drawApplyText(dr.content, true, stillWanted))) return;
+  } catch (e) {
+    _drawDropDraft(path);
+    _drawBeacon('draft-unreadable', { error: String(e && e.message || e) });
+    return;
+  }
+  d.savedVersion = 'draft';   // not what is on disk: autosave writes it
+  const sameBase = (dr.base || null) === (diskEtag || null);
+  _drawBeacon('draft-recovered', { same_base: sameBase, age_ms: Date.now() - (dr.ts || 0), measured: true, n_considered: 1 });
+  if (sameBase) {
+    _drawSetStatus('dirty');
+    _drawScheduleSave();
+    showToast('Recovered unsaved changes to ' + _drawBase(path));
+  } else {
+    d.conflict = { etag: diskEtag, text: diskText };
+    _drawSetStatus('conflict');
+    _drawShowConflictBar('Unsaved changes from an earlier session differ from the file on disk.');
+  }
+}
 
 // Write any pending change to the drawing on screen before it is replaced:
 // wait out a write already in flight (whose follow-up would otherwise be
@@ -60455,6 +65937,7 @@ async function _drawOpen(path) {
       _drawResetScene();
       d.etag = null;
       _drawSetStatus('new');
+      await _drawRecoverDraft(path, null, null, current);
     } else if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       throw new Error(e.error || ('HTTP ' + r.status));
@@ -60464,7 +65947,9 @@ async function _drawOpen(path) {
       if (!(await _drawApplyText(text, true, current))) return;
       d.etag = r.headers.get('ETag');
       _drawSetStatus('saved');
+      await _drawRecoverDraft(path, text, d.etag, current);
     }
+    if (!current()) return;
     _drawPrefSet('draw_last', path);
     _drawRememberRecent(true);
     _drawRtJoin(path);
@@ -60522,7 +66007,7 @@ async function _drawUniquePath(dir, stem) {
   return dir.replace(/\/+$/, '') + '/' + stem + ' ' + Date.now() + '.excalidraw';
 }
 
-async function _drawNew(quiet) {
+async function _drawNew(quiet, inDir) {
   const d = _drawS();
   if (!d.api) return;
   if (!d.opening && !(await _drawFlush())) {
@@ -60531,7 +66016,9 @@ async function _drawNew(quiet) {
     return;
   }
   d.openSeq++; d.opening = false;   // an open still in flight must not land on the new drawing
-  const dir = d.dir || _drawDefaultDir();
+  // New drawings go to the default folder (Library > Drawings > Default
+  // folder); "New here" in the folder picker passes its own.
+  const dir = inDir || d.defaultDir || _drawDefaultDir();
   const path = await _drawUniquePath(dir, 'Untitled');
   d.conflict = null; _drawHideConflict();
   d.path = path; d.dir = dir; d.etag = null;
@@ -60597,7 +66084,7 @@ async function _drawPoll() {
   if (!d || !d.api || activeView !== 'draw' || document.hidden) return;
   d.pollTick++;
   if (d.pollTick % 5 === 0) _drawPollLibrary();
-  if (!d.path || d.saving || d.opening || d.conflict) return;
+  if (!d.path || d.saving || d.opening || d.conflict || d.deleting) return;
   if (_drawRtFollower()) return;   // the room's saver watches the file for us
   try {
     const headers = d.etag ? { 'If-None-Match': d.etag } : {};
@@ -60661,6 +66148,7 @@ async function _drawResolveConflict(choice) {
   _drawHideConflict();
   _drawBeacon('conflict-resolved', { choice });
   if (choice === 'disk') {
+    _drawDropDraft(d.path);
     if (c.text) { await _drawApplyText(c.text, false); d.etag = c.etag; _drawSetStatus('saved'); }
     else { d.etag = null; _drawSetStatus('missing'); }
   } else {
@@ -60708,6 +66196,8 @@ function _drawCloseMenus() {
   if (b) b.setAttribute('aria-expanded', 'false');
   const p = document.getElementById('draw-dir-pop');
   if (p) p.remove();
+  const im = document.getElementById('draw-item-menu');
+  if (im) im.remove();
 }
 function _drawToggleExportMenu(e) {
   if (e) e.stopPropagation();
@@ -60720,8 +66210,10 @@ function _drawToggleExportMenu(e) {
   if (open) setTimeout(() => document.addEventListener('click', _drawCloseMenus, { once: true }), 0);
 }
 
-// Folder picker: a small browser anchored to the breadcrumb.
-async function _drawDirPop(path, anchor) {
+// Folder picker: a small browser anchored to the breadcrumb. mode 'default'
+// picks the default folder for new drawings (Library > Drawings); it sticks
+// while the user walks folders inside the same pop.
+async function _drawDirPop(path, anchor, mode) {
   let pop = document.getElementById('draw-dir-pop');
   if (!pop) {
     pop = document.createElement('div');
@@ -60738,6 +66230,8 @@ async function _drawDirPop(path, anchor) {
     pop.style.top = (r.bottom - vr.top + 4) + 'px';
   }
   pop.dataset.path = path;
+  if (anchor) pop.dataset.mode = mode || '';
+  const pickDefault = pop.dataset.mode === 'default';
   pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div><div class="draw-pop-list">Loading…</div>';
   let data;
   try {
@@ -60758,8 +66252,33 @@ async function _drawDirPop(path, anchor) {
   }
   pop.innerHTML = '<div class="draw-pop-path">' + esc(path) + '</div>'
     + '<div class="draw-pop-list">' + (rows.join('') || '<div class="draw-pop-empty">Empty folder</div>') + '</div>'
-    + '<div class="draw-pop-foot"><button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSaveInDir(this.dataset.path)" title="Saves this drawing into this folder; the old file is kept">Save here</button>'
-    + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawNewInDir(this.dataset.path)">New here</button></div>';
+    + '<div class="draw-pop-foot">' + (pickDefault
+      ? '<button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSetDefaultDir(this.dataset.path)" title="New drawings are created in this folder">Use as default</button>'
+      : '<button class="btn primary" data-path="' + esc(path) + '" onclick="_drawSaveInDir(this.dataset.path)" title="Saves this drawing into this folder; the old file is kept">Save here</button>'
+        + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawNewInDir(this.dataset.path)">New here</button>')
+    + '<button class="btn" data-path="' + esc(path) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open this folder in the Files tab">Open in Files</button></div>';
+}
+// Library > Drawings > Default folder.
+function _drawChangeDefaultDir(anchor) {
+  const d = _drawS();
+  _drawDirPop(d.defaultDir || _drawDefaultDir(), anchor, 'default');
+}
+function _drawSetDefaultDir(dir) {
+  const d = _drawS();
+  _drawCloseMenus();
+  if (!dir) return;
+  d.defaultDir = dir;
+  _drawPrefSet('draw_dir', dir).then(() => {});
+  showToast('New drawings go to ' + _drawShortPath(dir));
+  _drawLibRender();
+}
+function _drawShortPath(p) {
+  const home = (window._AMUX_HOME || '').replace(/\/+$/, '');
+  return home && (p === home || String(p).startsWith(home + '/')) ? '~' + String(p).slice(home.length) : String(p || '');
+}
+function _drawOpenDirInFiles(dir) {
+  _drawCloseMenus();
+  if (dir && typeof _openPathInFiles === 'function') _openPathInFiles(dir);
 }
 function _drawDirPopHere(anchor) {
   const d = _drawS();
@@ -60776,14 +66295,12 @@ function _drawPopOpen(path) {
 async function _drawNewInDir(dir) {
   _drawCloseMenus();
   _drawS().dir = dir;
-  _drawPrefSet('draw_dir', dir);
-  await _drawNew();
+  await _drawNew(false, dir);
 }
 async function _drawSaveInDir(dir) {
   const d = _drawS();
   _drawCloseMenus();
   d.dir = dir;
-  _drawPrefSet('draw_dir', dir);
   if (!d.api || !d.path) return;
   if (_drawDirOf(d.path) === dir) return;
   const target = await _drawUniquePath(dir, _drawTitleOf(d.path) || 'Untitled');
@@ -60867,6 +66384,26 @@ function _drawRenderSelbar() {
   const lock = document.getElementById('draw-lock-btn');
   if (lock) lock.textContent = d.selLocked ? 'Unlock' : 'Lock';
 }
+// The selection bar's Delete runs Excalidraw's own delete action (it unbinds
+// arrows and takes frame children and labels with it), through the same key
+// it listens for; if that did nothing, the elements are marked deleted here.
+// Either way it is one undo step.
+function _drawDeleteSelection() {
+  const d = _draw;
+  if (!d || !d.api) return;
+  const sel = _drawSelected();
+  if (!sel.length) return;
+  const ids = new Set(sel.map(e => e.id));
+  const host = document.querySelector('#draw-host .excalidraw');
+  if (host) host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', code: 'Delete', bubbles: true, cancelable: true }));
+  const left = d.api.getSceneElements().filter(e => ids.has(e.id));
+  if (left.length) {
+    const X = d.lib.X;
+    d.api.updateScene({ elements: d.api.getSceneElementsIncludingDeleted().map(e => ids.has(e.id) ? X.newElementWith(e, { isDeleted: true }) : e),
+      appState: { selectedElementIds: {} }, captureUpdate: X.CaptureUpdateAction.IMMEDIATELY });
+    _drawBeacon('delete-selection-fallback', { measured: true, n_considered: sel.length });
+  }
+}
 function _drawToggleLock() {
   const d = _draw;
   if (!d || !d.api) return;
@@ -60946,7 +66483,8 @@ async function _drawSaveLibrary(retried) {
       const rr = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(_drawLibPath()), { cache: 'no-store' });
       const theirs = rr.ok ? await d.lib.X.loadLibraryFromBlob(await rr.blob(), 'unpublished') : [];
       d.libEtag = rr.headers.get('ETag');
-      d.libItems = d.lib.X.mergeLibraryItems(items, theirs);
+      const gone = d.libDeleted || new Set();
+      d.libItems = d.lib.X.mergeLibraryItems(items, theirs).filter(i => !gone.has(i.id));
       return _drawSaveLibrary(true);
     }
     if (!r.ok || res.error || res.queued) throw new Error(res.error || ('HTTP ' + r.status));
@@ -61005,9 +66543,10 @@ function _drawLibRender() {
   // mousedown and mouseup (an autosave updating recents, a library echo)
   // removed the pressed tile and the tap never became a click.
   const fresh = _drawSetBody(body, '<div class="draw-lib-sub">My components</div><div class="draw-lib-grid">'
-    + items.map(i => '<button class="draw-lib-item" draggable="true" data-repeatable data-id="' + esc(i.id) + '" title="Drag onto the canvas, or tap to insert"'
+    + items.map(i => '<div class="draw-row draw-lib-cell"><button class="draw-lib-item" draggable="true" data-repeatable data-id="' + esc(i.id) + '" title="Drag onto the canvas, or tap to insert"'
       + ' onclick="_drawInsertLibItem(this.dataset.id)" ondragstart="_drawLibDragStart(event, this.dataset.id)">'
-      + '<span class="draw-lib-thumb" data-thumb="' + esc(i.id) + '"></span><span class="draw-lib-name">' + esc(i.name || 'Untitled') + '</span></button>').join('')
+      + '<span class="draw-lib-thumb" data-thumb="' + esc(i.id) + '"></span><span class="draw-lib-name">' + esc(i.name || 'Untitled') + '</span></button>'
+      + '<button class="draw-row-more" data-key="' + esc(i.id) + '" onclick="_drawItemMenu(event, \'component\', this.dataset.key)" aria-label="Component actions" title="Rename or delete">&#x22EF;</button>' + '</div>').join('')
     + '</div>');
   if (fresh || body.dataset.dark !== String(_drawIsDark())) { body.dataset.dark = String(_drawIsDark()); for (const i of items) _drawLibThumb(i); }
 }
@@ -61205,10 +66744,13 @@ async function _drawSaveRecents() {
 async function _drawRenderDrawings(body, q) {
   const d = _draw;
   const rec = d.recents.filter(x => !q || String(x.title || '').toLowerCase().includes(q));
-  const row = x => '<button class="draw-recent' + (x.path === d.path ? ' current' : '') + '" data-path="' + esc(x.path) + '" onclick="_drawPopOpen(this.dataset.path)" title="' + esc(x.path) + '">'
+  const row = x => '<div class="draw-row"><button class="draw-recent' + (x.path === d.path ? ' current' : '') + '" data-path="' + esc(x.path) + '" onclick="_drawPopOpen(this.dataset.path)" title="' + esc(x.path) + '">'
     + '<span class="draw-recent-thumb">' + (x.thumb ? '<img alt="" src="' + esc(x.thumb) + '">' : '') + '</span>'
     + '<span class="draw-recent-meta"><span class="draw-recent-title">' + esc(x.title || _drawTitleOf(x.path)) + '</span>'
-    + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>';
+    + '<span class="draw-recent-when">' + (x.ts ? esc(timeAgo(x.ts / 1000)) : '') + '</span></span></button>'
+    + '<button class="draw-row-more" data-key="' + esc(x.path) + '" onclick="_drawItemMenu(event, \'drawing\', this.dataset.key)" aria-label="Drawing actions" title="Rename or delete">&#x22EF;</button>' + '</div>';
+  const dir = d.path ? _drawDirOf(d.path) : d.dir;
+  const defDir = d.defaultDir || _drawDefaultDir();
   // The folder rows are restored from the last listing's own HTML and
   // marked with it, so a listing that comes back unchanged is a no-op.
   // Restoring a serialized copy left the mark off, and the unchanged listing
@@ -61216,15 +66758,19 @@ async function _drawRenderDrawings(body, q) {
   // straddled that swap fired no click (draw-tab.spec.ts:356 on iOS).
   const keep = d.folderHtml || '<div class="draw-empty">Loading…</div>';
   const top = body.scrollTop;
-  if (_drawSetBody(body, '<div class="draw-lib-sub">Recent drawings</div>'
+  if (_drawSetBody(body, '<div class="draw-default-dir"><span class="draw-default-lbl">New drawings go to</span>'
+      + '<button class="draw-link-btn" data-path="' + esc(defDir) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open ' + esc(defDir) + ' in Files">' + esc(_drawShortPath(defDir)) + '</button>'
+      + '<button class="draw-link-btn" id="draw-default-dir-btn" onclick="_drawChangeDefaultDir(this)" title="Choose the folder new drawings are created in">Change</button></div>'
+    + '<div class="draw-lib-sub">Recent drawings</div>'
     + (rec.length ? rec.map(row).join('') : '<div class="draw-empty">' + (q ? 'No drawings match.' : 'Drawings you open show up here.') + '</div>')
-    + '<div class="draw-lib-sub">In this folder</div><div id="draw-folder-list"></div>')) {
+    + '<div class="draw-lib-subrow"><span class="draw-lib-sub">In this folder</span>'
+    + '<button class="draw-link-btn" id="draw-folder-files" data-path="' + esc(dir) + '" onclick="_drawOpenDirInFiles(this.dataset.path)" title="Open ' + esc(dir) + ' in Files">Open in Files</button></div>'
+    + '<div id="draw-folder-list"></div>')) {
     _drawSetBody(document.getElementById('draw-folder-list'), keep);
     // The folder rows arrive after the body swap; restore the scroll again
     // now that the list is full height (it was clamped while they were absent).
     if (top) body.scrollTop = top;
   }
-  const dir = d.path ? _drawDirOf(d.path) : d.dir;
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dir), { signal: AbortSignal.timeout(8000) });
     const data = await r.json();
@@ -61233,11 +66779,131 @@ async function _drawRenderDrawings(body, q) {
     const files = (data.entries || []).filter(e => e.type !== 'dir' && /\.excalidraw$/i.test(e.name) && (!q || e.name.toLowerCase().includes(q)));
     const html = files.length ? files.map(e => {
       const p = dir.replace(/\/+$/, '') + '/' + e.name;
-      return '<button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>';
+      return '<div class="draw-row"><button class="draw-pop-row draw-pop-file' + (p === d.path ? ' current' : '') + '" data-path="' + esc(p) + '" onclick="_drawPopOpen(this.dataset.path)">&#x270E; ' + esc(e.name) + '</button>'
+        + '<button class="draw-row-more" data-key="' + esc(p) + '" onclick="_drawItemMenu(event, \'drawing\', this.dataset.key)" aria-label="Drawing actions" title="Rename or delete">&#x22EF;</button>' + '</div>';
     }).join('') : '<div class="draw-empty">No drawings in this folder yet.</div>';
     if (!q) d.folderHtml = html;
     _drawSetBody(list, html);
   } catch (e) {}
+}
+
+// ── Rename / delete from the library ──
+// One menu element, anchored to the ⋯ that opened it.
+function _drawItemMenu(e, kind, key) {
+  if (e) e.stopPropagation();
+  const open = document.getElementById('draw-item-menu');
+  const again = open && open.dataset.key === key && open.dataset.kind === kind;
+  _drawCloseMenus();
+  if (again) return;
+  const view = document.getElementById('draw-view');
+  const m = document.createElement('div');
+  m.id = 'draw-item-menu'; m.className = 'draw-menu draw-item-menu'; m.setAttribute('role', 'menu');
+  m.dataset.kind = kind; m.dataset.key = key;
+  m.innerHTML = '<button role="menuitem" onclick="_drawItemAction(\'rename\')">Rename</button>'
+    + '<button role="menuitem" class="draw-menu-danger" onclick="_drawItemAction(\'delete\')">Delete</button>';
+  m.addEventListener('click', ev => ev.stopPropagation());
+  view.appendChild(m);
+  const r = e.currentTarget.getBoundingClientRect(), vr = view.getBoundingClientRect();
+  const w = m.offsetWidth || 160, h = m.offsetHeight || 90;
+  m.style.left = Math.max(8, Math.min(r.right - vr.left - w, vr.width - w - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(r.bottom - vr.top + 4, vr.height - h - 8)) + 'px';
+  setTimeout(() => document.addEventListener('click', function close() {
+    const x = document.getElementById('draw-item-menu'); if (x === m) m.remove();
+  }, { once: true }), 0);
+}
+function _drawItemAction(action) {
+  const m = document.getElementById('draw-item-menu');
+  if (!m) return;
+  const kind = m.dataset.kind, key = m.dataset.key;
+  m.remove();
+  if (kind === 'drawing') return action === 'rename' ? _drawRenamePath(key) : _drawDeletePath(key);
+  return action === 'rename' ? _drawRenameComponent(key) : _drawDeleteComponent(key);
+}
+
+async function _drawRenamePath(path) {
+  const d = _drawS();
+  const title = await showPrompt('Rename drawing', 'Name', _drawTitleOf(path));
+  if (title === null) return;
+  const clean = String(title).trim().replace(/\.excalidraw$/i, '').replace(/[/\0]/g, '-');
+  if (!clean || clean === _drawTitleOf(path)) return;
+  if (path === d.path) { await _drawRename(clean); _drawLibRender(); return; }
+  const newName = clean + '.excalidraw';
+  try {
+    const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, new_name: newName }), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok || res.error) throw new Error(res.error || ('HTTP ' + r.status));
+    const to = res.path || (_drawDirOf(path).replace(/\/+$/, '') + '/' + newName);
+    for (const x of d.recents) if (x.path === path) { x.path = to; x.title = _drawTitleOf(to); }
+    (d.recentsDropped = d.recentsDropped || new Set()).add(path);
+    const dr = _drawDraftGet(path);
+    if (dr) { _drawDropDraft(path); try { localStorage.setItem(_DRAW_DRAFT_PREFIX + to, JSON.stringify(Object.assign(dr, { path: to }))); } catch (e) {} }
+    d.folderHtml = null;
+    _drawSaveRecents();
+    _drawLibRender();
+    showToast('Renamed to ' + newName);
+  } catch (e) {
+    showToast('Rename failed: ' + (e.message || e));
+    _drawBeacon('rename-failed', { target: path, error: String(e && e.message || e) });
+  }
+}
+
+async function _drawDeletePath(path) {
+  const d = _drawS();
+  if (!(await showConfirm('Delete "' + _drawTitleOf(path) + '"? The file is removed from disk.', 'Delete', true))) return;
+  const isCur = path === d.path;
+  if (isCur) {
+    // No autosave may recreate the file while (or after) it is deleted.
+    d.deleting = path;
+    if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = null; }
+    if (d.retryTimer) { clearTimeout(d.retryTimer); d.retryTimer = null; }
+    for (let i = 0; d.saving && i < 400; i++) await new Promise(r => setTimeout(r, 50));
+  }
+  try {
+    const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }), _skipOutbox: true });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok && r.status !== 404) throw new Error(res.error || ('HTTP ' + r.status));
+  } catch (e) {
+    if (isCur) d.deleting = null;
+    showToast('Delete failed: ' + (e.message || e));
+    _drawBeacon('delete-failed', { target: path, error: String(e && e.message || e) });
+    return;
+  }
+  _drawDropDraft(path);
+  d.recents = d.recents.filter(x => x.path !== path);
+  (d.recentsDropped = d.recentsDropped || new Set()).add(path);
+  d.folderHtml = null;
+  _drawSaveRecents();
+  if (isCur) {
+    d.path = ''; d.etag = null; d.conflict = null; _drawHideConflict();
+    _drawResetScene();
+    d.deleting = null;
+    await _drawNew(true);
+  }
+  _drawLibRender();
+  showToast('Deleted ' + _drawBase(path));
+}
+
+async function _drawRenameComponent(id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item) return;
+  const name = await showPrompt('Rename component', 'Name', item.name || '');
+  if (name === null || !name || name === item.name) return;
+  // Excalidraw's library hash leaves names out, so clear ours or the
+  // change handler would see "unchanged" and never write the rename.
+  d.libHash = null;
+  await d.api.updateLibrary({ libraryItems: d.libItems.map(i => i.id === id ? Object.assign({}, i, { name }) : i), merge: false });
+}
+async function _drawDeleteComponent(id) {
+  const d = _draw;
+  const item = d && (d.libItems || []).find(i => i.id === id);
+  if (!item) return;
+  if (!(await showConfirm('Delete the component "' + (item.name || 'Untitled') + '" from the library?', 'Delete', true))) return;
+  // Remembered so a merge with another device's copy does not bring it back.
+  (d.libDeleted = d.libDeleted || new Set()).add(id);
+  await d.api.updateLibrary({ libraryItems: d.libItems.filter(i => i.id !== id), merge: false });
 }
 
 // ── Mermaid paste ──
@@ -61870,3 +67536,433 @@ function _drawRtAfterDiskReload(text, etag) {
   for (const el of d.api.getSceneElementsIncludingDeleted()) _drawRt.sent.set(el.id, el.version);
   if (h && h.joined && h.canWrite && h.peers().length) h.op({ kind: 'reload', text, etag, t: _rtNow() });
 }
+
+// ═══════ COMMAND PALETTE (Cmd/Ctrl-K) ═══════
+// One box that finds any amux thing by name and opens it (Ethan, 2026-10-19:
+// "cmd + k i can quickly get the worker, group, etc."). Small families are
+// matched here from what the page holds or fetches once per open; board cards
+// and schedules come from /api/palette, a server-side name index, because
+// shipping 28k card titles to every client is the wrong cost.
+//
+// Ranking (Ethan, 2026-10-24) is the server's scale, so both lists merge by
+// score: `tier * 10000 + boost`. The tier is how the text matched (5 exact
+// name or id, 4 prefix or every word at a word start, 3 inside the title,
+// 2 only in the body, 1 fuzzy) and always wins. The boost orders one tier:
+// the kind of thing, active work, where you are, and what you open often.
+// Archived and discarded things stay out until "Show archived" is on.
+const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+const _CMDK_SHOW = 8;
+const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
+const _CMDK_KIND = {
+  worker: 'Worker', group: 'Group', project: 'Project', card: 'Card', schedule: 'Schedule', view: 'Tab',
+  action: 'Action', pin: 'Pin', secret: 'Vault', payment: 'Vault', connector: 'Connector', skill: 'Skill',
+};
+// Families weighted so a worker or group outranks a card that matched as
+// well: an open card fresh today reaches 60 + 80 + 60 (+60 for a prefix) on
+// the server's side of the scale.
+const _CMDK_WEIGHT = { worker: 220, group: 200, view: 160, action: 140, project: 140, card: 60, schedule: 50, pin: 60, connector: 50, skill: 50, secret: 30, payment: 30 };
+
+function _cmdkActions() {
+  return [
+    { title: 'New worker', sub: 'Create or connect', run: () => openCreate() },
+    { title: 'New card', sub: 'Add a card to the board', run: () => { switchView('board'); openBoardAdd(); } },
+    { title: 'New schedule', sub: 'Run a prompt or command on a timer', run: () => { switchView('scheduler'); openSchedModal(); } },
+    { title: 'New scratchpad note', sub: 'Scratchpad', run: () => { switchView('scratchpad'); _scratchpadNewNote(); } },
+    { title: 'Settings', sub: 'Dashboard settings', run: () => toggleSettings() },
+    { title: 'Toggle light / dark mode', sub: 'Theme', run: () => toggleTheme() },
+    { title: 'Grid view', sub: 'Every worker terminal at once', run: () => enterGridMode() },
+  ].map((a, i) => ({ kind: 'action', id: 'action-' + i, body: a.sub, ...a }));
+}
+
+function _cmdkViews() {
+  const out = [];
+  document.querySelectorAll('[id^="tab-"]').forEach(b => {
+    const m = /switchView\('([^']+)'\)/.exec(b.getAttribute('onclick') || '');
+    if (!m) return;
+    const title = (b.textContent || '').replace(/[^\p{L}\p{N} &'-]/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (title) out.push({ kind: 'view', id: m[1], title, sub: 'Open the ' + title + ' tab' });
+  });
+  return out;
+}
+
+async function _cmdkLoadLists() {
+  if (_cmdk.lists && Date.now() - _cmdk.listsAt < 30_000) return;
+  const get = (path) => fetch(API + path, { headers: _authHeaders(), signal: AbortSignal.timeout(8000) })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(path + ' ' + r.status)));
+  const fams = {
+    group: get('/api/groups').then(d => (d.groups || []).map(g => { const about = [g.department, g.goal].filter(Boolean).join(' · '); return { kind: 'group', id: g.name, title: g.name, sub: about || 'Group', body: about }; })),
+    project: get('/api/projects').then(d => (d.projects || []).map(p => ({ kind: 'project', id: p.name, title: p.name, sub: 'Project' }))),
+    pin: get('/api/pinned').then(d => (d || []).map(p => ({ kind: 'pin', id: p.id, title: p.title || String(p.file_path || '').split('/').pop(), sub: p.file_path || 'Pinned note', body: p.file_path || '' }))),
+    // Names and scopes only; the vault never sends values here.
+    secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: (s.kind === 'api_key' ? 'API key' : 'Secret') + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
+    payment: get('/api/vault').then(d => (d.items || []).filter(p => p.kind !== 'login').map(p => ({ kind: 'payment', id: p.id, title: p.label || p.brand || 'Card', sub: 'Payment method' + (p.brand ? ' · ' + p.brand : '') }))),
+    connector: get('/api/connectors').then(d => (d.connectors || []).map(c => ({ kind: 'connector', id: c.id, title: c.name || c.id, sub: c.category || 'Connector' }))),
+    skill: get('/api/skills').then(d => (d || []).map(s => ({ kind: 'skill', id: s.name, title: '/' + s.name, sub: s.description || 'Skill', body: s.description || '' }))),
+  };
+  const names = Object.keys(fams);
+  const settled = await Promise.allSettled(Object.values(fams));
+  const lists = {}, failed = [];
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') lists[names[i]] = r.value;
+    else { lists[names[i]] = []; failed.push(names[i]); }
+  });
+  _cmdk.lists = lists; _cmdk.failed = failed; _cmdk.listsAt = Date.now();
+  if (failed.length) console.warn('[amux] palette lists unavailable', failed);
+}
+
+// A worker that is working or waiting on you is active work.
+function _cmdkBusy(status) { return /waiting|needs|input|working|active/i.test(status || ''); }
+
+function _cmdkLocal() {
+  const workers = (typeof sessions !== 'undefined' ? sessions : []).map(s => ({
+    kind: 'worker', id: s.name, title: s.name,
+    sub: [s.status, s.desc].filter(Boolean).join(' · ').slice(0, 120), body: s.desc || '',
+    status: s.status || '', tags: s.tags || [], archived: !!s.archived,
+  }));
+  const l = _cmdk.lists || {};
+  return [...workers, ..._cmdkViews(), ..._cmdkActions(), ...(l.group || []), ...(l.project || []),
+    ...(l.pin || []), ...(l.connector || []), ...(l.skill || []), ...(l.secret || []), ...(l.payment || [])];
+}
+
+// What you opened from here, and how often: { "kind:id": [count, lastMs, title] }.
+function _cmdkUsage() {
+  try { return JSON.parse(localStorage.getItem(_CMDK_USAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+
+function _cmdkRecord(r) {
+  if (!r.id || r.kind === 'more' || r.kind === 'hidden') return;
+  const u = _cmdkUsage(), k = r.kind + ':' + r.id, prev = u[k] || [0, 0, ''];
+  u[k] = [prev[0] + 1, Date.now(), r.title];
+  const keep = Object.entries(u).sort((a, b) => b[1][1] - a[1][1]).slice(0, 60);
+  try { localStorage.setItem(_CMDK_USAGE_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) {}
+}
+
+// Up to +200 for something opened often and lately; a week halves it.
+function _cmdkFrecency(u, it) {
+  const e = u[it.kind + ':' + it.id];
+  if (!e) return 0;
+  const days = Math.max(0, Date.now() - e[1]) / 86_400_000;
+  return Math.round(Math.min(200, 70 * Math.log2(1 + e[0])) * Math.pow(0.5, days / 7));
+}
+
+// Where you are: the open worker, the filtered group, the tab on screen.
+function _cmdkContext(it) {
+  const peek = typeof peekSession !== 'undefined' ? peekSession : null;
+  const tag = typeof activeTag !== 'undefined' ? activeTag : '';
+  const view = typeof activeView !== 'undefined' ? activeView : '';
+  let b = 0;
+  if (it.kind === 'worker' && peek && it.id === peek) b += 150;
+  if ((it.kind === 'card' || it.kind === 'schedule') && peek && it.session === peek) b += 100;
+  if (tag && ((it.kind === 'worker' && (it.tags || []).includes(tag)) || (it.kind === 'group' && it.id === tag))) b += 80;
+  if ((view === 'board' && it.kind === 'card') || (view === 'scheduler' && it.kind === 'schedule')) b += 100;
+  return b;
+}
+
+function _cmdkWordStart(text, tok) {
+  let i = text.indexOf(tok);
+  while (i >= 0) {
+    if (i === 0 || !/[\p{L}\p{N}]/u.test(text[i - 1])) return true;
+    i = text.indexOf(tok, i + 1);
+  }
+  return false;
+}
+
+// The query's letters in order inside `text`: the matched positions, or null.
+function _cmdkFuzzy(text, q) {
+  const want = q.replace(/\s+/g, '');
+  const at = [];
+  let j = 0;
+  for (let i = 0; i < text.length && j < want.length; i++) if (text[i] === want[j]) { at.push(i); j++; }
+  return j === want.length ? at : null;
+}
+
+// How `it` matches: { tier, match, gaps } or null. The same tiers as
+// /api/palette's rank(), so a local hit and a server hit compare.
+function _cmdkMatch(it, q, toks) {
+  const t = String(it.title || '').toLowerCase(), id = String(it.id || '').toLowerCase();
+  const body = String(it.body || '').toLowerCase();
+  const hay = id + ' ' + t;
+  if (t === q || id === q) return { tier: 5, match: 'exact' };
+  const inHay = toks.every(k => hay.includes(k));
+  if (inHay && (t.startsWith(q) || id.startsWith(q))) return { tier: 4, match: 'prefix' };
+  if (inHay && toks.every(k => _cmdkWordStart(t, k) || _cmdkWordStart(id, k))) return { tier: 4, match: 'word' };
+  if (inHay) return { tier: 3, match: 'title' };
+  if (body && toks.every(k => hay.includes(k) || body.includes(k))) return { tier: 2, match: 'body' };
+  if (q.replace(/\s+/g, '').length >= 3) {
+    const at = _cmdkFuzzy(t, q);
+    if (at) { let gaps = 0; for (let i = 1; i < at.length; i++) if (at[i] !== at[i - 1] + 1) gaps++; return { tier: 1, match: 'fuzzy', gaps }; }
+  }
+  return null;
+}
+
+function _cmdkBoost(it, m, u) {
+  let b = _CMDK_WEIGHT[it.kind] || 0;
+  if (m.match === 'prefix') b += 60;
+  if (m.gaps) b -= Math.min(400, m.gaps * 40);
+  if (it.kind === 'worker' && _cmdkBusy(it.status)) b += 80;
+  if (it.archived) b -= 400;
+  return b + _cmdkContext(it) + _cmdkFrecency(u, it);
+}
+
+// Body text around the first matched word, for a hit found only there.
+function _cmdkSnippet(body, toks) {
+  const lc = body.toLowerCase();
+  const found = toks.map(k => lc.indexOf(k)).filter(i => i >= 0);
+  const at = found.length ? Math.min(...found) : 0;
+  const from = Math.max(0, at - 30), to = Math.min(body.length, from + 90);
+  return (from > 0 ? '…' : '') + body.slice(from, to) + (to < body.length ? '…' : '');
+}
+
+// `text` escaped, with the query's words (or a fuzzy match's letters) marked.
+function _cmdkMark(text, toks, fuzzyQ) {
+  text = String(text || '');
+  const lc = text.toLowerCase();
+  if (lc.length !== text.length) return esc(text);
+  const on = new Array(text.length).fill(false);
+  if (fuzzyQ) (_cmdkFuzzy(lc, fuzzyQ) || []).forEach(i => { on[i] = true; });
+  else for (const k of toks) { let i = lc.indexOf(k); while (i >= 0) { for (let j = i; j < i + k.length; j++) on[j] = true; i = lc.indexOf(k, i + k.length); } }
+  let out = '', open = false;
+  for (let i = 0; i < text.length; i++) {
+    if (on[i] !== open) { out += on[i] ? '<mark>' : '</mark>'; open = on[i]; }
+    out += esc(text[i]);
+  }
+  return out + (open ? '</mark>' : '');
+}
+
+function _cmdkKey(r) { return r ? r.kind + ':' + r.id : ''; }
+
+// Nothing typed: where you went lately, workers waiting on you, then actions
+// and tabs.
+function _cmdkStartRows() {
+  const local = _cmdkLocal(), u = _cmdkUsage();
+  const byKey = new Map(local.map(it => [_cmdkKey(it), it]));
+  const recent = [];
+  for (const [k, e] of Object.entries(u).sort((a, b) => b[1][1] - a[1][1])) {
+    if (recent.length >= 5) break;
+    const kind = k.split(':')[0], id = k.slice(kind.length + 1);
+    if (kind === 'action') continue;
+    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id } : null);
+    if (it && !it.archived) recent.push({ ...it, section: 'Recent' });
+  }
+  const seen = new Set(recent.map(_cmdkKey));
+  const waiting = local.filter(it => it.kind === 'worker' && !it.archived && /waiting|needs|input/i.test(it.status) && !seen.has(_cmdkKey(it)))
+    .slice(0, 3).map(it => ({ ...it, section: 'Needs you' }));
+  const actions = _cmdkActions().sort((a, b) => _cmdkFrecency(u, b) - _cmdkFrecency(u, a)).map(it => ({ ...it, section: 'Actions' }));
+  const views = _cmdkViews().filter(it => !seen.has(_cmdkKey(it))).map(it => ({ ...it, section: 'Tabs' }));
+  return [...recent, ...waiting, ...actions, ...views];
+}
+
+function _cmdkCompute() {
+  const q = _cmdk.q.trim().toLowerCase();
+  const toks = q.split(/\s+/).filter(Boolean);
+  let all;
+  _cmdk.hiddenLocal = 0;
+  if (!toks.length) {
+    all = _cmdkStartRows();
+  } else {
+    const u = _cmdkUsage();
+    const scored = [];
+    for (const it of _cmdkLocal()) {
+      const m = _cmdkMatch(it, q, toks);
+      if (!m) continue;
+      if (it.archived && !_cmdk.hidden) { _cmdk.hiddenLocal++; continue; }
+      scored.push([{ ...it, tier: m.tier, match: m.match,
+        snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, m.tier * 10000 + _cmdkBoost(it, m, u)]);
+    }
+    for (const h of (_cmdk.server || [])) {
+      // An older server answers without tier/boost: read the tier off its score.
+      const tier = h.tier || (h.score >= 1000 ? 5 : h.score >= 200 ? 4 : 3);
+      const it = { kind: h.kind, id: h.id, title: h.title, status: h.status, session: h.session, archived: h.archived,
+        sub: [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : ''),
+        tier, match: h.match || '', snippet: h.snippet || '' };
+      scored.push([it, tier * 10000 + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
+    }
+    all = scored.sort((a, b) => b[1] - a[1]).slice(0, 40).map(([it]) => it);
+  }
+  // Show 8 first; a "more" row opens the rest.
+  let rows = all;
+  if (!_cmdk.more && all.length > _CMDK_SHOW) {
+    const pinned = _cmdk.moved ? all.findIndex(r => _cmdkKey(r) === _cmdk.selKey) : -1;
+    if (pinned >= _CMDK_SHOW) _cmdk.more = true;
+    else rows = all.slice(0, _CMDK_SHOW).concat([{ kind: 'more', id: '', title: 'Show ' + (all.length - _CMDK_SHOW) + ' more' }]);
+  }
+  const hiddenN = ((_cmdk.serverMeta && _cmdk.serverMeta.hidden) || 0) + _cmdk.hiddenLocal;
+  if (toks.length && !_cmdk.hidden && hiddenN) rows = rows.concat([{ kind: 'hidden', id: '', title: 'Show ' + hiddenN + ' archived or discarded' }]);
+  _cmdk.rows = rows;
+  // The highlight stays on the same thing while results arrive; until you
+  // move it, it stays on the top row.
+  if (_cmdk.moved) {
+    const i = rows.findIndex(r => _cmdkKey(r) === _cmdk.selKey);
+    if (i >= 0) _cmdk.sel = i;
+  } else _cmdk.sel = 0;
+  if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
+}
+
+function _cmdkRowHtml(r, i, toks, q) {
+  const meta = r.kind === 'more' || r.kind === 'hidden';
+  const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
+    + ' onmousemove="_cmdkHover(' + i + ')" onclick="_cmdkRun(' + i + ')">';
+  if (meta) return head + '<span class="cmdk-kind"></span><span class="cmdk-text"><span class="cmdk-title">' + esc(r.title) + '</span></span></div>';
+  const fz = r.match === 'fuzzy' ? q : '';
+  const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
+    : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
+}
+
+function _cmdkRender() {
+  const list = document.getElementById('cmdk-list');
+  if (!list) return;
+  _cmdkCompute();
+  const q = _cmdk.q.trim().toLowerCase(), toks = q.split(/\s+/).filter(Boolean);
+  let html = '', section = '';
+  _cmdk.rows.forEach((r, i) => {
+    if (r.section && r.section !== section) { section = r.section; html += '<div class="cmdk-section">' + esc(section) + '</div>'; }
+    html += _cmdkRowHtml(r, i, toks, q);
+  });
+  list.innerHTML = html || '<div class="cmdk-empty">' + (q ? 'Nothing named “' + esc(_cmdk.q.trim()) + '”.' : 'Type to search.') + '</div>';
+  const foot = document.getElementById('cmdk-foot');
+  if (foot) {
+    const m = _cmdk.serverMeta;
+    const bits = [];
+    if (q && m) bits.push(m.measured ? (m.n_considered || 0).toLocaleString() + ' cards and schedules searched' + (m.stale ? ' (refreshing)' : '') : 'cards could not be searched');
+    if (_cmdk.failed.length) bits.push('not loaded: ' + _cmdk.failed.join(', '));
+    bits.push('↑↓ Enter · Esc');
+    foot.innerHTML = '<span class="cmdk-foot-text">' + esc(bits.join(' · ')) + '</span>'
+      + '<button type="button" class="btn cmdk-hidden-toggle" aria-pressed="' + _cmdk.hidden + '" onclick="_cmdkToggleHidden()">'
+      + (_cmdk.hidden ? 'Hide archived' : 'Show archived') + '</button>';
+  }
+  list.querySelector('.cmdk-row.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+function _cmdkHover(i) {
+  if (_cmdk.sel === i && _cmdk.moved) return;
+  _cmdk.sel = i;
+  _cmdk.moved = true; _cmdk.selKey = _cmdkKey(_cmdk.rows[i]);
+  document.querySelectorAll('#cmdk-list .cmdk-row').forEach((el, j) => {
+    el.classList.toggle('sel', j === i);
+    el.setAttribute('aria-selected', String(j === i));
+  });
+}
+
+function _cmdkToggleHidden() {
+  _cmdk.hidden = !_cmdk.hidden;
+  _cmdkRender(); _cmdkQueryServer();
+  document.getElementById('cmdk-input')?.focus();
+}
+
+function _cmdkQueryServer() {
+  clearTimeout(_cmdk.timer);
+  const q = _cmdk.q.trim();
+  const seq = ++_cmdk.seq;
+  if (!q) { _cmdk.server = []; _cmdk.serverMeta = null; return; }
+  _cmdk.timer = setTimeout(async () => {
+    try {
+      const r = await fetch(API + '/api/palette?limit=20&q=' + encodeURIComponent(q) + (_cmdk.hidden ? '&hidden=1' : ''), { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
+      const d = await r.json();
+      if (seq !== _cmdk.seq) return;
+      _cmdk.server = r.ok ? (d.hits || []) : [];
+      _cmdk.serverMeta = r.ok ? d : { measured: false };
+    } catch (e) {
+      if (seq !== _cmdk.seq) return;
+      _cmdk.server = []; _cmdk.serverMeta = { measured: false };
+    }
+    _cmdkRender();
+  }, 90);
+}
+
+function openCmdk() {
+  let ov = document.getElementById('cmdk-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'cmdk-overlay';
+    ov.className = 'modal-overlay cmdk-overlay';
+    ov.innerHTML = '<div class="modal cmdk" role="dialog" aria-label="Search amux">'
+      + '<input id="cmdk-input" class="input cmdk-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search workers, groups, cards, tabs, actions…" aria-controls="cmdk-list">'
+      + '<div id="cmdk-list" class="cmdk-list" role="listbox"></div>'
+      + '<div id="cmdk-foot" class="cmdk-foot"></div></div>';
+    ov.addEventListener('mousedown', e => { if (e.target === ov) closeCmdk(); });
+    document.body.appendChild(ov);
+    const inp = ov.querySelector('#cmdk-input');
+    inp.addEventListener('input', () => { _cmdk.q = inp.value; _cmdk.sel = 0; _cmdk.moved = false; _cmdk.more = false; _cmdkRender(); _cmdkQueryServer(); });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); _cmdkHover(Math.min(_cmdk.rows.length - 1, _cmdk.moved ? _cmdk.sel + 1 : 1)); _cmdkRender(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); _cmdkHover(Math.max(0, _cmdk.sel - 1)); _cmdkRender(); }
+      else if (e.key === 'Enter') { e.preventDefault(); _cmdkRun(_cmdk.sel); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeCmdk(); }
+    });
+  }
+  ov.classList.add('active');
+  const inp = document.getElementById('cmdk-input');
+  inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
+  _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
+  _cmdkRender();
+  inp.focus();
+  _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
+}
+
+function closeCmdk() {
+  const ov = document.getElementById('cmdk-overlay');
+  if (ov) ov.classList.remove('active');
+  clearTimeout(_cmdk.timer); _cmdk.seq++;
+}
+
+function _cmdkOpenSchedule(id, tries) {
+  if ((schedules || []).some(x => x.id === id && !x.deleted)) { openSchedDetail(id); return; }
+  if (tries > 20) { showToast(id + ' did not load in the Scheduler'); return; }
+  setTimeout(() => _cmdkOpenSchedule(id, tries + 1), 150);
+}
+
+function _cmdkFill(inputId, value) {
+  setTimeout(() => {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, 120);
+}
+
+function _cmdkRun(i) {
+  const r = _cmdk.rows[i];
+  if (!r) return;
+  if (r.kind === 'more') { _cmdk.more = true; _cmdk.moved = true; _cmdk.selKey = _cmdkKey(_cmdk.rows[i - 1]); _cmdkRender(); _cmdkHover(Math.min(i, _cmdk.rows.length - 1)); _cmdkRender(); return; }
+  if (r.kind === 'hidden') { _cmdkToggleHidden(); return; }
+  closeCmdk();
+  _cmdkRecord(r);
+  // rank and tier let a sweep see people opening things far down the list,
+  // which is what a ranking regression looks like from outside.
+  try { amuxTrack('palette_open', { kind: r.kind, rank: i, tier: r.tier || 0, match: r.match || (_cmdk.q.trim() ? '' : 'start'), measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
+  switch (r.kind) {
+    case 'worker': openPeek(r.id); break;
+    case 'view': switchView(r.id); break;
+    case 'action': r.run(); break;
+    case 'group':
+      if (document.getElementById('peek-overlay')?.classList.contains('active')) closePeek();
+      switchView('sessions');
+      hiddenTags.delete(r.id); activeTag = r.id; render();
+      break;
+    case 'project': switchView('projects'); _projectChoose(r.id); break;
+    case 'card': openBoardDetail(r.id); break;
+    case 'schedule': switchView('scheduler'); _cmdkOpenSchedule(r.id, 0); break;
+    case 'pin':
+      // The Mac app opens pins as its own floating panels.
+      if (typeof _nativeTabs !== 'undefined' && _nativeTabs) location.href = 'amux://pin/' + r.id;
+      else fetch(API + '/api/pinned/' + r.id + '/launch', { method: 'POST', headers: _authHeaders() })
+        .then(x => showToast(x.ok ? 'Opened ' + r.title : 'Could not open ' + r.title));
+      break;
+    case 'secret': openVault('secrets'); _cmdkFill('vault-q', r.id); break;
+    case 'payment': openVault('payments'); break;
+    case 'connector': switchView('connectors'); break;
+    case 'skill': switchView('skills'); _cmdkFill('skills-search', r.id); break;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || (e.key || '').toLowerCase() !== 'k') return;
+  // The Skills tab keeps Cmd-K for its own search box.
+  const skills = document.getElementById('skills-view');
+  if (skills && skills.style.display !== 'none' && !document.getElementById('cmdk-overlay')?.classList.contains('active')) return;
+  e.preventDefault();
+  if (document.getElementById('cmdk-overlay')?.classList.contains('active')) closeCmdk(); else openCmdk();
+}, true);

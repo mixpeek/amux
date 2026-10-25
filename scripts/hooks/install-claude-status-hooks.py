@@ -99,15 +99,29 @@ def canonical_ask_guard(hook_path: str) -> list[dict[str, Any]]:
     # AMUX-5234: AskUserQuestion under an active /goal becomes a needsyou card.
     # ANCHORED, for the reason the subagent matcher in hook-report.sh gives:
     # the matcher is an unanchored regex over the tool name.
+    # FAILS OPEN WHEN THE SCRIPT IS MISSING, as the script itself does on every
+    # other fault. `python3 <missing file>` exits 2, which Claude Code reads as
+    # a deliberate block, so a settings entry that outlived its script turned
+    # every AskUserQuestion into "can't open file" (2026-10-21: the entry was
+    # registered, ~/.amux/hooks/ask-guard.py was absent, and no ask-guard.jsonl
+    # line had ever been written). The missing case is logged with its own
+    # verdict so a sweep of ask-guard.jsonl finds it.
     quoted = '"' + hook_path.replace('"', '\\"') + '"'
-    return [group(f"python3 {quoted}", "^AskUserQuestion$")]
+    command = (
+        f"f={quoted}; if [ -f \"$f\" ]; then exec python3 \"$f\"; fi; "
+        'mkdir -p "$HOME/.amux/logs" && '
+        'printf \'{"ts":%s,"verdict":"script_missing","path":"%s"}\\n\' "$(date +%s)" "$f" '
+        '>> "$HOME/.amux/logs/ask-guard.jsonl"; exit 0'
+    )
+    return [group(command, "^AskUserQuestion$")]
 
 
 def canonical_boundary_guard(hook_path: str) -> list[dict[str, Any]]:
     # boundaries.toml, enforced by one guard. Anchored for the reason
-    # canonical_ask_guard gives: the matcher is an unanchored regex.
+    # canonical_ask_guard gives: the matcher is an unanchored regex. Agent and
+    # Task carry the `subagents` boundary (the running-subagent cap).
     quoted = '"' + hook_path.replace('"', '\\"') + '"'
-    return [group(f"python3 {quoted}", "^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob)$")]
+    return [group(f"python3 {quoted}", "^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Agent|Task)$")]
 
 
 # What an event's HANDLER must contain for the wiring to mean anything

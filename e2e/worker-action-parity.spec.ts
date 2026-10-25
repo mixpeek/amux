@@ -69,11 +69,13 @@ test('worker card and peek share all worker actions, plus both peek-only actions
       copy.querySelectorAll('.mi').forEach((icon) => icon.remove());
       return (copy.textContent || '').trim();
     };
-    // Prove the final action is reachable in the same render snapshot. Holding
-    // a locator across an await races the app's normal session-poll rerender;
-    // iOS WebKit correctly reported that detached-node race in the full suite.
+    // Focus mode is the FIRST item, visible with the menu unscrolled (Ethan,
+    // 2026-10-20: it sat below the whole action list, off-screen on a phone).
+    // Measured in the same render snapshot: holding a locator across an await
+    // races the app's normal session-poll rerender (iOS WebKit, full suite).
     const focus = peek.querySelector<HTMLElement>('#peek-focus-btn')!;
-    focus.scrollIntoView({ block: 'nearest' });
+    peek.scrollTop = 0;
+    const firstItem = peek.querySelector('.peek-more-item');
     const focusRect = focus.getBoundingClientRect();
     const peekRect = peek.getBoundingClientRect();
     const style = getComputedStyle(peek);
@@ -86,6 +88,7 @@ test('worker card and peek share all worker actions, plus both peek-only actions
       maxHeight: style.maxHeight,
       scrollHeight: peek.scrollHeight,
       clientHeight: peek.clientHeight,
+      focusFirst: firstItem === focus,
       focusReachable: focus.isConnected
         && focusRect.top >= peekRect.top - 1
         && focusRect.bottom <= peekRect.bottom + 1,
@@ -102,7 +105,8 @@ test('worker card and peek share all worker actions, plus both peek-only actions
   expect(state.peek).toEqual(state.card);
   // 64f864c6 made the peek item toggle the split file browser, and the
   // Chat tab's on/off moved into this menu (AMUX-5350).
-  expect(state.peekOnly).toEqual(['File browser (split)', 'Focus mode', 'Turn on chat']);
+  expect(state.peekOnly).toEqual(['Focus mode', 'File browser (split)', 'Turn on chat']);
+  expect(state.focusFirst).toBe(true);
   expect(state.overflowY).toBe('auto');
   expect(state.maxHeight).not.toBe('none');
   expect(state.scrollHeight).toBeGreaterThan(state.clientHeight);

@@ -40,8 +40,10 @@ metadata; a restarted raw CLI must not inherit harness routing.
 Three owner-configured exceptions reach isolated workers: their schedules, the
 goal keeper continuing an owner-set Claude Code `/goal` that is not met
 (`AMUX_GOAL_CONTINUE=0` opts out), and the worker boundaries in
-`boundaries.toml` (payments, email, credentials, resources), whose guard refuses
-the same tool calls for isolated workers (`apply_to_isolated = false` opts out).
+`boundaries.toml` (payments, email, credentials, resources, the subagent cap),
+whose guard refuses the same tool calls for isolated workers
+(`apply_to_isolated = false` opts out). The guard knows an isolated worker by
+`AMUX_ISOLATED_WORKER`.
 A refusal injects no prompt and routes nothing.
 A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
 send to, queue for and leave card notes that reach any worker, isolated included.
@@ -91,13 +93,30 @@ Verify a hook by what it WROTE, not by the settings file.
 
 ## Workflow
 
+- **Everything on main: no branches, no forks** (Ethan, 2026-10-24). A task is done when it
+  is on `origin/main`. Work in a detached worktree at `origin/main`, commit, then
+  `git fetch origin main && git rebase origin/main && git push origin HEAD:main` (retry on a
+  lost race). The pre-commit hook refuses a commit onto a branch that has forked from
+  `origin/main` (`fork_commit`), because those commits can never deploy.
+- **Only main deploys.** The builder activates the newest `origin/main` commit that passed
+  CI (`rust` and `checks`), within about a minute. A local commit, a branch, a fork or a
+  hand-built binary deploys nothing and is replaced. Never copy a build over
+  `~/.local/bin/amux-server-rs`: on 2026-10-24 a hand build of a two-week-old fork ran the
+  Mac for hours. Settings shows what the server runs against main (`GET /api/pull`).
+- **A red main holds the server.** Until one main commit passes both `rust` and `checks`,
+  nothing newer deploys (2026-10-24: a week red, 73 commits behind). SCHED-713
+  (`scripts/main-ci-watch.sh`) re-runs a first attempt that failed only in e2e once, then
+  keeps ONE card on the amux lane per red stretch. `deploy.served_commit_is_current` in
+  `/api/health/invariants` says when the gate is holding. A red main is the first thing to fix.
 - **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
-- **Commit after every completed task.** Committing deploys locally (builder adopts within ~60s).
+  Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
+  fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
+  diff the tree by hand.
 - **Bash CLI ships via `make install-cli`** (also part of `install.sh`).
   `check-and-commit.sh` checks saves; installation validates the exact published bytes.
-  Server ships on COMMIT via the auto-builder.
+  The server ships when its commit is on origin/main and passes CI.
 - **`CARGO_TARGET_DIR=~/.amux/rust-build-target`** -- one shared build dir, never per-session.
-- **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary on any commit.
+- **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary when main moves.
   Use `commit` for "did source change?", `build` for "same process image?".
 - **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
 - **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;
@@ -543,8 +562,16 @@ and lives only in `server.env`. Never commit the actual URL (repo is public).
 Use `amux browser route start '{"profile":"<saved-profile>","url":"https://..."}'`,
 then `amux browser route state`, `amux browser route shot`, and
 `amux browser route action '{"action":"click","selector":"..."}'`.
-The shared route tries Amux → direct CDP with the Chrome profile configured in
-Browser → Browser route settings → CUA when enabled. The result's `route`
-names the actual backend/profile and failed attempts. After a handoff, observe
-again before acting; uncertain actions are never replayed. Scope refusals remain refusals; an occupied native profile can use the configured isolated CDP copy while preserving its owner’s browser. Login-cookie evidence is not live auth proof.
+Omit `profile` and the route uses the profile `amux browser for <url>` picks for
+that site. Backends are tried in the `ladder` of `browser-methods.toml` (Amux →
+CDP copy of the Chrome profile set in Browser → Browser route settings → CUA
+when enabled). When another worker holds the profile, the Amux backend joins
+its browser in a tab of your own (live sign-ins); it falls to the CDP copy only
+if joining fails, or with `"join":false`. The result's `route` names the actual
+backend, profile, how the profile was chosen, and every attempt. After a
+handoff, observe again before acting; uncertain actions are never replayed.
+Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
+`amux browser route goal '{"task":"..."}'` hands a whole task to an agent method
+from `browser-methods.toml` (OpAgent first; disabled until its model is served),
+which drives the route and returns its answer and a trajectory.
 Standalone `/chrome-cdp` remains available for explicit tab work.

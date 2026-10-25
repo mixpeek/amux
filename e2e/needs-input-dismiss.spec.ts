@@ -1,16 +1,21 @@
 // The X on a card's "Waiting on you" box dismisses the ask for good, after an
 // "are you sure" (Ethan, 2026-10-12). It used to only hide the box, so the card
 // stayed in needsyou and kept flagging. Cancel in the confirm changes nothing.
+// It sends NOTHING to the worker (Ethan, 2026-10-21: "it should just dismiss it
+// and it shouldnt send anything to the worker"): a note on the card, needsyou
+// to backlog (todo would be dispatched back to the worker), and a permanent
+// server-side snooze so it stays gone on every device.
 // The worker, the card and every write are fakes.
 import { test, expect, allowUnusedRoute } from './fixtures';
 
-test('the X asks first, then tells the worker and takes the card out of needsyou', async ({ page }) => {
-  const card: any = { id: 'NI-9002', title: 'Allow the debugging prompt', status: 'needsyou', session: 'nid-worker', desc: '', archived: false,
+for (const start of ['needsyou', 'backlog']) test(`the X asks first, sends nothing to the worker and dismisses for good (card in ${start})`, async ({ page }) => {
+  const card: any = { id: 'NI-9002', title: 'Allow the debugging prompt', status: start, session: 'nid-worker', desc: '', archived: false,
     ask_question: 'Can you click Allow so I can mint the key myself?' };
   const sent: any[] = [];
   const patches: any[] = [];
   const logged: any[] = [];
   await page.route('**/api/sessions/nid-worker/send', async r => { sent.push(JSON.parse(r.request().postData() || '{}')); await r.fulfill({ json: { ok: true, submitted: true } }); });
+  allowUnusedRoute(page, '**/api/sessions/nid-worker/send');   // the point: a dismiss never sends
   await page.route('**/api/board/NI-9002**', async r => {
     if (r.request().method() === 'PATCH') {
       const p = JSON.parse(r.request().postData() || '{}');
@@ -21,6 +26,8 @@ test('the X asks first, then tells the worker and takes the card out of needsyou
     }
     return r.fulfill({ json: card });
   });
+  const snoozes: any[] = [];
+  await page.route('**/api/needs-input/snooze', r => { snoozes.push(JSON.parse(r.request().postData() || '{}')); return r.fulfill({ json: { ok: true } }); });
   await page.route('**/api/needs-input/log', r => { logged.push(JSON.parse(r.request().postData() || '{}')); return r.fulfill({ json: { ok: true } }); });
   const worker = { name: 'nid-worker', running: true, status: 'idle', lifecycle: 'active', tags: [], dir: '/tmp', provider: 'claude' };
   await page.route('**/api/events**', r => r.abort());
@@ -54,19 +61,23 @@ test('the X asks first, then tells the worker and takes the card out of needsyou
   await page.waitForTimeout(800);
   expect(sent).toHaveLength(0);
   expect(patches).toHaveLength(0);
-  expect(card.status).toBe('needsyou');
+  expect(snoozes).toHaveLength(0);
+  expect(card.status).toBe(start);
 
-  // Confirm: the worker is told, the card is noted and leaves needsyou.
+  // Confirm: nothing goes to the worker; the card is noted, leaves needsyou for
+  // backlog (never todo, which is dispatched), and the ask is snoozed for good.
   await x.click();
+  await expect(page.locator('#modal-msg')).toContainText('Nothing is sent to nid-worker');
   await modal.getByRole('button', { name: 'Dismiss' }).click();
   await expect(page.locator('#toast')).toContainText('Dismissed', { timeout: 10000 });
-  await expect.poll(() => sent.length, { timeout: 15000 }).toBeGreaterThanOrEqual(1);
-  await page.waitForTimeout(1200);
-  expect(sent).toHaveLength(1);
-  expect(sent[0].text).toContain('Dismissed (NI-9002)');
-  expect(sent[0].text).toContain('do not ask again');
-  expect(patches.some(p => String(p.desc_append || '').includes('Dismissed without an answer by owner in the card'))).toBe(true);
-  expect(card.status).toBe('todo');
+  await expect.poll(() => snoozes.length, { timeout: 15000 }).toBe(1);
+  await page.waitForTimeout(1500);
+  expect(sent).toHaveLength(0);
+  expect(snoozes[0].key).toBe('card:NI-9002');
+  expect(snoozes[0].until - Date.now() / 1000).toBeGreaterThan(365 * 86400);
+  expect(patches.some(p => String(p.desc_append || '').includes('Dismissed without an answer by owner in the card (nothing sent to the worker)'))).toBe(true);
+  expect(patches.some(p => p.status === 'todo')).toBe(false);
+  expect(card.status).toBe('backlog');
   expect(logged.some(l => l.action === 'dismiss' && l.outcome === 'ok')).toBe(true);
   await expect(box).toBeHidden();
   // A re-render of the open card keeps it gone.

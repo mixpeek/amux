@@ -160,18 +160,71 @@ fn last_recorded(conn: &Connection) -> std::collections::HashMap<String, (String
     out
 }
 
-/// Does this pair differ from what was last recorded? Split out so the change
-/// rule is one testable thing rather than an `if` buried in the loop.
+/// What one sampled decision does to the table. Split out so the change rule
+/// is one testable thing rather than an `if` buried in the loop.
 ///
 /// A FIRST SIGHTING IS A CHANGE. Otherwise a lane that has been stable since
 /// before this job existed never appears at all, and its empty history reads as
 /// "nothing to see" rather than "never sampled" — the failure this whole module
 /// is about, reproduced inside it.
-pub fn is_change(prev: Option<&(String, String)>, status: &str, decided_by: &str) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Write {
+    /// Same status, same rule: nothing.
+    Skip,
+    /// A first sighting or a new STATUS: a new row.
+    Insert,
+    /// Same status reached by a different rule: fold into the lane's latest
+    /// row (its `decided_by` moves, `repeats` and `last_seen_ts` advance, and
+    /// `rules_seen` counts each rule).
+    ///
+    /// The gs12 review measured 7,141 rows for one lane over 232 h, of which
+    /// 5,740 (80%) re-recorded the status the row before already held, mostly
+    /// `contradiction_provider_background_working` trading places with
+    /// `report`. A row per rule flip made the history a list of the same
+    /// badge; one row per status run keeps every rule that decided it.
+    Coalesce,
+}
+
+pub fn decide(prev: Option<&(String, String)>, status: &str, decided_by: &str) -> Write {
     match prev {
-        None => true,
-        Some((s, d)) => s != status || d != decided_by,
+        None => Write::Insert,
+        Some((s, _)) if s != status => Write::Insert,
+        Some((_, d)) if d != decided_by => Write::Coalesce,
+        Some(_) => Write::Skip,
     }
+}
+
+/// Fold a same-status decision into the lane's newest status row. Returns
+/// whether a row was updated (false: the lane has no row yet, so the caller's
+/// cache was stale and the next tick inserts).
+fn coalesce_row(c: &Connection, session: &str, decided_by: &str, now: f64) -> rusqlite::Result<bool> {
+    let row: Option<(i64, String)> = c
+        .query_row(
+            "SELECT id, data FROM session_events WHERE type=?1 AND session=?2 ORDER BY id DESC LIMIT 1",
+            rusqlite::params![EVENT, session],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((id, data)) = row else { return Ok(false) };
+    let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or(json!({}));
+    let Some(o) = v.as_object_mut() else { return Ok(false) };
+    let first_rule = o.get("decided_by").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let rules = o.entry("rules_seen").or_insert_with(|| json!({}));
+    if let Some(r) = rules.as_object_mut() {
+        if r.is_empty() && !first_rule.is_empty() {
+            r.insert(first_rule, json!(1));
+        }
+        let n = r.get(decided_by).and_then(|x| x.as_u64()).unwrap_or(0) + 1;
+        // Bounded: a pathological rule name churn cannot grow one row forever.
+        if r.len() < 32 || r.contains_key(decided_by) {
+            r.insert(decided_by.to_string(), json!(n));
+        }
+    }
+    let repeats = o.get("repeats").and_then(|x| x.as_u64()).unwrap_or(0) + 1;
+    o.insert("decided_by".into(), json!(decided_by));
+    o.insert("repeats".into(), json!(repeats));
+    o.insert("last_seen_ts".into(), json!(now));
+    Ok(c.execute("UPDATE session_events SET data=?1 WHERE id=?2", rusqlite::params![v.to_string(), id])? > 0)
 }
 
 /// One pass. Returns (lanes seen, rows recorded, rows pruned).
@@ -200,6 +253,7 @@ pub fn tick(state: &AppState) -> (u32, u32, u32) {
     );
 
     let mut rows: Vec<(String, String)> = Vec::new();
+    let mut folds: Vec<(String, String)> = Vec::new();
     let mut lanes = 0u32;
     for name in crate::api::session_verbs::all_lane_names() {
         let running = signals.agent_running(&format!("amux-{name}"));
@@ -209,8 +263,13 @@ pub fn tick(state: &AppState) -> (u32, u32, u32) {
         lanes += 1;
         let (status, explain) = signals.derive_status_explain(&name, running);
         let decided_by = explain["decided_by"].as_str().unwrap_or("").to_string();
-        if !is_change(prev.get(&name), &status, &decided_by) {
-            continue;
+        match decide(prev.get(&name), &status, &decided_by) {
+            Write::Skip => continue,
+            Write::Coalesce => {
+                folds.push((name, decided_by));
+                continue;
+            }
+            Write::Insert => {}
         }
         let (ps, pd) = prev
             .get(&name)
@@ -275,12 +334,45 @@ pub fn tick(state: &AppState) -> (u32, u32, u32) {
             })
         });
     }
+    let coalesced = if folds.is_empty() { 0 } else { fold(state, folds) };
     let pruned = if due { prune(state, cutoff) } else { 0 };
 
     // ALWAYS logged. A tick that only speaks when something changed makes "the
     // fleet was stable" and "the job is wedged" the same silence.
-    tracing::info!(job = JOB, lanes, recorded, "status-history census");
+    tracing::info!(job = JOB, lanes, recorded, coalesced, measured = true, n_considered = lanes,
+        "status-history census");
     (lanes, recorded, pruned)
+}
+
+/// Apply same-status rule changes in one write and move the cache to match:
+/// an UPDATE keeps the row's id, so `last_recorded`'s id-cursor would never
+/// see the new rule and every tick would fold the same flip again.
+fn fold(state: &AppState, folds: Vec<(String, String)>) -> u32 {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cell = n.clone();
+    let applied = folds.clone();
+    let wrote = state.store.write(move |c| {
+        let now = crate::config::now_f64();
+        for (session, rule) in &folds {
+            if coalesce_row(c, session, rule, now)? {
+                cell.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    });
+    if let Err(error) = wrote {
+        tracing::warn!(job = JOB, %error, measured = false, n_considered = applied.len(),
+            verdict = "status_history_coalesce_failed", "same-status rule changes were not folded");
+        return 0;
+    }
+    if let Some((_, (_, m))) = LAST_RECORDED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        for (session, rule) in applied {
+            if let Some(entry) = m.get_mut(&session) {
+                entry.1 = rule;
+            }
+        }
+    }
+    n.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Delete expired status rows WITHOUT holding the writer for the search.
@@ -397,24 +489,45 @@ mod tests {
     /// The change rule, including the cell that makes an empty history honest.
     #[test]
     fn a_first_sighting_counts_as_a_change_and_a_repeat_does_not() {
-        assert!(
-            is_change(None, "idle", "report"),
-            "a lane never recorded must be recorded"
-        );
+        assert_eq!(decide(None, "idle", "report"), Write::Insert, "a lane never recorded must be recorded");
         let prev = ("idle".to_string(), "report".to_string());
-        assert!(
-            !is_change(Some(&prev), "idle", "report"),
-            "an unchanged lane writes nothing"
+        assert_eq!(decide(Some(&prev), "idle", "report"), Write::Skip, "an unchanged lane writes nothing");
+        assert_eq!(decide(Some(&prev), "active", "report"), Write::Insert, "the STATUS changing is a change");
+        assert_eq!(
+            decide(Some(&prev), "idle", "activity_fallback"),
+            Write::Coalesce,
+            "the same status reached by a DIFFERENT RULE is kept, folded into the status row \
+             rather than written as another row reading the same badge"
         );
-        assert!(
-            is_change(Some(&prev), "active", "report"),
-            "the STATUS changing is a change"
-        );
-        assert!(
-            is_change(Some(&prev), "idle", "activity_fallback"),
-            "the same status reached by a DIFFERENT RULE is the interesting case: the badge \
-             reads identically and the reason it reads that way has moved"
-        );
+    }
+
+    /// gs12 review: 80% of one lane's 7,141 rows repeated the status before.
+    #[test]
+    fn a_same_status_rule_flip_folds_into_the_latest_row_with_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Connection::open(dir.path().join("h.db")).unwrap();
+        c.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT);").unwrap();
+        c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(1,'a',?1,?2)",
+            rusqlite::params![EVENT, json!({"status":"active","decided_by":"report"}).to_string()]).unwrap();
+        c.execute("INSERT INTO session_events(ts,session,type,data) VALUES(1,'b',?1,?2)",
+            rusqlite::params![EVENT, json!({"status":"idle","decided_by":"report"}).to_string()]).unwrap();
+        for (rule, at) in [("contradiction_provider_background_working", 10.0), ("report", 20.0),
+                           ("contradiction_provider_background_working", 30.0)] {
+            assert!(coalesce_row(&c, "a", rule, at).unwrap());
+        }
+        assert!(!coalesce_row(&c, "nobody", "report", 40.0).unwrap(), "no row to fold into");
+        let rows: i64 = c.query_row("SELECT count(*) FROM session_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 2, "folding never adds rows");
+        let a: serde_json::Value = serde_json::from_str(&c.query_row(
+            "SELECT data FROM session_events WHERE session='a'", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        assert_eq!(a["status"], "active");
+        assert_eq!(a["decided_by"], "contradiction_provider_background_working", "the latest rule decides");
+        assert_eq!(a["repeats"], 3);
+        assert_eq!(a["last_seen_ts"], 30.0);
+        assert_eq!(a["rules_seen"], json!({"report": 2, "contradiction_provider_background_working": 2}));
+        let b: serde_json::Value = serde_json::from_str(&c.query_row(
+            "SELECT data FROM session_events WHERE session='b'", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        assert!(b.get("repeats").is_none(), "another lane's row is untouched");
     }
 
     /// Retention and cadence are config, and their floors hold. A tick under 5s

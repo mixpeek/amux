@@ -15,6 +15,8 @@ test('LC-COORD-POLICY: peer task awareness spans groups; stopped targets and iso
       const made = await request.post('/api/sessions', { headers,
         data: { name, dir: '/tmp', start: false, tags: [`lc-${group}-${suffix}`], isolated } });
       expect(made.status()).toBe(201);
+      // New workers start with every Board-tab switch off (no board); turn it on.
+      if (!isolated) expect((await request.patch(`/api/sessions/${name}/config`, { headers, data: { board_enabled: true } })).ok()).toBeTruthy();
     }
     const cards: any[] = [];
     for (const name of [peer, outside]) {

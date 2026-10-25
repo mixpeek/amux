@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,22 +20,31 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenAI Agents SDK","item":"https://amux.io/compare/amux-vs-openai-agents-sdk/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenAI Agents SDK","datePublished":"2026-10-13","dateModified":"2026-10-13","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"description":"Comparison of amux (Claude Code fleet dashboard) and OpenAI Agents SDK (Python agent development framework) for teams building with AI coding agents in 2026."}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the OpenAI Agents SDK?","acceptedAnswer":{"@type":"Answer","text":"The OpenAI Agents SDK (open-sourced March 2026) is a Python library for building structured multi-agent AI applications. It provides primitives for tool calling, agent handoffs, guardrails, and tracing — all on top of OpenAI's API. Originally called Swarm, it was redesigned and released as the official Python SDK for building production AI agent workflows. It is a development framework: you write Python code that uses it."}},{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is an open-source operations layer for running AI coding sessions — Claude Code, Codex CLI, and Gemini CLI — in parallel from a single dashboard. It is not a programming framework. It is infrastructure: process management, self-healing, a shared kanban board, vault secrets, workspace isolation, and mobile oversight. You run amux on a server and connect to it from a browser or the iOS app."}},{"@type":"Question","name":"Are amux and OpenAI Agents SDK solving the same problem?","acceptedAnswer":{"@type":"Answer","text":"No. OpenAI Agents SDK is a framework for writing the logic of an agent — what tools it has, how it hands off to other agents, how it validates its output. amux is infrastructure for running the resulting agent sessions — spawning them, keeping them alive overnight, giving you visibility from your phone, and letting multiple agents coordinate on a shared task board. A team could use the Agents SDK to write the agent logic and amux to run and monitor those agents as long-running processes."}},{"@type":"Question","name":"Does OpenAI Agents SDK work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not directly. The Agents SDK is built around OpenAI's API (GPT-4o, o1, etc.) and the OpenAI tool-calling contract. Claude Code is a terminal-based coding agent from Anthropic. They occupy different layers: the Agents SDK is for building conversational agent workflows in Python; Claude Code is a coding agent you run in a terminal. amux, by contrast, is built specifically to manage Claude Code sessions."}},{"@type":"Question","name":"Which is easier to get started with for a team running parallel coding agents?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary — run install.sh, point your terminal at it, and you have a fleet dashboard in 5 minutes. No Python environment, no API wrapper code to write. The OpenAI Agents SDK requires writing Python code that defines agent logic, tools, and handoffs — meaningful engineering work before the first agent runs. For teams that already have coding agents (Claude Code sessions) and want observability and coordination, amux is the direct path."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -45,10 +54,6 @@
     <p class="subtitle">Fleet dashboard for running Claude Code sessions vs Python framework for building AI agent logic — different layers, different jobs.</p>
 
     <!-- EXP-130: /compare/amux-vs-openai-agents-sdk/ top CTA — October 2026 launch -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">Already writing agent logic? amux is the operations layer that keeps your Claude Code sessions alive overnight, coordinates them on a shared board, and gives you mobile oversight. Open source, self-hosted.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp130_agents_sdk_topofpage_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">Run your AI engineering team &#x2192;</a>
-    </div>
 
     <p><strong>OpenAI Agents SDK</strong> (open-sourced March 2026) is a Python library for building structured multi-agent AI applications on top of OpenAI's API. It gives you tool definitions, agent handoffs, guardrails, and distributed tracing. You write Python that uses it. It is a development framework for authoring agent logic.</p>
 
@@ -244,10 +249,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

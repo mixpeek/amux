@@ -42,11 +42,20 @@ fn normalize(p: &Path) -> PathBuf {
 /// catch: a class-kill must not share the blind spot of the gates it guards, and
 /// the image build compiles amux-cli too.
 fn external_include_roots(crate_manifest: &Path) -> BTreeSet<String> {
+    external_include_files(crate_manifest)
+        .iter()
+        .filter_map(|f| f.split('/').next().map(str::to_string))
+        .collect()
+}
+
+/// The repo-relative path of every file outside `crates/` that an
+/// `include_str!` under `<crate_manifest>/src/` reads.
+fn external_include_files(crate_manifest: &Path) -> BTreeSet<String> {
     let root = repo_root();
-    let mut roots = BTreeSet::new();
+    let mut files = BTreeSet::new();
     let src = crate_manifest.join("src");
     if !src.is_dir() {
-        return roots;
+        return files;
     }
     let mut stack = vec![src];
     while let Some(dir) = stack.pop() {
@@ -63,17 +72,15 @@ fn external_include_roots(crate_manifest: &Path) -> BTreeSet<String> {
             let src_dir = p.parent().unwrap();
             for abs in include_str_targets(&text, src_dir, crate_manifest) {
                 if let Ok(rr) = abs.strip_prefix(&root) {
-                    if let Some(first) = rr.components().next().and_then(|c| c.as_os_str().to_str())
-                    {
-                        if !first.is_empty() && first != "crates" {
-                            roots.insert(first.to_string());
-                        }
+                    let rel = rr.to_string_lossy().replace('\\', "/");
+                    if !rel.is_empty() && !rel.starts_with("crates/") {
+                        files.insert(rel);
                     }
                 }
             }
         }
     }
-    roots
+    files
 }
 
 /// The crates the Dockerfile's `cargo build --release -p X -p Y` compiles, read
@@ -228,4 +235,66 @@ fn dockerfile_copies_every_external_include_str_input() {
         would_miss.iter().any(|r| *r == "scripts"),
         "the check cannot detect a missing COPY — it is theatre"
     );
+}
+
+/// Whether the repo-root `.dockerignore` keeps `rel` out of the build context.
+/// Covers the forms that file uses: a path or directory prefix, `*.ext`,
+/// `**/name/`, and `!` exceptions, with the last matching line winning.
+fn dockerignored(ignore: &str, rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let mut excluded = false;
+    for line in ignore.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (negate, pat) = match line.strip_prefix('!') {
+            Some(p) => (true, p),
+            None => (false, line),
+        };
+        let pat = pat.trim_start_matches('/').trim_end_matches('/');
+        let hit = if let Some(ext) = pat.strip_prefix("*.") {
+            name.ends_with(&format!(".{ext}"))
+        } else if let Some(dir) = pat.strip_prefix("**/") {
+            rel.split('/').any(|seg| seg == dir)
+        } else {
+            rel == pat || rel.starts_with(&format!("{pat}/"))
+        };
+        if hit {
+            excluded = !negate;
+        }
+    }
+    excluded
+}
+
+/// A COPY of a directory the `.dockerignore` excludes copies nothing, so the
+/// test above passed while the cloud build failed with `"/skills": not found`
+/// (2026-10-24, after 62a880c27 added `COPY skills skills`).
+#[test]
+fn dockerignore_keeps_every_external_include_str_input() {
+    let root = repo_root();
+    let dockerfile = std::fs::read_to_string(root.join("cloud/docker/Dockerfile"))
+        .expect("cloud/docker/Dockerfile is readable");
+    let ignore = std::fs::read_to_string(root.join(".dockerignore")).unwrap_or_default();
+
+    let mut needed = BTreeSet::new();
+    for crate_dir in built_crate_dirs(&dockerfile, &root) {
+        needed.extend(external_include_files(&crate_dir));
+    }
+    assert!(
+        needed.iter().any(|f| f.starts_with("scripts/")),
+        "the include_str! scraper found {needed:?}; expected files under scripts/, so it is broken"
+    );
+
+    let ignored: Vec<&String> = needed.iter().filter(|f| dockerignored(&ignore, f)).collect();
+    assert!(
+        ignored.is_empty(),
+        ".dockerignore excludes {ignored:?}, which amux-server include_str!s at compile time, \
+         so the cloud image build cannot read them. Add a `!<path>` line after the pattern \
+         that excludes each one."
+    );
+
+    // The matcher must be able to say yes, or the green above means nothing.
+    assert!(dockerignored("skills/\n", "skills/amux-contribute.md"));
+    assert!(!dockerignored("skills/\n!skills/amux-contribute.md\n", "skills/amux-contribute.md"));
+    assert!(dockerignored("*.db\n", "a/b.db"));
 }

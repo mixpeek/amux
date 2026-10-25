@@ -93,6 +93,9 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.EthanSteininger.nextup
+        # Sign in with Apple finds an amux Cloud customer's server (ServerPickerView).
+        com.apple.developer.applesignin:
+          - Default
 
   # Unit tests (AMUX-4981). Hostless logic tests: they exercise pure parsing,
   # so they need no app to launch and run in seconds.

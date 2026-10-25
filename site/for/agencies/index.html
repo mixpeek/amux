@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,7 +23,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -87,24 +86,34 @@
         "name": "What does amux cost for an agency?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Self-hosting amux is free (MIT licensed, open source). The amux cloud tier ($20/month) adds a hosted dashboard, public tunnel URL, and managed backups — useful if you don't want to manage a server. There is no per-seat or per-project fee. Your only running cost is AI usage: each Claude Code session bills against your Anthropic API key at standard rates."
+          "text": "Self-hosting amux is free (open source, MIT + Commons Clause). amux Cloud (from $39/month) gives you a dedicated always-on amux server at yourname.amux.io — useful if you don't want to manage a server. There is no per-seat or per-project fee. Your only running cost is AI usage: each Claude Code session bills against your Anthropic API key at standard rates."
         }
       }
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -113,12 +122,6 @@
     <h1>amux for Software Agencies</h1>
     <p class="subtitle">Run an AI engineering team across all your client projects. Monitor progress between client calls. Manage client contacts, emails, and notes in one tool. Ship overnight while your team sleeps. <em>Updated October 2026.</em></p>
 
-    <div class="cta-top" style="background:var(--green,#22c55e10);border:1px solid var(--green,#22c55e);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-      <span style="font-size:14px;color:var(--fg);">Run client projects with an AI engineering team, managed from one dashboard.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
-         onclick="typeof posthog!=='undefined'&&posthog.capture('exp074_agencies_topofpage_cta_click')"
-         style="background:var(--green,#22c55e);color:#000;padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
-    </div>
 
     <p>Software agencies building with AI agents face a coordination problem that solo developers don't: each client project needs its own agent fleet, approval workflow, and progress visibility — while you're on calls, at client sites, or managing multiple teams simultaneously. amux is an open-source control plane designed for exactly this workload. It runs parallel Claude Code, Codex CLI, or Gemini CLI sessions across multiple client projects simultaneously, with per-project cost tracking, a shared kanban board, built-in CRM for client contacts, and a native iOS app for monitoring and approving actions from anywhere. Agencies using amux report running 3-5× more parallel work than single-session approaches, with overnight agent runs completing client deliverables while the team sleeps.</p>
 
@@ -242,8 +245,7 @@
     <h2>Getting started as an agency</h2>
     <p>The fastest path from zero to agents running across your client portfolio:</p>
 
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Install
-brew install mixpeek/amux/amux
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;">curl -fsSL https://amux.io/install.sh | bash
 
 # Create a separate project per client
 amux register client-a --dir ~/Dev/client-a --yolo
@@ -304,12 +306,12 @@ amux board add "Fix checkout redirect on mobile Safari" --session client-b</code
     <p>Yes — the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux iOS app</a> connects to your amux server over Wi-Fi, Tailscale, or the amux cloud tunnel. You can see all sessions, peek at terminal output, approve pending actions, and post messages to sessions from your phone. The amux cloud tunnel gives you a stable public HTTPS URL for your dashboard if you need remote access from outside your network.</p>
 
     <h3>What does amux cost for an agency?</h3>
-    <p>Self-hosting amux is free (MIT licensed, open source). The amux cloud tier ($20/month) adds a hosted dashboard, public tunnel URL, and managed backups — useful if you don't want to manage a server. There is no per-seat or per-project fee. Your only running cost is AI usage: each Claude Code session bills against your Anthropic API key at standard rates.</p>
+    <p>Self-hosting amux is free (open source, MIT + Commons Clause). amux Cloud (from $39/month) gives you a dedicated always-on amux server at yourname.amux.io — useful if you don't want to manage a server. There is no per-seat or per-project fee. Your only running cost is AI usage: each Claude Code session bills against your Anthropic API key at standard rates.</p>
 
     <div class="cta-box">
       <h3>Start running your AI engineering team across client projects</h3>
       <p>amux is free, open-source, and runs on your existing hardware. No SaaS subscription, no per-seat fees — just AI agents delivering client work while you sleep.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register client-a --dir ~/Dev/client-a --yolo
 amux start client-a
 amux serve  # → https://localhost:8824</code></pre>
@@ -363,10 +365,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

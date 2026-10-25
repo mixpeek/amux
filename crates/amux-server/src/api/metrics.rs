@@ -22,6 +22,8 @@ pub fn routes() -> Router<AppState> {
         .route("/fleet", axum::routing::get(fleet))
         .route("/telemetry", axum::routing::get(telemetry))
         .route("/replay", axum::routing::get(replay))
+        .route("/workers", axum::routing::get(worker_resources))
+        .route("/workers/live", axum::routing::get(worker_resources_live))
 }
 
 /// The full host-analysis script, embedded at compile time so the running
@@ -549,6 +551,20 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
     };
     // Discover tmux sessions + pane PIDs
     let tmux_pids = tmux_session_pids();
+    // One `ps` for every worker, the tree built in memory. This used to spawn
+    // `pgrep -P` per process and `ps -p` per worker: ~1300 spawns, 71s at
+    // load 87 on 2026-10-17 (AMUX resources visibility, desktop lane).
+    let mut children: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+    let mut stats: std::collections::HashMap<u64, (u64, f64)> = std::collections::HashMap::new();
+    for line in cmd_output("ps", &["-axo", "pid=,ppid=,rss=,%cpu="]).unwrap_or_default().lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if let [pid, ppid, rss, cpu, ..] = f[..] {
+            if let (Ok(pid), Ok(ppid)) = (pid.parse::<u64>(), ppid.parse::<u64>()) {
+                children.entry(ppid).or_default().push(pid);
+                stats.insert(pid, (rss.parse().unwrap_or(0), cpu.parse().unwrap_or(0.0)));
+            }
+        }
+    }
 
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
@@ -587,28 +603,18 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
         // Process stats: find all descendant PIDs then ps them
         if active {
             if let Some(pane_pid) = tmux_pids.get(&tmux_name) {
-                let mut all_pids = vec![*pane_pid];
-                collect_descendants(*pane_pid, &mut all_pids);
-                let pid_list = all_pids
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                if let Some(ps_out) = cmd_output("ps", &["-o", "pid=,rss=,pcpu=", "-p", &pid_list])
-                {
-                    let mut pids = Vec::new();
-                    let mut total_rss = 0u64;
-                    let mut total_cpu = 0.0f64;
-                    for line in ps_out.lines() {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 {
-                            if let Ok(pid) = parts[0].parse::<u64>() {
-                                pids.push(pid);
-                            }
-                            total_rss += parts[1].parse::<u64>().unwrap_or(0);
-                            total_cpu += parts[2].parse::<f64>().unwrap_or(0.0);
-                        }
+                let all_pids = descendants_of(*pane_pid, &children);
+                let mut pids = Vec::new();
+                let mut total_rss = 0u64;
+                let mut total_cpu = 0.0f64;
+                for pid in all_pids {
+                    if let Some((rss, cpu)) = stats.get(&pid) {
+                        pids.push(pid);
+                        total_rss += rss;
+                        total_cpu += cpu;
                     }
+                }
+                if !pids.is_empty() {
                     s["pids"] = json!(pids);
                     s["rss_mb"] = json!((total_rss as f64 / 1024.0 * 10.0).round() / 10.0);
                     s["cpu_percent"] = json!((total_cpu * 10.0).round() / 10.0);
@@ -621,15 +627,18 @@ pub(crate) fn collect_session_metrics() -> Vec<serde_json::Value> {
     sessions
 }
 
-fn collect_descendants(pid: u64, out: &mut Vec<u64>) {
-    if let Some(pgrep_out) = cmd_output("pgrep", &["-P", &pid.to_string()]) {
-        for line in pgrep_out.lines() {
-            if let Ok(child) = line.trim().parse::<u64>() {
-                out.push(child);
-                collect_descendants(child, out);
-            }
+/// `root` and everything under it, from a ppid -> children map.
+fn descendants_of(root: u64, children: &std::collections::HashMap<u64, Vec<u64>>) -> Vec<u64> {
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() && out.len() < 100_000 {
+        let cur = out[i];
+        if let Some(kids) = children.get(&cur) {
+            out.extend(kids.iter().copied().filter(|k| *k != cur));
         }
+        i += 1;
     }
+    out
 }
 
 fn tmux_session_pids() -> std::collections::HashMap<String, u64> {
@@ -813,6 +822,165 @@ async fn fleet(State(state): State<AppState>) -> Response {
         "last_fleet_state_change": parse(last("fleet_state")),
         "last_exhaustion_action": parse(last("exhaustion")),
         "providers": providers,
+    }))
+    .into_response()
+}
+
+// ---- per-worker resource metrics -------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct WorkerResourcesQuery {
+    since_h: Option<f64>,
+    limit: Option<usize>,
+    session: Option<String>,
+}
+
+/// GET /api/metrics/workers — historical per-worker resource samples.
+///
+/// Query params: `since_h` (default 24, max 168), `limit` (default 1000),
+/// `session` (filter to one worker). Returns aggregated per-worker totals
+/// and per-sample rows.
+async fn worker_resources(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<WorkerResourcesQuery>,
+) -> Response {
+    let since_h = q.since_h.unwrap_or(24.0).clamp(0.0, 168.0);
+    let limit = q.limit.unwrap_or(1000).clamp(1, 10000);
+    let session_filter = q.session.clone();
+
+    let result = state.store.read_async(move |conn| {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref sess) = session_filter {
+            (
+                "SELECT session, ts, rss_kb, cpu_pct, n_procs, n_threads \
+                 FROM worker_resource_samples \
+                 WHERE ts >= datetime('now', ?1) AND session = ?2 \
+                 ORDER BY ts DESC LIMIT ?3".to_string(),
+                vec![
+                    Box::new(format!("-{since_h} hours")) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(sess.clone()),
+                    Box::new(limit as i64),
+                ],
+            )
+        } else {
+            (
+                "SELECT session, ts, rss_kb, cpu_pct, n_procs, n_threads \
+                 FROM worker_resource_samples \
+                 WHERE ts >= datetime('now', ?1) \
+                 ORDER BY ts DESC LIMIT ?2".to_string(),
+                vec![
+                    Box::new(format!("-{since_h} hours")) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(limit as i64),
+                ],
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let samples: Vec<serde_json::Value> = stmt
+            .query_map(param_refs.as_slice(), |r| {
+                Ok(json!({
+                    "session": r.get::<_, String>(0)?,
+                    "ts": r.get::<_, String>(1)?,
+                    "rss_kb": r.get::<_, i64>(2)?,
+                    "cpu_pct": r.get::<_, f64>(3)?,
+                    "n_procs": r.get::<_, i64>(4)?,
+                    "n_threads": r.get::<_, i64>(5)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Compute per-worker summary: latest, peak, and average
+        let mut summaries: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+        for s in samples.iter().rev() {
+            let sess = s["session"].as_str().unwrap_or("").to_string();
+            let rss = s["rss_kb"].as_i64().unwrap_or(0);
+            let cpu = s["cpu_pct"].as_f64().unwrap_or(0.0);
+
+            let entry = summaries.entry(sess.clone()).or_insert_with(|| json!({
+                "session": sess,
+                "latest_rss_kb": 0,
+                "peak_rss_kb": 0,
+                "avg_rss_kb": 0,
+                "latest_cpu_pct": 0.0,
+                "peak_cpu_pct": 0.0,
+                "sample_count": 0,
+                "_sum_rss": 0i64,
+            }));
+            let count = entry["sample_count"].as_i64().unwrap_or(0) + 1;
+            let sum_rss = entry["_sum_rss"].as_i64().unwrap_or(0) + rss;
+            let peak_rss = entry["peak_rss_kb"].as_i64().unwrap_or(0).max(rss);
+            let peak_cpu = if cpu > entry["peak_cpu_pct"].as_f64().unwrap_or(0.0) { cpu } else { entry["peak_cpu_pct"].as_f64().unwrap_or(0.0) };
+            *entry = json!({
+                "session": sess,
+                "latest_rss_kb": rss,
+                "peak_rss_kb": peak_rss,
+                "avg_rss_kb": sum_rss / count,
+                "latest_cpu_pct": cpu,
+                "peak_cpu_pct": peak_cpu,
+                "sample_count": count,
+                "_sum_rss": sum_rss,
+            });
+        }
+
+        let mut worker_summaries: Vec<serde_json::Value> = summaries.into_values()
+            .map(|mut v| { v.as_object_mut().map(|o| o.remove("_sum_rss")); v })
+            .collect();
+        worker_summaries.sort_by(|a, b| {
+            b["peak_rss_kb"].as_i64().cmp(&a["peak_rss_kb"].as_i64())
+        });
+
+        let max_concurrent = crate::runtime_jobs::worker_resources::max_concurrent();
+        let max_rss_mb = std::env::var("AMUX_WORKER_MAX_RSS_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(json!({
+            "since_h": since_h,
+            "limit": limit,
+            "sample_count": samples.len(),
+            "worker_count": worker_summaries.len(),
+            "max_concurrent_active": if max_concurrent > 0 { json!(max_concurrent) } else { json!(null) },
+            "max_rss_mb": if max_rss_mb > 0 { json!(max_rss_mb) } else { json!(null) },
+            "workers": worker_summaries,
+            "samples": samples,
+        }))
+    }).await;
+
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => Json(json!({
+            "measured": false,
+            "n_considered": 0,
+            "why_unmeasured": format!("worker_resource_samples unreadable: {e}"),
+        })).into_response(),
+    }
+}
+
+/// GET /api/metrics/workers/live — current (live) per-worker resource usage,
+/// sampled on demand from ps. No history, just what each worker is using
+/// right now.
+async fn worker_resources_live() -> Response {
+    let snapshots = tokio::task::spawn_blocking(crate::runtime_jobs::worker_resources::latest)
+        .await
+        .unwrap_or_default();
+    let total_rss_kb: u64 = snapshots.iter().map(|s| s.rss_kb).sum();
+    let total_cpu: f64 = snapshots.iter().map(|s| s.cpu_pct).sum();
+    let n = snapshots.len();
+    let mut sorted = snapshots;
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.rss_kb));
+    let max_conc = crate::runtime_jobs::worker_resources::max_concurrent();
+    let max_conc_val = if max_conc > 0 { json!(max_conc) } else { json!(null) };
+    Json(json!({
+        "measured": true,
+        "n_considered": n,
+        "total_rss_mb": total_rss_kb as f64 / 1024.0,
+        "total_cpu_pct": (total_cpu * 10.0).round() / 10.0,
+        "worker_count": n,
+        "max_concurrent_active": max_conc_val,
+        "workers": sorted,
     }))
     .into_response()
 }

@@ -13,8 +13,10 @@ import XCTest
 ///
 /// Run: TEST_RUNNER_SANDBOX_E2E=1 [TEST_RUNNER_SANDBOX_USER=… TEST_RUNNER_SANDBOX_PASS=…]
 ///   xcodebuild test -scheme AmuxShareUITests -only-testing:AmuxShareUITests/SandboxConnectUITests
+/// TEST_RUNNER_SANDBOX_URL=https://<name>.amux.io points it at an amux Cloud customer's server.
 final class SandboxConnectUITests: XCTestCase {
-    private let sandbox = "https://sandbox.amux.io"
+    private let sandbox = ProcessInfo.processInfo.environment["SANDBOX_URL"] ?? "https://sandbox.amux.io"
+    private var sandboxHost: String { URL(string: sandbox)?.host ?? "sandbox.amux.io" }
 
     override func setUp() { continueAfterFailure = false }
 
@@ -23,6 +25,20 @@ final class SandboxConnectUITests: XCTestCase {
         a.name = name
         a.lifetime = .keepAlways
         add(a)
+    }
+
+    /// A WKWebView field can take the tap without taking keyboard focus (the door's password
+    /// field on a Cloud server did, 2026-10-19), and typeText then fails. Tap until the
+    /// keyboard is up, then type.
+    private func type(_ app: XCUIApplication, _ field: XCUIElement, _ text: String) {
+        // The keyboard can already be up for the previous field, so ask the field itself.
+        let focused = { (field.value(forKey: "hasKeyboardFocus") as? Bool) ?? false }
+        for _ in 0..<4 where !focused() {
+            field.tap()
+            _ = app.keyboards.firstMatch.waitForExistence(timeout: 2)
+            if !focused() { Thread.sleep(forTimeInterval: 1) }
+        }
+        field.typeText(text)
     }
 
     func testSandboxConnectsFromTheServerPicker() throws {
@@ -45,7 +61,7 @@ final class SandboxConnectUITests: XCTestCase {
         let switchServer = app.buttons["Switch Server"]
         let addServer = app.buttons["Add Server"]
         let deadline = Date().addingTimeInterval(40)
-        let savedSandbox = app.webViews.firstMatch.staticTexts["sandbox.amux.io"]
+        let savedSandbox = app.webViews.firstMatch.staticTexts[sandboxHost]
         while !pickerURL.exists && !addServer.exists && !savedSandbox.exists && Date() < deadline {
             if switchServer.exists { shot(app, "0-saved-server-unreachable"); switchServer.tap() }
             _ = pickerURL.waitForExistence(timeout: 2)
@@ -80,7 +96,7 @@ final class SandboxConnectUITests: XCTestCase {
         // The door's sign-in form, rendered inside the app's web view.
         let web = app.webViews.firstMatch
         XCTAssertTrue(web.waitForExistence(timeout: 30), "Connect opens the web view")
-        let password = web.secureTextFields.firstMatch
+        let password = web.secureTextFields.matching(NSPredicate(format: "label == 'Password'")).firstMatch
         XCTAssertTrue(password.waitForExistence(timeout: 30),
                       "the sandbox sign-in page renders in the app (no blank screen, no error overlay)")
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] 'No response from'")).firstMatch.exists,
@@ -95,33 +111,36 @@ final class SandboxConnectUITests: XCTestCase {
         }
 
         // Wrong password first: the door must refuse and stay on the form.
-        let username = web.textFields.firstMatch
-        username.tap()
-        username.typeText(user)
-        password.tap()
-        password.typeText("definitely-not-the-password")
-        web.buttons.firstMatch.tap()
-        XCTAssertTrue(web.secureTextFields.firstMatch.waitForExistence(timeout: 20), "a wrong password stays on the sign-in page")
+        let username = web.textFields.matching(NSPredicate(format: "label == 'Username'")).firstMatch
+        type(app, username, user)
+        type(app, password, "definitely-not-the-password")
+        web.buttons.matching(NSPredicate(format: "label == 'Sign in'")).firstMatch.tap()
+        XCTAssertTrue(web.secureTextFields.matching(NSPredicate(format: "label == 'Password'")).firstMatch.waitForExistence(timeout: 20), "a wrong password stays on the sign-in page")
         shot(app, "3-wrong-password")
 
         // Real sign-in, then the dashboard.
-        let user2 = web.textFields.firstMatch
-        user2.tap()
-        user2.press(forDuration: 1.0)
-        if app.menuItems["Select All"].waitForExistence(timeout: 2) { app.menuItems["Select All"].tap() }
-        user2.typeText(user)
-        let pw = web.secureTextFields.firstMatch
-        pw.tap()
-        pw.typeText(pass)
-        web.buttons.firstMatch.tap()
-        let workers = web.staticTexts["Workers"]
+        // The door keeps the username after a refusal. Retype it only when it differs: the
+        // long-press "Select All" menu otherwise swallowed the taps on the password field.
+        let user2 = web.textFields.matching(NSPredicate(format: "label == 'Username'")).firstMatch
+        if (user2.value as? String) != user {
+            user2.tap()
+            user2.press(forDuration: 1.0)
+            if app.menuItems["Select All"].waitForExistence(timeout: 2) { app.menuItems["Select All"].tap() }
+            user2.typeText(user)
+        }
+        let pw = web.secureTextFields.matching(NSPredicate(format: "label == 'Password'")).firstMatch
+        type(app, pw, pass)
+        web.buttons.matching(NSPredicate(format: "label == 'Sign in'")).firstMatch.tap()
+        // The tab reads "▦ Workers", so match on containing, not equality (2026-10-19).
+        let hasWorkers = NSPredicate(format: "label CONTAINS 'Workers'")
+        let workers = web.staticTexts.containing(hasWorkers).firstMatch
         XCTAssertTrue(workers.waitForExistence(timeout: 45), "signing in lands on the dashboard")
         shot(app, "4-dashboard")
 
         // Survives a relaunch: the session cookie is kept.
         app.terminate()
         app.launch()
-        XCTAssertTrue(app.webViews.firstMatch.staticTexts["Workers"].waitForExistence(timeout: 45),
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts.containing(hasWorkers).firstMatch.waitForExistence(timeout: 45),
                       "after a relaunch the app reopens the sandbox still signed in")
         shot(app, "5-after-relaunch")
     }

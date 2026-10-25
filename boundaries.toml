@@ -169,13 +169,26 @@ allow_examples = ["ls ~/.amux/gmail-tokens", "Read /Users/ethan/Dev/amux/docs/cr
 
 # The same credentials reached without the full path (from inside ~/.amux, or
 # through a glob such as gmail-tok*).
+#
+# The credential name must START a path segment (after /, a space, a quote, = or
+# the start of the line). Until 2026-10-20 it matched anywhere in the command, so
+# any command that also mentioned ~/.amux and contained "sb-<ref>-auth-token" (the
+# Supabase localStorage key) read as reading the owner's credentials: on one
+# afternoon it refused a commit message, a memory note and a schedule test across
+# two lanes, each reported as "Outbound email" (Ethan: "fix both in amux").
 [[boundary.deny]]
 tools = ["Bash"]
-match_all = ['\.amux\b', '(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)']
+match_all = ['\.amux\b', '(?<![\w.*-])(gmail-tok|gmail-oauth|gcal-tok|auth[-_]tok|worker-tok)']
 match_none = ['^\s*((cd|ls|du|grep|rg)\b[^;&|]*(&&|\|\||;|\|)\s*)*(cd|ls|du|grep|rg)\b[^;&|]*$']
 reason = "These are the owner's credentials. Use the amux API, which holds them for you; a worker reading them can bypass every send gate."
-block_examples = ["cd ~/.amux && cat gmail-tokens/x.json", "cat ~/.amux/gmail-tok*/x.json"]
-allow_examples = ["cd ~/.amux && ls gmail-tokens", "grep -rn auth-token ~/Dev/amux/docs"]
+block_examples = ["cd ~/.amux && cat gmail-tokens/x.json", "cat ~/.amux/gmail-tok*/x.json", "cd ~/.amux; cat 'auth-token'", "cat ~/.amux/worker-tokens/x"]
+allow_examples = [
+  "cd ~/.amux && ls gmail-tokens",
+  "grep -rn auth-token ~/Dev/amux/docs",
+  "git commit -F msg.txt  # Supabase sb-*-auth-token; eval \"$(~/.amux/github-app/get-token.sh)\"",
+  "~/.amux/scripts/browser-session-check.sh ethan-tubescience https://x.ts.app/ '^sb-.*-auth-token$'",
+  "cat > ~/.claude/notes.md <<'EOF'\nnever copy a Supabase sb-abc-auth-token between browsers; see ~/.amux/logs\nEOF",
+]
 
 [[boundary.deny]]
 tools = ["Bash"]
@@ -205,13 +218,28 @@ browsers, simulators, containers, media renders, model runs), run
 you are using now, and the resource profile you declared. Ask for only what the
 task needs: lower parallelism (`-j`, `--workers`) when the machine is strained,
 prefer remote hardware for big builds, and shut down what you started
-(simulators, browsers, containers, dev servers) when you are done. When the
+(simulators, browsers, containers, dev servers) when you are done. A process
+you started is still yours after your shell exits: `amux resources` lists such
+detached trees by root pid, and the cleanup tick lowers their priority when the
+machine is busy, so stop the ones you no longer need. The network is shared
+the same way: one Wi-Fi link (measured 69 Mbps down, 24 Mbps up on 2026-10-17)
+carries every worker, the nightly backup and the owner's calls, and uploads
+saturate first. Cap big transfers (`curl --limit-rate`, `rclone --bwlimit`,
+`gsutil -o GSUtil:parallel_thread_count=1`), avoid parallel pulls and pushes of
+large images, models, datasets and videos, and move bulk data on cloud hardware
+instead of through this Mac. When the
 machine is critical, heavy commands are refused until it recovers; if the work
 truly cannot wait, rerun with AMUX_RESOURCES_ACK="<why>" in front of the
-command, and that reason is recorded.
+command, and that reason is recorded. Disk is budgeted per worker: your scratch
+(~/.amux/tmp/<you>, plus AMUX_WORKER_DISK_PATHS) is measured against
+AMUX_WORKER_DISK_GB (default below). Past 80% heavy commands warn; past the
+budget they are refused until you delete what you no longer need (finished
+build targets first; give your subagents one shared CARGO_TARGET_DIR). An
+override is AMUX_DISK_ACK="<why>" in front of the command, recorded the same way.
 """
 enforced_by = [
   "hook: boundary-guard (heavy commands refused at critical pressure)",
+  "hook: boundary-guard (heavy commands refused past the worker's disk budget, AMUX_WORKER_DISK_GB)",
   "server: host_guard holds automated dispatch at critical (runtime_jobs/host_guard.rs)",
   "server: worker admission refuses new starts under memory pressure (api/health.rs)",
 ]
@@ -243,13 +271,101 @@ swap_used_critical = 0.97
 mem_level_strained = 2
 mem_level_critical = 4
 ack_env = "AMUX_RESOURCES_ACK"
+# Per-worker disk budget (mxp-gs12 review, 2026-10-18: the data volume filled
+# twice from one worker's subagent cargo targets). AMUX_WORKER_DISK_GB in the
+# worker's scope wins; 0 turns the check off for that worker.
+disk_budget_gb_default = 100
+disk_warn_fraction = 0.8
+disk_ttl_s = 600
+
+[[boundary]]
+id = "subagents"
+title = "Fan out within the account's capacity"
+kind = "subagents"
+rule = """
+Every worker on this machine draws on one Claude account. Subagents (the Agent
+or Task tool) share its usage windows, and when a window runs out every running
+agent stops at once. Keep the number of subagents you run at the same time
+small: a new one is refused while you already have the limit running
+(AMUX_MAX_SUBAGENTS, default below) or while the account has less usage left
+than the floor below. When refused, wait for one of your agents to finish, do
+the step yourself, or retry after the window resets. `amux usage` and
+GET $AMUX_URL/api/sessions/<you>/quota show the remaining window.
+"""
+enforced_by = [
+  "hook: boundary-guard (new Agent/Task call refused at the running-subagent cap or under the usage headroom floor)",
+]
+
+[boundary.subagents]
+# mxp-gs12 review, 2026-10-18: usage limits stopped every subagent of one
+# isolated worker five times in four days (up to 21 agents on one plan).
+tools = ["Agent", "Task"]
+# AMUX_MAX_SUBAGENTS in the worker's env wins; 0 turns the count cap off.
+env_max = "AMUX_MAX_SUBAGENTS"
+max_running_default = 4
+# Refuse new subagents while the highest account-wide window in /api/usage
+# has less than this percent left. 0 turns the floor off.
+min_headroom_pct = 10
+# A subagent counts as running while its meta has no "finished" flag and its
+# transcript was written in the last stale_s (a killed agent never gets the
+# flag). A transcript with no meta file counts only while written in the last
+# no_meta_warm_s.
+stale_s = 1800
+no_meta_warm_s = 240
+
+[[boundary]]
+id = "fleet-tmux"
+title = "The fleet's tmux server is not yours to stop"
+rule = """
+Every worker runs inside one shared tmux server. Inside a pane, a bare tmux
+command goes to that server because $TMUX names it, even when TMUX_TMPDIR is
+set. Never run `tmux kill-server` or `tmux kill-session -a` without `-L <name>`
+or `-S <socket>` naming your own private server in the same command. For a
+private test server, start and stop it as `tmux -L <name> ...` (or
+`env -u TMUX tmux -S <path> ...`). Stop a worker with `amux stop <name>`.
+"""
+enforced_by = ["hook: boundary-guard (fleet tmux kill-server / kill-session -a)"]
+
+# 2026-10-17 14:51: a demo reset script ran `TMUX_TMPDIR=/tmp/lfvd.X tmux
+# kill-server` in a pane. $TMUX won, the fleet server died, and 36 lanes
+# dropped mid-turn. The rule: a kill-server (or kill-session -a) in a tmux
+# invocation that names no -L/-S is the fleet; so is one naming the default
+# socket explicitly.
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['(?:^|[\s;&|(=])tmux\s(?:(?!(?<!\S)-[LS]\b)[^;&|\n])*\bkill-(server|session\b[^;&|\n]*\s-a\b)']
+reason = "A tmux kill without -L/-S inside a pane stops the shared fleet server and every worker with it ($TMUX wins over TMUX_TMPDIR). Name your private server: `tmux -L <name> kill-server`. Stop a worker with `amux stop <name>`."
+block_examples = [
+  "TMUX_TMPDIR=/tmp/lfvd.X tmux kill-server",
+  "tmux kill-server",
+  "tmux kill-session -a -t keep",
+  "cd /tmp && tmux kill-server 2>/dev/null || true",
+]
+allow_examples = [
+  "tmux -L lfvd kill-server",
+  "env -u TMUX tmux -S /tmp/lfvd/sock kill-server",
+  "tmux kill-session -t my-demo",
+  "grep -rn kill-server scripts/",
+]
+
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['(?:^|[\s;&|(=])tmux\s[^;&|\n]*?-(L\s*default\b|S\s*\S*/tmux-\d+/default\b)[^;&|\n]*\bkill-(server|session\b[^;&|\n]*\s-a\b)']
+reason = "That socket is the shared fleet tmux server; killing it stops every worker. Use your own `-L <name>`, or `amux stop <name>` for a worker."
+block_examples = [
+  "tmux -L default kill-server",
+  "tmux -S /private/tmp/tmux-501/default kill-server",
+]
+allow_examples = ["tmux -L default ls", "tmux -S /tmp/tmux-501/demo kill-server"]
 
 [[boundary]]
 id = "boundaries-self"
 title = "Boundaries are the owner's to change"
 rule = """
 Do not edit, move or delete the boundary registry on this machine
-(~/.amux/boundaries.toml) or the installed guard (~/.amux/hooks/boundary-guard.py,
+(~/.amux/boundaries.toml), the browser methods override
+(~/.amux/browser-methods.toml, which decides where screenshots of signed-in
+pages are sent) or the installed guard (~/.amux/hooks/boundary-guard.py,
 ~/.amux/hooks/boundaries.toml), and do not remove the guard from Claude
 settings. Propose a change to boundaries.toml in the amux repo instead.
 """
@@ -257,14 +373,14 @@ enforced_by = ["hook: boundary-guard"]
 
 [[boundary.deny]]
 tools = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
-path = '\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py)$'
+path = '\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py|browser-methods\.toml)$'
 reason = "The installed boundary registry and guard are the owner's. Propose the change in the amux repo's boundaries.toml."
-block_examples = ["Write /Users/ethan/.amux/boundaries.toml", "Edit /Users/ethan/.amux/hooks/boundary-guard.py"]
+block_examples = ["Write /Users/ethan/.amux/boundaries.toml", "Edit /Users/ethan/.amux/hooks/boundary-guard.py", "Write /Users/ethan/.amux/browser-methods.toml"]
 allow_examples = ["Edit /Users/ethan/Dev/amux/boundaries.toml"]
 
 [[boundary.deny]]
 tools = ["Bash"]
-match_all = ['\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py)', '(>|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\btruncate\b|\bln\b)']
+match_all = ['\.amux/(hooks/)?(boundaries\.toml|boundary-guard\.py|browser-methods\.toml)', '(>|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bcp\b|\bmv\b|\brm\b|\bchmod\b|\btruncate\b|\bln\b)']
 match_none = ['^\s*(cat|grep|rg|head|tail|less|diff)\b[^>|;&]*$']
 reason = "The installed boundary registry and guard are the owner's. Propose the change in the amux repo's boundaries.toml."
 block_examples = ["rm ~/.amux/hooks/boundary-guard.py", "echo x > ~/.amux/boundaries.toml", "sed -i '' 's/a/b/' ~/.amux/hooks/boundaries.toml"]

@@ -229,11 +229,11 @@ pub(crate) async fn record(state: &AppState, session: &str, prompt: &str) {
     }
     // An isolated lane's lifecycle observation is status only (CLAUDE.md,
     // "Isolated workers"): its hook may report state, never feed the ledger.
-    if super::session_verbs::session_is_isolated(session) {
+    if super::board_lifecycle::no_board(session) {
         tracing::debug!(
             session,
             verdict = "pane_prompt_skipped",
-            reason = "isolated",
+            reason = if super::session_verbs::session_is_isolated(session) { "isolated" } else { "board_unused" },
             "isolated lane: lifecycle observation is status only"
         );
         return;

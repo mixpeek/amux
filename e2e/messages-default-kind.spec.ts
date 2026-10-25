@@ -13,6 +13,9 @@ test('Messages tab opens with the human pill selected', async ({ page }) => {
     if (!r.url().includes('/api/history?counts=1')) return;
     try { rendered = await r.json(); } catch { /* page navigated */ }
   });
+  // CI's empty fleet opens the walkthrough (#wt-tooltip) over #cv-all-item, and on ios-safari the
+  // click retried until the 90s timeout (main, 2026-10-19). Same suppression as tab-customizer.
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function', { timeout: 20000 });
   await page.evaluate(() => (window as any).switchView('messages'));

@@ -47,6 +47,55 @@ test('separate Codex/Claude blocks, multiline origin matching, and late scoped h
   expect(new Set(result.colors).size).toBe(3);
 });
 
+test('a table pasted into a message stays inside it, and the message closes before the reply', async ({ page }) => {
+  // Ethan, 2026-10-18 ("why is this all blue"): the message ended between the
+  // table's top border and its first row, the box wrapper straddled the
+  // message's closing tag, and the blue message tint ran to the end.
+  const result = await page.evaluate(() => {
+    const w = window as any;
+    const body = document.getElementById('peek-body')!;
+    const bg = '\x1b[48;5;237m';
+    const raw = [
+      bg + '\u276f \x1b[38;5;231madd this to our datacenter folder\x1b[39m',
+      '',
+      '  ' + bg + '  What one lab run needs',
+      '',
+      '    \u250c\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2510',
+      '    \u2502 CPU \u2502 4   \u2502',
+      '    \u251c\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2524',
+      '    \u2502 RAM \u2502 15G \u2502',
+      '    \u2514\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2518',
+      '',
+      '    What to provision: 8 cores.',
+      '',
+      '\u23fa Bash(ls Datacenter/)',
+      '  \u23bf  ls: Datacenter/: No such file or directory',
+      '',
+      '\u276f add these dates to my calendar',
+      '',
+      '\u23fa Done.',
+    ].join('\n');
+    body.innerHTML = w._peekHtml(raw);
+    const prompts = [...body.querySelectorAll('.peek-prompt')];
+    return {
+      count: prompts.length,
+      nested: body.querySelectorAll('.peek-prompt .peek-prompt').length,
+      firstHasTable: prompts[0]?.textContent?.includes('RAM') ?? false,
+      firstHasProvision: prompts[0]?.textContent?.includes('What to provision') ?? false,
+      firstHasReply: prompts[0]?.textContent?.includes('Bash(') ?? true,
+      boxInside: !!prompts[0]?.querySelector('.peek-box'),
+      secondHasReply: prompts[1]?.textContent?.includes('Done.') ?? true,
+    };
+  });
+  expect(result.count).toBe(2);
+  expect(result.nested).toBe(0);
+  expect(result.firstHasTable).toBe(true);
+  expect(result.boxInside).toBe(true);
+  expect(result.firstHasProvision).toBe(true);
+  expect(result.firstHasReply).toBe(false);
+  expect(result.secondHasReply).toBe(false);
+});
+
 test('header arrows land at the start of a long message and hold through refresh', async ({ page }) => {
   await page.evaluate(() => {
     const w = window as any;
@@ -559,6 +608,12 @@ async function filterSpecimen(page: Page) {
   // Only fires when a board refresh happens during the test, which is the race
   // this stub exists for and is not guaranteed in any given run.
   allowUnusedRoute(page, BOARD_LIST);
+  // A board read that began at page load, before the route above existed, could
+  // still land after the push below and replace boardItems without the card
+  // (mobile CI f2bb59c75: Board references "0", the prompts still on screen).
+  // One read through the route first: fetchBoard drops any older read that
+  // finishes after a newer one has applied.
+  await page.evaluate(() => (window as any).fetchBoard());
   await page.evaluate(() => {
     // Board references count only for a prefix the loaded board uses. The
     // shared e2e server's board holds whatever earlier specs created, so name

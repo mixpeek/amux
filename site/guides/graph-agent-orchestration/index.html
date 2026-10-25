@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -124,11 +123,11 @@
 
   <style>
     .node-card {
-      background: var(--bg-card, #232838);
+      background: var(--bg-card, var(--panel-2));
       border-radius: 10px;
       padding: 1.4rem 1.5rem;
       margin-bottom: 1rem;
-      border: 1px solid rgba(255,255,255,0.06);
+      border: 1px solid var(--tint);
       display: grid;
       grid-template-columns: auto 1fr;
       gap: 0.75rem 1.25rem;
@@ -143,44 +142,54 @@
       white-space: nowrap;
       margin-top: 0.1rem;
     }
-    .node-badge.worker   { background: rgba(110,231,183,0.15); color: #6ee7b7; }
-    .node-badge.work     { background: rgba(96,165,250,0.15);  color: #60a5fa; }
-    .node-badge.trigger  { background: rgba(251,191,36,0.15);  color: #fbbf24; }
-    .node-badge.context  { background: rgba(167,139,250,0.15); color: #a78bfa; }
-    .node-badge.topology { background: rgba(251,113,133,0.15); color: #fb7185; }
+    .node-badge.worker   { background: rgba(110,231,183,0.15); color: var(--c-green); }
+    .node-badge.work     { background: rgba(96,165,250,0.15);  color: var(--c-blue); }
+    .node-badge.trigger  { background: rgba(251,191,36,0.15);  color: var(--c-amber); }
+    .node-badge.context  { background: rgba(167,139,250,0.15); color: light-dark(oklch(0.48 0.150 293.5), #a78bfa); }
+    .node-badge.topology { background: rgba(251,113,133,0.15); color: light-dark(oklch(0.48 0.150 13.4), #fb7185); }
     .node-content h3 { margin: 0 0 0.3rem; font-size: 1rem; }
     .node-content p  { margin: 0; font-size: 0.88rem; color: var(--muted, #9ca3af); line-height: 1.5; }
     .stat-row { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1.5rem 0; }
     .stat-box {
       flex: 1; min-width: 160px;
-      background: var(--bg-card, #232838);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--bg-card, var(--panel-2));
+      border: 1px solid var(--tint);
       border-radius: 8px;
       padding: 1rem 1.25rem;
       text-align: center;
     }
-    .stat-box .num { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; color: #6ee7b7; display: block; }
+    .stat-box .num { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; color: var(--c-green); display: block; }
     .stat-box .lbl { font-size: 0.78rem; color: var(--muted, #9ca3af); margin-top: 0.2rem; display: block; }
     .compare-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin: 1.25rem 0; }
-    .compare-table th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border, #333); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted, #9ca3af); }
-    .compare-table td { padding: 0.65rem 0.8rem; border-bottom: 1px solid var(--border, #333); vertical-align: top; }
+    .compare-table th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border, var(--rule)); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted, #9ca3af); }
+    .compare-table td { padding: 0.65rem 0.8rem; border-bottom: 1px solid var(--border, var(--rule)); vertical-align: top; }
     .compare-table td:first-child { font-weight: 600; white-space: nowrap; }
-    .check { color: #6ee7b7; }
+    .check { color: var(--c-green); }
     .dash  { color: var(--muted, #9ca3af); }
-    .ascii-graph { font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.65; background: var(--surface-2, #1a1f2e); border: 1px solid var(--border, #333); border-radius: 8px; padding: 1.25rem 1.5rem; overflow-x: auto; color: #e5e7eb; white-space: pre; }
+    .ascii-graph { font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.65; background: var(--surface-2, var(--panel)); border: 1px solid var(--border, var(--rule)); border-radius: 8px; padding: 1.25rem 1.5rem; overflow-x: auto; color: light-dark(oklch(0.40 0.012 250), #e5e7eb); white-space: pre; }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -402,8 +411,8 @@ WORKER ──reads/writes──▶ NOTE             (context; shared durable kno
     <p>The graph pattern works because amux separates two kinds of state that are usually conflated:</p>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0">
-      <div style="background:var(--bg-card,#232838);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:1.25rem">
-        <strong style="display:block;margin-bottom:0.75rem;color:#6ee7b7;font-size:0.85rem;letter-spacing:0.04em">COORDINATION STATE</strong>
+      <div style="background:var(--bg-card,var(--panel-2));border:1px solid var(--tint);border-radius:8px;padding:1.25rem">
+        <strong style="display:block;margin-bottom:0.75rem;color:var(--c-green);font-size:0.85rem;letter-spacing:0.04em">COORDINATION STATE</strong>
         <ul style="margin:0;padding-left:1.2rem;font-size:0.88rem;color:var(--muted,#9ca3af);line-height:1.7">
           <li>Board issues and their edges</li>
           <li>Task ownership and lifecycle</li>
@@ -413,8 +422,8 @@ WORKER ──reads/writes──▶ NOTE             (context; shared durable kno
           <li>Review and dependency gates</li>
         </ul>
       </div>
-      <div style="background:var(--bg-card,#232838);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:1.25rem">
-        <strong style="display:block;margin-bottom:0.75rem;color:#60a5fa;font-size:0.85rem;letter-spacing:0.04em">EXECUTION STATE</strong>
+      <div style="background:var(--bg-card,var(--panel-2));border:1px solid var(--tint);border-radius:8px;padding:1.25rem">
+        <strong style="display:block;margin-bottom:0.75rem;color:var(--c-blue);font-size:0.85rem;letter-spacing:0.04em">EXECUTION STATE</strong>
         <ul style="margin:0;padding-left:1.2rem;font-size:0.88rem;color:var(--muted,#9ca3af);line-height:1.7">
           <li>Running tmux process</li>
           <li>Terminal history and output</li>
@@ -436,37 +445,37 @@ WORKER ──reads/writes──▶ NOTE             (context; shared durable kno
 
     <h2>Frequently asked questions</h2>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">What is a graph agent?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">A graph agent is an AI agent that operates within a graph-structured coordination system. The term applies at two levels: the agent's internal reasoning (LangGraph's StateGraph — nodes are LLM calls, edges are routing rules) and the external coordination between multiple agents (amux — workers, board issues, schedules, and groups form a live property graph). The two levels compose: LangGraph-based agents can be nodes in an amux fleet.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">Why are graph-based agent architectures replacing chains and trees?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">Chains are sequential — they cannot represent concurrent work without becoming a graph. Trees impose a strict hierarchy that breaks when two agents need to coordinate as peers. Neither can represent feedback loops. Graph structures handle concurrency, peer coordination, and feedback loops natively. The production evidence confirms the shift: LangGraph (directed graph model) is in production at Uber, LinkedIn, Replit, and Klarna; Salesforce Agentforce runs on an explicit Agent Graph; Amazon Strands documents a Graph Multi-Agent Pattern.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">What is the difference between amux and LangGraph?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">LangGraph is a Python library you embed in your application code to define an individual agent's reasoning as a directed graph of LLM calls and tool invocations. amux is a control plane you run alongside your agents to coordinate a fleet of them. LangGraph controls what happens inside one agent turn; amux controls what happens across many agents running in parallel over days or weeks. You can run LangGraph-based agents inside an amux fleet — the two operate at different levels.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">How does amux prevent two agents from claiming the same task?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">Claiming a board issue is a compare-and-swap operation enforced by SQLite. The server atomically checks that the issue's status is still <code>todo</code> and no other worker has claimed it. If both hold, status transitions to <code>doing</code> and the claiming worker's identity is recorded. A second worker calling claim at the same time receives 409. This is equivalent to acquiring a distributed lock on a graph node.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">Can agents modify the graph at runtime?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">Yes. Workers access the same REST API the dashboard uses. An agent can create board issues (adding nodes), set <code>depends_on</code> relationships (adding edges), send tasks to other workers (traversing communication edges), create schedules (adding trigger nodes), and write shared notes (updating context nodes). The graph is mutable and open-ended — not a static workflow defined before execution begins.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">Is there academic evidence that graph agents outperform other architectures?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">The Graph-of-Agents (GoA) paper (Yun et al., arXiv:2604.17148) shows graph-structured multi-agent collaboration achieves superior performance using 3 agents versus baselines requiring 6. The graph topology enables efficiency gains that flat ensembles cannot: relevant agents are selected by node sampling, information flows directionally rather than broadcasting, and outputs are aggregated by graph-based pooling rather than naive voting.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">What is the difference between GraphRAG and an agentic graph?</summary>
       <p style="margin-top:0.75rem;font-size:0.9rem">GraphRAG (Microsoft Research, 2024) uses an LLM to induce a graph structure over a document corpus, then retrieves across that graph during queries — it is a retrieval method, not an agent orchestration method. An agentic graph (the pattern amux implements) is a live system where agents are the nodes and their coordination relationships are the edges. GraphRAG improves what an agent knows; an agentic graph coordinates what multiple agents do.</p>
     </details>
@@ -483,7 +492,7 @@ WORKER ──reads/writes──▶ NOTE             (context; shared durable kno
   </main>
   <footer class="site-footer">
     <div class="footer-inner">
-      <a href="/">amux</a> &mdash; <a href="https://github.com/mixpeek/amux">open source</a> &mdash; <a href="/docs/">docs</a> &mdash; <a href="/blog/">blog</a> &mdash; <a href="/privacy/">privacy</a>
+      <a href="/">amux</a> &mdash; <a href="https://github.com/mixpeek/amux">open source</a> &mdash; <a href="/docs/">docs</a> &mdash; <a href="/demos/">Demos</a> &mdash; <a href="/blog/">blog</a> &mdash; <a href="/privacy/">privacy</a>
     </div>
   </footer>
 </body>

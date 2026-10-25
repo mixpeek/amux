@@ -81,6 +81,10 @@ COPY frustrations-archive.md frustrations-archive.md
 # The worker boundary registry: api/boundaries.rs embeds it with include_str!
 # so a box without the installed copy still has the rule text.
 COPY boundaries.toml boundaries.toml
+# The browser methods registry: api/browser_routing.rs embeds it with include_str!.
+COPY browser-methods.toml browser-methods.toml
+# The skills amux ships: api/skills.rs embeds skills/amux-contribute.md with include_str!.
+COPY skills skills
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the
 # `debug-embed` feature, so a DEBUG binary reads the dashboard from
@@ -91,6 +95,8 @@ COPY boundaries.toml boundaries.toml
 # The cache mounts make an incremental rebuild cheap, and they are also why the
 # binaries are copied to /out INSIDE this RUN: a cache mount is not part of the
 # layer, so anything left in /src/target vanishes when the step ends.
+# No .git in this context, so CI names the commit (build.rs reads it) and /health reports it.
+ARG AMUX_SOURCE_COMMIT=
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,sharing=locked \
     cargo build --release -p amux-server -p amux-cli \

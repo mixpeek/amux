@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,50 +20,49 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Cognitive Debt","item":"https://amux.io/guides/cognitive-debt-ai-coding/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Cognitive Debt: How AI Coding Tools Erode Developer Skills (and How to Fight Back)","description":"AI-assisted developers score 17% lower on comprehension tests. Code churn has doubled. Review times are up 91%. Cognitive debt is the hidden cost of AI coding — here's the data, the five accumulation patterns, and the practical framework for staying sharp while shipping faster.","url":"https://amux.io/guides/cognitive-debt-ai-coding/","datePublished":"2026-05-21","dateModified":"2026-05-21","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is cognitive debt in software development?","acceptedAnswer":{"@type":"Answer","text":"Cognitive debt is the growing gap between how much code exists in a system and how much of it any developer genuinely understands. Unlike technical debt (which lives in code), cognitive debt lives in people — it accumulates when developers accept AI-generated code without building mental models of how it works. The term draws from Addy Osmani's 'comprehension debt' concept and Margaret-Anne Storey's academic 'triple debt model' (technical, cognitive, and intent debt)."}},{"@type":"Question","name":"Does AI coding make developers worse?","acceptedAnswer":{"@type":"Answer","text":"It depends on how you use it. Anthropic's 2026 randomized controlled trial found AI-assisted developers scored 17% lower on comprehension tests (50% vs 67%). But the same study found developers who used AI for conceptual inquiry scored 65%+, while those who purely delegated code generation scored below 40%. AI amplifies your approach: delegation without understanding causes skill atrophy, but using AI as a thinking partner can enhance learning."}},{"@type":"Question","name":"What is comprehension debt?","acceptedAnswer":{"@type":"Answer","text":"Comprehension debt, coined by Google engineering leader Addy Osmani in March 2026, is the specific form of cognitive debt where teams lose understanding of their own codebase because AI generates code faster than humans can evaluate it. AI produces 140-200 lines per minute; humans comprehend 20-40 lines per minute. The result: tests pass, code looks clean, PRs get merged — but nobody understands how the system works."}},{"@type":"Question","name":"What is AI brain fry?","acceptedAnswer":{"@type":"Answer","text":"AI brain fry is a term from Harvard Business Review's March 2026 research describing the mental fog, decision fatigue, and cognitive overload that comes from intensive AI oversight. It particularly affects developers running multiple AI coding agents in parallel, where the mental load of reviewing, redirecting, and coordinating AI output exceeds human cognitive capacity."}},{"@type":"Question","name":"How do you prevent cognitive debt while using AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"The key strategies are: (1) Use AI for inquiry before delegation — ask it to explain approaches before generating code. (2) Maintain architectural ownership — write specs and review AI output against them. (3) Use structured orchestration — tools like amux keep humans at the supervisor level while agents handle implementation, with review checkpoints that force comprehension. (4) Practice active code reading — use AI to annotate and explain code rather than just generate it. (5) Rotate between AI-assisted and manual coding sessions to maintain fundamental skills."}},{"@type":"Question","name":"Is cognitive debt the same as technical debt?","acceptedAnswer":{"@type":"Answer","text":"No. Technical debt lives in the code — shortcuts, missing tests, poor abstractions. Cognitive debt lives in the people — gaps in understanding, lost mental models, inability to debug without AI assistance. You can measure technical debt with static analysis tools. Cognitive debt is invisible until something breaks and no one on the team understands the system well enough to fix it. Margaret-Anne Storey's research adds a third category: intent debt, which is the gap between what the code does and what's documented about why."}},{"@type":"Question","name":"What percentage of AI-generated code has bugs?","acceptedAnswer":{"@type":"Answer","text":"Multiple studies converge on concerning numbers. CodeRabbit's analysis of 470 GitHub PRs found AI-co-authored code has 1.7x more issues overall, 75% more logic errors, and 2.74x more security vulnerabilities than human-only code. Lightrun's 2026 survey of 200 senior engineering leaders found 43% of AI-generated code changes need debugging in production even after passing QA. SonarSource reports 96% of developers do not fully trust AI-generated code, and only 48% always verify it before committing."}}]}</script>
   <style>
-    .debt-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .debt-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid var(--tint); }
     .debt-card h3 { margin-top: 0; font-size: 1.1rem; }
-    .debt-card .debt-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #6ee7b7; font-weight: 600; margin-bottom: 0.3rem; }
+    .debt-card .debt-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--c-green); font-weight: 600; margin-bottom: 0.3rem; }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
-    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #f87171; }
-    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
-    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--c-red); }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.3rem; opacity: 0.7; }
     @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
     .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .key-insight strong { color: #6ee7b7; }
+    .key-insight strong { color: var(--c-green); }
     .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .warning-box strong { color: #f87171; }
-    .pattern-card { background: var(--bg-card, #232838); border-left: 3px solid #f87171; border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
-    .pattern-card h4 { margin-top: 0; color: #f87171; }
-    .pattern-card .antidote { border-top: 1px solid rgba(255,255,255,0.06); margin-top: 0.75rem; padding-top: 0.75rem; }
-    .pattern-card .antidote strong { color: #6ee7b7; }
-    .strategy-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
-    .strategy-card h4 { margin-top: 0; color: #6ee7b7; }
+    .warning-box strong { color: var(--c-red); }
+    .pattern-card { background: var(--bg-card, var(--panel-2)); border-left: 3px solid var(--c-red); border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
+    .pattern-card h4 { margin-top: 0; color: var(--c-red); }
+    .pattern-card .antidote { border-top: 1px solid var(--tint); margin-top: 0.75rem; padding-top: 0.75rem; }
+    .pattern-card .antidote strong { color: var(--c-green); }
+    .strategy-card { background: var(--bg-card, var(--panel-2)); border-left: 3px solid var(--c-green); border-radius: 0 10px 10px 0; padding: 1.25rem; margin: 1.25rem 0; }
+    .strategy-card h4 { margin-top: 0; color: var(--c-green); }
     .spectrum-bar { display: flex; align-items: stretch; border-radius: 10px; overflow: hidden; margin: 1.5rem 0; font-size: 0.85rem; }
     .spectrum-bar .seg { padding: 1rem; flex: 1; text-align: center; }
     .spectrum-bar .seg-danger { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.25); }
     .spectrum-bar .seg-warn { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.2); }
     .spectrum-bar .seg-ok { background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.2); }
     .triple-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .triple-grid .tcard { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .triple-grid .tcard { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); }
     .triple-grid .tcard h4 { margin-top: 0; font-size: 0.95rem; }
     .triple-grid .tcard .tlabel { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
-    .triple-grid .tcard.td-tech .tlabel { color: var(--text-muted, #8892a4); }
-    .triple-grid .tcard.td-cog .tlabel { color: #f87171; }
-    .triple-grid .tcard.td-int .tlabel { color: #fbbf24; }
+    .triple-grid .tcard.td-tech .tlabel { color: var(--text-muted, var(--fg-mute)); }
+    .triple-grid .tcard.td-cog .tlabel { color: var(--c-red); }
+    .triple-grid .tcard.td-int .tlabel { color: var(--c-amber); }
     @media (max-width: 600px) { .triple-grid { grid-template-columns: 1fr; } }
     .evidence-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.88rem; }
-    .evidence-table th, .evidence-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .evidence-table th, .evidence-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--tint-2); }
     .evidence-table th { font-weight: 600; white-space: nowrap; }
-    .evidence-table a { color: #6ee7b7; }
+    .evidence-table a { color: var(--c-green); }
     .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
     .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
-    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.5rem; }
   [data-theme="light"] .debt-label { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
   [data-theme="light"] .stat-num   { color: var(--err); }
   [data-theme="light"] .stat-card  { border-color: var(--border); }
@@ -74,18 +73,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -310,15 +319,15 @@
 
     <div class="spectrum-bar">
       <div class="seg seg-ok">
-        <strong style="color:#6ee7b7;">Inquiry Mode</strong><br>
+        <strong style="color:var(--c-green);">Inquiry Mode</strong><br>
         <span style="font-size:0.8rem;">&ldquo;Explain how X works&rdquo;<br>&ldquo;What are the tradeoffs?&rdquo;<br>Comprehension: 65%+</span>
       </div>
       <div class="seg seg-warn">
-        <strong style="color:#fbbf24;">Collaboration Mode</strong><br>
+        <strong style="color:var(--c-amber);">Collaboration Mode</strong><br>
         <span style="font-size:0.8rem;">&ldquo;I'll write the structure, you fill in&rdquo;<br>&ldquo;Review what I wrote&rdquo;<br>Comprehension: 50&ndash;65%</span>
       </div>
       <div class="seg seg-danger">
-        <strong style="color:#f87171;">Delegation Mode</strong><br>
+        <strong style="color:var(--c-red);">Delegation Mode</strong><br>
         <span style="font-size:0.8rem;">&ldquo;Write the whole thing&rdquo;<br>&ldquo;Fix this for me&rdquo;<br>Comprehension: &lt;40%</span>
       </div>
     </div>
@@ -504,7 +513,7 @@
       <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Automation-induced skill atrophy is well-documented in aviation and manufacturing. What makes AI coding different is the <em>speed</em> and <em>scale</em>: AI generates code 5&ndash;7x faster than humans can comprehend it, and it generates <a href="https://www.sonarsource.com/blog/state-of-code-developer-survey-report-the-current-reality-of-ai-coding" target="_blank" rel="noopener">42% of all committed code</a>. Previous automation replaced specific, bounded tasks. AI coding tools are replacing the full spectrum of implementation work, which means the scope of potential skill erosion is much broader.</p>
     </details>
 
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+    <hr style="border:none;border-top:1px solid var(--tint-2);margin:3rem 0;">
 
     <h2>Further Reading</h2>
     <ul>
@@ -555,10 +564,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

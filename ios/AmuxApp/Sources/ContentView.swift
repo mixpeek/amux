@@ -20,7 +20,8 @@ struct ContentView: View {
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
                     loadError: $loadError,
-                    onNavigationAction: handleNavigation
+                    onNavigationAction: handleNavigation,
+                    onLongPress: { showSettings = true }
                 )
                 .id(webViewId)
                 .ignoresSafeArea()
@@ -70,10 +71,10 @@ struct ContentView: View {
                 .background(Color(uiColor: .systemBackground))
             }
         }
-        .gesture(
-            LongPressGesture(minimumDuration: 0.5)
-                .onEnded { _ in showSettings = true }
-        )
+        // The Settings long-press lives on the web view as a UIKit recognizer
+        // (WebView.makeUIView). A SwiftUI LongPressGesture here sat over the
+        // whole WKWebView and, on iPad, swallowed the page's taps: "I cant
+        // navigate the amux app on my ipad ... nothing clicks" (MSG-90700).
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(serverManager)

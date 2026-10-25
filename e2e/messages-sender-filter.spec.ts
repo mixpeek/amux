@@ -73,7 +73,10 @@ test('each message row names its sender and the From filter narrows the list', a
   await expect(laneRow).toHaveCount(1);
 });
 
-test('at 375px the From filter fits beside the worker filter and stays tappable', async ({ page }) => {
+// At 375px the controls above the list are one row that scrolls sideways
+// (Ethan, 2026-10-21, e2e/messages-mobile-one-row.spec.ts), so the From filter
+// may start off screen; it must still be readable, tappable and reachable.
+test('at 375px the From filter is readable, tappable and reachable beside the worker filter', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 740 });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function', { timeout: 20000 });
@@ -81,14 +84,13 @@ test('at 375px the From filter fits beside the worker filter and stays tappable'
   await page.click('#cv-all-item');
   const from = page.locator('#msgs-sender-filter');
   await expect(from).toBeVisible();
+  await from.scrollIntoViewIfNeeded();
   const box = await from.boundingBox();
   expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(375);
-  // Wide enough to read its label rather than squeezed beside the search box,
-  // and on the same row as the worker filter.
+  // Wide enough to read its label, and on the same row as the worker filter.
   expect(box!.width).toBeGreaterThanOrEqual(140);
   const worker = await page.locator('#msgs-session-filter').boundingBox();
   expect(Math.abs(worker!.y - box!.y)).toBeLessThan(4);
-  const overflow = await page.locator('#msgs-controls').evaluate((n: HTMLElement) => n.scrollWidth - n.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(0);
 });

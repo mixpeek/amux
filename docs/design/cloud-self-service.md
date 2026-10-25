@@ -392,8 +392,12 @@ local to Cloud, Cloud to local, and Cloud to Cloud.
 reporting what changed; apply declares workers and does not start them
 (`crates/amux-server/src/api/config_iac.rs`, `amux` `cmd_config`) [exists].
 `cloud/desktop/remote.py load` and `verify` load workers, files and schedules
-onto a host; sandbox.amux.io was loaded this way [exists]. There is no data
-export today [build].
+onto a host; sandbox.amux.io was loaded this way [exists]. The move bundle
+exists in its first form (2026-10-18): `GET /api/move/export`,
+`POST /api/move/import` and the CLI verbs `amux export` and `amux import`
+(`crates/amux-server/src/api/move_bundle.rs`, tested end to end by
+`crates/amux-server/tests/move_bundle.rs`) [exists]. What it does and does not
+do yet is listed under "The move bundle" below.
 
 **The YAML** [build]: `amux.yaml` extends today's IaC file so it describes a
 whole server, plus an optional `cloud:` block for the hosting itself.
@@ -432,8 +436,8 @@ created, changed, unchanged or skipped with the reason.
 | `amux iac export > amux.yaml` | Writes the YAML for the current server (exists today for configuration; extended to members, groups, schedules, skills, files, repos and env names) |
 | `amux iac apply amux.yaml` | Applies it to the current server, local or Cloud, after a dry-run diff |
 | `amux cloud apply amux.yaml` | Signs in (`amux cloud login`, 8.4). If no server matches the file, creates one: a new account goes through Stripe Checkout; an existing paid account adds a server only with `--confirm-billing`, which shows the monthly price and needs a typed yes. Waits for ready, then applies the rest of the file. Run again, it updates the same server |
-| `amux export out.amuxmove` | Writes the move bundle (below) from any server |
-| `amux import out.amuxmove` | Imports a bundle into the current server, local or Cloud, after a dry-run diff |
+| `amux export [file]` | Writes the move bundle (below) from any server; default name `amux-<host>-<YYYYMMDD>.amuxmove.json` [exists] |
+| `amux import <file> [--to <url>] [--user <email>] [--yes]` | Imports a bundle into the current server or `--to` another one (an amux Cloud server takes the account email and password; the password comes from `AMUX_IMPORT_PASSWORD` or a prompt, never argv), after a dry-run diff [exists] |
 | `amux cloud move` | Export, sign in or pay, provision, upload in chunks while provisioning, import: one command from local to Cloud |
 | `amux cloud pull <server>` | Downloads a Cloud server's bundle and imports it into the local install: the way back from Cloud, offered before cancelling |
 
@@ -448,6 +452,36 @@ created, changed, unchanged or skipped with the reason.
 | Repositories | Remote URL and branch per worker | Re-cloned; uncommitted local changes are listed as a warning before export |
 | Secrets | Excluded unless the user ticks "bring my API keys" (CLI sign-ins are redone, 8.4) | Written with `PATCH /api/settings/env` |
 
+**What exists now (2026-10-18)** [exists]:
+
+- The bundle is one JSON document: `format: "amuxmove"`, `version: 1`,
+  `schema_version` (the source's highest migration), `source_commit`,
+  `created_at`, `config` (exactly `/api/config/export`) and `tables`.
+- Tables come from an explicit allowlist (`ALLOWLIST` in `move_bundle.rs`):
+  `issues` (each card's history rides in its `log` column), `issue_tags`,
+  `issue_files`, `schedules`, `_amux_memories`, `crm_contacts`, `crm_tags`,
+  `crm_interactions`, `skills`, `cal_events`, `journal_entries`,
+  `_amux_messages`, `conversation_posts`. A unit test fails if any allowlisted
+  table has token, secret, credential, oauth, password or api_key in its name
+  or columns.
+- Import is a dry run unless `?dry_run=0`. It refuses an unknown format or
+  version, any table off the allowlist, a column the target lacks, and a
+  `schema_version` newer than the target's. Rows merge by primary key
+  (`conversation_posts` by conversation, author and time), in one
+  transaction: missing rows are inserted, existing rows are never overwritten
+  and nothing is deleted. Board and schedule id counters move past imported
+  ids. Config then goes through the config-apply path, so workers are
+  declared and not started.
+- Only the host owner may export or import: org members get 403 from the same
+  guard as `/api/org/*`, and an agent session (`X-Amux-Session`) may dry-run
+  but not apply. Each run logs a `move_export`, `move_import_dry_run`,
+  `move_import_applied` or `move_import_refused` line.
+
+Not yet built: a staging copy with migration of an older source schema (today
+rows of an older schema insert with the target's defaults for new columns),
+files, repositories and secrets, `amux cloud move` and `amux cloud pull`, and
+the Settings buttons.
+
 **Ways in.** The CLI as above; "Move to amux Cloud" and "Download everything"
 (a bundle) in Settings on any server; "Import from your local amux" on a new
 Cloud server's first screen, which accepts a bundle or plain YAML. The importer
@@ -455,10 +489,10 @@ always shows a dry-run diff and lists every item imported or skipped with the
 reason. Nothing at the source is deleted. Cancelling (J17) offers `amux cloud
 pull` and the bundle download first, so leaving Cloud is as easy as joining.
 
-**Calls to action** [build]: the README under the install command; the GitHub
-About link; a release-notes footer; the closing message of `install.sh`; a
-homepage secondary CTA ("Already running amux? Move it in one command"); a
-pricing FAQ; a docs page; OSS Settings, plus one dismissible banner when the
+**Calls to action**: the README under the install command, the closing
+message of `install.sh`, a homepage line in the Get started section and the
+ready state of `site/start/welcome/` exist (2026-10-18) [exists]. Still to
+build [build]: the GitHub About link; a release-notes footer; a pricing FAQ; a docs page; OSS Settings, plus one dismissible banner when the
 local server shows lost work (the machine slept with workers mid-task, or
 schedules were missed); first in `amux cloud` CLI help. Never in the iOS app.
 

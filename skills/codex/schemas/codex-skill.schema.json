@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mixpeek/amux/skills/codex/schemas/codex-skill.schema.json",
+  "title": "codex-skill output",
+  "description": "One JSON object per command; watch emits one WatchEvent per line. See skills/codex/reference.md.",
+  "oneOf": [
+    {"$ref": "#/$defs/Error"},
+    {"$ref": "#/$defs/Capabilities"},
+    {"$ref": "#/$defs/List"},
+    {"$ref": "#/$defs/Read"},
+    {"$ref": "#/$defs/Status"},
+    {"$ref": "#/$defs/Events"},
+    {"$ref": "#/$defs/Search"},
+    {"$ref": "#/$defs/WatchEvent"}
+  ],
+  "$defs": {
+    "iso": {"type": ["string", "null"], "description": "UTC ISO-8601, Z suffix"},
+    "Envelope": {
+      "type": "object",
+      "required": ["tool", "version", "command", "generated_at", "ok", "measured", "redactions"],
+      "properties": {
+        "tool": {"const": "codex-skill"},
+        "version": {"type": "string"},
+        "command": {"enum": ["capabilities", "list", "read", "status", "events", "search", "watch", "export"]},
+        "generated_at": {"$ref": "#/$defs/iso"},
+        "ok": {"type": "boolean"},
+        "measured": {"type": "boolean", "description": "false when the probe could not run; never read an empty result without it"},
+        "redactions": {"type": "integer", "description": "secrets replaced with [REDACTED] in this output"}
+      }
+    },
+    "Error": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "ok": {"const": false},
+        "error": {"enum": ["thread_not_found", "thread_ambiguous", "codex_not_found", "app_server_error",
+                           "app_server_timeout", "app_server_closed", "zstd_missing", "method_not_allowed"]},
+        "message": {"type": "string"},
+        "candidates": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}}}
+      },
+      "required": ["error", "message"]
+    },
+    "Thread": {
+      "type": "object",
+      "required": ["id", "source", "created_at", "updated_at"],
+      "properties": {
+        "id": {"type": "string"},
+        "name": {"type": ["string", "null"]},
+        "title_preview": {"type": "string", "description": "first 200 chars of the API preview, redacted"},
+        "source": {"enum": ["desktop", "desktop_or_ide", "cli", "exec", "app_server_client", "subagent", "unknown"]},
+        "originator": {"type": ["string", "null"]},
+        "cwd": {"type": ["string", "null"]},
+        "repository": {"type": ["string", "null"], "description": "owner/repo from the git origin"},
+        "git_origin_url": {"type": ["string", "null"]},
+        "branch": {"type": ["string", "null"]},
+        "git_sha": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "created_at": {"$ref": "#/$defs/iso"},
+        "updated_at": {"$ref": "#/$defs/iso"},
+        "archived": {"type": "boolean"},
+        "section": {"type": ["string", "null"]},
+        "parent_thread_id": {"type": ["string", "null"]},
+        "forked_from_id": {"type": ["string", "null"]},
+        "rollout_path": {"type": ["string", "null"]},
+        "api_status": {"type": ["string", "null"], "description": "the API's own status; notLoaded for threads another process owns"},
+        "listed_by": {"enum": ["thread/list", "state_db"]},
+        "status": {"$ref": "#/$defs/ThreadStatus"}
+      }
+    },
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "api_status": {"type": ["string", "null"]},
+        "started_at": {"$ref": "#/$defs/iso"},
+        "completed_at": {"$ref": "#/$defs/iso"},
+        "duration_ms": {"type": ["integer", "null"]},
+        "error": {}
+      }
+    },
+    "ThreadStatus": {
+      "type": "object",
+      "required": ["state", "basis", "detail"],
+      "properties": {
+        "state": {"enum": ["running", "waiting", "open_turn_quiet", "abandoned", "idle", "interrupted", "failed", "new", "unknown", "not_computed"]},
+        "basis": {"enum": ["observed", "inferred", "unavailable", "skipped"]},
+        "detail": {"type": "string"},
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "history_source": {"enum": ["app_server", "rollout", "none"]},
+            "queued_inputs": {"type": "integer"},
+            "loaded_in_this_app_server": {"type": "boolean"},
+            "rollout_last_write_age_s": {"type": ["number", "null"]},
+            "rollout_compressed": {"type": "boolean"},
+            "history_projection_status": {"type": "string"},
+            "rollout_held_open_by": {"type": ["array", "null"], "items": {"type": "object", "properties": {"pid": {"type": "integer"}, "command": {"type": "string"}}}}
+          }
+        },
+        "last_turn": {"oneOf": [{"$ref": "#/$defs/Turn"}, {"type": "null"}]}
+      }
+    },
+    "Item": {
+      "type": "object",
+      "required": ["kind", "id", "role"],
+      "properties": {
+        "kind": {"type": "string", "description": "userMessage, agentMessage, reasoning, commandExecution, mcpToolCall, fileChange, webSearch, imageView, contextCompaction, ..."},
+        "id": {"type": "string"},
+        "turn_id": {"type": ["string", "null"]},
+        "started_at": {"$ref": "#/$defs/iso"},
+        "completed_at": {"$ref": "#/$defs/iso"},
+        "role": {"enum": ["user", "assistant", "tool", "system"]},
+        "text": {"type": "string"},
+        "phase": {"type": ["string", "null"]},
+        "attachments": {"type": "array"},
+        "summary": {"type": "array"},
+        "command": {"type": ["string", "null"]},
+        "cwd": {"type": ["string", "null"]},
+        "status": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "duration_ms": {"type": ["integer", "null"]},
+        "output": {"type": "string"},
+        "server": {"type": ["string", "null"]},
+        "tool": {"type": ["string", "null"]},
+        "arguments": {},
+        "result": {},
+        "error": {},
+        "detail": {"type": "object"}
+      }
+    },
+    "Capabilities": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {"capabilities": {"type": "object", "required": ["codex_cli", "app_server", "desktop_app", "local_artifacts"]}},
+      "required": ["capabilities"]
+    },
+    "List": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "n_scanned": {"type": "integer"},
+        "n_listed_by": {"type": "object"},
+        "n_matched": {"type": "integer"},
+        "returned": {"type": "integer"},
+        "next_offset": {"type": ["integer", "null"]},
+        "filters": {"type": "object"},
+        "threads": {"type": "array", "items": {"$ref": "#/$defs/Thread"}},
+        "cloud": {"type": "object"}
+      },
+      "required": ["n_scanned", "n_matched", "returned", "threads"]
+    },
+    "Read": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "thread": {"$ref": "#/$defs/Thread"},
+        "history_source": {"enum": ["app_server", "rollout", "none"]},
+        "since": {"type": ["integer", "null"]},
+        "checkpoint": {"type": ["integer", "null"], "description": "pass as --since to read only newer items"},
+        "has_more": {"type": "boolean"},
+        "n_items": {"type": "integer"},
+        "n_fetched": {"type": "integer"},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}}
+      },
+      "required": ["thread", "history_source", "checkpoint", "has_more", "items"]
+    },
+    "Status": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "thread": {"$ref": "#/$defs/Thread"},
+        "status": {"$ref": "#/$defs/ThreadStatus"},
+        "recent_turns": {"type": "array", "items": {"$ref": "#/$defs/Turn"}},
+        "last_turn": {
+          "type": "object",
+          "properties": {
+            "item_counts": {"type": "object"},
+            "failures": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+            "last_agent_message": {"oneOf": [{"$ref": "#/$defs/Item"}, {"type": "null"}]},
+            "last_items": {"type": "array", "items": {"$ref": "#/$defs/Item"}}
+          }
+        }
+      },
+      "required": ["thread", "status"]
+    },
+    "Events": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "thread_id": {"type": "string"},
+        "history_source": {"type": "string"},
+        "checkpoint": {"type": ["integer", "null"]},
+        "has_more": {"type": "boolean"},
+        "turns": {"type": ["array", "null"], "items": {"$ref": "#/$defs/Turn"}},
+        "events": {"type": "array", "items": {"type": "object", "properties": {
+          "kind": {"type": "string"}, "id": {"type": "string"}, "turn_id": {"type": ["string", "null"]},
+          "at": {"$ref": "#/$defs/iso"}, "summary": {"type": "string"}, "failed": {"type": "boolean"},
+          "exit_code": {"type": ["integer", "null"]}, "status": {"type": ["string", "null"]}}}}
+      },
+      "required": ["thread_id", "events"]
+    },
+    "Search": {
+      "allOf": [{"$ref": "#/$defs/Envelope"}],
+      "properties": {
+        "query": {"type": "string"},
+        "n_threads_scanned": {"type": "integer"},
+        "n_items_scanned": {"type": "integer"},
+        "truncated": {"type": "boolean"},
+        "title_matches": {"type": "array"},
+        "matches": {"type": "array", "items": {"type": "object", "properties": {
+          "thread_id": {"type": "string"}, "name": {"type": ["string", "null"]}, "source": {"type": "string"},
+          "turn_id": {"type": ["string", "null"]}, "item_id": {"type": "string"}, "kind": {"type": "string"},
+          "at": {"$ref": "#/$defs/iso"}, "excerpt": {"type": "string"}}}},
+        "errors": {"type": "array"}
+      },
+      "required": ["query", "n_threads_scanned", "n_items_scanned", "matches"]
+    },
+    "WatchEvent": {
+      "type": "object",
+      "required": ["event"],
+      "properties": {
+        "event": {"enum": ["watch_start", "item", "status", "watch_end"]},
+        "thread_id": {"type": "string"},
+        "checkpoint": {"type": ["integer", "null"]},
+        "item": {"$ref": "#/$defs/Item"},
+        "from": {"type": ["string", "null"]},
+        "to": {"type": "string"},
+        "basis": {"type": "string"},
+        "detail": {"type": "string"},
+        "reason": {"type": "string"},
+        "checkpoints": {"type": "object"},
+        "status": {"type": "object"}
+      }
+    }
+  }
+}

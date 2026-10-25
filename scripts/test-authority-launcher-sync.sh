@@ -31,5 +31,19 @@ run "$BAD"
 expect grep -qx 'echo new launcher' "$DEST"
 expect grep -q "verdict=authority_launcher_invalid" "$LOG"
 
+# Never downgrade (2026-10-24): electing an OLDER green commit keeps the newer
+# installed launcher, and electing a newer one replaces it.
+OLDER=$(git -C "$REPO" rev-parse "$NEW")
+NEWER=$(commit 'echo newer launcher')
+run "$NEWER"
+expect grep -qx 'echo newer launcher' "$DEST"
+expect test "$(cat "$DEST.sha")" = "$NEWER"
+: > "$LOG"; run "$OLDER"
+expect grep -qx 'echo newer launcher' "$DEST"
+expect grep -q "verdict=authority_launcher_newer_kept" "$LOG"
+NEWEST=$(commit 'echo newest launcher')
+run "$NEWEST"
+expect grep -qx 'echo newest launcher' "$DEST"
+
 echo "test-authority-launcher-sync: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

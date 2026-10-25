@@ -40,4 +40,7 @@ else
     "$U/api/schedules")
   case "$code" in 2??) echo "schedule created (every 5m, shell)";; *) echo "schedule create refused: $code" >&2; exit 1;; esac
 fi
+# Automatic switching is opt-in and off by default, even after install.
+# CLAUDE_ROTATE_ENABLE=1 opts in here; `python3 $dest on` does it later.
+if [ "${CLAUDE_ROTATE_ENABLE:-0}" = 1 ]; then python3 "$dest" on; else echo "automatic switching is off (opt-in); enable with: python3 $dest on"; fi
 python3 "$dest" pick

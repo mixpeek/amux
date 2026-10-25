@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -156,18 +155,28 @@
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -177,12 +186,6 @@
     <p class="subtitle">Board cards are nodes. depends_on and reviewer fields are typed directed edges. Sessions are coordination nodes with send/peek edges between them. Here is the complete topology of a parallel AI agent fleet. July 2026.</p>
 
     <!-- EXP-018: top-of-page CTA -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>Want to run a dependency-aware agent fleet?</strong> <span style="color:var(--muted)">amux gives every agent a shared task graph with atomic claiming, typed edges, and phone-first monitoring — open source, zero external dependencies.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp018_guide_topofpage_cta_click',{page:window.location.pathname})" style="background:rgba(16,185,129,.15);color:var(--text);border:1px solid rgba(16,185,129,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View amux on GitHub ★</a>
-    </div>
 
     <p>When you run 10 or 20 parallel AI coding agents, you are running a distributed system. The hardest coordination problems in distributed systems — ordering, dependencies, sign-off gates, communication topology — are graph problems. amux makes this explicit: every coordination primitive is a typed graph edge, and the board is the adjacency list for your fleet's work.</p>
 
@@ -198,7 +201,7 @@
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
       <thead>
-        <tr style="border-bottom:2px solid var(--border,#333)">
+        <tr style="border-bottom:2px solid var(--border,var(--rule))">
           <th style="text-align:left;padding:0.6rem 0.75rem">Edge type</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Field</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Semantics</th>
@@ -206,13 +209,13 @@
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Prerequisite</td>
           <td style="padding:0.6rem 0.75rem"><code>depends_on</code></td>
           <td style="padding:0.6rem 0.75rem">Target cannot START until source reaches <code>done</code></td>
           <td style="padding:0.6rem 0.75rem">Claim time (atomic, server-side)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Completion gate</td>
           <td style="padding:0.6rem 0.75rem"><code>reviewer</code></td>
           <td style="padding:0.6rem 0.75rem">Node cannot CLOSE until named reviewer signs off</td>
@@ -258,24 +261,24 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
       <thead>
-        <tr style="border-bottom:2px solid var(--border,#333)">
+        <tr style="border-bottom:2px solid var(--border,var(--rule))">
           <th style="text-align:left;padding:0.6rem 0.75rem">State</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Precondition</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Who transitions</th>
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem"><code>todo</code></td>
           <td style="padding:0.6rem 0.75rem"><code>depends_on</code> is done (or absent)</td>
           <td style="padding:0.6rem 0.75rem">Initial state, or set by orchestrator</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem"><code>doing</code></td>
           <td style="padding:0.6rem 0.75rem">Atomic claim succeeds</td>
           <td style="padding:0.6rem 0.75rem">Agent (via /claim)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem"><code>done</code></td>
           <td style="padding:0.6rem 0.75rem">Implementation complete (not yet confirmed)</td>
           <td style="padding:0.6rem 0.75rem">Agent on completion</td>
@@ -294,7 +297,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
       <thead>
-        <tr style="border-bottom:2px solid var(--border,#333)">
+        <tr style="border-bottom:2px solid var(--border,var(--rule))">
           <th style="text-align:left;padding:0.6rem 0.75rem">Edge type</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">API call</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Direction</th>
@@ -302,13 +305,13 @@ curl -sk -X POST -H 'Content-Type: application/json' \
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Instruction</td>
           <td style="padding:0.6rem 0.75rem"><code>POST /api/sessions/NAME/send</code></td>
           <td style="padding:0.6rem 0.75rem">Directed (A → B)</td>
           <td style="padding:0.6rem 0.75rem">Deliver a message to a session's next turn</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Observation</td>
           <td style="padding:0.6rem 0.75rem"><code>GET /api/sessions/NAME/peek</code></td>
           <td style="padding:0.6rem 0.75rem">Directed (A reads B)</td>
@@ -407,44 +410,44 @@ import json, sys
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.85rem">
       <thead>
-        <tr style="border-bottom:2px solid var(--border,#333)">
+        <tr style="border-bottom:2px solid var(--border,var(--rule))">
           <th style="text-align:left;padding:0.6rem 0.75rem">Operation</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Endpoint</th>
           <th style="text-align:left;padding:0.6rem 0.75rem">Graph meaning</th>
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Add node</td>
           <td style="padding:0.6rem 0.75rem"><code>POST /api/board</code></td>
           <td style="padding:0.6rem 0.75rem">Create a new task node (with optional edges)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Add/update edge</td>
           <td style="padding:0.6rem 0.75rem"><code>PATCH /api/board/:id</code></td>
           <td style="padding:0.6rem 0.75rem">Set or change <code>depends_on</code> / <code>reviewer</code></td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Traverse node</td>
           <td style="padding:0.6rem 0.75rem"><code>POST /api/board/:id/claim</code></td>
           <td style="padding:0.6rem 0.75rem">Atomically take ownership of a node (enforces dependency edges)</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Advance state</td>
           <td style="padding:0.6rem 0.75rem"><code>PATCH /api/board/:id {status: "done"}</code></td>
           <td style="padding:0.6rem 0.75rem">Move node forward; unlocks downstream dependents</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Read graph</td>
           <td style="padding:0.6rem 0.75rem"><code>GET /api/board</code></td>
           <td style="padding:0.6rem 0.75rem">Full adjacency list: all nodes and their edge fields</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Add session node</td>
           <td style="padding:0.6rem 0.75rem"><code>POST /api/sessions</code></td>
           <td style="padding:0.6rem 0.75rem">Start a new agent node in the session graph</td>
         </tr>
-        <tr style="border-bottom:1px solid var(--border,#333)">
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Send instruction edge</td>
           <td style="padding:0.6rem 0.75rem"><code>POST /api/sessions/NAME/send</code></td>
           <td style="padding:0.6rem 0.75rem">Create a directed message edge between sessions</td>
@@ -458,46 +461,40 @@ import json, sys
     </table>
 
     <!-- EXP-007: inline GitHub CTA -->
-    <div style="background:var(--surface-2);border:1px solid var(--border,#333);border-radius:8px;padding:16px 20px;margin:2rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.9rem">
-        <strong>amux is open source.</strong> <span style="color:var(--muted)">Single Rust binary, SQLite-backed, zero external dependencies. The full graph API is live in every amux installation.</span>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_guide_github_cta_click',{page:window.location.pathname})" style="background:var(--surface-3,#2a2f3e);color:var(--text);border:1px solid var(--border,#333);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
-    </div>
 
     <h2>Frequently asked questions</h2>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">What does it mean to say amux is a graph?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">amux represents a multi-agent fleet as two interlocking graphs. The task graph: board cards are nodes; <code>depends_on</code> and <code>reviewer</code> fields are typed directed edges; the status lifecycle is the node state machine. The session graph: running agent sessions are nodes; send/peek/channel calls are directed edges. Together they give you a complete typed graph of what every agent is doing, what it depends on, who it talks to, and what state it's in.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">How does depends_on work at the API level?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">Set <code>depends_on</code> to another board card's ID when creating or updating a card. The claim endpoint checks whether the dependency is in <code>done</code> or <code>verified</code> inside the same SQLite transaction that grants the claim. If not, the claim returns HTTP 409. Agents treat 409 identically to a race condition: move to the next available task. Dependency enforcement is zero-cost in agent prompts — no logic needed.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">Can amux detect circular dependencies?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">amux does not run cycle detection at write time. A circular dependency (A depends_on B, B depends_on A) causes both tasks to return 409 indefinitely — agents skip them and the tasks stay in todo. This is immediately visible on the board as tasks that never move to doing in the presence of idle agents. Fix by patching one card's <code>depends_on</code> to remove the cycle.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">What is the reviewer edge and how is it different from depends_on?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)"><code>depends_on</code> is a prerequisite edge — the task cannot START until the dependency is done. <code>reviewer</code> is a completion edge — the task cannot CLOSE (reach verified) until the named reviewer clears it. Set reviewer to a session name (agent signs off) or <code>human</code> (blocks until a human manually moves the card to verified). They compose: a task can have both.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">How does the session graph relate to the task graph?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">They are separate graphs that interact through the board. An orchestrator session creates task nodes and dependency edges. Worker sessions traverse the task graph by claiming and completing tasks. A reviewer session closes completion edges on cards with <code>reviewer</code> set to its name. The session graph drives the task graph; the task graph records the outcome.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">Does amux have a visual graph view?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">The board renders as a kanban (columns: todo / doing / done / verified) rather than a node-link diagram. Each card shows its <code>depends_on</code> link and reviewer. The REST API (<code>GET /api/board</code>) returns the full graph as JSON — all nodes with their edges — so you can render a custom DAG view with any visualization library. The SSE endpoint keeps the data live.</p>
     </details>
 
-    <details style="margin:1rem 0;border:1px solid var(--border,#333);border-radius:6px;padding:0.75rem 1rem">
+    <details style="margin:1rem 0;border:1px solid var(--border,var(--rule));border-radius:6px;padding:0.75rem 1rem">
       <summary style="font-weight:600;cursor:pointer">How deep can dependency chains go?</summary>
       <p style="margin-top:0.75rem;color:var(--muted)">No enforced limit. A chain A → B → C → D → E works correctly. Very deep chains serialize the work the same way a single agent would. For overnight runs, shallow fan-out graphs (roots fan to many leaves, few intermediate nodes) maximize parallelism. Deep sequential chains are appropriate when each stage genuinely requires the previous stage's output.</p>
     </details>
@@ -505,7 +502,7 @@ import json, sys
     <div class="cta-box">
       <h3>Build your first agent graph with amux</h3>
       <p>Open-source control plane for parallel AI coding agents. SQLite-backed task graph with atomic claiming, typed edges, and phone-first monitoring. Single Rust binary, zero external dependencies.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # → https://localhost:8824
 # Start building your graph via the REST API or dashboard</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
@@ -562,10 +559,12 @@ amux serve  # → https://localhost:8824
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

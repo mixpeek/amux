@@ -38,7 +38,7 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
     for lane in ["owner", "peer"] {
         std::fs::write(
             home.path().join(format!("sessions/{lane}.env")),
-            "CC_DIR=/tmp\n",
+            "CC_DIR=/tmp\nCC_AUTO_PICKUP=1\n",
         )
         .unwrap();
     }

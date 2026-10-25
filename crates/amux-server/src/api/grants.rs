@@ -332,6 +332,8 @@ pub fn take_allowance(home: &Path, origin: &str, target: &str) -> Option<String>
 /// the email gate's discriminator, and it is the reason a worker cannot approve
 /// its own ask.
 fn is_worker_origin(headers: &HeaderMap) -> bool {
+    // An admin-group worker decides grants as the owner (Ethan, 2026-10-17).
+    if super::session_verbs::admin_origin(headers, "grant_decision").is_some() { return false; }
     ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
             .get(*h)

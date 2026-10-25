@@ -19,7 +19,13 @@ cat > "$TMP/www/api/resources" <<'JSON'
  "pressure":{"level":"strained","reasons":["swap 85% used"],"measured":true,"why_unmeasured":null},
  "workers_running":2,"workers_rss_mb":3072,
  "top_by_memory":[{"name":"alpha","cpu_percent":150,"rss_mb":2048,"n_processes":12},{"name":"beta","cpu_percent":5,"rss_mb":1024,"n_processes":3}],
- "worker":{"name":"alpha","measured":true,"cpu_percent":150,"rss_mb":2048,"n_processes":12,"share_of_worker_memory":0.667,
+ "top_by_cpu":[{"name":"alpha","cpu_percent":150,"rss_mb":2048,"n_processes":12},{"name":"beta","cpu_percent":5,"rss_mb":1024,"n_processes":3}],
+ "machine":{"measured":true,"capacity_percent":800,"cpu_percent_total":600,"workers_cpu_percent":155,"unattributed_cpu_percent":445,
+   "by_kind":{"vm":250,"detached":151,"apps":24,"system":20,"amux_server":0},"sample_age_s":12,"sample_ms":300,
+   "top_unattributed":[{"kind":"vm","root_pid":400,"command":"/System/Library/Frameworks/Virtualization.framework/x/com.apple.Virtualization.VirtualMachine","cpu_percent":250,"rss_mb":8192,"n_processes":1},
+                       {"kind":"detached","root_pid":500,"command":"bash","cpu_percent":151,"rss_mb":200,"n_processes":3},
+                       {"kind":"system","root_pid":600,"command":"/System/x/fseventsd","cpu_percent":5,"rss_mb":20,"n_processes":1}]},
+ "worker":{"name":"alpha","measured":true,"cpu_percent":150,"rss_mb":2048,"n_processes":12,"share_of_worker_memory":0.667,"share_of_machine_cpu":0.1875,
    "profile":{"declared":true,"cpus":1.0,"mem_gb":4.0},"over_profile":["cpu 1.5 cores over the declared 1"]}}
 JSON
 cat > "$TMP/www/api/boundaries" <<'JSON'
@@ -55,7 +61,12 @@ for py in "${pythons[@]}"; do
   check "[$py] resources: load per core" "$r" "(0.75 per core over 5 min)"
   check "[$py] resources: level and reason" "$r" "level   strained  (swap 85% used)"
   check "[$py] resources: top worker" "$r" "alpha"
-  check "[$py] resources: own usage" "$r" "using   150% CPU, 2.00 GB in 12 processes (67% of all worker memory)"
+  check "[$py] resources: own usage" "$r" "using   150% CPU (18.8% of the machine), 2.00 GB in 12 processes (67% of all worker memory)"
+  check "[$py] resources: cpu split" "$r" "cpu     600% of 800% busy: workers 155%, everything else 445%  (sample 12s old)"
+  check "[$py] resources: workers by cpu" "$r" "alpha                          150% CPU    2.0 GB   12 procs"
+  check "[$py] resources: where the rest is" "$r" "Rest     vm 250%, detached 151%, apps 24%, system 20%"
+  check "[$py] resources: a detached tree by root" "$r" "detached     151% CPU    0.2 GB    3 procs  pid 500 bash"
+  if grep -qF "fseventsd" <<<"$r"; then fail=$((fail + 1)); echo "FAIL [$py] resources: a tree under 10% is listed"; else pass=$((pass + 1)); echo "ok   [$py] resources: trees under 10% are not listed"; fi
   check "[$py] resources: over profile" "$r" "OVER    cpu 1.5 cores over the declared 1"
   b=$(run boundaries)
   check "[$py] boundaries: guard line" "$b" "Guard    installed=True wired=False registry_matches_build=True"

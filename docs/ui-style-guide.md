@@ -36,6 +36,7 @@ Do not replace the owner's original toolbar symbols with a different icon family
 | --- | --- | --- |
 | Primary button | `.btn.primary` | One primary action per group; contrasting text; meaningful verb. |
 | Secondary button | `.btn` | Normal action, Cancel, or Close; wraps with its action group. |
+| Switch | `.btn` with `role="switch"` and `aria-checked` (`true`, `false`, `mixed`) | A setting that is on or off. Draws a track and knob from `aria-checked` with On/Off beside it; never a filled `.primary` button. |
 | Destructive button | `.btn.danger` | Explicit action label; confirmation when real data would be irreversibly affected. |
 | Unavailable/loading | `disabled`, `aria-busy="true"` | Prevent dispatch and explain the state. Do not disguise a failed request as loading forever. |
 | Press feedback | automatic: `state/feedback.mjs` (`.press-busy`, `.press-done`, `.press-failed`) | Every press whose handler makes a request is busy (disabled, `aria-busy`, a bar on its bottom edge) until it settles, refuses a second press, then shows the outcome; a failure always reaches a toast. Write plain handlers and do not hand-roll busy code. Opt a rapid-repeat control out with `data-repeatable`. Inventory: `docs/ux/button-feedback-audit.md` (`node scripts/button-audit.mjs`). |

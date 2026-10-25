@@ -3,6 +3,14 @@ name: rust
 # Grows stages as phases land: Playwright golden scenarios, perf baselines,
 # migration rehearsal. Every stage here must be able to FAIL (ethos rule 7).
 on:
+  # A manual run of main's tip (full suite, as on a push). Deploys take the
+  # newest commit where rust is green, and the push filter below skips docs
+  # and site commits. So after one red run (2026-10-23: c5aba6e5e, two iOS
+  # flakes that pass locally), every later non-Rust commit leaves main with
+  # no green rust run newer than the last deploy, and the builder logs
+  # ci_gate_held_back until somebody happens to push Rust. Dispatch is the
+  # way out: gh workflow run rust.yml --ref main.
+  workflow_dispatch:
   push:
     branches: [main]
     # `amux` + `scripts/**` are here so the CLI gates below (shellcheck + the AF-78
@@ -50,8 +58,14 @@ on:
 # could never clear. For pushes to main GitHub now lets the running run finish
 # and keeps ONE pending run, which a newer push replaces, so every completed
 # run judges a recent head. Pull requests still cancel their own stale runs.
+#
+# A RE-RUN IS NEVER REPLACED (2026-10-24). "Re-run failed jobs" queues attempt
+# 2 into the same group, where the next push's run replaced it as the one
+# pending run: 68ade32c3's and 31351128f's re-runs were cancelled after 27
+# minutes each. A re-run attempt gets its own group, so it runs beside the
+# queue; it re-runs only the failed jobs, so it costs one or two shards.
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: rust-${{ github.event.pull_request.number || github.ref }}${{ github.run_attempt > 1 && format('-attempt-{0}', github.run_attempt) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

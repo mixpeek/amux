@@ -3243,7 +3243,7 @@ mod adherence_tests {
         let _home = tempfile::tempdir().unwrap();
         let _g = crate::api::settings::test_env::set_home(_home.path());
         std::fs::create_dir_all(_home.path().join("sessions")).unwrap();
-        std::fs::write(_home.path().join("sessions/alpha.env"), "CC_DIR=/tmp\n").unwrap();
+        std::fs::write(_home.path().join("sessions/alpha.env"), "CC_DIR=/tmp\nCC_AUTO_PICKUP=1\n").unwrap();
         let w = seed_worker(&store, 7, "alpha");
         let protocol = Arc::new(MockProtocol::new());
         protocol.register(w.clone(), AgentState::Idle);

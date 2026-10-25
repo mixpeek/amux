@@ -33,8 +33,6 @@ const vendorGlobals = {
   DOMPurify: 'readonly',     // dompurify
   remend: 'readonly',        // remend, in the same vendor/md.js bundle (scripts/build-md.mjs)
   Sortable: 'readonly',      // sortablejs
-  Quill: 'readonly',         // quill
-  QuillMarkdown: 'readonly', // quilljs-markdown
   Chart: 'readonly',         // chart.js
   Motion: 'readonly',        // motion.dev
   GridStack: 'readonly',     // gridstack

@@ -51,6 +51,7 @@ is cheap (the section takes about 8s) and goes through a seam;
 | Leftover test processes | stops a process older than 2h whose parent has exited (ppid 1) and whose command runs out of a pytest temp dir. Log: `test-orphans.log` | none |
 | Kernel limits | nothing | `limits`: open files, this user's processes or inodes at 85% of the limit. `zombies`: one parent holding 200 unreaped children |
 | Crash reports | prunes `.ips/.crash/.diag/.hang/.spin` older than 30 days in `~/Library/Logs/DiagnosticReports` | `crashes`: one app crashing 10 times in 24h |
+| Who is using the CPU (`GET /api/resources`: workers, and the rest by kind: `vm`, `detached`, `apps`, `system`, `amux_server`) | with the CPU at 85% busy (`AMUX_CLEANUP_UTIL_ACT_SHARE`), lowers each detached tree at 100%+ (`AMUX_CLEANUP_UTIL_RENICE_MIN_PCT`) to nice 10, never killing it. Never touches tmux (new worker panes would inherit the priority) or gs12 (`AMUX_CLEANUP_UTIL_RENICE_EXCLUDE`). Log: `util-renice.log` | none of its own: it adds `(who: ...)` to the `cpu` constraint so that escalation names the consumers |
 | launchd jobs, network, thermal | nothing (report only) | none |
 
 The logs named above live in `~/.amux/logs/mac-cleanup/`. A `zombies`

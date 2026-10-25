@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best AI Model for Coding 2026","item":"https://amux.io/guides/best-ai-model-for-coding-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Model for Coding in 2026: Every Model Benchmarked, Priced, and Compared","description":"The definitive guide to choosing the right AI model for coding. SWE-bench scores, pricing, context windows, speed benchmarks, and a decision framework for every major AI coding model.","url":"https://amux.io/guides/best-ai-model-for-coding-2026/","datePublished":"2026-05-20","dateModified":"2026-07-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the best AI model for coding in 2026?","acceptedAnswer":{"@type":"Answer","text":"Claude Opus 4.7 by Anthropic leads the SWE-bench Verified benchmark at 87.6% and SWE-bench Pro at 64.3%, making it the highest-performing generally available model for coding tasks. However, 'best' depends on your constraints: GPT-5.5 scores highest on Terminal-Bench 2.0 (82.0%), Gemini 2.5 Pro leads WebDev Arena for frontend work, and DeepSeek V4 Pro delivers frontier-class quality at 10x lower cost. Most productive developers use 2-3 models via model routing — Opus for architecture and planning, Sonnet for implementation."}},{"@type":"Question","name":"Claude Opus 4.7 vs GPT-5.5 for coding — which is better?","acceptedAnswer":{"@type":"Answer","text":"Claude Opus 4.7 leads SWE-bench Verified (87.6%) and SWE-bench Pro (64.3% vs GPT-5.5's 58.6%). GPT-5.5 leads Terminal-Bench 2.0 (82.0% vs 69.4%) and may edge ahead on the very hardest tickets. On pricing, Opus is $5/$25 per million tokens; GPT-5.5 is $5/$30 — Opus gives more output per dollar. In practice, developers report Opus 4.7 makes better architectural decisions while GPT-5.5 is faster at terminal-native workflows. Both are frontier-class; the right choice depends on whether you prioritize code reasoning (Opus) or shell/DevOps tasks (GPT-5.5)."}},{"@type":"Question","name":"What does SWE-bench Verified actually measure?","acceptedAnswer":{"@type":"Answer","text":"SWE-bench Verified tests whether an AI model can autonomously fix real bugs from 500 GitHub issues in popular Python repositories. Each task provides a failing test case and the model must read the codebase, identify the root cause, and submit a patch that makes the tests pass. 'Verified' means human annotators confirmed each task has exactly one valid solution path. The newer SWE-bench Pro (1,865 tasks across Python, Go, TypeScript, and JavaScript) is considered more reliable because it uses private codebases that cannot appear in training data. Scores on SWE-bench depend heavily on the agent harness (tooling around the model), not just the model itself — harness changes can swing scores by 22+ points."}},{"@type":"Question","name":"Is Claude Sonnet 4.6 good enough for coding or do I need Opus?","acceptedAnswer":{"@type":"Answer","text":"Claude Sonnet 4.6 scores 79.6% on SWE-bench Verified — roughly 90% of Opus 4.7's quality at one-fifth the cost ($3/$15 vs $5/$25 per million tokens) and 2x the speed. For 80% of daily coding work — feature implementation, bug fixes, test writing, straightforward refactoring — Sonnet is the better choice because the quality difference is marginal but the cost and speed difference is substantial. Escalate to Opus for the 20% that demands deep reasoning: complex architecture decisions, subtle cross-module bugs, large-scale refactoring, and multi-file coordination. Claude Code's opusplan mode automates this by using Opus for planning and Sonnet for implementation."}},{"@type":"Question","name":"What is the cheapest good AI model for coding?","acceptedAnswer":{"@type":"Answer","text":"DeepSeek V4 Pro at approximately $0.50/$2.00 per million tokens delivers frontier-class coding quality at 10-13x lower cost than Claude Opus or GPT-5.5. It scores 80.6% on SWE-bench Verified (comparable to Claude Opus 4.5). For even cheaper options: Gemini 2.5 Flash ($0.30/$2.50) scores 63.8% on SWE-bench Verified with the best WebDev Arena performance; GPT-4.1 nano ($0.10/$0.40) handles simple code generation; and DeepSeek V3.2 achieves 74.2% on Aider's polyglot benchmark at just $1.30 per run. The open-weight Qwen3-Coder-Next runs locally on consumer hardware and scores 70.6% on SWE-bench Verified at zero API cost."}},{"@type":"Question","name":"Which AI model has the largest context window for coding?","acceptedAnswer":{"@type":"Answer","text":"Gemini 3 Pro offers the largest context window at 10 million tokens (effective ~6-7M), followed by Grok 4 at 2 million tokens and Claude Opus 4.7, GPT-5.5, and Gemini 3.1 Pro at 1 million tokens each (effective ~600-700K). However, research analyzing 22 models found most fail well before advertised limits — a '1M-token model' typically maintains high-quality recall to approximately 600-700K tokens. For large codebase work, Augment Code's proprietary context engine can index 100,000+ file repositories, and DeepSeek V4 Pro achieves 97% needle-in-haystack accuracy on ~500-file codebases."}},{"@type":"Question","name":"Should I use the same model for all coding tasks?","acceptedAnswer":{"@type":"Answer","text":"No. Using a single model for all tasks either wastes money (using Opus for simple tasks) or sacrifices quality (using a budget model for complex architecture). The optimal approach is model routing: use a frontier model (Opus 4.7 or GPT-5.5) for planning, architecture, and complex reasoning, then switch to a workhorse model (Sonnet 4.6 or GPT-4.1) for implementation. Claude Code's opusplan mode does this automatically, saving ~40% on tokens while preserving Opus-quality planning. Cursor's Auto mode similarly routes queries by complexity. The price difference between cheapest and most expensive models is 50x — routing is the single highest-leverage cost optimization."}},{"@type":"Question","name":"How do AI coding benchmarks differ and which should I trust?","acceptedAnswer":{"@type":"Answer","text":"SWE-bench Verified (500 Python tasks) was the original standard but has known contamination issues — frontier models may have seen some tasks in training. SWE-bench Pro (1,865 multi-language tasks from private codebases) is now the more reliable frontier signal. Terminal-Bench 2.0 tests shell/DevOps workflows. Aider's polyglot benchmark tests code generation across 6 languages. LiveCodeBench uses competitive programming problems published after training cutoffs to prevent contamination. HumanEval and MBPP are saturated (95%+ scores) and no longer discriminative. No single benchmark tells the full story — look at SWE-bench Pro for overall coding ability, Terminal-Bench for CLI/DevOps, and Aider polyglot for multi-language generation."}}]}</script>
@@ -30,55 +29,55 @@
     .lb-rank { font-size: 0.8rem; font-weight: 700; font-family: var(--mono, 'JetBrains Mono', monospace); color: var(--muted, #6b7589); min-width: 1.6rem; text-align: right; }
     .lb-name { font-size: 0.85rem; font-weight: 600; min-width: 11rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .lb-name a { color: var(--text, #e8eaf0); }
-    .lb-name a:hover { color: var(--green, #6ee7b7); }
-    .lb-bar-wrap { flex: 1; background: var(--surface, #232838); border-radius: 4px; height: 22px; overflow: hidden; position: relative; }
+    .lb-name a:hover { color: var(--green, var(--c-green)); }
+    .lb-bar-wrap { flex: 1; background: var(--surface, var(--panel-2)); border-radius: 4px; height: 22px; overflow: hidden; position: relative; }
     .lb-bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, rgba(110,231,183,0.35), rgba(110,231,183,0.6)); transition: width 0.6s ease; }
     .lb-bar.tier-frontier { background: linear-gradient(90deg, rgba(110,231,183,0.4), rgba(110,231,183,0.7)); }
     .lb-bar.tier-premium { background: linear-gradient(90deg, rgba(96,165,250,0.35), rgba(96,165,250,0.6)); }
     .lb-bar.tier-budget { background: linear-gradient(90deg, rgba(251,191,36,0.3), rgba(251,191,36,0.55)); }
     .lb-bar.tier-open { background: linear-gradient(90deg, rgba(192,132,252,0.3), rgba(192,132,252,0.55)); }
-    .lb-score { font-size: 0.85rem; font-weight: 700; font-family: var(--mono, 'JetBrains Mono', monospace); min-width: 3.2rem; text-align: right; color: var(--green, #6ee7b7); }
-    .lb-score.tier-premium { color: #60a5fa; }
-    .lb-score.tier-budget { color: #fbbf24; }
-    .lb-score.tier-open { color: #c084fc; }
+    .lb-score { font-size: 0.85rem; font-weight: 700; font-family: var(--mono, 'JetBrains Mono', monospace); min-width: 3.2rem; text-align: right; color: var(--green, var(--c-green)); }
+    .lb-score.tier-premium { color: var(--c-blue); }
+    .lb-score.tier-budget { color: var(--c-amber); }
+    .lb-score.tier-open { color: light-dark(oklch(0.48 0.150 305.5), #c084fc); }
     .lb-maker { font-size: 0.7rem; color: var(--muted, #6b7589); font-weight: 400; margin-left: 0.3rem; }
     @media (max-width: 600px) { .lb-name { min-width: 7rem; font-size: 0.78rem; } .lb-maker { display: none; } .lb-rank { min-width: 1.2rem; } }
     .bench-note { background: rgba(110,231,183,0.06); border: 1px solid rgba(110,231,183,0.15); border-radius: 8px; padding: 0.9rem 1rem; margin: 1rem 0; font-size: 0.85rem; color: var(--dim, #a0aab8); line-height: 1.5; }
     .tier-label { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.15rem 0.5rem; border-radius: 4px; margin-bottom: 0.4rem; }
-    .tier-label.frontier { background: rgba(110,231,183,0.15); color: #6ee7b7; }
-    .tier-label.premium { background: rgba(96,165,250,0.15); color: #60a5fa; }
-    .tier-label.budget { background: rgba(251,191,36,0.12); color: #fbbf24; }
-    .tier-label.openw { background: rgba(192,132,252,0.12); color: #c084fc; }
-    .model-card { background: var(--surface, #232838); border-radius: 10px; padding: 1.15rem 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+    .tier-label.frontier { background: rgba(110,231,183,0.15); color: var(--c-green); }
+    .tier-label.premium { background: rgba(96,165,250,0.15); color: var(--c-blue); }
+    .tier-label.budget { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+    .tier-label.openw { background: rgba(192,132,252,0.12); color: light-dark(oklch(0.48 0.150 305.5), #c084fc); }
+    .model-card { background: var(--surface, var(--panel-2)); border-radius: 10px; padding: 1.15rem 1.25rem; margin-bottom: 1rem; border: 1px solid var(--border, var(--tint)); }
     .model-card:hover { border-color: rgba(110,231,183,0.18); }
     .model-card h4 { margin: 0 0 0.3rem; font-size: 0.95rem; }
     .model-card h4 a { color: var(--text, #e8eaf0); }
-    .model-card h4 a:hover { color: var(--green, #6ee7b7); }
+    .model-card h4 a:hover { color: var(--green, var(--c-green)); }
     .model-card .mc-stats { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
     .model-card .mc-stat { font-size: 0.78rem; font-family: var(--mono, 'JetBrains Mono', monospace); background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.15rem 0.5rem; color: var(--dim, #a0aab8); }
     .model-card .mc-desc { font-size: 0.85rem; color: var(--dim, #a0aab8); line-height: 1.5; }
     .cmp-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin: 1rem 0; }
-    .cmp-table th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted, #6b7589); padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border, rgba(255,255,255,0.08)); }
+    .cmp-table th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted, #6b7589); padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border, var(--tint-2)); }
     .cmp-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border, rgba(255,255,255,0.04)); color: var(--dim, #a0aab8); vertical-align: top; }
     .cmp-table td:first-child { color: var(--text, #e8eaf0); font-weight: 500; }
     .cmp-table td a { color: var(--text, #e8eaf0); }
-    .cmp-table td a:hover { color: var(--green, #6ee7b7); }
+    .cmp-table td a:hover { color: var(--green, var(--c-green)); }
     .cmp-table tr:hover td { background: rgba(255,255,255,0.02); }
     @media (max-width: 600px) { .cmp-table { font-size: 0.75rem; } .cmp-table th, .cmp-table td { padding: 0.4rem 0.35rem; } }
     .task-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 1rem 0; }
-    .task-card { background: var(--surface, #232838); border-radius: 8px; padding: 0.9rem 1rem; border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+    .task-card { background: var(--surface, var(--panel-2)); border-radius: 8px; padding: 0.9rem 1rem; border: 1px solid var(--border, var(--tint)); }
     .task-card h4 { margin: 0 0 0.25rem; font-size: 0.88rem; }
-    .task-card .tc-model { font-size: 0.82rem; color: var(--green, #6ee7b7); font-weight: 600; font-family: var(--mono, 'JetBrains Mono', monospace); }
+    .task-card .tc-model { font-size: 0.82rem; color: var(--green, var(--c-green)); font-weight: 600; font-family: var(--mono, 'JetBrains Mono', monospace); }
     .task-card .tc-why { font-size: 0.8rem; color: var(--muted, #6b7589); margin-top: 0.2rem; line-height: 1.4; }
     @media (max-width: 600px) { .task-grid { grid-template-columns: 1fr; } }
     .weakness-card { background: rgba(248,113,113,0.04); border: 1px solid rgba(248,113,113,0.12); border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 0.75rem; }
-    .weakness-card h4 { margin: 0 0 0.3rem; font-size: 0.9rem; color: #f87171; }
+    .weakness-card h4 { margin: 0 0 0.3rem; font-size: 0.9rem; color: var(--c-red); }
     .weakness-card ul { margin: 0; padding-left: 1.2rem; font-size: 0.82rem; color: var(--dim, #a0aab8); line-height: 1.5; }
-    .key-stat { display: inline-block; background: rgba(110,231,183,0.10); border: 1px solid rgba(110,231,183,0.25); border-radius: 8px; padding: 0.15rem 0.6rem; font-size: 0.82rem; font-weight: 600; color: #6ee7b7; margin-right: 0.4rem; margin-bottom: 0.3rem; }
+    .key-stat { display: inline-block; background: rgba(110,231,183,0.10); border: 1px solid rgba(110,231,183,0.25); border-radius: 8px; padding: 0.15rem 0.6rem; font-size: 0.82rem; font-weight: 600; color: var(--c-green); margin-right: 0.4rem; margin-bottom: 0.3rem; }
     .routing-box { background: linear-gradient(135deg, rgba(110,231,183,0.08), rgba(110,231,183,0.02)); border: 2px solid rgba(110,231,183,0.3); border-radius: 14px; padding: 1.5rem; margin: 1.5rem 0; }
-    .routing-box h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #6ee7b7; }
+    .routing-box h3 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--c-green); }
     .routing-box code { background: rgba(0,0,0,0.3); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.82rem; }
-    .updated-badge { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--green, #6ee7b7); background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.2); border-radius: 4px; padding: 0.15rem 0.5rem; margin-bottom: 0.5rem; }
+    .updated-badge { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--green, var(--c-green)); background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.2); border-radius: 4px; padding: 0.15rem 0.5rem; margin-bottom: 0.5rem; }
   [data-theme="light"] .lb-bar-wrap { background: var(--bg-3); }
   [data-theme="light"] .lb-bar { background: linear-gradient(90deg, oklch(0.36 0.18 145 / .5), oklch(0.36 0.18 145 / .8)); }
   [data-theme="light"] .lb-bar.tier-frontier { background: linear-gradient(90deg, oklch(0.36 0.18 145 / .5), oklch(0.36 0.18 145 / .85)); }
@@ -109,18 +108,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td         { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -135,7 +144,7 @@
     <!-- EXP-013: GitHub CTA on high-traffic zero-conversion guide -->
     <div style="display:inline-flex;align-items:center;gap:0.75rem;background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:0.75rem 1rem;margin:1rem 0 1.5rem;flex-wrap:wrap">
       <span style="font-size:13px;color:var(--fg-mute)">Run multiple AI models in parallel from one dashboard &rarr;</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.4rem;background:var(--accent);color:#fff;border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap" onclick="if(window.posthog) posthog.capture('exp013_guide_github_cta_click', {page: 'best-ai-model-for-coding-2026'})">&#11088; Star amux on GitHub</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.4rem;background:var(--accent);color:var(--bg);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap" onclick="if(window.posthog) posthog.capture('exp013_guide_github_cta_click', {page: 'best-ai-model-for-coding-2026'})">&#11088; Star amux on GitHub</a>
     </div>
 
     <h2 id="tldr" style="margin-top:2rem">The Decision Framework</h2>
@@ -306,7 +315,7 @@
     <p style="font-size:0.9rem;color:var(--dim);margin-bottom:1rem">Every model has failure modes. Knowing them prevents surprises.</p>
 
     <div class="weakness-card">
-      <h4><a href="https://www.anthropic.com/claude" style="color:#f87171">Claude</a> (Opus / Sonnet)</h4>
+      <h4><a href="https://www.anthropic.com/claude" style="color:var(--c-red)">Claude</a> (Opus / Sonnet)</h4>
       <ul>
         <li><strong>Sycophancy</strong> &mdash; validates flawed approaches rather than pushing back; says &ldquo;Excellent work!&rdquo; then ships bugs</li>
         <li><strong>Ghost file operations</strong> &mdash; claims to have performed file operations it did not actually execute</li>
@@ -315,7 +324,7 @@
       </ul>
     </div>
     <div class="weakness-card">
-      <h4><a href="https://openai.com" style="color:#f87171">GPT</a> (4.1 / 5.x)</h4>
+      <h4><a href="https://openai.com" style="color:var(--c-red)">GPT</a> (4.1 / 5.x)</h4>
       <ul>
         <li><strong>Edge case failures</strong> &mdash; generates mostly valid code that gives incorrect responses on boundary conditions</li>
         <li><strong>Problem misunderstanding</strong> &mdash; occasionally solves a different problem than the one described</li>
@@ -324,7 +333,7 @@
       </ul>
     </div>
     <div class="weakness-card">
-      <h4><a href="https://deepmind.google/technologies/gemini/" style="color:#f87171">Gemini</a> (2.5 Pro / 3.x)</h4>
+      <h4><a href="https://deepmind.google/technologies/gemini/" style="color:var(--c-red)">Gemini</a> (2.5 Pro / 3.x)</h4>
       <ul>
         <li><strong>File editing failures</strong> &mdash; repeatedly hits &ldquo;old_string not found&rdquo; errors on basic edits</li>
         <li><strong>Overeager implementation</strong> &mdash; changes code when the developer only wanted to discuss</li>
@@ -333,7 +342,7 @@
       </ul>
     </div>
     <div class="weakness-card">
-      <h4><a href="https://www.deepseek.com" style="color:#f87171">DeepSeek V4</a> / <a href="https://github.com/QwenLM/Qwen3-Coder" style="color:#f87171">Qwen</a> (Open-Weight)</h4>
+      <h4><a href="https://www.deepseek.com" style="color:var(--c-red)">DeepSeek V4</a> / <a href="https://github.com/QwenLM/Qwen3-Coder" style="color:var(--c-red)">Qwen</a> (Open-Weight)</h4>
       <ul>
         <li><strong>Instruction following</strong> &mdash; weaker on complex multi-constraint prompts vs closed frontier models</li>
         <li><strong>Long-horizon reliability</strong> &mdash; agentic reliability over many steps still favors Claude/GPT</li>
@@ -363,7 +372,7 @@
 
     <div class="routing-box">
       <h3>The 80/20 Rule</h3>
-      <p style="font-size:0.9rem;color:var(--dim);line-height:1.55">Default to <strong><a href="https://www.anthropic.com/claude" style="color:#6ee7b7">Sonnet 4.6</a></strong> for 80% of tasks. Escalate to <strong><a href="https://www.anthropic.com/news/claude-opus-4-7" style="color:#6ee7b7">Opus 4.7</a></strong> for the 20% that demands deep reasoning &mdash; architecture decisions, subtle bugs, multi-file refactoring. This saves ~40% on costs while preserving top-tier quality where it matters.</p>
+      <p style="font-size:0.9rem;color:var(--dim);line-height:1.55">Default to <strong><a href="https://www.anthropic.com/claude" style="color:var(--c-green)">Sonnet 4.6</a></strong> for 80% of tasks. Escalate to <strong><a href="https://www.anthropic.com/news/claude-opus-4-7" style="color:var(--c-green)">Opus 4.7</a></strong> for the 20% that demands deep reasoning &mdash; architecture decisions, subtle bugs, multi-file refactoring. This saves ~40% on costs while preserving top-tier quality where it matters.</p>
     </div>
 
     <p style="font-size:0.9rem;color:var(--dim);margin-top:1rem"><strong><a href="https://www.anthropic.com/product/claude-code">Claude Code</a>&rsquo;s <code>opusplan</code> mode</strong> automates this: Opus handles the planning phase (architecture, reasoning, tradeoff analysis), then automatically switches to Sonnet for code generation. <strong><a href="https://www.cursor.com">Cursor</a>&rsquo;s Auto mode</strong> similarly routes queries by complexity &mdash; simpler questions go to cheaper models, complex ones to premium models.</p>
@@ -421,9 +430,9 @@
     </details>
 
     <div style="margin-top:2.5rem;background:linear-gradient(135deg,rgba(110,231,183,0.08),rgba(110,231,183,0.02));border:2px solid rgba(110,231,183,0.3);border-radius:14px;padding:1.5rem">
-      <h3 style="margin:0 0 0.5rem;font-size:1rem;color:#6ee7b7">Run multiple models in parallel with amux</h3>
-      <p style="font-size:0.88rem;color:var(--dim);line-height:1.5;margin:0"><a href="https://github.com/mixpeek/amux" style="color:#6ee7b7">amux</a> orchestrates parallel <a href="https://www.anthropic.com/product/claude-code">Claude Code</a> sessions with per-session model configuration, real-time cost tracking, and a shared kanban board for task coordination. Assign an Opus-powered architect alongside Sonnet-powered implementers &mdash; each agent uses the right model for its job. Open-source, MIT licensed.</p>
-      <p style="margin:0.75rem 0 0"><a href="https://github.com/mixpeek/amux" style="color:#6ee7b7;font-weight:600;font-size:0.88rem">View on GitHub &rarr;</a></p>
+      <h3 style="margin:0 0 0.5rem;font-size:1rem;color:var(--c-green)">Run multiple models in parallel with amux</h3>
+      <p style="font-size:0.88rem;color:var(--dim);line-height:1.5;margin:0"><a href="https://github.com/mixpeek/amux" style="color:var(--c-green)">amux</a> orchestrates parallel <a href="https://www.anthropic.com/product/claude-code">Claude Code</a> sessions with per-session model configuration, real-time cost tracking, and a shared kanban board for task coordination. Assign an Opus-powered architect alongside Sonnet-powered implementers &mdash; each agent uses the right model for its job. Open-source, MIT licensed.</p>
+      <p style="margin:0.75rem 0 0"><a href="https://github.com/mixpeek/amux" style="color:var(--c-green);font-weight:600;font-size:0.88rem">View on GitHub &rarr;</a></p>
     </div>
 
   </main>
@@ -465,10 +474,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

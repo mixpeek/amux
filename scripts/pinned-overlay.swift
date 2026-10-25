@@ -1,28 +1,99 @@
 import Cocoa
 import WebKit
 
+class DragBarView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let attrs: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .font: NSFont.systemFont(ofSize: 12),
+            .paragraphStyle: style,
+        ]
+        let r = NSRect(x: 0, y: (bounds.height - 16) / 2, width: bounds.width, height: 16)
+        "⠿".draw(in: r, withAttributes: attrs)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let target = window?.parent ?? window else { return }
+        let startScreen = NSEvent.mouseLocation
+        let startOrigin = target.frame.origin
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
+            if next.type == .leftMouseUp { break }
+            let cur = NSEvent.mouseLocation
+            target.setFrameOrigin(NSPoint(
+                x: startOrigin.x + cur.x - startScreen.x,
+                y: startOrigin.y + cur.y - startScreen.y
+            ))
+        }
+    }
+}
+
+class ResizeGripView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.tertiaryLabelColor.setStroke()
+        let path = NSBezierPath()
+        for offset: CGFloat in [4, 8, 12] {
+            path.move(to: NSPoint(x: bounds.maxX - offset, y: bounds.minY))
+            path.line(to: NSPoint(x: bounds.maxX, y: bounds.minY + offset))
+        }
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let cw = window?.parent else { return }
+        let startScreen = NSEvent.mouseLocation
+        let startFrame = cw.frame
+        let topY = startFrame.maxY
+        let leftX = startFrame.origin.x
+
+        while true {
+            guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
+            if next.type == .leftMouseUp { break }
+            let cur = NSEvent.mouseLocation
+            let newW = max(250, startFrame.width + (cur.x - startScreen.x))
+            let newH = max(200, startFrame.height - (cur.y - startScreen.y))
+            cw.setFrame(NSRect(x: leftX, y: topY - newH, width: newW, height: newH), display: true)
+            if let ctrl = cw.delegate as? OverlayController {
+                ctrl.repositionChildren()
+            }
+        }
+    }
+}
+
 class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
 
 class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
-    let window: OverlayWindow
+    let contentWindow: OverlayWindow
+    let toolbarWindow: NSWindow
     let webView: WKWebView
-    var filePath: String
-    var initialOpacity: CGFloat
-    var fileContent: String = ""
+    var files: [(path: String, content: String)]
+    let resizeWindow: NSWindow
+    var editMode = false
+    var zoom = 100
+    var zoomLabel: NSTextField!
+    var editBtn: NSButton!
+    var tabControl: NSSegmentedControl?
+    var fileWatchers: [DispatchSourceFileSystemObject] = []
 
-    init(filePath: String, x: Int, y: Int, w: Int, h: Int, opacity: Double) {
-        self.filePath = filePath
-        self.initialOpacity = CGFloat(opacity)
+    init(filePaths: [String], x: Int, y: Int, w: Int, h: Int, opacity: Double) {
+        self.files = filePaths.map { p in
+            let c = (try? String(contentsOf: URL(fileURLWithPath: p), encoding: .utf8)) ?? ""
+            return (path: p, content: c)
+        }
 
         let rect = NSRect(x: x, y: y, width: w, height: h)
-        window = OverlayWindow(
+        contentWindow = OverlayWindow(
             contentRect: rect,
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
+            styleMask: [.borderless],
+            backing: .buffered, defer: false
         )
 
         let config = WKWebViewConfiguration()
@@ -30,28 +101,55 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
         webView = WKWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
 
+        let tbH: CGFloat = 28
+        let tbRect = NSRect(
+            x: CGFloat(x), y: CGFloat(y) + CGFloat(h) - tbH,
+            width: CGFloat(w), height: tbH
+        )
+        toolbarWindow = NSWindow(
+            contentRect: tbRect,
+            styleMask: [.borderless],
+            backing: .buffered, defer: false
+        )
+
+        let gripSize: CGFloat = 20
+        let gripRect = NSRect(
+            x: CGFloat(x) + CGFloat(w) - gripSize,
+            y: CGFloat(y),
+            width: gripSize, height: gripSize
+        )
+        resizeWindow = NSWindow(
+            contentRect: gripRect,
+            styleMask: [.borderless],
+            backing: .buffered, defer: false
+        )
+
         super.init()
 
-        window.delegate = self
-        window.level = .floating
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
-        window.alphaValue = initialOpacity
-        window.hasShadow = true
-        window.minSize = NSSize(width: 250, height: 200)
+        contentWindow.delegate = self
+        #if AMUX_APP
+        contentWindow.isReleasedWhenClosed = false
+        toolbarWindow.isReleasedWhenClosed = false
+        resizeWindow.isReleasedWhenClosed = false
+        #endif
+        contentWindow.level = .floating
+        contentWindow.isOpaque = false
+        contentWindow.backgroundColor = .clear
+        contentWindow.alphaValue = CGFloat(opacity)
+        contentWindow.hasShadow = true
+        contentWindow.ignoresMouseEvents = true
 
         let visual = NSVisualEffectView()
         visual.material = .hudWindow
         visual.blendingMode = .behindWindow
         visual.state = .active
         visual.translatesAutoresizingMaskIntoConstraints = false
+        visual.wantsLayer = true
+        visual.layer?.cornerRadius = 10
+        visual.layer?.masksToBounds = true
 
-        window.contentView = visual
+        contentWindow.contentView = visual
         visual.addSubview(webView)
-
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: visual.topAnchor),
             webView.bottomAnchor.constraint(equalTo: visual.bottomAnchor),
@@ -62,112 +160,395 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
 
-        let opacityHandler = OpacityHandler(window: window)
-        let toggleHandler = ToggleHandler(controller: self)
+        let togHandler = ToggleHandler(controller: self)
         let editHandler = EditHandler(controller: self)
-        webView.configuration.userContentController.add(opacityHandler, name: "opacity")
-        webView.configuration.userContentController.add(toggleHandler, name: "toggle")
+        let zoomHandler = ZoomHandler(controller: self)
+        webView.configuration.userContentController.add(togHandler, name: "toggle")
         webView.configuration.userContentController.add(editHandler, name: "edit")
+        webView.configuration.userContentController.add(zoomHandler, name: "zoomChanged")
+
+        toolbarWindow.level = .floating
+        toolbarWindow.isOpaque = false
+        toolbarWindow.backgroundColor = .clear
+        toolbarWindow.hasShadow = false
+        toolbarWindow.alphaValue = CGFloat(opacity)
+
+        let tbVisual = NSVisualEffectView()
+        tbVisual.material = .titlebar
+        tbVisual.blendingMode = .behindWindow
+        tbVisual.state = .active
+        tbVisual.translatesAutoresizingMaskIntoConstraints = false
+        tbVisual.wantsLayer = true
+        tbVisual.layer?.cornerRadius = 8
+        tbVisual.layer?.masksToBounds = true
+
+        toolbarWindow.contentView = tbVisual
+        setupToolbar(in: tbVisual)
+
+        resizeWindow.level = .floating
+        resizeWindow.isOpaque = false
+        resizeWindow.backgroundColor = .clear
+        resizeWindow.hasShadow = false
+        resizeWindow.alphaValue = CGFloat(opacity)
+
+        let gripView = ResizeGripView()
+        gripView.translatesAutoresizingMaskIntoConstraints = false
+        let gripContainer = NSView()
+        gripContainer.wantsLayer = true
+        resizeWindow.contentView = gripContainer
+        gripContainer.addSubview(gripView)
+        gripView.frame = gripContainer.bounds
+        gripView.autoresizingMask = [.width, .height]
+
+        contentWindow.addChildWindow(toolbarWindow, ordered: .above)
+        contentWindow.addChildWindow(resizeWindow, ordered: .above)
 
         loadContent()
-        window.makeKeyAndOrderFront(nil)
+        contentWindow.orderFront(nil)
+        toolbarWindow.orderFront(nil)
+        resizeWindow.orderFront(nil)
+
+        setupFileWatchers()
+    }
+
+    func setupToolbar(in container: NSView) {
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .horizontal
+        stack.spacing = 3
+        stack.alignment = .centerY
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 4)
+
+        let sf = NSFont.systemFont(ofSize: 11)
+
+        let closeBtn = makeBtn("\u{2715}", font: sf)
+        closeBtn.target = self
+        closeBtn.action = #selector(closeOverlay)
+        closeBtn.contentTintColor = .secondaryLabelColor
+
+        let zoomOutBtn = makeBtn("\u{2212}", font: sf)
+        zoomOutBtn.target = self
+        zoomOutBtn.action = #selector(zoomOutAction)
+
+        zoomLabel = NSTextField(labelWithString: "100%")
+        zoomLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        zoomLabel.textColor = .secondaryLabelColor
+        zoomLabel.alignment = .center
+        zoomLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        let zoomInBtn = makeBtn("+", font: sf)
+        zoomInBtn.target = self
+        zoomInBtn.action = #selector(zoomInAction)
+
+        editBtn = makeBtn("Edit", font: sf)
+        editBtn.target = self
+        editBtn.action = #selector(toggleEditAction)
+
+        let moreBtn = makeBtn("\u{22EF}", font: NSFont.systemFont(ofSize: 13))
+        moreBtn.target = self
+        moreBtn.action = #selector(showMoreMenu(_:))
+
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let dragBar = DragBarView()
+        dragBar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dragBar.widthAnchor.constraint(equalToConstant: 28),
+            dragBar.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
+        stack.addArrangedSubview(closeBtn)
+
+        if files.count > 1 {
+            let seg = NSSegmentedControl()
+            seg.segmentCount = files.count
+            seg.segmentStyle = .roundRect
+            seg.controlSize = .small
+            seg.font = NSFont.systemFont(ofSize: 10)
+            for (i, f) in files.enumerated() {
+                let name = URL(fileURLWithPath: f.path).lastPathComponent
+                let label = name.count > 16 ? String(name.prefix(13)) + "..." : name
+                seg.setLabel(label, forSegment: i)
+                seg.setWidth(0, forSegment: i)
+            }
+            seg.selectedSegment = 0
+            seg.target = self
+            seg.action = #selector(tabChanged(_:))
+            seg.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            tabControl = seg
+            stack.addArrangedSubview(seg)
+        }
+
+        for v in [zoomOutBtn, zoomLabel, zoomInBtn, editBtn, moreBtn, spacer, dragBar] as [NSView] {
+            stack.addArrangedSubview(v)
+        }
+
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+    }
+
+    func makeBtn(_ title: String, font: NSFont) -> NSButton {
+        let btn = NSButton(title: title, target: nil, action: nil)
+        btn.bezelStyle = .inline
+        btn.font = font
+        btn.isBordered = true
+        btn.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        return btn
+    }
+
+    @objc func closeOverlay() {
+        #if AMUX_APP
+        contentWindow.close()   // windowWillClose tears down the rest
+        #else
+        NSApplication.shared.terminate(nil)
+        #endif
+    }
+
+    @objc func zoomOutAction() {
+        zoom = max(60, zoom - 10)
+        zoomLabel.stringValue = "\(zoom)%"
+        webView.evaluateJavaScript("_zoom=\(zoom);applyZoom()")
+    }
+
+    @objc func zoomInAction() {
+        zoom = min(200, zoom + 10)
+        zoomLabel.stringValue = "\(zoom)%"
+        webView.evaluateJavaScript("_zoom=\(zoom);applyZoom()")
+    }
+
+    @objc func toggleEditAction() {
+        if !editMode {
+            editMode = true
+            contentWindow.ignoresMouseEvents = false
+            contentWindow.makeKeyAndOrderFront(nil)
+            editBtn.title = "Done"
+            webView.evaluateJavaScript("enterEditMode()")
+        } else {
+            editMode = false
+            contentWindow.ignoresMouseEvents = true
+            editBtn.title = "Edit"
+            webView.evaluateJavaScript("exitEditMode()")
+        }
+    }
+
+    @objc func tabChanged(_ sender: NSSegmentedControl) {
+        if editMode {
+            editMode = false
+            contentWindow.ignoresMouseEvents = true
+            editBtn.title = "Edit"
+        }
+        webView.evaluateJavaScript("switchTab(\(sender.selectedSegment))")
+    }
+
+    func cancelEditMode() {
+        editMode = false
+        editBtn.title = "Edit"
+        contentWindow.ignoresMouseEvents = true
+    }
+
+    @objc func showMoreMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+
+        let themeLabel = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
+        themeLabel.isEnabled = false
+        menu.addItem(themeLabel)
+
+        for t in ["Dark", "Light", "Warm", "Ocean", "Rose", "Green"] {
+            let item = NSMenuItem(title: t, action: #selector(setThemeAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = t.lowercased()
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        let scrollUp = NSMenuItem(title: "\u{25B2} Scroll Up", action: #selector(scrollUpAction), keyEquivalent: "")
+        scrollUp.target = self
+        menu.addItem(scrollUp)
+
+        let scrollDown = NSMenuItem(title: "\u{25BC} Scroll Down", action: #selector(scrollDownAction), keyEquivalent: "")
+        scrollDown.target = self
+        menu.addItem(scrollDown)
+
+        menu.addItem(.separator())
+
+        let opLabel = NSMenuItem(title: "Opacity", action: nil, keyEquivalent: "")
+        opLabel.isEnabled = false
+        menu.addItem(opLabel)
+
+        let opView = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        let slider = NSSlider(
+            value: Double(contentWindow.alphaValue * 100),
+            minValue: 20, maxValue: 100,
+            target: self, action: #selector(opacityChanged(_:))
+        )
+        slider.frame = NSRect(x: 12, y: 0, width: 136, height: 24)
+        opView.addSubview(slider)
+        let sliderItem = NSMenuItem()
+        sliderItem.view = opView
+        menu.addItem(sliderItem)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    @objc func setThemeAction(_ sender: NSMenuItem) {
+        guard let theme = sender.representedObject as? String else { return }
+        webView.evaluateJavaScript("setTheme('\(theme)')")
+    }
+
+    @objc func scrollUpAction() {
+        webView.evaluateJavaScript("window.scrollBy(0,-150)")
+    }
+
+    @objc func scrollDownAction() {
+        webView.evaluateJavaScript("window.scrollBy(0,150)")
+    }
+
+    @objc func opacityChanged(_ sender: NSSlider) {
+        let val = CGFloat(sender.doubleValue / 100.0)
+        contentWindow.alphaValue = val
+        toolbarWindow.alphaValue = val
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        #if AMUX_APP
+        // Inside the desktop app a pin is one of many windows: close its own
+        // toolbar and grip, stop watching its files, and let the app drop it.
+        toolbarWindow.orderOut(nil)
+        resizeWindow.orderOut(nil)
+        for w in fileWatchers { w.cancel() }
+        fileWatchers = []
+        NotificationCenter.default.post(name: .amuxOverlayClosed, object: self)
+        #else
+        NSApplication.shared.terminate(nil)
+        #endif
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        repositionChildren()
+    }
+
+    func repositionChildren() {
+        let f = contentWindow.frame
+        let tbH: CGFloat = 28
+        toolbarWindow.setFrame(
+            NSRect(x: f.origin.x, y: f.maxY - tbH, width: f.width, height: tbH),
+            display: true
+        )
+        let gripSize: CGFloat = 20
+        resizeWindow.setFrame(
+            NSRect(x: f.maxX - gripSize, y: f.origin.y, width: gripSize, height: gripSize),
+            display: true
+        )
+    }
+
+    func setupFileWatchers() {
+        for watcher in fileWatchers { watcher.cancel() }
+        fileWatchers = []
+
+        for f in files {
+            let fd = open(f.path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .rename, .delete],
+                queue: .main
+            )
+            source.setEventHandler { [weak self] in
+                self?.loadContent()
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            fileWatchers.append(source)
+        }
     }
 
     func loadContent() {
-        let url = URL(fileURLWithPath: filePath)
-        fileContent = (try? String(contentsOf: url, encoding: .utf8)) ?? "Could not read file."
+        for i in 0..<files.count {
+            files[i].content = (try? String(contentsOf: URL(fileURLWithPath: files[i].path), encoding: .utf8)) ?? ""
+        }
 
-        let renderedBody = renderMarkdown(fileContent)
-        let opPct = Int(initialOpacity * 100)
+        var fd = "["
+        for (i, f) in files.enumerated() {
+            let nm = escapeJS(URL(fileURLWithPath: f.path).lastPathComponent)
+            let b = f.content.data(using: .utf8)?.base64EncodedString() ?? ""
+            if i > 0 { fd += "," }
+            fd += "{name:\"" + nm + "\",b64:\"" + b + "\"}"
+        }
+        fd += "]"
 
-        let html = """
+        let tb = ""
+
+        var rc = ""
+        for (i, f) in files.enumerated() {
+            let body = renderMarkdown(f.content, tabIndex: i)
+            let ac = i == 0 ? " active" : ""
+            rc += "<div class=\"tab-content" + ac + "\" id=\"tc-" + String(i) + "\">" + body + "</div>"
+        }
+
+        let html = htmlTemplate()
+            .replacingOccurrences(of: "/*FILEDATA*/[]", with: fd)
+            .replacingOccurrences(of: "<!--TABBAR-->", with: tb)
+            .replacingOccurrences(of: "<!--TABS-->", with: rc)
+
+        webView.loadHTMLString(html, baseURL: URL(fileURLWithPath: files[0].path).deletingLastPathComponent())
+    }
+
+    func htmlTemplate() -> String {
+        return """
         <!DOCTYPE html>
         <html>
         <head>
         <meta charset="utf-8">
         <style>
             :root {
-                --fg: #e8e8e8;
-                --fg-dim: rgba(255,255,255,0.45);
-                --fg-muted: rgba(255,255,255,0.5);
-                --fg-heading: rgba(255,255,255,0.9);
-                --accent: #5ba3f5;
-                --code-bg: rgba(0,0,0,0.25);
-                --border: rgba(255,255,255,0.15);
-                --table-header: rgba(255,255,255,0.05);
-                --toolbar-bg: rgba(255,255,255,0.05);
-                --toolbar-hover: rgba(255,255,255,0.1);
-                --toolbar-fg: rgba(255,255,255,0.6);
+                --fg: #e8e8e8; --fg-dim: rgba(255,255,255,0.45);
+                --fg-muted: rgba(255,255,255,0.5); --fg-heading: rgba(255,255,255,0.9);
+                --accent: #5ba3f5; --code-bg: rgba(0,0,0,0.25);
+                --border: rgba(255,255,255,0.15); --table-header: rgba(255,255,255,0.05);
                 --scrollbar: rgba(255,255,255,0.15);
             }
             [data-theme="light"] {
-                --fg: #1a1a1a;
-                --fg-dim: rgba(0,0,0,0.4);
-                --fg-muted: rgba(0,0,0,0.45);
-                --fg-heading: rgba(0,0,0,0.85);
-                --accent: #2563eb;
-                --code-bg: rgba(0,0,0,0.06);
-                --border: rgba(0,0,0,0.12);
-                --table-header: rgba(0,0,0,0.04);
-                --toolbar-bg: rgba(0,0,0,0.04);
-                --toolbar-hover: rgba(0,0,0,0.08);
-                --toolbar-fg: rgba(0,0,0,0.5);
+                --fg: #1a1a1a; --fg-dim: rgba(0,0,0,0.4);
+                --fg-muted: rgba(0,0,0,0.45); --fg-heading: rgba(0,0,0,0.85);
+                --accent: #2563eb; --code-bg: rgba(0,0,0,0.06);
+                --border: rgba(0,0,0,0.12); --table-header: rgba(0,0,0,0.04);
                 --scrollbar: rgba(0,0,0,0.12);
             }
             [data-theme="warm"] {
-                --fg: #f5e6d3;
-                --fg-dim: rgba(245,230,211,0.45);
-                --fg-muted: rgba(245,230,211,0.5);
-                --fg-heading: rgba(245,230,211,0.9);
-                --accent: #e8a64c;
-                --code-bg: rgba(0,0,0,0.2);
-                --border: rgba(245,230,211,0.15);
-                --table-header: rgba(245,230,211,0.05);
-                --toolbar-bg: rgba(245,230,211,0.05);
-                --toolbar-hover: rgba(245,230,211,0.1);
-                --toolbar-fg: rgba(245,230,211,0.5);
+                --fg: #f5e6d3; --fg-dim: rgba(245,230,211,0.45);
+                --fg-muted: rgba(245,230,211,0.5); --fg-heading: rgba(245,230,211,0.9);
+                --accent: #e8a64c; --code-bg: rgba(0,0,0,0.2);
+                --border: rgba(245,230,211,0.15); --table-header: rgba(245,230,211,0.05);
                 --scrollbar: rgba(245,230,211,0.15);
             }
             [data-theme="ocean"] {
-                --fg: #c8e6f5;
-                --fg-dim: rgba(200,230,245,0.45);
-                --fg-muted: rgba(200,230,245,0.5);
-                --fg-heading: rgba(200,230,245,0.9);
-                --accent: #38bdf8;
-                --code-bg: rgba(0,20,40,0.3);
-                --border: rgba(200,230,245,0.15);
-                --table-header: rgba(200,230,245,0.05);
-                --toolbar-bg: rgba(200,230,245,0.05);
-                --toolbar-hover: rgba(200,230,245,0.1);
-                --toolbar-fg: rgba(200,230,245,0.5);
+                --fg: #c8e6f5; --fg-dim: rgba(200,230,245,0.45);
+                --fg-muted: rgba(200,230,245,0.5); --fg-heading: rgba(200,230,245,0.9);
+                --accent: #38bdf8; --code-bg: rgba(0,20,40,0.3);
+                --border: rgba(200,230,245,0.15); --table-header: rgba(200,230,245,0.05);
                 --scrollbar: rgba(200,230,245,0.15);
             }
             [data-theme="rose"] {
-                --fg: #f5d5e0;
-                --fg-dim: rgba(245,213,224,0.45);
-                --fg-muted: rgba(245,213,224,0.5);
-                --fg-heading: rgba(245,213,224,0.9);
-                --accent: #f472b6;
-                --code-bg: rgba(30,0,15,0.25);
-                --border: rgba(245,213,224,0.15);
-                --table-header: rgba(245,213,224,0.05);
-                --toolbar-bg: rgba(245,213,224,0.05);
-                --toolbar-hover: rgba(245,213,224,0.1);
-                --toolbar-fg: rgba(245,213,224,0.5);
+                --fg: #f5d5e0; --fg-dim: rgba(245,213,224,0.45);
+                --fg-muted: rgba(245,213,224,0.5); --fg-heading: rgba(245,213,224,0.9);
+                --accent: #f472b6; --code-bg: rgba(30,0,15,0.25);
+                --border: rgba(245,213,224,0.15); --table-header: rgba(245,213,224,0.05);
                 --scrollbar: rgba(245,213,224,0.15);
             }
             [data-theme="green"] {
-                --fg: #d4edda;
-                --fg-dim: rgba(212,237,218,0.45);
-                --fg-muted: rgba(212,237,218,0.5);
-                --fg-heading: rgba(212,237,218,0.9);
-                --accent: #34d399;
-                --code-bg: rgba(0,20,10,0.25);
-                --border: rgba(212,237,218,0.15);
-                --table-header: rgba(212,237,218,0.05);
-                --toolbar-bg: rgba(212,237,218,0.05);
-                --toolbar-hover: rgba(212,237,218,0.1);
-                --toolbar-fg: rgba(212,237,218,0.5);
+                --fg: #d4edda; --fg-dim: rgba(212,237,218,0.45);
+                --fg-muted: rgba(212,237,218,0.5); --fg-heading: rgba(212,237,218,0.9);
+                --accent: #34d399; --code-bg: rgba(0,20,10,0.25);
+                --border: rgba(212,237,218,0.15); --table-header: rgba(212,237,218,0.05);
                 --scrollbar: rgba(212,237,218,0.15);
             }
 
@@ -175,40 +556,35 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
             html, body { height: 100%; overflow-y: auto; }
             body {
                 font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-                font-size: 14px;
-                color: var(--fg);
-                padding: 16px 20px 20px;
-                line-height: 1.55;
+                font-size: 14px; color: var(--fg);
+                padding: 36px 16px 16px; line-height: 1.55;
             }
-            .header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                margin-bottom: 14px;
+
+            .tab-bar {
+                display: flex; gap: 2px; margin-bottom: 6px;
+                overflow-x: auto; flex-shrink: 0;
             }
-            .pin-icon { font-size: 16px; opacity: 0.7; cursor: default; }
-            .controls {
-                display: flex; align-items: center; gap: 6px;
+            .tab-bar button {
+                font-size: 11px; padding: 3px 10px; border-radius: 4px 4px 0 0;
+                border: 1px solid var(--border); border-bottom: none;
+                background: rgba(255,255,255,0.05); color: var(--fg-muted);
+                cursor: pointer; white-space: nowrap;
+                max-width: 140px; overflow: hidden; text-overflow: ellipsis;
             }
-            .opacity-row {
-                display: flex; align-items: center; gap: 6px;
-                font-size: 12px; color: var(--fg-muted);
-            }
-            .opacity-row input[type=range] { width: 80px; accent-color: var(--accent); }
+            .tab-bar button.active { background: var(--code-bg); color: var(--fg); font-weight: 600; }
+            .tab-content { display: none; }
+            .tab-content.active { display: block; }
 
             h1 { font-size: 22px; font-weight: 700; margin-bottom: 2px; }
             h2 { font-size: 16px; font-weight: 700; margin: 18px 0 8px; color: var(--fg-heading); }
             h3 { font-size: 14px; font-weight: 700; margin: 14px 0 6px; color: var(--fg-heading); }
             h4 { font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
             .date { font-size: 13px; color: var(--fg-dim); margin-bottom: 16px; }
-
             p { margin: 6px 0; }
             strong { font-weight: 700; }
             em { font-style: italic; }
-
             a { color: var(--accent); text-decoration: none; }
             a:hover { text-decoration: underline; }
-
             ul, ol { padding-left: 20px; margin: 4px 0; }
             ul { list-style: disc; }
             ol { list-style: decimal; }
@@ -223,37 +599,30 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
                 width: 16px; height: 16px;
             }
             .task-item.checked > span { text-decoration: line-through; opacity: 0.5; }
-
             blockquote {
                 border-left: 3px solid var(--border);
                 padding: 4px 0 4px 14px; margin: 8px 0;
                 color: var(--fg-muted); font-style: italic;
             }
-
             code {
                 background: var(--code-bg); padding: 1px 5px;
-                border-radius: 3px; font-size: 12px; font-family: "SF Mono", Menlo, monospace;
+                border-radius: 3px; font-size: 0.86em;
+                font-family: "SF Mono", Menlo, monospace;
             }
             pre {
                 background: var(--code-bg); padding: 10px 12px;
                 border-radius: 6px; overflow-x: auto; margin: 8px 0;
-                font-size: 12px; line-height: 1.4;
+                font-size: 0.86em; line-height: 1.4;
             }
             pre code { background: none; padding: 0; }
-
-            hr {
-                border: none; border-top: 1px solid var(--border);
-                margin: 12px 0;
-            }
-
-            table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 13px; }
+            hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+            table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.93em; }
             th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
             th { background: var(--table-header); font-weight: 600; }
-
             img { max-width: 100%; border-radius: 4px; margin: 4px 0; }
 
             .edit-area {
-                width: 100%; min-height: 120px; background: var(--code-bg);
+                width: 100%; min-height: 200px; background: var(--code-bg);
                 border: 1px solid var(--border); border-radius: 6px;
                 color: var(--fg); font-family: "SF Mono", Menlo, monospace;
                 font-size: 13px; padding: 10px; resize: vertical; line-height: 1.5;
@@ -263,37 +632,11 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
             .edit-bar { display: none; gap: 6px; margin-top: 6px; }
             .edit-bar button {
                 font-size: 12px; padding: 4px 10px; border-radius: 4px;
-                border: 1px solid var(--border); background: var(--toolbar-bg);
+                border: 1px solid var(--border); background: rgba(255,255,255,0.05);
                 color: var(--fg); cursor: pointer;
             }
             .edit-bar button.save { background: var(--accent); border-color: var(--accent); color: #fff; }
             .edit-bar button:hover { opacity: 0.85; }
-
-            .toolbar-btn {
-                font-size: 11px; padding: 3px 8px; border-radius: 4px;
-                border: 1px solid var(--border); background: var(--toolbar-bg);
-                color: var(--toolbar-fg); cursor: pointer;
-            }
-            .toolbar-btn:hover { background: var(--toolbar-hover); color: var(--fg); }
-
-            .theme-menu {
-                position: absolute; right: 0; top: 24px;
-                background: rgba(30,30,30,0.95); border: 1px solid var(--border);
-                border-radius: 8px; padding: 4px; display: none; z-index: 10;
-                min-width: 110px; backdrop-filter: blur(10px);
-            }
-            .theme-menu.open { display: block; }
-            .theme-opt {
-                display: flex; align-items: center; gap: 8px;
-                padding: 5px 10px; border-radius: 5px; cursor: pointer;
-                font-size: 12px; color: #ccc; white-space: nowrap;
-            }
-            .theme-opt:hover { background: rgba(255,255,255,0.1); }
-            .theme-opt.active { color: #fff; font-weight: 600; }
-            .theme-swatch {
-                width: 12px; height: 12px; border-radius: 50%;
-                border: 1px solid rgba(255,255,255,0.2);
-            }
 
             ::-webkit-scrollbar { width: 6px; }
             ::-webkit-scrollbar-track { background: transparent; }
@@ -301,56 +644,57 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
         </style>
         </head>
         <body>
-            <div class="header">
-                <span class="pin-icon">📌</span>
-                <div class="controls">
-                    <button class="toolbar-btn" id="editBtn" onclick="toggleEdit()">✎ Edit</button>
-                    <div style="position:relative;">
-                        <button class="toolbar-btn" id="themeBtn" onclick="toggleThemeMenu()">🎨</button>
-                        <div class="theme-menu" id="themeMenu">
-                            <div class="theme-opt" onclick="setTheme('dark')"><span class="theme-swatch" style="background:#1a1a2e;"></span>Dark</div>
-                            <div class="theme-opt" onclick="setTheme('light')"><span class="theme-swatch" style="background:#f5f5f5;"></span>Light</div>
-                            <div class="theme-opt" onclick="setTheme('warm')"><span class="theme-swatch" style="background:#4a3728;"></span>Warm</div>
-                            <div class="theme-opt" onclick="setTheme('ocean')"><span class="theme-swatch" style="background:#0c2d48;"></span>Ocean</div>
-                            <div class="theme-opt" onclick="setTheme('rose')"><span class="theme-swatch" style="background:#3d1f2e;"></span>Rose</div>
-                            <div class="theme-opt" onclick="setTheme('green')"><span class="theme-swatch" style="background:#1a3d2a;"></span>Green</div>
-                        </div>
-                    </div>
-                    <div class="opacity-row">
-                        <input type="range" id="opSlider" min="20" max="100" value="\(opPct)"
-                               oninput="setOpacity(this.value)">
-                        <span id="opLabel">\(opPct)%</span>
-                    </div>
-                </div>
-            </div>
-            <div id="rendered">\(renderedBody)</div>
+            <!--TABBAR-->
+            <!--TABS-->
             <textarea class="edit-area" id="editArea"></textarea>
             <div class="edit-bar" id="editBar">
                 <button class="save" onclick="saveEdit()">Save</button>
-                <button onclick="cancelEdit()">Cancel</button>
+                <button onclick="cancelEditFromWeb()">Cancel</button>
             </div>
             <script>
-                function setOpacity(val) {
-                    document.getElementById('opLabel').textContent = val + '%';
-                    window.webkit.messageHandlers.opacity.postMessage(val);
+                var _files = /*FILEDATA*/[];
+                var _currentTab = 0;
+                var _editMode = false;
+                var _zoom = 100;
+
+                try { _zoom = parseInt(localStorage.getItem('pinned_zoom')) || 100; } catch(e) {}
+                try { _currentTab = parseInt(localStorage.getItem('pinned_tab')) || 0; } catch(e) {}
+                document.body.style.fontSize = (_zoom / 100 * 14) + 'px';
+
+                function b64decode(b64) {
+                    try {
+                        var raw = atob(b64);
+                        var arr = new Uint8Array(raw.length);
+                        for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+                        return new TextDecoder().decode(arr);
+                    } catch(e) { return ''; }
+                }
+                function b64encode(str) {
+                    try {
+                        var bytes = new TextEncoder().encode(str);
+                        var bin = '';
+                        bytes.forEach(function(b) { bin += String.fromCharCode(b); });
+                        return btoa(bin);
+                    } catch(e) { return ''; }
                 }
 
-                function toggleThemeMenu() {
-                    document.getElementById('themeMenu').classList.toggle('open');
+                function switchTab(idx) {
+                    if (_editMode) exitEditMode();
+                    _currentTab = idx;
+                    document.querySelectorAll('.tab-content').forEach(function(el, i) {
+                        el.classList.toggle('active', i === idx);
+                    });
+                    document.querySelectorAll('.tab-bar button').forEach(function(el, i) {
+                        el.classList.toggle('active', i === idx);
+                    });
+                    try { localStorage.setItem('pinned_tab', '' + idx); } catch(e) {}
                 }
-                document.addEventListener('click', function(e) {
-                    if (!e.target.closest('#themeBtn') && !e.target.closest('#themeMenu'))
-                        document.getElementById('themeMenu').classList.remove('open');
-                });
+                if (_currentTab > 0 && _currentTab < _files.length) switchTab(_currentTab);
 
                 function setTheme(name) {
-                    document.documentElement.setAttribute('data-theme', name === 'dark' ? '' : name);
                     if (name === 'dark') document.documentElement.removeAttribute('data-theme');
+                    else document.documentElement.setAttribute('data-theme', name);
                     try { localStorage.setItem('pinned_theme', name); } catch(e) {}
-                    document.querySelectorAll('.theme-opt').forEach(function(el) {
-                        el.classList.toggle('active', el.textContent.trim().toLowerCase() === name);
-                    });
-                    document.getElementById('themeMenu').classList.remove('open');
                 }
                 (function() {
                     var saved = 'dark';
@@ -358,60 +702,68 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
                     setTheme(saved);
                 })();
 
-                function handleToggle(lineIdx, checked) {
+                function handleToggle(tab, lineIdx, checked) {
                     window.webkit.messageHandlers.toggle.postMessage(
-                        JSON.stringify({ line: lineIdx, checked: checked })
+                        JSON.stringify({ tab: tab, line: lineIdx, checked: checked })
                     );
                 }
 
-                let _editMode = false;
-                function toggleEdit() {
-                    _editMode = !_editMode;
-                    const rendered = document.getElementById('rendered');
-                    const area = document.getElementById('editArea');
-                    const bar = document.getElementById('editBar');
-                    const btn = document.getElementById('editBtn');
-                    if (_editMode) {
-                        window.webkit.messageHandlers.edit.postMessage('get');
-                    } else {
-                        cancelEdit();
-                    }
-                }
-
-                function showEditMode(content) {
-                    const rendered = document.getElementById('rendered');
-                    const area = document.getElementById('editArea');
-                    const bar = document.getElementById('editBar');
-                    rendered.style.display = 'none';
+                function enterEditMode() {
+                    _editMode = true;
+                    var content = b64decode(_files[_currentTab].b64);
+                    var tc = document.getElementById('tc-' + _currentTab);
+                    if (tc) tc.style.display = 'none';
+                    var area = document.getElementById('editArea');
                     area.style.display = '';
                     area.value = content;
-                    bar.style.display = 'flex';
-                    document.getElementById('editBtn').textContent = '✕ Cancel';
+                    area.style.height = Math.max(200, area.scrollHeight) + 'px';
+                    document.getElementById('editBar').style.display = 'flex';
                     area.focus();
                 }
-
-                function saveEdit() {
-                    const content = document.getElementById('editArea').value;
-                    window.webkit.messageHandlers.edit.postMessage('save:' + content);
-                }
-
-                function cancelEdit() {
+                function exitEditMode() {
                     _editMode = false;
-                    document.getElementById('rendered').style.display = '';
+                    document.querySelectorAll('.tab-content').forEach(function(el, i) {
+                        el.style.display = i === _currentTab ? '' : 'none';
+                        el.classList.toggle('active', i === _currentTab);
+                    });
                     document.getElementById('editArea').style.display = 'none';
                     document.getElementById('editBar').style.display = 'none';
-                    document.getElementById('editBtn').textContent = '✎ Edit';
                 }
+                function saveEdit() {
+                    var content = document.getElementById('editArea').value;
+                    var b64 = b64encode(content);
+                    _files[_currentTab].b64 = b64;
+                    window.webkit.messageHandlers.edit.postMessage(
+                        JSON.stringify({ tab: _currentTab, b64: b64 })
+                    );
+                }
+                function cancelEditFromWeb() {
+                    exitEditMode();
+                    window.webkit.messageHandlers.edit.postMessage(
+                        JSON.stringify({ action: 'cancel' })
+                    );
+                }
+
+                function applyZoom() {
+                    document.body.style.fontSize = (_zoom / 100 * 14) + 'px';
+                    try { localStorage.setItem('pinned_zoom', '' + _zoom); } catch(e) {}
+                    try { window.webkit.messageHandlers.zoomChanged.postMessage('' + _zoom); } catch(e) {}
+                }
+
+                document.addEventListener('keydown', function(e) {
+                    if (e.metaKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); _zoom = Math.min(200, _zoom + 10); applyZoom(); }
+                    if (e.metaKey && e.key === '-') { e.preventDefault(); _zoom = Math.max(60, _zoom - 10); applyZoom(); }
+                    if (e.metaKey && e.key === '0') { e.preventDefault(); _zoom = 100; applyZoom(); }
+                });
             </script>
         </body>
         </html>
         """
-
-        webView.loadHTMLString(html, baseURL: URL(fileURLWithPath: filePath).deletingLastPathComponent())
     }
 
-    func toggleCheckbox(lineIndex: Int, checked: Bool) {
-        var lines = fileContent.components(separatedBy: "\n")
+    func toggleCheckbox(tab: Int, lineIndex: Int, checked: Bool) {
+        guard tab >= 0 && tab < files.count else { return }
+        var lines = files[tab].content.components(separatedBy: "\n")
         guard lineIndex >= 0 && lineIndex < lines.count else { return }
 
         let line = lines[lineIndex]
@@ -427,18 +779,22 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
                 .replacingOccurrences(of: "- [X]", with: "- [ ]")
         }
 
-        fileContent = lines.joined(separator: "\n")
-        try? fileContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+        files[tab].content = lines.joined(separator: "\n")
+        try? files[tab].content.write(toFile: files[tab].path, atomically: true, encoding: .utf8)
         loadContent()
     }
 
-    func saveContent(_ newContent: String) {
-        fileContent = newContent
-        try? fileContent.write(toFile: filePath, atomically: true, encoding: .utf8)
+    func saveContent(tab: Int, content: String) {
+        guard tab >= 0 && tab < files.count else { return }
+        files[tab].content = content
+        try? content.write(toFile: files[tab].path, atomically: true, encoding: .utf8)
+        editMode = false
+        editBtn.title = "Edit"
+        contentWindow.ignoresMouseEvents = true
         loadContent()
     }
 
-    func renderMarkdown(_ text: String) -> String {
+    func renderMarkdown(_ text: String, tabIndex: Int) -> String {
         var html = ""
         let lines = text.components(separatedBy: "\n")
         var inCodeBlock = false
@@ -526,7 +882,7 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
                 let isChecked = trimmed.hasPrefix("- [x]") || trimmed.hasPrefix("- [X]")
                 let label = String(trimmed.dropFirst(6))
                 html += "<li class=\"task-item\(isChecked ? " checked" : "")\">"
-                html += "<input type=\"checkbox\"\(isChecked ? " checked" : "") onchange=\"handleToggle(\(idx), this.checked)\">"
+                html += "<input type=\"checkbox\"\(isChecked ? " checked" : "") onchange=\"handleToggle(\(tabIndex), \(idx), this.checked)\">"
                 html += "<span>" + inlineMarkdown(label) + "</span></li>"
             } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
                 if !inList || listType != "ul" {
@@ -614,16 +970,19 @@ class OverlayController: NSObject, WKNavigationDelegate, NSWindowDelegate {
          .replacingOccurrences(of: ">", with: "&gt;")
          .replacingOccurrences(of: "\"", with: "&quot;")
     }
-}
 
-class OpacityHandler: NSObject, WKScriptMessageHandler {
-    weak var window: NSWindow?
-    init(window: NSWindow) { self.window = window }
-
-    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let val = message.body as? String, let num = Double(val) {
-            DispatchQueue.main.async { self.window?.alphaValue = CGFloat(num / 100.0) }
+    func escapeJS(_ s: String) -> String {
+        var r = ""
+        for c in s {
+            switch c {
+            case "\\": r += "\\\\"
+            case "\"": r += "\\\""
+            case "\n": r += "\\n"
+            case "\r": r += "\\r"
+            default: r.append(c)
+            }
         }
+        return r
     }
 }
 
@@ -635,10 +994,11 @@ class ToggleHandler: NSObject, WKScriptMessageHandler {
         guard let body = message.body as? String,
               let data = body.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tab = json["tab"] as? Int,
               let line = json["line"] as? Int,
               let checked = json["checked"] as? Bool
         else { return }
-        DispatchQueue.main.async { self.controller?.toggleCheckbox(lineIndex: line, checked: checked) }
+        DispatchQueue.main.async { self.controller?.toggleCheckbox(tab: tab, lineIndex: line, checked: checked) }
     }
 }
 
@@ -647,53 +1007,82 @@ class EditHandler: NSObject, WKScriptMessageHandler {
     init(controller: OverlayController) { self.controller = controller }
 
     func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? String else { return }
-        if body == "get" {
-            let escaped = (controller?.fileContent ?? "")
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "`", with: "\\`")
-                .replacingOccurrences(of: "$", with: "\\$")
+        guard let body = message.body as? String,
+              let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        if let action = json["action"] as? String, action == "cancel" {
+            DispatchQueue.main.async { self.controller?.cancelEditMode() }
+            return
+        }
+
+        guard let tab = json["tab"] as? Int,
+              let b64 = json["b64"] as? String,
+              let contentData = Data(base64Encoded: b64),
+              let content = String(data: contentData, encoding: .utf8)
+        else { return }
+        DispatchQueue.main.async { self.controller?.saveContent(tab: tab, content: content) }
+    }
+}
+
+class ZoomHandler: NSObject, WKScriptMessageHandler {
+    weak var controller: OverlayController?
+    init(controller: OverlayController) { self.controller = controller }
+
+    func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let val = message.body as? String, let z = Int(val) {
             DispatchQueue.main.async {
-                self.controller?.webView.evaluateJavaScript("showEditMode(`\(escaped)`)")
+                self.controller?.zoom = z
+                self.controller?.zoomLabel.stringValue = "\(z)%"
             }
-        } else if body.hasPrefix("save:") {
-            let newContent = String(body.dropFirst(5))
-            DispatchQueue.main.async { self.controller?.saveContent(newContent) }
         }
     }
 }
 
+#if AMUX_APP
+extension Notification.Name {
+    static let amuxOverlayClosed = Notification.Name("amuxOverlayClosed")
+}
+#else
 @main
 struct PinnedOverlayApp {
     static func main() {
         let args = CommandLine.arguments
         guard args.count >= 2 else {
-            print("Usage: pinned-overlay <file> [--x N] [--y N] [--width N] [--height N] [--opacity F]")
+            print("Usage: pinned-overlay <file> [file2 ...] [--x N] [--y N] [--width N] [--height N] [--opacity F]")
             exit(1)
         }
 
-        let file = args[1]
+        var filePaths: [String] = []
         var x = 800, y = 200, w = 400, h = 500
         var opacity = 0.85
 
-        var i = 2
+        var i = 1
         while i < args.count {
             switch args[i] {
-            case "--x": i += 1; x = Int(args[i]) ?? x
-            case "--y": i += 1; y = Int(args[i]) ?? y
-            case "--width": i += 1; w = Int(args[i]) ?? w
-            case "--height": i += 1; h = Int(args[i]) ?? h
-            case "--opacity": i += 1; opacity = Double(args[i]) ?? opacity
-            default: break
+            case "--x": i += 1; if i < args.count { x = Int(args[i]) ?? x }
+            case "--y": i += 1; if i < args.count { y = Int(args[i]) ?? y }
+            case "--width": i += 1; if i < args.count { w = Int(args[i]) ?? w }
+            case "--height": i += 1; if i < args.count { h = Int(args[i]) ?? h }
+            case "--opacity": i += 1; if i < args.count { opacity = Double(args[i]) ?? opacity }
+            default:
+                if !args[i].hasPrefix("--") { filePaths.append(args[i]) }
             }
             i += 1
+        }
+
+        guard !filePaths.isEmpty else {
+            print("Error: at least one file path required")
+            exit(1)
         }
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let _ = OverlayController(filePath: file, x: x, y: y, w: w, h: h, opacity: opacity)
+        let _ = OverlayController(filePaths: filePaths, x: x, y: y, w: w, h: h, opacity: opacity)
 
         app.run()
     }
 }
+#endif

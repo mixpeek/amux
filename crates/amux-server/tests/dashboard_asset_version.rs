@@ -173,3 +173,33 @@ async fn the_control_registry_is_served_beside_the_kernel() {
         "the SW must precache the registry for offline use"
     );
 }
+
+/// Dashboard files revalidate: an ETag of the dashboard hash and no-cache on
+/// the way out, a bodiless 304 when the browser already holds that version.
+/// Before this every load without the service worker re-sent app.js in full.
+#[tokio::test]
+async fn dashboard_files_answer_304_to_the_version_the_browser_holds() {
+    let res = app()
+        .oneshot(Request::builder().uri("/app.js").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let etag = res.headers().get("etag").expect("etag").to_str().unwrap().to_string();
+    assert!(etag.contains(amux_dashboard::asset_version()), "{etag}");
+    assert_eq!(res.headers().get("cache-control").unwrap(), "no-cache");
+
+    let again = app()
+        .oneshot(Request::builder().uri("/app.js").header("if-none-match", etag.as_str()).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(again.status().as_u16(), 304);
+    let body = axum::body::to_bytes(again.into_body(), 1 << 20).await.unwrap();
+    assert!(body.is_empty(), "a 304 carries no body");
+
+    // A different version, or a path that is not a dashboard file, is a normal answer.
+    let stale = app()
+        .oneshot(Request::builder().uri("/app.js").header("if-none-match", "\"d-old\"").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stale.status().as_u16(), 200);
+}

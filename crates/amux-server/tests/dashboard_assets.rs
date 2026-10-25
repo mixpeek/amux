@@ -1339,7 +1339,6 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "Start To Do cards when idle",
         "Keep going on unfinished cards",
         "Board steers this worker",
-        "Plan my messages onto the board",
         "Status availability and Board gates below define transition requirements",
         "external_email_allowed",
         "Send external email without approval",
@@ -1350,7 +1349,6 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "auto_drain_backlog",
         "board_auto_pickup",
         "board_auto_continue",
-        "board_decompose",
         "board_force_adherence",
     ] {
         assert!(
@@ -1366,10 +1364,14 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         app.contains("if (z && typeof z === 'object') return Object.keys(z).length > 0"),
         "nested skin/connector settings must not render as an unset configuration"
     );
+    // The way back to inherited configuration is the Scope tab: removing a
+    // worker-level row deletes that key (asserted just above). The Board tab's
+    // own Inherit button was removed on 2026-10-24 (Ethan: "we should have had
+    // one toggle for enable/disable board"), so it must not come back beside
+    // the switch.
     assert!(
-        app.contains("_workerBoardConfigurationSet(\\'")
-            && app.contains("\\',null)\">Inherit</button>"),
-        "worker overrides need an explicit path back to inherited configuration"
+        !app.contains("_boardOneSet(\\'' + escJs(name) + '\\',null)"),
+        "the Board tab is one switch; inherited configuration is reached from Scope"
     );
     let css = asset("app.css");
     for needle in [
@@ -2344,7 +2346,19 @@ fn every_cdn_asset_is_cors_and_precached_for_offline() {
         if !tag.contains("crossorigin") { problems.push(format!("no crossorigin: {url}")); }
         if !sw.contains(&format!("'{url}'")) { problems.push(format!("not in sw.js CDN_URLS: {url}")); }
     }
-    assert!(seen >= 10, "found only {seen} CDN tags in index.html; the scan is broken, not the page");
+    // View-only libraries load on first use through app.js's _LAZY_LIBS table
+    // rather than a tag, and an offline open needs them precached just the same.
+    let app = asset("app.js");
+    let start = app.find("const _LAZY_LIBS = {").expect("_LAZY_LIBS table in app.js");
+    let table = &app[start..start + app[start..].find("\n};").expect("end of _LAZY_LIBS")];
+    let mut lazy = 0;
+    for url in table.split('\'').filter(|s| s.starts_with("https://")) {
+        lazy += 1;
+        if !sw.contains(&format!("'{url}'")) { problems.push(format!("lazy lib not in sw.js CDN_URLS: {url}")); }
+    }
+    assert!(lazy >= 8, "found only {lazy} URLs in _LAZY_LIBS; the scan is broken, not the table");
+    seen += lazy;
+    assert!(seen >= 10, "found only {seen} CDN assets; the scan is broken, not the page");
     assert!(problems.is_empty(), "offline would lose these libraries:\n{}", problems.join("\n"));
 }
 
@@ -2385,4 +2399,27 @@ fn every_notification_emitter_goes_through_the_shared_gate() {
     assert!(app.contains("if (!amuxNotifyAllowed('native')) return;"), "_notifFireNative must ask the gate");
     let feedback = asset("state/feedback.mjs");
     assert!(feedback.contains("amuxNotifyAllowed?.('toast')"), "the press layer's success toast must ask the gate");
+}
+
+/// A server with no model must lead to "Sign in with Claude", not only to an API
+/// key. On an amux Cloud server the first-run window opened only for the old
+/// shared gateway (`is_cloud`), and the banner pointed at the Vault's API keys,
+/// so a customer could not connect a subscription at all (2026-10-19).
+#[test]
+fn no_model_leads_to_the_window_with_the_subscription_sign_in() {
+    let html = asset("index.html");
+    let app = asset("app.js");
+    let banner_start = html.find("id=\"no-apikey-banner\"").expect("banner");
+    let banner = &html[banner_start..banner_start + html[banner_start..].find("</div>").unwrap()];
+    assert!(
+        banner.contains("getElementById('apikey-setup-modal').style.display='flex'"),
+        "the no-model banner opens the first-run window: {banner}"
+    );
+    let modal_start = html.find("id=\"apikey-setup-modal\"").expect("modal");
+    let modal_end = modal_start + html[modal_start..].find("id=\"apikey-setup-input\"").unwrap();
+    assert!(html[modal_start..modal_end].contains("modelLogin('claude')"), "the window offers Sign in with Claude");
+    assert!(
+        app.contains("if (d.is_cloud || d.account_url) {"),
+        "a Cloud server's owner (account_url) gets the first-run window on load"
+    );
 }

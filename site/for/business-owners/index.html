@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,22 +20,31 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"Business Owners","item":"https://amux.io/for/business-owners/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for Business Owners — Run and Grow Your Business with AI Agents (2026)","description":"How business owners use amux to run AI coding agents, automate browser tasks, manage email and CRM, run scheduled routines, and monitor everything from an iPhone — without a dedicated dev team.","url":"https://amux.io/for/business-owners/","datePublished":"2026-08-04","dateModified":"2026-10-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can non-technical business owners use amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is primarily used by developers and technical founders, but non-technical business owners use it through the web dashboard and iOS app to monitor AI agents set up by a developer or a managed service. The dashboard shows agent status, completed tasks, and pending items — no command line required. The amux Concierge service also handles the initial setup for business owners who want the system running without configuring it themselves."}},{"@type":"Question","name":"What kinds of business tasks can AI agents automate?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents (Claude Code, Codex) build software, fix bugs, generate reports, and manage codebases. Browser automation agents handle repetitive web tasks: pulling reports from SaaS dashboards, filling out forms, reconciling data between two systems, checking competitor prices, monitoring status pages. The scheduler triggers these tasks on a cron-style schedule so they run without manual intervention."}},{"@type":"Question","name":"How do I monitor AI agents when I'm not at my desk?","acceptedAnswer":{"@type":"Answer","text":"The amux iOS app (on the App Store) and installable PWA give you a full dashboard on your phone. You can see which agents are running, what they are working on, approve pending decisions, and send steering messages — all from your iPhone. Push notifications alert you when an agent needs your input."}},{"@type":"Question","name":"Can AI agents handle email and CRM for my business?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux includes a built-in CRM (contacts, company, email, phone, LinkedIn, interaction logs, tags, follow-up tracking) and a Gmail API integration for sending and reading email from Claude Code or Codex sessions. Agents can draft email responses, log customer interactions, update CRM records, and trigger follow-up sequences — all from the agent's context without external integrations."}},{"@type":"Question","name":"What does amux cost?","acceptedAnswer":{"@type":"Answer","text":"amux itself is free and open source (MIT + Commons Clause). The cost is the AI model API usage — typically $10-200/month depending on how many agents you run and how long. Claude Code Max plan ($100-200/month) covers a team of agents with no per-token billing. The amux Concierge service (setup + ongoing management) is available for business owners who want a done-for-you solution."}},{"@type":"Question","name":"What is the amux Concierge service?","acceptedAnswer":{"@type":"Answer","text":"The amux Concierge is a done-for-you service where the amux team sets up your agent fleet, configures it for your business workflows, integrates your tools (CRM, email, browser automations, scheduler), and provides ongoing management. Designed for business owners who want the capability of a full AI engineering team without hiring developers or configuring the system themselves."}},{"@type":"Question","name":"Can I run AI agents overnight without watching them?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux's self-healing watchdog monitors agents continuously and recovers from crashes, context overflow, and tool-approval prompts automatically. You set the tasks before bed, agents work overnight, and you wake up to a morning summary pushed to your phone — completed work, anything that needs your decision, and the day's first scheduled automations already running."}},{"@type":"Question","name":"What is the difference between amux and Zapier for business automation?","acceptedAnswer":{"@type":"Answer","text":"Zapier connects apps via pre-built triggers and actions. amux uses AI agents that follow plain-English instructions and adapt to what they find — handling UI changes, edge cases, and multi-step judgment calls that rigid automations cannot. amux also includes a full coding agent stack (building software, not just connecting apps). Zapier is simpler for simple linear workflows; amux handles complex, judgment-intensive, multi-step business tasks."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -45,10 +54,10 @@
 
     <div style="background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(59,130,246,.08));border:1px solid rgba(110,231,183,.3);border-radius:10px;padding:1.2rem 1.6rem;margin:1.5rem 0;display:flex;align-items:center;gap:1.2rem;flex-wrap:wrap;">
       <div style="flex:1;min-width:240px;">
-        <div style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#6ee7b7;margin-bottom:0.3rem;">Want this set up for you?</div>
+        <div style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--c-green);margin-bottom:0.3rem;">Want this set up for you?</div>
         <div style="font-size:0.92rem;color:var(--fg);">The amux Concierge handles setup, workflow design, and ongoing management. You get an AI engineering team without hiring engineers.</div>
       </div>
-      <a href="/concierge/" onclick="posthog?.capture('business_owners_concierge_cta_click',{page:window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba(110,231,183,.15);border:1px solid rgba(110,231,183,.4);color:#6ee7b7;padding:0.55rem 1.2rem;border-radius:6px;font-weight:600;font-size:0.88rem;text-decoration:none;white-space:nowrap;">Get set up &rarr;</a>
+      <a href="/concierge/" onclick="posthog?.capture('business_owners_concierge_cta_click',{page:window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba(110,231,183,.15);border:1px solid rgba(110,231,183,.4);color:var(--c-green);padding:0.55rem 1.2rem;border-radius:6px;font-weight:600;font-size:0.88rem;text-decoration:none;white-space:nowrap;">Get set up &rarr;</a>
     </div>
 
     <h2 id="oct-2026">What's new for business owners (October 2026)</h2>
@@ -277,8 +286,8 @@
       </ul>
     </div>
 
-    <div class="cta-box"><h3>Run your business with AI agents</h3><p>amux is the open-source control plane for AI engineering teams. Free, MIT licensed, single Rust binary. Or let the Concierge set it up for you.</p><pre><code>brew install mixpeek/amux/amux
-amux serve  # &rarr; https://localhost:8824</code></pre><div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem;"><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a><a class="btn" href="/concierge/" style="background:rgba(110,231,183,.12);border:1px solid rgba(110,231,183,.3);color:#6ee7b7;">Get the Concierge &rarr;</a></div></div>
+    <div class="cta-box"><h3>Run your business with AI agents</h3><p>amux is the open-source control plane for AI engineering teams. Free, MIT licensed, single Rust binary. Or let the Concierge set it up for you.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+amux serve  # &rarr; https://localhost:8824</code></pre><div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem;"><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a><a class="btn" href="/concierge/" style="background:rgba(110,231,183,.12);border:1px solid rgba(110,231,183,.3);color:var(--c-green);">Get the Concierge &rarr;</a></div></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -317,10 +326,12 @@ amux serve  # &rarr; https://localhost:8824</code></pre><div style="display:flex
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

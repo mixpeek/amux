@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,27 +20,26 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Resource Limits","item":"https://amux.io/guides/ai-agent-resource-limits/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Resource Limits: Worker Boundaries for Claude Code Fleets (2026)","description":"How to set CPU, memory, and filesystem resource limits for AI coding agents. Covers amux boundaries.toml, the amux resources and amux boundaries commands, and why declarative resource governance prevents runaway agents.","url":"https://amux.io/guides/ai-agent-resource-limits/","datePublished":"2026-10-17","dateModified":"2026-10-17","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set Resource Limits for AI Coding Agents with amux","description":"How to declare CPU, memory, and filesystem limits per worker in an amux agent fleet using boundaries.toml.","step":[{"@type":"HowToStep","position":1,"name":"Create boundaries.toml","text":"Add a boundaries.toml file to your amux project root. Declare limits per worker or set fleet-wide defaults."},{"@type":"HowToStep","position":2,"name":"Run amux resources to view current usage","text":"Run amux resources to see real-time CPU, memory, and disk consumption across all workers. Identify which agents are running hot before setting limits."},{"@type":"HowToStep","position":3,"name":"Set per-worker limits with amux boundaries","text":"Run amux boundaries to inspect and update per-worker limits interactively, or edit boundaries.toml directly. Changes apply on the next agent cycle."},{"@type":"HowToStep","position":4,"name":"Verify limits with amux resources","text":"Re-run amux resources to confirm the limits are applied. Workers that hit a boundary are paused and logged rather than terminated."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What are AI agent resource limits?","acceptedAnswer":{"@type":"Answer","text":"AI agent resource limits define the maximum CPU, memory, filesystem, and network usage each agent worker is allowed. Without them, one runaway agent can starve the rest of the fleet — consuming all available RAM or saturating disk I/O on a shared machine. Declarative limits, defined in boundaries.toml, let the orchestrator enforce an execution envelope per worker independent of what the agent tries to do."}},{"@type":"Question","name":"How do I set resource limits for Claude Code agents?","acceptedAnswer":{"@type":"Answer","text":"With amux, create a boundaries.toml in your project root and declare limits per worker or as fleet defaults. Use amux resources to view current usage and amux boundaries to inspect and update limits interactively. The harness enforces these from outside the agent process — the agent itself does not need to be aware of them."}},{"@type":"Question","name":"What happens when an agent hits its resource limit in amux?","acceptedAnswer":{"@type":"Answer","text":"When a worker hits a boundary, amux pauses the worker and logs the event rather than hard-killing the process. The operator sees the breach on the dashboard and can raise the limit, terminate the worker, or investigate. This is deliberate: a killed worker loses context; a paused one can be inspected and resumed."}},{"@type":"Question","name":"What is boundaries.toml in amux?","acceptedAnswer":{"@type":"Answer","text":"boundaries.toml is the declarative resource-governance file for an amux fleet. Each entry names a worker and its allowed resource envelope: CPU cores, memory ceiling, disk usage, and optionally network bandwidth. Default values apply to any worker not explicitly listed. The file lives in the project root alongside amux.toml and is committed to version control so limit policies are auditable."}},{"@type":"Question","name":"Do resource limits apply to isolated workers in amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. As of October 2026, amux boundaries apply to isolated workers too. Isolated workers run with a direct owner-to-CLI transport and no harness routing, but the boundaries registry still enforces their resource envelope from the outside."}},{"@type":"Question","name":"What is the difference between amux resources and amux boundaries?","acceptedAnswer":{"@type":"Answer","text":"amux resources is a read command: it shows real-time CPU, memory, and disk consumption across all active workers. amux boundaries is a read-write command: it lets you inspect the declared limits and update them interactively. Use amux resources to observe, amux boundaries to govern."}}]}</script>
   <style>
-    .step-card { background: var(--bg-2, #232838); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 1.4rem 1.6rem; margin-bottom: 1.25rem; }
-    .step-card .step-num { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: #6ee7b7; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.4rem; }
+    .step-card { background: var(--bg-2, var(--panel-2)); border: 1px solid var(--tint); border-radius: 10px; padding: 1.4rem 1.6rem; margin-bottom: 1.25rem; }
+    .step-card .step-num { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700; color: var(--c-green); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.4rem; }
     .step-card h3 { margin: 0 0 0.6rem; font-size: 1.05rem; }
     .step-card p { margin: 0; font-size: 0.9rem; line-height: 1.65; color: var(--fg-dim, #c8cfdd); }
-    .cmd-block { background: var(--bg-2, #232838); border-radius: 8px; padding: 1rem 1.25rem; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.6; overflow-x: auto; margin: 1rem 0; }
+    .cmd-block { background: var(--bg-2, var(--panel-2)); border-radius: 8px; padding: 1rem 1.25rem; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.6; overflow-x: auto; margin: 1rem 0; }
     .key-point { background: rgba(110,231,183,0.07); border: 1px solid rgba(110,231,183,0.2); border-radius: 8px; padding: 1.1rem 1.4rem; margin: 1.5rem 0; }
-    .key-point strong { color: #6ee7b7; }
+    .key-point strong { color: var(--c-green); }
     .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .comparison-grid .cg-card { background: var(--bg-2, #232838); border-radius: 10px; padding: 1.2rem; border: 1px solid rgba(255,255,255,0.06); }
+    .comparison-grid .cg-card { background: var(--bg-2, var(--panel-2)); border-radius: 10px; padding: 1.2rem; border: 1px solid var(--tint); }
     .comparison-grid .cg-card h4 { margin: 0 0 0.5rem; font-size: 0.9rem; }
     .comparison-grid .cg-card.bad { border-color: rgba(239,68,68,0.25); }
     .comparison-grid .cg-card.good { border-color: rgba(110,231,183,0.3); }
     .comparison-grid .cg-card .cg-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.4rem; }
-    .comparison-grid .cg-card.bad .cg-label { color: #f87171; }
-    .comparison-grid .cg-card.good .cg-label { color: #6ee7b7; }
+    .comparison-grid .cg-card.bad .cg-label { color: var(--c-red); }
+    .comparison-grid .cg-card.good .cg-label { color: var(--c-green); }
     @media (max-width: 600px) { .comparison-grid { grid-template-columns: 1fr; } }
     [data-theme="light"] .step-card { border-color: var(--border); }
     [data-theme="light"] .key-point { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
@@ -53,18 +52,28 @@
     [data-theme="light"] .comparison-grid .cg-card.good .cg-label { color: var(--ok); }
     [data-theme="light"] .step-num { color: var(--ok); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -72,13 +81,6 @@
     <h1>AI Agent Resource Limits: Worker Boundaries for Claude Code Fleets</h1>
     <p class="subtitle">One runaway agent can exhaust a machine and stall every other worker in the fleet. Declarative resource limits in <code>boundaries.toml</code> give each worker an explicit execution envelope the harness enforces from the outside.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:24px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Managing a fleet of Claude Code, Codex, or Gemini CLI agents?</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for AI agent fleets. Boundaries, task history, self-healing watchdog, kanban, and mobile monitoring in one binary.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp139_resource_limits_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
-    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -189,12 +191,12 @@ gainz               2%     0.4 GB  0.3 GB</div>
         </tr>
       </thead>
       <tbody>
-        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+        <tr style="border-bottom:1px solid var(--tint);">
           <td style="padding:0.6rem 0.75rem;"><code>amux resources</code></td>
           <td style="padding:0.6rem 0.75rem;">Real-time read: current CPU, memory, disk per worker</td>
           <td style="padding:0.6rem 0.75rem;">Observing usage before setting limits; debugging a slow fleet</td>
         </tr>
-        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+        <tr style="border-bottom:1px solid var(--tint);">
           <td style="padding:0.6rem 0.75rem;"><code>amux boundaries</code></td>
           <td style="padding:0.6rem 0.75rem;">Read-write: declared limits vs actual usage; edit inline</td>
           <td style="padding:0.6rem 0.75rem;">Setting or adjusting limits; reviewing limit policy across the fleet</td>
@@ -227,13 +229,6 @@ gainz               2%     0.4 GB  0.3 GB</div>
 
     <p>The harness accumulates resource policy the same way it accumulates behavioral policy in CLAUDE.md. Every entry in <code>boundaries.toml</code> traces to a real usage event, real or anticipated.</p>
 
-    <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:32px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">amux: open-source control plane for AI agent fleets</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">Worker boundaries, self-healing watchdog, task history, account rotation, kanban board, and mobile monitoring. One Rust binary.</div>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp139_resource_limits_midpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
-    </div>
 
     <h2 id="faq">FAQ</h2>
 
@@ -297,10 +292,12 @@ amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primar
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

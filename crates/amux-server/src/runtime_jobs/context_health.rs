@@ -16,7 +16,9 @@
 //! automatic: a conversation is the lane's accumulated work, so deciding it is
 //! spent belongs to its owner (ethos rule 8). This job reports; a human acts.
 
-use crate::api::session_verbs::{generation_census, is_degraded, GENERATIONS_WARN_AT};
+use crate::api::session_verbs::{
+    compact_scan_of, compact_window_shrank, generation_census, is_degraded, GENERATIONS_WARN_AT,
+};
 
 const JOB: &str = super::registry::ids::CONTEXT_HEALTH;
 const TICK_SECS: u64 = 3600;
@@ -40,6 +42,36 @@ pub fn tick() -> (u32, u32, usize) {
         }
     }
     over.sort_by_key(|(_, g)| std::cmp::Reverse(*g));
+
+    // gs12 review finding 12: a lane whose compaction point fell by more than
+    // 30% between its last two compactions now runs a smaller window (a
+    // settings or model change took effect at a restart) and compacts far
+    // more often. Same population as the census above.
+    let mut sized = 0u32;
+    let mut shrank: Vec<String> = Vec::new();
+    for (lane, gens) in generation_census() {
+        if gens.is_none() {
+            continue;
+        }
+        if let Some(scan) = compact_scan_of(&lane) {
+            if scan.pre_tokens_prev.is_some() && scan.pre_tokens_last.is_some() {
+                sized += 1;
+            }
+            if compact_window_shrank(&scan) {
+                shrank.push(format!(
+                    "{lane}={}->{}",
+                    scan.pre_tokens_prev.unwrap_or(0),
+                    scan.pre_tokens_last.unwrap_or(0)
+                ));
+            }
+        }
+    }
+    if !shrank.is_empty() {
+        tracing::warn!(job = JOB, verdict = "compact_window_shrank", count = shrank.len(),
+            lanes = %shrank.join(" "), measured = true, n_considered = sized,
+            "lanes now compact at a much smaller context size than before; check launch_compact_window_source \
+             (verdict=launch_effective_context) and GET /api/debug/context-health");
+    }
 
     // ALWAYS logged, including on a clean pass. A tick that only speaks when
     // something is wrong makes "no lanes are degraded" and "the census found

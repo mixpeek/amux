@@ -159,6 +159,29 @@ const TEXT_MIMES: &[(&str, &str)] = &[
 const EBOOK_RENDERABLE: &[&str] = &[".epub", ".fb2", ".cbz", ".mobi", ".azw"];
 const EBOOK_DOWNLOAD_ONLY: &[&str] = &[".azw3", ".azw4", ".kfx", ".cbr", ".djvu", ".lit", ".pdb"];
 
+
+/// The most of a text file /api/file returns, in characters. It was 200,000
+/// (the Python server's limit), which silently cut a 410 KB course note in half
+/// in the viewer: everything after its Lesson 10 was missing (Ethan,
+/// 2026-10-20). A note that size renders in about half a second, so text now
+/// gets the 5,000,000 CSV files already had, and a cut says so in
+/// `truncated` and `total_chars` as well as in the appended marker.
+pub(crate) const TEXT_VIEW_LIMIT: usize = 5_000_000;
+
+/// Cap `text` at [`TEXT_VIEW_LIMIT`] characters. Returns (cut?, original length).
+pub(crate) fn cap_text(text: &mut String, is_csv: bool) -> (bool, usize) {
+    let total = text.chars().count();
+    if total <= TEXT_VIEW_LIMIT {
+        return (false, total);
+    }
+    let cut = text.char_indices().nth(TEXT_VIEW_LIMIT).map(|(i, _)| i).unwrap_or(text.len());
+    text.truncate(cut);
+    text.push_str(if is_csv { "\n... (truncated at 5MB)" } else { "\n\n... (truncated at 5MB)" });
+    tracing::info!(total_chars = total, limit = TEXT_VIEW_LIMIT, measured = true, n_considered = 1,
+        verdict = "file_view_truncated", "a file was cut to the viewer limit");
+    (true, total)
+}
+
 fn mime_of<'a>(table: &[(&'a str, &'a str)], ext: &str) -> Option<&'a str> {
     table.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)
 }
@@ -505,25 +528,13 @@ async fn view(req: Request) -> Response {
     let is_csv = matches!(ext.as_str(), ".csv" | ".tsv");
     let is_html = matches!(ext.as_str(), ".html" | ".htm");
     // Python limits are in CHARACTERS (str slicing), not bytes.
-    let limit: usize = if is_csv { 5_000_000 } else { 200_000 };
-    if content.chars().count() > limit {
-        let cut = content
-            .char_indices()
-            .nth(limit)
-            .map(|(i, _)| i)
-            .unwrap_or(content.len());
-        content.truncate(cut);
-        content.push_str(if is_csv {
-            "\n... (truncated at 5MB)"
-        } else {
-            "\n\n... (truncated at 200KB)"
-        });
-    }
+    let (truncated, total_chars) = cap_text(&mut content, is_csv);
     j(
         200,
         json!({
             "path": pystr(&p), "content": content,
             "is_markdown": is_md, "is_csv": is_csv, "is_html": is_html,
+            "truncated": truncated, "total_chars": total_chars,
         }),
     )
 }
@@ -652,24 +663,12 @@ async fn view_from_git(cwd: &str, fpath: &str) -> Option<Response> {
     let is_md = matches!(ext.as_str(), ".md" | ".markdown" | ".mdx");
     let is_csv = matches!(ext.as_str(), ".csv" | ".tsv");
     let is_html = matches!(ext.as_str(), ".html" | ".htm");
-    let limit: usize = if is_csv { 5_000_000 } else { 200_000 };
-    if text.chars().count() > limit {
-        let cut = text
-            .char_indices()
-            .nth(limit)
-            .map(|(i, _)| i)
-            .unwrap_or(text.len());
-        text.truncate(cut);
-        text.push_str(if is_csv {
-            "\n... (truncated at 5MB)"
-        } else {
-            "\n\n... (truncated at 200KB)"
-        });
-    }
+    let (truncated, total_chars) = cap_text(&mut text, is_csv);
     Some(j(
         200,
         json!({
             "path": abs_path, "content": text,
+            "truncated": truncated, "total_chars": total_chars,
             "is_markdown": is_md, "is_csv": is_csv, "is_html": is_html,
             "source": "git",
         }),
@@ -2852,20 +2851,29 @@ pub(crate) mod tests {
         assert_eq!(v["is_html"], false);
         assert_eq!(v["path"], md.to_str().unwrap());
 
-        // 200KB char truncation with the python suffix.
+        // A note past the old 200,000-character limit comes back whole.
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, "b".repeat(410_000)).unwrap();
+        let (_, v) = get(&app, &format!("/api/file?path={}", enc(note.to_str().unwrap()))).await;
+        assert_eq!(v["content"].as_str().unwrap().chars().count(), 410_000);
+        assert_eq!(v["truncated"], json!(false));
+
+        // Past the 5MB limit: cut, with the marker and the original length.
         let big = dir.path().join("big.txt");
-        std::fs::write(&big, "a".repeat(200_001)).unwrap();
+        std::fs::write(&big, "a".repeat(TEXT_VIEW_LIMIT + 1)).unwrap();
         let (_, v) = get(
             &app,
             &format!("/api/file?path={}", enc(big.to_str().unwrap())),
         )
         .await;
         let content = v["content"].as_str().unwrap();
-        assert!(content.ends_with("\n\n... (truncated at 200KB)"));
+        assert!(content.ends_with("\n\n... (truncated at 5MB)"));
         assert_eq!(
             content.chars().count(),
-            200_000 + "\n\n... (truncated at 200KB)".chars().count()
+            TEXT_VIEW_LIMIT + "\n\n... (truncated at 5MB)".chars().count()
         );
+        assert_eq!(v["truncated"], json!(true));
+        assert_eq!(v["total_chars"], json!(TEXT_VIEW_LIMIT + 1));
 
         // CSV keeps 5MB and flags is_csv.
         let csv = dir.path().join("t.csv");

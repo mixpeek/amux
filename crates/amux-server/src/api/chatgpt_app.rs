@@ -1117,6 +1117,7 @@ pub(crate) fn owner_refusal(headers: &HeaderMap, uri: &Uri, owner_token: Option<
 }
 
 fn guard(state: &AppState, headers: &HeaderMap, uri: &Uri, action: &str) -> Option<Response> {
+    if super::session_verbs::admin_origin(headers, "chatgpt_connection").is_some() { return None; }
     let valid = super::static_files::owner_session_status(state, headers) == "valid";
     let why = owner_refusal(headers, uri, state.auth_token.as_deref(), valid)?;
     tracing::warn!(target: "amux::chatgpt_app", verdict = "chatgpt_owner_action_refused", why, action, measured = true, n_considered = 1,

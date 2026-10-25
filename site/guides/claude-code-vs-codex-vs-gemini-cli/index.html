@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code vs Codex vs Gemini CLI","item":"https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code vs OpenAI Codex vs Gemini CLI: Runtime Comparison 2026","description":"Side-by-side comparison of Claude Code, OpenAI Codex CLI, and Gemini CLI for AI-assisted software development — context windows, cost models, headless support, and multi-agent parallelism.","url":"https://amux.io/guides/claude-code-vs-codex-vs-gemini-cli/","datePublished":"2026-08-12","dateModified":"2026-08-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is Claude Code better than Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Claude Code consistently scores higher on SWE-bench and produces stronger code reasoning, but Gemini CLI's 1M-token context window is a meaningful advantage for large codebases. Which is 'better' depends on your task: Claude Code for nuanced architecture and refactoring, Gemini CLI for codebase-wide comprehension, Codex for OpenAI ecosystem integration. Most serious fleets run two or more runtimes in parallel."}},{"@type":"Question","name":"What is the difference between Claude Code and OpenAI Codex CLI?","acceptedAnswer":{"@type":"Answer","text":"Claude Code is Anthropic's terminal-native coding agent using Claude Sonnet/Opus models. OpenAI Codex CLI is OpenAI's terminal coding agent using GPT-4o, o4-mini, and o3 models. Claude Code has a stronger reputation for code quality and complex reasoning. Codex CLI integrates natively with OpenAI's API and is a natural choice if you're already on the OpenAI platform. Both are open source and run locally."}},{"@type":"Question","name":"Can I run Claude Code and Gemini CLI at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is an open-source control plane that runs Claude Code, Codex, and Gemini CLI sessions in parallel from a single dashboard. Each agent gets its own isolated tmux session, the same CLAUDE.md context, and a shared kanban board. You can run 5–50 agents across multiple runtimes overnight and review their work from your phone the next morning."}},{"@type":"Question","name":"Is Gemini CLI free?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI has a generous free tier: 1,000 requests per day and 60 requests per minute using the Gemini 2.5 Pro model. Above those limits, or for higher quotas, it uses Google AI API tokens. This makes it the cheapest option for development use and a natural complement to paid Claude Code or Codex usage."}},{"@type":"Question","name":"Which AI coding agent has the largest context window?","acceptedAnswer":{"@type":"Answer","text":"Gemini CLI uses Gemini 2.5 Pro, which has a 1,000,000-token (1M) context window — the largest of the three. Claude Code uses Claude Sonnet/Opus models with 200,000-token context. OpenAI Codex CLI uses GPT-4o (128K) and o4-mini/o3 (200K). For tasks that require loading a large portion of a codebase at once, Gemini CLI has a meaningful advantage."}},{"@type":"Question","name":"How do I switch between Claude Code and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"With amux, you don't switch — you run both. amux registers each runtime as a named session, each with its own working directory and context. You can assign different runtimes to different tasks from the kanban board, or run them in parallel on the same task to compare outputs. The amux dashboard shows all sessions regardless of which AI backend powers them."}}]}</script>
@@ -29,18 +28,18 @@
     th, td { padding:.65rem .8rem; text-align:left; border-bottom:1px solid rgba(255,255,255,.08); }
     th { font-weight:600; white-space:nowrap; }
     td:first-child { font-weight:500; }
-    .win { color:#6ee7b7; font-weight:600; }
-    .ok  { color:#93c5fd; }
-    .mid { color:#fbbf24; }
-    .rt-card { background:var(--bg-card,#232838); border-radius:12px; padding:1.5rem; margin-bottom:1.25rem; border:1px solid rgba(255,255,255,.06); }
+    .win { color:var(--c-green); font-weight:600; }
+    .ok  { color:light-dark(oklch(0.48 0.096 251.8), #93c5fd); }
+    .mid { color:var(--c-amber); }
+    .rt-card { background:var(--bg-card,var(--panel-2)); border-radius:12px; padding:1.5rem; margin-bottom:1.25rem; border:1px solid rgba(255,255,255,.06); }
     .rt-card h3 { margin-top:0; }
-    .rt-label { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:#6ee7b7; font-weight:600; margin-bottom:.3rem; }
+    .rt-label { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:var(--c-green); font-weight:600; margin-bottom:.3rem; }
     .install-block { background:rgba(0,0,0,.35); border-radius:8px; padding:1rem 1.25rem; font-family:'JetBrains Mono',monospace; font-size:.85rem; margin:.8rem 0; overflow-x:auto; }
     .verdict-box { background:rgba(110,231,183,.08); border:1px solid rgba(110,231,183,.2); border-radius:10px; padding:1.25rem; margin:1.5rem 0; }
-    .verdict-box strong { color:#6ee7b7; }
+    .verdict-box strong { color:var(--c-green); }
     .fleet-step { display:flex; gap:.9rem; align-items:flex-start; padding:.8rem 0; border-bottom:1px solid rgba(255,255,255,.05); }
     .fleet-step:last-child { border-bottom:none; }
-    .step-num { width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#10b981,#059669); color:#fff; font-weight:700; font-size:.85rem; display:flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:2px; }
+    .step-num { width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#047857,#065f46); color:#fff; font-weight:700; font-size:.85rem; display:flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:2px; }
     .step-body { flex:1; }
     .step-body strong { display:block; margin-bottom:.25rem; }
     [data-theme="light"] .rt-card { border-color:var(--border); }
@@ -52,18 +51,28 @@
     [data-theme="light"] th, [data-theme="light"] td { border-bottom-color:var(--border); }
     [data-theme="light"] .step-num { background:var(--ok); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -77,7 +86,7 @@
         <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Running Claude Code, Codex, and Gemini CLI in parallel?</div>
         <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for mixed-runtime agent fleets — orchestration, self-healing, shared kanban, and mobile monitoring, all for $0.</div>
       </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp030_runtimes_compare_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp030_runtimes_compare_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#047857,#065f46);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -313,7 +322,7 @@
       <div class="step-num">1</div>
       <div class="step-body">
         <strong>Install amux</strong>
-        <div class="install-block">brew install mixpeek/amux/amux
+        <div class="install-block">curl -fsSL https://amux.io/install.sh | bash
 amux start</div>
       </div>
     </div>
@@ -440,7 +449,7 @@ amux register gemini-1 --runtime gemini --dir ~/Dev/myproject</div>
       <h3 style="margin:0 0 .4rem;font-size:1.1rem">Run a mixed-runtime agent fleet tonight</h3>
       <p style="margin:0 0 1rem;color:var(--fg-dim);font-size:.9rem">amux orchestrates Claude Code, Codex, and Gemini CLI sessions in parallel — shared kanban board, self-healing, mobile dashboard. Free, open-source, single Rust binary.</p>
       <div style="display:flex;gap:.75rem;flex-wrap:wrap">
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:10px 22px;border-radius:7px;font-weight:600;text-decoration:none;font-size:.9rem">View amux on GitHub ★</a>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#047857,#065f46);color:#fff;padding:10px 22px;border-radius:7px;font-weight:600;text-decoration:none;font-size:.9rem">View amux on GitHub ★</a>
         <a href="/guides/harness-engineering/" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:var(--fg);padding:10px 18px;border-radius:7px;font-weight:500;text-decoration:none;font-size:.9rem">Harness Engineering Guide →</a>
       </div>
     </div>
@@ -452,6 +461,7 @@ amux register gemini-1 --runtime gemini --dir ~/Dev/myproject</div>
       <div class="footer-brand"><a href="/" class="logo">amux</a><span class="footer-copy">&copy; 2026 amux. Open source under MIT.</span></div>
       <nav class="footer-links">
         <a href="/guides/">guides</a>
+        <a href="/demos/">Demos</a>
         <a href="/compare/">compare</a>
         <a href="/docs/">docs</a>
         <a href="/blog/">blog</a>

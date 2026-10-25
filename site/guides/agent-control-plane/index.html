@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,32 +20,41 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent Control Plane","item":"https://amux.io/guides/agent-control-plane/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents (2026)","description":"An agent control plane manages the lifecycle of AI agents: starting, monitoring, governing, and stopping them. The developer's guide to the missing infrastructure layer.","url":"https://amux.io/guides/agent-control-plane/","datePublished":"2026-04-15","dateModified":"2026-09-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents."}},{"@type":"Question","name":"How is an agent control plane different from an agent framework?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent. You can swap frameworks without changing your control plane, and vice versa."}},{"@type":"Question","name":"Do I need an agent control plane if I only run one agent?","acceptedAnswer":{"@type":"Answer","text":"No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation — typically around 3-5 concurrent agents. At that point, you cannot manually monitor each agent's terminal, and the failure modes multiply: agents crash, context windows overflow, costs spike, and tasks get duplicated. A control plane automates the responses to these failure modes."}},{"@type":"Question","name":"What is the difference between agent observability and agent governance?","acceptedAnswer":{"@type":"Answer","text":"Observability answers 'what is happening?' — dashboards, logs, token tracking, session replay. Governance answers 'what is allowed to happen?' — budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both. Most tools today focus on observability (Langfuse, Helicone) or governance (Microsoft Agent Governance Toolkit) but not both together."}},{"@type":"Question","name":"Is an agent control plane the same as an orchestration framework?","acceptedAnswer":{"@type":"Answer","text":"No. Orchestration frameworks like LangGraph and CrewAI define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A crashed, restart it. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime. You can use both together — orchestration defines what should happen, the control plane ensures it actually happens."}},{"@type":"Question","name":"What are the core components of an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Five core components: (1) Agent lifecycle management — start, stop, restart agents programmatically. (2) Observability — real-time status, output streaming, token/cost tracking. (3) Fault tolerance — automatic crash recovery, context compaction, stuck-agent detection. (4) Orchestration — task assignment, inter-agent messaging, work queues with atomic claiming. (5) Governance — budget limits, concurrency caps, kill switches, audit logs."}},{"@type":"Question","name":"Can I build my own agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes, and many teams start with shell scripts and tmux. The typical progression: (1) bash scripts that start/stop agents, (2) a shared task file agents read from, (3) a simple dashboard to see what's running, (4) automatic crash recovery. By stage 3, you've rebuilt half of what dedicated tools provide. The question is whether you want to maintain that infrastructure yourself. Open-source options like amux provide all five control plane layers as a single Rust binary with zero dependencies."}},{"@type":"Question","name":"How does amux implement an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"amux implements all five control plane layers as a single Rust binary with zero external dependencies: lifecycle management via tmux sessions, observability via a real-time web dashboard with SSE, fault tolerance via a watchdog that auto-compacts context and replays failed messages, orchestration via a REST API with a SQLite-backed kanban board for atomic task claiming, and governance via session-level controls and cost tracking. Manage the whole fleet from a browser or the iOS app. No Docker, no cloud, no config files."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agent Control Plane</span></div>
     <h1>What Is an Agent Control Plane?</h1>
-    <div class="cta-top" style="background:var(--green,#22c55e10);border:1px solid var(--green,#22c55e);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+    <div class="cta-top" style="background:color-mix(in oklab, var(--green) 8%, transparent);border:1px solid var(--green,var(--c-green));border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
       <span style="font-size:14px;color:var(--fg);">Run an AI engineering team from one dashboard. Self-healing, phone-manageable, open source.</span>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
          onclick="typeof posthog!=='undefined'&&posthog.capture('exp073_agent_control_plane_topofpage_cta_click')"
-         style="background:var(--green,#22c55e);color:#000;padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
+         style="background:var(--green,var(--c-green));color:var(--bg);padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
     </div>
     <p class="subtitle">Agent frameworks define what agents do. Agent runtimes execute them. An agent control plane manages the fleet. This is the missing infrastructure layer &mdash; and it&rsquo;s why your 10-agent setup keeps falling apart.</p>
 
@@ -423,7 +432,7 @@ $ amux serve
     <p>No Docker. No config files. No cloud dependency. Single Rust binary, zero external dependencies.</p>
 
     <div style="margin:2.5rem 0;text-align:center;">
-      <a href="https://github.com/mixpeek/amux" style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--accent);color:#fff;padding:0.7rem 2rem;border-radius:999px;text-decoration:none;font-weight:600;font-size:0.92rem;transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Get started &mdash; it&rsquo;s free and open source</a>
+      <a href="https://github.com/mixpeek/amux" style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--accent);color:var(--bg);padding:0.7rem 2rem;border-radius:999px;text-decoration:none;font-weight:600;font-size:0.92rem;transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Get started &mdash; it&rsquo;s free and open source</a>
     </div>
 
     <!-- ───────────────────────────────── SECTION: FAQ ───────────────────────────────── -->

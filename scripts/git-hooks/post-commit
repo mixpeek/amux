@@ -152,6 +152,46 @@ if git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -q '^scri
   fi
 fi
 
+# ── A COMMIT THAT CITES NO OWNER REQUEST NAMES THE OPEN ONES (velocity audit
+# 2026-10-25) ────────────────────────────────────────────────────────────────
+#
+# `amux requests` counts a request as landed only when a commit names it. On
+# 2026-10-25 it showed 43 open for amux-admin; the three oldest sampled were on
+# main already (a71f5c797, 96a084a27, 207a53951), uncited, and 14 of that
+# lane's 91 commits in 8 days carried `Amux-Request`. So the owner's list of
+# what is still owed was mostly done work, and the undone asks hid inside it.
+# The commit is the one moment the author knows which request it lands, so
+# that is where the open ones are named. The lane comes from the commit's own
+# Amux-Session trailer, which prepare-commit-msg recovers when $AMUX_SESSION is
+# empty (MR-43), as it is in isolated lanes. Fail-open, bounded to 20s (a live lookup took 9s).
+_rq_lane=$(git log -1 --format='%(trailers:key=Amux-Session,valueonly,separator=)' 2>/dev/null)
+if [ -n "$_rq_lane" ] && [ "$_rq_lane" != "(human)" ] && command -v amux >/dev/null 2>&1 \
+   && ! git log -1 --format=%B 2>/dev/null | grep -Eq 'MSG-[0-9]+'; then
+  _rq_open=$(perl -e 'alarm 20; exec @ARGV' amux requests "$_rq_lane" --open --json 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin).get("requests") or []
+except Exception:
+    sys.exit(0)
+if rows:
+    print(len(rows))
+    for r in sorted(rows, key=lambda r: r.get("age_h") or 0)[:5]:
+        text = " ".join((r.get("text") or "").split())[:70]
+        print("    %s  %5.1fh  %s" % (r.get("id"), r.get("age_h") or 0, text))
+' 2>/dev/null)
+  if [ -n "$_rq_open" ]; then
+    _rq_n=$(printf '%s\n' "$_rq_open" | head -1)
+    _rq_sha=$(git rev-parse --short HEAD 2>/dev/null)
+    echo "" >&2
+    echo "amux post-commit: $_rq_sha cites no owner request; $_rq_lane has $_rq_n open (verdict=commit_cites_no_request open=$_rq_n). Newest:" >&2
+    printf '%s\n' "$_rq_open" | sed 1d >&2
+    echo "  If this commit lands one, before pushing:  git commit --amend --no-edit --trailer 'Amux-Request: MSG-<id>'" >&2
+    echo "  Already pushed:  amux requests close --sha $_rq_sha MSG-<id> \"<what landed>\"" >&2
+    echo "" >&2
+  fi
+fi
+
 [ -n "$AMUX_SESSION" ] || exit 0
 sha=$(git rev-parse --short HEAD 2>/dev/null)
 # tr strips the two JSON-hostile characters instead of escaping them — a

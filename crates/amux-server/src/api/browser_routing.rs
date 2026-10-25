@@ -81,6 +81,81 @@ impl Config {
 fn root() -> PathBuf {
     crate::config::amux_home().join("browser-routing")
 }
+
+/// browser-methods.toml as committed: the backend ladder and the agent methods.
+pub const METHODS_DEFAULT: &str = include_str!("../../../../browser-methods.toml");
+/// Adapters shipped with this build, by protocol.
+const ADAPTERS: &[(&str, &str)] = &[("opagent-v1", include_str!("../../../../scripts/browser-agents/opagent-v1.mjs"))];
+
+fn methods_layer(text: &str) -> Result<toml::Table, String> {
+    toml::from_str::<toml::Table>(text).map_err(|e| e.to_string())
+}
+
+/// The effective methods registry: the committed file, then the owner's
+/// ~/.amux/browser-methods.toml (a top-level `ladder` replaces the order; an
+/// [[agent]] with a known id replaces that agent's fields; a new id adds one).
+/// `adapter` (a path to the owner's own adapter module) is honoured only from
+/// the owner's file. Errors are returned beside the result, never fatal.
+pub fn methods() -> (Value, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut base = methods_layer(METHODS_DEFAULT).unwrap_or_else(|e| { errors.push(format!("browser-methods.toml: {e}")); toml::Table::new() });
+    for a in base.get_mut("agent").and_then(|v| v.as_array_mut()).into_iter().flatten() {
+        if let Some(t) = a.as_table_mut() { t.remove("adapter"); }
+    }
+    let path = crate::config::amux_home().join("browser-methods.toml");
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        match methods_layer(&text) {
+            Ok(over) => {
+                if let Some(l) = over.get("ladder") { base.insert("ladder".into(), l.clone()); }
+                let agents = base.entry("agent").or_insert_with(|| toml::Value::Array(vec![]));
+                if let (Some(list), Some(add)) = (agents.as_array_mut(), over.get("agent").and_then(|v| v.as_array())) {
+                    for a in add.iter().filter_map(|v| v.as_table()) {
+                        let id = a.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                        match list.iter_mut().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                            Some(existing) => { if let Some(t) = existing.as_table_mut() { t.extend(a.clone()); } }
+                            None => list.push(toml::Value::Table(a.clone())),
+                        }
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{}: {e}", path.display())),
+        }
+    }
+    let mut v = serde_json::to_value(&base).unwrap_or(Value::Null);
+    if let Some(agents) = v.get_mut("agent").and_then(|a| a.as_array_mut()) {
+        for a in agents.iter_mut() {
+            if let Some(p) = a.get("adapter").and_then(Value::as_str).map(str::to_string) {
+                a["adapter_path"] = json!(p);
+            }
+        }
+    }
+    let out = json!({
+        "ladder": v.get("ladder").cloned().unwrap_or(json!(["amux","cdp","cua"])),
+        "backends": v.get("backend").cloned().unwrap_or(json!([])),
+        "agents": v.get("agent").cloned().unwrap_or(json!([])),
+    });
+    (out, errors)
+}
+
+/// Write each shipped adapter beside the driver (content-addressed) and
+/// return protocol -> path for the driver's dynamic import.
+fn adapter_modules() -> std::io::Result<Value> {
+    let dir = root().join("agents");
+    std::fs::create_dir_all(&dir)?;
+    let mut map = serde_json::Map::new();
+    for (protocol, source) in ADAPTERS {
+        use sha2::{Digest, Sha256};
+        let hash = format!("{:x}", Sha256::digest(source.as_bytes()));
+        let file = dir.join(format!("{protocol}-{}.mjs", &hash[..16]));
+        if std::fs::read(&file).ok().as_deref() != Some(source.as_bytes()) {
+            let tmp = dir.join(format!("{protocol}-{}.tmp", ulid::Ulid::new()));
+            std::fs::write(&tmp, source)?;
+            std::fs::rename(&tmp, &file)?;
+        }
+        map.insert((*protocol).to_string(), json!(file.display().to_string()));
+    }
+    Ok(Value::Object(map))
+}
 fn load() -> Config {
     std::fs::read(root().join("config.json"))
         .ok()
@@ -102,6 +177,18 @@ async fn request_lock(key: String) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 #[cfg(test)]
 mod tests {
     use super::{request_lock, Config};
+
+    #[test]
+    fn the_committed_methods_registry_parses_with_its_ladder_and_a_disabled_opagent() {
+        let t = super::methods_layer(super::METHODS_DEFAULT).expect("browser-methods.toml parses");
+        let ladder: Vec<&str> = t["ladder"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(ladder, ["amux", "cdp", "cua"]);
+        let agents = t["agent"].as_array().unwrap();
+        let op = agents.iter().find(|a| a["id"].as_str() == Some("opagent")).expect("opagent agent");
+        assert_eq!(op["protocol"].as_str(), Some("opagent-v1"));
+        assert_eq!(op["enabled"].as_bool(), Some(false), "an agent sees signed-in pages; it ships disabled");
+        assert!(super::ADAPTERS.iter().any(|(p, _)| *p == "opagent-v1"), "every shipped protocol has an adapter");
+    }
 
     #[test]
     fn owner_choices_are_retained_per_profile_without_cross_account_defaults() {
@@ -168,7 +255,7 @@ async fn config() -> Response {
         .and_then(|s| serde_json::from_slice(&s).ok())
         .unwrap_or(Value::Null);
     let profiles:Vec<Value>=v.pointer("/profile/info_cache").and_then(Value::as_object).map(|cache|cache.iter().map(|(name,m)|json!({"name":name,"label":m.get("name"),"identity":m.get("user_name"),"on_disk":chrome_root.join(name).is_dir()})).collect()).unwrap_or_default();
-    Json(json!({"config":load(),"chrome_profiles":profiles,"measured":true,"n_considered":profiles.len(),"ladder":["amux","cdp","cua"],"note":"CDP uses a persistent isolated copy of the selected Chrome profile. CUA uses the selected saved Amux profile; sandbox transfer currently covers cookies only."})).into_response()
+    Json(json!({"config":load(),"chrome_profiles":profiles,"measured":true,"n_considered":profiles.len(),"ladder":methods().0["ladder"],"methods":methods().0,"methods_errors":methods().1,"note":"CDP uses a persistent isolated copy of the selected Chrome profile. CUA uses the selected saved Amux profile; sandbox transfer currently covers cookies only."})).into_response()
 }
 async fn save(headers: HeaderMap, Json(mut c): Json<Config>) -> Response {
     // The fallback identity is an owner choice, never a worker's silent edit.
@@ -234,7 +321,7 @@ struct Request {
 async fn request(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(r): Json<Request>,
+    Json(mut r): Json<Request>,
 ) -> Response {
     let verbs = [
         "start",
@@ -248,6 +335,7 @@ async fn request(
         "inspect/clear",
         "status",
         "advance",
+        "goal",
     ];
     if !verbs.contains(&r.verb.as_str()) {
         return error(StatusCode::BAD_REQUEST, "unsupported browser route verb");
@@ -292,16 +380,48 @@ async fn request(
     .ok()
     .and_then(|b| serde_json::from_slice(&b).ok())
     .unwrap_or(Value::Null);
-    let chosen = if r.verb == "start" {
-        r.body
-            .get("profile")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+    // A start that names no profile gets the profile chosen for its site, by
+    // the same selector as `amux browser for` (found 2026-10-17: a route to the
+    // TubeScience app opened the saved default `ethan` and hit a sign-in page
+    // while `amux browser for` named `ethan-tubescience`). The saved native
+    // profile is the fallback when the URL names no public site.
+    let named = if r.verb == "start" {
+        r.body.get("profile").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
     } else {
-        receipt.get("selected_profile").and_then(Value::as_str)
+        receipt.get("selected_profile").and_then(Value::as_str).map(str::to_owned)
+    };
+    let mut chosen_by = "named";
+    let chosen = match named {
+        Some(p) => p,
+        None => {
+            let url = r.body.get("url").and_then(Value::as_str).unwrap_or("").to_owned();
+            let worker = r.session.clone();
+            let site_pick = if r.verb == "start" && !url.is_empty() {
+                tokio::task::spawn_blocking(move || super::browser::profile_for_url(&worker, &url)).await.ok().flatten()
+            } else {
+                None
+            };
+            match site_pick.filter(|c| !c.profile.is_empty()) {
+                Some(c) => {
+                    chosen_by = "site";
+                    tracing::info!(session = %r.session, profile = %c.profile, signed_in = c.signed_in, why = %c.why,
+                        measured = true, n_considered = 1, verdict = "browser_route_profile_for_site",
+                        "route start named no profile; using the profile chosen for the site");
+                    c.profile
+                }
+                None => {
+                    chosen_by = "default";
+                    c.native_profile.clone()
+                }
+            }
+        }
+    };
+    if r.verb == "start" {
+        if let Some(o) = r.body.as_object_mut() {
+            o.entry("profile").or_insert(json!(chosen));
+            o.insert("profile_chosen_by".into(), json!(chosen_by));
+        }
     }
-    .unwrap_or(&c.native_profile)
-    .to_owned();
     if let Err(denied) = super::browser_scope::profile_allowed(&r.session, &chosen) {
         return denied.response();
     }
@@ -427,6 +547,17 @@ async fn request(
         .and_then(|v| v.get("user_name"))
         .cloned()
         .unwrap_or(json!(""));
+    let (methods, method_errors) = methods();
+    for e in &method_errors {
+        tracing::warn!(error = %e, measured = true, n_considered = 1, verdict = "browser_methods_unloadable", "a browser-methods layer did not parse; using the rest");
+    }
+    context["methods"] = methods;
+    if r.verb == "goal" {
+        match adapter_modules() {
+            Ok(m) => context["agent_modules"] = m,
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("could not write the browser agent adapters: {e}")),
+        }
+    }
     let input = json!({"context":context,"verb":r.verb,"body":r.body});
     let mut child = match tokio::process::Command::new("node")
         .arg(script)
@@ -452,7 +583,7 @@ async fn request(
     // CUA may provision the exact desktop image (Docker's bounded 30-minute
     // build). An outer 240s limit otherwise repeatedly cancels every cold build.
     // Ordinary driver calls retain their own shorter transport/action limits.
-    let deadline_s = if c.allow_cua && r.verb != "stop" {
+    let deadline_s = if r.verb == "goal" || (c.allow_cua && r.verb != "stop") {
         2700
     } else {
         240

@@ -177,7 +177,11 @@ pub async fn background_should_pause_now() -> bool {
     }
     let probe = crate::provider::claude::probe_usage_raw().await;
     if let Some(body) = probe.exact_body() {
-        if let Some(pct) = session_pct_of(&shape_probe(UsageProbe::Ok(body.clone()))) {
+        let shaped = shape_probe(UsageProbe::Ok(body.clone()));
+        if let Some(reset) = session_reset_of(&shaped) {
+            note_window_reset(reset);
+        }
+        if let Some(pct) = session_pct_of(&shaped) {
             note_window_pct(pct);
             return background_should_pause(Some(pct), reserve);
         }
@@ -194,6 +198,53 @@ pub fn reserve_pause_note(kind: &str) -> String {
          (AMUX_BACKGROUND_RESERVE_PCT). Background work stops here so a prompt you type still \
           has room; direct sends are never gated. Set the pref to 0 to disable the reserve."
     )
+}
+
+/// When the session (5-hour) window last observed will reset.
+///
+/// The reserve gates on the session window only, so this is the one reset that
+/// can lift a reserve refusal. The scheduler aims a refused fire's retry at it
+/// instead of polling every 15 minutes. Kept apart from [`WINDOW_PCT`] because
+/// a reset time stays true after the percentage goes stale; the caller still
+/// has to check that it lies in the future.
+static WINDOW_RESET: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>> =
+    std::sync::Mutex::new(None);
+
+/// Record the session window's reset time. Idempotent, cheap, never fails.
+pub fn note_window_reset(at: chrono::DateTime<chrono::Utc>) {
+    if let Ok(mut g) = WINDOW_RESET.lock() {
+        *g = Some(at);
+    }
+}
+
+/// The last observed session-window reset, if any. It may already be in the
+/// past; `None` means amux never saw one.
+pub fn window_reset_known() -> Option<chrono::DateTime<chrono::Utc>> {
+    *WINDOW_RESET.lock().ok()?
+}
+
+/// Parse a `resets_at` value: RFC 3339 text or unix seconds.
+fn parse_reset(v: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Some(n) = v.as_i64() {
+        return chrono::DateTime::from_timestamp(n, 0);
+    }
+    chrono::DateTime::parse_from_rfc3339(v.as_str()?)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// Pull the `session` window's reset time out of a shaped usage body: the
+/// `limits[kind=session].resets_at`, else the top-level `five_hour.resets_at`.
+pub fn session_reset_of(body: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    body.get("limits")
+        .and_then(Value::as_array)
+        .and_then(|ls| {
+            ls.iter()
+                .find(|l| l.get("kind").and_then(Value::as_str) == Some("session"))
+        })
+        .and_then(|l| l.get("resets_at"))
+        .and_then(parse_reset)
+        .or_else(|| body.pointer("/five_hour/resets_at").and_then(parse_reset))
 }
 
 /// Pull the `session` window's percent out of a shaped usage body.
@@ -283,6 +334,19 @@ struct UsageCache {
     /// transient failure cannot evict a good reading.
     last_good: Option<Value>,
     last_good_at: Option<Instant>,
+    /// Which model sign-ins existed when `data` was read. A sign-in or a new
+    /// key makes the cached reading stale at once: a dashboard sign-in kept
+    /// showing "Connect account" for the rest of the 60 s TTL (2026-10-21).
+    creds: Option<String>,
+}
+
+/// Presence of each model credential (never a value), as /api/identity
+/// reports it. Cheap: two small file reads and a few stats.
+fn credential_stamp() -> String {
+    let home = crate::config::amux_home();
+    let env_text = std::fs::read_to_string(home.join("server.env")).unwrap_or_default();
+    let user_home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    super::model_auth_status(&env_text, &user_home).to_string()
 }
 
 /// Production wiring: every provider's real read-only usage surface.
@@ -322,6 +386,12 @@ fn routes_with_probes(probes: UsageProbes) -> Router<AppState> {
         .route("/attribution", axum::routing::get(get_attribution))
         // AMUX-4584: the same numbers as markdown, deterministic, for MDAI.
         .route("/report.md", axum::routing::get(get_usage_report_md))
+        // Per-account Claude usage history for the account rotator (0129).
+        .route("/accounts", axum::routing::get(super::usage_accounts::get_accounts))
+        .route(
+            "/accounts/readings",
+            axum::routing::post(super::usage_accounts::post_reading),
+        )
         .layer(Extension(probes))
         .layer(Extension(Arc::new(tokio::sync::Mutex::new(
             UsageCache::default(),
@@ -329,6 +399,7 @@ fn routes_with_probes(probes: UsageProbes) -> Router<AppState> {
 }
 
 async fn get_usage(
+    State(state): State<AppState>,
     Extension(probes): Extension<UsageProbes>,
     Extension(cache): Extension<Arc<tokio::sync::Mutex<UsageCache>>>,
 ) -> Response {
@@ -338,8 +409,11 @@ async fn get_usage(
     // Serve from cache while fresh. Failures are cached too, deliberately: a
     // rate-limited probe must not be retried on every settings render, which
     // is the behaviour that provokes the rate limit in the first place.
-    let fresh = matches!((&c.data, c.at), (Some(_), Some(at)) if at.elapsed() < ttl);
+    let creds = credential_stamp();
+    let fresh = matches!((&c.data, c.at), (Some(_), Some(at)) if at.elapsed() < ttl)
+        && c.creds.as_deref() == Some(creds.as_str());
     if !fresh {
+        c.creds = Some(creds);
         let (claude, claude_account, codex, gemini) = tokio::join!(
             (probes.claude)(),
             (probes.claude_account)(),
@@ -358,6 +432,11 @@ async fn get_usage(
         {
             c.last_good = Some(shaped.clone());
             c.last_good_at = Some(Instant::now());
+        }
+        // Keep a per-account history of every live probe, for the rotator.
+        if let Some(reading) = super::usage_accounts::reading_from_usage(&shaped) {
+            let state = state.clone();
+            tokio::spawn(async move { super::usage_accounts::record_logged(&state, reading).await });
         }
         c.data = Some(shaped);
         c.at = Some(Instant::now());
@@ -755,6 +834,7 @@ fn shape_claude_provider(body: &Value) -> Value {
             "measured": false, "n_considered": 0,
             "account": body.get("account_email").cloned().unwrap_or(Value::Null),
             "cause": body.get("cause").cloned().unwrap_or(Value::Null),
+            "signed_in": body.get("signed_in") == Some(&json!(true)),
             "reason": body.get("reason").cloned()
                 .unwrap_or_else(|| json!("Claude usage is unavailable.")),
             "retry_at": body.get("retry_at"),
@@ -1018,6 +1098,17 @@ fn shape_probe(probe: UsageProbe) -> Value {
             "unexpected_shape",
             "Usage endpoint returned an unexpected response shape".into(),
         ),
+        // Connected, and nothing to fix: "Not reported" in the SPA. `signed_in`
+        // tells the row to offer "Switch account" rather than "Sign in", since
+        // `available: false` alone reads as no account.
+        UsageProbe::SubscriptionTokenOnly => {
+            let mut v = degraded(
+                "account_quota_not_reported",
+                "Signed in with a Claude subscription token. Claude does not report plan usage for this kind of sign-in, so it is not shown here.".into(),
+            );
+            v["signed_in"] = json!(true);
+            v
+        }
     }
 }
 
@@ -2087,6 +2178,17 @@ mod tests {
     /// The real endpoint's success body, built from the live response SHAPE
     /// (both the top-level windows and the `limits[]` array Anthropic sends
     /// together). Numbers are invented; no credential is involved.
+    #[test]
+    fn session_reset_reads_the_limits_array_then_five_hour_then_nothing() {
+        let body = live_shaped_body();
+        assert_eq!(session_reset_of(&body).map(|t| t.to_rfc3339()), Some("2026-08-09T18:00:00+00:00".into()));
+        let only_top = json!({"five_hour": {"utilization": 3.0, "resets_at": "2026-08-09T19:00:00+00:00"}});
+        assert_eq!(session_reset_of(&only_top).map(|t| t.timestamp()), Some(1786302000));
+        let epoch = json!({"limits": [{"kind": "session", "percent": 80, "resets_at": 1786302000}]});
+        assert_eq!(session_reset_of(&epoch).map(|t| t.timestamp()), Some(1786302000));
+        assert_eq!(session_reset_of(&json!({"limits": [{"kind": "weekly_all", "resets_at": 1}]})), None);
+    }
+
     fn live_shaped_body() -> Value {
         json!({
             "five_hour": {"utilization": 34.4, "resets_at": "2026-08-09T18:00:00+00:00"},
@@ -2244,6 +2346,53 @@ mod tests {
         assert_eq!(claude["account"], "b@example.com");
     }
 
+    /// A live probe of the signed-in account lands in the per-account history
+    /// (claude_account_usage) that the account rotator reads.
+    #[tokio::test]
+    async fn a_live_probe_is_kept_in_the_account_usage_history() {
+        let (probe, _) = probe_sequence(vec![UsageProbe::Ok(live_shaped_body())]);
+        let unavailable: ProviderProbeFn = Arc::new(|| {
+            Box::pin(async {
+                ProviderProbe::Unavailable {
+                    cause: "test",
+                    reason: "test".into(),
+                }
+            })
+        });
+        let app = app_routes(routes_with_probes(UsageProbes {
+            claude: probe,
+            claude_account: Arc::new(|| Box::pin(async { Some("b@example.com".to_string()) })),
+            codex: unavailable.clone(),
+            gemini: unavailable,
+        }));
+        let (_, usage) = get(&app).await;
+        let mut history = Value::Null;
+        for _ in 0..50 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/usage/accounts?rows=5")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            history = serde_json::from_slice(&bytes).unwrap();
+            if history["n_considered"] == json!(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(history["n_considered"], json!(1), "no history row: {history}");
+        let row = &history["rows"][0];
+        assert_eq!(row["account"], "b@example.com");
+        assert_eq!(row["source"], "server-probe");
+        assert_eq!(row["seven_day_pct"], usage["seven_day"]["utilization"]);
+        assert_eq!(row["five_hour_pct"], usage["five_hour"]["utilization"]);
+    }
+
     #[test]
     fn one_unavailable_probe_does_not_hide_the_other_provider_rows() {
         let body = shape_all_providers(
@@ -2318,6 +2467,7 @@ mod tests {
             (UsageProbe::Transport("timeout"), "probe_failed"),
             (UsageProbe::BadShape, "unexpected_shape"),
             (UsageProbe::Ok(json!([1, 2, 3])), "unexpected_shape"),
+            (UsageProbe::SubscriptionTokenOnly, "account_quota_not_reported"),
         ];
         let mut seen_reasons: Vec<String> = Vec::new();
         for (outcome, expect_cause) in cases {
@@ -2326,6 +2476,12 @@ mod tests {
             assert_eq!(st, StatusCode::OK, "{outcome:?}");
             assert_eq!(v["available"], json!(false), "{outcome:?}");
             assert_eq!(v["cause"], json!(expect_cause), "{outcome:?}");
+            // Only the subscription-token state is a degraded row with an account.
+            assert_eq!(
+                v.get("signed_in") == Some(&json!(true)),
+                matches!(outcome, UsageProbe::SubscriptionTokenOnly),
+                "{outcome:?}"
+            );
             let reason = v["reason"].as_str().unwrap().to_string();
             assert!(!reason.is_empty());
             // Never the collapsed sentence again.
@@ -2389,6 +2545,25 @@ mod tests {
         }
         // The one path that echoes upstream content is 2xx. The type system
         // is what guarantees the rest: no failure variant can hold a token.
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // the AMUX_HOME guard must span the requests
+    async fn a_new_sign_in_makes_the_cached_reading_stale() {
+        // 2026-10-21, live on a Cloud server: the dashboard sign-in saved its
+        // token and the usage list kept serving the cached "no token" for the
+        // rest of the 60 s TTL, so the row still said "Connect account".
+        let _env = default_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = app(probe_fn(UsageProbe::NoToken, calls.clone()));
+        get(&app).await;
+        get(&app).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "unchanged sign-ins: served from cache");
+        std::fs::write(dir.path().join("server.env"), "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fake-e2e-token\n").unwrap();
+        get(&app).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "a new sign-in must re-probe within the TTL");
     }
 
     #[tokio::test]

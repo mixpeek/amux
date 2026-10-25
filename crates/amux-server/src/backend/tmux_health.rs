@@ -42,7 +42,9 @@ fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-fn default_socket() -> String {
+/// The socket a bare `tmux` from this process reaches: the fleet's server for
+/// the amux server itself, which runs outside any pane.
+pub(crate) fn default_socket() -> String {
     if let Ok(tmux) = std::env::var("TMUX") {
         if let Some((path, _)) = tmux.split_once(',') {
             if !path.is_empty() {

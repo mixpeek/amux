@@ -115,6 +115,13 @@ DOWN_ESCALATE = int(os.environ.get("WATCHDOG_DOWN_ESCALATE", 2))
 # not fixed by restarting it faster, and the restart storm looks like the fault.
 KICKSTART_COOLDOWN = int(os.environ.get("WATCHDOG_KICKSTART_COOLDOWN", 300))
 DIAG_COOLDOWN = int(os.environ.get("WATCHDOG_DIAG_COOLDOWN", 900))
+# A server process that is alive and has not bound its port yet is STARTING,
+# not down, until it has been up this long. 2026-10-21 06:25-10:31Z: a boot
+# needed 85s to 5+ minutes before binding on a loaded host, and every recovery
+# (kickstart -k, then a launch-agent reload 30s later, then kickstart -k again
+# when the 300s cooldown ran out) killed the boot in progress. 95 boots, none
+# reached the bind, and the fleet had no server for four hours.
+BOOT_GRACE = int(os.environ.get("WATCHDOG_BOOT_GRACE", 900))
 MAX_LOG_BYTES = int(os.environ.get("WATCHDOG_MAX_LOG_BYTES", 2_000_000))
 
 CONNECT_TIMEOUT = 3
@@ -281,6 +288,63 @@ def _find_server_pid() -> int | None:
         return None
 
 
+def _etime_secs(text: str) -> int | None:
+    """ps etime ([[dd-]hh:]mm:ss) to seconds."""
+    text = text.strip()
+    if not text:
+        return None
+    days, _, rest = text.rpartition("-")
+    try:
+        parts = [int(p) for p in rest.split(":")]
+        secs = 0
+        for p in parts:
+            secs = secs * 60 + p
+        return secs + (int(days) * 86400 if days else 0)
+    except ValueError:
+        return None
+
+
+def booting_server() -> tuple[int, int] | None:
+    """(pid, age_s) of a live server process younger than BOOT_GRACE, else None.
+    With the port closed, that process is still starting: killing it restarts
+    the same boot from zero and can never make it finish sooner."""
+    pid = _find_server_pid()
+    if not pid:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "etime=", "-p", str(pid)], timeout=5, stderr=subprocess.DEVNULL
+        ).decode()
+    except Exception:
+        return None
+    age = _etime_secs(out)
+    if age is None or age >= BOOT_GRACE:
+        return None
+    return pid, age
+
+
+def capture_stack(pid: int, why: str) -> str | None:
+    """Sample a stuck server's threads before it is killed, so the restart does
+    not erase the only evidence of where it was stuck (2026-10-21: four hours
+    of hangs left no stack at all). macOS `sample`; elsewhere nothing."""
+    if not IS_MACOS or DRY_RUN:
+        return None
+    path = LOG_FILE.parent / f"watchdog-stack-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+    try:
+        subprocess.run(
+            ["/usr/bin/sample", str(pid), "3", "-mayDie", "-file", str(path)],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception as e:
+        log(f"stack capture failed for pid {pid} ({why}): {e}")
+        return None
+    if path.is_file():
+        log(f"stack of pid {pid} captured before restart ({why}): {path}")
+        return str(path)
+    return None
+
+
 def _reload_launch_agent(target: str) -> bool:
     """Reload the one exact server plist after launchd itself is wedged.
 
@@ -389,6 +453,11 @@ def restart_server(reload_if_needed: bool = False) -> bool:
         if verdict == "ok":
             log("server healthy again after restart")
             return True
+    if IS_MACOS and kick_ok and (b := booting_server()):
+        # The kickstart worked and its process is still starting. A reload
+        # here would boot it out mid-start (the 2026-10-21 loop).
+        log(f"booting — pid {b[0]} up {b[1]}s, no listener yet; leaving it to finish (verdict=booting)")
+        return True
     if IS_MACOS and reload_if_needed and kick_ok:
         log("server still down after kickstart — reloading its launch agent")
         if _reload_launch_agent(target):
@@ -491,6 +560,14 @@ def run():
             _consecutive_down = 0
             log(f"probe slow, recovery window not exhausted — restart deferred: {detail.get('store_probe')}")
 
+        elif verdict == "down" and (b := booting_server()):
+            _consecutive_down = 0
+            _consecutive_hung = 0
+            log(
+                f"booting — pid {b[0]} up {b[1]}s with no listener yet; not restarting a "
+                f"server that is still starting (grace {BOOT_GRACE}s, verdict=booting)"
+            )
+
         elif verdict == "down":
             _consecutive_down += 1
             _consecutive_hung = 0
@@ -512,6 +589,8 @@ def run():
             log(f"{verdict} ({_consecutive_hung}/{HUNG_THRESHOLD}) — {detail}")
             if _consecutive_hung >= HUNG_THRESHOLD:
                 log(f"threshold reached ({verdict}) — this is the case launchd cannot see; restarting")
+                if pid := _find_server_pid():
+                    capture_stack(pid, verdict)
                 if not restart_server():
                     escalate(f"{verdict} and restart did not recover it")
                 _consecutive_hung = 0

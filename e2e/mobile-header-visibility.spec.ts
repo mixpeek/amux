@@ -51,8 +51,13 @@ test('header badge, controls and text tabs fit both themes from phone through de
  for(const light of [true,false])for(const width of [375,600,601,768,1440]){
   await page.setViewportSize({width,height:900});
   await page.evaluate(light=>{document.body.classList.toggle('light',light);const badge=document.querySelector<HTMLElement>('#notif-badge')!;badge.textContent='99+';badge.style.display='flex';},light);
-  await expect.poll(()=>page.evaluate(()=>(window as any)._headerLayoutCheck())).toEqual([]);
-  await expect.poll(()=>page.evaluate(()=>{const r=document.querySelector('#notif-btn')!.getBoundingClientRect(),b=document.querySelector('#notif-badge')!.getBoundingClientRect();return b.left>=r.left-0.1&&b.right<=r.right+0.1;})).toBe(true);
+  // The app's own badge refresh (_notifUpdateBadge, once Needs You loads) sets
+  // the real count and hides a zero badge, which collapsed its box and failed the
+  // fit check for the whole poll (ios-safari CI f2bb59c75). Each poll re-applies
+  // the widest badge before it measures.
+  const widest=()=>{const badge=document.querySelector<HTMLElement>('#notif-badge')!;badge.textContent='99+';badge.style.display='flex';};
+  await expect.poll(()=>page.evaluate(`(${widest})(),_headerLayoutCheck()`)).toEqual([]);
+  await expect.poll(()=>page.evaluate(`(${widest})(),(()=>{const r=document.querySelector('#notif-btn').getBoundingClientRect(),b=document.querySelector('#notif-badge').getBoundingClientRect();return b.left>=r.left-0.1&&b.right<=r.right+0.1;})()`)).toBe(true);
   if(width===375){
    // The FOURTH visible tab, not #tab-calendar: the Projects tab now leads
    // the strip (cbf4d384), so Calendar is no longer the fourth and scrolls.

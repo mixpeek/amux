@@ -171,7 +171,7 @@ while [ "$i" -lt "$n_considered" ]; do
   done
 
   echo "$(date -Iseconds) amuxhelper: running $runbook for $id (args: $args_line)"
-  out_file="$(mktemp -t "amuxhelper-$id")"
+  out_file="$(mktemp -t "amuxhelper-$id.XXXXXX")"
   # `env` with no var=val arguments still works fine, but an empty
   # "${arg_env[@]}" is the same bash-3.2 unbound-variable trap as above —
   # branch instead of trusting the expansion.

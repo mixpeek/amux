@@ -377,6 +377,39 @@ pub(crate) fn materialize_missing(
     (created, considered)
 }
 
+/// Skills amux itself ships, from the repo's `skills/` (Ethan, 2026-10-24:
+/// "a skill that is baked into amux which can be used for anybody"). Every
+/// install gets them as Claude Code commands without copying a file by hand.
+pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] =
+    &[("amux-contribute", include_str!("../../../../skills/amux-contribute.md"))];
+
+/// The frontmatter line that lets amux keep a shipped command current. A user
+/// who edits their copy deletes it, and from then on the copy is theirs.
+const MANAGED_MARKER: &str = "amux-managed: true";
+
+/// Boot install of SHIPPED_COMMANDS: write each one that is missing, or that
+/// still carries MANAGED_MARKER and differs from this build's copy. A file
+/// without the marker is never touched. Returns (written, considered).
+pub(crate) fn install_shipped(dir: &std::path::Path, shipped: &[(&str, &str)]) -> (usize, usize) {
+    let mut written = 0;
+    for (name, content) in shipped {
+        let path = dir.join(format!("{name}.md"));
+        let write = match std::fs::read_to_string(&path) {
+            Err(_) => true,
+            Ok(cur) => cur != *content && cur.lines().any(|l| l.trim() == MANAGED_MARKER),
+        };
+        if !write {
+            continue;
+        }
+        match write_command_file(dir, name, content) {
+            Ok(_) => written += 1,
+            Err(e) => tracing::warn!(skill = %name, error = %e, verdict = "shipped_skill_unwritten",
+                "a skill amux ships could not be installed, so Claude Code cannot run it"),
+        }
+    }
+    (written, shipped.len())
+}
+
 /// Table skills as composer entries, for any name no command file claimed.
 fn table_skill_commands(conn: &rusqlite::Connection) -> Vec<(String, String)> {
     let Ok(mut stmt) = conn.prepare("SELECT name, content FROM skills ORDER BY name") else {
@@ -699,6 +732,35 @@ mod write_tests {
         assert!(!dir.join("../x.md").exists());
         assert_eq!(materialize_missing(&conn, &dir), (0, 3), "idempotent");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shipped skill is installed, kept current while it carries the marker,
+    /// and left alone once the user has made it theirs.
+    #[test]
+    fn shipped_skills_install_update_and_respect_a_user_copy() {
+        let dir = std::env::temp_dir().join(format!("amux-shipped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let v1 = "---\ndescription: x\namux-managed: true\n---\nv1";
+        let v2 = "---\ndescription: x\namux-managed: true\n---\nv2";
+        assert_eq!(install_shipped(&dir, &[("s", v1)]), (1, 1), "missing: written");
+        assert_eq!(install_shipped(&dir, &[("s", v1)]), (0, 1), "same: untouched");
+        assert_eq!(install_shipped(&dir, &[("s", v2)]), (1, 1), "managed and stale: updated");
+        assert_eq!(std::fs::read_to_string(dir.join("s.md")).unwrap(), v2);
+        std::fs::write(dir.join("s.md"), "---\ndescription: mine\n---\nmine").unwrap();
+        assert_eq!(install_shipped(&dir, &[("s", v1)]), (0, 1), "marker removed: the copy is the user's");
+        assert_eq!(std::fs::read_to_string(dir.join("s.md")).unwrap(), "---\ndescription: mine\n---\nmine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shipped copy carries the marker and a description, or it would be
+    /// frozen at its first install and listed blank in the `/` menu.
+    #[test]
+    fn every_shipped_skill_is_managed_and_described() {
+        for (name, content) in SHIPPED_COMMANDS {
+            assert!(!bad_name(name), "{name}");
+            assert!(content.lines().any(|l| l.trim() == MANAGED_MARKER), "{name} lacks {MANAGED_MARKER}");
+            assert!(!frontmatter_fields(content).0.is_empty(), "{name} has no description");
+        }
     }
 
     #[test]

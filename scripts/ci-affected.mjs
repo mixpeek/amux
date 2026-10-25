@@ -78,6 +78,9 @@ export const TREE_GUARDS = {
   // Runs the bash CLI at the repo root (`amux exec --help`, 2849df12); its
   // read_dir is over a temp home.
   cli_worker_name_guard: { prefixes: ['amux'] },
+  // Reads every script and git hook for a GNU-safe mktemp template
+  // (e4fee90bf). Its CLI checks are already selected by the "amux" path literal.
+  cli_syntax_guard: { prefixes: ['amux', 'scripts/', '.githooks/'], lines: /mktemp/ },
 };
 export const RUST_ONLY_WALKERS = [
   'dead_pub_api', 'kill_on_drop_guard', 'no_ollama_cli', 'schema_fixtures', 'runtime_tick_bracketing',

@@ -283,3 +283,13 @@ fn split_quota_footer_with_live_children_is_current_clocked_capacity() {
         assert!(claude_auto_resume_banner(&frame).is_none(),"scrollback, active turns and unowned prose must not become a current quota footer");
     }
 }
+
+/// gtm-engine, 2026-10-20 13:00 ET: the newer wording of the same footer.
+#[test]
+fn the_continuing_shortly_footer_is_the_same_quota_banner() {
+    let raw = "  \u{23bf}  You've hit your session limit \u{b7} resets 1pm (America/New_York)\n\n\u{23fa} Usage limit reached \u{b7} continuing automatically at 1pm \u{b7} esc to cancel\n\n\u{273b} Worked for 1m 2s \u{b7} done 12:54 PM\n\u{2500}\u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\n  \u{26a0} Usage limit reached \u{b7} limit resets 1pm\n    Continuing shortly \u{b7} esc to cancel\n  usemixpeek \u{b7} wk 26%\n  \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} \u{2190} 5 agents";
+    let banner = claude_auto_resume_banner(raw).expect("the footer is recognised");
+    let now = chrono::Local::now();
+    let reset = crate::api::session_verbs::parse_rate_limit_reset_at(&banner, now).expect("its reset time parses, so a hold can expire");
+    assert!(reset > 0);
+}

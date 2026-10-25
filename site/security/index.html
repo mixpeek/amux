@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Security: what amux can and cannot access | amux</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="What amux Cloud can and cannot access: one dedicated server per customer, Stripe for payment, a browser-hashed password, usage counts with no content, and how deletion works. Self-hosted amux sends us nothing.">
+  <link rel="canonical" href="https://amux.io/security/">
+  <meta property="og:title" content="Security: what amux can and cannot access | amux">
+  <meta property="og:description" content="What amux Cloud can and cannot access: one dedicated server per customer, Stripe for payment, a browser-hashed password, usage counts with no content, and how deletion works. Self-hosted amux sends us nothing.">
+  <meta property="og:url" content="https://amux.io/security/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/nav.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"Can amux see my code or prompts?","acceptedAnswer":{"@type":"Answer","text":"No. Self-hosted amux runs on your machine and sends nothing to amux. On amux Cloud, your workers, files, prompts and model keys live on your own dedicated server, and none of it passes through an amux service. The only thing our signup service reads from your server is an hourly usage report made of counts and yes/no answers."}},
+{"@type":"Question","name":"Is my amux Cloud server shared with other customers?","acceptedAnswer":{"@type":"Answer","text":"No. Every amux Cloud customer gets their own Hetzner server at yourname.amux.io, in Germany or Finland. Nothing on it is shared with anyone else."}},
+{"@type":"Question","name":"What can the amux team technically reach?","acceptedAnswer":{"@type":"Answer","text":"As the Hetzner account holder we can use Hetzner's console, rescue mode and snapshots for any Cloud server. Our signup service can make two-minute sign-in links for a server, used for Sign in with Apple in the iOS app. We keep no SSH key on customer servers."}},
+{"@type":"Question","name":"What happens to my data when I cancel or delete my account?","acceptedAnswer":{"@type":"Answer","text":"Canceling keeps a final snapshot for 30 days so you can come back, then deletes it. Deleting your account erases the server, its address, backups and snapshots right away and ends the subscription."}}]}</script>
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <span>Security</span></div>
+    <h1>Security: what amux can and cannot access</h1>
+    <p class="subtitle">Last updated: October 21, 2026</p>
+
+    <p><strong>Short answer:</strong> self-hosted amux runs on your machine and sends us nothing. On amux Cloud you get your own dedicated server, and your code, prompts, files and model keys stay on it. The amux team can reach your server's hardware through our hosting provider, and our signup service reads an hourly usage report made only of counts and yes/no answers. Everything below says exactly what that means.</p>
+    <p>We hold no security certifications and have had no third-party audit. The server code is public, so you can check every claim on this page in the <a href="https://github.com/mixpeek/amux">amux repository</a>.</p>
+
+    <h2>Self-hosted amux</h2>
+    <ul>
+      <li>There is no amux account, and amux sends us no usage data, analytics or crash reports.</li>
+      <li>Your workers, board, notes and files stay in <code>~/.amux</code> and your own folders.</li>
+      <li>The installer and updates download amux from GitHub. The agent CLIs you run (Claude Code, Codex, Gemini CLI) talk to their own providers under those providers' terms.</li>
+      <li>Optional features you turn on, such as calendar sync to your own S3 bucket, connect only where you point them.</li>
+    </ul>
+
+    <h2>amux Cloud: your own server</h2>
+    <ul>
+      <li><strong>One server per customer.</strong> Each customer gets a dedicated Hetzner server at <code>yourname.amux.io</code>, in Falkenstein or Nuremberg (Germany) or Helsinki (Finland). It is shared with no one.</li>
+      <li><strong>Your data stays on it.</strong> Workers, files, the board, notes, schedules and model keys (your Claude, ChatGPT or Gemini sign-in, or API keys) are stored on that server only. Code and prompts never pass through an amux service.</li>
+      <li><strong>A sign-in gate in front of everything.</strong> Every request to the server goes through its sign-in gate first, over TLS with a Let's Encrypt certificate that renews automatically.</li>
+      <li><strong>Three open ports.</strong> The firewall allows only 22 (SSH), 80 (certificate checks and the redirect to HTTPS) and 443 (HTTPS).</li>
+      <li><strong>Public code, automatic updates.</strong> Each server updates itself hourly to the newest amux build that passed CI on the public repository's main branch, and rolls back if the new build does not come up healthy.</li>
+    </ul>
+
+    <h2>Signup and payment</h2>
+    <ul>
+      <li>Stripe Checkout takes the payment. We never see your card number.</li>
+      <li>Your password is hashed in your browser (scrypt) before it is sent. We never receive the password itself. The hash is kept in the Stripe order only until your server is built, then it is removed.</li>
+      <li>Your email address is stored with Stripe and on your server, where it is your sign-in name. We use it for the "server ready" email, billing links and account messages.</li>
+    </ul>
+
+    <h2>What the amux team can technically reach</h2>
+    <p>Being specific about this matters more than sounding reassuring:</p>
+    <ul>
+      <li><strong>The hosting console.</strong> We hold the Hetzner account, so we can use Hetzner's console, rescue mode and snapshots for any Cloud server. That is the same level of access any hosting company has to the machines it rents out. We keep no SSH key on customer servers, and the server image is built with every SSH key removed.</li>
+      <li><strong>Sign-in links.</strong> Our signup service holds a key that can create two-minute sign-in links for a server. It uses them for Sign in with Apple in the iOS app.</li>
+      <li><strong>Usage counts.</strong> Since October 21, 2026 our signup service reads a usage report from each server once an hour, so we can spot customers stuck in setup and fix problems early. It contains counts and yes/no answers only: sign-ins and failed sign-ins, which model providers are connected, worker counts, tokens used today, the number of board cards and schedules, error counts, disk use and the amux version.</li>
+      <li><strong>What the report never contains:</strong> messages, prompts, file or worker names, paths, email addresses, card titles, schedule commands, keys or tokens.</li>
+    </ul>
+
+    <h2>Backups and deletion</h2>
+    <ul>
+      <li>Hetzner takes a daily backup of each Cloud server and keeps the last seven.</li>
+      <li><strong>Canceling</strong> keeps a final snapshot for 30 days, so re-subscribing with the same email restores your data. After 30 days the snapshot is deleted.</li>
+      <li><strong>Deleting your account</strong> (from Settings on your server, or at <a href="/start/delete/">amux.io/start/delete</a>) ends the subscription and erases the server, its address, its backups and its snapshots right away, with no 30-day copy.</li>
+    </ul>
+
+    <h2>The amux.io website</h2>
+    <p>amux.io uses PostHog analytics to see which pages lead people to star the repository or sign up. The <a href="/privacy/">privacy policy</a> lists exactly what it records.</p>
+
+    <h2>Reporting a vulnerability</h2>
+    <p>Email <a href="mailto:info@mixpeek.com">info@mixpeek.com</a> or open a <a href="https://github.com/mixpeek/amux/security/advisories/new">GitHub security advisory</a>, as the <a href="https://github.com/mixpeek/amux/blob/main/SECURITY.md">security policy</a> describes. Please do not open a public issue for a vulnerability.</p>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-bottom">
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="/demos/">Demos</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/privacy/">Privacy</a>
+          <a href="/terms/">Terms</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

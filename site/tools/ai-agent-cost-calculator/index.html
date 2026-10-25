@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -22,7 +22,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"AI Coding Agent Cost Calculator","description":"Interactive calculator for estimating AI coding agent costs in 2026. Compare Max plans vs API keys, model routing savings, and parallel agent fleet spend.","url":"https://amux.io/tools/ai-agent-cost-calculator/","applicationCategory":"DeveloperApplication","operatingSystem":"Web","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Tools","item":"https://amux.io/tools/"},{"@type":"ListItem","position":3,"name":"AI Agent Cost Calculator","item":"https://amux.io/tools/ai-agent-cost-calculator/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How much does it cost to run Claude Code per month?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Max costs $100/month (Sonnet-only, 5x Pro usage) or $200/month (Opus + Sonnet, 20x Pro usage). With API keys, a solo developer typically spends $50-400/month depending on usage intensity. Running 10 parallel agents overnight costs $30-150 per 8-hour session with model routing."}},{"@type":"Question","name":"Is Claude Code Max or API keys cheaper?","acceptedAnswer":{"@type":"Answer","text":"Max is cheaper if you use one agent for 4+ hours daily. API keys are cheaper for parallel agent fleets (5+ agents) because you can route 80% of tasks to Sonnet ($3/M input tokens) and reserve Opus ($15/M input tokens) for complex reasoning — something Max doesn't let you control."}},{"@type":"Question","name":"How much does it cost to run 10 AI agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With API keys and model routing (80% Sonnet, 20% Opus): $50-120 for an 8-hour overnight run. Pure Sonnet: $30-80. Pure Opus: $150-400. With a Max plan, it's included in your subscription but you'll hit rate limits with 10+ concurrent sessions."}},{"@type":"Question","name":"What is the biggest hidden cost of AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Context re-reading. Every time an agent reads a file it has already seen, you pay for those input tokens again. After context compaction, agents re-read everything from scratch. Studies show 60-80% of agent token spend is redundant re-reading. The second biggest hidden cost is circular loops — agents retrying the same approach repeatedly."}},{"@type":"Question","name":"How do I reduce my AI coding agent costs?","acceptedAnswer":{"@type":"Answer","text":"Three high-impact strategies: (1) Model routing — use Sonnet for 80% of tasks, Opus only for complex reasoning (saves 50-65%). (2) Reduce context waste — write focused CLAUDE.md files, use compact context, avoid large file reads. (3) Track per-session spend with tools like amux to identify wasteful agents and kill runaway sessions."}}]}</script>
@@ -145,7 +144,7 @@
     margin-top: 4px;
   }
   .result-num.savings { color: var(--green); }
-  .result-num.warning { color: oklch(0.80 0.18 65); }
+  .result-num.warning { color: light-dark(oklch(0.48 0.150 65.0), oklch(0.80 0.18 65)); }
 
   .versus {
     display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px;
@@ -322,18 +321,28 @@
   .preset-btn:hover { border-color: var(--amber); color: var(--text); }
   .preset-btn.active { border-color: var(--amber); color: var(--text); background: oklch(0.82 0.17 85 / 0.1); }
 </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -604,10 +613,12 @@ amux serve  <span style="color:var(--muted);"># &rarr; https://localhost:8824</s
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

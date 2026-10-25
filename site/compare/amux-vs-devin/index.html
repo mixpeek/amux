@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,22 +20,31 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Devin","item":"https://amux.io/compare/amux-vs-devin/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Devin 2026","description":"Full comparison of amux open-source AI agent fleet and Devin managed autonomous engineer — cost, control, parallelism, and use cases.","datePublished":"2026-07-29","dateModified":"2026-10-07","author":{"@type":"Organization","name":"amux"},"about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux cheaper than Devin?","acceptedAnswer":{"@type":"Answer","text":"Yes, significantly. Devin costs $500/month for the Teams plan (250 Agent Compute Units). amux is free and open source — you pay only for the underlying API tokens (Claude Code, Codex, or Gemini CLI). Heavy parallel use typically costs $10–50/month in API tokens. For the same $500 Devin budget, amux users run 50–200 agent-sessions per month."}},{"@type":"Question","name":"What is the open-source alternative to Devin?","acceptedAnswer":{"@type":"Answer","text":"amux is the leading open-source alternative for teams that want autonomous AI engineering at scale. Instead of one managed agent in a cloud sandbox, amux runs a fleet of 10–50 Claude Code, Codex, or Gemini CLI sessions simultaneously on your own machine — with a shared kanban board, self-healing watchdog, and iOS app for phone management. MIT licensed, single Rust binary, zero external dependencies."}},{"@type":"Question","name":"Can amux run as many tasks as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux runs significantly more tasks in parallel than Devin. Devin handles one task at a time per session. amux runs 10–50 parallel agent sessions simultaneously — each an independent coding agent working on a different task from the shared kanban board. With amux, a solo developer can wake up to 20-50 completed tasks instead of one."}},{"@type":"Question","name":"Does amux have the same level of autonomy as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux provides comparable autonomy through Claude Code, Codex, or Gemini CLI agents — which are themselves state-of-the-art autonomous coding systems. The key difference is that amux adds fleet orchestration, self-healing (auto-compact, auto-restart, NEEDS INPUT watchdog), and overnight operation on top of these agents. Devin provides a more turnkey managed experience with built-in Slack/Jira integrations. For raw coding autonomy, Claude Code via amux matches or exceeds Devin on most benchmark tasks."}},{"@type":"Question","name":"Can I use amux and Devin together?","acceptedAnswer":{"@type":"Answer","text":"Yes. A common pattern: use Devin for high-stakes, client-facing tasks where you want a fully managed, auditable record with Slack notifications. Run amux with 20 background agents simultaneously on the rest of your backlog — feature work, tests, documentation, refactors. Both can share a GitHub repo. The fleet output from amux often exceeds what Devin produces in the same time window, at a fraction of the cost."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -45,22 +54,18 @@
     <p class="subtitle">Open-source AI agent fleet vs. managed autonomous engineer — cost, control, and parallel output compared. Updated October 2026.</p>
 
     <!-- Answer box -->
-    <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.125rem 1.25rem;margin:1.5rem 0">
+    <div style="background:var(--bg-2,var(--panel));border:1px solid var(--line,var(--panel-3));border-radius:8px;padding:1.125rem 1.25rem;margin:1.5rem 0">
       <p style="margin:0;font-size:.95rem;line-height:1.65"><strong>The short answer:</strong> Devin is a fully managed, zero-setup autonomous engineer — one task at a time, $500/month, cloud sandbox. amux is an open-source control plane that runs a fleet of 10–50 Claude Code, Codex, or Gemini CLI agents simultaneously on your own machine, at $10–50/month in API tokens. If you want maximum parallel throughput, local file access, and full control, choose amux. If you want a turnkey managed product with Slack integrations and no setup, Devin is worth the premium.</p>
     </div>
 
     <!-- EXP-120: /compare/amux-vs-devin/ top-of-page CTA October 2026 -->
-    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">Run 50 coding tasks overnight for under $50 — workspace isolation, vault secrets, standing approvals. No $500/month plans. 514+ stars, MIT licensed.</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp120_devin_compare_topofpage_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
-    </div>
 
     <!-- Quick pick cards -->
     <h2>Which one is right for you?</h2>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0 2rem">
-      <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.125rem 1.25rem">
+      <div style="background:var(--bg-2,var(--panel));border:1px solid var(--line,var(--panel-3));border-radius:8px;padding:1.125rem 1.25rem">
         <div style="font-weight:700;font-size:.95rem;margin-bottom:.75rem;color:var(--fg,#e2e8f0)">Choose Devin if...</div>
-        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,#8892a4)">
+        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,var(--fg-mute))">
           <li>You want zero local setup — just sign up and go</li>
           <li>Your workflow lives in Slack, Jira, or Linear</li>
           <li>You want session replay and a polished audit trail</li>
@@ -69,9 +74,9 @@
           <li>You need the agent to browse the web during the task</li>
         </ul>
       </div>
-      <div style="background:var(--bg-2,#1a1f2e);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1.125rem 1.25rem">
-        <div style="font-weight:700;font-size:.95rem;margin-bottom:.75rem;color:#6ee7b7">Choose amux if...</div>
-        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,#8892a4)">
+      <div style="background:var(--bg-2,var(--panel));border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1.125rem 1.25rem">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:.75rem;color:var(--c-green)">Choose amux if...</div>
+        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,var(--fg-mute))">
           <li>You want 10–50 tasks running in parallel overnight</li>
           <li>Your codebase is local and the agent needs full filesystem access</li>
           <li>You need to switch between Claude Code, Codex, and Gemini CLI</li>
@@ -87,86 +92,86 @@
     <div style="overflow-x:auto;margin:1rem 0 2rem">
       <table style="width:100%;border-collapse:collapse;font-size:.875rem">
         <thead>
-          <tr style="background:var(--bg-2,#1a1f2e)">
-            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">Feature</th>
-            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600;color:#6ee7b7">amux</th>
-            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600;color:var(--fg-mute,#8892a4)">Devin</th>
+          <tr style="background:var(--bg-2,var(--panel))">
+            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,var(--panel-3));font-weight:600">Feature</th>
+            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,var(--panel-3));font-weight:600;color:var(--c-green)">amux</th>
+            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,var(--panel-3));font-weight:600;color:var(--fg-mute,var(--fg-mute))">Devin</th>
           </tr>
         </thead>
         <tbody>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Hosting</td>
             <td style="padding:.6rem .875rem;text-align:center">Your machine (local-first)</td>
             <td style="padding:.6rem .875rem;text-align:center">Cognition cloud (Ubuntu sandbox)</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Parallel agent sessions</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">10–50+ simultaneously</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">10–50+ simultaneously</td>
             <td style="padding:.6rem .875rem;text-align:center">1 task at a time</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Pricing</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Free + API tokens ($10–50/mo typical)</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Free + API tokens ($10–50/mo typical)</td>
             <td style="padding:.6rem .875rem;text-align:center">$500/month (Teams), Enterprise custom</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Underlying model</td>
             <td style="padding:.6rem .875rem;text-align:center">Claude Code, Codex, Gemini CLI (your choice)</td>
             <td style="padding:.6rem .875rem;text-align:center">Proprietary Cognition model</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Local file / environment access</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Full access to your local machine</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Full access to your local machine</td>
             <td style="padding:.6rem .875rem;text-align:center">Isolated cloud sandbox only</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Self-healing watchdog</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Auto-compact, restart, unstick NEEDS INPUT</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Auto-compact, restart, unstick NEEDS INPUT</td>
             <td style="padding:.6rem .875rem;text-align:center">Proprietary recovery (managed)</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Mobile management</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">iOS app + PWA (native fleet control)</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">iOS app + PWA (native fleet control)</td>
             <td style="padding:.6rem .875rem;text-align:center">Slack notifications</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Open source</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Yes — MIT + Commons Clause, single Rust binary</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Yes — MIT + Commons Clause, single Rust binary</td>
             <td style="padding:.6rem .875rem;text-align:center">No — proprietary SaaS</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Setup time</td>
-            <td style="padding:.6rem .875rem;text-align:center">~5 minutes (brew install amux)</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Zero (SaaS, sign up and go)</td>
+            <td style="padding:.6rem .875rem;text-align:center">~5 minutes (curl -fsSL https://amux.io/install.sh | bash)</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Zero (SaaS, sign up and go)</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Web browsing during task</td>
             <td style="padding:.6rem .875rem;text-align:center">Via browser automation tab</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Native (built-in browser)</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Native (built-in browser)</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Slack / Jira / Linear integrations</td>
             <td style="padding:.6rem .875rem;text-align:center">Via scheduler + board webhooks</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Native, built-in</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Native, built-in</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Session replay / audit</td>
             <td style="padding:.6rem .875rem;text-align:center">Event-sourced execution log + scrollback</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Full session replay (polished UI)</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Full session replay (polished UI)</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))">
             <td style="padding:.6rem .875rem;font-weight:500">Vendor lock-in</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">None — switch runtimes freely</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">None — switch runtimes freely</td>
             <td style="padding:.6rem .875rem;text-align:center">Proprietary model + platform</td>
           </tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))">
             <td style="padding:.6rem .875rem;font-weight:500">Kanban board, CRM, email, scheduler</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">Built-in</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">Built-in</td>
             <td style="padding:.6rem .875rem;text-align:center">Task-focused only</td>
           </tr>
           <tr>
             <td style="padding:.6rem .875rem;font-weight:500">Overnight / unattended operation</td>
-            <td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">First-class — self-healing designed for this</td>
+            <td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">First-class — self-healing designed for this</td>
             <td style="padding:.6rem .875rem;text-align:center">Yes (managed)</td>
           </tr>
         </tbody>
@@ -178,9 +183,9 @@
     <p>This is where the gap is widest. For a developer running 20 tasks per week:</p>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0 1.5rem">
-      <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.125rem 1.25rem">
-        <div style="font-weight:700;font-size:.95rem;margin-bottom:.5rem;color:var(--fg-mute,#8892a4)">Devin — $500/month</div>
-        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,#8892a4)">
+      <div style="background:var(--bg-2,var(--panel));border:1px solid var(--line,var(--panel-3));border-radius:8px;padding:1.125rem 1.25rem">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:.5rem;color:var(--fg-mute,var(--fg-mute))">Devin — $500/month</div>
+        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,var(--fg-mute))">
           <li>250 ACU (Agent Compute Units) per month</li>
           <li>~$2/ACU effective cost</li>
           <li>A medium task uses 5–20 ACU → 12–50 tasks/month</li>
@@ -188,9 +193,9 @@
           <li>Runs one task at a time</li>
         </ul>
       </div>
-      <div style="background:var(--bg-2,#1a1f2e);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1.125rem 1.25rem">
-        <div style="font-weight:700;font-size:.95rem;margin-bottom:.5rem;color:#6ee7b7">amux — $10–50/month typical</div>
-        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,#8892a4)">
+      <div style="background:var(--bg-2,var(--panel));border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:1.125rem 1.25rem">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:.5rem;color:var(--c-green)">amux — $10–50/month typical</div>
+        <ul style="margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.9;color:var(--fg-mute,var(--fg-mute))">
           <li>Free platform — only pay for API tokens</li>
           <li>Claude Sonnet: ~$3/MTok input, $15/MTok output</li>
           <li>A typical coding session: $0.50–$5</li>
@@ -240,20 +245,20 @@
     <div style="overflow-x:auto;margin:1rem 0 2rem">
       <table style="width:100%;border-collapse:collapse;font-size:.875rem">
         <thead>
-          <tr style="background:var(--bg-2,#1a1f2e)">
-            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">Situation</th>
-            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">Best pick</th>
+          <tr style="background:var(--bg-2,var(--panel))">
+            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,var(--panel-3));font-weight:600">Situation</th>
+            <th style="text-align:center;padding:.625rem .875rem;border-bottom:2px solid var(--line,var(--panel-3));font-weight:600">Best pick</th>
           </tr>
         </thead>
         <tbody>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)"><td style="padding:.6rem .875rem">I want zero local setup</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)"><td style="padding:.6rem .875rem">I want to run 20+ tasks overnight</td><td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">amux</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)"><td style="padding:.6rem .875rem">I need Slack/Jira/Linear task assignment</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)"><td style="padding:.6rem .875rem">I have a large local codebase</td><td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">amux</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)"><td style="padding:.6rem .875rem">My budget is under $100/month</td><td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">amux</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)"><td style="padding:.6rem .875rem">I want to manage agents from my iPhone</td><td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">amux</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040)"><td style="padding:.6rem .875rem">I need a polished session replay for clients</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
-          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)"><td style="padding:.6rem .875rem">I want to switch between AI models freely</td><td style="padding:.6rem .875rem;text-align:center;color:#6ee7b7;font-weight:600">amux</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))"><td style="padding:.6rem .875rem">I want zero local setup</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))"><td style="padding:.6rem .875rem">I want to run 20+ tasks overnight</td><td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">amux</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))"><td style="padding:.6rem .875rem">I need Slack/Jira/Linear task assignment</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))"><td style="padding:.6rem .875rem">I have a large local codebase</td><td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">amux</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))"><td style="padding:.6rem .875rem">My budget is under $100/month</td><td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">amux</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))"><td style="padding:.6rem .875rem">I want to manage agents from my iPhone</td><td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">amux</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3))"><td style="padding:.6rem .875rem">I need a polished session replay for clients</td><td style="padding:.6rem .875rem;text-align:center;color:var(--fg-mute)">Devin</td></tr>
+          <tr style="border-bottom:1px solid var(--line,var(--panel-3));background:var(--bg-2,var(--panel))"><td style="padding:.6rem .875rem">I want to switch between AI models freely</td><td style="padding:.6rem .875rem;text-align:center;color:var(--c-green);font-weight:600">amux</td></tr>
           <tr><td style="padding:.6rem .875rem">I want both managed and fleet options</td><td style="padding:.6rem .875rem;text-align:center">Both</td></tr>
         </tbody>
       </table>
@@ -315,7 +320,7 @@
     <div class="cta-box">
       <h3>Try amux — free and open source</h3>
       <p>Run an AI engineering team from one dashboard. Claude Code, Codex, Gemini CLI — all from your phone or browser. Self-healing built in.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -359,10 +364,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

@@ -140,7 +140,25 @@ async fn refuse_isolated_caller(
     let headers = req.headers();
     if super::org::local_member_actor(headers).is_none() {
         let name = crate::api::groups::hdr_worker(headers);
-        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name) {
+        // An admin-group worker keeps the board even when isolated (Ethan, 2026-10-17).
+        // A worker with every Board tab switch off has no board either (same day:
+        // "if all these are off, the board is not used").
+        let unused = !name.is_empty() && !crate::api::session_verbs::session_is_isolated(&name)
+            && crate::api::board_lifecycle::board_unused(&name)
+            && !crate::api::session_verbs::is_admin_worker(&name);
+        if unused {
+            tracing::info!(target: "amux::board", session = %name, method = %req.method(), path = %req.uri().path(),
+                measured = true, n_considered = 1, verdict = "board_unused_refused",
+                "board: refused a request from a worker whose board switches are all off");
+            return err(StatusCode::FORBIDDEN, json!({
+                "error": format!("'{name}' has every board switch off, so it has no board"),
+                "code": "board_off",
+                "how": "Keep task state in your own files. The owner can turn the board back on in the worker's Board tab.",
+            }));
+        }
+        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name)
+            && !crate::api::session_verbs::is_admin_worker(&name)
+        {
             tracing::info!(
                 target: "amux::board",
                 session = %name,
@@ -969,9 +987,25 @@ async fn board_changes(
         }
     };
 
-    match crate::runtime_jobs::cdc_poller::changes_since(&conn, since_seq, limit) {
-        Ok(rows) => {
-            let cursor = crate::runtime_jobs::cdc_poller::last_seq();
+    // The rows and the head come from ONE read snapshot. Read as two
+    // statements, a write landing between them gave a cursor past rows this
+    // response never carried, and the client skipped those cards for good: a
+    // burst of five creates converged on zero (golden_realtime_convergence in
+    // CI). The head is read from the log, not the poller, whose copy trails by
+    // up to one 200ms tail, reads 0 after a restart, and is taken at yet
+    // another moment.
+    let read = conn.unchecked_transaction().and_then(|tx| {
+        let rows = crate::runtime_jobs::cdc_poller::changes_since(&tx, since_seq, limit)?;
+        let head: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) FROM board_change_log", [], |r| r.get(0))?;
+        Ok((rows, head))
+    });
+    match read {
+        Ok((rows, head)) => {
+            let poller = crate::runtime_jobs::cdc_poller::last_seq();
+            if poller > head {
+                tracing::warn!(verdict = "board_changes_poller_ahead", poller, head, "poller cursor is past the log head it reads");
+            }
+            let cursor = head;
             Json(json!({
                 "changes": rows,
                 "cursor": cursor,
@@ -1678,6 +1712,11 @@ async fn get_contract(
                           you add done_limit=0 or all=1. Added for the dashboard's collapsed \
                           Archived (N) header, where shipping the set to render a number cost \
                           a measured +38% on the board poll (AMUX-3715)",
+                "ids": "A-1,B-2 = the same list restricted to these cards, under every other \
+                        filter, with no terminal cap. An id that does not come back has left \
+                        this view (archived, deleted, out of scope). x-amux-ids-asked says the \
+                        filter ran. The dashboard's change feed patches changed cards with it \
+                        in one read instead of one GET per card",
             },
             // NOT a filter — descriptive metadata about what `slim` DROPS, so it
             // lives outside `filters`. It sat inside `filters` from 64a9cb7d until
@@ -2448,7 +2487,10 @@ fn hhmm() -> String {
 /// fixes every already-installed CLI copy at once, and closes both effects
 /// together, whereas patching curl lines fixes only the machines that upgrade.
 fn actor_from_headers(headers: &HeaderMap) -> (Actor, String) {
-    match super::org::local_member_actor(headers)
+    // An automated policy names itself first: it is never the owner and never
+    // a worker, and `api-anonymous` is what an owner's dashboard click reads as.
+    match super::org::policy_actor(headers)
+        .or_else(|| super::org::local_member_actor(headers))
         .map(str::to_string)
         .or_else(|| Some(crate::api::groups::hdr_worker(headers)))
         .map(|s| s.trim().to_string())
@@ -4080,6 +4122,14 @@ pub struct ListParams {
     // either changed.
     #[serde(default)]
     pub count: Option<String>,
+    // `?ids=A-1,B-2` — the same list, restricted to these cards. The dashboard's
+    // change feed names the cards that moved; it fetched each one with its own
+    // GET, in sequence, so a busy minute cost one round trip per card. Every
+    // other filter still applies, so an id that does not come back has left the
+    // caller's view (archived, deleted, out of scope) rather than gone missing.
+    // The terminal cap does not apply: a named card is a bounded question.
+    #[serde(default)]
+    pub ids: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
@@ -4132,6 +4182,7 @@ const RECOGNISED_BOARD_PARAMS: &[&str] = &[
     "full",
     "quota",
     "count",
+    "ids",
     "limit",
     "offset",
     "q",
@@ -4552,7 +4603,7 @@ pub async fn list_board(
                 "use_instead": format!("/api/search?q={term}"),
                 "why": "This param was silently ignored until 2026-08-11, so the full board came \
                         back looking like ranked results. Refusing loudly beats answering wrongly.",
-                "board_filters": ["status", "session", "archived", "done_limit", "all", "slim", "full", "quota", "count", "limit", "offset"],
+                "board_filters": ["status", "session", "archived", "done_limit", "all", "slim", "full", "quota", "count", "ids", "limit", "offset"],
             })),
         )
             .into_response();
@@ -4660,6 +4711,17 @@ pub async fn list_board(
         bs::Prose::Full
     };
     let quota = qp_truthy(p.quota.as_deref());
+    let ids: Option<Vec<String>> = p.ids.as_deref().map(|s| {
+        let mut v: Vec<String> = s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    });
+    let ids_asked = ids.as_ref().map(|v| v.len());
     let store = state.store.clone();
     let list_started = std::time::Instant::now();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
@@ -4681,7 +4743,13 @@ pub async fn list_board(
         // ?quota=1 swaps the lumped cap for per-status quotas (AMUX-3503);
         // quota has no single truncation count, so it reports (0, 0) and
         // the truncation warn/headers stay silent for it.
-        let (kept, term_total, term_kept) = if quota {
+        let (kept, term_total, term_kept) = if let Some(ids) = ids.as_deref() {
+            (
+                bs::list_issues_by_ids(&conn, &status_f, &session_f, archived, ids, prose)?,
+                0,
+                0,
+            )
+        } else if quota {
             (
                 bs::list_issues_quota(
                     &conn,
@@ -4859,6 +4927,11 @@ pub async fn list_board(
     put(&mut headers, "x-amux-total", total.to_string());
     put(&mut headers, "x-amux-offset", offset.to_string());
     put(&mut headers, "x-amux-returned", items.len().to_string());
+    // Says the ids filter RAN, so a client talking to an older server (which
+    // drops the param and answers with the whole board) can tell the two apart.
+    if let Some(n) = ids_asked {
+        put(&mut headers, "x-amux-ids-asked", n.to_string());
+    }
     // BACKE-3228: announce any query params we ignored, so a filter typo cannot
     // masquerade as an empty/absent result. Non-breaking (informational header).
     if !ignored.is_empty() {
@@ -5687,7 +5760,7 @@ pub async fn create_item(
         let allowed = match rule9 {
             Some(peer) => !peer,
             None => bs::board_delegation_allowed(Some(&hdr_session)) && bs::board_delegation_allowed(Some(target)),
-        };
+        } || super::session_verbs::speaks_for_owner(&hdr_session);
         if !allowed {
             tracing::warn!(marker="board_delegation_refused", requester=%hdr_session, target_lane=%target,
                 measured=true, n_considered=1, "worker owns its outcome; cross-board assignment refused");
@@ -5763,7 +5836,9 @@ pub async fn create_item(
             );
         }
     }
-    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session {
+    if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session
+        && !super::session_verbs::speaks_for_owner(&hdr_session)
+    {
         tracing::warn!(
             caller = %hdr_session,
             requested_owner = %(if session.is_empty() { "(unassigned)" } else { session.as_str() }),
@@ -7033,6 +7108,11 @@ pub async fn get_item(
             let mut body = detail_body(&row);
             body["children"] = json!(children);
             body["messages"] = json!(messages);
+            // Owner notes on the ask that is open now: what any answer to it
+            // must carry (gs12 review finding 2).
+            if bs::parse_status(&row.status) == Some(TaskStatus::NeedsYou) {
+                body["ask_owner_notes"] = json!(bs::owner_notes_since_ask(row.log.as_deref().unwrap_or("")));
+            }
             body["artifacts"] = json!(artifacts);
             body["asset_links"] = json!(asset_links);
             body["gate_requirements"] = json!(gate_requirements);
@@ -8991,7 +9071,7 @@ mod overlap_reconciliation_tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::api::settings::test_env::set_home(home.path());
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
-        std::fs::write(home.path().join("sessions/handoff-producer-0907.env"), "CC_TAGS=test\n").unwrap();
+        std::fs::write(home.path().join("sessions/handoff-producer-0907.env"), "CC_TAGS=test\nCC_AUTO_PICKUP=1\n").unwrap();
         let db = store();
         let producer = seed_card(&db, "handoff-producer-0907");
         let consumer = seed_card(&db, "handoff-consumer-0907");
@@ -9026,7 +9106,7 @@ mod overlap_reconciliation_tests {
         // worker's env file or whichever AMUX_HOME another test selected.
         std::fs::write(
             home.path().join("sessions/handoff-consumer-0907.env"),
-            "CC_TAGS=\"test\"\n",
+            "CC_TAGS=\"test\"\nCC_AUTO_PICKUP=1\n",
         )
         .unwrap();
         let (status, reply) = post(&app, "handoff-producer-0907", payload.clone()).await;
@@ -9080,7 +9160,7 @@ mod overlap_reconciliation_tests {
         for worker in ["handoff-producer-0907", "handoff-consumer-0907"] {
             std::fs::write(
                 home.path().join(format!("sessions/{worker}.env")),
-                "CC_TAGS=\"test\"\n",
+                "CC_TAGS=\"test\"\nCC_AUTO_PICKUP=1\n",
             )
             .unwrap();
         }
@@ -9227,7 +9307,7 @@ mod overlap_reconciliation_tests {
         let _home = crate::api::settings::test_env::set_home(dir.path());
         std::fs::create_dir_all(dir.path().join("sessions")).expect("sessions");
         std::fs::write(dir.path().join("sessions/raw.env"), "CC_ISOLATED=\"1\"\n").expect("w");
-        std::fs::write(dir.path().join("sessions/normal.env"), "CC_TAGS=\"amux\"\n").expect("w");
+        std::fs::write(dir.path().join("sessions/normal.env"), "CC_TAGS=\"amux\"\nCC_AUTO_PICKUP=1\n").expect("w");
         assert!(crate::api::session_verbs::session_is_isolated("raw"), "premise");
         assert!(!crate::api::session_verbs::session_is_isolated("normal"), "premise");
 
@@ -10895,11 +10975,23 @@ pub async fn patch_item(
     // Fixed at the guard site (AF-701), not here: `caller_lane` still needs
     // to read "" for every other caller (notify targets, log lines) that
     // legitimately treats an anonymous/local-member caller as unnamed.
-    let caller_lane = if actor_name == "api-anonymous" || is_local_member {
+    // An automated policy is not a lane either: it keeps the unnamed caller's
+    // treatment everywhere a lane name drives a decision, and its own name in
+    // every log line (gs12 review finding 2).
+    let policy_caller = super::org::policy_actor(&headers).is_some();
+    let caller_lane = if actor_name == "api-anonymous" || is_local_member || policy_caller {
         String::new()
     } else {
         actor_name.clone()
     };
+    // WHO COUNTS AS THE OWNER FOR A NOTE ON AN OPEN ASK. The owner writes from
+    // the dashboard (unnamed or a verified member), from a worker's Chat tab,
+    // or from an admin-group worker; a peer lane's note and the policy's own
+    // note are not his. Computed here because `speaks_for_owner` reads env
+    // files, which does not belong inside the write closure.
+    let owner_side_note = !policy_caller
+        && map.contains_key("desc_append")
+        && (caller_lane.is_empty() || crate::api::session_verbs::speaks_for_owner(&caller_lane));
 
     // AMUX-5270: the TRANSITION door into needsyou gets the same standing-
     // approval check as the create door (one predicate, both doors, the
@@ -11112,7 +11204,9 @@ pub async fn patch_item(
             // able to reassign, while a verified worker may only name itself as
             // the destination. Peer collaboration belongs in reviewer,
             // shepherd, and evidence references instead of cross-board ownership or dependency edges.
-            if !caller_lane.is_empty() && map.contains_key("session") {
+            if !caller_lane.is_empty() && map.contains_key("session")
+                && !super::session_verbs::speaks_for_owner(&caller_lane)
+            {
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());
@@ -11195,6 +11289,8 @@ pub async fn patch_item(
             //   {desc: "text", desc_append: true} -> old + "\n" + text
             //   {desc_append: false}              -> plain replace semantics
             let mut appended_note: Option<String> = None;
+            // The whole note, for an owner note on an open ask (below).
+            let mut appended_full: Option<String> = None;
             let desc_effective: Option<String> = match map.get("desc_append") {
                 None | Some(Value::Bool(false)) => body_str(&map, "desc"),
                 Some(v) => {
@@ -11207,6 +11303,7 @@ pub async fn patch_item(
                         Some(t) if !t.is_empty() => {
                             // Kept for the AVE-36 owner notice below.
                             appended_note = Some(t.trim().chars().take(400).collect());
+                            appended_full = Some(t.trim().to_string());
                             let old = next.desc.trim_end();
                             Some(if old.is_empty() {
                                 t.trim().to_string()
@@ -14129,7 +14226,18 @@ pub async fn patch_item(
                                     "force by {force_actor}: {from_raw}->{target_raw} reason={reason}"
                                 )
                             } else {
-                                format!("{actor_name}: {from_raw} -> {target_raw}")
+                                // WHO ANSWERED AN ASK goes on the line that
+                                // records the answer: an owner click and the
+                                // policy both arrive unnamed or server-side,
+                                // and `authorized_by` is what tells them apart.
+                                let authz = map
+                                    .get("authorized_by")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|a| !a.is_empty() && from_raw == "needsyou")
+                                    .map(|a| format!(" (authorized_by: {})", chars_truncate_log(a, 80)))
+                                    .unwrap_or_default();
+                                format!("{actor_name}: {from_raw} -> {target_raw}{authz}")
                             };
                             next.log = Some(bs::append_log(next.log.as_deref(), &stamp, &line));
                             // AMUX-3607, Ethan's 2026-08-05 directive: every
@@ -14543,6 +14651,28 @@ pub async fn patch_item(
                         &hhmm(),
                         &format!("{actor_name}: {}", parts.join(", ")),
                     ));
+                }
+            }
+            // AN OWNER NOTE ON AN OPEN ASK IS PART OF ITS ANSWER (gs12 review
+            // finding 2, MG-2017). Recorded with its author on the card's log,
+            // because the desc cannot say whose a line is, and every approval
+            // of this ask then carries it (`owner_notes_since_ask`). Only while
+            // the card stays in needsyou: the note in the PATCH that answers
+            // and moves the card is the answer itself, delivered already.
+            if owner_side_note
+                && row.session.as_deref() != Some(actor_name.as_str())
+                && bs::parse_status(&row.status) == Some(TaskStatus::NeedsYou)
+                && bs::parse_status(&next.status) == Some(TaskStatus::NeedsYou)
+            {
+                if let Some(note) = appended_full.as_deref().filter(|n| !n.is_empty()) {
+                    next.log = Some(bs::append_log(
+                        next.log.as_deref(),
+                        &hhmm(),
+                        &bs::ask_note_log_line(&actor_name, note),
+                    ));
+                    tracing::info!(card = %next.id, author = %actor_name, chars = note.chars().count(),
+                        measured = true, n_considered = 1, verdict = "ask_owner_note_recorded",
+                        "an owner-side note on an open ask was recorded; every approval of this ask carries it");
                 }
             }
 
@@ -15310,7 +15440,7 @@ pub async fn patch_item(
                     crate::db::interactions::spawn(async move {
                         let _ =
                             crate::runtime_jobs::board_drive::drive_session(&st, &session).await;
-                        crate::api::session_verbs::steer_deliver_for_session(&st, &session).await;
+                        crate::api::session_verbs::steer_deliver_at_boundary(&st, &session, "board-card-closed").await;
                     });
                 }
             }

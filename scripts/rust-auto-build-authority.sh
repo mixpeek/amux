@@ -15,6 +15,16 @@ mkdir -p "$(dirname "$LOG")"
 
 say() { echo "== !! ACTIVATION AUTHORITY $*" >> "$LOG"; }
 refuse() { say "REFUSED — $*"; exit 0; }
+# The gate's last verdict, as JSON, for readers outside this log (`amux
+# requests` says why a landed fix is not live). Written by rename so a reader
+# never sees half a file; a failed write costs the reader its explanation only.
+GATE_STATE="${AMUX_ACTIVATION_GATE_STATE:-$HOME/.amux/activation-gate.json}"
+gate_state() { # verdict tip tip_state target held
+  local t
+  t=$(mktemp "$GATE_STATE.XXXXXX" 2>/dev/null) || return 0
+  printf '{"at":%s,"verdict":"%s","tip":"%s","tip_state":"%s","target":"%s","held":%s}\n' \
+    "$(date +%s)" "$1" "$2" "$3" "$4" "${5:-0}" > "$t" && mv -f "$t" "$GATE_STATE" || rm -f "$t"
+}
 
 [ -n "$REPO" ] || refuse "AMUX_AUTHORITY_REPO is unset; no checkout may choose the live image"
 tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
@@ -30,7 +40,14 @@ tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
 # final ones are cached per sha so a 60s timer costs about one API call while a
 # run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
 CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts-v2}"  # v2: workflow-run verdicts; v1 judged check runs
-CI_DEPTH="${AMUX_CI_GATE_DEPTH:-40}"
+# How far back the walk looks for a green commit. It was 40, and on 2026-10-24
+# main had 56 commits after its newest green one: the gate refused every tick
+# (ci_gate_no_green), the builder never ran, and a hand-installed build of a
+# 2026-10-07 fork stayed live for hours. Verdicts are cached per sha, so a deep
+# walk costs API calls once. A green found deeper than CI_DEEP_WARN is still
+# activated and logged as ci_gate_green_deep: main has been red that long.
+CI_DEPTH="${AMUX_CI_GATE_DEPTH:-300}"
+CI_DEEP_WARN="${AMUX_CI_GATE_DEEP_WARN:-40}"
 # The push workflow runs for one sha, as GitHub's JSON. AMUX_CI_FETCH_CMD
 # stands in for the network in tests; everything after it (the judging below
 # and the verdict cache) is the shipped path.
@@ -68,6 +85,10 @@ for w in need:
     else: states.append("red")
 for v in ("red","pending","none"):
     if v in states: print(v); raise SystemExit
+# Green only on a re-run means a flaky test let it through: say so where a
+# sweep looks (the builder log), once per commit, since green is cached.
+again=[w+" attempt "+str(r.get("run_attempt",1)) for w in need for r in [sorted([x for x in runs if x["name"]==w], key=lambda x: x["created_at"])[-1]] if r.get("run_attempt",1)>1]
+if again: print("WARN CI-GATE "+runs[0].get("head_sha","?")[:9]+" green only after a re-run ("+", ".join(again)+") verdict=ci_green_after_rerun", file=sys.stderr)
 print("green")'
 }
 ci_verdict() {   # green | red | pending | none | unmeasured
@@ -75,21 +96,24 @@ ci_verdict() {   # green | red | pending | none | unmeasured
   if [ -n "${AMUX_CI_VERDICT_CMD:-}" ]; then "$AMUX_CI_VERDICT_CMD" "$sha"; return; fi
   cached=$(cat "$CI_CACHE/$sha" 2>/dev/null || true)
   case "$cached" in
-    green|none) echo "$cached"; return ;;
-    red)
+    green) echo "$cached"; return ;;
+    red|none)
       # A re-run can turn red green (2026-10-16: 3067a22da's rust run passed on
       # attempt 2 at 11:36, the cache had said red since 11:13, and the gate
       # held a server fix back for an hour while the fleet ran out of quota).
+      # A cancelled run can be re-run too: on 2026-10-24 f83afc792's checks run
+      # was cancelled, its re-run was never read because "none" was cached as
+      # final, and the Mac stayed 79 commits behind main.
       # Ask again every AMUX_CI_RED_RECHECK_S until the commit is a day old.
       local cache_age commit_age
       cache_age=$(python3 -c 'import os,sys,time; print(int(time.time()-os.path.getmtime(sys.argv[1])))' "$CI_CACHE/$sha" 2>/dev/null || echo 0)
       commit_age=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") ))
       if [ "$cache_age" -lt "${AMUX_CI_RED_RECHECK_S:-600}" ] || [ "$commit_age" -gt 86400 ]; then
-        echo red; return
+        echo "$cached"; return
       fi ;;
   esac
   local token v
-  v=$(ci_runs_json "$sha" | ci_judge_runs 2>/dev/null) || v=unmeasured
+  v=$(ci_runs_json "$sha" | ci_judge_runs 2>>"$LOG") || v=unmeasured
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
@@ -138,11 +162,16 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
     [ -n "$tip_state" ] || tip_state="$v"
     if [ "$v" = green ]; then target="$sha"; break; fi
     if [ "$v" = unmeasured ]; then
+      gate_state ci_gate_unmeasured "$tip" unmeasured "" "$passed"
       self_heal_launcher
       refuse "CI-GATE unmeasured for $sha (no App token or GitHub unreachable); keeping the live image verdict=ci_gate_unmeasured"
     fi
     passed=$((passed + 1))
   done
+  if [ -n "$target" ] && [ "$passed" -ge "$CI_DEEP_WARN" ]; then
+    say "WARN CI-GATE newest green $target is $passed first-parent commits behind $REF tip $tip; main has been red or pending that long verdict=ci_gate_green_deep"
+  fi
+  [ -n "$target" ] || gate_state ci_gate_no_green "$tip" "$tip_state" "" "$passed"
   [ -n "$target" ] || refuse "CI-GATE no green commit in the last $CI_DEPTH of $REF (tip $tip is $tip_state); keeping the live image verdict=ci_gate_no_green"
   if [ "$target" != "$tip" ]; then
     # NEVER ROLL BACK. If the live image already contains the newest green
@@ -153,9 +182,13 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("commit_full") or d.get("commit") or "").replace("-dirty",""))' 2>/dev/null || true)
     if [ -n "$live" ] && live_full=$(git -C "$REPO" rev-parse --verify -q "${live}^{commit}" 2>/dev/null) \
        && [ "$live_full" != "$target" ] && git -C "$REPO" merge-base --is-ancestor "$target" "$live_full"; then
+      gate_state ci_gate_no_rollback "$tip" "$tip_state" "$target" "$passed"
       refuse "CI-GATE tip $tip is $tip_state; newest green $target is older than the live image $live_full, holding it rather than rolling back verdict=ci_gate_no_rollback"
     fi
+    gate_state ci_gate_held_back "$tip" "$tip_state" "$target" "$passed"
     say "CI-GATE tip $tip is $tip_state; activating newest green $target ($passed newer commit(s) not yet green) verdict=ci_gate_held_back"
+  else
+    gate_state ci_gate_clear "$tip" green "$tip" 0
   fi
 fi
 

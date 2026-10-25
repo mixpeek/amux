@@ -100,7 +100,7 @@ pub(crate) fn read_doc(root_canon: &Path, file: &Path) -> Result<Value, FieldErr
     }))
 }
 
-fn mtime_ms(file: &Path) -> Option<i64> {
+pub(crate) fn mtime_ms(file: &Path) -> Option<i64> {
     std::fs::metadata(file)
         .and_then(|m| m.modified())
         .ok()
@@ -362,7 +362,7 @@ fn resolve_for_write(root_canon: &Path, raw: &str) -> Result<PathBuf, FieldError
     }
 }
 
-fn write_atomic(file: &Path, text: &str) -> Result<(), FieldError> {
+pub(crate) fn write_atomic(file: &Path, text: &str) -> Result<(), FieldError> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| FieldError {
             status: StatusCode::INTERNAL_SERVER_ERROR, field: "path", msg: format!("{}: {e}", dir.display()) })?;
@@ -509,6 +509,7 @@ fn rename(store: &crate::db::Store, root_canon: &Path, file: &Path, new_name: &s
         tracing::warn!(target: "amux::mdai", from = %old_key, to = %new_key, error = %e,
             verdict = "mdai_rename_history_not_moved", "renamed a node but its run history stayed under the old name");
     }
+    super::chat::move_chat(&old_key, &new_key);
     Ok(target)
 }
 

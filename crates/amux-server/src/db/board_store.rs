@@ -2053,6 +2053,62 @@ pub fn append_log(existing: Option<&str>, hhmm: &str, line: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Owner notes on an open ask (gs12 review finding 2, MG-2017)
+// ---------------------------------------------------------------------------
+
+/// Opens the card-log line that carries an owner-side note added while the card
+/// waits in `needsyou`. The rest of the log summarises desc edits as `desc +N
+/// chars`; these notes are copied because an answer to the ask must carry them.
+///
+/// MG-2017, 2026-10-10: Ethan's condition ("3eed662 must never delete
+/// TubeScience") sat in the card's desc, written by the Chat tab, and the
+/// approval clicked later reached the worker as a bare "Approved (MG-2017):
+/// ... Proceed." The worker landed the DSAR executor without the exclusion
+/// (274a2ec1e96). The desc could not say which lines were the owner's, so
+/// nothing could put them beside the approval.
+pub const ASK_NOTE_TAG: &str = "owner note on the open ask, by ";
+/// A note longer than this is clipped in the log line, and the line says so.
+pub const ASK_NOTE_MAX_CHARS: usize = 1200;
+
+/// The log line for one owner-side note. One line: newlines become ` / `.
+pub fn ask_note_log_line(who: &str, note: &str) -> String {
+    let flat = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    let n = flat.chars().count();
+    let body: String = flat.chars().take(ASK_NOTE_MAX_CHARS).collect();
+    let more = if n > ASK_NOTE_MAX_CHARS {
+        format!(" [clipped at {ASK_NOTE_MAX_CHARS} of {n} chars; the full note is in the card desc]")
+    } else {
+        String::new()
+    };
+    format!("{ASK_NOTE_TAG}{who}: {body}{more}")
+}
+
+/// Every owner-side note recorded since the card last entered `needsyou`, in
+/// order, each as `"<who>: <text>"`. A card filed straight into `needsyou` has
+/// no entry line, so every note in its log counts.
+pub fn owner_notes_since_ask(log: &str) -> Vec<String> {
+    static ENTERED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"->\s*needsyou\b").expect("constant needsyou entry regex")
+    });
+    let mut out = Vec::new();
+    for line in log.lines() {
+        // `HH:MM` stamp, then the entry text.
+        let entry = line
+            .trim()
+            .strip_prefix('`')
+            .and_then(|r| r.split_once("` "))
+            .map(|(_, rest)| rest)
+            .unwrap_or("");
+        if let Some(note) = entry.strip_prefix(ASK_NOTE_TAG) {
+            out.push(note.trim().to_string());
+        } else if ENTERED.is_match(entry) {
+            out.clear();
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // AF-510: fleet-wide needs:you digest producer
 // ---------------------------------------------------------------------------
 
@@ -3188,6 +3244,26 @@ pub fn list_issues_quota(
     let light = light_rows(conn, status_filter, session_filter, archived)?;
     let kept_light = terminal_quota_by(light, done_limit, |r| &r.status, |r| r.updated);
     hydrate_light(conn, &kept_light, prose)
+}
+
+/// The list's rows for just these ids, under the same filters and order.
+/// Built on the list's own loader so a card it returns is exactly a card the
+/// unrestricted list would have shown; no terminal cap, since the caller named
+/// the cards. Used by the dashboard's change feed (`?ids=`).
+pub fn list_issues_by_ids(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    ids: &[String],
+    prose: Prose,
+) -> rusqlite::Result<Vec<IssueRow>> {
+    let want: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let light: Vec<LightRow> = light_rows(conn, status_filter, session_filter, archived)?
+        .into_iter()
+        .filter(|r| want.contains(r.id.as_str()))
+        .collect();
+    hydrate_light(conn, &light, prose)
 }
 
 /// Pass 1 shared by the capped and quota lists: filter + sort over the
@@ -7188,6 +7264,29 @@ mod tests {
         assert_eq!(prefix_from_session(""), "AMUX");
         assert_eq!(prefix_from_session("---"), "AMUX");
         assert_eq!(prefix_from_session("general-canvas-apps"), "GCA");
+    }
+
+    /// MG-2017's shape: notes before the ask was re-raised do not count, notes
+    /// after it do, in order, and a note quoting "-> needsyou" stays a note.
+    #[test]
+    fn owner_notes_since_ask_reads_only_the_current_ask() {
+        let mut log = append_log(None, "08:00", &ask_note_log_line("old@chat", "stale condition"));
+        log = append_log(Some(&log), "08:05", "mxp-gs12: todo -> needsyou");
+        log = append_log(Some(&log), "08:10", "mxp-gs12: desc +40 chars");
+        log = append_log(Some(&log), "08:20", &ask_note_log_line("mxp-gs12@chat", "approved only if\nit never deletes TubeScience"));
+        log = append_log(Some(&log), "08:30", &ask_note_log_line("api-anonymous", "also: card moved -> needsyou is fine"));
+        assert_eq!(
+            owner_notes_since_ask(&log),
+            [
+                "mxp-gs12@chat: approved only if it never deletes TubeScience",
+                "api-anonymous: also: card moved -> needsyou is fine",
+            ]
+        );
+        // A force move back into needsyou is a new ask too.
+        log = append_log(Some(&log), "09:00", "force by x: todo->needsyou reason=r");
+        assert!(owner_notes_since_ask(&log).is_empty());
+        let long = "y".repeat(ASK_NOTE_MAX_CHARS + 5);
+        assert!(ask_note_log_line("w", &long).contains("[clipped at 1200 of 1205 chars"));
     }
 
     /// AF-470: `append_log`'s line SHAPE for an entry (backtick-time, space,

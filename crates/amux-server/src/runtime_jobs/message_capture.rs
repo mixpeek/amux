@@ -267,8 +267,8 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM cmd_history", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
-                201,
-                "ordinary history must still be pruned"
+                502,
+                "recording prunes nothing: the per-session row cap is gone and the age sweep is the only bound (gs12 review)"
             );
         }
         tick(&state).await;

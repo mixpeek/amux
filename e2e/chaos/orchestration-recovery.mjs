@@ -75,7 +75,7 @@ try {
   check('long job accepted', begun.status < 300, begun.body);
   await waitFor('in-flight run persisted', async () => (await runs(interrupted.body.id)).some(r => r.status === 'running'), 15000);
   await amux.down(); await amux.up();
-  const orphan = await waitFor('in-flight result reconciled', async () => (await runs(interrupted.body.id)).find(r => r.status === 'error'), 20000);
+  const orphan = await waitFor('in-flight result reconciled', async () => (await runs(interrupted.body.id)).find(r => r.status === 'interrupted'), 20000);
   check('crashed execution stays explicitly unmeasured', /restarted/.test(orphan.note), orphan);
   check('uncertain side effect not blindly replayed', !fs.existsSync(never) && (await runs(interrupted.body.id)).length === 1);
 

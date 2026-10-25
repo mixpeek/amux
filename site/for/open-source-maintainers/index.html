@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,7 +20,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -92,24 +91,34 @@
         "name": "What is the cost for open-source maintainers?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux itself is free and open-source (MIT license). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. For issue triage and PR review, costs are typically low because the tasks are read-heavy: reading 50 issues and drafting responses costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs. Many maintainers find the ROI immediate — hours of triage work replaced by minutes of review."
+          "text": "amux itself is free and open-source (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. For issue triage and PR review, costs are typically low because the tasks are read-heavy: reading 50 issues and drafting responses costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs. Many maintainers find the ROI immediate — hours of triage work replaced by minutes of review."
         }
       }
     ]
   }
   </script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -261,10 +270,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <h2>Get started</h2>
     <p>Install amux, register your open-source project, write a CLAUDE.md with your project context and triage rules, and queue your first overnight issue triage.</p>
 
-    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Install (choose your preferred method)
-brew install mixpeek/amux/amux      # Homebrew (macOS)
-pipx install amux                    # PyPI
-uvx amux serve                       # Zero-install
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;">curl -fsSL https://amux.io/install.sh | bash      # Homebrew (macOS)
 
 # Register your open-source project
 amux register myproject --dir ~/Dev/myproject --yolo
@@ -289,12 +295,12 @@ amux board add "Triage all open issues — categorize, label, draft responses pe
     <p>Yes — you can run one agent per batch of issues overnight. For a backlog of 200 open issues, queue them in batches of 20–30 per agent session. Agents read in parallel and draft responses independently, sharing a kanban board so no issue is touched twice. A 200-issue triage backlog that would take a maintainer 3 days can often be drafted in one overnight run.</p>
 
     <h3>What is the cost for open-source maintainers?</h3>
-    <p>amux itself is free and open-source (MIT license). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. Issue triage and PR review are read-heavy tasks: triaging 50 issues typically costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs.</p>
+    <p>amux itself is free and open-source (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. Issue triage and PR review are read-heavy tasks: triaging 50 issues typically costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs.</p>
 
     <div class="cta-box">
       <h3>Run an AI engineering team tonight — free and open-source</h3>
       <p>Install amux, write a CLAUDE.md with your project context, and queue your first overnight triage run.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
@@ -348,10 +354,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

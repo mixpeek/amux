@@ -51,8 +51,10 @@ for(const worker of [owner,...workers])writeFileSync(join(home,'sessions',worker
 let observer, proxy;
 try{
   const native=await route(owner,'start',{profile:nativeProfile,url:url+'/protected'});prove('native owner is established before contention',native.route.backend==='amux');
-  const begun=Date.now();const started=await Promise.all(workers.map(session=>route(session,'start',{profile:nativeProfile,url:url+'/protected'})));
-  prove('eight simultaneous workers fall back to real CDP',started.every(r=>r.route.backend==='cdp'&&r.route.attempts[0].status===409));
+  // Joining is the default; this suite exercises the CDP copy under load, so
+  // it opts out. The join path is covered in browser-routing-e2e.mjs.
+  const begun=Date.now();const started=await Promise.all(workers.map(session=>route(session,'start',{profile:nativeProfile,url:url+'/protected',join:false})));
+  prove('eight simultaneous workers with join:false fall back to real CDP',started.every(r=>r.route.backend==='cdp'&&r.route.attempts[0].status===409));
   prove('eight workers share one isolated Chrome process',new Set(started.map(r=>r.route.cdp_port)).size===1);
   prove('eight worker tabs are distinct',new Set(started.map(r=>r.route.target)).size===8);
   timings.concurrent_start_ms=Date.now()-begun;
@@ -136,7 +138,7 @@ try{
   prove('stopping one worker leaves seven other CDP tabs usable',(await route(workers[3],'state')).url===url+'/protected');
   await observer.close();observer=undefined;
   for(const session of workers.slice(0,7))await route(session,'stop');
-  const reopened=await route(workers[0],'start',{profile:nativeProfile,url:url+'/protected'});
+  const reopened=await route(workers[0],'start',{profile:nativeProfile,url:url+'/protected',join:false});
   await poll(async()=>JSON.stringify(await route(workers[0],'state')).includes('Authenticated stress account'));
   const storage=await route(workers[0],'action',{action:'eval',script:'localStorage.getItem("stress-storage")'});
   prove('last-tab shutdown and reopen preserves CDP authentication and storage',reopened.route.backend==='cdp'&&storage.data.result==='persistent-marker');

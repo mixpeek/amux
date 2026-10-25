@@ -21,15 +21,12 @@
 //!
 //! # Dual-scheduler safety (see runtime_jobs/mod.rs for the full statement)
 //!
-//! ONLY the Python server fires schedules until `AMUX_RS_SCHEDULER=1` is
-//! set. With firing disabled, [`run_scheduler`] runs in SHADOW MODE: it
-//! computes due schedules and journals `Other("schedule_shadow")` events
-//! into `_amux_state_events` — never touching `schedules`/`schedule_runs` —
-//! so Phase 11 can diff shadow events against Python's actual fires. Even
-//! with firing enabled, each fire re-checks the row inside the write
-//! transaction, so an occurrence Python already advanced is not re-fired.
-//! NOTE: enabling `AMUX_RS_SCHEDULER=1` while the Python scheduler is also
-//! running is the double-fire configuration; don't.
+//! Firing is ON by default. `AMUX_RS_SCHEDULER=0` selects SHADOW MODE, a
+//! leftover of the Python cutover: [`run_scheduler`] computes due schedules
+//! and journals `Other("schedule_shadow")` events into `_amux_state_events`,
+//! never touching `schedules`/`schedule_runs`. Each real fire re-checks the
+//! row inside the write transaction, so an occurrence already advanced by
+//! another writer is not re-fired.
 //!
 //! # Timezone semantics
 //!
@@ -66,14 +63,28 @@ pub const CATCH_UP_CAP: usize = 10;
 /// exact count — an announced omission, not a silent one.
 pub const SCAN_LIMIT: usize = 1000;
 
-/// Is real firing enabled? Anything but the literal `1` is shadow mode.
+/// Is real firing enabled? ON unless `AMUX_RS_SCHEDULER` says off.
 /// Read per-call (not cached) so a test or operator change is honored
 /// without a restart; [`run_scheduler`] still takes `enabled` explicitly so
 /// the loop's mode is decided once, visibly, by its caller.
+///
+/// The default was OFF while the Python server owned firing, to avoid a
+/// double fire. Python was deleted at 792ce1f and the default stayed, so
+/// every install that had not copied `AMUX_RS_SCHEDULER=1` into its env,
+/// every amux Cloud server included, accepted schedules and never ran one
+/// (amux-cloud e2e, 2026-10-18: `every 1m`, run_count 0 after four minutes).
 pub fn firing_enabled() -> bool {
-    std::env::var("AMUX_RS_SCHEDULER")
-        .map(|v| v == "1")
-        .unwrap_or(false)
+    firing_from(std::env::var("AMUX_RS_SCHEDULER").ok().as_deref())
+}
+
+/// The parse behind [`firing_enabled`], separate so tests need no env var.
+/// `0`, `false`, `off` and `no` (any case) select shadow mode; anything
+/// else, unset included, fires for real.
+pub fn firing_from(v: Option<&str>) -> bool {
+    !matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "false" | "off" | "no")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +294,52 @@ pub trait Deliverer: Send + Sync {
     /// session can tell a run-now from the 9am fire in its own terminal rather
     /// than by polling an endpoint (AMUX-1998).
     async fn deliver(&self, sched: &DurableSchedule, source: &str) -> RunOutcome;
+
+    /// When the plan window the background reserve gates on will reset, if
+    /// amux has seen it. A reserve refusal aims its retry here. Overridable so
+    /// tests inject a reset instead of reading the process-wide reading.
+    fn window_reset(&self) -> Option<DateTime<chrono::Utc>> {
+        crate::api::usage::window_reset_known()
+    }
+}
+
+/// The fallback retry step for a reserve-refused one-off when no future
+/// window reset is known.
+pub const RESERVE_RETRY_FALLBACK_MINUTES: i64 = 15;
+
+/// Where a reserve-refused fire should retry, and which basis chose it.
+///
+/// A known reset still in the future wins: nothing can lift the reserve before
+/// the window resets, so polling every 15 minutes only spends refusals. The
+/// target is the reset plus 30 to 90 seconds of jitter (spread per schedule so
+/// a fleet of refused rows does not land on the new window in one tick),
+/// rounded UP to the minute because `next_run` has minute resolution and a
+/// rounded-down minute could fire before the reset. An unknown or already
+/// passed reset keeps the 15-minute fallback.
+pub fn reserve_retry_target(
+    sid: &str,
+    now: DateTime<Local>,
+    reset: Option<DateTime<chrono::Utc>>,
+) -> (DateTime<Local>, &'static str) {
+    match reset.filter(|r| *r > now.with_timezone(&chrono::Utc)) {
+        Some(r) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (sid, r.timestamp()).hash(&mut h);
+            let jitter = 30 + (h.finish() % 61) as i64;
+            let t = (r + ChronoDuration::seconds(jitter)).with_timezone(&Local);
+            let floor = t
+                .with_second(0)
+                .and_then(|x| x.with_nanosecond(0))
+                .unwrap_or(t);
+            let ceil = if floor < t { floor + ChronoDuration::minutes(1) } else { floor };
+            (ceil, "reserve_retry_at_reset")
+        }
+        None => (
+            now + ChronoDuration::minutes(RESERVE_RETRY_FALLBACK_MINUTES),
+            "reserve_retry_fallback_15m",
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -695,7 +752,7 @@ fn at_local_time(date: NaiveDate, hour: u32, minute: u32) -> Option<DateTime<Loc
     resolve_local(date.and_hms_opt(hour, minute, 0)?)
 }
 
-fn resolve_local(n: NaiveDateTime) -> Option<DateTime<Local>> {
+pub(crate) fn resolve_local(n: NaiveDateTime) -> Option<DateTime<Local>> {
     match Local.from_local_datetime(&n) {
         LocalResult::Single(t) => Some(t),
         LocalResult::Ambiguous(earliest, _) => Some(earliest),
@@ -1057,7 +1114,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 27] = [
+    const COLS: [&str; 34] = [
         "id",
         "title",
         "session",
@@ -1085,6 +1142,14 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "worktree",
         "fan_out",
         "fan_out_model",
+        // 0125 lifecycle columns. cron_runs is written only by the fire path.
+        "not_before",
+        "until",
+        "max_runs",
+        "locked_by",
+        "lock_reason",
+        "locked_at",
+        "disabled_reason",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -1104,7 +1169,7 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
 
 /// Full-row UPDATE with Python's PATCH column list.
 pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<usize> {
-    const COLS: [&str; 22] = [
+    const COLS: [&str; 29] = [
         "title",
         "session",
         "command",
@@ -1127,6 +1192,15 @@ pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "worktree",
         "fan_out",
         "fan_out_model",
+        // 0125 lifecycle columns. cron_runs is written only by the fire path
+        // and by an explicit reset, never by a full-row write.
+        "not_before",
+        "until",
+        "max_runs",
+        "locked_by",
+        "lock_reason",
+        "locked_at",
+        "disabled_reason",
     ];
     let sets: Vec<String> = COLS
         .iter()
@@ -1454,6 +1528,45 @@ fn days_in_month(y: i32, mo: u32) -> Option<u32> {
 /// `subprocess.run(..., timeout=600)`.
 pub const SHELL_TIMEOUT_S: u64 = 600;
 
+/// `/bin/bash -o pipefail -c <cmd>` in a process group of its own, so a run
+/// that times out can be stopped whole. `kill_on_drop` alone kills only this
+/// bash: SCHED-783's `bash "$R" | tail -60` kept running after its 600s
+/// timeout (2026-10-22 04:00), finished at 04:15 and quarantined a file under
+/// a run already reported failed.
+fn shell_schedule_command(cmd: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/bash");
+    // A check piped into tail must report the check's failure.
+    command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+    command.process_group(0);
+    command
+}
+
+/// Kills a shell schedule's whole process group if the run is dropped before
+/// it finishes, which is what the timeout does. Declared after the child, so
+/// it drops first: the group is killed while its leader is still unreaped and
+/// the id cannot have been reused. A run that finishes disarms it, so a
+/// daemon a schedule starts on purpose (`nohup x &`) outlives the run as before.
+struct ShellGroupKill {
+    pgid: i32,
+    armed: bool,
+}
+impl ShellGroupKill {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for ShellGroupKill {
+    fn drop(&mut self) {
+        if self.armed && self.pgid > 0 {
+            // SAFETY: the group was created for this run by process_group(0)
+            // and its leader has not been reaped yet (see the type's comment).
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// How much of a shell run's output the run ROW keeps (AMUX-5241). The full
 /// stream is in `~/.amux/shell-runs/<schedule>/`; the row keeps enough to read a
 /// failure from `/api/schedules/runs` without opening a file.
@@ -1709,7 +1822,7 @@ pub fn finish_manual_shell_run(
     let note = outcome
         .note()
         .map(|s| s.chars().take(500).collect::<String>());
-    conn.execute(
+    let n = conn.execute(
         "UPDATE schedule_runs SET status=?1, note=?2, delivery=?3, submission=?4,
                 exit_code=?6, output_tail=?7
          WHERE id=?5 AND status='running'",
@@ -1722,7 +1835,22 @@ pub fn finish_manual_shell_run(
             outcome.shell_output().map(|o| o.exit_code),
             outcome.shell_output().map(|o| o.tail.as_str()),
         ],
-    )
+    )?;
+    // AF-648 parity: cron fires and record_run stamp the schedule row with the
+    // latest outcome; a manual Run did not, so a passing rerun of SCHED-646
+    // (2026-10-18) left the schedule reading last_delivery=error beside a
+    // green run row and failure_streak 0.
+    if n > 0 {
+        conn.execute(
+            "UPDATE schedules SET last_delivery=?1, last_refusal_reason=?2
+             WHERE id=(SELECT schedule_id FROM schedule_runs WHERE id=?3)",
+            rusqlite::params![outcome.status(), outcome.refusal_reason(), run_id],
+        )?;
+        tracing::info!(run_id, status = outcome.status(), measured = true, n_considered = 1,
+            verdict = "manual_shell_run_outcome_stamped",
+            "manual shell run finished; its outcome is stamped on the schedule row");
+    }
+    Ok(n)
 }
 
 /// Replace a cron fire's provisional row with what delivery actually did (AF-515).
@@ -1774,8 +1902,8 @@ pub fn finish_cron_run(
 pub fn fail_orphaned_cron_runs(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE schedule_runs \
-         SET status='error', \
-             note='server restarted before this fire recorded a delivery outcome', \
+         SET status='interrupted', \
+             note='interrupted: server restarted before this fire recorded a delivery outcome', \
              delivery='unknown', submission=NULL \
          WHERE status='running' AND delivery IS NULL",
         [],
@@ -1788,7 +1916,7 @@ pub fn fail_orphaned_cron_runs(conn: &Connection) -> rusqlite::Result<usize> {
 pub fn fail_orphaned_manual_shell_runs(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE schedule_runs
-         SET status='error', note='server restarted before the shell result was recorded',
+         SET status='interrupted', note='interrupted: server restarted before the shell result was recorded',
              delivery='shell', submission=NULL
          WHERE status='running' AND delivery='shell'",
         [],
@@ -1871,12 +1999,11 @@ impl LiveDeliverer {
             let owner = owner.clone();
             let vault_vals = vault_vals.clone();
             async move {
+                let _in_flight = ShellRunInFlight::enter(&sid);
                 let path = shell_run_log_path(&sid);
                 let fut = async {
                     use tokio::io::AsyncReadExt;
-                    let mut command = tokio::process::Command::new("/bin/bash");
-                    // A check piped into tail must report the check's failure.
-                    command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+                    let mut command = shell_schedule_command(&cmd);
                     for (k, v) in vault_vals.iter() {
                         command.env(k, v);
                     }
@@ -1900,6 +2027,7 @@ impl LiveDeliverer {
                         .kill_on_drop(true)
                         .spawn()
                         .map_err(|e| format!("could not spawn /bin/bash: {e}"))?;
+                    let mut group = ShellGroupKill { pgid: child.id().map(|p| p as i32).unwrap_or(0), armed: true };
                     let log = std::sync::Arc::new(std::sync::Mutex::new(ShellRunLog::open(path.as_deref())));
                     // Both streams in ARRIVAL order, bounded, for the run row's
                     // tail (AMUX-5241). (bytes kept, bytes dropped off the front)
@@ -1967,6 +2095,7 @@ impl LiveDeliverer {
                             }
                         }
                     };
+                    group.disarm();
                     let code = status.code().unwrap_or(-1);
                     if let Ok(mut l) = log.lock() { l.write(format!("\n[exit {code}]\n").as_bytes()); }
                     let tail = combined
@@ -1991,7 +2120,9 @@ impl LiveDeliverer {
                 match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
                     Ok(r) => r,
                     Err(_) => {
-                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s]\n").as_bytes()); }
+                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s; its process group was killed]\n").as_bytes()); }
+                        tracing::warn!(schedule = %sid, verdict = "shell_schedule_timed_out_group_killed", measured = true, n_considered = 1,
+                            "shell schedule timed out after {SHELL_TIMEOUT_S}s; killed its whole process group, so nothing it started keeps running");
                         Err(format!("timed out after {SHELL_TIMEOUT_S}s"))
                     }
                 }
@@ -2199,8 +2330,24 @@ impl Deliverer for LiveDeliverer {
             };
         }
 
+        // Wake economics (schedule_wake.rs): a goal-continuation fire obeys the
+        // goal keeper's rules, a long brief becomes a pointer while unchanged,
+        // and held receipts ride along instead of waking the worker themselves.
+        if let Some(reason) = super::schedule_wake::goal_gate(&self.state, sched, source).await {
+            return RunOutcome::Refused { reason };
+        }
         let session = sched.str_field("session").to_string();
-        let text = delivered_text(&command, source);
+        let brief = super::schedule_wake::brief(
+            &super::schedule_wake::briefs_dir(),
+            sched.id(),
+            &session,
+            &command,
+            source,
+            super::schedule_wake::brief_min_chars(),
+        );
+        let home = crate::api::session_verbs::home();
+        let (text, carried) =
+            super::receipts::attach(&home, &session, &delivered_text(&brief.text, source));
         let d = crate::api::session_verbs::deliver_automated(
             &self.state,
             &session,
@@ -2210,6 +2357,17 @@ impl Deliverer for LiveDeliverer {
         .await;
         if d.refused {
             return RunOutcome::Refused { reason: d.message };
+        }
+        if d.submitted != Some(false) {
+            super::schedule_wake::brief_delivered(&brief);
+            super::receipts::consume(&home, &session, carried);
+            if super::schedule_wake::is_goal_continuation(sched.str_field("title"), &command) {
+                super::goal_keeper::note_wake(
+                    &session,
+                    crate::config::now_f64(),
+                    &format!("sched:{}", sched.id()),
+                );
+            }
         }
         if let Some(queue_id) = d.queue_id {
             return RunOutcome::Queued {
@@ -2467,6 +2625,9 @@ struct Claim {
     /// claim transaction, so the fire is on record before delivery is
     /// attempted. RECORD updates these by id instead of inserting.
     run_ids: Vec<i64>,
+    /// The claim disabled the row because this was its last fire (a one-shot,
+    /// or a bound reached). A reserve refusal re-arms exactly these.
+    ended_by_claim: bool,
 }
 
 /// Fire one due schedule: CLAIM the occurrence, DELIVER outside the write
@@ -2497,6 +2658,10 @@ async fn fire_one(
     let slot: std::sync::Arc<std::sync::Mutex<Option<Claim>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot_w = slot.clone();
+    // A claim that only applied a lifecycle bound (ended the row, or moved its
+    // first fire to `not_before`) commits without firing.
+    let bound_only = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bound_only_w = bound_only.clone();
     let reply = store
         .write_async(move |conn| {
             let Some(sched) = get_schedule(conn, &id)? else {
@@ -2521,6 +2686,40 @@ async fn fire_one(
             let expr = sched
                 .schedule_expr()
                 .and_then(|e| ScheduleExpr::parse(e).ok());
+
+            // LIFECYCLE BOUNDS (GS-12 finding 5), before anything fires. A
+            // bound reached while the row sat due ends it here; a first fire
+            // earlier than `not_before` moves to the first one at or after it.
+            let bounds = super::schedule_lifecycle::Bounds::of(&sched);
+            let bound_event = || PendingEvent {
+                entity_type: EntityType::Schedule,
+                entity_id: sched.id().to_string(),
+                mutation: MutationKind::Updated,
+                payload: None,
+            };
+            if let Some(reason) = bounds.end_reason(Some(&stored_next)) {
+                super::schedule_lifecycle::end_schedule(conn, sched.id(), &reason)?;
+                bound_only_w.store(true, std::sync::atomic::Ordering::SeqCst);
+                return Ok(WriteOutcome { applied: true, events: vec![bound_event()] });
+            }
+            if bounds.too_early(&stored_next) {
+                let next = expr
+                    .as_ref()
+                    .and_then(|e| bounds.first_after(e, now))
+                    .map(fmt_minute)
+                    .or_else(|| bounds.not_before.clone())
+                    .unwrap_or_else(|| stored_next.clone());
+                conn.execute(
+                    "UPDATE schedules SET next_run=?1, updated=?2 WHERE id=?3",
+                    rusqlite::params![next, now_ts, sched.id()],
+                )?;
+                tracing::info!(schedule = %sched.id(), next_run = %next,
+                    not_before = ?bounds.not_before, verdict = "schedule_bound_deferred_start",
+                    measured = true, n_considered = 1,
+                    "schedule was due before its not_before; moved to the first fire after it");
+                bound_only_w.store(true, std::sync::atomic::Ordering::SeqCst);
+                return Ok(WriteOutcome { applied: true, events: vec![bound_event()] });
+            }
             let prev = parse_minute(&stored_next).unwrap_or(now);
 
             // Occurrences due in (anchor, now]. The anchor sits one step
@@ -2572,19 +2771,24 @@ async fn fire_one(
                     None
                 });
             }
+            // `cron_runs` counts scheduled fires against `max_runs` (0125); a
+            // reserve refusal gives its count back in RECORD below.
             conn.execute(
-                "UPDATE schedules SET run_count = COALESCE(run_count,0) + ?1 WHERE id=?2",
+                "UPDATE schedules SET run_count = COALESCE(run_count,0) + ?1, \
+                 cron_runs = COALESCE(cron_runs,0) + ?1 WHERE id=?2",
                 rusqlite::params![occurrences.len() as i64, sched.id()],
             )?;
+            let mut ended_by_claim = false;
 
             if sched.str_field("sched_type") == "once" {
                 conn.execute(
-                    "UPDATE schedules SET enabled=0, last_run=?1, updated=?1 WHERE id=?2",
-                    rusqlite::params![now_ts, sched.id()],
+                    "UPDATE schedules SET enabled=0, last_run=?1, updated=?1, disabled_reason=?3 WHERE id=?2",
+                    rusqlite::params![now_ts, sched.id(), format!("one-shot: fired at {now_str}")],
                 )?;
                 // run-once disable is audited exactly like Python's
                 // ("run-once" source; ours is suffixed for the dual period).
                 insert_audit(conn, sched.id(), "enabled", "1", "0", "run-once-rs", "")?;
+                ended_by_claim = true;
             } else {
                 let next = expr
                     .as_ref()
@@ -2605,6 +2809,15 @@ async fn fire_one(
                     "UPDATE schedules SET last_run=?1, next_run=?2, updated=?1 WHERE id=?3",
                     rusqlite::params![now_ts, next, sched.id()],
                 )?;
+                // This fire may be the last one its bounds allow: end it now so
+                // the row reads disabled, with the reason, from this moment on.
+                let after = super::schedule_lifecycle::Bounds {
+                    cron_runs: bounds.cron_runs + occurrences.len() as i64,
+                    ..bounds.clone()
+                };
+                if let Some(reason) = after.end_reason(Some(&next)) {
+                    ended_by_claim = super::schedule_lifecycle::end_schedule(conn, sched.id(), &reason)?;
+                }
             }
 
             events.push(PendingEvent {
@@ -2674,6 +2887,7 @@ async fn fire_one(
                 sched,
                 notes,
                 run_ids,
+                ended_by_claim,
             });
             Ok(WriteOutcome {
                 applied: true,
@@ -2681,7 +2895,7 @@ async fn fire_one(
             })
         })
         .await?;
-    if !reply.applied {
+    if !reply.applied || bound_only.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(false);
     }
     let Some(claim) = slot.lock().expect("claim slot poisoned").take() else {
@@ -2698,8 +2912,34 @@ async fn fire_one(
 
     // ---- RECORD what actually happened ----
     let sid = claim.sched.id().to_string();
-    let retry_once = claim.sched.str_field("sched_type") == "once"
+    // A fire the background reserve refused consumed no input. It gives its
+    // `cron_runs` back, and a ONE-SHOT is deferred rather than lost: a
+    // `once` row, a row this fire ended by a bound, or a fixed-date cron whose
+    // next fire is a year away. Seven GS-12 one-offs were fixed-date crons and
+    // lost their only fire this way because only `sched_type=once` retried.
+    let reserve_refused_all = !outcomes.is_empty()
         && outcomes.iter().all(|o| matches!(o, RunOutcome::Refused { reason } if reason.starts_with("schedule PAUSED: the plan window")));
+    let ended_by_claim = claim.ended_by_claim;
+    let fixed_date = claim
+        .sched
+        .schedule_expr()
+        .is_some_and(super::schedule_lifecycle::is_fixed_date_cron);
+    let retry_once = reserve_refused_all && (ended_by_claim || fixed_date);
+    // Read the reset once, after delivery: the refusal itself may have just
+    // probed the window and recorded a fresh one.
+    let (retry_target, retry_verdict) = reserve_retry_target(
+        claim.sched.id(),
+        now,
+        if reserve_refused_all { deliverer.window_reset() } else { None },
+    );
+    // A RECURRING refusal keeps its natural next fire unless the window resets
+    // sooner; then it is pulled forward to the reset (never delayed, and never
+    // on the 15-minute fallback, which would turn a cron into a poll). The
+    // target always lies past the reset, so the retry lands in the NEXT window
+    // and a refused recurring fire retries at most once per window.
+    let pull_forward = reserve_refused_all && !retry_once && retry_verdict == "reserve_retry_at_reset";
+    let last_run_id = claim.run_ids.last().copied();
+    let occurrences_n = outcomes.len() as i64;
     let expected_version = claim.sched.i64_field("version", 0);
     let expected_command = claim.sched.str_field("command").to_string();
     let expected_session = claim.sched.str_field("session").to_string();
@@ -2735,15 +2975,49 @@ async fn fire_one(
             // Definite reserve refusal consumed no input. Preserve a one-off
             // until capacity returns; never replay queued/unknown delivery or
             // resurrect a schedule its owner changed while delivery was running.
+            if reserve_refused_all {
+                conn.execute(
+                    "UPDATE schedules SET cron_runs = MAX(0, COALESCE(cron_runs,0) - ?1) WHERE id=?2",
+                    rusqlite::params![occurrences_n, sid],
+                )?;
+            }
+            let retry_at = fmt_minute(retry_target);
+            let mut retried = false;
             if retry_once {
-                let retry_at = fmt_minute(now + ChronoDuration::minutes(15));
-                let changed = conn.execute(
-                    "UPDATE schedules SET enabled=1, next_run=?1 WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
-                    rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?;
+                let changed = if ended_by_claim {
+                    conn.execute(
+                        "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
+                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?
+                } else {
+                    // A fixed-date cron is still enabled; only its next fire moves.
+                    conn.execute(
+                        "UPDATE schedules SET next_run=?1 WHERE id=?2 AND enabled=1 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
+                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?
+                };
                 if changed > 0 {
-                    insert_audit(conn, &sid, "enabled", "0", "1", "capacity-retry-rs", "")?;
-                    tracing::info!(schedule = %sid, retry_at, measured = true, n_considered = 1,
+                    if ended_by_claim {
+                        insert_audit(conn, &sid, "enabled", "0", "1", "capacity-retry-rs", "")?;
+                    }
+                    tracing::info!(schedule = %sid, retry_at, fixed_date, measured = true, n_considered = 1,
                         verdict = "schedule_capacity_deferred", "undelivered one-off retained for capacity recovery");
+                    retried = true;
+                }
+            } else if pull_forward {
+                // `next_run > ?1`: only ever SOONER than the natural next fire
+                // the claim already wrote (minute strings sort as times).
+                let changed = conn.execute(
+                    "UPDATE schedules SET next_run=?1 WHERE id=?2 AND enabled=1 AND deleted IS NULL AND next_run > ?1 AND version=?3 AND command=?4 AND session=?5",
+                    rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?;
+                retried = changed > 0;
+            }
+            if retried {
+                tracing::info!(schedule = %sid, retry_at, verdict = retry_verdict, recurring = pull_forward,
+                    measured = true, n_considered = 1, "reserve-refused fire rescheduled");
+                if let Some(id) = last_run_id {
+                    let basis = if retry_verdict == "reserve_retry_at_reset" { "at window reset" } else { "fallback 15m" };
+                    conn.execute(
+                        "UPDATE schedule_runs SET note = substr(COALESCE(note || ' · ', '') || ?1, 1, 500) WHERE id=?2",
+                        rusqlite::params![format!("retry at {retry_at} ({basis}; {retry_verdict})"), id])?;
                 }
             }
             // AF-648: last_run/run_count already advanced in the CLAIM phase
@@ -2792,6 +3066,10 @@ pub async fn run_scheduler(
 ) {
     let reconciled = store
         .write_async(|conn| {
+            // GS-12 finding 5: 276 runs in flight at a restart read as `error`,
+            // the word a real failure uses. They are `interrupted` now, and each
+            // schedule gets its own WARN line and a stamp on its row.
+            let affected = super::schedule_lifecycle::running_rows_by_schedule(conn)?;
             let n = fail_orphaned_manual_shell_runs(conn)?;
             // AF-515: cron fires now write a provisional row too, so a restart
             // mid-delivery can orphan one of those as well. Counted separately
@@ -2799,6 +3077,7 @@ pub async fn run_scheduler(
             // process, a cron orphan lost a DELIVERY, and only the second says a
             // lane may not have received its turn.
             let c = fail_orphaned_cron_runs(conn)?;
+            super::schedule_lifecycle::stamp_interrupted(conn, &affected)?;
             if c > 0 {
                 tracing::warn!(
                     orphaned_cron_runs = c,
@@ -2827,7 +3106,7 @@ pub async fn run_scheduler(
         .await;
     match reconciled {
         Ok(r) if r.applied => {
-            tracing::warn!("scheduler startup marked orphaned provisional runs as failed")
+            tracing::warn!("scheduler startup marked orphaned provisional runs as interrupted")
         }
         Err(e) => tracing::error!(error = %e, "scheduler could not reconcile orphaned runs"),
         _ => {}
@@ -2987,6 +3266,72 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn firing_defaults_on_and_only_explicit_off_words_disable_it() {
+        use super::firing_from;
+        assert!(firing_from(None), "unset must fire: the cloud servers never set it");
+        for on in ["1", "true", "yes", "", "on"] {
+            assert!(firing_from(Some(on)), "{on:?} fires");
+        }
+        for off in ["0", "false", "OFF", " no "] {
+            assert!(!firing_from(Some(off)), "{off:?} is shadow mode");
+        }
+    }
+
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the pid exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Spawns a schedule shell that backgrounds a sleeper and waits on it, as
+    /// `bash "$R" | tail -60` leaves the script under the top bash. Returns
+    /// the child and the sleeper's pid.
+    async fn shell_with_grandchild() -> (tokio::process::Child, i32) {
+        use tokio::io::AsyncBufReadExt;
+        let mut child = shell_schedule_command("sleep 60 & echo $!; wait")
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        tokio::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).await.unwrap();
+        (child, line.trim().parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_schedule_shell_leads_its_own_process_group() {
+        let (child, _sleeper) = shell_with_grandchild().await;
+        let pid = child.id().unwrap() as i32;
+        // SAFETY: getpgid reads the group of a live child.
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid, "the run's bash must lead a new group, or a timeout cannot stop what it started");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_run_kills_what_its_shell_started_and_a_finished_one_does_not() {
+        // Timed out: the run future drops with the guard armed.
+        let (child, sleeper) = shell_with_grandchild().await;
+        let group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
+        drop(group);
+        drop(child);
+        let mut gone = false;
+        for _ in 0..50 {
+            if !alive(sleeper) { gone = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "pid {sleeper}, started by a timed-out run, is still running");
+
+        // Finished: disarmed, a process the run started on purpose outlives it.
+        let (child, sleeper) = shell_with_grandchild().await;
+        let mut group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
+        group.disarm();
+        drop(group);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(alive(sleeper), "a finished run must not kill a daemon it started");
+        // SAFETY: the sleeper is this test's own grandchild.
+        unsafe { libc::kill(sleeper, libc::SIGKILL); }
+        drop(child);
+    }
 
     #[tokio::test]
     async fn reserve_refusal_preserves_a_one_off_but_never_replays_uncertain_delivery() {
@@ -3013,6 +3358,234 @@ mod tests {
                 assert!(!get_schedule(&reopened.read().unwrap(), "ONCE").unwrap().unwrap().enabled());
             }
         }
+    }
+
+    // ---- GS-12 finding 5: lifecycle bounds on the fire path ----------------
+
+    fn put_row(store: &SharedStore, row: DurableSchedule) {
+        store.write(move |conn| { insert_schedule(conn, &row)?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+    }
+
+    fn exec(store: &SharedStore, sql: String) {
+        store.write(move |conn| { conn.execute(&sql, [])?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+    }
+
+    fn reserve_refusal() -> RunOutcome {
+        RunOutcome::Refused { reason: "schedule PAUSED: the plan window is 99% used".into() }
+    }
+
+    fn lifecycle_cols(store: &SharedStore, id: &str) -> (bool, i64, String, String) {
+        let s = get_schedule(&store.read().unwrap(), id).unwrap().unwrap();
+        (s.enabled(), s.i64_field("cron_runs", -1), s.str_field("disabled_reason").to_string(), s.str_field("next_run").to_string())
+    }
+
+    #[tokio::test]
+    async fn max_runs_ends_a_recurring_schedule_and_a_reserve_refusal_does_not_spend_it() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let due = fmt_minute(now - ChronoDuration::minutes(1));
+        let mut row = make_row("MAX", "lane", Some("every 10m"), &due);
+        row.set("max_runs", Value::from(2));
+        put_row(&store, row);
+
+        let refused = StubDeliverer::new(reserve_refusal());
+        fire_one(&store, &refused, "MAX", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, runs, _, _) = lifecycle_cols(&store, "MAX");
+        assert!(en && runs == 0, "a reserve refusal consumed no input, so it spends no run: enabled={en} cron_runs={runs}");
+
+        let ok = StubDeliverer::confirmed();
+        for n in 1..=2 {
+            exec(&store, format!("UPDATE schedules SET next_run='{due}' WHERE id='MAX'"));
+            fire_one(&store, &ok, "MAX", now, MissedRunPolicy::Skip).await.unwrap();
+            let (en, runs, why, _) = lifecycle_cols(&store, "MAX");
+            assert_eq!(runs, n);
+            assert_eq!(en, n < 2, "fire {n} of max_runs 2");
+            if n == 2 {
+                assert!(why.contains("max_runs 2 reached"), "the row says why it ended: {why}");
+            }
+        }
+        assert_eq!(ok.calls(), 2);
+        let audit: i64 = store.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM schedule_audit WHERE schedule_id='MAX' AND source='schedule-bound-rs' AND field='enabled'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(audit, 1, "the harness's own disable is in the audit trail");
+        // Even if something re-arms next_run, a spent budget does not fire.
+        exec(&store, format!("UPDATE schedules SET next_run='{due}', enabled=1 WHERE id='MAX'"));
+        assert!(!fire_one(&store, &ok, "MAX", now, MissedRunPolicy::Skip).await.unwrap());
+        assert_eq!(ok.calls(), 2, "a spent max_runs ends the row at claim instead of firing");
+    }
+
+    #[tokio::test]
+    async fn until_ends_the_schedule_after_its_last_allowed_fire() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let mut row = make_row("UNTIL", "lane", Some("every 10m"), &fmt_minute(now - ChronoDuration::minutes(1)));
+        row.set("until", Value::from(fmt_minute(now + ChronoDuration::minutes(5))));
+        put_row(&store, row);
+        let ok = StubDeliverer::confirmed();
+        assert!(fire_one(&store, &ok, "UNTIL", now, MissedRunPolicy::Skip).await.unwrap());
+        assert_eq!(ok.calls(), 1, "the fire inside the window happens");
+        let (en, _, why, _) = lifecycle_cols(&store, "UNTIL");
+        assert!(!en, "the next fire would be past until, so the row ends now");
+        assert!(why.contains("until"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn not_before_holds_the_first_fire_until_its_start() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let start = fmt_minute(now + ChronoDuration::days(2));
+        let mut row = make_row("AFTER", "lane", Some("daily at 09:00"), &fmt_minute(now - ChronoDuration::minutes(1)));
+        row.set("not_before", Value::from(start.clone()));
+        put_row(&store, row);
+        let ok = StubDeliverer::confirmed();
+        assert!(!fire_one(&store, &ok, "AFTER", now, MissedRunPolicy::Skip).await.unwrap());
+        assert_eq!(ok.calls(), 0, "nothing fires before not_before");
+        let (en, _, _, next) = lifecycle_cols(&store, "AFTER");
+        assert!(en);
+        assert!(next >= start && next.ends_with("09:00"), "first fire moved to the first 09:00 at or after {start}: {next}");
+    }
+
+    #[tokio::test]
+    async fn a_fixed_date_cron_refused_by_the_reserve_is_deferred_rather_than_a_year_late() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let mut row = make_row("FIXED", "lane", Some("5 0 3 10 *"), &fmt_minute(now - ChronoDuration::minutes(1)));
+        row.set("sched_type", Value::from("recurring"));
+        put_row(&store, row);
+        let refused = StubDeliverer::new(reserve_refusal());
+        fire_one(&store, &refused, "FIXED", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, _, _, next) = lifecycle_cols(&store, "FIXED");
+        assert!(en);
+        assert_eq!(next, fmt_minute(now + ChronoDuration::minutes(15)), "deferred 15 minutes, not to next year");
+        let ok = StubDeliverer::confirmed();
+        fire_one(&store, &ok, "FIXED", now + ChronoDuration::minutes(16), MissedRunPolicy::Skip).await.unwrap();
+        assert_eq!(ok.calls(), 1, "the deferred one-off fires once capacity returns");
+        let (_, _, _, next) = lifecycle_cols(&store, "FIXED");
+        assert!(next > fmt_minute(now + ChronoDuration::days(1)), "after it lands, the cron's own next date applies: {next}");
+    }
+
+
+    // ---- reserve retry aimed at the window reset --------------------------
+
+    fn last_run_note(store: &SharedStore, id: &str) -> String {
+        store.read().unwrap().query_row(
+            "SELECT COALESCE(note,'') FROM schedule_runs WHERE schedule_id=?1 ORDER BY id DESC LIMIT 1",
+            [id], |r| r.get(0)).unwrap()
+    }
+
+    fn fixed_now() -> DateTime<Local> {
+        Local.with_ymd_and_hms(2030, 6, 1, 12, 0, 20).single().unwrap()
+    }
+
+    #[test]
+    fn reserve_retry_target_aims_at_reset_plus_jitter_and_falls_back_otherwise() {
+        let now = fixed_now();
+        let reset = (now + ChronoDuration::minutes(97)).with_timezone(&chrono::Utc);
+        for sid in ["A", "B", "SCHED-1", "SCHED-999"] {
+            let (t, v) = reserve_retry_target(sid, now, Some(reset));
+            assert_eq!(v, "reserve_retry_at_reset");
+            let lead = (t.with_timezone(&chrono::Utc) - reset).num_seconds();
+            assert!((30..=150).contains(&lead), "{sid}: at least 30s of jitter, rounded up to a minute: {lead}s");
+            assert_eq!(t.second(), 0, "minute resolution");
+        }
+        let (t, v) = reserve_retry_target("A", now, None);
+        assert_eq!((t, v), (now + ChronoDuration::minutes(15), "reserve_retry_fallback_15m"));
+        let passed = (now - ChronoDuration::minutes(1)).with_timezone(&chrono::Utc);
+        let (t, v) = reserve_retry_target("A", now, Some(passed));
+        assert_eq!((t, v), (now + ChronoDuration::minutes(15), "reserve_retry_fallback_15m"), "a reset already passed is no target");
+    }
+
+    #[tokio::test]
+    async fn a_refused_one_off_retries_at_the_known_reset_not_every_15_minutes() {
+        let (store, _dir) = store();
+        let now = fixed_now();
+        put_row(&store, make_row("ONE", "lane", None, &fmt_minute(now - ChronoDuration::minutes(1))));
+        let reset = (now + ChronoDuration::minutes(140)).with_timezone(&chrono::Utc);
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&store, &refused, "ONE", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, _, _, next) = lifecycle_cols(&store, "ONE");
+        let (want, _) = reserve_retry_target("ONE", now, Some(reset));
+        assert!(en, "the one-off is kept");
+        assert_eq!(next, fmt_minute(want), "aimed at the reset");
+        assert_ne!(next, fmt_minute(now + ChronoDuration::minutes(15)));
+        let note = last_run_note(&store, "ONE");
+        assert!(note.contains("reserve_retry_at_reset") && note.contains(&next), "the run row says why: {note}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_one_off_with_no_or_a_passed_reset_keeps_the_15_minute_fallback() {
+        let now = fixed_now();
+        for reset in [None, Some((now - ChronoDuration::minutes(3)).with_timezone(&chrono::Utc))] {
+            let (store, _dir) = store();
+            put_row(&store, make_row("ONE", "lane", None, &fmt_minute(now - ChronoDuration::minutes(1))));
+            let mut refused = StubDeliverer::new(reserve_refusal());
+            refused.reset = reset;
+            fire_one(&store, &refused, "ONE", now, MissedRunPolicy::Skip).await.unwrap();
+            let (en, _, _, next) = lifecycle_cols(&store, "ONE");
+            assert!(en);
+            assert_eq!(next, fmt_minute(now + ChronoDuration::minutes(15)), "reset {reset:?}");
+            assert!(last_run_note(&store, "ONE").contains("reserve_retry_fallback_15m"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_recurring_fire_is_pulled_to_a_sooner_reset_once_and_never_delayed() {
+        let now = fixed_now();
+        let due = fmt_minute(now - ChronoDuration::minutes(1));
+        // Daily at 09:00: the natural next fire is tomorrow, the reset is in 2h.
+        let (s1, _d1) = store();
+        put_row(&s1, make_row("DAILY", "lane", Some("daily at 09:00"), &due));
+        let reset = (now + ChronoDuration::minutes(120)).with_timezone(&chrono::Utc);
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&s1, &refused, "DAILY", now, MissedRunPolicy::Skip).await.unwrap();
+        let (en, _, _, next) = lifecycle_cols(&s1, "DAILY");
+        let (want, _) = reserve_retry_target("DAILY", now, Some(reset));
+        assert!(en);
+        assert_eq!(next, fmt_minute(want), "pulled forward to the reset");
+        assert!(last_run_note(&s1, "DAILY").contains("reserve_retry_at_reset"));
+        // The retry fires in the new window and is refused again on a reading
+        // that still names the reset just passed: no second retry this window,
+        // the cron's own next date applies.
+        let at = want + ChronoDuration::seconds(10);
+        fire_one(&s1, &refused, "DAILY", at, MissedRunPolicy::Skip).await.unwrap();
+        assert_eq!(refused.calls(), 2);
+        let (_, _, _, next) = lifecycle_cols(&s1, "DAILY");
+        assert!(next.ends_with("09:00") && next > fmt_minute(at), "back on its natural cadence: {next}");
+
+        // Every 10m: the natural next fire is sooner than the reset, so it stays.
+        let (st2, _d2) = store();
+        put_row(&st2, make_row("TEN", "lane", Some("every 10m"), &due));
+        let refused = StubDeliverer::new(reserve_refusal()).with_reset(reset);
+        fire_one(&st2, &refused, "TEN", now, MissedRunPolicy::Skip).await.unwrap();
+        let (_, _, _, next) = lifecycle_cols(&st2, "TEN");
+        assert!(next <= fmt_minute(now + ChronoDuration::minutes(10)), "never delayed to the reset: {next}");
+
+        // No known reset: a recurring refusal does not start a 15-minute poll.
+        let (st3, _d3) = store();
+        put_row(&st3, make_row("NORESET", "lane", Some("daily at 09:00"), &due));
+        fire_one(&st3, &StubDeliverer::new(reserve_refusal()), "NORESET", now, MissedRunPolicy::Skip).await.unwrap();
+        let (_, _, _, next) = lifecycle_cols(&st3, "NORESET");
+        assert!(next.ends_with("09:00"), "{next}");
+    }
+
+    #[tokio::test]
+    async fn a_run_in_flight_at_restart_is_recorded_interrupted_and_stamped_on_its_schedule() {
+        let (store, _dir) = store();
+        put_row(&store, make_row("INFLIGHT", "lane", Some("every 10m"), "2020-01-01T00:00"));
+        exec(&store, "INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source, delivery) VALUES ('INFLIGHT', 1, 'running', 'fired', 'cron-rs', NULL)".into());
+        store.write(|conn| {
+            let affected = super::super::schedule_lifecycle::running_rows_by_schedule(conn)?;
+            assert_eq!(affected, vec![("INFLIGHT".to_string(), 1)]);
+            assert_eq!(fail_orphaned_cron_runs(conn)?, 1);
+            super::super::schedule_lifecycle::stamp_interrupted(conn, &affected)?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let conn = store.read().unwrap();
+        let st: String = conn.query_row("SELECT status FROM schedule_runs WHERE schedule_id='INFLIGHT'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st, "interrupted");
+        let s = get_schedule(&conn, "INFLIGHT").unwrap().unwrap();
+        assert_eq!(s.str_field("last_delivery"), "interrupted", "the schedule row says its last run was interrupted");
     }
 
     #[tokio::test]
@@ -3042,7 +3615,7 @@ mod tests {
             let conn = store.read().unwrap();
             let (count, status): (i64, String) = conn.query_row("SELECT COUNT(*),status FROM schedule_runs WHERE schedule_id='RACE'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
             assert_eq!(count, 1, "{mode}: one attempt cannot produce two receipts");
-            assert_eq!(status, match mode { "reconciled"=>"error", "missing"=>"delivered", _=>"refused" });
+            assert_eq!(status, match mode { "reconciled"=>"interrupted", "missing"=>"delivered", _=>"refused" });
             assert!(!get_schedule(&conn, "RACE").unwrap().unwrap().enabled(), "owner changes must fence the capacity retry");
         }
     }
@@ -3280,6 +3853,7 @@ mod tests {
     struct StubDeliverer {
         outcome: RunOutcome,
         calls: std::sync::atomic::AtomicUsize,
+        reset: Option<DateTime<chrono::Utc>>,
     }
 
     impl StubDeliverer {
@@ -3287,7 +3861,12 @@ mod tests {
             StubDeliverer {
                 outcome,
                 calls: std::sync::atomic::AtomicUsize::new(0),
+                reset: None,
             }
+        }
+        fn with_reset(mut self, reset: DateTime<chrono::Utc>) -> Self {
+            self.reset = Some(reset);
+            self
         }
         fn confirmed() -> Self {
             StubDeliverer::new(RunOutcome::Delivered {
@@ -3305,6 +3884,9 @@ mod tests {
         async fn deliver(&self, _sched: &DurableSchedule, _source: &str) -> RunOutcome {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.outcome.clone()
+        }
+        fn window_reset(&self) -> Option<DateTime<chrono::Utc>> {
+            self.reset
         }
     }
 
@@ -3922,6 +4504,10 @@ mod tests {
         let run_id = first.run_id();
         store
             .write_async(move |conn| {
+                conn.execute(
+                    "UPDATE schedules SET last_delivery='error', last_refusal_reason='an older failure' WHERE id='SCHED-173'",
+                    [],
+                )?;
                 finish_manual_shell_run(
                     conn,
                     run_id,
@@ -3937,6 +4523,19 @@ mod tests {
             })
             .await
             .unwrap();
+        {
+            let conn = store.read().unwrap();
+            let (d, r): (Option<String>, Option<String>) = conn
+                .query_row("SELECT last_delivery, last_refusal_reason FROM schedules WHERE id='SCHED-173'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(
+                (d.as_deref(), r.as_deref()),
+                (Some(RunOutcome::ShellOk { note: None, output: None }.status()), None),
+                "a manual run's outcome replaces the schedule's stale failure"
+            );
+        }
         let third = claim(&store, "manual:browser-c").await;
         assert!(
             third.started(),
@@ -3963,7 +4562,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(orphan_status, "error");
+        assert_eq!(orphan_status, "interrupted", "a restart mid-run is not a failure of the command");
     }
 
     #[tokio::test]
@@ -4272,7 +4871,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            status, "error",
+            status, "interrupted",
             "an unrecorded fire must not read as delivered"
         );
         assert_ne!(status, "running", "it must not sit provisional forever");
@@ -5246,5 +5845,60 @@ mod tests {
         let mut s = make_row("SCHED-3", "alpha", None, "2026-08-10T09:00");
         s.set("recurrence", Value::from("fortnightly"));
         assert_eq!(skip_next_run(&s), None);
+    }
+}
+
+/// Shell schedule runs executing in THIS process, so self-adoption can wait for
+/// them: an exec closes a run's output pipes and the run is recorded as "server
+/// restarted before this fire recorded a delivery outcome". The builder's own
+/// hold (rust-auto-build.sh SHELL-RUN DEFER) looks only before it builds, and
+/// SCHED-465 fired during the build at 17:18 and 18:18 on 2026-10-17, so both
+/// runs died at the adoption that followed.
+static SHELL_RUNS_IN_FLIGHT: std::sync::Mutex<Vec<(u64, String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+static SHELL_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) struct ShellRunInFlight(u64);
+
+impl ShellRunInFlight {
+    pub(crate) fn enter(schedule: &str) -> Self {
+        let id = SHELL_RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.push((id, schedule.to_string(), std::time::Instant::now()));
+        }
+        Self(id)
+    }
+}
+
+impl Drop for ShellRunInFlight {
+    fn drop(&mut self) {
+        if let Ok(mut v) = SHELL_RUNS_IN_FLIGHT.lock() {
+            v.retain(|(id, _, _)| *id != self.0);
+        }
+    }
+}
+
+/// Schedule ids of shell runs in flight that started less than `max_age` ago.
+pub(crate) fn shell_runs_in_flight(max_age: std::time::Duration) -> Vec<String> {
+    let mut ids: Vec<String> = SHELL_RUNS_IN_FLIGHT.lock().map(|v| {
+        v.iter().filter(|(_, _, t)| t.elapsed() < max_age).map(|(_, s, _)| s.clone()).collect()
+    }).unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[cfg(test)]
+mod shell_in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_run_is_in_flight_until_its_guard_drops() {
+        let hour = std::time::Duration::from_secs(3600);
+        let g = ShellRunInFlight::enter("SCHED-test-inflight");
+        assert!(shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
+        assert!(!shell_runs_in_flight(std::time::Duration::ZERO).contains(&"SCHED-test-inflight".to_string()),
+            "a run older than the cap no longer holds adoption");
+        drop(g);
+        assert!(!shell_runs_in_flight(hour).contains(&"SCHED-test-inflight".to_string()));
     }
 }

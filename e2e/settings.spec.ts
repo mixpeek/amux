@@ -58,6 +58,7 @@
 //   clicks the visible .theme-track sibling, so the tests do too.
 import { test, expect } from './fixtures';
 import { E2E_ANTHROPIC_KEY } from './test-env';
+import { cleanup } from './teardown';
 import type { Page, APIRequestContext } from '@playwright/test';
 
 // Deterministic theme baseline: initTheme falls back to prefers-color-scheme
@@ -846,7 +847,10 @@ test('settings_usage_meter', async ({ page, request }) => {
     await expect(row, `missing ${provider.id} summary`).toHaveCount(1);
     const summary = row.locator('summary');
     await expect(summary).toContainText(provider.label);
-    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…' : provider.cause === 'account_quota_not_reported' ? 'Not reported' : 'Connect account');
+    // A signed-in provider whose usage reply was empty (cause unexpected_shape)
+    // reads "Usage not reported", never "Connect account" (MSG-92525).
+    if (!provider.available) await expect(summary).toContainText(provider.retry_at || ['rate_limited','probe_failed'].includes(provider.cause) ? 'Checking…'
+      : provider.cause === 'account_quota_not_reported' ? 'Not reported' : provider.cause === 'unexpected_shape' ? 'Usage not reported' : 'Connect account');
     if (provider.metered === false) await expect(summary).toContainText('Unlimited');
 
     if (!(await row.evaluate((element) => element.hasAttribute('open')))) await summary.click();
@@ -984,6 +988,15 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   expect(teams.some((team: any) => team.id === 'team_global')).toBe(true);
   await page.locator('#invite-team-id').selectOption('team_global');
   await expect(page.locator('#host-access-ack')).toBeVisible();
+  // Unticked: the form says what to do and sends nothing, rather than relaying the
+  // server's API wording (amux Cloud e2e C8-2).
+  let posted = 0;
+  const countPost = (r: any) => { if (r.url().endsWith('/api/org/invites') && r.method() === 'POST') posted++; };
+  page.on('request', countPost);
+  await page.locator('#team-scope-submit').click();
+  await expect(page.locator('#team-scope-error')).toContainText('Tick the box above');
+  expect(posted).toBe(0);
+  page.off('request', countPost);
   await page.locator('#host-access-ack').check();
   const [invRes] = await Promise.all([
     page.waitForResponse(
@@ -1032,6 +1045,54 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   expect(patchBack.status()).toBe(200);
   const orgRestored = await (await request.get('/api/org', { headers: authHeaders(token) })).json();
   expect(orgRestored.name).toBe('My Workspace');
+});
+
+// The owner removes a teammate from Settings, and the teammate is signed out
+// (amux Cloud e2e C8-3: People offered only "change", so revoking took the API).
+test('settings_team_member_remove', async ({ page, request, browser }, testInfo) => {
+  await settle(page);
+  const token = await appToken(page);
+  const email = `remove-${Date.now()}@example.com`;
+  const invRes = await request.post('/api/org/invites', {
+    headers: authHeaders(token),
+    data: { email, team_id: 'team_global', grant_host_access: true },
+  });
+  const inv = await invRes.json();
+  expect(invRes.status(), JSON.stringify(inv)).toBe(201);
+  const mateCtx = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: 'block' });
+  const mate = await mateCtx.newPage();
+  try {
+    await mate.goto(`/invite/${inv.token}`);
+    await mate.locator('#name').fill('Removable Mate');
+    await Promise.all([
+      mate.waitForURL((url) => url.pathname === '/'),
+      mate.getByRole('button', { name: 'Join workspace' }).click(),
+    ]);
+    expect(await mate.evaluate(async () => (await fetch('/api/identity')).status)).toBe(200);
+
+    await openSettings(page);
+    const remove = page.locator(`#settings-members-list button[data-member-remove][data-email="${email}"]`);
+    // The People list loads after the panel opens; slow on a busy host.
+    await expect(remove).toBeVisible({ timeout: 20_000 });
+    // Cancel keeps them.
+    await remove.click();
+    await page.locator('#modal-btns button[onclick="_modalClose(false)"]').click();
+    let members = await (await request.get('/api/org/members', { headers: authHeaders(token) })).json();
+    expect(members.some((m: any) => m.email === email)).toBe(true);
+    // Confirm removes them, and their open session stops working.
+    await remove.click();
+    const [del] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/org/members/') && r.request().method() === 'DELETE'),
+      page.locator('#modal-btns .btn.danger').click(),
+    ]);
+    expect(del.status()).toBe(200);
+    await expect(page.locator(`#settings-members-list [data-email="${email}"]`)).toHaveCount(0);
+    members = await (await request.get('/api/org/members', { headers: authHeaders(token) })).json();
+    expect(members.some((m: any) => m.email === email)).toBe(false);
+    expect(await mate.evaluate(async () => (await fetch('/api/identity')).status)).toBe(401);
+  } finally {
+    await cleanup('close teammate context', () => mateCtx.close(), testInfo);
+  }
 });
 
 // UN-FIXME'd 2026-08-11 (AMUX-2621/AMUX-2587): routed native [GET].

@@ -1232,7 +1232,7 @@ pub async fn start_worker(
             Some(StepOutcome::NotFound)
         );
         if is_not_found && crate::api::session_verbs::lane_env_exists(&key) {
-            let (ok, msg) = crate::api::session_verbs::start_session(&state, &key, "", false).await;
+            let (ok, msg) = crate::api::session_verbs::start_session_as("api-start", &state, &key, "", false).await;
             return if ok {
                 (
                     StatusCode::ACCEPTED,
@@ -1607,7 +1607,7 @@ async fn change_pause(
                 fleet::stop_for_pause(&state, &name).await?;
                 Ok(json!({"running":false,"session":"stopped"}))
             } else {
-                let (ok, detail) = fleet::start_session(&state, &name, "", false).await;
+                let (ok, detail) = fleet::start_session_as("api-resume", &state, &name, "", false).await;
                 anyhow::ensure!(ok, "{detail}");
                 Ok(json!({"running":true,"session":"started"}))
             }

@@ -6,12 +6,12 @@
 // stripped, and two notes sharing a first line get distinct names so one never
 // overwrites the other.
 import { test, expect, Page } from './fixtures';
+import { scratchpadDir } from './scratchpad-dir';
 import { boot } from './lifecycle/evidence';
 
 type Win = Window & { switchView: (v: string) => void; _scratchpadNewNote: () => void;
   _AMUX_AUTH_TOKEN: string };
 
-const DIR = '~/Vault/Scratchpad';
 const token = (p: Page) => p.evaluate(() => (window as unknown as Win)._AMUX_AUTH_TOKEN);
 
 async function openScratchpad(p: Page) {
@@ -22,9 +22,9 @@ async function openScratchpad(p: Page) {
 
 // The scratchpad filename whose stored content contains `marker`, or null.
 async function nameContaining(p: Page, auth: Record<string, string>, marker: string) {
-  const ls = await (await p.request.get('/api/ls?path=' + encodeURIComponent(DIR) + '&hidden=0', { headers: auth })).json();
+  const ls = await (await p.request.get('/api/ls?path=' + encodeURIComponent(await scratchpadDir(p.request, auth)) + '&hidden=0', { headers: auth })).json();
   for (const e of (ls.entries || []).filter((x: any) => String(x.name).endsWith('.md'))) {
-    const f = await p.request.get('/api/file?path=' + encodeURIComponent(DIR + '/' + e.name), { headers: auth });
+    const f = await p.request.get('/api/file?path=' + encodeURIComponent((await scratchpadDir(p.request, auth)) + '/' + e.name), { headers: auth });
     if (f.ok() && String((await f.json()).content || '').includes(marker)) return String(e.name);
   }
   return null;
@@ -47,7 +47,7 @@ test('a quick-capture note is named from its first line', async ({ page }, info)
   await expect.poll(() => nameContaining(page, auth, m), { timeout: 15_000 }).not.toBeNull();
   const name = await nameContaining(page, auth, m);
   expect(name, 'named from the first line, slugified, .md').toBe(`buy-milk-and-eggs-${m}.md`);
-  await page.request.delete('/api/file?path=' + encodeURIComponent(DIR + '/' + name), { headers: auth }).catch(() => {});
+  await page.request.delete('/api/file?path=' + encodeURIComponent((await scratchpadDir(page.request, auth)) + '/' + name), { headers: auth }).catch(() => {});
 });
 
 test('an editor note is renamed from its first line, markdown heading stripped', async ({ page }, info) => {
@@ -65,7 +65,7 @@ test('an editor note is renamed from its first line, markdown heading stripped',
   await expect.poll(() => nameContaining(page, auth, m), { timeout: 15_000 }).not.toBeNull();
   const name = await nameContaining(page, auth, m);
   expect(name, 'the "#" heading marker is stripped from the name').toBe(`weekly-sync-agenda-${m}.md`);
-  await page.request.delete('/api/file?path=' + encodeURIComponent(DIR + '/' + name), { headers: auth }).catch(() => {});
+  await page.request.delete('/api/file?path=' + encodeURIComponent((await scratchpadDir(page.request, auth)) + '/' + name), { headers: auth }).catch(() => {});
 });
 
 test('two notes with the same first line get distinct names (no overwrite)', async ({ page }, info) => {
@@ -78,6 +78,9 @@ test('two notes with the same first line get distinct names (no overwrite)', asy
   await page.locator('#sp-capture').fill(`${first}\nbody ALPHA ${m}`);
   await page.locator('#sp-capture').press('Meta+Enter');
   await expect.poll(() => nameContaining(page, auth, `ALPHA ${m}`), { timeout: 15_000 }).not.toBeNull();
+  // The client's cached listing can lag the folder (CI, a phone saving right
+  // after opening the tab). Forget it, so the name must come from the server.
+  await page.evaluate('_spLastData = null');
   await page.locator('#sp-capture').fill(`${first}\nbody BRAVO ${m}`);
   await page.locator('#sp-capture').press('Meta+Enter');
   await expect.poll(() => nameContaining(page, auth, `BRAVO ${m}`), { timeout: 15_000 }).not.toBeNull();
@@ -86,5 +89,5 @@ test('two notes with the same first line get distinct names (no overwrite)', asy
   const b = await nameContaining(page, auth, `BRAVO ${m}`);
   expect(a, 'first note named from its first line').toBe(`meeting-notes-${m}.md`);
   expect(b, 'second note stepped so it does not overwrite the first').toBe(`meeting-notes-${m}-2.md`);
-  for (const n of [a, b]) await page.request.delete('/api/file?path=' + encodeURIComponent(DIR + '/' + n), { headers: auth }).catch(() => {});
+  for (const n of [a, b]) await page.request.delete('/api/file?path=' + encodeURIComponent((await scratchpadDir(page.request, auth)) + '/' + n), { headers: auth }).catch(() => {});
 });

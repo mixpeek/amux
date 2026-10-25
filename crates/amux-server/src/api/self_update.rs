@@ -37,7 +37,154 @@ use std::time::Duration;
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/pull", post(pull))
+    Router::new().route("/api/pull", post(pull).get(pull_status))
+}
+
+// ---- deploy status: what this server runs, against main -----------------
+//
+// Ethan, 2026-10-24: "i should easily keep the mac server up to date". The
+// button used to report the shared checkout's `git pull` ("Already up to
+// date") while the server ran a hand build of a fork two weeks behind main,
+// and while the CI gate held every deploy. Neither fact reached the Settings
+// card. Now GET /api/pull says what runs, what main has, and what the gate is
+// doing, and POST adds the same report after it fetches and starts the builder.
+
+/// The ref the activation authority deploys from (its launchd plist sets it).
+fn activation_ref() -> String {
+    std::env::var("AMUX_RS_ACTIVATION_REF").unwrap_or_else(|_| "origin/main".into())
+}
+
+pub(crate) fn gate_state() -> Option<serde_json::Value> {
+    let path = std::env::var("AMUX_ACTIVATION_GATE_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| crate::api::session_verbs::home().join(".amux/activation-gate.json"));
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(9)]
+}
+
+/// (state, sentence) from the measured facts. Pure, so every branch is tested.
+/// `tip` is None when main could not be read; `on_main` is whether the live
+/// commit is an ancestor of it; `behind` counts main's commits the server lacks.
+pub(crate) fn deploy_summary(
+    live: &str,
+    tip: Option<&str>,
+    on_main: bool,
+    behind: u64,
+    gate: Option<&serde_json::Value>,
+) -> (&'static str, String) {
+    let Some(tip) = tip else {
+        return ("unmeasured", format!("Server runs {}. main could not be read here, so it cannot say whether that is current.", short(live)));
+    };
+    let target = gate.and_then(|g| g["target"].as_str()).filter(|t| !t.is_empty());
+    let tip_state = gate.and_then(|g| g["tip_state"].as_str()).unwrap_or("unknown");
+    if !on_main {
+        return ("off_main", match target {
+            Some(t) => format!("Server runs {}, which is not on main (a local or forked build). The builder replaces it with {}, the newest main commit that passed CI.", short(live), short(t)),
+            None => format!("Server runs {}, which is not on main (a local or forked build). No main commit has passed CI recently, so the builder has nothing to replace it with yet.", short(live)),
+        });
+    }
+    if live == tip || behind == 0 {
+        return ("current", format!("Up to date: server runs {}, the latest commit on main.", short(live)));
+    }
+    if let Some(t) = target.filter(|t| *t != live) {
+        return ("deploying", format!("Updating: the builder is deploying {}, the newest main commit that passed CI. Server runs {}, {behind} commit(s) behind main.", short(t), short(live)));
+    }
+    let why = match tip_state {
+        "red" => format!("main is failing CI at {}", short(tip)),
+        "pending" => format!("CI is still running on {}", short(tip)),
+        _ => format!("main's newer commits have not passed CI ({} is {tip_state})", short(tip)),
+    };
+    ("held", format!("Server runs {}, the newest main commit that passed CI. main is {behind} commit(s) ahead; they deploy once they pass CI ({why}).", short(live)))
+}
+
+async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
+    let full = env!("AMUX_BUILD_COMMIT_FULL");
+    let live = full.trim_end_matches("-dirty");
+    let gate = gate_state();
+    let mut tip: Option<String> = None;
+    let (mut on_main, mut behind) = (false, 0u64);
+    if let Some(dir) = dir {
+        let r = activation_ref();
+        tip = git(dir, &["rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")], GIT_TIMEOUT)
+            .await
+            .filter(|o| o.status.success())
+            .map(|o| out_of(&o))
+            .filter(|s| !s.is_empty());
+        if let Some(t) = tip.as_deref() {
+            on_main = git(dir, &["merge-base", "--is-ancestor", live, t], GIT_TIMEOUT)
+                .await
+                .is_some_and(|o| o.status.success());
+            if on_main {
+                behind = git(dir, &["rev-list", "--count", &format!("{live}..{t}")], GIT_TIMEOUT)
+                    .await
+                    .and_then(|o| out_of(&o).parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+    }
+    let (state, summary) = deploy_summary(live, tip.as_deref(), on_main, behind, gate.as_ref());
+    if state == "off_main" {
+        tracing::warn!(live = %live, tip = ?tip, measured = true, n_considered = 1, verdict = "server_off_main",
+            "the running server is not a build of main");
+    }
+    json!({
+        "measured": tip.is_some(),
+        "n_considered": 1,
+        "state": state,
+        "summary": summary,
+        "live": live,
+        "live_dirty": full.ends_with("-dirty"),
+        "ref": activation_ref(),
+        "tip": tip,
+        "on_main": on_main,
+        "behind": behind,
+        "gate": gate,
+        // The checkout this server builds from, so /amux-contribute can find it.
+        "repo": dir.map(|d| d.display().to_string()),
+    })
+}
+
+/// Start the builder now instead of on its next 60s tick. Best effort: the
+/// answer says whether it ran, and the timer catches up either way.
+async fn kick_builder() -> serde_json::Value {
+    let (prog, args): (&str, Vec<String>) = if cfg!(target_os = "macos") {
+        let uid = unsafe { libc::getuid() };
+        ("launchctl", vec!["kickstart".into(), format!("gui/{uid}/com.amux.server-rs-builder")])
+    } else {
+        ("systemctl", vec!["--user".into(), "start".into(), "amux-builder.service".into()])
+    };
+    let run = tokio::process::Command::new(prog)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .output();
+    match tokio::time::timeout(GIT_TIMEOUT, run).await {
+        Ok(Ok(o)) if o.status.success() => json!({"kicked": true}),
+        Ok(Ok(o)) => json!({"kicked": false, "why": out_of(&o)}),
+        Ok(Err(e)) => json!({"kicked": false, "why": e.to_string()}),
+        Err(_) => json!({"kicked": false, "why": "timed out"}),
+    }
+}
+
+async fn pull_status() -> Response {
+    Json(deploy_status(repo_dir().as_deref()).await).into_response()
+}
+
+async fn pull() -> Response {
+    let resp = pull_checkout().await;
+    let (parts, body) = resp.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+        return Json(json!({"ok": false, "output": "could not read the pull result"})).into_response();
+    };
+    let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"ok": false}));
+    let dir = repo_dir();
+    if dir.is_some() {
+        v["builder"] = kick_builder().await;
+    }
+    v["deploy"] = deploy_status(dir.as_deref()).await;
+    (parts.status, Json(v)).into_response()
 }
 
 async fn git(dir: &Path, args: &[&str], timeout: Duration) -> Option<std::process::Output> {
@@ -248,7 +395,7 @@ pub(crate) async fn preflight(dir: &Path) -> Option<serde_json::Value> {
     None
 }
 
-async fn pull() -> Response {
+async fn pull_checkout() -> Response {
     match install_channel().0 {
         "brew" => {
             return Json(json!({"ok": false, "channel": "brew",
@@ -388,6 +535,41 @@ fn https_equiv(url: &str) -> Option<String> {
         return Some(format!("https://{host}/{}", path.trim_end_matches(".git")));
     }
     None
+}
+
+#[cfg(test)]
+mod deploy_summary_tests {
+    use super::deploy_summary;
+    use serde_json::json;
+
+    const LIVE: &str = "08c8c6973e71ba5b391ec2a553c550e1fe350248";
+    const TIP: &str = "3e0f0823a30bf324737e596bda94673ef82efea7";
+
+    #[test]
+    fn every_state_names_what_runs_and_why() {
+        let (s, m) = deploy_summary(LIVE, None, false, 0, None);
+        assert_eq!(s, "unmeasured", "{m}");
+        let (s, m) = deploy_summary(LIVE, Some(LIVE), true, 0, None);
+        assert_eq!(s, "current", "{m}");
+        // The 2026-10-24 morning: a fork build live, a green main commit to replace it.
+        let g = json!({"target": LIVE, "tip_state": "pending"});
+        let (s, m) = deploy_summary("03adc2a58cf4a7f3430f0166268d2487166b1e70", Some(TIP), false, 0, Some(&g));
+        assert_eq!(s, "off_main", "{m}");
+        assert!(m.contains("not on main") && m.contains("08c8c6973"), "{m}");
+        // Live is the newest green; main is ahead and red.
+        let g = json!({"target": LIVE, "tip_state": "red"});
+        let (s, m) = deploy_summary(LIVE, Some(TIP), true, 62, Some(&g));
+        assert_eq!(s, "held", "{m}");
+        assert!(m.contains("62 commit(s) ahead") && m.contains("failing CI at 3e0f0823a"), "{m}");
+        // A newer green exists than what runs: deploying.
+        let g = json!({"target": TIP, "tip_state": "green"});
+        let (s, m) = deploy_summary(LIVE, Some(TIP), true, 62, Some(&g));
+        assert_eq!(s, "deploying", "{m}");
+        // Off main with nothing green: say there is nothing to replace it with.
+        let (s, m) = deploy_summary("03adc2a58", Some(TIP), false, 0, Some(&json!({"target": "", "tip_state": "red"})));
+        assert_eq!(s, "off_main");
+        assert!(m.contains("nothing to replace it with"), "{m}");
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,67 @@
+# amux browser methods: where a browser route runs, and which agents can drive it.
+#
+# Browser use keeps improving, and new methods should arrive as configuration
+# plus a small adapter, never as a rewrite of the route. Two kinds live here:
+#
+# BACKENDS are where the browser runs. A route tries them in `ladder` order and
+# moves to the next only when one cannot serve the request. Today:
+#   amux  the server's own Chrome for a saved profile (joins the running
+#         browser in a tab of its own when another session holds the profile)
+#   cdp   a headless copy of the selected Chrome profile (Browser route settings)
+#   cua   the sandboxed desktop (only when CUA is enabled for the profile)
+#
+# AGENTS are methods that take a natural-language goal and drive whichever
+# backend the route is on, through the same state, screenshot and action verbs
+# a worker uses: `amux browser route goal '{"task":"...","agent":"<id>"}'`.
+# Each agent names a `protocol`, implemented by an adapter module at
+# scripts/browser-agents/<protocol>.mjs (or `adapter = "/abs/path.mjs"` for one
+# of your own). An adapter is two pure functions: `request(step)` builds the
+# model call from the screenshot, task and history, and `parse(reply, step)`
+# turns the model's answer into one action or a final answer. The loop, the
+# browser, the trajectory log and the safety rules are shared.
+#
+# To add a method: write its adapter, add an [[agent]] here, point `endpoint`
+# at a server that speaks its API, and set enabled = true. To change this on
+# one machine only, put the same keys in ~/.amux/browser-methods.toml: an
+# [[agent]] with an existing id replaces its fields, a new id adds one, and a
+# top-level `ladder` replaces the order.
+#
+# Screenshots go to the agent's endpoint. A loopback endpoint keeps them on
+# this machine; a remote one sends what the browser shows (signed-in pages
+# included) to that host, which is why every agent starts disabled.
+
+version = 1
+ladder = ["amux", "cdp", "cua"]
+
+[[backend]]
+id = "amux"
+description = "The amux-managed Chrome for the saved profile; a second session joins it in its own tab."
+
+[[backend]]
+id = "cdp"
+description = "Headless copy of the Chrome profile chosen in Browser route settings."
+
+[[backend]]
+id = "cua"
+description = "The sandboxed desktop (amux computer), when CUA is enabled for the profile."
+
+# OpAgent (codefuse-ai, Apache-2.0): a vision-language web agent that reads a
+# screenshot and answers with one tool call per step, coordinates on a
+# 0-1000 grid. Single-model mode, as published in opagent_single_model/.
+# Serve the INT4 model with llama.cpp's OpenAI-compatible server:
+#   llama-server --model OpAgent.Q4_K_M.gguf --mmproj mmproj-f16.gguf --port 18080 --ctx-size 4096
+# It needs about 20 GB of memory: check `amux resources` first. Setup notes:
+# docs/design/browser-methods.md.
+[[agent]]
+id = "opagent"
+protocol = "opagent-v1"
+title = "OpAgent single-model (codefuse-ai)"
+endpoint = "http://127.0.0.1:18080/v1/chat/completions"
+model = "OpAgent-32B-Q4"
+enabled = false
+max_steps = 15
+timeout_s = 180
+temperature = 0.0
+max_tokens = 1024
+history_steps = 2
+source = "https://github.com/codefuse-ai/OpAgent"

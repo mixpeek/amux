@@ -43,6 +43,23 @@
   --nav-bg:     color-mix(in oklab, oklch(0.17 0.012 250) 85%, transparent);
 }
 
+/* Page-level accents. Pages used to hardcode these hex values, tuned for a
+   dark background; they now read these so light mode gets legible versions. */
+:root {
+  --c-green: #6ee7b7; --c-red: #f87171; --c-amber: #fbbf24; --c-blue: #60a5fa;
+  --c-green-bg: #112211; --tint: rgba(255,255,255,0.06); --tint-2: rgba(255,255,255,0.08);
+  --panel: #1a1f2e; --panel-2: #232838; --panel-3: #2a3040; --code-bg: #0d1117; --code-fg: #e6edf3;
+  --code-dim: #8b949e; --rule: #333;
+  /* aliases some pages reference */
+  --text-secondary: var(--fg-dim); --text-dim: var(--fg-mute); --bg-alt: var(--bg-2);
+}
+[data-theme="light"] {
+  --c-green: oklch(0.47 0.12 160); --c-red: oklch(0.52 0.19 25); --c-amber: oklch(0.52 0.13 70); --c-blue: oklch(0.50 0.15 250);
+  --c-green-bg: oklch(0.95 0.035 150); --tint: rgba(20,25,35,0.04); --tint-2: rgba(20,25,35,0.06);
+  --panel: oklch(0.95 0.005 90); --panel-2: oklch(0.93 0.006 90); --panel-3: oklch(0.90 0.007 90); --code-bg: oklch(0.95 0.005 90); --code-fg: oklch(0.22 0.012 250);
+  --code-dim: oklch(0.45 0.012 250); --rule: oklch(0.82 0.008 90);
+}
+
 [data-theme="light"] {
   --bg:         oklch(0.97 0.004 90);
   --bg-2:       oklch(0.93 0.006 90);
@@ -52,8 +69,8 @@
   --fg:         oklch(0.18 0.012 250);
   --fg-dim:     oklch(0.38 0.014 250);
   --fg-mute:    oklch(0.44 0.010 250);
-  --accent:     oklch(0.40 0.18 85);
-  --accent-dim: oklch(0.40 0.18 85 / .15);
+  --accent:     oklch(0.52 0.14 70);
+  --accent-dim: oklch(0.52 0.14 70 / .14);
   --ok:         oklch(0.36 0.18 145);
   --warn:       oklch(0.44 0.18 65);
   --err:        oklch(0.44 0.20 25);
@@ -72,7 +89,7 @@
   --green:      oklch(0.36 0.18 145);
   --green-dim:  oklch(0.32 0.16 145);
   --green-glow: oklch(0.36 0.18 145 / .15);
-  --amber:      oklch(0.40 0.18 85);
+  --amber:      oklch(0.52 0.14 70);
   --red:        oklch(0.44 0.20 25);
   --nav-bg:     color-mix(in oklab, oklch(0.97 0.004 90) 90%, transparent);
 }
@@ -103,129 +120,7 @@ body {
 a { color: var(--fg); text-decoration: none; }
 a:hover { color: var(--accent); }
 
-/* ────────────────── NAV ────────────────── */
-.site-header {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 28px;
-  height: 56px;
-  background: var(--nav-bg);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
-}
-
-.site-header a.logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 16px;
-  color: var(--fg);
-  text-decoration: none;
-  letter-spacing: -0.02em;
-}
-
-.site-header a.logo::before {
-  content: "▌";
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--line-2);
-  border-radius: 4px;
-  background: var(--bg-2);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  animation: blink 1.1s steps(2) infinite;
-}
-
-@keyframes blink { 50% { opacity: 0; } }
-
-.site-header nav {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-}
-
-.site-header nav a {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--fg-dim);
-  text-decoration: none;
-}
-
-.site-header nav a:hover { color: var(--fg); }
-
-.site-header nav a.nav-cta {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 7px 12px;
-  border: 1px solid var(--line-2);
-  border-radius: 4px;
-  color: var(--fg);
-  background: var(--bg-2);
-}
-
-.site-header nav a.nav-cta:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.site-header nav a.nav-cta-primary {
-  background: var(--accent);
-  color: var(--bg);
-  border-color: var(--accent);
-  font-weight: 600;
-}
-
-.site-header nav a.nav-cta-primary:hover {
-  opacity: 0.85;
-  color: var(--bg);
-}
-
-/* Theme toggle — labeled pill (icon + "Light"/"Dark"), full-contrast text and a
-   44px-min touch target, instead of the old lone dim 13px glyph. */
-.theme-toggle {
-  background: var(--bg-2);
-  border: 1.5px solid var(--line-2);
-  border-radius: 999px;
-  color: var(--fg);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: var(--font-sans, inherit);
-  padding: 7px 14px;
-  line-height: 1;
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-}
-.theme-toggle .tt-ic { font-size: 15px; color: var(--accent); line-height: 1; }
-.theme-toggle:hover {
-  border-color: var(--accent);
-  background: var(--bg-3);
-}
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-@media (max-width: 640px) {
-  .theme-toggle { min-height: 44px; min-width: 44px; padding: 8px 13px; }
-}
-
-@media (max-width: 640px) {
-  .site-header { padding: 0 16px; }
-  .site-header nav { gap: 12px; }
-  .site-header nav a.hide-mobile { display: none; }
-}
+/* Site header: see /nav.css (shared by every page). */
 
 /* ────────────────── CONTENT ────────────────── */
 main {
@@ -804,6 +699,8 @@ footer, .site-footer {
 /* ────────────────── MOBILE ────────────────── */
 @media (max-width: 900px) {
   .footer-top { flex-direction: column; gap: 24px; }
+  /* The 200px column basis becomes a 200px HEIGHT once the footer stacks. */
+  .footer-brand-col { flex: none; }
   .footer-link-cols { gap: 24px; }
   .grid { grid-template-columns: 1fr; }
 }
@@ -825,10 +722,26 @@ footer, .site-footer {
   .page-title { font-size: 1.5rem; }
 }
 
-@media (max-width: 420px) {
-  .site-header { height: 48px; }
-  .site-header a.logo { font-size: 14px; }
-  .site-header a.logo::before { width: 18px; height: 18px; font-size: 10px; }
-  .site-header nav { gap: 8px; }
-  .site-header nav a.nav-cta { padding: 5px 8px; font-size: 11px; }
+/* Mobile: long inline code and wide tables must not widen the page */
+p code, li code, td code, dd code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  main table { display: block; max-width: 100%; overflow-x: auto; }
+}
+video, img { max-width: 100%; height: auto; }
+
+/* EXP-141: copy button on the install command (site.js) */
+.copy-wrap { position: relative; margin: 1.25rem 0; }
+.copy-wrap pre { margin: 0; padding-right: 88px; }
+.copy-btn {
+  position: absolute; top: 50%; right: 10px; transform: translateY(-50%);
+  min-height: 32px; padding: 0 12px;
+  font: 600 12px var(--font-mono); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px;
+  cursor: pointer;
+}
+.copy-btn:hover { border-color: var(--accent); }
+.copy-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .copy-wrap pre { padding-right: 18px; }
+  .copy-btn { position: static; transform: none; display: block; margin-top: 8px; min-height: 44px; min-width: 88px; }
 }

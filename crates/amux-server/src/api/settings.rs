@@ -517,8 +517,14 @@ async fn patch_task_guard(Json(body): Json<Value>) -> Response {
 
 /// The only keys the settings UI may read (masked) or write. Fixed array,
 /// not a set: response key order is stable.
-pub(crate) const PROVIDER_ENV_KEYS: [&str; 4] = [
+///
+/// CLAUDE_CODE_OAUTH_TOKEN is the Claude subscription token from the
+/// dashboard's "Sign in with Claude" (`claude setup-token`). It was missing
+/// from 2026-10-14 to 10-21, so every dashboard sign-in ended in "saving the
+/// token failed" (HTTP 400) and no worker ever received it.
+pub(crate) const PROVIDER_ENV_KEYS: [&str; 5] = [
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -1369,6 +1375,21 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join("server.env")).unwrap();
         assert!(content.contains("ANTHROPIC_API_KEY=sk-ant-api03-abcd"));
         assert!(!content.contains("NOT_ALLOWED"));
+        // The dashboard's "Sign in with Claude" saves exactly this body. It was
+        // refused with 400 from 2026-10-14 to 10-21, so no sign-in ever stuck.
+        let (st, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/env",
+            Some(json!({ "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake-subscription-wxyz" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let content = std::fs::read_to_string(dir.path().join("server.env")).unwrap();
+        assert!(content.contains("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fake-subscription-wxyz"));
+        let (_, v) = send(&app, "GET", "/api/settings/env", None).await;
+        let shown = v["CLAUDE_CODE_OAUTH_TOKEN"].as_str().unwrap_or_default();
+        assert!(shown.ends_with("wxyz") && !shown.contains("fake"), "masked, got {shown:?}");
         // Only disallowed / non-string keys: Python's 400.
         let (st, v) = send(
             &app,

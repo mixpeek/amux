@@ -31,8 +31,10 @@
 //! as `server.env`, where credential values already live. The amount is what the
 //! worker DECLARES; the audit line records it so a mismatch with the actual
 //! charge is findable. A card field inside a cross-origin payment iframe
-//! (Stripe Elements and similar) cannot be reached from the page and is
-//! reported back as `not_found`, never guessed at.
+//! (Stripe Elements, Braintree hosted fields) is filled by attaching to that
+//! frame over CDP (`fill_with_frames`), only for frames served by a payment
+//! provider (`PAYMENT_FRAME_HOSTS`, extended by AMUX_VAULT_PAYMENT_FRAME_HOSTS).
+//! A field still unreached is reported back as `not_found`, never guessed at.
 
 use crate::config::{amux_home, now_f64};
 use axum::extract::Path as AxPath;
@@ -231,6 +233,14 @@ fn is_worker_origin(headers: &HeaderMap) -> bool {
     })
 }
 
+/// A worker that does not act for the owner. An admin-group worker acts with
+/// the owner's reach (CLAUDE.md), so it adds items as active and may edit
+/// them; every other worker is held to the pending/refused path below.
+/// `admin_origin` logs each admin pass (`admin_group_owner_gate`).
+fn non_owner_worker(headers: &HeaderMap, gate: &str) -> bool {
+    is_worker_origin(headers) && super::session_verbs::admin_origin(headers, gate).is_none()
+}
+
 fn origin_name(headers: &HeaderMap) -> String {
     headers
         .get("x-amux-session")
@@ -327,7 +337,7 @@ fn create_login(home: &Path, headers: &HeaderMap, name: String, body: &Value) ->
             "error": "rules.origins is required: the hosts this login may be typed into, e.g. [\"netsuite.com\"]",
             "why": "amux checks the page's host against it before every fill, so a worker cannot send the password to a page of its choosing"}));
     }
-    let from_worker = is_worker_origin(headers);
+    let from_worker = non_owner_worker(headers, "vault_create");
     let by = origin_name(headers);
     let item = json!({
         "id": new_id(),
@@ -471,13 +481,21 @@ async fn list() -> Response {
     Json(json!({
         "measured": true,
         "n_considered": items.len(),
-        "items": items.iter().map(public_view).collect::<Vec<_>>(),
+        "items": items.iter().map(|i| {
+            let mut v = public_view(i);
+            if i["kind"].as_str() != Some("login") {
+                // What each window has spent so far, beside the limits it is
+                // checked against (vault_spend.rs), so the owner sees headroom.
+                v["spent_usd"] = super::vault_spend::spent_summary(&home, i["id"].as_str().unwrap_or(""));
+            }
+            v
+        }).collect::<Vec<_>>(),
     }))
     .into_response()
 }
 
-/// Add an item. From the dashboard it is active at once. From a worker (a
-/// request carrying X-Amux-Session) it is stored PENDING: nothing can use it
+/// Add an item. From the dashboard or an admin-group worker it is active at
+/// once. From any other worker (a request carrying X-Amux-Session) it is stored PENDING: nothing can use it
 /// until the owner activates it, so a worker cannot mint itself a spendable
 /// card.
 async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
@@ -512,14 +530,24 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     fields.insert("number".into(), json!(number));
     // Every card gets a rule; the default is the owner's stated one.
     let limit = body["rules"]["max_usd_without_approval"].as_f64().unwrap_or(100.0);
-    let from_worker = is_worker_origin(&headers);
+    if !limit.is_finite() || limit < 0.0 {
+        return err(StatusCode::BAD_REQUEST, json!({"error": "max_usd_without_approval must be >= 0"}));
+    }
+    let spend_limits = match body["rules"].get("spend_limits_usd") {
+        None | Some(Value::Null) => json!({}),
+        Some(p) => match super::vault_spend::merge_limits(&json!({}), p) {
+            Ok(m) => m,
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
+        },
+    };
+    let from_worker = non_owner_worker(&headers, "vault_create");
     let by = origin_name(&headers);
     let item = json!({
         "id": new_id(),
         "name": name,
         "kind": "card",
         "fields": fields,
-        "rules": {"max_usd_without_approval": limit},
+        "rules": {"max_usd_without_approval": limit, "spend_limits_usd": spend_limits},
         "status": if from_worker { "pending_owner_activation" } else { "active" },
         "created": now_f64(),
         "created_by": by,
@@ -537,11 +565,11 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     (StatusCode::CREATED, Json(json!({"ok": true, "item": view}))).into_response()
 }
 
-/// Owner only: activate a pending item, or change its rules.
+/// Owner or an admin-group worker: activate a pending item, or change its rules.
 async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<Value>) -> Response {
-    if is_worker_origin(&headers) {
+    if non_owner_worker(&headers, "vault_update") {
         return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not change a vault item or its rules",
-            "why": "the rules exist to bound what workers can spend; only the owner (the dashboard) sets them"}));
+            "why": "the rules exist to bound what workers can spend; only the owner (the dashboard) or an admin-group worker sets them"}));
     }
     let home = amux_home();
     let mut items = load_items(&home);
@@ -557,18 +585,25 @@ async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json
         }
         item["rules"]["max_usd_without_approval"] = json!(limit);
     }
+    if let Some(p) = body["rules"].get("spend_limits_usd") {
+        match super::vault_spend::merge_limits(&item["rules"]["spend_limits_usd"], p) {
+            Ok(m) => item["rules"]["spend_limits_usd"] = m,
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
+        }
+    }
     let view = public_view(item);
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "change": body}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "by": origin_name(&headers), "change": body}));
     Json(json!({"ok": true, "item": view})).into_response()
 }
 
-/// Owner only: remove an item.
+/// Owner or an admin-group worker: remove an item.
 async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
-    if is_worker_origin(&headers) {
-        return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not delete a vault item"}));
+    if non_owner_worker(&headers, "vault_delete") {
+        return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not delete a vault item",
+            "why": "only the owner (the dashboard) or an admin-group worker removes vault items"}));
     }
     let home = amux_home();
     let mut items = load_items(&home);
@@ -580,52 +615,259 @@ async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id, "by": origin_name(&headers)}));
     Json(json!({"ok": true})).into_response()
 }
 
 /// The page script that types a card into the current checkout. Values travel
 /// only to Chrome; the script returns WHICH fields it filled, never values.
+/// The script lives in `vault_fill.js` so a browser test runs these exact bytes.
+pub(crate) const FILL_SCRIPT_JS: &str = include_str!("vault_fill.js");
+
 pub(crate) fn fill_script(values: &Value) -> String {
-    format!(
-        r#"(() => {{
-  const v = {values};
-  const pick = (sels) => {{ for (const s of sels) {{ const el = document.querySelector(s); if (el && !el.disabled && el.offsetParent !== null) return el; }} return null; }};
-  const set = (el, val) => {{
-    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const d = Object.getOwnPropertyDescriptor(proto, 'value');
-    el.focus(); d.set.call(el, val);
-    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    el.blur();
-  }};
-  const F = {{
-    number: ['[autocomplete="cc-number"]', 'input[name*="cardnumber" i]', 'input[name*="card_number" i]', 'input[id*="cardnumber" i]', 'input[name*="ccnumber" i]'],
-    exp: ['[autocomplete="cc-exp"]', 'input[name*="expiry" i]:not([name*="month" i]):not([name*="year" i])', 'input[name="exp" i]'],
-    exp_month: ['[autocomplete="cc-exp-month"]', 'select[name*="month" i]', 'input[name*="exp_month" i]'],
-    exp_year: ['[autocomplete="cc-exp-year"]', 'select[name*="year" i]', 'input[name*="exp_year" i]'],
-    cvc: ['[autocomplete="cc-csc"]', 'input[name*="cvc" i]', 'input[name*="cvv" i]', 'input[name*="csc" i]', 'input[name*="security" i]'],
-    name: ['[autocomplete="cc-name"]', 'input[name*="cardholder" i]', 'input[name*="nameoncard" i]', 'input[name*="card_name" i]'],
-    address: ['[autocomplete="address-line1"]', '[autocomplete="street-address"]', 'input[name*="address1" i]', 'input[name*="line1" i]'],
-    city: ['[autocomplete="address-level2"]', 'input[name*="city" i]'],
-    state: ['[autocomplete="address-level1"]', 'select[name*="state" i]', 'input[name*="state" i]'],
-    zip: ['[autocomplete="postal-code"]', 'input[name*="zip" i]', 'input[name*="postal" i]'],
-    country: ['[autocomplete="country"]', '[autocomplete="country-name"]', 'select[name*="country" i]'],
-    email: ['[autocomplete="email"]', 'input[type="email"]'],
-  }};
-  const filled = [], not_found = [];
-  const wantsSplit = !pick(F.exp);
-  for (const [k, sels] of Object.entries(F)) {{
-    if (v[k] == null || v[k] === '') continue;
-    if (k === 'exp' && wantsSplit) continue;
-    if ((k === 'exp_month' || k === 'exp_year') && !wantsSplit) continue;
-    const el = pick(sels);
-    if (el) {{ set(el, v[k]); filled.push(k); }} else not_found.push(k);
-  }}
-  const iframes = [...document.querySelectorAll('iframe')].filter(f => /stripe|braintree|adyen|checkout|payment|card/i.test(f.src || f.name || '')).length;
-  return {{ filled, not_found, payment_iframes: iframes, url: location.href }};
-}})()"#
-    )
+    FILL_SCRIPT_JS.replacen("__AMUX_FILL_VALUES__", &values.to_string(), 1)
+}
+
+/// Hosts whose iframes may receive card fields: the payment providers'
+/// hosted-field frames. A cross-origin frame from anyone else (an ad, a chat
+/// widget, analytics) never does. AMUX_VAULT_PAYMENT_FRAME_HOSTS adds more,
+/// comma-separated.
+pub(crate) const PAYMENT_FRAME_HOSTS: [&str; 4] = ["stripe.com", "braintreegateway.com", "braintree-api.com", "adyen.com"];
+
+pub(crate) fn payment_frame_hosts() -> Vec<String> {
+    let mut v: Vec<String> = PAYMENT_FRAME_HOSTS.iter().map(|h| h.to_string()).collect();
+    if let Ok(extra) = std::env::var("AMUX_VAULT_PAYMENT_FRAME_HOSTS") {
+        v.extend(extra.split(',').map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()));
+    }
+    v
+}
+
+/// The host of `url` when it is one of `allowed` or under one.
+pub(crate) fn payment_frame_host(url: &str, allowed: &[String]) -> Option<String> {
+    let host = url.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = host.rsplit_once(':').filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h).to_ascii_lowercase();
+    allowed.iter().any(|a| host == *a || host.ends_with(&format!(".{a}"))).then_some(host)
+}
+
+/// The card keys a payment frame may hold. Address and email stay on the page.
+const FRAME_KEYS: [&str; 7] = ["number", "exp", "exp_month", "exp_year", "cvc", "name", "zip"];
+
+fn keys_of(v: &Value) -> Vec<String> {
+    v.as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect()
+}
+
+/// Merge the page's fill result with each payment frame's, into the shape
+/// `fill_outcome` reads: a key filled anywhere is filled; a mismatch counts
+/// only if no frame filled that key; not_found is what the page could not find
+/// and no frame filled or mismatched.
+pub(crate) fn merge_frame_fills(top: &Value, frames: &[(String, Value)], skipped: &[String]) -> Value {
+    let mut filled = keys_of(&top["filled"]);
+    for (_, r) in frames {
+        for k in keys_of(&r["filled"]) {
+            if !filled.contains(&k) {
+                filled.push(k);
+            }
+        }
+    }
+    let mut mismatched: Vec<Value> = Vec::new();
+    for m in top["mismatched"].as_array().into_iter().flatten()
+        .chain(frames.iter().flat_map(|(_, r)| r["mismatched"].as_array().into_iter().flatten()))
+    {
+        let k = m["key"].as_str().unwrap_or("").to_string();
+        if !filled.contains(&k) && !mismatched.iter().any(|x| x["key"] == m["key"]) {
+            mismatched.push(m.clone());
+        }
+    }
+    let not_found: Vec<String> = keys_of(&top["not_found"]).into_iter()
+        .filter(|k| !filled.contains(k) && !mismatched.iter().any(|m| m["key"].as_str() == Some(k)))
+        .collect();
+    let mut out = top.clone();
+    out["filled"] = json!(filled);
+    out["mismatched"] = json!(mismatched);
+    out["not_found"] = json!(not_found);
+    out["frames"] = json!(frames.iter().map(|(h, r)| json!({"host": h, "filled": r["filled"]})).collect::<Vec<_>>());
+    out["frames_skipped"] = json!(skipped);
+    out
+}
+
+/// Fill the page, then any card field still empty inside the page's payment
+/// iframes. Each frame runs the same script; a field that rejects a value set
+/// by script is typed into by Chrome itself (Input.insertText), which is what
+/// Stripe's and Braintree's hosted fields accept.
+pub(crate) async fn fill_with_frames(
+    cdp: &mut crate::integrations::browser::CdpClient,
+    values: &Value,
+    allowed: &[String],
+) -> anyhow::Result<Value> {
+    let top = cdp.eval(&fill_script(values), 15).await?;
+    let done = keys_of(&top["filled"]);
+    let mut want = serde_json::Map::new();
+    for k in FRAME_KEYS {
+        let v = &values[k];
+        if !done.iter().any(|d| d == k || (k.starts_with("exp") && d.starts_with("exp")))
+            && v.as_str().is_some_and(|s| !s.is_empty())
+        {
+            want.insert(k.to_string(), v.clone());
+        }
+    }
+    if want.is_empty() {
+        return Ok(merge_frame_fills(&top, &[], &[]));
+    }
+    let attached = cdp.attach_frames(std::time::Duration::from_millis(600)).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, verdict = "vault_frames_unmeasured", "could not attach to the page's iframes");
+        Vec::new()
+    });
+    let want = Value::Object(want);
+    let (mut frames, mut skipped) = (Vec::new(), Vec::new());
+    for (sid, url) in &attached {
+        let Some(host) = payment_frame_host(url, allowed) else {
+            skipped.push(url.split('/').take(3).collect::<Vec<_>>().join("/"));
+            continue;
+        };
+        let mut r = match cdp.eval_in(sid, &fill_script(&want), 15).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(host = %host, error = %e, verdict = "vault_frame_fill_failed", "payment frame did not run the fill");
+                continue;
+            }
+        };
+        // Real typing for what a script-set value did not stick in.
+        let mut still = Vec::new();
+        for m in r["mismatched"].as_array().cloned().unwrap_or_default() {
+            let key = m["key"].as_str().unwrap_or("").to_string();
+            let val = want[&key].as_str().unwrap_or("").to_string();
+            let focused = cdp.eval_in(sid, &fill_script(&json!({"__focus": key})), 10).await
+                .ok().and_then(|f| f["focused"].as_bool()).unwrap_or(false);
+            if focused {
+                let _ = cdp.call_in(Some(sid), "Input.insertText", json!({"text": val}),
+                    std::time::Duration::from_secs(10), None).await;
+            }
+            let ok = focused && cdp.eval_in(sid, &fill_script(&json!({"__check": {"key": key, "val": val}})), 10).await
+                .ok().and_then(|c| c["took"].as_bool()).unwrap_or(false);
+            if ok {
+                if let Some(f) = r["filled"].as_array_mut() {
+                    f.push(json!(key));
+                }
+            } else {
+                still.push(m);
+            }
+        }
+        r["mismatched"] = json!(still);
+        frames.push((host, r));
+    }
+    let merged = merge_frame_fills(&top, &frames, &skipped);
+    tracing::info!(attached = attached.len(), reached = frames.len(), skipped = ?skipped,
+        filled = %merged["filled"], measured = true, n_considered = attached.len(),
+        verdict = "vault_fill_frames", "filled card fields inside payment iframes (values not logged)");
+    Ok(merged)
+}
+
+/// What a fill result says about the form, read the same way by both callers.
+/// A fill that typed nothing, or wrote a field that did not keep its value, is
+/// not a filled form (GE-1121: "order form filled by the harness (fields: )"
+/// exited 0 with nothing in the page).
+pub(crate) struct FillOutcome {
+    pub filled: Value,
+    pub not_found: Value,
+    pub mismatched: Value,
+    pub complete: bool,
+    pub why: String,
+}
+
+pub(crate) fn fill_outcome(r: &Value) -> FillOutcome {
+    let filled = r.get("filled").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let not_found = r.get("not_found").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let mismatched = r.get("mismatched").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    let n_filled = filled.as_array().map_or(0, Vec::len);
+    let n_bad = mismatched.as_array().map_or(0, Vec::len);
+    let why = if n_filled == 0 && n_bad == 0 {
+        "no payment field on this page took a value: the form was not filled. Payment iframes are reached only when served by a payment provider (frames, frames_skipped); check payment_iframes and not_found".to_string()
+    } else if n_bad > 0 {
+        let keys: Vec<&str> = mismatched.as_array().into_iter().flatten()
+            .filter_map(|m| m["key"].as_str()).collect();
+        format!("{} field(s) did not keep the value written to them ({}): the form is not correctly filled", n_bad, keys.join(", "))
+    } else {
+        String::new()
+    };
+    FillOutcome { filled, not_found, mismatched, complete: why.is_empty(), why }
+}
+
+/// The money gate, shared by `fill` and `complete_order`: the item's rules,
+/// then its spending limits, then the approval threshold, then the atomic
+/// check-and-record in the spend ledger (vault_spend.rs). `Ok` carries the
+/// ledger id of the recorded charge; `Err` is the response to return, already
+/// audited and logged.
+#[allow(clippy::too_many_arguments)]
+fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, currency: &str,
+    merchant: &str, purpose: &str, path: &str, base_audit: &Value) -> Result<String, Box<Response>> {
+    let refuse_limit = |b: &super::vault_spend::Breach| {
+        let mut a = base_audit.clone();
+        a["decision"] = json!("refused_spend_limit");
+        a["window"] = json!(b.window);
+        a["limit_usd"] = json!(b.limit_usd);
+        a["spent_usd"] = json!(b.spent_usd);
+        audit(home, a);
+        tracing::warn!(item = %id, session = %session, amount, merchant = %merchant, window = b.window,
+            limit_usd = b.limit_usd, spent_usd = b.spent_usd, path, measured = true, n_considered = 1,
+            verdict = "vault_spend_limit_exceeded",
+            "vault charge refused: it would exceed the card's spending limit (values not logged)");
+        err(StatusCode::FORBIDDEN, b.body(id))
+    };
+    let decision = decide(item, amount, currency);
+    if let SpendDecision::Refused(why) = &decision {
+        let mut a = base_audit.clone();
+        a["decision"] = json!("refused");
+        a["why"] = json!(why);
+        audit(home, a);
+        return Err(Box::new(err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}))));
+    }
+    // A spending limit is a hard cap: check it before an approval is spent or
+    // requested, so the owner is never asked to approve what a limit refuses.
+    if let Some(b) = super::vault_spend::check(home, item, amount) {
+        return Err(Box::new(refuse_limit(&b)));
+    }
+    if let SpendDecision::NeedsApproval { limit } = decision {
+        let target = spend_target(id, amount, merchant);
+        if super::grants::take_allowance(home, session, &target).is_none() {
+            let view = public_view(item);
+            let summary = format!(
+                "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
+                view["brand"].as_str().unwrap_or("card"), view["last4"].as_str().unwrap_or("????"));
+            let grant = super::grants::create_grant(home, "vault_spend", session, &summary, json!({
+                "origin": session, "target": target, "item": id, "amount_usd": amount,
+                "currency": currency, "merchant": merchant, "purpose": purpose,
+            }));
+            let mut a = base_audit.clone();
+            a["decision"] = json!("needs_approval");
+            a["grant"] = json!(grant);
+            audit(home, a);
+            tracing::warn!(item = %id, session = %session, amount, merchant = %merchant, path,
+                measured = true, n_considered = 1, verdict = "vault_spend_needs_approval",
+                "vault charge above the item's limit; owner approval requested");
+            return Err(Box::new(err(StatusCode::FORBIDDEN, json!({
+                "ok": false, "requires_approval": true, "grant_id": grant, "limit_usd": limit,
+                "error": format!("a charge of {amount:.2} {currency} is above this card's ${limit:.0} limit and needs the owner's explicit approval"),
+                "next": "the owner approves it in the dashboard (Grants). Then retry this exact request (same amount and merchant) once; the approval is single-use and expires in 1h.",
+            }))));
+        }
+    }
+    let charge = super::vault_spend::Charge { amount_usd: amount, merchant, purpose, session, path };
+    match super::vault_spend::reserve(home, item, &charge) {
+        Ok(spend) => Ok(spend),
+        Err(super::vault_spend::ReserveError::Limit(b)) => Err(Box::new(refuse_limit(&b))),
+        Err(super::vault_spend::ReserveError::Io(e)) => {
+            let mut a = base_audit.clone();
+            a["decision"] = json!("refused_ledger_unwritable");
+            a["why"] = json!(e);
+            audit(home, a);
+            tracing::warn!(item = %id, session = %session, error = %e, measured = true, n_considered = 1,
+                verdict = "vault_spend_ledger_unwritable",
+                "vault charge refused: the spend ledger could not be written, so the limits cannot be enforced");
+            Err(Box::new(err(StatusCode::SERVICE_UNAVAILABLE, json!({"ok": false,
+                "error": format!("the spend ledger could not be written ({e}); no charge goes through unrecorded")}))))
+        }
+    }
 }
 
 /// A worker asks amux to put a vault card into its amux browser page for a
@@ -652,42 +894,10 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
     };
     let base_audit = json!({"ts": now_f64(), "event": "fill", "item": id, "session": session,
         "amount_usd": amount, "currency": currency, "merchant": merchant, "purpose": purpose});
-    let target = spend_target(&id, amount, &merchant);
-    match decide(&item, amount, &currency) {
-        SpendDecision::Refused(why) => {
-            let mut a = base_audit.clone();
-            a["decision"] = json!("refused");
-            a["why"] = json!(why);
-            audit(&home, a);
-            return err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}));
-        }
-        SpendDecision::NeedsApproval { limit } => {
-            // A matching approval already granted for exactly this charge?
-            if super::grants::take_allowance(&home, &session, &target).is_none() {
-                let view = public_view(&item);
-                let summary = format!(
-                    "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
-                    view["brand"].as_str().unwrap_or("card"), view["last4"].as_str().unwrap_or("????"));
-                let grant = super::grants::create_grant(&home, "vault_spend", &session, &summary, json!({
-                    "origin": session, "target": target, "item": id, "amount_usd": amount,
-                    "currency": currency, "merchant": merchant, "purpose": purpose,
-                }));
-                let mut a = base_audit.clone();
-                a["decision"] = json!("needs_approval");
-                a["grant"] = json!(grant);
-                audit(&home, a);
-                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
-                    measured = true, n_considered = 1, verdict = "vault_spend_needs_approval",
-                    "vault charge above the item's limit; owner approval requested");
-                return err(StatusCode::FORBIDDEN, json!({
-                    "ok": false, "requires_approval": true, "grant_id": grant, "limit_usd": limit,
-                    "error": format!("a charge of {amount:.2} {currency} is above this card's ${limit:.0} limit and needs the owner's explicit approval"),
-                    "next": "the owner approves it in the dashboard (Grants). Then retry this exact request (same amount and merchant) once; the approval is single-use and expires in 1h.",
-                }));
-            }
-        }
-        SpendDecision::Allowed => {}
-    }
+    let spend = match gate_charge(&home, &id, &item, &session, amount, &currency, &merchant, &purpose, "fill", &base_audit) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
     // Fill the worker's own amux browser page.
     let f = &item["fields"];
     let yy: String = f["exp_year"].as_str().unwrap_or("").chars().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
@@ -697,34 +907,65 @@ async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<V
         "address": f["address"], "city": f["city"], "state": f["state"], "zip": f["zip"],
         "country": f["country"], "email": f["email"],
     });
+    let mut reached_page = true;
     let result = match super::browser::connect_session(&session, None).await {
-        Ok((_page, mut cdp)) => cdp.eval(&fill_script(&values), 15).await.map_err(|e| e.to_string()),
-        Err(_) => Err(format!("no amux browser page for session '{session}': open the checkout with /api/browser/start first")),
+        Ok((_page, mut cdp)) => fill_with_frames(&mut cdp, &values, &payment_frame_hosts()).await.map_err(|e| e.to_string()),
+        Err(_) => {
+            reached_page = false;
+            Err(format!("no amux browser page for session '{session}': open the checkout with /api/browser/start first"))
+        }
     };
     let mut a = base_audit;
+    a["spend"] = json!(spend);
     match result {
         Ok(r) => {
-            let filled = r.get("filled").cloned().unwrap_or(json!([]));
-            let not_found = r.get("not_found").cloned().unwrap_or(json!([]));
-            a["decision"] = json!("filled");
-            a["filled"] = filled.clone();
-            a["not_found"] = not_found.clone();
+            let o = fill_outcome(&r);
+            release_if_nothing_typed(&home, &spend, &o, &mut a);
+            a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
+            a["filled"] = o.filled.clone();
+            a["not_found"] = o.not_found.clone();
+            a["mismatched"] = o.mismatched.clone();
             a["page"] = r.get("url").cloned().unwrap_or(Value::Null);
             audit(&home, a);
+            if !o.complete {
+                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
+                    filled = %o.filled, not_found = %o.not_found, mismatched = %o.mismatched,
+                    measured = true, n_considered = 1, verdict = "vault_fill_incomplete",
+                    "vault card fill did not fill the form (values not logged)");
+                return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
+                    "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
+                    "payment_iframes": r.get("payment_iframes"), "frames": r.get("frames"),
+                    "frames_skipped": r.get("frames_skipped"), "page": r.get("url")}));
+            }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
                 measured = true, n_considered = 1, verdict = "vault_card_filled",
                 "vault card filled into the worker's page (values not logged)");
-            Json(json!({"ok": true, "filled": filled, "not_found": not_found,
+            Json(json!({"ok": true, "filled": o.filled, "not_found": o.not_found,
                 "payment_iframes": r.get("payment_iframes"),
-                "note": "values were typed into the page by amux and are not returned. A field inside a cross-origin payment iframe cannot be reached from the page and shows up in not_found."}))
+                "frames": r.get("frames"),
+                "note": "values were typed into the page by amux and are not returned. Card fields inside a payment provider's iframe are filled there (frames); anything unreached shows up in not_found."}))
                 .into_response()
         }
         Err(e) => {
             a["decision"] = json!("fill_failed");
             a["why"] = json!(e);
+            if !reached_page {
+                super::vault_spend::release(&home, &spend, "no browser page: the card never reached a page");
+                a["spend_released"] = json!(true);
+            }
             audit(&home, a);
             err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": e}))
         }
+    }
+}
+
+/// A fill that typed no field cannot have moved money, so its reservation is
+/// released. Any field typed keeps the charge counted: amux cannot see whether
+/// the checkout was submitted afterwards, and over-counting is the safe side.
+fn release_if_nothing_typed(home: &Path, spend: &str, o: &FillOutcome, a: &mut Value) {
+    if o.filled.as_array().is_none_or(Vec::is_empty) {
+        super::vault_spend::release(home, spend, "the fill typed no field");
+        a["spend_released"] = json!(true);
     }
 }
 
@@ -887,10 +1128,11 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     let item = if item_name.is_empty() {
         items
             .iter()
-            .find(|i| i["status"].as_str() == Some("active"))
+            .find(|i| i["status"].as_str() == Some("active") && i["kind"].as_str() != Some("login"))
     } else {
         items.iter().find(|i| {
             i["status"].as_str() == Some("active")
+                && i["kind"].as_str() != Some("login")
                 && i["name"]
                     .as_str()
                     .is_some_and(|n| n.to_lowercase().contains(&item_name))
@@ -907,48 +1149,10 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     let base_audit = json!({"ts": now_f64(), "event": "complete_order", "item": id,
         "session": session, "amount_usd": amount, "currency": currency,
         "merchant": merchant, "purpose": purpose, "url": url});
-    let target = spend_target(&id, amount, &merchant);
-    match decide(&item, amount, &currency) {
-        SpendDecision::Refused(why) => {
-            let mut a = base_audit.clone();
-            a["decision"] = json!("refused");
-            a["why"] = json!(why);
-            audit(&home, a);
-            return err(StatusCode::FORBIDDEN, json!({"ok": false, "error": why}));
-        }
-        SpendDecision::NeedsApproval { limit } => {
-            if super::grants::take_allowance(&home, &session, &target).is_none() {
-                let summary = format!(
-                    "{session} wants to complete a {currency} {amount:.2} order at {merchant}: \
-                     {purpose} (rule: approval above ${limit:.0})",
-                );
-                let grant = super::grants::create_grant(
-                    &home,
-                    "vault_spend",
-                    &session,
-                    &summary,
-                    json!({
-                        "origin": session, "target": target, "item": id,
-                        "amount_usd": amount, "currency": currency,
-                        "merchant": merchant, "purpose": purpose,
-                    }),
-                );
-                let mut a = base_audit.clone();
-                a["decision"] = json!("needs_approval");
-                a["grant"] = json!(grant);
-                audit(&home, a);
-                return err(
-                    StatusCode::FORBIDDEN,
-                    json!({
-                        "ok": false, "requires_approval": true, "grant_id": grant,
-                        "error": format!("this order (${amount:.2}) needs the owner's approval"),
-                        "next": "the owner approves it in the dashboard, then retry",
-                    }),
-                );
-            }
-        }
-        SpendDecision::Allowed => {}
-    }
+    let spend = match gate_charge(&home, &id, &item, &session, amount, &currency, &merchant, &purpose, "complete_order", &base_audit) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
 
     // If a URL is provided, drive the full checkout flow server-side
     let cdp_result = if !url.is_empty() {
@@ -970,6 +1174,9 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
             let mut a = base_audit;
             a["decision"] = json!("browser_failed");
             a["why"] = json!(e);
+            a["spend"] = json!(spend);
+            a["spend_released"] = json!(true);
+            super::vault_spend::release(&home, &spend, "no browser page: the card never reached a page");
             audit(&home, a);
             return err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": e}));
         }
@@ -994,14 +1201,14 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
         "address": f["address"], "city": f["city"], "state": f["state"],
         "zip": f["zip"], "country": f["country"], "email": f["email"],
     });
-    let fill_result = cdp
-        .eval(&fill_script(&values), 15)
+    let fill_result = fill_with_frames(&mut cdp, &values, &payment_frame_hosts())
         .await
         .map_err(|e| e.to_string());
 
     // Optionally click submit/place-order
+    let fill_complete = fill_result.as_ref().map(|r| fill_outcome(r).complete).unwrap_or(false);
     let submit_result = if auto_submit {
-        if fill_result.is_ok() {
+        if fill_complete {
             let submit_js = r#"(async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const btn = document.querySelector(
@@ -1026,22 +1233,35 @@ async fn complete_order(headers: HeaderMap, Json(body): Json<Value>) -> Response
     };
 
     let mut a = base_audit;
+    a["spend"] = json!(spend);
     match fill_result {
         Ok(r) => {
-            let filled = r.get("filled").cloned().unwrap_or(json!([]));
-            let not_found = r.get("not_found").cloned().unwrap_or(json!([]));
-            a["decision"] = json!("filled");
-            a["filled"] = filled.clone();
-            a["not_found"] = not_found.clone();
+            let o = fill_outcome(&r);
+            release_if_nothing_typed(&home, &spend, &o, &mut a);
+            a["decision"] = json!(if o.complete { "filled" } else { "fill_incomplete" });
+            a["filled"] = o.filled.clone();
+            a["not_found"] = o.not_found.clone();
+            a["mismatched"] = o.mismatched.clone();
             a["page"] = r.get("url").cloned().unwrap_or(Value::Null);
             if let Some(ref sr) = submit_result {
                 a["submit"] = sr.clone();
             }
             audit(&home, a);
+            if !o.complete {
+                tracing::warn!(item = %id, session = %session, amount, merchant = %merchant,
+                    filled = %o.filled, not_found = %o.not_found, mismatched = %o.mismatched,
+                    auto_submit, measured = true, n_considered = 1, verdict = "order_fill_incomplete",
+                    "order form NOT filled by the harness; nothing was submitted (values not logged)");
+                return err(StatusCode::UNPROCESSABLE_ENTITY, json!({"ok": false, "error": o.why,
+                    "filled": o.filled, "not_found": o.not_found, "mismatched": o.mismatched,
+                    "payment_iframes": r.get("payment_iframes"), "frames": r.get("frames"),
+                    "frames_skipped": r.get("frames_skipped"), "page": r.get("url"),
+                    "submitted": false}));
+            }
             tracing::info!(item = %id, session = %session, amount, merchant = %merchant,
                 measured = true, n_considered = 1, verdict = "order_completed",
                 "order form filled by the harness (values not logged)");
-            let mut resp = json!({"ok": true, "filled": filled, "not_found": not_found,
+            let mut resp = json!({"ok": true, "filled": o.filled, "not_found": o.not_found,
                 "payment_iframes": r.get("payment_iframes"),
                 "note": "the harness filled the order form. Values are not returned."});
             if let Some(sr) = submit_result {
@@ -1138,6 +1358,146 @@ mod tests {
     use super::*;
 
     #[test]
+    fn payment_frames_are_only_the_providers() {
+        let a: Vec<String> = PAYMENT_FRAME_HOSTS.iter().map(|h| h.to_string()).collect();
+        let host = |u: &str| payment_frame_host(u, &a);
+        assert_eq!(host("https://js.stripe.com/v3/elements-inner-card.html#x").as_deref(), Some("js.stripe.com"));
+        assert_eq!(host("https://assets.braintreegateway.com/web/3.97/html/hosted-fields-frame.min.html").as_deref(),
+            Some("assets.braintreegateway.com"));
+        assert_eq!(host("https://checkoutshopper-live.adyen.com:443/x").as_deref(), Some("checkoutshopper-live.adyen.com"));
+        // Lookalikes and everyone else get nothing.
+        assert_eq!(host("https://js.stripe.com.evil.example/x"), None);
+        assert_eq!(host("https://evilstripe.com/x"), None);
+        assert_eq!(host("https://user@evil.example/js.stripe.com"), None);
+        assert_eq!(host("https://ads.example.com/frame"), None);
+        assert_eq!(host("about:blank"), None);
+    }
+
+    #[test]
+    fn frame_fills_merge_into_one_outcome() {
+        let top = json!({"filled": ["email"], "not_found": ["number", "exp", "cvc", "zip"], "mismatched": [], "url": "u"});
+        let frames = vec![
+            ("js.stripe.com".to_string(), json!({"filled": ["number", "exp"], "not_found": ["cvc", "zip"], "mismatched": []})),
+            ("js.stripe.com".to_string(), json!({"filled": ["cvc"], "not_found": [], "mismatched": [{"key": "number"}]})),
+        ];
+        let m = merge_frame_fills(&top, &frames, &["https://ads.example".into()]);
+        assert_eq!(m["filled"], json!(["email", "number", "exp", "cvc"]));
+        // A mismatch in one frame does not count when another frame filled the key.
+        assert_eq!(m["mismatched"], json!([]));
+        assert_eq!(m["not_found"], json!(["zip"]));
+        assert_eq!(m["frames_skipped"], json!(["https://ads.example"]));
+        assert!(fill_outcome(&m).complete);
+        let none = merge_frame_fills(&json!({"filled": [], "not_found": ["number"], "mismatched": []}), &[], &[]);
+        assert!(!fill_outcome(&none).complete);
+    }
+
+    /// A real Chromium: a checkout on 127.0.0.1 with a cross-site payment
+    /// iframe (localhost, allowed) whose card number keeps only what Chrome
+    /// itself types, as hosted fields do, and a cross-site iframe from a host
+    /// that is not a payment provider ([::1]), which must receive nothing.
+    /// Needs Playwright's headless Chromium (or AMUX_TEST_CHROME); without one
+    /// it says so and passes, since CI has none.
+    #[tokio::test]
+    async fn fills_card_fields_inside_a_cross_origin_payment_iframe() {
+        let Some(chrome) = test_chrome() else {
+            eprintln!("SKIPPED fills_card_fields_inside_a_cross_origin_payment_iframe: no headless Chromium (set AMUX_TEST_CHROME)");
+            return;
+        };
+        let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let v6 = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let (p4, p6) = (v4.local_addr().unwrap().port(), v6.local_addr().unwrap().port());
+        let page = format!(r#"<input id="email" type="email"><script>window.__loaded=0</script>
+<iframe src="http://localhost:{p4}/pay" onload="window.__loaded++"></iframe>
+<iframe src="http://[::1]:{p6}/other" onload="window.__loaded++"></iframe>"#);
+        let pay = r#"<input autocomplete="cc-number" id="n"><input autocomplete="cc-exp" id="e"><input autocomplete="cc-csc" id="c">
+<script>const n=document.getElementById('n');n.addEventListener('input',e=>{if(!e.isTrusted)n.value='';});
+setInterval(()=>{if(n.value&&!n.dataset.t)n.value=''},0);n.addEventListener('beforeinput',e=>{if(e.isTrusted)n.dataset.t=1});</script>"#;
+        let other = r#"<input autocomplete="cc-number" id="n"><input autocomplete="cc-csc" id="c">"#;
+        for (l, routes) in [(v4, vec![("/page", page.clone()), ("/pay", pay.to_string())]), (v6, vec![("/other", other.to_string())])] {
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                for mut c in l.incoming().flatten() {
+                    let mut buf = [0u8; 4096];
+                    let n = c.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/");
+                    let body = routes.iter().find(|(p, _)| *p == path).map(|(_, b)| b.clone()).unwrap_or_default();
+                    let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                }
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new(&chrome)
+            .args(["--headless", "--site-per-process", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
+            .arg(format!("--user-data-dir={}", dir.path().display()))
+            .arg("about:blank")
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let port = {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+            let mut port = 0u16;
+            while let Ok(Ok(Some(l))) = tokio::time::timeout(std::time::Duration::from_secs(20), lines.next_line()).await {
+                if let Some(rest) = l.split("ws://127.0.0.1:").nth(1) {
+                    port = rest.split('/').next().unwrap().parse().unwrap();
+                    break;
+                }
+            }
+            port
+        };
+        assert!(port > 0, "chrome did not report its DevTools port");
+        let tab = crate::integrations::browser::cdp_new_tab(port, "about:blank").await.unwrap();
+        let mut cdp = crate::integrations::browser::CdpClient::connect(tab["webSocketDebuggerUrl"].as_str().unwrap()).await.unwrap();
+        cdp.call("Page.navigate", json!({"url": format!("http://127.0.0.1:{p4}/page")}), std::time::Duration::from_secs(10)).await.unwrap();
+        let mut loaded = false;
+        for _ in 0..100 {
+            if cdp.eval("window.__loaded", 5).await.ok().and_then(|v| v.as_u64()) == Some(2) { loaded = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(loaded, "the checkout and both iframes loaded");
+        let values = json!({"number": "4242424242424242", "exp": "03/29", "exp_month": "03", "exp_year": "2029",
+            "cvc": "123", "email": "buyer@example.test"});
+        let r = fill_with_frames(&mut cdp, &values, &["localhost".to_string()]).await.unwrap();
+        let o = fill_outcome(&r);
+        assert!(o.complete, "{r}");
+        assert_eq!(r["frames"].as_array().map(Vec::len), Some(1), "{r}");
+        assert_eq!(r["frames"][0]["host"], "localhost", "{r}");
+        assert_eq!(r["frames_skipped"].as_array().map(Vec::len), Some(1), "{r}");
+        for k in ["email", "number", "exp", "cvc"] {
+            assert!(keys_of(&r["filled"]).contains(&k.to_string()), "{k} not filled: {r}");
+        }
+        // Read the frames' fields back through their own sessions.
+        let ts = cdp.call("Target.getTargets", json!({}), std::time::Duration::from_secs(5)).await.unwrap();
+        let mut seen = 0;
+        for t in ts["targetInfos"].as_array().unwrap().iter().filter(|t| t["type"] == "iframe") {
+            let a = cdp.call("Target.attachToTarget", json!({"targetId": t["targetId"], "flatten": true}),
+                std::time::Duration::from_secs(5)).await.unwrap();
+            let (sid, url) = (a["sessionId"].as_str().unwrap().to_string(), t["url"].as_str().unwrap_or(""));
+            let n = cdp.eval_in(&sid, "document.getElementById('n').value.replace(/\\D/g,'')", 5).await.unwrap();
+            if url.contains("localhost") { assert_eq!(n, "4242424242424242", "payment frame"); seen += 1; }
+            if url.contains("[::1]") { assert_eq!(n, "", "a non-payment frame got a card number"); seen += 1; }
+        }
+        assert_eq!(seen, 2, "both frames read back");
+        let _ = child.kill().await;
+    }
+
+    fn test_chrome() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("AMUX_TEST_CHROME") {
+            return Some(p.into());
+        }
+        let cache = std::path::PathBuf::from(std::env::var("HOME").ok()?).join("Library/Caches/ms-playwright");
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&cache).ok()?.flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("chromium_headless_shell-"))
+            .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().map(|d| d.path().join("chrome-headless-shell")))
+            .filter(|p| p.exists())
+            .collect();
+        found.sort();
+        found.pop()
+    }
+
+    #[test]
     fn login_origins_match_host_suffixes_and_nothing_else() {
         let o = vec!["netsuite.com".to_string()];
         assert!(host_allowed("system.netsuite.com", &o));
@@ -1161,6 +1521,29 @@ mod tests {
         assert!(v.contains("e***@runmixpeek.com"), "{v}");
         let routed = public_view(&item).to_string();
         assert!(!routed.contains("hunter2-secret"), "public_view must route logins to the login view: {routed}");
+    }
+
+    #[test]
+    fn the_fill_script_carries_the_values_at_its_one_placeholder() {
+        assert_eq!(FILL_SCRIPT_JS.matches("__AMUX_FILL_VALUES__").count(), 1,
+            "a second mention (a comment) would take the substitution instead of the code");
+        let s = fill_script(&json!({"number": "4242", "name": "a\"b"}));
+        assert!(!s.contains("__AMUX_FILL_VALUES__"));
+        assert!(s.contains(r#"const v = {"name":"a\"b","number":"4242"};"#) || s.contains(r#"const v = {"number":"4242","name":"a\"b"};"#), "{}", &s[..400.min(s.len())]);
+    }
+
+    #[test]
+    fn an_empty_or_mismatched_fill_is_not_a_filled_form() {
+        let empty = fill_outcome(&json!({"filled": [], "not_found": ["number"], "mismatched": []}));
+        assert!(!empty.complete);
+        assert!(empty.why.contains("not filled"), "{}", empty.why);
+        let bad = fill_outcome(&json!({"filled": ["name"], "not_found": [], "mismatched": [{"key": "number"}, {"key": "exp_month"}]}));
+        assert!(!bad.complete);
+        assert!(bad.why.contains("number, exp_month"), "{}", bad.why);
+        let missing = fill_outcome(&json!({"url": "x"}));
+        assert!(!missing.complete, "a result without fields is not a fill");
+        let ok = fill_outcome(&json!({"filled": ["number", "cvc"], "not_found": ["email"], "mismatched": []}));
+        assert!(ok.complete && ok.why.is_empty());
     }
 
     #[test]

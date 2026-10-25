@@ -31,6 +31,36 @@ check "an arm past the reserve does not run"          1   "$rc2"
 check "the skipped arm is recorded by name"           late_arm "$skipped"
 check "and the skip is said, with its verdict"        yes "$(has "$out" 'late arm skipped: .*verdict=tick_out_of_time')"
 
+echo "1a. under load the last budgeted arm still runs (Mac self RCA 20261020-005306)"
+# Replays the 23:54 tick of 2026-10-19: 25s before the first arm, every budgeted
+# arm spending its whole cap, and the unbudgeted ones their measured seconds. A
+# cap of "whatever is left" let the first arms take it all and skipped worktrees.
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=25; t=25
+  spend() { t=$(( t + $1 )); SECONDS=$t; }
+  tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  c=$TICK_ARM_SHARE
+  tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  tick_arm "vm images" >/dev/null && spend 2
+  tick_arm "vm trim" >/dev/null && spend 70
+  tick_arm "claude tmp" >/dev/null && spend "$TICK_ARM_SHARE"
+  ct=$TICK_ARM_SHARE
+  tick_arm "user tmp" >/dev/null && spend 4
+  tick_arm "lane tmp" LANE_TMP_BUDGET_S >/dev/null && spend "$LANE_TMP_BUDGET_S"
+  out=$(tick_arm "worktrees" WORKTREE_BUDGET_S); rc=$?
+  tick_arm "worktrees" WORKTREE_BUDGET_S >/dev/null
+  printf "%s|%s|%s|%s|%s|%s" "$rc" "${TICK_SKIPPED:-none}" "$WORKTREE_BUDGET_S" "$c" "$t" "$ct"')
+IFS='|' read -r rc skipped wt cargo used ct <<<"$got"
+check "the last budgeted arm runs"                    0    "$rc"
+check "no arm is skipped"                             none "$skipped"
+check "it keeps a working budget (its runs took 3-13s)" yes "$([ "$wt" -ge 8 ] && echo yes || echo no)"
+check "the first arm keeps its measured 54-95s"     yes "$([ "$cargo" -ge 70 ] && echo yes || echo no)"
+check "claude tmp is not squeezed below the arms after it" yes "$([ "$ct" -ge 45 ] && echo yes || echo no)"
+check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 330 ] && echo yes || echo no)"
+out=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; SECONDS=25; TARGET_SCAN_S=90; tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S')
+check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 305s left.*verdict=tick_arm_share')"
+
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
   AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"
@@ -47,8 +77,9 @@ got=$(TICK_PATH="$TICK" bash -c '
   SECONDS=40; tick_mark "claude tmp"
   SECONDS=55; tick_mark verdicts
   SECONDS=200; tick_mark end
-  echo "$TICK_SLOWEST"')
-check "the slowest section is named with its seconds"  verdicts:145s "$got"
+  echo "$TICK_SLOWEST ${TICK_SECTIONS:-}"')
+check "the slowest section is named with its seconds"  verdicts:145s "${got%% *}"
+check "every timed section is listed for the done line" "cargo_targets:40,claude_tmp:15,verdicts:145" "${got#* }"
 
 echo "2. a tick out of time still reaches its verdicts and names what it skipped (macOS only)"
 if [ "$(uname)" = Darwin ]; then
@@ -58,14 +89,16 @@ if [ "$(uname)" = Darwin ]; then
         AMUX_CLEANUP_USER_TMP=0 AMUX_CLEANUP_WORKTREE_ROOTS="$FIX/none" AMUX_CLEANUP_CHURN_ROOTS="$FIX/none" \
         AMUX_CLEANUP_VM_LIST_CMD=true AMUX_CLEANUP_VM_IMAGE_PRUNE_CMD=true AMUX_CLEANUP_SESSIONS_CMD=false \
         AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
-        AMUX_CLEANUP_ESCALATE_CMD=true "$@" bash "$TICK" --dry-run 2>&1; }
+        AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD=true "$@" bash "$TICK" --dry-run 2>&1; }
   out=$(run env AMUX_CLEANUP_TICK_BUDGET_S=1 AMUX_CLEANUP_TICK_RESERVE_S=1); rc=$?
   check "the tick exits cleanly"                      0   "$rc"
   for arm in "cargo targets" "lane tmp" "worktrees" "claude tmp"; do
     check "the $arm arm is skipped and says so"       yes "$(has "$out" "mac-cleanup: $arm skipped: ")"
   done
   check "the verdicts still run"                      yes "$(has "$out" 'mac-cleanup: assess disk=')"
-  check "the done line names the skipped arms"        yes "$(has "$out" 'skipped=cargo_targets,.*lane_tmp,worktrees,claude_tmp')"
+  check "the done line names the skipped arms"        yes "$(has "$out" 'skipped=cargo_targets,.*claude_tmp,.*lane_tmp,worktrees')"
+  # Session scratch is reached before the cursor-resumable lane tmp (Mac self RCA 20261019-175342).
+  check "claude tmp is reached before user and lane tmp" yes "$(printf '%s\n' "$out" | grep -o 'mac-cleanup: [a-z ]* skipped: ' | tr '\n' '|' | grep -q 'claude tmp skipped: |.*lane tmp skipped: ' && echo yes || echo no)"
   out=$(run env); rc=$?
   check "with the default budget nothing is skipped"  yes "$(has "$out" ' skipped=none ')"
   check "and no arm says it ran out of time"          no  "$(has "$out" 'verdict=tick_out_of_time')"

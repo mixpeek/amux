@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["fs", "io-util", "io-std", "macros", "net",
 axum = { version = "0.8", features = ["http2", "ws"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions", "limits"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 thiserror = "2"

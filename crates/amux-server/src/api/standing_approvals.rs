@@ -1002,6 +1002,7 @@ pub const LEARN_KEY: &str = "AMUX_STANDING_APPROVALS_LEARN";
 /// The same predicate `refuse_non_owner` refuses on, stated positively: no
 /// worker header and not a scoped org member.
 pub fn is_owner_request(headers: &HeaderMap) -> bool {
+    if super::session_verbs::admin_origin(headers, "owner_request").is_some() { return true; }
     let worker = ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
             .get(*h)
@@ -1200,6 +1201,7 @@ pub async fn learn_after_owner_approval(state: &AppState, card: &str, note: &str
 /// granting itself standing permission, which is the one thing this table
 /// must never let it do.
 fn refuse_non_owner(headers: &HeaderMap) -> Option<Response> {
+    if super::session_verbs::admin_origin(headers, "standing_approval").is_some() { return None; }
     let worker = ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
             .get(*h)

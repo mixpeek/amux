@@ -2186,13 +2186,17 @@ pub async fn run_prereviews(state: &AppState) -> usize {
 /// queued only on the done request from doing, so GD-78 and GP-238 sat at
 /// done with a stale failed round for two days (mixpeek-override, MO-3964,
 /// 2026-10-08). A done card that entered done after its last failed review
-/// goes back to pending. Logs verdict=contract_review_requeued_after_redone.
+/// goes back to pending. Only a contract whose server check PASSED: one whose
+/// check never passed would fail the round on the check alone, spending a
+/// quality round on no review (GD-78 and GP-238, 17:47Z, round 2 of 3); its
+/// done request from doing runs the check instead. Logs
+/// verdict=contract_review_requeued_after_redone.
 pub(crate) async fn requeue_failed_redone(state: &AppState) -> usize {
     let now = crate::config::now_f64();
     write_value(state, move |conn| {
         let cards: Vec<String> = conn.prepare(
             "SELECT c.card FROM card_contracts c JOIN issues i ON i.id = c.card \
-             WHERE c.review_state = 'failed' AND c.command <> ?1 AND i.status = 'done' \
+             WHERE c.review_state = 'failed' AND c.state = 'passed' AND c.command <> ?1 AND i.status = 'done' \
              AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
              AND COALESCE(i.entered_state_at, 0) > COALESCE(c.review_at, 0) + 60")?
             .query_map([UNCONTRACTED_CMD], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
@@ -2308,7 +2312,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused", "land_lock_acquired", "land_lock_waited", "land_lock_timeout_requeued"]),
     ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
-    ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
+    ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered", "rules_withheld_isolated"]),
 ];
 
 /// Count each rule's verdicts in `log` text with a timestamp at or after
@@ -2645,13 +2649,16 @@ mod tests {
                 ("reopened", "doing", 5000, "make test"), ("evidence", "done", 5000, UNCONTRACTED_CMD)] {
                 conn.execute("INSERT INTO issues(id,title,type,status,session,entered_state_at,created,updated) VALUES(?1,'t','code',?2,'lane',?3,1,1)",
                     rusqlite::params![id, status, entered])?;
-                conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES(?1,'a',?2,'h',1,'frozen','failed',1000,1)",
+                conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES(?1,'a',?2,'h',1,'passed','failed',1000,1)",
                     rusqlite::params![id, cmd])?;
             }
             // Exhausted independent quality rounds remain an owner decision;
             // a later done timestamp cannot create a fourth review.
             conn.execute("INSERT INTO issues(id,title,type,status,session,entered_state_at,created,updated) VALUES('escalated','t','code','done','lane',5000,1,1)", [])?;
-            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES('escalated','a','make test','h',1,'frozen','escalated',1000,3)", [])?;
+            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES('escalated','a','make test','h',1,'passed','escalated',1000,3)", [])?;
+            // unchecked: redone, but its server check never passed
+            conn.execute("INSERT INTO issues(id,title,type,status,session,entered_state_at,created,updated) VALUES('unchecked','t','code','done','lane',5000,1,1)", [])?;
+            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES('unchecked','a','make test','h',1,'frozen','failed',1000,1)", [])?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
@@ -2659,10 +2666,10 @@ mod tests {
         assert_eq!(requeue_failed_redone(&state).await, 1);
         let conn = store.read().unwrap();
         let st = |c: &str| conn.query_row("SELECT review_state FROM card_contracts WHERE card=?1", [c], |r| r.get::<_, String>(0)).unwrap();
-        assert_eq!((st("redone").as_str(), st("stale").as_str(), st("reopened").as_str(), st("evidence").as_str()),
-            ("pending", "failed", "failed", "failed"));
         assert_eq!((st("escalated"), conn.query_row("SELECT review_rounds FROM card_contracts WHERE card='escalated'", [], |r| r.get::<_, i64>(0)).unwrap()),
             ("escalated".into(), 3), "owner direction and the quality budget must survive stale-review discovery");
+        assert_eq!((st("redone").as_str(), st("stale").as_str(), st("reopened").as_str(), st("evidence").as_str(), st("unchecked").as_str()),
+            ("pending", "failed", "failed", "failed", "failed"));
         drop(conn);
         assert_eq!(requeue_failed_redone(&state).await, 0, "a pending review is not queued twice");
     }

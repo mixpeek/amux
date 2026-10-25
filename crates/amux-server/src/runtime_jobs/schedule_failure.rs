@@ -101,7 +101,8 @@ pub enum Verdict {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
-    /// `exit`, `refused` or `failed` (timeout, spawn error, failed delivery).
+    /// `exit`, `refused`, `failed` (timeout, spawn error, failed delivery), or
+    /// `credential` (an expired user credential, whatever the exit path).
     pub kind: &'static str,
     pub exit_code: Option<i32>,
     /// The line the signature is computed from.
@@ -123,12 +124,33 @@ impl Failure {
     }
 }
 
+/// The verdict for one outcome. A failure whose text is an expired USER
+/// credential gets kind `credential` (GS-12 finding 5: 881 runs failed on
+/// expired gcloud user tokens and each read as its own error).
 pub fn classify(outcome: &RunOutcome) -> Verdict {
+    match classify_raw(outcome) {
+        Verdict::Fail(mut f) => {
+            let text = format!("{}\n{}\n{}", f.detail, f.error_line, f.tail);
+            if super::schedule_lifecycle::credential_cause(&text).is_some() {
+                f.kind = "credential";
+            }
+            Verdict::Fail(f)
+        }
+        other => other,
+    }
+}
+
+fn classify_raw(outcome: &RunOutcome) -> Verdict {
     match outcome {
         RunOutcome::Delivered { .. } | RunOutcome::Queued { .. } | RunOutcome::ShellOk { .. } => {
             Verdict::Pass
         }
         RunOutcome::Refused { reason } if reason.starts_with(RESERVE_PREFIX) => Verdict::Neutral,
+        // A goal-continuation fire skipped because the goal is met, the worker
+        // is busy or was just continued: working as designed, not a failure.
+        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::GATE_PREFIX) => {
+            Verdict::Neutral
+        }
         RunOutcome::Refused { reason } => Verdict::Fail(Failure {
             kind: "refused",
             exit_code: None,
@@ -296,7 +318,7 @@ impl WorkerProbe for LiveProbe {
     }
 }
 
-async fn resolve_route(store: &SharedStore, worker: &str, probe: &dyn WorkerProbe) -> Route {
+pub(crate) async fn resolve_route(store: &SharedStore, worker: &str, probe: &dyn WorkerProbe) -> Route {
     use crate::api::session_verbs::{permanently_blocked_resolved, schedule_target_refusal, TargetRefusal};
     let mut refusal = schedule_target_refusal(worker);
     // A rust-managed worker has no env file; its `_amux_workers` row proves it
@@ -368,6 +390,9 @@ pub fn notice_text(
             "\nLast output (up to {TAIL_LINES} lines):\n{}\n",
             tail_lines(&f.tail, TAIL_LINES)
         ));
+    }
+    if f.kind == "credential" {
+        out.push_str(&format!("\n{}\n", super::schedule_lifecycle::CREDENTIAL_HINT));
     }
     out.push_str(&format!(
         "\nAsk: fix the cause (the script, its inputs, or the schedule itself), then rerun it with \
@@ -490,6 +515,19 @@ async fn handle(
     let Some((streak, action, notice)) = slot.lock().expect("failure slot").take() else {
         return Ok(());
     };
+    if let Verdict::Fail(f) = &verdict {
+        if f.kind == "credential" {
+            if matches!(action, Action::Notify(_)) {
+                tracing::warn!(schedule = %id, worker = %worker, streak, cause = "expired_user_credential",
+                    verdict = "schedule_run_credential_expired", measured = true, n_considered = 1,
+                    "schedule failed on an expired user credential; one cause, not a new error");
+            } else {
+                tracing::info!(schedule = %id, worker = %worker, streak, cause = "expired_user_credential",
+                    verdict = "schedule_run_credential_expired", measured = true, n_considered = 1,
+                    "schedule failed on an expired user credential again");
+            }
+        }
+    }
     // Before the dedupe below: a repeat of the same error is suppressed as a
     // notice, but it still counts toward pausing an orphaned schedule.
     if let (Verdict::Fail(f), Some(Route::Owner { cause })) = (&verdict, &route) {
@@ -571,12 +609,22 @@ async fn pause_orphan(
         truncate(error_line, 200)
     );
     let (id_w, source_ref) = (id.to_string(), owner_card_ref(id));
+    let (worker_w, cause_w) = (worker.to_string(), cause.to_string());
     let slot = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let slot_w = slot.clone();
     store
         .write_async(move |conn| {
             use rusqlite::OptionalExtension;
-            conn.execute("UPDATE schedules SET enabled=0, updated=?2 WHERE id=?1", rusqlite::params![id_w, now])?;
+            // The 10-16 orphan pauses left no schedule_audit row (GS-12 review),
+            // so the harness's own disable was the one change nobody could trace.
+            let why = format!("paused by the harness: failed {streak} times in a row and its worker {worker_w} {}", cause_sentence(&cause_w));
+            let was = conn.execute(
+                "UPDATE schedules SET enabled=0, updated=?2, disabled_reason=?3 WHERE id=?1 AND enabled=1",
+                rusqlite::params![id_w, now, why],
+            )?;
+            if was > 0 {
+                super::scheduler::insert_audit(conn, &id_w, "enabled", "1", "0", "harness:schedule_failure", SENDER)?;
+            }
             let open: Option<String> = conn
                 .query_row(
                     "SELECT id FROM issues WHERE source_ref=?1 AND COALESCE(archived,0)=0 \

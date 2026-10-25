@@ -1,0 +1,67 @@
+name: rust-flake-rerun
+
+# The Mac stays on main (Ethan, 2026-10-24). The builder only activates a main
+# commit whose `rust` and `checks` runs passed, and it already re-reads a red
+# commit's verdict in case a re-run turned it green
+# (scripts/rust-auto-build-authority.sh). Nothing ever re-ran one, so a single
+# flaky e2e spec held every deploy: on 2026-10-24 four main runs in a row went
+# red, each on a different spec (board-keeps-unchanged-columns, db-ask,
+# offline-prefetch-one-tab, mdai-pages), and the server stayed 79 commits
+# behind main.
+#
+# This re-runs the failed jobs of a red main `rust` run ONCE, and only when
+# every failed job is an e2e job. Playwright keeps retries: 0, so attempt 1 still
+# records the failure and its evidence; a real regression fails attempt 2 as
+# well and main stays red. A compile, clippy or unit-test failure is never
+# re-run. Each re-run leaves a warning annotation and a job summary naming the
+# failed jobs, so a spec that keeps needing one shows up.
+
+on:
+  workflow_run:
+    workflows: ['rust']
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rerun-flaky-e2e:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-run failed e2e jobs once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          failed=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/1/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name')
+          if [ -z "$failed" ]; then
+            echo "verdict=flake_rerun_skipped reason=no_failed_jobs run=$RUN_ID sha=$SHA"
+            exit 0
+          fi
+          other=$(printf '%s\n' "$failed" | grep -v '^e2e' || true)
+          {
+            echo "### rust run $RUN_ID on ${SHA:0:9}"
+            echo
+            printf '%s\n' "$failed" | sed 's/^/- /'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$other" ]; then
+            echo "Not re-run: a non-e2e job failed." >> "$GITHUB_STEP_SUMMARY"
+            echo "verdict=flake_rerun_skipped reason=non_e2e_failure run=$RUN_ID sha=$SHA jobs=$(printf '%s' "$other" | tr '\n' ',')"
+            exit 0
+          fi
+          echo "Re-running the failed e2e jobs once." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=flake_rerun::rust run $RUN_ID (${SHA:0:9}) failed only e2e jobs; re-running them once: $(printf '%s' "$failed" | tr '\n' ';')"
+          gh run rerun "$RUN_ID" --failed -R "$REPO"
+          echo "verdict=flake_rerun_started run=$RUN_ID sha=$SHA"

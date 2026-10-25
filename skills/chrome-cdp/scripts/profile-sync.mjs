@@ -56,6 +56,33 @@ export const isSessionBound = (site) => {
   return SESSION_BOUND_SITES.some(b => s === b || s.endsWith('.' + b));
 };
 
+// localStorage logins that must never be copied into a second browser. These
+// SDKs keep a REFRESH TOKEN that rotates on every refresh, and reusing a rotated
+// token revokes the whole session (Supabase "refresh token reuse detection",
+// Auth0 rotation, MSAL, Okta). Two browsers holding one copy race to refresh:
+// the loser's reuse signs out BOTH. Measured 2026-10-20: tubescience-parity
+// copied Ethan's flawless-footage.ts.app sign-in (Supabase sb-*-auth-token) from
+// his Chrome into the amux profile 'ethan-tubescience'; hours later his Chrome
+// read signed out and the copy landed on /auth, so he was asked to sign in again.
+// The durable shape is one session per browser: sign in once inside the amux
+// profile (`amux browser start <profile> <url> --headed`), which Supabase and
+// the rest treat as a separate session with its own token family.
+const ROTATING_SESSION_KEYS = [
+  /^sb-[a-z0-9]+-auth-token$/i,          // Supabase (supabase-js v2)
+  /^supabase\.auth\.token$/i,             // Supabase (v1)
+  /^@@auth0spajs@@::/,                   // Auth0 SPA
+  /^msal\..*refreshtoken/i,               // MSAL
+  /refreshtoken|refresh_token|refresh-token/i, // any key named for a refresh token
+  /^okta-token-storage$/i,               // Okta
+];
+// A value that carries a refresh token marks its key too, whatever the key is named.
+const REFRESH_IN_VALUE = /"refresh_?token"\s*:\s*"[^"]{8,}/i;
+export function isRotatingSessionEntry(key, value) {
+  const k = String(key || '');
+  if (ROTATING_SESSION_KEYS.some(re => re.test(k))) return true;
+  return typeof value === 'string' && value.length < 200_000 && REFRESH_IN_VALUE.test(value);
+}
+
 export const onSite = (c, site) => {
   const d = String(c.domain || '').replace(/^\./, '');
   return d === site || d.endsWith('.' + site);
@@ -106,11 +133,14 @@ export async function capture(cdp, sessionId) {
   const site = siteOf(url.hostname);
   if (!site) return null;
   const { cookies } = await cdp.send('Storage.getCookies', {});
+  const rotating = page.ls.filter(([k, v]) => isRotatingSessionEntry(k, v)).map(([k]) => k);
   return {
     site, host: url.hostname, origin: url.origin, href: page.href,
     cookies: cookies.filter(c => onSite(c, site) && !c.partitionKey),
     allCookies: cookies,
-    localStorage: page.ls,
+    // Never copied: see ROTATING_SESSION_KEYS. The rest of localStorage still is.
+    localStorage: page.ls.filter(([k]) => !rotating.includes(k)),
+    rotatingSessionKeys: rotating,
   };
 }
 
@@ -210,6 +240,21 @@ export async function importInto(CDPClass, profile, cap) {
 export async function syncSite(CDPClass, cdp, sessionId, { profile: explicit = '', reason = 'explicit', list = null } = {}) {
   const cap = await capture(cdp, sessionId);
   if (!cap) return { skipped: 'not an http(s) page on a registrable domain' };
+  const rotatingNote = (profile) => cap.rotatingSessionKeys.length
+    ? {
+        rotating_session_not_copied: cap.rotatingSessionKeys,
+        verdict: 'cdp_sync_rotating_session_not_copied',
+        sign_in_instead: `${cap.site} keeps its login in a rotating refresh token (${cap.rotatingSessionKeys.join(', ')}); ` +
+          `a copy would sign out both browsers, so it was not copied. Sign in once inside the amux profile instead: ` +
+          `amux browser start ${profile || '<profile>'} ${cap.origin} --headed`,
+      }
+    : {};
+  if (cap.rotatingSessionKeys.length && !cap.cookies.some(c => isAuthCookie(c.name))) {
+    // The login is ONLY the rotating token: copying the rest saves nothing that signs in.
+    const out = { site: cap.site, skipped: 'login is a rotating session token; not copied', reason, ...rotatingNote(explicit) };
+    log(out);
+    return out;
+  }
   if (!cap.cookies.length) return { skipped: `no cookies for ${cap.site}`, site: cap.site };
   // An AUTOMATIC save needs a signed-in page: a logged-out Brex page once
   // registered "brex" from its tracking cookies, and the next lane was sent to
@@ -239,6 +284,7 @@ export async function syncSite(CDPClass, cdp, sessionId, { profile: explicit = '
   const out = {
     profile, site: cap.site, appended_to_existing: !!had, reason, ...res,
     registered: !reg.error, register_error: reg.error || undefined,
+    ...rotatingNote(profile),
   };
   log(out);
   return out;

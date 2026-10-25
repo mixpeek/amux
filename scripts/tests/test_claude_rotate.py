@@ -1,9 +1,13 @@
 """Policy tests for scripts/claude-rotate.py. Run: python3 scripts/tests/test_claude_rotate.py"""
 import datetime as dt, importlib.util, io, json, os, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
+import subprocess as _sp, threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+# Some tests below patch the subprocess module itself; keep the real calls.
+REAL_RUN, REAL_POPEN = _sp.run, _sp.Popen
 
 TMP = tempfile.mkdtemp()
-os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
+os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_USAGE_LOG="off", CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
                   CLAUDE_ROTATE_CLAUDE_JSON=os.path.join(TMP, "claude.json"))
 spec = importlib.util.spec_from_file_location("cr", os.path.join(os.path.dirname(__file__), "..", "claude-rotate.py"))
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
@@ -111,6 +115,28 @@ class Policy(unittest.TestCase):
         setup({"mix": acct(86, h(1), 22, h(160)), "join": acct(30, h(1), 50, h(140))})
         self.assertEqual(cr.decide("mix", cr.rank(NOW), {}, NOW), ("join", "preempt_limit"))
 
+    def test_tick_is_off_until_opted_in(self):
+        setup({"join": acct(100, h(1), 52, h(140)), "vec": acct(0, None, 80, h(100))}, current="join")
+        cr.save(cr.STATE, {})
+        calls, real = [], (cr.switch, cr.probe)
+        cr.switch = lambda t, r: calls.append(t) or 0
+        cr.probe = lambda: None
+        try:
+            with redirect_stdout(io.StringIO()):
+                cr.main(["x", "off"])
+                cr.cmd_tick()
+                self.assertEqual(calls, [])
+                os.environ["CLAUDE_ROTATE_ENABLED"] = "1"
+                self.assertTrue(cr.enabled())
+                os.environ["CLAUDE_ROTATE_ENABLED"] = "0"
+                cr.main(["x", "on"])
+                self.assertFalse(cr.enabled())
+                del os.environ["CLAUDE_ROTATE_ENABLED"]
+                self.assertTrue(cr.enabled())
+        finally:
+            cr.switch, cr.probe = real
+            os.environ.pop("CLAUDE_ROTATE_ENABLED", None)
+
     def test_exhausted_tick_falls_back_to_the_next_account(self):
         setup({"join": acct(100, h(1), 52, h(140)), "vec": acct(0, None, 80, h(100)),
                "mix": acct(10, h(3), 30, h(160))}, current="join")
@@ -122,6 +148,7 @@ class Policy(unittest.TestCase):
         cr.rank = lambda at=None: real[3](NOW)
         try:
             with redirect_stdout(io.StringIO()):
+                cr.main(["x", "on"])
                 cr.cmd_tick()
         finally:
             cr.switch, cr.cli_email, cr.probe, cr.rank = real
@@ -158,8 +185,9 @@ class Policy(unittest.TestCase):
             for f in ("last-trigger",):
                 try: os.remove(os.path.join(cr.DIR, f))
                 except OSError: pass
-            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 96}))
-            self.assertTrue(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 97.5}))
+            # Fires at MIN_HEADROOM (4%) remaining, i.e. 96% used.
+            self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 95}))
+            self.assertTrue(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 96.5}))
             self.assertFalse(cr.trigger_if_exhausted("x", {"used_percentage": 10}, {"used_percentage": 99}))
             self.assertEqual(len(calls), 1)
             self.assertIn("tick", calls[0][0])
@@ -197,6 +225,169 @@ class Policy(unittest.TestCase):
         sys.stdin = io.StringIO(json.dumps({"rate_limits": {"seven_day": {"used_percentage": 99, "resets_at": 1}}}))
         with redirect_stdout(io.StringIO()): cr.cmd_statusline()
         self.assertNotIn("ethan@a.com", cr.load(cr.ACCOUNTS, {"accounts": {}})["accounts"])
+
+class Logins(unittest.TestCase):
+    """2026-10-20: a fresh account with a signed-in config folder went to the
+    browser 47 times while the browser could not be reached."""
+
+    def setUp(self):
+        self.kc = {}
+        self.saved = {k: getattr(cr, k) for k in ("_kc_read", "_kc_write", "cli_email", "probe", "resume_stranded",
+                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream")}
+        self.real_run, self.real_popen = cr.subprocess.run, cr.subprocess.Popen
+        cr._kc_read = lambda svc, acct: self.kc.get((svc, acct))
+        cr._kc_write = lambda svc, acct, v: self.kc.__setitem__((svc, acct), v) or True
+        cr.cli_email = lambda: (cr.load(cr.CLAUDE_JSON, {}).get("oauthAccount") or {}).get("emailAddress")
+        cr.probe = lambda: {"five_hour": 0}
+        cr.resume_stranded = lambda force=False: []
+        cr.resume_auth_lost = lambda: []
+        cr.ACCOUNTS_DIR = tempfile.mkdtemp()
+        cr.save(cr.STATE, {})
+        json.dump({"oauthAccount": {"emailAddress": "spent@x.com"}}, open(cr.CLAUDE_JSON, "w"))
+        self.kc[(cr.CRED_SVC, cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": "spent-rt"}})
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(cr, k, v)
+        cr.subprocess.run, cr.subprocess.Popen = self.real_run, self.real_popen
+
+    def folder(self, name, email, rt="fresh-rt"):
+        d = os.path.join(cr.ACCOUNTS_DIR, name)
+        os.makedirs(d)
+        json.dump({"oauthAccount": {"emailAddress": email}}, open(os.path.join(d, ".claude.json"), "w"))
+        self.kc[(cr._folder_service(d), cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": rt}})
+
+    def test_folder_service_matches_the_cli(self):
+        # Observed on this Mac: CLAUDE_CONFIG_DIR=~/.amux/claude-accounts/amux
+        # stores its login as "Claude Code-credentials-02d1cc0b".
+        self.assertEqual(cr._folder_service("/Users/ethan/.amux/claude-accounts/amux"),
+                         "Claude Code-credentials-02d1cc0b")
+        real = cr.CRED_SVC
+        try:
+            cr.CRED_SVC = "Claude Code-credentials-sandbox"  # an override must not move folder logins
+            self.assertEqual(cr._folder_service("/Users/ethan/.amux/claude-accounts/amux"),
+                             "Claude Code-credentials-02d1cc0b")
+        finally:
+            cr.CRED_SVC = real
+
+    def test_switch_uses_the_account_folder_when_nothing_is_stored(self):
+        self.folder("usemixpeek", "fresh@x.com")
+        self.assertEqual(cr.login_coverage(["fresh@x.com", "none@x.com"]),
+                         {"fresh@x.com": "account_folder", "none@x.com": "browser"})
+        with redirect_stdout(io.StringIO()):
+            rc = cr.stored_switch("fresh@x.com", "spent@x.com", "current_exhausted", time.time())
+        self.assertEqual(rc, 0)
+        self.assertEqual(cr.cli_email(), "fresh@x.com")
+        cred = json.loads(self.kc[(cr.CRED_SVC, cr.CRED_ACCT)])
+        self.assertEqual(cred["claudeAiOauth"]["refreshToken"], "fresh-rt")
+        switched = [json.loads(l) for l in open(cr.LOG) if '"claude_rotate_switched"' in l][-1]
+        self.assertEqual((switched["to"], switched["via"]), ("fresh@x.com", "account_folder"))
+
+    def test_failed_folder_login_restores_the_previous_one(self):
+        self.folder("dead", "dead@x.com")
+        cr.probe = lambda: None
+        with redirect_stdout(io.StringIO()):
+            self.assertIsNone(cr.stored_switch("dead@x.com", "spent@x.com", "current_exhausted", time.time()))
+        self.assertEqual(cr.cli_email(), "spent@x.com")
+        self.assertEqual(json.loads(self.kc[(cr.CRED_SVC, cr.CRED_ACCT)])["claudeAiOauth"]["refreshToken"], "spent-rt")
+
+    def test_unreachable_browser_fails_fast_and_alerts_once(self):
+        calls = []
+        cr.relay_upstream = lambda: "awaiting_approval"
+        cr.subprocess.Popen = lambda args, **kw: calls.append(list(args))
+        cr.subprocess.run = lambda args, **kw: calls.append(list(args)) or type("P", (), {"returncode": 0})()
+        t = time.time()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cr._switch("nologin@x.com", "current_exhausted"), 1)
+            self.assertEqual(cr._switch("nologin@x.com", "current_exhausted"), 1)
+        self.assertLess(time.time() - t, 5, "no 6-minute sign-in wait")
+        self.assertFalse(any("auth" in c for c in calls), "the CLI sign-in never starts: %r" % calls)
+        self.assertEqual(sum(1 for c in calls if c[:2] == ["amux", "alert"]), 1, calls)
+        self.assertNotIn("nologin@x.com", cr.load(cr.STATE, {}).get("switch_failures") or {},
+                         "the browser's outage is not the account's failure")
+
+    def test_unreachable_browser_does_not_alert_for_a_preempt(self):
+        calls = []
+        cr.relay_upstream = lambda: "disconnected"
+        cr.subprocess.Popen = lambda args, **kw: calls.append(list(args))
+        cr.subprocess.run = lambda args, **kw: calls.append(list(args)) or type("P", (), {"returncode": 0})()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cr._switch("nologin@x.com", "preempt_limit"), 1)
+        self.assertFalse(any(c[:2] == ["amux", "alert"] for c in calls))
+
+
+class FakeAmux(BaseHTTPRequestHandler):
+    have, posted = {}, []
+
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def do_GET(self):
+        self._reply({"measured": True, "accounts": [{"account": a, "latest": {"at": at}} for a, at in FakeAmux.have.items()]})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeAmux.posted.append(body)
+        self._reply({"ok": True, "recorded": True})
+
+
+class UsageLog(unittest.TestCase):
+    """Readings reach the amux DB history (POST /api/usage/accounts/readings)."""
+
+    def setUp(self):
+        cr.subprocess.run, cr.subprocess.Popen = REAL_RUN, REAL_POPEN
+        self.srv = HTTPServer(("127.0.0.1", 0), FakeAmux)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        os.environ["CLAUDE_ROTATE_AMUX_URL"] = "http://127.0.0.1:%d" % self.srv.server_port
+        cr.USAGE_LOG = "on"
+        FakeAmux.have, FakeAmux.posted = {}, []
+        open(cr.LOG, "w").close()
+
+    def tearDown(self):
+        cr.USAGE_LOG = "off"
+        os.environ.pop("CLAUDE_ROTATE_AMUX_URL", None)
+        self.srv.shutdown(); self.srv.server_close()
+
+    def verdicts(self):
+        return [json.loads(l) for l in open(cr.LOG) if l.strip()]
+
+    def test_an_accepted_reading_is_posted_with_its_observation_time(self):
+        setup({})
+        self.assertTrue(cr.record("a@x.com", five=12, five_reset=r(3), week=34, week_reset=r(90), source="usage-probe"))
+        self.assertEqual(len(FakeAmux.posted), 1)
+        body = FakeAmux.posted[0]
+        acct = cr.load(cr.ACCOUNTS, {})["accounts"]["a@x.com"]
+        self.assertEqual((body["account"], body["source"], body["five_hour_pct"], body["seven_day_pct"]),
+                         ("a@x.com", "usage-probe", 12, 34))
+        self.assertEqual(body["at"], dt.datetime.fromisoformat(acct["observed_at"]).timestamp())
+        self.assertEqual(body["seven_day_resets_at"], acct["seven_day"]["resets_at"])
+
+    def test_sync_backfills_only_what_the_db_lacks(self):
+        fresh = dict(acct(5, r(2), 20, r(80)), observed_at=r(0), source="usage-probe")
+        stale = dict(acct(6, r(2), 30, r(80)), observed_at=r(0), source="statusline")
+        setup({"have@x.com": fresh, "miss@x.com": stale, "never@x.com": {}})
+        FakeAmux.have = {"have@x.com": dt.datetime.fromisoformat(fresh["observed_at"]).timestamp()}
+        out = cr.usage_log_sync()
+        self.assertEqual(out["added"], ["miss@x.com"])
+        self.assertEqual([b["account"] for b in FakeAmux.posted], ["miss@x.com"])
+        v = [x for x in self.verdicts() if x["verdict"] == "claude_rotate_usage_log_backfilled"]
+        self.assertEqual(v[-1]["added"], ["miss@x.com"])
+        # Nothing to do on the next tick once the DB has it: no post, no log line.
+        FakeAmux.have["miss@x.com"] = dt.datetime.fromisoformat(stale["observed_at"]).timestamp()
+        FakeAmux.posted = []
+        self.assertEqual(cr.usage_log_sync()["added"], [])
+        self.assertEqual(FakeAmux.posted, [])
+
+    def test_unreachable_server_is_logged(self):
+        os.environ["CLAUDE_ROTATE_AMUX_URL"] = "http://127.0.0.1:9"
+        self.assertIsNone(cr.usage_log_sync())
+        self.assertEqual(self.verdicts()[-1]["verdict"], "claude_rotate_usage_log_unreachable")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

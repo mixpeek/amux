@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Omnara: AI Team Control Plane vs Open-Source Managed Agent Platform (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Omnara is an open-source managed agent platform (Apache 2.0) for running agents you define in YAML through an API. amux runs an AI engineering team of Claude Code, Codex and Gemini CLI agents from a dashboard or your phone. Compared (October 2026): what each runs, interface, coordination, hosting, pricing, license.">
+  <meta name="keywords" content="omnara alternative, amux vs omnara, omnara vs amux, open source managed agents, claude managed agents alternative, run claude code agents from phone, ai engineering team control plane">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-omnara/">
+  <meta property="og:title" content="amux vs Omnara: AI Team Control Plane vs Open-Source Managed Agent Platform (2026)">
+  <meta property="og:description" content="Omnara runs agents you build through an API. amux runs an AI engineering team of coding agents from a dashboard or your phone. How they compare and how to choose.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-omnara/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Omnara", "item": "https://amux.io/compare/amux-vs-omnara/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Omnara: AI Team Control Plane vs Open-Source Managed Agent Platform", "description": "Omnara is an open-source managed agent platform (Apache 2.0) for running agents you define in YAML through an API. amux runs an AI engineering team of Claude Code, Codex and Gemini CLI agents from a dashboard or your phone. Compared (October 2026): what each runs, interface, coordination, hosting, pricing, license.", "url": "https://amux.io/compare/amux-vs-omnara/", "datePublished": "2026-10-21", "dateModified": "2026-10-21", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is Omnara?", "acceptedAnswer": {"@type": "Answer", "text": "Omnara is an open-source managed agent platform, written in Go and licensed Apache 2.0, positioned as a self-hostable alternative to Claude Managed Agents and the OpenAI Agents API. You define an agent in a small YAML config (instruction, model, tools, machines) and run it through a REST API, TypeScript SDK, CLI or web dashboard. It self-hosts with Docker Compose, and Omnara Cloud has no platform fee and charges for Omnara-managed models and machines as you use them."}}, {"@type": "Question", "name": "What is the difference between amux and Omnara?", "acceptedAnswer": {"@type": "Answer", "text": "Omnara is infrastructure for building your own agents: you write the agent config and call it from your code, Slack bot or product. amux runs the coding agents you already use (Claude Code, Codex, Gemini CLI, OpenCode, Ollama) as an AI engineering team, with a shared task board agents claim work from, messages between agents, schedules, self-healing, and a dashboard and phone app to supervise them."}}, {"@type": "Question", "name": "Should I use Omnara or amux to run Claude Code agents?", "acceptedAnswer": {"@type": "Answer", "text": "Use amux if you want Claude Code, Codex or Gemini CLI sessions working through a backlog on your machine or an always-on server, supervised from your phone. Use Omnara if you are building an agent into a product or internal tool and want an API, SDK and per-agent permissions around a model you choose."}}, {"@type": "Question", "name": "Can I self-host both?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Omnara self-hosts with Docker Compose under Apache 2.0. amux self-hosts as one Rust binary plus SQLite on macOS or Linux under MIT plus the Commons Clause: curl -fsSL https://amux.io/install.sh | bash. Each also has a hosted option: Omnara Cloud, and amux Cloud, your own always-on amux server at yourname.amux.io from $39 per month."}}, {"@type": "Question", "name": "Is amux free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux is open source (MIT plus the Commons Clause) and free to self-host with every feature. amux Cloud starts at $39 per month."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Omnara</span></div>
+
+    <h1>amux vs Omnara</h1>
+    <p class="subtitle">An AI team control plane and an open-source managed agent platform, side by side. Updated October 2026.</p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--accent)">
+      <strong>Quick answer:</strong> Omnara is an open-source managed agent platform: you define an agent in YAML (instruction, model, tools, machines) and run it through an API, SDK, CLI or dashboard, much like Claude Managed Agents or the OpenAI Agents API. amux runs the coding agents you already use, Claude Code, Codex and Gemini CLI, as an AI engineering team that claims work from a shared board, recovers from crashes and is supervised from a dashboard or your phone. Pick Omnara to build an agent into a product or internal tool; pick amux to run a team of coding agents.
+    </div>
+
+    <h2 id="table">amux vs Omnara at a glance</h2>
+    <table>
+      <thead><tr><th></th><th>amux</th><th>Omnara</th></tr></thead>
+      <tbody>
+        <tr><td>What it is</td><td>Open-source control plane for an AI engineering team</td><td>Open-source managed agent platform</td></tr>
+        <tr><td>What it runs</td><td>Existing agent CLIs: Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Agents you define in YAML on any model (OpenRouter or your own provider keys)</td></tr>
+        <tr><td>How you drive it</td><td>Web dashboard, PWA, iOS app, CLI, REST API</td><td>REST API, TypeScript SDK, CLI, web dashboard</td></tr>
+        <tr><td>Where agents run</td><td>Your machine, or your own amux Cloud server</td><td>Machines you connect, or Omnara-managed sandboxes</td></tr>
+        <tr><td>Task board</td><td>Shared board; agents claim cards atomically</td><td>No board; each agent is one durable conversation</td></tr>
+        <tr><td>Agents message each other</td><td>Yes</td><td>Not in its docs</td></tr>
+        <tr><td>Schedules and loops</td><td>Yes (daily at 9am, every 15m, cron)</td><td>Triggered by your code through the API</td></tr>
+        <tr><td>Self-healing</td><td>Compacts context, restarts crashes, replays last message</td><td>Durable agent history; idle managed machines sleep and keep their data</td></tr>
+        <tr><td>Permissions and secrets</td><td>Per-worker environment and scopes</td><td>Org secrets, grants per project, tool permissions</td></tr>
+        <tr><td>Self-host</td><td>One Rust binary plus SQLite: <code>curl -fsSL https://amux.io/install.sh | bash</code></td><td>Docker Compose (<code>docker compose --profile app up -d</code>)</td></tr>
+        <tr><td>Hosted option</td><td>amux Cloud: dedicated server at yourname.amux.io, Solo $39, Team $69, Max $129 per month</td><td>Omnara Cloud: no platform fee; managed models at provider token rates, managed machines billed per GiB-hour</td></tr>
+        <tr><td>License</td><td>MIT + Commons Clause</td><td>Apache 2.0</td></tr>
+        <tr><td>GitHub stars (Oct 2026)</td><td>540+</td><td>2,900+</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.85rem;color:var(--fg-mute)">Omnara details from its <a href="https://github.com/omnara-ai/omnara" target="_blank" rel="noopener">GitHub README</a>, <a href="https://docs.omnara.com/introduction" target="_blank" rel="noopener">docs</a> and <a href="https://www.omnara.com/pricing" target="_blank" rel="noopener">pricing page</a>, checked October 21, 2026.</p>
+
+    <h2 id="omnara">What Omnara does well</h2>
+    <p>Omnara gives you the plumbing for agents you build yourself. An agent starts as a short YAML file naming its instruction, model, tools and machines; you launch it from the dashboard, the CLI (<code>npx omnara agents launch</code>) or the TypeScript SDK, then stream its events and answer its questions. Organizations, projects, secrets and grants control which models and machines each agent may use, which matters when the agent sits inside a product or answers in Slack.</p>
+    <p>Its pricing is simple: the platform is free, your own model keys and machines cost nothing extra, and Omnara-managed machines are billed for active memory time and retention. Its docs give the example of a 4 GiB machine active one hour a day costing about $5 a month in runtime.</p>
+
+    <h2 id="amux">What amux does differently</h2>
+    <p>amux starts from the coding agents developers already pay for and runs them as a team. Work goes on a shared board, and workers claim cards atomically, do the task, attach evidence and move it on, so a dozen Claude Code, Codex or Gemini CLI sessions can drain a backlog without colliding. Agents message each other, schedules start work at set times, and a watchdog compacts context, restarts crashed sessions and replays the last message so runs last overnight.</p>
+    <p>You supervise from a browser dashboard, the PWA or the free iOS app, and approve or redirect work from your phone. amux is one Rust binary with SQLite that self-hosts on macOS or Linux. For agents that keep working while your laptop is closed, <a href="/start/">amux Cloud</a> runs your own amux server at <code>yourname.amux.io</code> from $39 a month.</p>
+
+    <h2 id="choose">Which should you choose?</h2>
+    <ul>
+      <li><strong>Choose Omnara</strong> if you are building an agent into your product, a Slack bot or an internal tool and want an API, SDK, secrets and per-project grants around a model you pick.</li>
+      <li><strong>Choose amux</strong> if you want Claude Code, Codex or Gemini CLI agents working through your backlog as a team, on a schedule or overnight, supervised from your phone.</li>
+      <li><strong>Use both</strong> if your amux workers build and ship an agent product that runs on Omnara.</li>
+    </ul>
+
+    <h2 id="try">Try amux</h2>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>
+    <p>The installer asks before installing Rust or tmux. You need at least one agent CLI. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="/guides/run-ai-engineering-team/">how to run an AI engineering team</a>.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">What is Omnara?</summary>
+      <p style="color:var(--fg-dim)">Omnara is an open-source managed agent platform, written in Go and licensed Apache 2.0, positioned as a self-hostable alternative to Claude Managed Agents and the OpenAI Agents API. You define an agent in a small YAML config (instruction, model, tools, machines) and run it through a REST API, TypeScript SDK, CLI or web dashboard. It self-hosts with Docker Compose, and Omnara Cloud has no platform fee and charges for Omnara-managed models and machines as you use them.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">What is the difference between amux and Omnara?</summary>
+      <p style="color:var(--fg-dim)">Omnara is infrastructure for building your own agents: you write the agent config and call it from your code, Slack bot or product. amux runs the coding agents you already use (Claude Code, Codex, Gemini CLI, OpenCode, Ollama) as an AI engineering team, with a shared task board agents claim work from, messages between agents, schedules, self-healing, and a dashboard and phone app to supervise them.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Should I use Omnara or amux to run Claude Code agents?</summary>
+      <p style="color:var(--fg-dim)">Use amux if you want Claude Code, Codex or Gemini CLI sessions working through a backlog on your machine or an always-on server, supervised from your phone. Use Omnara if you are building an agent into a product or internal tool and want an API, SDK and per-agent permissions around a model you choose.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Can I self-host both?</summary>
+      <p style="color:var(--fg-dim)">Yes. Omnara self-hosts with Docker Compose under Apache 2.0. amux self-hosts as one Rust binary plus SQLite on macOS or Linux under MIT plus the Commons Clause: curl -fsSL https://amux.io/install.sh | bash. Each also has a hosted option: Omnara Cloud, and amux Cloud, your own always-on amux server at yourname.amux.io from $39 per month.</p>
+    </details>
+    <details style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;margin-bottom:0.8rem;padding:0.2rem 1.2rem">
+      <summary style="padding:0.8rem 0;cursor:pointer;font-weight:600">Is amux free?</summary>
+      <p style="color:var(--fg-dim)">Yes. amux is open source (MIT plus the Commons Clause) and free to self-host with every feature. amux Cloud starts at $39 per month.</p>
+    </details>
+
+    <h2>Related comparisons</h2>
+    <ul>
+      <li><a href="/compare/amux-vs-claude-managed-agents/">amux vs Claude Managed Agents</a></li>
+      <li><a href="/compare/amux-vs-openai-agents-sdk/">amux vs OpenAI Agents SDK</a></li>
+      <li><a href="/compare/amux-vs-openhands/">amux vs OpenHands</a></li>
+      <li><a href="/compare/amux-vs-claude-squad/">amux vs Claude Squad</a></li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

@@ -30,7 +30,7 @@ fn app(lane: &str, repo: &std::path::Path) -> axum::Router {
     std::fs::create_dir_all(fleet.join("sessions")).unwrap();
     std::fs::write(
         fleet.join("sessions").join(format!("{lane}.env")),
-        format!("CC_DIR=\"{}\"\nCC_PROVIDER=\"codex\"\n", repo.display()),
+        format!("CC_DIR=\"{}\"\nCC_PROVIDER=\"codex\"\nCC_AUTO_PICKUP=1\n", repo.display()),
     )
     .unwrap();
     let store = Store::open(&fleet.join(format!("{lane}.sqlite"))).unwrap();

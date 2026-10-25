@@ -16,8 +16,20 @@ Subcommands:
                  accounts, email sign-in link read from the forwarded inbox.
   record EMAIL 5H 5H_RESET WK WK_RESET   Save a reading by hand (ISO times).
   status         Show the current account, its reading and the last switch.
+  history [H]    Per-account usage history from the amux DB over the last H
+                 hours (default 168): latest reading, burn rate, hours to full.
+  on | off       Opt this machine in to (or out of) automatic switching.
 
-State lives in ~/.amux/claude-usage (accounts.json, state.json). Every decision
+Automatic switching is opt-in and off by default: tick only switches when
+~/.amux/claude-usage/enabled exists (`on` writes it; the installer only with
+CLAUDE_ROTATE_ENABLE=1)
+or CLAUDE_ROTATE_ENABLED=1. CLAUDE_ROTATE_ENABLED=0 or a `paused` file there
+turns it off even when enabled. Manual `switch EMAIL` always works.
+
+State lives in ~/.amux/claude-usage (accounts.json, state.json). Every
+accepted reading is also stored in the amux DB (table claude_account_usage,
+GET /api/usage/accounts); each tick backfills any account the DB is behind on.
+Every decision
 is one JSON line in ~/.amux/logs/claude-rotate.log with a `verdict`.
 
 Policy, readings for an account that is not logged in can only fall, so a
@@ -48,8 +60,12 @@ STATE = os.path.join(DIR, "state.json")
 LOCK = os.path.join(DIR, "switch.lock")
 LOG = os.environ.get("CLAUDE_ROTATE_LOG", os.path.join(HOME, ".amux", "logs", "claude-rotate.log"))
 CLAUDE_JSON = os.environ.get("CLAUDE_ROTATE_CLAUDE_JSON", os.path.join(HOME, ".claude.json"))
-SWITCH_AT = float(os.environ.get("CLAUDE_SWITCH_AT", "99"))
-MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "2"))
+# SWITCH BY 4% REMAINING (Ethan, 2026-10-17: "make sure the login change
+# happens [when] we're at 4% remaining"). An account is spent once either
+# window has MIN_HEADROOM or less left under SWITCH_AT, so the current one is
+# left at 96% used at the latest and no target is picked at or above it.
+SWITCH_AT = float(os.environ.get("CLAUDE_SWITCH_AT", "100"))
+MIN_HEADROOM = float(os.environ.get("CLAUDE_MIN_HEADROOM", "4"))
 # SWITCH BEFORE THE LIMIT (Ethan, 2026-10-15: "workers shouldn't never be rate
 # limited, u needs to switch login before then"). Switching only once the
 # current account was exhausted (SWITCH_AT) let amux-app hit the weekly limit:
@@ -64,6 +80,11 @@ PREEMPT_AT = float(os.environ.get("CLAUDE_PREEMPT_AT", "85"))
 # twenty minutes later and preempted straight back; both 5h windows reset at
 # 13:00, joinmixpeek ran out at 12:17 and the fleet stopped.
 PREEMPT_MARGIN = float(os.environ.get("CLAUDE_PREEMPT_MARGIN", "20"))
+# Past HOT_AT the current account is minutes from the limit, so any usable
+# account with more headroom beats holding. 2026-10-17: ethan@trymixpeek.com
+# reached 97% of its 5h window with "current_is_fine" because no other account
+# was cool() (every weekly window sat at 85% or more).
+HOT_AT = float(os.environ.get("CLAUDE_HOT_AT", "95"))
 # A worker already parked on Claude's limit prompt is resumed at most this often.
 RESUME_GAP_S = int(os.environ.get("CLAUDE_ROTATE_RESUME_GAP_S", "600"))
 # Readings arriving this soon after a switch may still describe the previous
@@ -167,6 +188,10 @@ def merge_window(known, used, reset, source, at=None):
     /usage probe and manual records are first-hand and may move a reset."""
     at = at or now()
     new = {"used_percentage": used, "resets_at": reset}
+    if source == "usage-probe":
+        # The account's own /usage screen: it outranks whatever a status line
+        # left behind, including a higher number in the same window.
+        return new, "probe"
     known = known or {}
     k_reset, n_reset = _reset(known.get("resets_at")), _reset(reset)
     if known.get("used_percentage") is None or k_reset is None or k_reset <= at or n_reset is None:
@@ -180,6 +205,25 @@ def merge_window(known, used, reset, source, at=None):
     return new, "rose"
 
 
+PROBE_TRUST_S = int(os.environ.get("CLAUDE_ROTATE_PROBE_TRUST_S", "900"))
+PROBE_JUMP = float(os.environ.get("CLAUDE_ROTATE_PROBE_JUMP", "10"))
+
+
+def contradicts_probe(acct, key, used, at_s=None):
+    """A status-line reading far above a recent /usage probe of the same window.
+    A worker's status line repeats its own last API response, so a process that
+    hit the limit earlier, or one still on another login, keeps saying 100%.
+    2026-10-17: the probe read ethan@runmixpeek.com at 13% weekly while status
+    lines said 100%; the status lines won, the account was ranked spent, and
+    four browser switches away from it failed over 19 minutes. The probe reads
+    the account's own /usage screen, so inside PROBE_TRUST_S it wins."""
+    at_s = at_s or time.time()
+    p = (acct.get("probed") or {}).get(key) or {}
+    if p.get("used") is None or at_s - float(p.get("at") or 0) > PROBE_TRUST_S:
+        return False
+    return float(used) - float(p["used"]) > PROBE_JUMP
+
+
 def record(email, five=None, five_reset=None, week=None, week_reset=None, source="statusline"):
     """Store one reading. Returns False when it was rejected as another
     account's numbers or held nothing newer than what is known."""
@@ -187,6 +231,22 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         data = load(ACCOUNTS, {"accounts": {}})
         acct = data["accounts"].setdefault(email, {})
         changed = source != "statusline"
+        if source == "statusline":
+            # Weekly only: the five-hour window can climb 15 points between
+            # probes (2026-10-17 22:17: 85-86% status lines were rejected
+            # against a 73% probe, the live trigger never fired, and the
+            # account reached 98% before the next tick).
+            for key, used in (("seven_day", week),):
+                if used is not None and contradicts_probe(acct, key, used):
+
+                    log("claude_rotate_reading_rejected", account=email, source=source, reason="contradicts_probe",
+                        window=key, used=used, probed=acct["probed"][key]["used"])
+                    return False
+        elif source == "usage-probe":
+            probed = acct.setdefault("probed", {})
+            for key, used in (("seven_day", week), ("five_hour", five)):
+                if used is not None:
+                    probed[key] = {"used": used, "at": time.time()}
         if week is not None:
             merged, why = merge_window(acct.get("seven_day"), week, week_reset, source)
             if merged is None:
@@ -204,7 +264,89 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
         acct["observed_at"] = now().isoformat(timespec="seconds")
         acct["source"] = source
         save(ACCOUNTS, data)
-        return True
+        snapshot = dict(acct)
+    # Status lines render constantly; never make one wait on the server.
+    usage_log_post(email, snapshot, wait=source != "statusline")
+    return True
+
+
+USAGE_LOG_PATH = "/api/usage/accounts"
+# "off" stops writes to the amux DB history (the tests set it).
+USAGE_LOG = os.environ.get("CLAUDE_ROTATE_USAGE_LOG", "on")
+
+
+def _observed_epoch(acct):
+    try:
+        return dt.datetime.fromisoformat(acct["observed_at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def usage_log_body(email, acct):
+    """One accounts.json entry as a reading for the amux DB history
+    (POST /api/usage/accounts/readings, table claude_account_usage)."""
+    five, week = acct.get("five_hour") or {}, acct.get("seven_day") or {}
+    return {
+        "account": email,
+        "source": acct.get("source") or "unknown",
+        "at": _observed_epoch(acct),
+        "five_hour_pct": five.get("used_percentage"),
+        "five_hour_resets_at": five.get("resets_at"),
+        "seven_day_pct": week.get("used_percentage"),
+        "seven_day_resets_at": week.get("resets_at"),
+        "plan": acct.get("plan"),
+    }
+
+
+def _amux_base():
+    return os.environ.get("CLAUDE_ROTATE_AMUX_URL") or os.environ.get("AMUX_URL") or subprocess.run(
+        ["amux", "url"], capture_output=True, text=True, timeout=10).stdout.strip()
+
+
+def usage_log_post(email, acct, wait=True):
+    """Add a reading to the amux DB history. Returns the server's reply when
+    waited for, else None. A missed post is caught by usage_log_sync on the
+    next tick, so this never raises."""
+    body = usage_log_body(email, acct)
+    if USAGE_LOG == "off" or body["five_hour_pct"] is None and body["seven_day_pct"] is None:
+        return None
+    try:
+        cmd = ["curl", "-sk", "--max-time", "5", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", json.dumps(body), _amux_base() + USAGE_LOG_PATH + "/readings"]
+        if not wait:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return None
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        return json.loads(out) if out.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def usage_log_sync():
+    """Make the amux DB history hold every account's latest reading. Posts the
+    ones it lacks and logs what it did, so a server that was down or a dropped
+    status-line post is repaired and visible in the log."""
+    if USAGE_LOG == "off":
+        return None
+    try:
+        out = subprocess.run(["curl", "-sk", "--max-time", "10", _amux_base() + USAGE_LOG_PATH + "?since_h=2160"],
+                             capture_output=True, text=True, timeout=15).stdout
+        have = {a["account"]: a["latest"]["at"] for a in json.loads(out)["accounts"]}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
+        log("claude_rotate_usage_log_unreachable", measured=False, why_unmeasured=str(e)[:200] or "empty reply")
+        return None
+    accounts = load(ACCOUNTS, {"accounts": {}})["accounts"]
+    added, failed = [], []
+    for email, acct in sorted(accounts.items()):
+        at = _observed_epoch(acct)
+        if at is None or (email in have and have[email] >= at - 1):
+            continue
+        reply = usage_log_post(email, acct)
+        (added if reply and reply.get("ok") else failed).append(email)
+    if added or failed:
+        log("claude_rotate_usage_log_backfilled", measured=True, n_considered=len(accounts),
+            added=added, failed=failed)
+    return {"added": added, "failed": failed, "n_considered": len(accounts)}
 
 
 REPORTERS = os.path.join(DIR, "reporters")
@@ -247,7 +389,7 @@ def trigger_if_exhausted(email, five, week):
     5-minute schedule overshoots. At most one trigger per 90 s; the switch
     lock stops two switches running at once."""
     used = max(float(five.get("used_percentage") or 0), float(week.get("used_percentage") or 0))
-    if SWITCH_AT - used >= MIN_HEADROOM:
+    if SWITCH_AT - used > MIN_HEADROOM:
         return False
     stamp = os.path.join(DIR, "last-trigger")
     try:
@@ -337,8 +479,8 @@ def rank(at=None):
         u7, r7 = window(a.get("seven_day"), at)
         known = u5 is not None or u7 is not None
         head = min(SWITCH_AT - (u5 or 0), SWITCH_AT - (u7 or 0))
-        usable = head >= MIN_HEADROOM
-        blockers = [r for u, r in ((u5, r5), (u7, r7)) if u is not None and SWITCH_AT - u < MIN_HEADROOM and r]
+        usable = head > MIN_HEADROOM
+        blockers = [r for u, r in ((u5, r5), (u7, r7)) if u is not None and SWITCH_AT - u <= MIN_HEADROOM and r]
         rows.append({"email": email, "known": known, "usable": usable, "headroom": round(head, 1),
                      "five_hour": u5, "weekly": u7,
                      "weekly_resets": r7.isoformat() if r7 else None,
@@ -364,6 +506,22 @@ def note_failure(times, steps, at_s=None):
     return times
 
 
+def forgive_browser_failures(state, target):
+    """After a browser sign-in works, drop the backoff of every account whose
+    failures were the browser's, not the account's. 2026-10-17: the sign-in
+    page looped for every account from 19:03 to 19:22, three failures put
+    hello@amux.io (76 points free) in a 6-hour backoff, and two later sign-ins
+    to other accounts worked while the rotator kept picking accounts at 95%.
+    An unreadable sign-in link is the account's own fault and keeps its backoff."""
+    fails = state.get("switch_failures") or {}
+    own = set(state.get("account_failures") or [])
+    cleared = sorted(e for e in fails if e == target or e not in own)
+    for e in cleared:
+        fails.pop(e, None)
+    state["account_failures"] = sorted(own - {target})
+    return [e for e in cleared if e != target]
+
+
 def backed_off(state, at_s=None):
     """Accounts with FAIL_BACKOFF_N failed switches inside FAIL_BACKOFF_S. Each
     failed switch costs ~4 minutes of a 5-minute tick and holds every deploy
@@ -381,17 +539,73 @@ def cool(r):
     return (r["five_hour"] or 0) < PREEMPT_AT - PREEMPT_MARGIN and (r["weekly"] or 0) < PREEMPT_AT
 
 
-def decide(current, rows, state, at=None):
-    """Return (target or None, reason)."""
+def dead_mailboxes():
+    """Connected mailboxes whose Gmail token no longer works (amux reports them
+    as needs_reauth). The sign-in link for that account lands where nothing can
+    read it, so a switch to it waits out the whole login page. 2026-10-17: the
+    hello@amux.io grant was ended by the amux.io Workspace session policy, the
+    link search answered empty rather than failing, and the policy picked
+    hello@amux.io (the only roomy account) on every tick for 4 minutes each
+    while ethan@trymixpeek.com climbed past 92%.
+    None means the read failed: unknown, and never evidence that a mailbox recovered."""
+    try:
+        d = amux_get("/api/gmail/accounts") or {}
+    except Exception:
+        return None
+    if "needs_reauth" not in d:
+        return None
+    return {e.lower() for e in (d.get("needs_reauth") or []) if isinstance(e, str)}
+
+
+def forgive_recovered_mailboxes(state, dead, at_s=None):
+    """Drop the switch failures an account collected while its mailbox was dead,
+    once the mailbox reads healthy again. 2026-10-17: hello@amux.io was
+    reconnected at ~20:40, its token worked, and the rotator still held it in a
+    6-hour backoff for the two switches that failed at 18:07 and 18:12 while
+    nothing could read its sign-in link. Returns the accounts cleared.
+    `dead` must be a measured set; pass None and nothing is forgiven."""
+    at_s = at_s or time.time()
+    seen = state.setdefault("mailbox_dead_seen", {})
+    if dead is None:
+        return []
+    for e in dead:
+        seen[e] = at_s
+    fails = state.get("switch_failures") or {}
+    cleared = []
+    for e in sorted(set(seen) - set(dead)):
+        last_dead = float(seen.pop(e))
+        kept = [t for t in fails.get(e, []) if float(t) > last_dead]
+        if len(kept) != len(fails.get(e, [])):
+            cleared.append(e)
+            if kept:
+                fails[e] = kept
+            else:
+                fails.pop(e, None)
+    return cleared
+
+
+def decide(current, rows, state, at=None, unreachable=()):
+    """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    skip = backed_off(state) - {current}
-    if skip:
-        rows = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
+    dead = {e.lower() for e in unreachable} - {current}
+    skip = (backed_off(state) | dead) - {current}
+    marked = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
+    # A backoff saves sign-in time; it must never leave the fleet with no
+    # account. 2026-10-17 22:28: ethan@trymixpeek.com at 98% held with
+    # "no_usable_account" while hello@amux.io (76 points free) sat in a backoff
+    # earned during a browser outage. With nothing else usable, a backed-off
+    # account is tried again; a dead mailbox still is not.
+    if not any(r["usable"] and r["email"] != current for r in marked):
+        marked = [dict(r, usable=False) if r["email"] in dead else r for r in rows]
+    rows = marked
     # A target already over the preempt line would be preempted on the next
     # tick, so prefer accounts under it (2026-10-16: the soonest-expiring account
     # sat at 93% weekly and was picked first, which would flap straight back).
     under = [r for r in rows if r["usable"] and max(r["five_hour"] or 0, r["weekly"] or 0) < PREEMPT_AT]
-    best = next(iter(under), None) or next((r for r in rows if r["usable"]), None)
+    # With nothing under it, take the roomiest: an account with 4 points left
+    # is spent within minutes and costs another sign-in (2026-10-17: 95% weekly
+    # joinmixpeek was picked for its early reset and hit 99% three minutes later).
+    best = next(iter(under), None) or max((r for r in rows if r["usable"]), key=lambda r: r["headroom"], default=None)
     cur = next((r for r in rows if r["email"] == current), None)
     if best is None:
         return None, "no_usable_account"
@@ -405,6 +619,12 @@ def decide(current, rows, state, at=None):
             if time.time() - float(state.get("switched_at") or 0) < MIN_SWITCH_GAP_S:
                 return None, "recent_switch"
             return roomier["email"], "preempt_limit"
+        # Roomiest first; a target over HOT_AT itself would be preempted straight back.
+        hot = max((r for r in rows if r["usable"] and r["email"] != current and r["headroom"] > cur["headroom"]
+                   and max(r["five_hour"] or 0, r["weekly"] or 0) < HOT_AT),
+                  key=lambda r: r["headroom"], default=None)
+        if peak >= HOT_AT and hot is not None:
+            return hot["email"], "preempt_hot"
     if best["email"] == current:
         return None, "current_is_best"
     if cur is None or not cur["usable"]:
@@ -520,8 +740,55 @@ def probe():
     return windows
 
 
+REPO = os.environ.get("CLAUDE_ROTATE_REPO", os.path.join(HOME, "Dev", "amux"))
+
+
+def install_drift():
+    """Log when this installed copy is not origin/main's scripts/claude-rotate.py.
+    2026-10-17: a lane wrote a mailbox-recovery change straight into the
+    installed copy at 20:57 and never committed it, and the next install from
+    main would have deleted it with nothing saying so. Returns the verdict
+    fields, or None when they agree or the repo cannot be read."""
+    try:
+        main = subprocess.run(["git", "-C", REPO, "show", "origin/main:scripts/claude-rotate.py"],
+                              capture_output=True, text=True, timeout=20)
+        mine = open(os.path.abspath(__file__)).read()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if main.returncode != 0 or main.stdout == mine:
+        return None
+    a, b = main.stdout.splitlines(), mine.splitlines()
+    import difflib
+    changed = sum(1 for l in difflib.unified_diff(a, b, lineterm="", n=0)
+                  if l[:1] in "+-" and not l.startswith(("+++", "---")))
+    fields = {"installed": os.path.abspath(__file__), "lines_differing": changed,
+              "fix": "commit the installed change to scripts/claude-rotate.py, or reinstall from main"}
+    log("claude_rotate_install_drift", measured=True, n_considered=1, **fields)
+    return fields
+
+
+ENABLED_FILE = os.path.join(DIR, "enabled")
+
+
+def enabled():
+    """Opt-in, default off (Ethan, 2026-10-18): the env var or the marker file."""
+    env = os.environ.get("CLAUDE_ROTATE_ENABLED")
+    if env is not None:
+        return env == "1"
+    return os.path.exists(ENABLED_FILE)
+
+
 def cmd_tick():
-    if os.environ.get("CLAUDE_ROTATE_ENABLED", "1") == "0" or os.path.exists(os.path.join(DIR, "paused")):
+    try:
+        install_drift()
+    except Exception as e:
+        log("claude_rotate_install_drift", measured=False, why_unmeasured=str(e)[:200])
+    usage_log_sync()
+    if not enabled():
+        print(log("claude_rotate_disabled", measured=False,
+                  why_unmeasured="automatic switching is opt-in; run `claude-rotate.py on` to enable"))
+        return 0
+    if os.environ.get("CLAUDE_ROTATE_ENABLED") == "0" or os.path.exists(os.path.join(DIR, "paused")):
         print(log("claude_rotate_paused", measured=False, why_unmeasured="paused"))
         return 0
     if not os.path.exists(LOCK) or not _switch_running():
@@ -529,11 +796,41 @@ def cmd_tick():
             probe()
         except Exception as e:
             log("claude_rotate_probe_failed", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            capture_login()
+        except Exception as e:
+            log("claude_rotate_capture_failed", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
-    target, reason = decide(current, rows, state)
-    skipped = sorted(backed_off(state) - {current})
+    try:
+        cov = login_coverage([r["email"] for r in rows])
+        if cov != state.get("login_coverage"):
+            log("claude_rotate_login_coverage", measured=True, n_considered=len(cov), coverage=cov,
+                browser_only=sorted(e for e, v in cov.items() if v == "browser"))
+            if not os.path.exists(LOCK) or not _switch_running():
+                state["login_coverage"] = cov
+                save(STATE, state)
+    except Exception as e:
+        log("claude_rotate_login_coverage", measured=False, why_unmeasured=str(e)[:200])
+    health = dead_mailboxes()
+    if health is None:
+        log("claude_rotate_mailbox_health_unmeasured", measured=False, why_unmeasured="GET /api/gmail/accounts failed")
+    dead = (health or set()) & {r["email"].lower() for r in rows}
+    # Only this tick writes state while no switch runs; a running switch owns it.
+    if not os.path.exists(LOCK) or not _switch_running():
+        before = json.dumps(state.get("mailbox_dead_seen"), sort_keys=True)
+        recovered = forgive_recovered_mailboxes(state, None if health is None else dead)
+        if recovered:
+            log("claude_rotate_mailbox_recovered", measured=True, n_considered=len(rows), accounts=recovered,
+                why="the mailbox reads healthy again, so failures from while it was dead no longer count")
+        if recovered or json.dumps(state.get("mailbox_dead_seen"), sort_keys=True) != before:
+            save(STATE, state)
+    if dead:
+        log("claude_rotate_mailbox_dead", measured=True, n_considered=len(rows), accounts=sorted(dead),
+            fix="GET /api/gmail/auth?account=<email>, open the url, approve")
+    target, reason = decide(current, rows, state, unreachable=dead)
+    skipped = sorted((backed_off(state) | dead) - {current})
     if not target:
         print(log("claude_rotate_hold", measured=True, n_considered=len(rows), current=current, reason=reason,
                   backed_off=skipped))
@@ -552,7 +849,7 @@ def cmd_tick():
     # The current account is spent and that target failed: try the next one now
     # rather than leaving the fleet stopped until the next tick.
     rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
-    target2, reason2 = decide(current, rows, load(STATE, {}))
+    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=dead)
     if not target2 or target2 == target:
         return rc
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
@@ -575,10 +872,28 @@ def stranded(sessions):
     return out, isolated
 
 
+# Newer Claude Code parks a limited worker on a timer instead of a menu:
+# "Usage limit reached · limit resets 1:40am / Continuing automatically at
+# 1:40am · esc to cancel". 2026-10-17 22:32: three workers sat on it after the
+# switch to hello@amux.io, logged not_on_prompt_or_recent, because only the
+# menu was recognised. Escape cancels the timer and the "continue" that follows
+# runs on the new login.
+# Claude Code 2026-10-20 also words it "Usage limit reached · limit resets
+# 1pm / Continuing shortly · esc to cancel"; the rotator logged eight workers
+# not_on_prompt_or_recent at 13:00 because only the "at <time>" form matched.
+AUTO_WAIT = re.compile(r"Continuing (?:automatically at|shortly)[^\n]{0,40}esc to cancel")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def resume_action(screen):
     """The keys that leave Claude's limit prompt, or None when it is not on screen
     (a worker in any other state must not get a stray keypress)."""
-    return "1" if LIMIT_PROMPT in (screen or "") else None
+    plain = ANSI.sub("", screen or "")
+    if LIMIT_PROMPT in plain:
+        return "1"
+    if AUTO_WAIT.search(plain):
+        return "Escape"
+    return None
 
 
 def _amux(path, body=None):
@@ -831,9 +1146,13 @@ def enter_code(tab, code):
 
 
 def fill_email(tab, email):
-    """Type the address into an empty email field. Returns True if it typed."""
-    js = ('(() => { const i = document.querySelector("input[type=email]"); if (!i || i.value) return "skip";'
-          ' i.focus(); i.select(); return "ok" })()')
+    """Clear and type the address into the email field. Always retypes to
+    ensure React state matches (a login_hint prefill doesn't trigger the
+    synthetic change event the form needs)."""
+    js = ('(() => { const i = document.querySelector("input[type=email]");'
+          ' if (!i) return "none"; i.focus(); i.select();'
+          ' document.execCommand("selectAll"); document.execCommand("delete");'
+          ' return "ok" })()')
     if cdp("eval", tab, js, check=False).splitlines()[-1:] != ["ok"]:
         return False
     cdp("type", tab, email)
@@ -889,6 +1208,270 @@ def magic_link(email, since_epoch):
     return None
 
 
+# ---------------------------------------------------------------- stored logins
+#
+# SWITCH WITHOUT A BROWSER (Ethan, 2026-10-17: "it needs to understand when to
+# switch and only switch to accounts to optimize our usage across them all
+# totally using cli"). The browser sign-in failed four times in a row that
+# evening (~4.5 min each, its Chrome tab blank or gone) while the fleet sat on
+# an account at 100% weekly. The CLI keeps its login in the Keychain item
+# `Claude Code-credentials`: `claudeAiOauth` is the account's token pair and
+# `mcpOAuth` holds MCP logins shared by every account. Every tick snapshots the
+# logged-in account's `claudeAiOauth` (and its `oauthAccount` from
+# ~/.claude.json) into a private Keychain item per email, and again right
+# before switching away, so a rotated refresh token is never lost. A switch to
+# an account with a snapshot swaps it in, keeps `mcpOAuth`, and proves it with
+# a /usage probe; on any failure the previous login is put back and the browser
+# flow runs, which captures that account for next time. Values only travel on
+# stdin to `security -i`, never in argv.
+CRED_SVC = os.environ.get("CLAUDE_ROTATE_CRED_SERVICE", "Claude Code-credentials")
+CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", ""))
+STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
+
+
+def _kc_read(service, account):
+    p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+                       capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
+
+
+def _kc_write(service, account, value):
+    # -X takes hex, so quotes in the JSON cannot break the command line, and
+    # `security -i` reads it from stdin, so the value is never an argv element.
+    cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
+    p = subprocess.run(["security", "-i"], input=cmd, capture_output=True, text=True)
+    return p.returncode == 0 and "error" not in (p.stderr or "").lower()
+
+
+# Per-account config folders, each signed in on its own with CLAUDE_CONFIG_DIR
+# set. The CLI keeps such a login in the keychain under CRED_SVC plus "-" and
+# the first 8 hex digits of sha256(folder path). 2026-10-20: all seven of
+# ~/.amux/claude-accounts held logins valid to 11-11, and the rotator, reading
+# only STORE_SVC, sent ethan@usemixpeek.com (the one account with weekly
+# capacity left) to the browser 47 times over 4.5 hours while the browser
+# could not be reached.
+ACCOUNTS_DIR = os.environ.get("CLAUDE_ROTATE_ACCOUNTS_DIR", os.path.join(HOME, ".amux", "claude-accounts"))
+
+
+# The CLI's own name, fixed: CRED_SVC is overridable (a sandbox points it at a
+# scratch item), and an override must not move where folder logins are read.
+CLI_CRED_SVC = "Claude Code-credentials"
+
+
+def _folder_service(folder):
+    import hashlib
+    return CLI_CRED_SVC + "-" + hashlib.sha256(folder.encode()).hexdigest()[:8]
+
+
+def account_folders():
+    """email -> the config folder signed in to it."""
+    out = {}
+    try:
+        names = sorted(os.listdir(ACCOUNTS_DIR))
+    except OSError:
+        return out
+    for n in names:
+        folder = os.path.join(ACCOUNTS_DIR, n)
+        acct = (load(os.path.join(folder, ".claude.json"), {}) or {}).get("oauthAccount") or {}
+        email = (acct.get("emailAddress") or "").lower()
+        if email:
+            out[email] = folder
+    return out
+
+
+def folder_login(email, folders=None):
+    """The login held by `email`'s own config folder, shaped like a STORE_SVC
+    entry, or None."""
+    folder = (account_folders() if folders is None else folders).get((email or "").lower())
+    if not folder:
+        return None
+    try:
+        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+    except ValueError:
+        oauth = None
+    if not oauth or not oauth.get("refreshToken"):
+        return None
+    acct = (load(os.path.join(folder, ".claude.json"), {}) or {}).get("oauthAccount") or {}
+    return {"claudeAiOauth": oauth, "oauthAccount": acct, "folder": folder}
+
+
+def _expired(oauth):
+    exp = oauth.get("refreshTokenExpiresAt") or 0
+    exp = exp / 1000 if exp > 1e12 else exp
+    return bool(exp) and exp < time.time()
+
+
+def login_candidates(target):
+    """[(via, saved)] to try in order: the rotator's own snapshot, then the
+    account's config folder when it holds a different token."""
+    out = []
+    raw = _kc_read(STORE_SVC, target)
+    if raw:
+        try:
+            out.append(("stored_login", json.loads(raw)))
+        except ValueError:
+            pass
+    side = folder_login(target)
+    if side:
+        mine = (out[0][1].get("claudeAiOauth") or {}).get("refreshToken") if out else None
+        if side["claudeAiOauth"].get("refreshToken") != mine:
+            out.append(("account_folder", side))
+    return out
+
+
+def login_coverage(emails):
+    """email -> how a switch to it would sign in: stored_login, account_folder,
+    or browser (nothing saved, so it needs the Chrome sign-in)."""
+    folders = account_folders()
+    cov = {}
+    for e in emails:
+        raw = _kc_read(STORE_SVC, e)
+        ok = False
+        if raw:
+            try:
+                ok = not _expired(json.loads(raw).get("claudeAiOauth") or {})
+            except ValueError:
+                ok = False
+        if ok:
+            cov[e] = "stored_login"
+        else:
+            side = folder_login(e, folders)
+            cov[e] = "account_folder" if side and not _expired(side["claudeAiOauth"]) else "browser"
+    return cov
+
+
+def _write_oauth_account(acct):
+    data = load(CLAUDE_JSON, {}) or {}
+    data["oauthAccount"] = acct
+    save(CLAUDE_JSON, data)
+
+
+def capture_login():
+    """Snapshot the logged-in account's token pair under its email. Only when
+    the CLI and ~/.claude.json agree on who is logged in."""
+    email = current_email()
+    if not email or cli_email() != email:
+        return None
+    raw = _kc_read(CRED_SVC, CRED_ACCT)
+    try:
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
+    except ValueError:
+        oauth = None
+    if not oauth or not oauth.get("refreshToken"):
+        log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="no claudeAiOauth in the CLI credential")
+        return None
+    acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount") or {}
+    prev = _kc_read(STORE_SVC, email)
+    blob = json.dumps({"claudeAiOauth": oauth, "oauthAccount": acct, "captured": time.time()})
+    if prev and json.loads(prev).get("claudeAiOauth") == oauth:
+        return email
+    if _kc_write(STORE_SVC, email, blob):
+        log("claude_rotate_captured", measured=True, account=email, new=prev is None)
+        return email
+    log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="keychain write failed")
+    return None
+
+
+def stored_switch(target, before, reason, started):
+    """Swap in a saved login for `target`: the rotator's snapshot, then the
+    account's own config folder. Returns 0 on a proven switch, None to fall
+    back to the browser flow."""
+    candidates = login_candidates(target)
+    if not candidates:
+        log("claude_rotate_no_stored_login", target=target, account_folder_checked=ACCOUNTS_DIR)
+        return None
+    capture_login()  # the account being left keeps its newest refresh token
+    for via, saved in candidates:
+        oauth = saved.get("claudeAiOauth") or {}
+        if _expired(oauth):
+            log("claude_rotate_stored_login_expired", target=target, via=via)
+            continue
+        prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
+        prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
+        try:
+            cred = json.loads(prev_raw or "{}")
+        except ValueError:
+            cred = {}
+        cred["claudeAiOauth"] = oauth
+        if not _kc_write(CRED_SVC, CRED_ACCT, json.dumps(cred)):
+            log("claude_rotate_stored_switch_failed", target=target, via=via, why="keychain write failed")
+            return None
+        _write_oauth_account(saved.get("oauthAccount") or {})
+        after = cli_email()
+        windows = probe() if after == target else None
+        if after == target and windows is not None:
+            elapsed = round(time.time() - started, 1)
+            state = load(STATE, {})
+            state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
+            (state.get("switch_failures") or {}).pop(target, None)
+            save(STATE, state)
+            print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
+                      elapsed_s=elapsed, via=via, folder=saved.get("folder")))
+            capture_login()
+            resume_stranded(force=True)
+            resume_auth_lost()
+            return 0
+        # Put the previous login back exactly, then try the next candidate.
+        if prev_raw:
+            _kc_write(CRED_SVC, CRED_ACCT, prev_raw)
+        if prev_acct:
+            _write_oauth_account(prev_acct)
+        log("claude_rotate_stored_switch_failed", target=target, via=via, still=cli_email(), cli_said=after,
+            probed=windows is not None, restored=bool(prev_raw))
+    return None
+
+
+# The browser sign-in drives Ethan's Chrome through the CDP relay, which needs
+# one "Allow remote debugging?" click per Chrome launch. 2026-10-19 15:42 to
+# 2026-10-20 08:06 the relay had no Chrome connection; every switch still waited
+# out a 6-minute sign-in that ended "no tab appeared", and nobody was told.
+OWNER_ALERT_GAP_S = int(os.environ.get("CLAUDE_ROTATE_OWNER_ALERT_GAP_S", str(3 * 3600)))
+
+
+def relay_upstream():
+    """The relay's Chrome connection: connected, awaiting_approval or
+    disconnected. None when the relay status cannot be read (unknown, so the
+    browser flow runs as before)."""
+    try:
+        p = subprocess.run(["amux", "cdp", "relay"], capture_output=True, text=True, timeout=15)
+        line = next((l for l in reversed(p.stdout.splitlines()) if l.strip().startswith("{")), "")
+        return json.loads(line).get("upstream") if line else None
+    except Exception:
+        return None
+
+
+def browser_unreachable(target, reason, upstream):
+    """Skip a sign-in that cannot work, ask Chrome for approval, and tell the
+    owner once per OWNER_ALERT_GAP_S when the fleet is on a spent account."""
+    try:  # a relay client makes Chrome show the approval prompt
+        subprocess.Popen(["amux", "cdp", "list"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+    fix = "click Allow on Chrome's \"Allow remote debugging?\" prompt"
+    print(log("claude_rotate_browser_unreachable", measured=True, n_considered=1, target=target,
+              reason=reason, upstream=upstream, fix=fix))
+    if reason != "current_exhausted":
+        return 1
+    state = load(STATE, {})
+    if time.time() - float(state.get("owner_alerted_at") or 0) < OWNER_ALERT_GAP_S:
+        return 1
+    current = current_email()
+    msg = ("Claude account switching is stuck: %s is spent and %s has no saved login, so it needs a "
+           "browser sign-in, but Chrome is not connected to amux (relay: %s). To fix it, %s." % (current, target, upstream, fix))
+    try:
+        p = subprocess.run(["amux", "alert", msg, "workers are rate-limited until the switch lands"],
+                           capture_output=True, text=True, timeout=30)
+        sent = p.returncode == 0
+    except Exception:
+        sent = False
+    state = load(STATE, {})
+    state["owner_alerted_at"] = time.time()
+    save(STATE, state)
+    log("claude_rotate_owner_alerted", measured=True, target=target, sent=sent)
+    return 1
+
+
 def _switch_running():
     with locked(LOCK, nowait=True) as got:
         return not got
@@ -908,6 +1491,12 @@ def _switch(target, reason):
         print(log("claude_rotate_switch_noop", target=target))
         return 0
     started = time.time()
+    rc = stored_switch(target, before, reason, started)
+    if rc is not None:
+        return rc
+    upstream = relay_upstream()
+    if upstream is not None and upstream != "connected":
+        return browser_unreachable(target, reason, upstream)
     with tempfile.TemporaryDirectory(prefix="claude-rotate-") as tmp:
         url_file = os.path.join(tmp, "url")
         opener = os.path.join(tmp, "open.sh")
@@ -951,6 +1540,18 @@ def _switch(target, reason):
                             gap.start()
                             steps.append("authorize")
                             time.sleep(4)
+                    elif steps.count("switch-account") >= 3 and steps[-1] == "switch-account":
+                        # Clicking "Switch account" keeps bouncing back to the
+                        # authorize page (session cookies auto-log the old
+                        # account). Clear claude.ai session cookies via CDP
+                        # so the next navigation hits the real login form.
+                        cdp("evalraw", tab, "Storage.clearDataForOrigin",
+                            json.dumps({"origin": "https://claude.ai", "storageTypes": "cookies"}),
+                            check=False)
+                        auth_url = open(url_file).read()
+                        cdp("nav", tab, auth_url, check=False)
+                        steps.append("force-login")
+                        time.sleep(4)
                     elif click_text(tab, r"^Switch account$"):
                         steps.append("switch-account")
                 elif "Sign in here instead" in text:
@@ -980,7 +1581,14 @@ def _switch(target, reason):
                                 steps.append("verify")
                                 time.sleep(4)
                             elif not code:
-                                raise RuntimeError("sign-in link showed no verification code")
+                                # Visiting the magic link often completes
+                                # the auth without a visible code (the
+                                # browser redirect finishes the PKCE flow).
+                                # Give the CLI a moment before giving up.
+                                steps.append("link-wait")
+                                time.sleep(8)
+                                if proc.poll() is not None:
+                                    break
                 elif "Continue with email" in text:
                     if steps.count("continue-email") >= 3:
                         raise RuntimeError("login page did not advance after 3 email submissions")
@@ -1012,10 +1620,11 @@ def _switch(target, reason):
     if ok:
         state = load(STATE, {})
         state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
-        (state.get("switch_failures") or {}).pop(target, None)
+        cleared = forgive_browser_failures(state, target)
         save(STATE, state)
         print(log("claude_rotate_switched", measured=True, from_=before, to=target, reason=reason,
-                  elapsed_s=elapsed, steps=steps))
+                  elapsed_s=elapsed, steps=steps, backoff_cleared=cleared))
+        capture_login()
         resume_stranded(force=True)
         time.sleep(5)
         resume_auth_lost()
@@ -1024,6 +1633,12 @@ def _switch(target, reason):
     state = load(STATE, {})
     fails = state.setdefault("switch_failures", {})
     fails[target] = note_failure(fails.get(target, []), steps)
+    marked = set(state.get("account_failures") or [])
+    if any("unreadable" in str(x) for x in steps):
+        marked.add(target)
+    else:
+        marked.discard(target)
+    state["account_failures"] = sorted(marked)
     save(STATE, state)
     print(log("claude_rotate_switch_failed", measured=True, target=target, still=after, reason=reason,
               elapsed_s=elapsed, steps=steps, cli_tail=tail, recent_failures=len(fails[target]),
@@ -1043,6 +1658,14 @@ def main(argv):
         return 0
     if cmd == "tick":
         return cmd_tick()
+    if cmd in ("on", "off"):
+        os.makedirs(DIR, exist_ok=True)
+        if cmd == "on":
+            open(ENABLED_FILE, "a").close()
+        elif os.path.exists(ENABLED_FILE):
+            os.remove(ENABLED_FILE)
+        print(log("claude_rotate_" + ("enabled" if cmd == "on" else "disabled"), measured=True, n_considered=1, file=ENABLED_FILE))
+        return 0
     if cmd == "probe":
         return 0 if probe() else 1
     if cmd == "switch" and len(argv) == 3:
@@ -1051,6 +1674,13 @@ def main(argv):
         _, _, email, f, fr, w, wr = argv
         record(email, float(f), fr or None, float(w), wr or None, source="manual")
         return 0
+    if cmd == "history":
+        hours = argv[2] if len(argv) > 2 else "168"
+        out = subprocess.run(["curl", "-sk", "--max-time", "10",
+                              _amux_base() + USAGE_LOG_PATH + "?since_h=" + hours],
+                             capture_output=True, text=True).stdout
+        print(out)
+        return 0 if out.strip() else 1
     if cmd == "status":
         state = load(STATE, {})
         email = current_email()

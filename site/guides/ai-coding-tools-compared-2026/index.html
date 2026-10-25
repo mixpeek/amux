@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,65 +20,64 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Coding Tools Compared 2026","item":"https://amux.io/guides/ai-coding-tools-compared-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding Tools Compared: Antigravity vs Claude Code vs Cursor vs Codex vs Copilot (May 2026)","description":"The definitive comparison of every major AI coding tool after Google Antigravity 2.0. Side-by-side benchmarks, pricing, background agents, multi-agent orchestration, and a decision framework.","url":"https://amux.io/guides/ai-coding-tools-compared-2026/","datePublished":"2026-05-23","dateModified":"2026-05-23","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the best AI coding tool in 2026?","acceptedAnswer":{"@type":"Answer","text":"There is no single best AI coding tool in 2026 — it depends on your workflow. Claude Code is strongest for terminal-native developers who want agentic autonomy and deep reasoning (Opus 4.6). Cursor is the best full IDE experience with the most model flexibility (GPT-5, Claude, Gemini). GitHub Copilot has the deepest GitHub integration and is transitioning to usage-based pricing. Google Antigravity 2.0 offers the best Google ecosystem integration with built-in browser verification and voice commands. OpenAI Codex CLI is the open-source choice with strong cloud agents. For multi-agent orchestration across any of these tools, amux coordinates parallel sessions from a single dashboard."}},{"@type":"Question","name":"What is Google Antigravity 2.0?","acceptedAnswer":{"@type":"Answer","text":"Google Antigravity 2.0 is Google's agent-first IDE and development platform, announced at Google I/O on May 19, 2026. It is a VS Code fork with AI agents built into every surface — tab completions, inline chat, multi-agent orchestration via an Agent Teams panel, built-in Chromium browser for visual verification, and native voice commands via Gemini Audio models. It includes a CLI tool (agy), a Python SDK, Managed Agents in the Gemini API, and an Enterprise Agent Platform. Antigravity runs on Gemini 3.5 Flash with a 1M-token context window. Gemini CLI is being deprecated June 18, 2026 in favor of Antigravity CLI."}},{"@type":"Question","name":"How much do AI coding tools cost in 2026?","acceptedAnswer":{"@type":"Answer","text":"Most AI coding tools converge around $20/month for a standard plan: Claude Code Pro ($20/mo), Cursor Pro ($20/mo), Google Antigravity AI Pro ($20/mo), Kiro Pro ($20/mo), GitHub Copilot Pro ($10/mo plus credits), and JetBrains AI Pro ($10/mo plus IDE license). Premium tiers run $100-200/month: Claude Code Max ($100-200/mo), Cursor Ultra ($200/mo), Antigravity AI Ultra ($100-200/mo), and ChatGPT Pro with Codex ($200/mo). Aider is free and open source — you pay only for API tokens ($5-200/mo depending on model and usage). GitHub Copilot is transitioning to usage-based billing starting June 2026."}},{"@type":"Question","name":"Which AI coding tools support background agents?","acceptedAnswer":{"@type":"Answer","text":"As of May 2026, background/autonomous agents are supported by: Claude Code (via subagent runtime and headless mode), GitHub Copilot (Coding Agent creates PRs autonomously in cloud environments), OpenAI Codex (cloud-based async task execution), Google Antigravity 2.0 (Agent Teams panel with background scheduling), Cursor v3 (local-to-cloud agent handoff), Kiro (autonomous cross-repository agent), and JetBrains Junie (multi-step autonomous planning and execution). Google Jules is a dedicated async cloud agent that works alongside Antigravity. Aider does not support background agents — it is interactive by design."}},{"@type":"Question","name":"What is multi-agent orchestration for coding?","acceptedAnswer":{"@type":"Answer","text":"Multi-agent orchestration is the practice of running multiple AI coding agents in parallel, each working on a separate task, coordinated through shared state. Instead of one agent handling everything sequentially, you might run 5-10 agents simultaneously: one writing tests, one implementing a feature, one fixing a bug, one handling a refactor. Tools like amux coordinate this through a shared kanban board and inter-session messaging, with each agent running in an isolated git worktree to prevent merge conflicts. Google Antigravity 2.0, Cursor v3, and GitHub Copilot all now offer built-in multi-agent features, while amux works as an orchestration layer across any of these tools."}},{"@type":"Question","name":"Should I use Claude Code or Cursor?","acceptedAnswer":{"@type":"Answer","text":"Use Claude Code if you prefer the terminal, want deep agentic autonomy, need to run headless or in CI/CD pipelines, or are orchestrating multiple agents via amux or tmux. Claude Code with Opus 4.6 excels at complex, multi-file refactors and architectural reasoning. Use Cursor if you prefer a visual IDE, want model flexibility (Claude, GPT-5, Gemini in one tool), need inline editing with diff preview, or work primarily in a single-file editing flow. Many professional developers use both — Cursor for focused editing sessions, Claude Code for complex autonomous tasks. amux can coordinate both in parallel."}},{"@type":"Question","name":"Is Google Antigravity replacing Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. Google announced on May 19, 2026 that Gemini CLI's individual tier will stop service on June 18, 2026. Users are directed to migrate to Antigravity CLI (the agy command), which is positioned as the successor. Antigravity CLI is open source on GitHub and written in Go. Enterprise Gemini CLI customers have a longer migration timeline. The Antigravity CLI offers the same terminal-native coding workflow plus access to Antigravity's Agent Teams, SDK, and Managed Agents API."}},{"@type":"Question","name":"What AI models do coding tools use in 2026?","acceptedAnswer":{"@type":"Answer","text":"The major AI coding tools in May 2026 use these models: Claude Code defaults to Claude Opus 4.6 (with Sonnet 4.6 available). Cursor offers the widest selection — Claude Opus 4.6, Claude Sonnet 4.5, GPT-5.1/5.2/5.3, GPT-4o, and Gemini 2.5 Pro, with automatic model routing. GitHub Copilot supports both Claude (Opus 4.5, Opus 4.6, Sonnet 4.5, Sonnet 4.6) and GPT models. Google Antigravity runs on Gemini 3.5 Flash (new at I/O 2026) with a 1M-token context window. OpenAI Codex uses GPT-4o, o1, and o3-mini. Kiro uses Claude models via AWS Bedrock. Aider is fully model-agnostic and works with any provider."}}]}</script>
   <style>
-    .tool-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid rgba(255,255,255,0.06); }
+    .tool-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid var(--tint); }
     .tool-card h3 { margin-top: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
     .tool-card h3 a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.15); }
-    .tool-card h3 a:hover { color: #6ee7b7; border-color: #6ee7b7; }
+    .tool-card h3 a:hover { color: var(--c-green); border-color: var(--c-green); }
     .tool-card .tool-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; font-size: 0.8rem; }
-    .tool-card .tool-meta .tag { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 0.25rem 0.6rem; }
-    .tool-card .tag-new { background: rgba(110,231,183,0.15); color: #6ee7b7; }
-    .tool-card .tag-oss { background: rgba(96,165,250,0.15); color: #60a5fa; }
-    .tool-card .tag-ide { background: rgba(251,191,36,0.12); color: #fbbf24; }
-    .tool-card .tag-cli { background: rgba(167,139,250,0.15); color: #a78bfa; }
+    .tool-card .tool-meta .tag { background: var(--tint); border-radius: 6px; padding: 0.25rem 0.6rem; }
+    .tool-card .tag-new { background: rgba(110,231,183,0.15); color: var(--c-green); }
+    .tool-card .tag-oss { background: rgba(96,165,250,0.15); color: var(--c-blue); }
+    .tool-card .tag-ide { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+    .tool-card .tag-cli { background: rgba(167,139,250,0.15); color: light-dark(oklch(0.48 0.150 293.5), #a78bfa); }
     .tool-card .best-for { background: rgba(110,231,183,0.06); border: 1px solid rgba(110,231,183,0.15); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; font-size: 0.88rem; }
-    .tool-card .best-for strong { color: #6ee7b7; }
+    .tool-card .best-for strong { color: var(--c-green); }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
-    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
-    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
-    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--c-green); }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.3rem; opacity: 0.7; }
     .stat-grid .stat-card .stat-source a { color: inherit; }
     @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
     .cmp-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.84rem; }
-    .cmp-table th, .cmp-table td { padding: 0.65rem 0.7rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
-    .cmp-table th { font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card, #232838); z-index: 2; }
+    .cmp-table th, .cmp-table td { padding: 0.65rem 0.7rem; text-align: left; border-bottom: 1px solid var(--tint-2); }
+    .cmp-table th { font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card, var(--panel-2)); z-index: 2; }
     .cmp-table th:first-child { min-width: 120px; }
     .cmp-table td:first-child { font-weight: 600; }
-    .cmp-table a { color: #6ee7b7; }
-    .cmp-table .y { color: #6ee7b7; }
-    .cmp-table .n { color: #f87171; }
-    .cmp-table .p { color: #fbbf24; }
-    .cmp-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }
+    .cmp-table a { color: var(--c-green); }
+    .cmp-table .y { color: var(--c-green); }
+    .cmp-table .n { color: var(--c-red); }
+    .cmp-table .p { color: var(--c-amber); }
+    .cmp-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid var(--tint); border-radius: 12px; }
     .cmp-wrap .cmp-table { margin: 0; }
     .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .key-insight strong { color: #6ee7b7; }
+    .key-insight strong { color: var(--c-green); }
     .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .warning-box strong { color: #f87171; }
-    .decision-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
-    .decision-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
+    .warning-box strong { color: var(--c-red); }
+    .decision-card { background: var(--bg-card, var(--panel-2)); border-left: 3px solid var(--c-green); border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .decision-card h4 { margin-top: 0; color: var(--c-green); font-size: 1.05rem; }
     .decision-card ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
     .price-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .price-grid .price-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .price-grid .price-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); }
     .price-grid .price-card h4 { margin: 0 0 0.5rem; font-size: 0.95rem; }
     .price-grid .price-card h4 a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.15); }
-    .price-grid .price-card h4 a:hover { color: #6ee7b7; border-color: #6ee7b7; }
-    .price-grid .price-card .price-amount { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; color: #6ee7b7; }
-    .price-grid .price-card .price-tier { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted, #8892a4); margin-bottom: 0.25rem; }
+    .price-grid .price-card h4 a:hover { color: var(--c-green); border-color: var(--c-green); }
+    .price-grid .price-card .price-amount { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; color: var(--c-green); }
+    .price-grid .price-card .price-tier { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted, var(--fg-mute)); margin-bottom: 0.25rem; }
     @media (max-width: 600px) { .price-grid { grid-template-columns: 1fr; } }
     .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
     .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
-    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
-    .era-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.06); }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.5rem; }
+    .era-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--tint); }
     .era-card h4 { margin-top: 0; }
     .era-card .era-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
-    .era-card .era-label.past { color: var(--text-muted, #8892a4); }
-    .era-card .era-label.present { color: #6ee7b7; }
-    .era-card .era-label.future { color: #60a5fa; }
+    .era-card .era-label.past { color: var(--text-muted, var(--fg-mute)); }
+    .era-card .era-label.present { color: var(--c-green); }
+    .era-card .era-label.future { color: var(--c-blue); }
   [data-theme="light"] .tool-card      { border-color: var(--border); }
   [data-theme="light"] .tag-new   { background: oklch(0.36 0.18 145 / .12); color: var(--ok); }
   [data-theme="light"] .tag-oss   { background: oklch(0.38 0.18 240 / .12); color: var(--blue); }
@@ -92,18 +91,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -128,6 +137,15 @@
         <div class="stat-label">Now support background / autonomous agents</div>
         <div class="stat-source">Up from 2 of 9 in January 2025</div>
       </div>
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-coding-tools-compared-2026">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=ai-coding-tools-compared-2026" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -890,7 +908,7 @@
       <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;">Three strong open-source options: <a href="https://github.com/Aider-AI/aider" target="_blank" rel="noopener">Aider</a> (44K+ stars, model-agnostic CLI, interactive), <a href="https://github.com/openai/codex" target="_blank" rel="noopener">OpenAI Codex CLI</a> (67K+ stars, Rust, cloud agents), and <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">Claude Code</a> (open source on GitHub). For orchestration, <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is MIT-licensed. If privacy is a primary concern, <a href="https://github.com/Aider-AI/aider" target="_blank" rel="noopener">Aider</a> with a self-hosted model (via <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> or <a href="https://lmstudio.ai" target="_blank" rel="noopener">LM Studio</a>) runs entirely on your machine with zero data leaving your network.</p>
     </details>
 
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+    <hr style="border:none;border-top:1px solid var(--tint-2);margin:3rem 0;">
 
     <h2>Further Reading</h2>
     <ul>
@@ -903,6 +921,16 @@
       <li><a href="/guides/ai-coding-agent-safety-checklist/">AI Coding Agent Safety Checklist</a> &mdash; 25 rules for safe agent operation</li>
       <li><a href="/guides/ai-coding-agent-costs/">AI Coding Agent Costs</a> &mdash; the real total cost of ownership</li>
     </ul>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-coding-tools-compared-2026">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=ai-coding-tools-compared-2026" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
+    </div>
 
   </main>
   <footer class="sub-footer">
@@ -942,10 +970,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

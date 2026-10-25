@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Hermes Agent — Fleet Orchestration vs Personal AI Assistant</title>
+  <title>amux vs Hermes Agent: AI Engineering Team vs Self-Improving Personal Agent (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="amux vs Hermes Agent by NousResearch: parallel coding agent fleet orchestration vs a single self-improving personal AI assistant. Feature comparison, use cases, and when to use each.">
   <meta name="keywords" content="amux vs hermes agent, hermes agent alternative, NousResearch hermes, AI agent orchestration vs personal assistant, open source AI agent comparison">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-hermes-agent/">
-  <meta property="og:title" content="amux vs Hermes Agent — Fleet Orchestration vs Personal AI Assistant">
+  <meta property="og:title" content="amux vs Hermes Agent: AI Engineering Team vs Self-Improving Personal Agent (2026)">
   <meta property="og:description" content="Compare amux (parallel coding agent fleet) with Hermes Agent by NousResearch (self-improving personal assistant). Different tools for different jobs.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-hermes-agent/">
   <meta property="og:image" content="https://amux.io/og-image.png">
@@ -20,38 +20,52 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Hermes Agent","item":"https://amux.io/compare/amux-vs-hermes-agent/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Hermes Agent by NousResearch?","acceptedAnswer":{"@type":"Answer","text":"Hermes Agent is an open-source autonomous AI agent released by NousResearch in February 2026. It runs as a persistent daemon on your own infrastructure, accumulates memory across sessions, creates and improves reusable skills from experience, and executes scheduled tasks. It works with any LLM (Anthropic, OpenAI, Ollama, local models) and connects to 16+ messaging platforms including Telegram, Discord, Slack, WhatsApp, and Signal. The headline feature is a self-improvement loop — it writes skills from what it learns and searches its own conversation history."}},{"@type":"Question","name":"What is the main difference between amux and Hermes Agent?","acceptedAnswer":{"@type":"Answer","text":"amux and Hermes Agent solve different problems. amux is a fleet orchestration control plane: it runs 10-50 parallel coding agents (Claude Code, Codex, Gemini CLI) simultaneously, coordinates them via a shared kanban board, self-heals crashes and context exhaustion, and lets you manage the fleet from your phone. Hermes Agent is a single persistent personal assistant: one agent, very deep memory, self-improving skills, accessible via messaging platforms. If you want to ship code in parallel at scale, use amux. If you want a personal assistant that gets smarter over time, Hermes fits better."}},{"@type":"Question","name":"Can amux and Hermes Agent be used together?","acceptedAnswer":{"@type":"Answer","text":"Yes. They occupy different layers of the stack. You could use Hermes Agent as your personal assistant for decision-making and communication, while amux runs the parallel coding agents that implement those decisions. The amux board API and REST endpoints make it straightforward to integrate with any external agent that can make HTTP calls."}},{"@type":"Question","name":"Does Hermes Agent support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"No. Hermes Agent runs a single persistent daemon — one agent per installation. It is designed for depth (memory, skill accumulation, self-improvement) rather than breadth (parallel task execution). amux is designed for breadth: running many agents simultaneously on independent tasks from a shared queue, coordinating via atomic task claiming to prevent duplicate work."}},{"@type":"Question","name":"Which is better for software development teams?","acceptedAnswer":{"@type":"Answer","text":"amux. It is specifically built for running coding agent fleets — Claude Code, Codex, and Gemini CLI sessions — with git integration, worktree isolation for parallel development, a kanban board for task coordination, and a self-healing watchdog that keeps agents running overnight. Hermes Agent is a general-purpose personal assistant; its 40+ built-in tools include code analysis but it is not designed to run parallel coding sessions on a shared repository."}}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is Hermes Agent by NousResearch?", "acceptedAnswer": {"@type": "Answer", "text": "Hermes Agent is an open-source autonomous AI agent released by NousResearch in February 2026. It runs as a persistent daemon on your own infrastructure, accumulates memory across sessions, creates and improves reusable skills from experience, and executes scheduled tasks. It works with any LLM (Anthropic, OpenAI, Ollama, local models) and connects to messaging platforms including Telegram, Discord, Slack, WhatsApp, and Signal. The headline feature is a self-improvement loop: it writes skills from what it learns and searches its own conversation history."}}, {"@type": "Question", "name": "What is the main difference between amux and Hermes Agent?", "acceptedAnswer": {"@type": "Answer", "text": "amux and Hermes Agent solve different problems. amux is a fleet orchestration control plane: it runs 10-50 parallel coding agents (Claude Code, Codex, Gemini CLI) simultaneously, coordinates them via a shared kanban board, self-heals crashes and context exhaustion, and lets you manage the fleet from your phone. Hermes Agent is a single persistent personal assistant: one agent with subagents, very deep memory, self-improving skills, accessible via messaging platforms. If you want to ship code in parallel at scale, use amux. If you want a personal assistant that gets smarter over time, Hermes fits better."}}, {"@type": "Question", "name": "Can amux and Hermes Agent be used together?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. They occupy different layers of the stack. You could use Hermes Agent as your personal assistant for decision-making and communication, while amux runs the parallel coding agents that implement those decisions. The amux board API and REST endpoints make it straightforward to integrate with any external agent that can make HTTP calls."}}, {"@type": "Question", "name": "Does Hermes Agent support parallel agents?", "acceptedAnswer": {"@type": "Answer", "text": "Partly. Hermes Agent is one agent that can spawn isolated subagents for parallel workstreams, with their provider, model and limits set in Hermes Desktop. It is designed for depth (memory, skill accumulation, self-improvement). amux is designed for breadth: many independent coding agents working a shared queue, coordinated by atomic task claiming so no two take the same card."}}, {"@type": "Question", "name": "Which is better for software development teams?", "acceptedAnswer": {"@type": "Answer", "text": "amux. It is specifically built for running coding agent fleets (Claude Code, Codex, and Gemini CLI sessions) with git integration, worktree isolation for parallel development, a kanban board for task coordination, and a self-healing watchdog that keeps agents running overnight. Hermes Agent is a general-purpose personal assistant; its 40+ built-in tools include code analysis but it is not designed to run parallel coding sessions on a shared repository."}}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Hermes Agent: AI Engineering Team vs Self-Improving Personal Agent", "url": "https://amux.io/compare/amux-vs-hermes-agent/", "datePublished": "2026-07-06", "dateModified": "2026-10-21", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Hermes Agent</span></div>
 
     <h1>amux vs Hermes Agent</h1>
-    <p class="subtitle">Parallel coding agent fleet vs. a single self-improving personal AI assistant.</p>
+    <p class="subtitle">An AI engineering team control plane and a self-improving personal AI agent. Updated October 2026.</p>
 
-    <p><strong>Hermes Agent</strong> by NousResearch is an open-source autonomous AI agent that runs as a persistent daemon, accumulates long-term memory, writes reusable skills from experience, and is accessible through messaging platforms like Telegram, Discord, and Slack. It launched in February 2026 and became one of the fastest-growing open-source AI projects with 175,000+ GitHub stars in four months.</p>
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--accent)">
+      <strong>Quick answer:</strong> Hermes Agent by Nous Research is a self-improving personal AI agent: one assistant with long-term memory and skills it writes for itself, reachable from a terminal, a desktop app, Telegram, Discord, Slack, WhatsApp or Signal. amux runs an AI engineering team: many Claude Code, Codex and Gemini CLI sessions that claim work from a shared board, recover from crashes and are supervised from a dashboard or your phone. Pick Hermes for a personal assistant that learns you; pick amux to run a team of coding agents.
+    </div>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team — launching, monitoring, and self-healing dozens of parallel Claude Code, Codex, or Gemini CLI sessions from a single web dashboard or mobile app. Built-in kanban board, scheduler, CRM, email, and browser automation. Single Rust binary, zero external dependencies, MIT licensed.</p>
+    <p><strong>Hermes Agent</strong> by NousResearch is an open-source autonomous AI agent that runs as a persistent daemon, accumulates long-term memory, writes reusable skills from experience, and is accessible through messaging platforms like Telegram, Discord, and Slack. It launched in February 2026 and is one of the most-starred open-source AI projects, with more than 250,000 GitHub stars by October 2026.</p>
+
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team: launching, monitoring, and self-healing dozens of parallel Claude Code, Codex, or Gemini CLI sessions from a single web dashboard or mobile app. Built-in kanban board, scheduler, CRM, email, and browser automation. One Rust binary plus SQLite, open source under MIT + Commons Clause.</p>
 
     <p>These two tools solve genuinely different problems. Understanding which one fits your situation is more useful than declaring a winner.</p>
 
     <h2>What each tool is optimized for</h2>
 
-    <p><strong>Hermes Agent</strong> is optimized for <em>depth with one agent</em>: persistent memory that survives across sessions, a self-improvement loop that writes reusable skills from experience, and ubiquitous access via 16+ messaging platforms. It gets smarter about you over time.</p>
+    <p><strong>Hermes Agent</strong> is optimized for <em>depth with one agent</em>: persistent memory that survives across sessions, a self-improvement loop that writes reusable skills from experience, and access from a terminal, a desktop app and messaging platforms. It gets smarter about you over time.</p>
 
     <p><strong>amux</strong> is optimized for <em>breadth with many agents</em>: running 10-50 coding agents in parallel, coordinating them via atomic task claiming so no two agents pick up the same work, and keeping them running overnight with a self-healing watchdog. It ships more code faster.</p>
 
@@ -60,35 +74,37 @@
     <table>
       <thead><tr><th>Feature</th><th>amux</th><th>Hermes Agent</th></tr></thead>
       <tbody>
-        <tr><td>Parallel agents</td><td>Unlimited (10–50+ typical)</td><td>Single persistent daemon</td></tr>
-        <tr><td>Primary interface</td><td>Web dashboard + mobile PWA + iOS app</td><td>Messaging platforms (Telegram, Discord, Slack, WhatsApp, Signal, 11 more)</td></tr>
-        <tr><td>Long-term memory</td><td>Per-session CLAUDE.md + notes</td><td>Core feature — cross-session memory with search</td></tr>
+        <tr><td>Parallel agents</td><td>Many independent workers (10 to 50+ typical)</td><td>One agent that spawns isolated subagents for parallel workstreams</td></tr>
+        <tr><td>Primary interface</td><td>Web dashboard + mobile PWA + iOS app</td><td>TUI, Hermes Desktop, and messaging (Telegram, Discord, Slack, WhatsApp, Signal) from one gateway</td></tr>
+        <tr><td>Long-term memory</td><td>Shared memory file every worker reads, plus project CLAUDE.md and notes</td><td>Core feature: cross-session memory with search</td></tr>
         <tr><td>Self-improvement</td><td>No</td><td>Yes — writes skills from experience</td></tr>
         <tr><td>Coding agents</td><td>Claude Code, Codex, Gemini CLI (full fleet management)</td><td>Code analysis tools (single agent)</td></tr>
-        <tr><td>Task coordination</td><td>Kanban board with atomic claiming (SQLite CAS)</td><td>Scheduled tasks (single queue)</td></tr>
+        <tr><td>Task coordination</td><td>Kanban board with atomic claiming (SQLite CAS)</td><td>Built-in cron scheduler; subagent delegation</td></tr>
         <tr><td>Self-healing</td><td>Auto-compact, crash restart, YOLO mode, idle nudge</td><td>Not a focus</td></tr>
         <tr><td>LLM support</td><td>Claude Code, Codex, Gemini CLI (provider routing)</td><td>Any LLM (Anthropic, OpenAI, Ollama, local)</td></tr>
         <tr><td>Built-in tools</td><td>Kanban, CRM, Gmail, browser automation, scheduler, skills</td><td>40+ tools (file ops, web search, terminal, code analysis)</td></tr>
         <tr><td>Mobile</td><td>Native iOS app + PWA — manage fleet from phone</td><td>Messaging app access (WhatsApp, Telegram, etc.)</td></tr>
         <tr><td>Cost</td><td>Free + your API tokens</td><td>Free + your API keys</td></tr>
         <tr><td>License</td><td>MIT + Commons Clause</td><td>MIT</td></tr>
-        <tr><td>Hosting</td><td>Your machine (local-first)</td><td>Your infrastructure</td></tr>
+        <tr><td>Hosting</td><td>Your machine, or amux Cloud: your own always-on server at yourname.amux.io from $39/mo</td><td>Your machine or a terminal backend: Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox</td></tr>
+        <tr><td>Install</td><td><code>curl -fsSL https://amux.io/install.sh | bash</code></td><td><code>curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash</code></td></tr>
+        <tr><td>GitHub stars (Oct 2026)</td><td>540+</td><td>255,000+</td></tr>
       </tbody>
     </table>
 
     <h2>Hermes Agent's strengths</h2>
 
     <ul>
-      <li><strong>Memory that compounds.</strong> Hermes remembers what you told it in January and applies it in July. amux agents start fresh each session (CLAUDE.md provides static context, but there's no cross-session experiential memory).</li>
+      <li><strong>Memory that compounds.</strong> Hermes remembers what you told it in January and applies it in July. amux workers share a memory file and project context, but they do not write skills from their own experience the way Hermes does.</li>
       <li><strong>Self-improvement loop.</strong> Hermes writes skills from what it learns and nudges itself to persist knowledge. Over time, it gets more capable at your specific tasks without you reconfiguring anything.</li>
-      <li><strong>Messaging-platform access.</strong> 16+ connectors mean you can reach your agent through whatever app you already use — no new dashboard to learn. If you live in WhatsApp, your agent lives in WhatsApp.</li>
+      <li><strong>Messaging-platform access.</strong> One gateway process means you can reach your agent through whatever app you already use, with no new dashboard to learn. If you live in WhatsApp, your agent lives in WhatsApp.</li>
       <li><strong>Broad LLM support.</strong> Works with Ollama and local models, not just cloud APIs. Useful if you're running fully air-gapped or want to minimize API spend.</li>
     </ul>
 
     <h2>amux's strengths</h2>
 
     <ul>
-      <li><strong>Parallel fleet at scale.</strong> Run 10 agents on 10 independent feature branches simultaneously. Hermes runs one agent; amux runs many — coordinated via a shared kanban board so tasks are claimed atomically and never duplicated.</li>
+      <li><strong>Parallel fleet at scale.</strong> Run 10 agents on 10 independent feature branches simultaneously. Hermes delegates to subagents inside one agent; amux runs many independent workers, coordinated via a shared kanban board so tasks are claimed atomically and never duplicated.</li>
       <li><strong>Coding-agent-specific tooling.</strong> Claude Code sessions, worktree isolation to prevent git conflicts, commit-guard, verify-gate, and a self-healing watchdog built specifically for how coding agents fail (context exhaustion, thinking-block corruption, tool-approval blocks).</li>
       <li><strong>Overnight unattended operation.</strong> Queue tasks before bed. The watchdog handles all failure modes — auto-compact, crash restart, YOLO mode — and you wake up to completed pull requests.</li>
       <li><strong>Full business ops stack.</strong> CRM, Gmail API email, browser automation, scheduler, skills, notes — all accessible to agents via the REST API. Hermes focuses on personal assistance; amux is a full business operations platform for AI-run teams.</li>
@@ -115,12 +131,9 @@
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, Python 3 + tmux.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <p>Run an AI engineering team from your dashboard or phone. Free and open source; one command installs it on macOS or Linux, then open https://localhost:8824.</p>
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">Star on GitHub</a> <a class="btn" href="/start/">Run it in the cloud</a>
     </div>
   </main>
   <footer class="sub-footer">
@@ -160,10 +173,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

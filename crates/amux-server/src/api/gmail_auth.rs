@@ -765,6 +765,18 @@ pub async fn callback(
             ),
         );
     }
+    // A new grant makes the cached verdict stale. Without this, /accounts kept
+    // answering needs_reauth for up to HEALTH_TTL_S after a successful
+    // reconnect, and claude-rotate skipped the mailbox as dead (2026-10-17).
+    let dropped = ctx.health_cache.lock().expect("health cache").remove(&account);
+    tracing::info!(
+        account,
+        verdict = "gmail_health_cache_cleared",
+        stale = dropped.as_ref().map(|(_, s)| s.as_str()).unwrap_or("none"),
+        measured = true,
+        n_considered = 1,
+        "a reconnect replaced the token; the next health read probes it"
+    );
     html(
         StatusCode::OK,
         format!(
@@ -1827,6 +1839,57 @@ mod tests {
         let (_, v2) = send_json(&app2, "GET", "/api/gmail/accounts").await;
         assert_eq!(v2["health"][ACCT], json!("needs_reauth"), "{v2}");
         assert_eq!(v2["needs_reauth"], json!([ACCT]));
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_clears_a_cached_needs_reauth() {
+        let home = home_with_client_config();
+        let tokens = home.path().join("gmail-tokens");
+        std::fs::create_dir_all(&tokens).unwrap();
+        std::fs::write(
+            tokens.join(format!("{ACCT}.json")),
+            json!({
+                "token": "PLACEHOLDER_DEAD",
+                "refresh_token": "PLACEHOLDER_RT_DEAD",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "PLACEHOLDER_ID",
+                "client_secret": "PLACEHOLDER_SECRET",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // One server: the revoked grant is probed and cached, the owner
+        // reconnects, and the next read probes the new token.
+        let http = MockHttp::new(vec![
+            ("GET", "/profile", 401, json!({ "error": "unauthorized" })),
+            ("FORM", "oauth2.googleapis.com/token", 400, json!({ "error": "invalid_grant" })),
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT",
+                         "expires_in": 3599, "scope": "openid" }),
+            ),
+            ("GET", "users/me/profile", 200, json!({ "emailAddress": ACCT })),
+            ("GET", "/profile", 200, json!({ "emailAddress": ACCT })),
+        ]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (_, v) = send_json(&app, "GET", "/api/gmail/accounts").await;
+        assert_eq!(v["health"][ACCT], json!("needs_reauth"), "{v}");
+
+        let (_, v) = send_json(&app, "GET", "/api/gmail/auth?account=hello%40amux.io").await;
+        let state = qparam(v["url"].as_str().unwrap(), "state").unwrap().to_string();
+        let (st, page) = send(
+            &app,
+            "GET",
+            &format!("/api/gmail/callback?code=authcode123&state={state}"),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{page}");
+
+        let (_, v) = send_json(&app, "GET", "/api/gmail/accounts").await;
+        assert_eq!(v["health"][ACCT], json!("ok"), "{v}");
+        assert_eq!(v["needs_reauth"], json!([]));
     }
 
     #[tokio::test]

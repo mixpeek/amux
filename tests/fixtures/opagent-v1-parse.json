@@ -1,0 +1,1 @@
+[["open search", {"action_type": "click", "x": 640, "y": 200}], ["t", {"action_type": "type", "x": 128, "y": 40, "text": "mug", "press_enter": true}], [null, {"action_type": "scroll", "direction": "up", "distance": 450}], [null, {"action_type": "answer", "content": "$12"}], [null, null]]

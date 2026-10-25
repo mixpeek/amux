@@ -130,6 +130,12 @@ fn get_event_json(conn: &Connection, id: &str) -> rusqlite::Result<Option<Value>
 /// when no bucket is configured; when a bucket IS configured but the
 /// publisher cannot deliver (the pre-aws-sdk-s3 state), the registry says
 /// so instead of a fake success (RR-0073).
+/// Publish the iCal feed after a calendar write made outside this module
+/// (a dated map pin writes cal_events directly, map_store::sync_event).
+pub(crate) fn publish_feed(state: &AppState) {
+    push_ical(state, &CalendarCtx::new_default());
+}
+
 fn push_ical(state: &AppState, ctx: &CalendarCtx) {
     if ctx.s3_bucket.is_none() {
         return;

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,55 +20,54 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Legacy Code Modernization with AI Agents","item":"https://amux.io/guides/legacy-code-modernization-ai-agents/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Legacy Code Modernization: The Developer's Week-by-Week DIY Guide (2026)","description":"Week-by-week playbook for modernizing legacy codebases with AI coding agents. Map dependencies, generate test coverage, refactor module by module, and ship — with parallel agent workflows and real cost estimates.","url":"https://amux.io/guides/legacy-code-modernization-ai-agents/","datePublished":"2026-05-24","dateModified":"2026-05-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Modernize a Legacy Codebase with AI Coding Agents","description":"A four-week plan for using parallel AI coding agents to map, test, refactor, and ship a legacy codebase modernization.","totalTime":"P28D","estimatedCost":{"@type":"MonetaryCost","currency":"USD","value":"400-1600"},"step":[{"@type":"HowToStep","name":"Week 1: Map the codebase","text":"Use AI agents to generate dependency graphs, identify dead code, catalog technical debt, and produce an architectural inventory of the legacy system."},{"@type":"HowToStep","name":"Week 2: Generate test coverage","text":"Run parallel agents to write integration tests, unit tests, and characterization tests that capture the current behavior of the legacy system before any changes."},{"@type":"HowToStep","name":"Week 3: Refactor module by module","text":"Apply the Strangler Fig pattern with parallel agents — each agent refactors one module in its own git worktree while tests from Week 2 verify correctness."},{"@type":"HowToStep","name":"Week 4: Integrate, validate, and ship","text":"Merge refactored modules, run the full test suite, perform security scanning, update documentation, and deploy the modernized codebase."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents modernize legacy code?","acceptedAnswer":{"@type":"Answer","text":"Yes, but not by pressing a button. AI coding agents like Claude Code, OpenAI Codex, and Aider can map dependencies, generate test coverage, refactor modules, and update syntax — but they need human guidance on architectural decisions, business logic validation, and integration strategy. McKinsey's LegacyX program reports 40-50% timeline acceleration when AI agents are used for legacy modernization. The key is structured orchestration: break the codebase into modules, assign each to an agent running in an isolated git worktree, and use a shared task board to coordinate the work."}},{"@type":"Question","name":"How long does AI-assisted legacy code modernization take?","acceptedAnswer":{"@type":"Answer","text":"For a 100K-500K line codebase, a structured four-week sprint can accomplish what traditionally takes 3-6 months. Week 1: codebase mapping and dependency analysis. Week 2: automated test generation (agents can produce 60-80% coverage for code that previously had near-zero tests). Week 3: parallel refactoring with 4-8 agents working on separate modules simultaneously. Week 4: integration, validation, and deployment. Larger codebases (500K-2M+ lines) typically need 2-3 of these four-week cycles, each targeting a different subsystem."}},{"@type":"Question","name":"What types of legacy code modernization can AI agents handle?","acceptedAnswer":{"@type":"Answer","text":"AI agents are most effective at: (1) Language version upgrades (Python 2→3, Java 8→21, PHP 5→8, Ruby 2→3), (2) Framework migrations (jQuery→React, AngularJS→Angular, Rails 5→7, Django 2→5), (3) Dependency updates and vulnerability remediation, (4) Dead code removal and unused import cleanup, (5) Test generation for untested code, (6) API modernization (REST→GraphQL, SOAP→REST), (7) Code style normalization and linting fixes. They are less effective at: architectural redesigns (monolith→microservices), business logic rewrites, and database schema migrations — those need human architectural judgment."}},{"@type":"Question","name":"How much does AI-assisted legacy modernization cost?","acceptedAnswer":{"@type":"Answer","text":"For a solo developer or small team using the DIY approach in this guide: $400-1,600 over four weeks. That breaks down to $100-200/month per developer for Claude Code Max or similar tool, plus $50-200/month in additional API tokens for parallel agent sessions. Compare this to hiring a modernization consultancy, which typically costs $150,000-500,000+ for a comparable codebase. The tradeoff: the DIY approach requires developers who understand the legacy system and can validate agent output. The consultancy approach is more hands-off but 100-300x more expensive."}},{"@type":"Question","name":"What is the Strangler Fig pattern for legacy modernization?","acceptedAnswer":{"@type":"Answer","text":"The Strangler Fig pattern, described by Martin Fowler, is a strategy where you gradually replace a legacy system by building new functionality around it — like a strangler fig tree growing around its host. Instead of rewriting the entire codebase at once (big bang migration), you replace one module at a time while the legacy system continues running. AI agents accelerate this pattern dramatically: each agent can refactor one module in an isolated git worktree while the legacy system stays operational. When the module's tests pass, you merge the refactored version and move to the next module."}},{"@type":"Question","name":"Should I use Claude Code, Codex, or Aider for legacy modernization?","acceptedAnswer":{"@type":"Answer","text":"Each tool has strengths for different phases. Claude Code (with Opus 4.6) excels at architectural analysis, complex multi-file refactors, and tasks requiring deep reasoning about unfamiliar codebases — making it ideal for Weeks 1 and 3. OpenAI Codex CLI is strong for parallelized, scoped tasks like batch test generation (Week 2). Aider works well for interactive, file-by-file refactoring when you want tight human control. For maximum throughput, use amux to run all three in parallel: Claude Code sessions for complex refactors, Codex for batch operations, and Aider for the modules that need careful human guidance."}},{"@type":"Question","name":"How do I prevent AI agents from breaking legacy code during refactoring?","acceptedAnswer":{"@type":"Answer","text":"Four safety layers: (1) Git worktree isolation — each agent works in its own worktree so changes cannot conflict. (2) Characterization tests — before refactoring, generate tests that capture the existing behavior (even if the behavior has bugs, the tests document it). (3) CI gates — every agent PR must pass the full test suite before merge. (4) Incremental merges — merge one module at a time, run integration tests after each merge, and only proceed if everything passes. The combination of worktree isolation + characterization tests + CI gates means an agent can never silently break the production system."}}]}</script>
   <style>
-    .week-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid rgba(255,255,255,0.06); }
+    .week-card { background: var(--bg-card, var(--panel-2)); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid var(--tint); }
     .week-card h3 { margin-top: 0; font-size: 1.15rem; }
     .week-card .week-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
-    .week-card .week-label.w1 { color: #60a5fa; }
-    .week-card .week-label.w2 { color: #a78bfa; }
-    .week-card .week-label.w3 { color: #6ee7b7; }
-    .week-card .week-label.w4 { color: #fbbf24; }
-    .week-card .agents { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.06); }
+    .week-card .week-label.w1 { color: var(--c-blue); }
+    .week-card .week-label.w2 { color: light-dark(oklch(0.48 0.150 293.5), #a78bfa); }
+    .week-card .week-label.w3 { color: var(--c-green); }
+    .week-card .week-label.w4 { color: var(--c-amber); }
+    .week-card .agents { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--tint); }
     .week-card .agents strong { color: var(--dim, #c5cad8); }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
-    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
-    .stat-grid .stat-card .stat-num.amber { color: #fbbf24; }
-    .stat-grid .stat-card .stat-num.blue { color: #60a5fa; }
-    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
-    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--c-green); }
+    .stat-grid .stat-card .stat-num.amber { color: var(--c-amber); }
+    .stat-grid .stat-card .stat-num.blue { color: var(--c-blue); }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.3rem; opacity: 0.7; }
     .stat-grid .stat-card .stat-source a { color: inherit; }
     @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
     .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .key-insight strong { color: #6ee7b7; }
+    .key-insight strong { color: var(--c-green); }
     .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
-    .warning-box strong { color: #f87171; }
-    .phase-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
-    .phase-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
-    .phase-card.danger { border-left-color: #f87171; }
-    .phase-card.danger h4 { color: #f87171; }
-    .phase-card.amber { border-left-color: #fbbf24; }
-    .phase-card.amber h4 { color: #fbbf24; }
+    .warning-box strong { color: var(--c-red); }
+    .phase-card { background: var(--bg-card, var(--panel-2)); border-left: 3px solid var(--c-green); border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .phase-card h4 { margin-top: 0; color: var(--c-green); font-size: 1.05rem; }
+    .phase-card.danger { border-left-color: var(--c-red); }
+    .phase-card.danger h4 { color: var(--c-red); }
+    .phase-card.amber { border-left-color: var(--c-amber); }
+    .phase-card.amber h4 { color: var(--c-amber); }
     .quote-block { border-left: 3px solid rgba(110,231,183,0.4); padding: 1rem 1.25rem; margin: 1.5rem 0; background: rgba(110,231,183,0.04); border-radius: 0 8px 8px 0; }
     .quote-block .quote-text { font-style: italic; font-size: 1.05rem; line-height: 1.6; color: var(--dim, #c5cad8); }
-    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.5rem; }
+    .quote-block .quote-attr { font-size: 0.82rem; color: var(--text-muted, var(--fg-mute)); margin-top: 0.5rem; }
     .tool-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.86rem; }
-    .tool-table th, .tool-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .tool-table th, .tool-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--tint-2); }
     .tool-table th { font-weight: 600; white-space: nowrap; }
-    .tool-table a { color: #6ee7b7; }
-    .tool-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }
+    .tool-table a { color: var(--c-green); }
+    .tool-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid var(--tint); border-radius: 12px; }
     .tool-wrap .tool-table { margin: 0; }
     .cost-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
-    .cost-row .cost-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .cost-row .cost-card { background: var(--bg-card, var(--panel-2)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); }
     .cost-row .cost-card h4 { margin-top: 0; font-size: 0.95rem; }
     .cost-row .cost-card .cost-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
-    .cost-row .cost-card .cost-label.diy { color: #6ee7b7; }
-    .cost-row .cost-card .cost-label.consult { color: #f87171; }
+    .cost-row .cost-card .cost-label.diy { color: var(--c-green); }
+    .cost-row .cost-card .cost-label.consult { color: var(--c-red); }
     .cost-row .cost-card .cost-amount { font-family: 'JetBrains Mono', monospace; font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0; }
     @media (max-width: 600px) { .cost-row { grid-template-columns: 1fr; } }
     .checklist { list-style: none; padding: 0; margin: 1rem 0; }
@@ -87,18 +86,28 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -472,7 +481,7 @@ Each agent:
       <div class="cost-card">
         <div class="cost-label diy">DIY with AI agents</div>
         <h4>4-week modernization sprint</h4>
-        <div class="cost-amount" style="color:#6ee7b7;">$400 &ndash; $1,600</div>
+        <div class="cost-amount" style="color:var(--c-green);">$400 &ndash; $1,600</div>
         <ul style="font-size:0.85rem;color:var(--dim);margin:0.5rem 0 0;padding-left:1.2rem;">
           <li><a href="https://www.anthropic.com/product/claude-code" target="_blank" rel="noopener">Claude Code Max</a>: $100&ndash;200/mo per developer</li>
           <li>Additional API tokens for parallel agents: $50&ndash;200/mo</li>
@@ -483,7 +492,7 @@ Each agent:
       <div class="cost-card">
         <div class="cost-label consult">Modernization consultancy</div>
         <h4>Comparable engagement</h4>
-        <div class="cost-amount" style="color:#f87171;">$150K &ndash; $500K+</div>
+        <div class="cost-amount" style="color:var(--c-red);">$150K &ndash; $500K+</div>
         <ul style="font-size:0.85rem;color:var(--dim);margin:0.5rem 0 0;padding-left:1.2rem;">
           <li>Team of 4&ndash;6 consultants: $200&ndash;350/hour</li>
           <li>Duration: 3&ndash;6 months</li>
@@ -650,7 +659,7 @@ Each agent:
       <p style="padding:0.5rem 0 0.5rem 1rem;color:var(--dim);font-size:0.9rem;"><a href="https://www.entrepreneur.com/business-news/morgan-stanley-builds-ai-tool-that-fixes-major-coding-issue/492697" target="_blank" rel="noopener">Morgan Stanley built a custom AI tool</a> that converted 9 million lines of code, saving an estimated 280,000 developer hours. Their approach was enterprise-scale: custom-trained models, dedicated infrastructure, months of development on the tooling itself. The approach in this guide uses off-the-shelf AI coding agents and is designed for teams of 1&ndash;5 developers working on 100K&ndash;2M line codebases. You trade Morgan Stanley&rsquo;s scale for speed and cost: they spent millions building bespoke tooling; you spend $400&ndash;1,600 using existing tools in a structured workflow.</p>
     </details>
 
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:3rem 0;">
+    <hr style="border:none;border-top:1px solid var(--tint-2);margin:3rem 0;">
 
     <h2>Further Reading</h2>
     <ul>
@@ -703,10 +712,12 @@ Each agent:
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

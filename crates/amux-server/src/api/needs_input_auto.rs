@@ -22,8 +22,9 @@
 //!   everything already waiting as `baseline` and approves none of it; POST
 //!   /api/needs-input/auto/sweep is the owner's explicit "include what is
 //!   already waiting". An approval does what the triage sheet's Approve does:
-//!   an owner message "Approved (ID): ... Proceed." to the worker (through the
-//!   owner-policy guard, so it reaches isolated lanes too), a note on the card
+//!   a message "[amux policy, not the owner] Approved by policy (ID): ...
+//!   Proceed." to the worker (through the owner-policy guard, so it reaches
+//!   isolated lanes too), a note on the card
 //!   and the needsyou -> todo move through the ordinary board PATCH, read
 //!   back, or the email release through the real /api/email/approve handler.
 //! - **Visibility**: every evaluation is a row in the ledger ([`LEDGER_KEY`]).
@@ -63,8 +64,14 @@ pub const SHOW_S: f64 = 7.0 * 86_400.0;
 /// item is still waiting is never pruned, or a long-waiting baseline item
 /// would come back as "new".
 pub const KEEP_S: f64 = 30.0 * 86_400.0;
-/// Named in the card note, the send-audit ledger and the board log.
-pub const APPROVER: &str = "owner policy (needs-input auto-approve)";
+/// Named in the card note, the send-audit ledger and the board log. It names
+/// the POLICY: an automated answer is never recorded as the owner's consent
+/// (gs12 review finding 2: MG-2029, a customer price change, read as "approved
+/// by owner policy" and the board log said `api-anonymous`, the same name an
+/// owner's own dashboard click gets).
+pub const APPROVER: &str = "policy:needs-input-auto (automated; the owner did not see this ask)";
+/// The board actor every policy write carries (`org::policy_headers`).
+pub const POLICY_ACTOR: &str = "policy:needs-input-auto";
 pub const DEFAULT_CAP_USD: f64 = 50.0;
 /// The source reported for categories the contract keeps with the owner.
 pub const CONTRACT_RULE_11: &str = "contract rule 11 (never auto-approved)";
@@ -225,7 +232,7 @@ impl Policy {
         if parts.is_empty() {
             return format!("Auto-approve is ON for {who}, but every category is off, so nothing is approved.");
         }
-        parts.push("never money, production data, outside parties, scope, priorities or reversals of owner actions".to_string());
+        parts.push("never money, prices, deletions, production data, outside parties, scope, priorities, reversals of owner actions, choices between options, passed windows or asks you added a note to".to_string());
         let list = match parts.len() {
             1 => parts[0].clone(),
             n => format!("{} and {}", parts[..n - 1].join(", "), parts[n - 1]),
@@ -567,7 +574,9 @@ pub fn category_of(item: &Value) -> String {
 /// owner's own `prod_data` switch decides it (off by default). 2026-10-02: the
 /// policy approved MO-4149 (disable a webhook in the owner's org), MO-4150
 /// (TubeScience ts-api replicas) and MO-4160 (promote through the TubeScience
-/// production ring), all filed as "other".
+/// production ring), all filed as "other". 2026-10-23: MF-4425, "May I set
+/// role=admin on the creating user in each of the 37 production orgs", was
+/// approved three times because no verb in the list wrote a role.
 fn effective_category(item: &Value) -> String {
     // The structured ask_type outranks keyword scoring (contract rule 11).
     match item["ask_type"].as_str().unwrap_or("") {
@@ -581,7 +590,7 @@ fn effective_category(item: &Value) -> String {
     }
     let t = ask_text(item).to_ascii_lowercase();
     let hit = |re: &str| regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false);
-    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
+    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat|set|grant|revok|assign|writ|updat|chang|modif|elevat|demot|insert)\w*";
     let target = r"\b(production|prod\b|prod plane|customer|tenant|tubescience|primis|live (data|plane|cluster)|your own org)";
     if hit(action) && hit(target) {
         tracing::info!(target: "amux::needs_input_auto", verdict = "scored_as_prod_data",
@@ -616,12 +625,163 @@ pub(crate) fn is_owner_control_decision(item: &Value) -> bool {
     (hit(0) && hit(1)) || (hit(2) && hit(3)) || (hit(4) && hit(5))
 }
 
+/// The question the hold rules read: the ask itself, or the title.
+fn question_text(item: &Value) -> String {
+    item["question"]
+        .as_str()
+        .filter(|q| !q.trim().is_empty())
+        .or_else(|| item["title"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Asks about a PRICE stay with the owner (gs12 review finding 2: MG-2029, a
+/// platform Gemini 2.5 to 3.5 move that raised a customer price, was approved
+/// automatically the minute it was filed, as "category other").
+pub fn is_price_decision(item: &Value) -> bool {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\b(prices?|pricing|priced|repric\w*|rate ?cards?|list price|surcharge\w*",
+            r"|charge (customers|tenants|users|clients)",
+            r"|customers?'?s? (bills?|invoices?|costs?)",
+            r"|billing (change|rate|plan)s?|plan (prices?|tiers?))\b"
+        ))
+        .expect("constant price regex")
+    });
+    RE.is_match(&ask_text(item).to_ascii_lowercase())
+}
+
+/// Asks to DELETE anything stay with the owner, local or not (gs12 review
+/// finding 2: MG-2017 was the DSAR executor, which deletes organizations).
+pub fn is_deletion_decision(item: &Value) -> bool {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\b(delet\w*|purg\w*|eras(e|es|ed|ing|ure)\b|wip(e|es|ed|ing)\b|destroy\w*|truncat\w*",
+            r"|tear(ing)? ?down|hard[- ]delete",
+            r"|\b(drop|remov\w*)\s+(?:[\w'-]+\s+){0,4}",
+            r"(tables?|collections?|databases?|db|indexe?s|indices|namespaces?|buckets?|orgs?|organi[sz]ations?",
+            r"|tenants?|accounts?|users?|records?|rows?|documents?|data))"
+        ))
+        .expect("constant deletion regex")
+    });
+    RE.is_match(&ask_text(item).to_ascii_lowercase())
+}
+
+/// The latest time an ask names as its window ("at 2026-10-09T04:50Z", "by
+/// 2026-10-12"), as epoch seconds. A date alone means the end of that UTC day.
+/// Dates that are context ("hand-applied 2026-09-28") are not windows.
+pub fn ask_window_end(item: &Value) -> Option<f64> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\b(?:at|by|before|until|till|from|starting|on|for|window)\s+(?:the\s+)?(?:window\s+(?:at|of)\s+)?",
+            r"(20\d\d-\d\d-\d\d)(?:[t ](\d\d):(\d\d)(?::(\d\d))?)?"
+        ))
+        .expect("constant ask window regex")
+    });
+    let t = question_text(item).to_ascii_lowercase();
+    RE.captures_iter(&t)
+        .filter_map(|c| {
+            let d = chrono::NaiveDate::parse_from_str(&c[1], "%Y-%m-%d").ok()?;
+            let at = match (c.get(2), c.get(3)) {
+                (Some(h), Some(m)) => d.and_hms_opt(
+                    h.as_str().parse().ok()?,
+                    m.as_str().parse().ok()?,
+                    c.get(4).and_then(|x| x.as_str().parse().ok()).unwrap_or(0),
+                )?,
+                _ => d.and_hms_opt(23, 59, 59)?,
+            };
+            Some(at.and_utc().timestamp() as f64)
+        })
+        .reduce(f64::max)
+}
+
+/// An ask "Proceed" cannot answer: an open question (which, what, how many),
+/// an enumerated list of decisions, or an either/or that is not the worker's
+/// own proposal and names no recommendation (gs12 review finding 2: MG-2016,
+/// "Which of the fourteen numbered decisions ... are a yes, which are a no?",
+/// was answered "Proceed."). "Want me to X, or Y?" proposes X, and "A or B? I
+/// recommend A." names the answer, so both stay approvable.
+pub fn is_multiple_choice(item: &Value) -> bool {
+    static WH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(^|[.!?:;]\s+)(which|what|how many|how much|when|where|who|whom)\b|\b(in|at|for|with|on|by|to) (which|what)\b")
+            .expect("constant wh regex")
+    });
+    static LIST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\bnumbered (decisions|options|questions|choices|items)\b",
+            r"|\b(\d+|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty) ",
+            r"(decisions|options|questions|choices)\b"
+        ))
+        .expect("constant list regex")
+    });
+    static MARK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(^|\s|\()([1-9]|[a-e])\)").expect("constant option marker regex")
+    });
+    static PROPOSAL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(do you )?(want me to|shall i|should i|may i|can i|could i|ok(ay)? (if|to) i|is it ok (if|to))\b")
+            .expect("constant proposal regex")
+    });
+    static RECOMMEND: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\b(i recommend|i'?d recommend|i would recommend|my recommendation|recommended:|recommendation:|i suggest|i propose|i'?d go with|i would go with)\b")
+            .expect("constant recommendation regex")
+    });
+    static EITHER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Clause alternatives only: ", or" or "or <verb>". A noun pair ("a
+        // sandbox or demo key") is not a choice between actions.
+        regex::Regex::new(r",\s*or\b|\bor (should|do|go|keep|stay|move|use|switch|wait|leave|let|take|stop|start|run|ship|land|split|merge|retire|hold off|defer|pick|choose)\b")
+            .expect("constant or regex")
+    });
+    static YES_NO_TAIL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r",?\s*or (not|hold|no|decline|wait|leave it|skip it)\s*\?").expect("constant yes/no tail regex")
+    });
+    let q = question_text(item).to_ascii_lowercase();
+    let q = q.trim();
+    // Only sentences that ask: the context before a question is not a choice.
+    let asks: Vec<&str> = q
+        .split_inclusive('?')
+        .filter(|s| s.trim_end().ends_with('?'))
+        .collect();
+    let asked = if asks.is_empty() { q.to_string() } else { asks.join(" ") };
+    if WH.is_match(asked.trim()) || LIST.is_match(q) || MARK.find_iter(q).count() >= 2 {
+        return true;
+    }
+    let either = asks.iter().any(|s| {
+        let s = YES_NO_TAIL.replace_all(s, "?");
+        EITHER.is_match(&s)
+    });
+    either && !PROPOSAL.is_match(asked.trim()) && !RECOMMEND.is_match(q)
+}
+
 pub fn decide(policy: &Policy, item: &Value) -> Decision {
+    decide_at(policy, item, now_f64())
+}
+
+/// [`decide`] at a given time, which only the window check reads.
+pub fn decide_at(policy: &Policy, item: &Value, now: f64) -> Decision {
     if !policy.enabled {
         return Decision::Off;
     }
     if requires_explicit_approval(item) {
         return Decision::Never("explicit_approval_required");
+    }
+    // AN OWNER NOTE ON THE ASK MEANS THE OWNER IS IN IT (MG-2017: his note
+    // carried the one condition that mattered). The policy does not answer
+    // over him; the owner's own answer carries the note.
+    if item["owner_notes"].as_array().is_some_and(|n| !n.is_empty()) {
+        return Decision::Never("owner_noted");
+    }
+    // A WINDOW THAT HAS PASSED cannot be approved into (MG-2024: "Hold the
+    // rolling restart ... at 2026-10-09T04:50Z?" was answered 4.5 h after it).
+    if ask_window_end(item).is_some_and(|end| end < now) {
+        return Decision::Never("expired");
+    }
+    // Before the category switches, so a price or a deletion filed as a
+    // production change still says what it is.
+    if is_price_decision(item) {
+        return Decision::Never("price");
+    }
+    if is_deletion_decision(item) {
+        return Decision::Never("deletion");
     }
     let boundary = effective_category(item);
     if matches!(boundary.as_str(), "money" | "prod_data" | "outbound") {
@@ -657,6 +817,9 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
     };
     if !on {
         return Decision::SkipCategory(cat);
+    }
+    if is_multiple_choice(item) {
+        return Decision::Never("multiple_choice");
     }
     Decision::Approve
 }
@@ -831,7 +994,7 @@ pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &s
         let resp = crate::api::board::patch_item(
             State(state.clone()),
             axum::extract::Path(card.to_string()),
-            HeaderMap::new(),
+            crate::api::org::policy_headers(POLICY_ACTOR),
             Json(Value::Object(patch)),
         )
         .await;
@@ -961,8 +1124,20 @@ async fn approve_item(acts: &dyn Actions, state: &AppState, item: &Value, dk: &s
     let r = if card.is_empty() { String::new() } else { format!(" ({card})") };
     let mut done = Vec::new();
     if !worker.is_empty() {
+        // THE POLICY SPEAKS AS THE POLICY. The opening says who answered
+        // before anything else, because "Approved (ID): ... Proceed." is word
+        // for word what the owner's own click sends. The closing literal is
+        // what the dashboard classifies as harness text; keep it.
+        let lq = q.to_ascii_lowercase();
+        let rec = if ["recommend", "i suggest", "i propose", "go with"].iter().any(|w| lq.contains(w)) {
+            " This takes your stated recommendation."
+        } else {
+            ""
+        };
         let text = format!(
-            "Approved{r}: {q}. Proceed. (Approved automatically under the owner's needs-input policy.)"
+            "[amux policy, not the owner] Approved by policy{r}: {q}. Proceed.{rec} Ethan has not seen this ask; \
+             this answer covers it only, and anything he must weigh stays a needsyou card. \
+             (Approved automatically under the owner's needs-input policy.)"
         );
         // A refused send leaves the card alone: moving it with nobody told
         // would clear the owner's queue while the worker still waits. A
@@ -973,7 +1148,7 @@ async fn approve_item(acts: &dyn Actions, state: &AppState, item: &Value, dk: &s
     if !card.is_empty() {
         let stamp = chrono::Local::now().format("%b %d %H:%M");
         let note = format!(
-            "[{stamp}] Approved automatically by {APPROVER}, category {}.",
+            "[{stamp}] Approved automatically by {APPROVER}, category {}. This is not an owner decision.",
             category_of(item)
         );
         let marker = format!("#ni-auto-{}", hash(dk));
@@ -1019,7 +1194,7 @@ async fn send_back_item(acts: &dyn Actions, state: &AppState, item: &Value, dk: 
     let mut done = vec![send_or_paused(acts, state, worker, &send_back_text(card, &q), &format!("ni-back-{}", hash(dk))).await?];
     let stamp = chrono::Local::now().format("%b %d %H:%M");
     let note = format!(
-        "[{stamp}] Sent back to {worker} by owner policy (needs-input send-back): do it through the access \
+        "[{stamp}] Sent back to {worker} by {POLICY_ACTOR} (automated needs-input send-back, not the owner): do it through the access \
          ladder (amux browser, CDP, CUA); re-file needsyou only with the rung that failed."
     );
     done.push(acts.card(state, card, &note, &format!("#ni-back-{}", hash(dk))).await?);
@@ -1110,6 +1285,12 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
     // worker saying the ladder failed, so it stays with the owner.
     let sent_back_keys: HashSet<String> =
         ledger.iter().filter(|e| e.outcome == "sent_back").map(|e| e.key.clone()).collect();
+    // Approved once already: the worker re-asking after a policy approval is
+    // the worker declining it (MF-4425, 2026-10-23: one card approved three
+    // times in 15 minutes, each re-ask a new question hash), so it is the
+    // owner's.
+    let approved_keys: HashSet<String> =
+        ledger.iter().filter(|e| e.outcome == "approved").map(|e| e.key.clone()).collect();
 
     let mut skips = Vec::new();
     // Snoozed items are never touched: first seen snoozed means never
@@ -1136,12 +1317,18 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
             .clone();
         let label = entry_for(item, &dk, "", String::new(), now).card;
         let label = if label.is_empty() { key.clone() } else { label };
-        let decision = match decide(&policy, item) {
+        let decision = match decide_at(&policy, item, now) {
             Decision::SendBack(why) if sent_back_keys.contains(&key) => {
                 tracing::info!(verdict = "needs_input_auto_skipped_category", key = %key, worker = %worker,
                     reason = "sent_back_once", ask = why,
                     "needs-input auto: already sent back once; the re-ask stays with the owner");
                 Decision::Never("sent_back_once")
+            }
+            Decision::Approve if approved_keys.contains(&key) => {
+                tracing::info!(verdict = "needs_input_auto_skipped_category", key = %key, worker = %worker,
+                    reason = "approved_once",
+                    "needs-input auto: approved once already; the worker re-asked, so the re-ask stays with the owner");
+                Decision::Never("approved_once")
             }
             d => d,
         };
@@ -1164,8 +1351,14 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
                     "owner_control_decision" => "fleet control, priorities and reversals of owner actions require an owner decision",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
+                    "approved_once" => "approved by the policy once already; the worker re-asked, so it is yours",
                     "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
                     "explicit_approval_required" => "this ask requires explicit approval; automatic approval does not cover it",
+                    "owner_noted" => "you added a note to this ask; your answer carries it, the policy does not answer over you",
+                    "expired" => "the time this ask names has passed; approving it now would act on a closed window",
+                    "price" => "a price or billing change stays with you",
+                    "deletion" => "a deletion stays with you",
+                    "multiple_choice" => "a choice between options: \"Proceed\" does not pick one",
                     _ => "credential or access: only you can do it",
                 };
                 skips.push(entry_for(item, &dk, "never", label_why.into(), now));
@@ -1313,6 +1506,12 @@ fn view(home: &Path, worker: &str, ledger: &[Entry], waiting: &[Value], now: f64
         .iter()
         .filter(|it| by_dk.get(dedupe_key(it).as_str()).is_some_and(|o| REEVALUABLE.contains(o)))
         .count();
+    let waiting_dks: HashSet<String> = waiting.iter().map(dedupe_key).collect();
+    let held: Vec<&Entry> = ledger
+        .iter()
+        .rev()
+        .filter(|e| matches!(e.outcome.as_str(), "never" | "skipped_category") && waiting_dks.contains(&e.dk))
+        .collect();
     let who = if worker.is_empty() { "all workers".to_string() } else { worker.to_string() };
     let defaults = Policy::default();
     json!({
@@ -1329,6 +1528,10 @@ fn view(home: &Path, worker: &str, ledger: &[Entry], waiting: &[Value], now: f64
         "already_waiting_unapproved": already_waiting,
         "recent": recent,
         "recent_count": recent.len(),
+        // Asks the policy left for the owner, each with its reason, while they
+        // still wait (gs12 review finding 2: "stay for the owner and say why").
+        "held": held,
+        "held_count": held.len(),
     })
 }
 

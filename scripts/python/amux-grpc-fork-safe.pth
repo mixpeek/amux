@@ -1,0 +1,1 @@
+import os; os.environ.setdefault('GRPC_ENABLE_FORK_SUPPORT', 'false'); os.environ.setdefault('GRPC_DNS_RESOLVER', 'native')

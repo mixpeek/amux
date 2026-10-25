@@ -358,6 +358,12 @@ fn helper_cli_command(cli: &str, prompt: &str, model: &str) -> std::process::Com
     }
     if cli == "claude" {
         cmd.arg("--strict-mcp-config").arg("--tools").arg("");
+        // The fallback after a failed API call must not reuse the same key: a
+        // workspace key over its spend limit failed both attempts while the
+        // signed-in subscription had usage left (sandbox, 2026-10-24).
+        if super::session_verbs::claude_subscription_signed_in() {
+            cmd.env_remove("ANTHROPIC_API_KEY");
+        }
     }
     // `Command::output()` used to add these pipes implicitly. The stdin-sized
     // execution path now uses `spawn()` so it can stream the prompt; without

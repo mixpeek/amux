@@ -678,7 +678,58 @@ const MIGRATIONS: &[Migration] = &[
         version: 123,
         name: "0123_file_opens",
         sql: include_str!("../../migrations/0123_file_opens.sql"),
-    },];
+    },
+    Migration {
+        version: 124,
+        name: "0124_pinned_notes_groups",
+        sql: include_str!("../../migrations/0124_pinned_notes_groups.sql"),
+    },
+    Migration {
+        version: 125,
+        name: "0125_schedule_lifecycle",
+        sql: include_str!("../../migrations/0125_schedule_lifecycle.sql"),
+    },
+    Migration {
+        version: 126,
+        name: "0126_land_queue_guard_overrides",
+        sql: include_str!("../../migrations/0126_land_queue_guard_overrides.sql"),
+    },
+    Migration {
+        version: 127,
+        name: "0127_board_cdc_all_rendered_columns",
+        sql: include_str!("../../migrations/0127_board_cdc_all_rendered_columns.sql"),
+    },
+    Migration {
+        version: 128,
+        name: "0128_map_store",
+        sql: include_str!("../../migrations/0128_map_store.sql"),
+    },
+    Migration {
+        version: 129,
+        name: "0129_claude_account_usage",
+        sql: include_str!("../../migrations/0129_claude_account_usage.sql"),
+    },
+    Migration {
+        version: 130,
+        name: "0130_signal_subscriptions",
+        sql: include_str!("../../migrations/0130_signal_subscriptions.sql"),
+    },
+    Migration {
+        version: 131,
+        name: "0131_worker_resource_samples",
+        sql: include_str!("../../migrations/0131_worker_resource_samples.sql"),
+    },
+    Migration {
+        version: 132,
+        name: "0132_token_ledger_task_session_ts_index",
+        sql: include_str!("../../migrations/0132_token_ledger_task_session_ts_index.sql"),
+    },
+    Migration {
+        version: 133,
+        name: "0133_layout_presets_scope",
+        sql: include_str!("../../migrations/0133_layout_presets_scope.sql"),
+    },
+];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
 ///

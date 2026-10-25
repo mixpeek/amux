@@ -38,17 +38,10 @@ test('full task name on the card and details page, and its changes are recorded'
     await expect(label).toContainText(second);
     await expect(label, 'the task line is on screen, phones included').toBeVisible();
     expect(await label.evaluate(e => getComputedStyle(e).whiteSpace)).toBe('normal');
-    // History opens the standard dialog with the list (Ethan: "it should open a modal which is a list").
-    await page.locator('#peek-task-history-btn').click();
-    const dlg = page.locator('#task-history-modal [role="dialog"]');
-    await expect(dlg).toBeVisible();
-    await expect(dlg.locator('li')).toHaveCount(2, { timeout: 15_000 });
-    await expect(dlg.locator('li').first()).toContainText(second);
-    const box = await dlg.boundingBox();
-    expect(box!.x + box!.width, 'the dialog fits the screen').toBeLessThanOrEqual(page.viewportSize()!.width + 1);
-    await page.screenshot({ path: info.outputPath('task-history-modal.png') });
-    await page.keyboard.press('Escape');
-    await expect(page.locator('#task-history-modal')).toHaveCount(0);
+    // The header's History button was removed (Ethan, 2026-10-17: "you can
+    // remove the history button ... since we have a tasks tab"); the recorded
+    // changes are asserted through the API above.
+    await expect(page.locator('#peek-task-history-btn')).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('task-name-full.png') });
   } finally {
     await cleanup('remove task-name worker', removeWorker, info);

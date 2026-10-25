@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,23 +20,32 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Scratchpad","item":"https://amux.io/guides/ai-agent-scratchpad/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet","description":"amux's built-in scratchpad gives your AI agent fleet a shared markdown workspace. Store context, track decisions, and coordinate without consuming agent memory.","url":"https://amux.io/guides/ai-agent-scratchpad/","datePublished":"2026-10-10","dateModified":"2026-10-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set up the amux scratchpad for your AI agent fleet","description":"Use amux's built-in scratchpad to store persistent notes, coordination state, and reference documents for your AI coding agents.","step":[{"@type":"HowToStep","position":1,"name":"Open the Scratchpad tab","text":"In the amux dashboard, click the Scratchpad tab in the global tab bar. The directory ~/.amux/scratchpad/ is created automatically on first visit."},{"@type":"HowToStep","position":2,"name":"Create a note","text":"Click New File in the scratchpad, type a filename (e.g. context.md), and write your content. The file is saved automatically."},{"@type":"HowToStep","position":3,"name":"Reference the scratchpad from an agent","text":"Tell an agent to read from or write to ~/.amux/scratchpad/filename.md. The path is stable across restarts and shared by all agents on the same machine."},{"@type":"HowToStep","position":4,"name":"Use pinned notes for startup injection","text":"If you want the content automatically injected at session start, copy it to a pinned note with: amux pin set --scope global \"$(cat ~/.amux/scratchpad/context.md)\""},{"@type":"HowToStep","position":5,"name":"Organize with subdirectories","text":"Create subdirectories in the scratchpad for different projects: ~/.amux/scratchpad/project-a/, ~/.amux/scratchpad/shared/. The dashboard's breadcrumb navigation lets you browse them."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the amux scratchpad?","acceptedAnswer":{"@type":"Answer","text":"The amux scratchpad is a global tab in the amux dashboard that provides a shared markdown file workspace at ~/.amux/scratchpad/. It lets you create, browse, and edit notes without leaving the dashboard. All agents running on the same machine can read from and write to scratchpad files."}},{"@type":"Question","name":"How is the scratchpad different from pinned notes?","acceptedAnswer":{"@type":"Answer","text":"Pinned notes are injected automatically into agent context at session start — they consume tokens on every session. The scratchpad is a passive file store: agents only read it when you tell them to. Use pinned notes for standing instructions that every agent always needs, and the scratchpad for larger documents, reference material, or ad-hoc notes that agents access on demand."}},{"@type":"Question","name":"Can multiple AI agents share the same scratchpad?","acceptedAnswer":{"@type":"Answer","text":"Yes. All agents on the same machine share the same ~/.amux/scratchpad/ directory. One agent can write a decision log, another can read it. For large teams with workspace isolation enabled (AMUX_WORKSPACE_ISOLATION=1), each agent gets its own worktree but still shares the scratchpad."}},{"@type":"Question","name":"Does the scratchpad survive an agent restart?","acceptedAnswer":{"@type":"Answer","text":"Yes. The scratchpad is a directory of plain files at ~/.amux/scratchpad/ — it exists independently of any agent session and persists across restarts, context compactions, and server upgrades."}},{"@type":"Question","name":"Can I use the scratchpad from my phone?","acceptedAnswer":{"@type":"Answer","text":"The scratchpad is available in the amux dashboard, which is accessible from any browser. The iOS app focuses on agent monitoring and control; for scratchpad editing, use the mobile web dashboard at your amux server address."}},{"@type":"Question","name":"What file types can I store in the scratchpad?","acceptedAnswer":{"@type":"Answer","text":"The scratchpad uses the same file viewer and editor as the rest of amux. Markdown (.md), plain text (.txt), JSON, YAML, and other text formats work well. Binary files and images are stored but not rendered inline."}},{"@type":"Question","name":"How does the scratchpad relate to amux memory?","acceptedAnswer":{"@type":"Answer","text":"amux memory (the ~/.claude/projects/*/memory/ directories) is used by Claude Code itself for cross-session memory between Claude Code sessions. The scratchpad is a separate, lighter-weight workspace managed by amux — use it for shared reference documents, task logs, and coordination notes that are not specific to one agent's memory."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -45,10 +54,6 @@
     <h1>AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet</h1>
     <p class="subtitle">Updated October 2026</p>
 
-    <div class="cta-box cta-box--top" style="background:color-mix(in oklab,var(--green) 12%,var(--bg-2));border-color:color-mix(in oklab,var(--green) 40%,transparent)">
-      <strong>A persistent shared workspace your entire agent fleet can read and write</strong> — no token cost until an agent asks for it.
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="posthog.capture('exp123_scratchpad_guide_topofpage_cta_click')">Get amux on GitHub</a>
-    </div>
 
     <p>Every AI coding agent fleet eventually needs a place to store things that do not fit inside a single agent's context window: architecture decisions, a running list of completed tasks, a file ownership map, a shared API reference. Injecting this into every agent's pinned notes wastes tokens. Leaving it in a one-off file with no access from the dashboard loses it.</p>
 
@@ -194,7 +199,7 @@ EOF</code></pre>
     <h2>How to set up the scratchpad</h2>
 
     <ol>
-      <li><strong>Install amux</strong> — <code>brew install mixpeek/amux/amux</code> and run <code>amux serve</code>.</li>
+      <li><strong>Install amux</strong> — <code>curl -fsSL https://amux.io/install.sh | bash</code> and run <code>amux serve</code>.</li>
       <li><strong>Open the Scratchpad tab</strong> — click Scratchpad in the global tab bar. The directory <code>~/.amux/scratchpad/</code> is created automatically.</li>
       <li><strong>Create your first note</strong> — click New File, name it <code>context.md</code>, and write the shared context your agents need.</li>
       <li><strong>Reference it from agents</strong> — tell agents the path: <code>cat ~/.amux/scratchpad/context.md</code>. Or add a one-line pinned note pointing to the file.</li>
@@ -233,7 +238,7 @@ EOF</code></pre>
     <div class="cta-box">
       <h3>Give your agent fleet a shared workspace</h3>
       <p>amux is an open-source control plane for running an AI engineering team — with built-in scratchpad, kanban, vault secrets, email, and mobile control.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
       <a class="btn" href="/guides/ai-agent-pinned-notes/">Pinned notes guide</a>
@@ -276,10 +281,12 @@ amux serve</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

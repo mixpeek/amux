@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -19,23 +19,32 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Computer Use","item":"https://amux.io/guides/ai-agent-computer-use/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Computer Use with CUA Sandboxes","description":"How to give AI coding agents full desktop computer use via CUA sandboxes — rung 3 of the amux browser access ladder.","url":"https://amux.io/guides/ai-agent-computer-use/","datePublished":"2026-09-28","dateModified":"2026-09-28","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set up AI agent computer use with CUA sandboxes in amux","description":"Give AI coding agents full desktop access via the CUA computer-use sandbox — rung 3 of the amux browser access ladder.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Install the amux Rust binary via Homebrew: brew install mixpeek/amux/amux"},{"@type":"HowToStep","position":2,"name":"Start the amux server","text":"Run amux serve to start the local server. Navigate to localhost:8824 to see the fleet dashboard."},{"@type":"HowToStep","position":3,"name":"Configure the CUA sandbox","text":"In amux settings, connect the CUA computer-use sandbox (github.com/trycua/cua). amux runs the sandbox as rung 3 of its browser access ladder — after amux browser and Chrome CDP both fail."},{"@type":"HowToStep","position":4,"name":"Set browser profile scopes","text":"Use scoped browser profiles (AMUX-5307) to restrict which agents can access which saved login profiles. Per-worker scoping prevents an agent for project A from reading credentials for project B."},{"@type":"HowToStep","position":5,"name":"Test the three-rung escalation","text":"Trigger a browser task from an agent. amux attempts rung 1 (amux browser), escalates to rung 2 (Chrome CDP) if needed, and falls back to rung 3 (CUA sandbox) for desktop-only flows. Check the agent log to see which rung was used."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set up AI agent computer use with CUA sandboxes in amux","description":"Give AI coding agents full desktop access via the CUA computer-use sandbox — rung 3 of the amux browser access ladder.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Install the amux Rust binary curl -fsSL https://amux.io/install.sh | bash"},{"@type":"HowToStep","position":2,"name":"Start the amux server","text":"Run amux serve to start the local server. Navigate to localhost:8824 to see the fleet dashboard."},{"@type":"HowToStep","position":3,"name":"Configure the CUA sandbox","text":"In amux settings, connect the CUA computer-use sandbox (github.com/trycua/cua). amux runs the sandbox as rung 3 of its browser access ladder — after amux browser and Chrome CDP both fail."},{"@type":"HowToStep","position":4,"name":"Set browser profile scopes","text":"Use scoped browser profiles (AMUX-5307) to restrict which agents can access which saved login profiles. Per-worker scoping prevents an agent for project A from reading credentials for project B."},{"@type":"HowToStep","position":5,"name":"Test the three-rung escalation","text":"Trigger a browser task from an agent. amux attempts rung 1 (amux browser), escalates to rung 2 (Chrome CDP) if needed, and falls back to rung 3 (CUA sandbox) for desktop-only flows. Check the agent log to see which rung was used."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is CUA computer use for AI agents?","acceptedAnswer":{"@type":"Answer","text":"CUA (from github.com/trycua/cua) is a sandboxed desktop environment that lets AI agents interact with a full computer — clicking native UI elements, navigating OS dialogs, and running desktop apps — beyond what a headless browser can reach. amux integrates CUA as rung 3 of its browser access ladder."}},{"@type":"Question","name":"When should an AI agent use CUA instead of a headless browser?","acceptedAnswer":{"@type":"Answer","text":"Use CUA when: the target site actively blocks headless browsers (bot-detection, CAPTCHA walls), the workflow involves native desktop apps (Xcode, Android Studio, Figma, Slack), or the task requires OS-level interactions like file dialogs, system settings, or native notifications. Rung 1 (amux browser) handles most web tasks; rung 3 (CUA) handles what rung 1 and 2 cannot."}},{"@type":"Question","name":"How does the three-rung browser access ladder work in amux?","acceptedAnswer":{"@type":"Answer","text":"amux tries rung 1 first (amux browser — headless Playwright with saved auth profiles, fastest and cheapest). If that fails, it escalates to rung 2 (Chrome CDP — connects to your real Chrome with live sign-ins, handles anti-bot sites). If that also fails, it falls back to rung 3 (CUA computer-use sandbox — full desktop agent, handles anything a browser cannot). Agents log which rung was used."}},{"@type":"Question","name":"Are browser profiles scoped per agent in amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. AMUX-5307 (scoped browser profiles) lets you restrict which agents can access which saved auth profiles. A worker for project A cannot read credentials saved for project B. Scoping is set per-session, per-group, or globally from the amux settings panel."}},{"@type":"Question","name":"How do I save my real browser logins into amux profiles?","acceptedAnswer":{"@type":"Answer","text":"Chrome CDP profile sync (85f32eae) lets amux read saved logins from your real Chrome browser and store them into amux browser profiles. This means agents can authenticate to sites that require your personal login, without you manually entering credentials each time."}},{"@type":"Question","name":"Does AI agent computer use work on mobile (iOS)?","acceptedAnswer":{"@type":"Answer","text":"The amux iOS app can monitor CUA agent tasks and approve escalations, but CUA itself runs on your local machine. You can observe computer-use sessions from your phone via the live output stream and act on any approval requests the agent surfaces."}},{"@type":"Question","name":"Is AI agent computer use safe? Can an agent delete files or make purchases?","acceptedAnswer":{"@type":"Answer","text":"amux standing approvals (AMUX-5270) and auto-approve policies (AMUX-5301) govern what CUA agents can do without asking. You configure which categories of action are pre-approved (filesystem reads, browser navigation) and which require owner confirmation (purchases, destructive deletes, account changes). The CUA sandbox is isolated — it cannot affect the host system beyond what you explicitly authorize."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -44,10 +53,6 @@
     <p class="subtitle">Rung 3 of the amux browser access ladder — for native dialogs, desktop apps, and anything a headless browser cannot reach. Published September 2026.</p>
 
     <!-- EXP-102 top-of-page CTA -->
-    <div class="cta-box cta-top" id="exp102-top">
-      <strong>Give your AI agents full desktop access</strong> — amux manages the three-rung browser escalation ladder automatically. Headless browser → real Chrome → CUA desktop sandbox.
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="window.amuxEvent&&amuxEvent('exp102_computer_use_guide_topofpage_cta_click')">View on GitHub ★ 505+</a>
-    </div>
 
     <h2>The three-rung browser access ladder</h2>
     <p>Before CUA, AI agents had two options for browser work: headless automation (fast, blocked by many sites) or connecting to a real browser (slower, needs a running Chrome session). CUA adds a third rung — a full sandboxed desktop that handles native apps, OS dialogs, and anything in between.</p>
@@ -115,7 +120,7 @@ node skills/chrome-cdp/scripts/profile-sync.mjs
     <p>CUA runs as a separate sandboxed process managed by amux. Install amux, then connect the CUA backend:</p>
 
     <pre><code># 1. Install amux
-brew install mixpeek/amux/amux
+curl -fsSL https://amux.io/install.sh | bash
 
 # 2. Start the amux server
 amux serve
@@ -172,7 +177,7 @@ export AMUX_ALLOW_FS_READ=1
     <div class="cta-box">
       <h3>Run AI agents with full computer access</h3>
       <p>amux manages the three-rung escalation ladder automatically — headless browser, real Chrome, CUA desktop sandbox. Open source, single Rust binary.</p>
-      <pre><code>brew install mixpeek/amux/amux
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★ 505+</a>
     </div>
@@ -214,10 +219,12 @@ amux serve</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

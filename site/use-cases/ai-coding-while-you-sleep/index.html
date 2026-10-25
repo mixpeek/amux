@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,31 +20,40 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Coding While You Sleep","item":"https://amux.io/use-cases/ai-coding-while-you-sleep/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding While You Sleep — amux","description":"Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight — self-healing watchdog, YOLO mode, TTS read-aloud morning briefing, Trends view, and Review dashboard from your phone.","url":"https://amux.io/use-cases/ai-coding-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-08-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"image":"https://amux.io/og-image.png","keywords":["AI coding while you sleep","run coding agents overnight","AI coding agents unattended","Gemini CLI overnight","AI engineering team","morning agent review"]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can Claude Code run overnight without supervision?","acceptedAnswer":{"@type":"Answer","text":"Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. The self-healing watchdog monitors every session for idle hangs, context overflow, and process crashes — handling each automatically without any human input. The morning review takes about five minutes from your phone."}},{"@type":"Question","name":"What is YOLO mode in amux and is it safe?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode makes amux auto-respond 'yes' to every tool-approval prompt Claude Code raises, so sessions never block waiting for human input overnight. It is safe to use on a dedicated dev machine or inside a properly scoped project directory. As of July 2026, YOLO mode is the default for new sessions registered with amux. You can disable it per-session with the --no-yolo flag."}},{"@type":"Question","name":"What happens if a Claude Code session runs out of context while I'm asleep?","acceptedAnswer":{"@type":"Answer","text":"amux's watchdog detects the context-overflow signal and automatically sends the /compact slash command to the session. A 5-minute cooldown prevents repeated compactions from thrashing. If the session enters a thinking-block corruption state, the watchdog restarts the session entirely and replays the last message, so work continues without any human intervention."}},{"@type":"Question","name":"How do I check on my AI coding agents from my phone in the morning?","acceptedAnswer":{"@type":"Answer","text":"Open the amux PWA at https://localhost:8824 from your phone (or use the native iOS app). The board tab shows which tasks each session completed, is still working on, or failed. Tap any session to peek at its last 100 lines of output. Use the Trends view to see what themes your fleet worked on overnight, and the Review dashboard to surface any blockers that need your attention. From there you can send a one-tap saved message to redirect an agent, or open GitHub to review the pull requests it opened overnight."}},{"@type":"Question","name":"How many AI coding agents can run overnight on one machine?","acceptedAnswer":{"@type":"Answer","text":"On a Mac with 32 GB of RAM you can comfortably run 10–20 parallel Claude Code sessions. A Mac Studio or Mac Pro with 64–192 GB of RAM supports 30–50 sessions. Each Claude Code session uses roughly 1–2 GB of RAM at peak. The practical limit is usually your Anthropic API rate limit and disk I/O throughput, not CPU or RAM alone."}},{"@type":"Question","name":"Can I run Gemini CLI or Codex agents overnight, not just Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux supports Claude Code, Codex CLI, and Gemini CLI in the same fleet. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging, self-healing, and board integration all work the same way. You can run a mixed fleet: Claude Code for complex reasoning tasks, Codex for sandboxed code execution, and Gemini CLI for cost-effective batch tasks. The watchdog handles all three runtimes with the same overnight reliability."}},{"@type":"Question","name":"What is the read-aloud feature and how does it help with overnight reviews?","acceptedAnswer":{"@type":"Answer","text":"amux includes a built-in read-aloud (TTS) button powered by Piper — a free, local text-to-speech engine that runs entirely on your machine with no API key required. In your morning review, tap the read-aloud button on any session card or Trends summary and amux reads the agent's output aloud. This is especially useful on your commute or while making coffee — you can hear what your fleet accomplished without staring at a screen."}}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to run AI coding agents overnight with amux","description":"Set up amux so Claude Code agents run autonomously overnight, with self-healing and morning board review.","totalTime":"PT10M","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Clone the repo and run the install script. amux requires Python 3 and tmux — no other dependencies.","url":"https://amux.io/guides/getting-started/"},{"@type":"HowToStep","position":2,"name":"Register your project with YOLO mode","text":"Run 'amux register myproject --dir ~/Dev/myproject --yolo'. YOLO mode (now default) auto-approves all tool prompts so sessions never block overnight.","url":"https://amux.io/guides/setting-up-yolo-mode/"},{"@type":"HowToStep","position":3,"name":"Add tasks to the board","text":"Use 'amux board add' to create one task per agent. The board uses SQLite CAS (compare-and-swap) so two agents can never claim the same task simultaneously."},{"@type":"HowToStep","position":4,"name":"Start sessions and go to sleep","text":"Run 'amux start myproject' for each session slot. The watchdog activates immediately. Check the live board at localhost:8824 before closing your laptop."},{"@type":"HowToStep","position":5,"name":"Review results in the morning","text":"Open the amux PWA or iOS app, check the board for completed tasks, peek at session output, and review pull requests on GitHub.","url":"https://amux.io/guides/mobile-management-pwa/"}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>AI Coding While You Sleep</span></div>
     <!-- EXP-018: top-of-page CTA — 2026-08-03 -->
     <div style="background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.9rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-      <span style="color:#6ee7b7;font-weight:600;font-size:.95rem;">Run your AI engineering team overnight</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#10b981;color:#fff;border-radius:5px;padding:.35rem .9rem;font-size:.85rem;font-weight:600;text-decoration:none;white-space:nowrap;">Get amux free →</a>
+      <span style="color:var(--c-green);font-weight:600;font-size:.95rem;">Run your AI engineering team overnight</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#047857;color:#fff;border-radius:5px;padding:.35rem .9rem;font-size:.85rem;font-weight:600;text-decoration:none;white-space:nowrap;">Get amux free →</a>
     </div>
 
     <h1>AI Coding While You Sleep</h1>
@@ -438,10 +447,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

@@ -5,7 +5,15 @@
 // Up recalls history. No real worker is messaged: sends are captured.
 import { test, expect } from './fixtures';
 
+const CC_W = { name: 'cc-w', status: 'active', running: true, chat_companion: true, renderer: 'terminal' };
+
 async function boot(page: any) {
+  // The fixture worker is served by /api/sessions too. Pushed only into the
+  // in-memory list, the next sessions refresh dropped it, the Chat tab lost
+  // its chat target and hid the chip row (red on a loaded CI shard, green
+  // locally where the refresh landed after the assertions).
+  await page.route(/\/api\/sessions(?:\?.*)?$/, (r: any) => r.request().method() === 'GET'
+    ? r.fulfill({ json: [CC_W] }) : r.fallback());
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).renderChips === 'function'
@@ -19,9 +27,9 @@ test('Chat tab shows the shortcut chips and they act on the chat', async ({ page
     interrupts.push(route.request().url());
     await route.fulfill({ json: { ok: true, interrupted: true, detail: '' } });
   });
-  await page.evaluate(() => {
+  await page.evaluate((cc: any) => {
     const g = globalThis as any;
-    g.eval('sessions').push({ name: 'cc-w', status: 'active', running: true, chat_companion: true, renderer: 'terminal' });
+    if (!g.eval('sessions').some((x: any) => x.name === 'cc-w')) g.eval('sessions').push(cc);
     g.__sent = [];
     g.eval('doSend = async (s, t) => { globalThis.__sent.push([s, t]); return "sent"; }');
     g.eval('_chatMount = () => {}');
@@ -29,13 +37,16 @@ test('Chat tab shows the shortcut chips and they act on the chat', async ({ page
     g.eval('_chatShowing = () => false');
     g.eval('_sendMode = "send"');
     g.openPeek('cc-w');
-  });
+  }, CC_W);
   await expect(page.locator('#peek-overlay')).toBeVisible();
   const chips = page.locator('#peek-chips');
 
   // Terminal tab: every default chip, Space included.
   await page.evaluate(() => (globalThis as any).setPeekTab('terminal'));
   await expect(chips.locator('.chip', { hasText: 'Space' })).toHaveCount(1);
+
+  // A sessions refresh mid-test (what made CI red) must not drop the worker.
+  await page.evaluate(() => (globalThis as any)._fetchSessionsOnce());
 
   // Chat tab: the row is there, Space (no chat meaning) is not.
   await page.evaluate(() => {

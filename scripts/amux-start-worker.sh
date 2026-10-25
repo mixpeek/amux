@@ -94,9 +94,25 @@ verify_running() {
     return 1
 }
 
+# Staggered startup: spread worker launches to avoid a thundering herd on
+# boot that overwhelms the CPU. AMUX_WORKER_START_DELAY_S controls the
+# pause between each launch (default 3s). Set to 0 to disable.
+# Measured 2026-10-23: all workers starting simultaneously pushed load to
+# 52 on a 28-core machine within 3 minutes of boot.
+STAGGER_DELAY="${AMUX_WORKER_START_DELAY_S:-3}"
+lane_idx=0
+
 for f in "${lane_files[@]}"; do
     name=$(basename "$f" .env)
-    echo "$(date): Calling amux API to start worker: $name..." >> "$LOG_FILE"
+
+    # Stagger: wait between launches (skip the first one)
+    if [ "$lane_idx" -gt 0 ] && [ "$STAGGER_DELAY" -gt 0 ] 2>/dev/null; then
+        echo "$(date): waiting ${STAGGER_DELAY}s before starting next worker (staggered startup)" >> "$LOG_FILE"
+        sleep "$STAGGER_DELAY"
+    fi
+    lane_idx=$((lane_idx + 1))
+
+    echo "$(date): Calling amux API to start worker: $name ($lane_idx/${#lane_files[@]})..." >> "$LOG_FILE"
     RESPONSE=$(/usr/bin/curl -sk --connect-timeout 5 --max-time 10 -X POST "https://localhost:8824/api/sessions/$name/start" \
       -H "Content-Type: application/json" \
       -d '{"backend": "tmux"}' 2>&1)

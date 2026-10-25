@@ -78,6 +78,10 @@ pub fn routes() -> Router<AppState> {
         // never existed, from two lanes; each got 405 and nothing to act on,
         // while the equivalent GET answers `{"error": "not found"}`.
         // `serve_path` still refuses to hand the SPA shell to a non-GET.
+        // A dev server on this machine, opened from any device (port_proxy.rs).
+        // Before the catch-all, which answered these with the dashboard.
+        .route("/proxy/{port}", axum::routing::any(port_proxy::proxy))
+        .route("/proxy/{port}/{*rest}", axum::routing::any(port_proxy::proxy))
         .route("/{*path}", axum::routing::any(serve_path))
 }
 
@@ -157,15 +161,33 @@ async fn serve_path(
     // `__AMUX_ASSET_VER__` placeholder, and the served bytes must hold the real
     // content hash so the SW cache name moves on every deploy and the SSE
     // ping's version (sse.rs) matches what this page will compare it with.
+    // Revalidate every dashboard file against the dashboard's content hash.
+    // These URLs carry no version, so a long max-age would pin stale code;
+    // with no validator at all, every load without the service worker sent
+    // app.js again in full (1MB gzipped, recompressed per request). The hash
+    // covers all of static/, so any change moves every file's ETag.
+    let etag = format!("\"d-{}\"", amux_dashboard::asset_version());
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+    if fresh && amux_dashboard::asset(path).is_some() {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, etag), (header::CACHE_CONTROL, "no-cache".to_string())],
+        )
+            .into_response();
+    }
     match amux_dashboard::asset(path) {
         Some(content) => {
             let mime = mime_for(path);
             let mut resp =
                 ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response();
-            if path == "sw.js" {
-                resp.headers_mut()
-                    .insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+            if let Ok(v) = HeaderValue::from_str(&etag) {
+                resp.headers_mut().insert(header::ETAG, v);
             }
+            resp.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             resp
         }
         // SPA fallback: unknown NON-API paths get the shell so client routing
@@ -183,15 +205,18 @@ async fn serve_path(
     }
 }
 
+// Every `cookie` field, not the first: over HTTP/2 a browser may send each
+// cookie as its own field (RFC 7540 8.1.2.5), and reading only the first
+// missed the owner cookie whenever another cookie came ahead of it.
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|part| {
-                let (cookie_name, value) = part.trim().split_once('=')?;
-                (cookie_name == name && !value.is_empty()).then_some(value)
-            })
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|cookies| cookies.split(';'))
+        .find_map(|part| {
+            let (cookie_name, value) = part.trim().split_once('=')?;
+            (cookie_name == name && !value.is_empty()).then_some(value)
         })
 }
 
@@ -349,6 +374,7 @@ mod clear_sw_landing_tests {
     }
 }
 
+pub(crate) mod port_proxy;
 pub(crate) mod tailnet_auth;
 
 async fn serve_shell(
@@ -386,6 +412,19 @@ fn request_authority(headers: &HeaderMap, uri: &Uri) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .or_else(|| uri.authority().map(|authority| authority.to_string()))
+}
+
+/// Owner access for a page view (api/pages.rs): the same decision that gives
+/// the dashboard shell the owner bearer.
+pub(crate) fn owner_access(state: &AppState, headers: &HeaderMap, uri: &Uri, peer: Option<IpAddr>) -> bool {
+    owner_bootstrap_allowed(state, headers, uri, peer)
+}
+
+/// The shell's bootstrap block for another trusted amux document (the
+/// standalone page host), decided the same way as for the shell.
+pub(crate) fn bootstrap_for(html: &str, state: &AppState, headers: &HeaderMap, uri: &Uri, peer: Option<IpAddr>) -> String {
+    let owner = owner_bootstrap_allowed(state, headers, uri, peer);
+    inject_bootstrap(html, state, None, owner)
 }
 
 fn owner_bootstrap_allowed(
@@ -661,6 +700,16 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::time::Instant;
+
+    #[test]
+    fn the_owner_cookie_is_found_in_any_http2_cookie_field() {
+        let mut h = HeaderMap::new();
+        h.append(header::COOKIE, HeaderValue::from_static("appsid=1"));
+        h.append(header::COOKIE, HeaderValue::from_static("__Host-amux_owner=abc; theme=dark"));
+        assert_eq!(cookie_value(&h, OWNER_COOKIE), Some("abc"), "a later field still carries the owner cookie");
+        assert_eq!(cookie_value(&h, "appsid"), Some("1"));
+        assert_eq!(cookie_value(&h, "missing"), None);
+    }
 
     fn state(token: Option<&str>) -> AppState {
         let dir = tempfile::tempdir().unwrap();

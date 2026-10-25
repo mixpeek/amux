@@ -1820,19 +1820,22 @@ async fn hand_off_isolated<F: Fleet>(state: &AppState, fleet: &F, lane: &str) {
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND updated < ?2",
                 rusqlite::params![l, c], |r| r.get(0))?)
         }).await.unwrap_or(0);
-        // Once an hour per lane: the drive tick runs every minute.
+        // Once per distinct count per lane. The lane has no board, so an
+        // hourly repeat of an unchanged count was 54 WARNs for one isolated
+        // lane in the gs12 review with nothing new in any of them. A changed
+        // count (cards added or cleared) still warns.
         let due = UNROUTED_WARNED.lock().map(|mut m| {
-            let last = m.get(lane).copied().unwrap_or(0.0);
-            let due = now - last >= 3600.0;
-            if due && waiting > 0 {
-                m.insert(lane.to_string(), now);
+            let last = m.get(lane).copied();
+            let due = last != Some(waiting as f64);
+            if due {
+                m.insert(lane.to_string(), waiting as f64);
             }
             due
         }).unwrap_or(true);
         if waiting > 0 && due {
             tracing::warn!(target: "amux::board_drive", session = lane, waiting, configured = ?configured,
                 measured = true, n_considered = waiting, verdict = "isolated_cards_unrouted",
-                "board_drive: an isolated lane holds cards nothing will dispatch; set AMUX_ISOLATED_HANDOFF to a lane that can work them");
+                "board_drive: an isolated lane holds cards nothing will dispatch; set AMUX_ISOLATED_HANDOFF to a lane that can work them (repeats only when the count changes)");
         }
         return;
     };
@@ -7080,10 +7083,32 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // gating inside drive_lane) matters: the idle-drain arm stamps its nudge
     // backoff BEFORE sending, so a mid-lane skip would advance it for nothing.
     let lanes = if crate::runtime_jobs::host_guard::admit_automation("board-dispatch") { fleet.lanes() } else { Vec::new() };
+    let max_concurrent = crate::runtime_jobs::worker_resources::max_concurrent();
+    let mut concurrent_active = 0u64;
+    if max_concurrent > 0 {
+        if let Ok(conn) = state.store.read() {
+            concurrent_active = conn.query_row(
+                "SELECT COUNT(DISTINCT session) FROM issues WHERE status = 'doing' AND session IS NOT NULL AND session != ''",
+                [], |r| r.get::<_, i64>(0),
+            ).unwrap_or(0) as u64;
+        }
+    }
     for lane in lanes {
+        if max_concurrent > 0 && concurrent_active >= max_concurrent {
+            let trace = LaneTrace::skip(
+                &lane,
+                "concurrent-cap",
+                format!("{concurrent_active} workers already active (cap {max_concurrent})"),
+            );
+            report.lanes.push(trace);
+            continue;
+        }
         let trace = drive_lane(state, fleet, &lane).await;
         match trace.outcome.as_str() {
-            "assigned" => report.assigned += 1,
+            "assigned" => {
+                report.assigned += 1;
+                concurrent_active += 1;
+            }
             "skipped" => {}
             _ => report.nudged += 1,
         }
@@ -7579,9 +7604,19 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         open_card_count(conn, &census_lane),
     ))).await;
     if census_started.elapsed() >= std::time::Duration::from_millis(250) {
-        tracing::warn!(session=lane,elapsed_ms=census_started.elapsed().as_millis() as u64,
-            measured=counts.is_ok(),n_considered=1,verdict="board_census_slow",
-            "lane census ran off the async thread; inspect DB query cost or read-pool contention");
+        let elapsed_ms = census_started.elapsed().as_millis() as u64;
+        // A boardless lane (isolated or every board switch off) is still
+        // counted, so its trace stays honest, but a slow count on a board it
+        // does not have goes to debug (gs12 review: 35 such WARNs).
+        if crate::api::board_lifecycle::lane_has_board(lane) {
+            tracing::warn!(session=lane,elapsed_ms,
+                measured=counts.is_ok(),n_considered=1,verdict="board_census_slow",
+                "lane census ran off the async thread; inspect DB query cost or read-pool contention");
+        } else {
+            tracing::debug!(session=lane,elapsed_ms,has_board=false,
+                measured=counts.is_ok(),n_considered=1,verdict="board_census_slow_boardless",
+                "lane census was slow for a worker with no board");
+        }
     }
     let (eligible, open) = match counts {
         Ok(counts) => counts,
@@ -13254,7 +13289,7 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(
             sessions.join("lane.env"),
-            format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n", dir.path().display()),
+            format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\nCC_AUTO_PICKUP=1\n", dir.path().display()),
         )
         .unwrap();
         drive_card(&store, "ATE-92", "doing", "agent", "code");

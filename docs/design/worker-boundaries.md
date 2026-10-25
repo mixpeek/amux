@@ -48,6 +48,7 @@ Where it is visible:
 | payments | vault approval limit and single-use grants (`api/vault.rs`) | payment provider APIs, vault files, approving grants or editing vault rules |
 | email | external-send approval hold, send audit (`api/email_approval.rs`, `/api/email/log`) | Mail.app, sendmail and SMTP, provider APIs (Gmail, SendGrid, Mailgun, ...), stored Gmail and auth tokens, approving or editing held sends |
 | resources | `host_guard` holds automated dispatch at critical; admission refuses new workers under memory pressure | heavy commands refused at critical pressure, with an acknowledged override |
+| subagents | none | a new Agent/Task call while the worker already runs its subagent limit, or while the account's usage headroom is under the floor |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
 **What this cannot do yet.** Workers run as the owner's macOS user. The guard
@@ -58,10 +59,53 @@ with a recorded reason, not walls. The per-worker VM below is what makes them
 walls: a worker whose credentials, network egress and filesystem are those of
 its own VM cannot reach the owner's tokens at all.
 
-**Isolated workers** are skipped by the guard, as CLAUDE.md promises them no
-behavioral hooks. The server gates still apply to them. `/api/boundaries`
-lists them under `not_covered_by_hook`. Whether a boundary should override
-isolation is the owner's call.
+**Isolated workers** are covered by the guard while the registry's top-level
+`apply_to_isolated` is true (the default, named as an exception in CLAUDE.md
+"Isolated workers"). A refusal injects no prompt and routes nothing. An
+isolated launch unsets `AMUX_SESSION` and exports `AMUX_ISOLATED_WORKER`, and
+the guard reads that name; before 2026-10-18 it exited on the missing
+`AMUX_SESSION`, so no boundary reached a real isolated worker even with the
+switch on. With `apply_to_isolated = false` they are exempt and
+`/api/boundaries` lists them under `not_covered_by_hook`. The server gates
+apply either way.
+
+## Subagents
+
+The mxp-gs12 review (2026-10-18) found usage limits had stopped every subagent
+of one large isolated worker five times in four days: it ran up to 21 Claude
+Code agents on one shared plan, and nothing compared the fan-out with the
+account's remaining capacity. The `subagents` boundary refuses a new `Agent`
+or `Task` tool call when either holds:
+
+- the worker already has `max_running` subagents running. The limit is
+  `AMUX_MAX_SUBAGENTS` in the worker's env (Scope tab), else
+  `[boundary.subagents].max_running_default` (4). `0` turns the count cap off.
+- the account's usage headroom is under `min_headroom_pct` (10). Headroom is
+  100 minus the highest account-wide window percent in `GET /api/usage` (the
+  5-hour session and weekly windows; model-scoped windows are ignored). `0`
+  turns the floor off.
+
+The refusal tells the model the running count, the limit, and when to retry
+(when one of its agents finishes, or the window's reset time). It is a refusal
+only: no prompt, no routing.
+
+The count comes from Claude Code's own files, so it needs no amux reporting
+(isolated workers send none). The hook payload's `transcript_path` names the
+conversation; each subagent has `<conversation>/subagents/agent-<id>.jsonl`
+and `agent-<id>.meta.json`, and the meta gains `"finished": true` when the
+agent stops. A subagent counts as running while its meta has no finished flag
+and its transcript was written within `stale_s` (1800, since a killed agent
+never gets the flag). A transcript with no meta counts only within
+`no_meta_warm_s` (240). A subagent's own Agent call counts its siblings.
+
+Unmeasured means allowed: no `transcript_path`, a transcript that does not
+exist, or an unreachable or unmeasured `/api/usage`. Verdicts in
+`boundaries.jsonl`: `subagent_cap_refused` (`level` WARN, `cause`
+`running_cap` or `usage_headroom`, with `running`, `limit`, `headroom_pct`) and
+`subagent_cap_allowed_unmeasured` (`level` INFO, `measured` false when the
+count was the unmeasured half, `unmeasured` naming which). The guard is wired
+for `Agent` and `Task` by `install-claude-status-hooks.py`; a box installed
+before this change needs `install.sh` rerun for the matcher to include them.
 
 ## Resources
 
@@ -75,6 +119,16 @@ What a worker can see now:
   and `AMUX_WORKER_DISK_GB`, set in the Scope tab and resolved worker, then
   group, then global. `amux resources` reports usage against it and names any
   limit the worker is over.
+- **Disk is enforced** (2026-10-18, after one worker's subagent cargo targets
+  filled the data volume twice). The boundary guard measures the worker's
+  scratch (`~/.amux/tmp/<worker>` plus `AMUX_WORKER_DISK_PATHS`) with `du` in a
+  detached process, caches it in `~/.amux/state/disk-usage/<worker>.json`, and
+  checks heavy commands against `AMUX_WORKER_DISK_GB` (registry default
+  `disk_budget_gb_default`, 100): a warning past 80%, a refusal past 100%,
+  `AMUX_DISK_ACK="<why>"` to override (recorded). `amux resources` shows the
+  same reading under `worker.disk`. Verdicts in `boundaries.jsonl`:
+  `disk_budget_warn`, `disk_budget_refused`, `disk_budget_acknowledged`,
+  `disk_budget_unmeasured`.
 - The `resources` rule text tells every worker to check before heavy work,
   lower parallelism when the machine is strained, prefer remote hardware for
   big builds, and shut down what it started.

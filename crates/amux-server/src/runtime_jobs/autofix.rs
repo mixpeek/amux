@@ -6768,6 +6768,14 @@ pub struct CiRun {
     /// Populated only for the newest failing run of a failing workflow — it
     /// costs one extra API call each, so it is not fetched for history.
     pub failing_step: Option<String>,
+    /// Test files that failed in that same newest failing run, read from its
+    /// failed-job log (e2e spec headers, Rust panic locations). Same one-run
+    /// budget as `failing_step`; empty when the log named none.
+    pub failing_tests: Vec<String>,
+    /// The sessions that wrote those files (`Amux-Session` trailers), most
+    /// commits first. The finding routes to the first one: a flaky spec is
+    /// fixed fastest by whoever wrote it (velocity audit 2026-10-22).
+    pub test_owners: Vec<String>,
 }
 
 /// A workflow whose redness means MERGED AND DEPLOYED HAVE DIVERGED.
@@ -7199,6 +7207,22 @@ pub fn ci_findings(runs: &[CiRun], now: f64) -> (Vec<Finding>, Vec<Suppressed>) 
             ("latest_run_url".into(), newest.url.clone()),
             ("failing_step".into(), step),
             (
+                "failing_tests".into(),
+                if newest.failing_tests.is_empty() {
+                    "<none named in the failed-job log>".into()
+                } else {
+                    newest.failing_tests.join(", ")
+                },
+            ),
+            (
+                "test_owners".into(),
+                if newest.test_owners.is_empty() {
+                    "<unknown: routed to AMUX_AUTOFIX_SESSION>".into()
+                } else {
+                    newest.test_owners.join(", ")
+                },
+            ),
+            (
                 "trigger".into(),
                 format!("{} on {}", newest.event, newest.branch),
             ),
@@ -7222,17 +7246,25 @@ pub fn ci_findings(runs: &[CiRun], now: f64) -> (Vec<Finding>, Vec<Suppressed>) 
         out.push(Finding {
             kind: DetectorKind::CiFailure,
             signature,
-            title: format!(
-                "CI red: {workflow} — {count}x consecutive since {}",
-                ci_when(first_seen)
-            ),
+            // The signature, not the title, is the dedupe key, so naming the
+            // newest failing test here costs no refile.
+            title: match newest.failing_tests.first() {
+                Some(t) => format!(
+                    "CI red: {workflow} — {count}x consecutive since {} ({t})",
+                    ci_when(first_seen)
+                ),
+                None => format!(
+                    "CI red: {workflow} — {count}x consecutive since {}",
+                    ci_when(first_seen)
+                ),
+            },
             evidence,
             recheck: format!(
                 "gh run list --repo {repo} --workflow '{workflow}' --limit 10; \
                  gh run view {} --repo {repo} --log-failed",
                 newest.run_id
             ),
-            owner: None,
+            owner: newest.test_owners.first().cloned(),
             count: count as u64,
             last_ts: newest.created_at,
             parked_until: None,
@@ -7433,6 +7465,8 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 created_at: ci_parse_ts(&s("createdAt")),
                 url: s("url"),
                 failing_step: None,
+                failing_tests: Vec::new(),
+                test_owners: Vec::new(),
             });
         }
     }
@@ -7512,6 +7546,8 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 created_at: ci_parse_ts(&s("createdAt")),
                 url: s("url"),
                 failing_step: None,
+                failing_tests: Vec::new(),
+                test_owners: Vec::new(),
             });
             added += 1;
         }
@@ -7559,12 +7595,117 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 r.failing_step = Some(step.clone());
             }
         }
+        let tests = gh(
+            &[
+                "run".into(),
+                "view".into(),
+                run_id.to_string(),
+                "--repo".into(),
+                repo.clone(),
+                "--log-failed".into(),
+            ],
+            timeout_s,
+        )
+        .await
+        .map(|log| ci_failing_test_paths(&log))
+        .unwrap_or_default();
+        let owners = ci_test_owners(&repo, &tests).await;
+        for r in runs.iter_mut().filter(|r| r.run_id == run_id) {
+            r.failing_tests = tests.clone();
+            r.test_owners = owners.clone();
+        }
     }
 
     if let Ok(mut g) = ci_cache().write() {
         *g = Some((now, runs.clone(), suppressed.clone()));
     }
     (runs, suppressed)
+}
+
+/// The test FILES a failed-job log names as failing, in first-seen order.
+///
+/// Two shapes, both from this repo's own CI: a Playwright failure header
+/// (`  1) [desktop] › e2e/map-manage.spec.ts:121:5 › title`) and a Rust panic
+/// location (`panicked at crates/amux-server/tests/x.rs:102:5`). Playwright's
+/// trailing list of flaky and skipped specs has no `N)` before its `[project]`,
+/// so it never matches `) [` and is not read as a failure.
+pub fn ci_failing_test_paths(log: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in log.lines() {
+        let path = if let Some(i) = line.find(") [") {
+            let rest = &line[i..];
+            rest.find("› ")
+                .and_then(|j| rest[j + "› ".len()..].split(':').next())
+        } else if let Some(i) = line.find("panicked at ") {
+            line[i + "panicked at ".len()..].split(':').next()
+        } else {
+            None
+        };
+        if let Some(p) = path.map(str::trim) {
+            let test_file =
+                p.ends_with(".spec.ts") || p.ends_with(".test.mjs") || p.ends_with(".rs");
+            if test_file && !p.contains(' ') && !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Rank the sessions in `Amux-Session` trailer values, most commits first;
+/// ties by name so the routing cannot flip between ticks. Hand commits carry
+/// no trailer and are not an owner.
+pub fn ci_rank_owners(trailers: &str) -> Vec<String> {
+    let mut n: BTreeMap<String, usize> = BTreeMap::new();
+    for v in trailers.lines().flat_map(|l| l.split(',')) {
+        let v = v.trim();
+        if !v.is_empty() && !v.starts_with('(') {
+            *n.entry(v.to_string()).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(String, usize)> = n.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.into_iter().map(|(s, _)| s).collect()
+}
+
+/// Who wrote these test files, read from the checkout this server was BUILT
+/// from: the builder compiles a clean worktree of the repo's main, so its
+/// history is the repo's. Only used when that checkout's origin is `repo`;
+/// any other repo routes as before, to `AMUX_AUTOFIX_SESSION`.
+async fn ci_test_owners(repo: &str, paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let git = |args: Vec<String>| {
+        let root = root.clone();
+        async move {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        }
+    };
+    let origin = git(vec!["remote".into(), "get-url".into(), "origin".into()])
+        .await
+        .unwrap_or_default();
+    let origin = origin.trim().trim_end_matches(".git");
+    if !origin.ends_with(&format!("/{repo}")) && !origin.ends_with(&format!(":{repo}")) {
+        return Vec::new();
+    }
+    let mut args: Vec<String> = vec![
+        "log".into(),
+        "--format=%(trailers:key=Amux-Session,valueonly,separator=,)".into(),
+        "HEAD".into(),
+        "--".into(),
+    ];
+    args.extend(paths.iter().cloned());
+    ci_rank_owners(&git(args).await.unwrap_or_default())
 }
 
 fn sup(kind: DetectorKind, signature: &str, reason: &str) -> Suppressed {
@@ -8663,6 +8804,44 @@ pub(crate) fn should_refresh_with_counts(
     escalating || now - updated_at >= min_secs
 }
 
+/// Why `worker` cannot read its own board, or `None` when it can.
+///
+/// An isolated worker has no board (CLAUDE.md "Isolated workers"; the board
+/// API answers it 403 `isolated_no_board`), and a worker with every Board tab
+/// switch off has none either. An admin-group isolated worker keeps its board.
+fn board_absence(worker: &str) -> Option<&'static str> {
+    use crate::api::session_verbs::{is_admin_worker, session_is_isolated};
+    if session_is_isolated(worker) && !is_admin_worker(worker) {
+        return Some("is isolated and has no board");
+    }
+    if crate::api::board_lifecycle::board_unused(worker) {
+        return Some("has every board switch off");
+    }
+    None
+}
+
+/// NEVER FILE ON A BOARD ITS OWNER CANNOT SEE (gs12 review, 2026-10-18).
+/// Autofix filed MG-2063, MG-2092 and MG-2123 on mxp-gs12's board after the
+/// board started refusing that isolated worker; it could not read them, and
+/// MG-2063 was auto-discarded after 74 h unread. Such a finding goes to the
+/// fixer lane (`AMUX_AUTOFIX_SESSION`), or unowned on the shared board when
+/// that lane is unset or boardless too. Nothing is sent to the worker:
+/// isolation forbids injected prompts. Returns the owner to file under and,
+/// when rerouted, the worker it came from and why.
+fn boardless_reroute(
+    owner: &str,
+    absence: impl Fn(&str) -> Option<&'static str>,
+    fixer: &str,
+) -> (String, Option<(String, &'static str)>) {
+    let owner = owner.trim();
+    let Some(why) = (!owner.is_empty()).then(|| absence(owner)).flatten() else {
+        return (owner.to_string(), None);
+    };
+    let fixer = fixer.trim();
+    let to = if fixer.is_empty() || fixer == owner || absence(fixer).is_some() { "" } else { fixer };
+    (to.to_string(), Some((owner.to_string(), why)))
+}
+
 async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<String>> {
     // PER-TENANT CLOUD: do not drop the server's own health/ops findings onto a
     // customer's board (AMUX-3014). Off by env in the cloud image; on locally
@@ -8729,13 +8908,26 @@ async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<St
         }
     }
     let owner = f.owner.clone().unwrap_or_else(fixer_session);
+    let (owner, rerouted) = boardless_reroute(&owner, board_absence, &fixer_session());
+    if let Some((from, why)) = &rerouted {
+        tracing::warn!(detector = %f.signature, from = %from, to = %owner, why, measured = true, n_considered = 1,
+            verdict = "autofix_owner_has_no_board",
+            "autofix: the finding names a worker with no board; filed where it can be read instead");
+    }
     let owner = if owner.trim().is_empty() {
         None
     } else {
         Some(owner)
     };
     let title = truncate(&f.title, 160);
-    let desc = render_desc(f);
+    let desc = match &rerouted {
+        Some((from, why)) => format!(
+            "Routed here from {from}: that worker {why}, so a card on its board is one it can never read. \
+             Nothing was sent to {from}.\n\n{}",
+            render_desc(f)
+        ),
+        None => render_desc(f),
+    };
     let item_type = f.kind.item_type();
     let signature = f.signature.clone();
     let idem = idem_of(&signature);
@@ -9354,6 +9546,26 @@ fn parse_ts(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    /// A finding naming a worker with no board is filed where it can be read
+    /// (gs12 review: MG-2063/2092/2123 sat on an isolated worker's board).
+    #[test]
+    fn a_finding_for_a_boardless_worker_is_filed_where_it_can_be_read() {
+        let absence = |w: &str| match w {
+            "raw" => Some("is isolated and has no board"),
+            "off" => Some("has every board switch off"),
+            _ => None,
+        };
+        assert_eq!(super::boardless_reroute("lane", absence, "amux"), ("lane".to_string(), None), "a worker with a board keeps its card");
+        assert_eq!(super::boardless_reroute("", absence, "amux"), (String::new(), None), "unowned stays unowned");
+        let (to, from) = super::boardless_reroute("raw", absence, "amux");
+        assert_eq!(to, "amux");
+        assert_eq!(from, Some(("raw".to_string(), "is isolated and has no board")));
+        assert_eq!(super::boardless_reroute("off", absence, "amux").0, "amux");
+        assert_eq!(super::boardless_reroute("raw", absence, "").0, "", "no fixer lane: unowned on the shared board, never the boardless worker");
+        assert_eq!(super::boardless_reroute("raw", absence, "off").0, "", "a boardless fixer is no better");
+        assert_eq!(super::boardless_reroute("raw", absence, "raw").0, "");
+    }
+
     #[test]
     fn snapshot_listing_requires_a_measured_listing_before_counting_zero() {
         let header = "Snapshots for volume group containing disk /:\n";
@@ -16885,6 +17097,8 @@ mod tests {
             created_at: unix_now() - mins_ago * 60.0,
             url: format!("https://github.com/mixpeek/amux/actions/runs/{id}"),
             failing_step: None,
+            failing_tests: Vec::new(),
+            test_owners: Vec::new(),
         }
     }
 
@@ -16903,6 +17117,73 @@ mod tests {
     /// If the detector is removed, misfiltered, or its threshold is set above
     /// the streak, this fails — which is the property "nobody saw 29 failures"
     /// needed and did not have.
+    /// Lines copied from rust runs 39721002526 and 39748901102 (2026-10-22).
+    /// The un-numbered `[desktop] › board-…` lines are Playwright's flaky and
+    /// skipped list, present on every run; reading them as failures would
+    /// route every card to whoever wrote the board specs.
+    #[test]
+    fn failing_test_paths_come_from_failure_headers_and_panics_only() {
+        let log = "e2e-shards (14)\tGolden\t2026-10-22T04:20:00Z   1) [desktop] › e2e/map-manage.spec.ts:121:5 › categories: any group within a category\n\
+            e2e-shards (14)\tGolden\t2026-10-22T04:20:00Z     [desktop] › e2e/map-manage.spec.ts:121:5 › categories: any group within a category\n\
+            e2e-shards (14)\tGolden\t2026-10-22T04:20:01Z   [desktop] › board-activity-scrolls.spec.ts:16:5 › the worker activity banner scrolls away\n\
+            e2e-shards (2)\tGolden\t2026-10-22T08:42:00Z   2) [ios-safari] › e2e/worker-configurations.spec.ts:10:5 › worker Configurations edits\n\
+            test-shards (1)\tnextest\t2026-10-20T21:59:46Z     thread 'bilateral_peers' (6422) panicked at crates/amux-server/tests/bilateral_peers.rs:102:5:\n\
+            spa-gates\tunit\t2026-10-21T11:36:04Z not ok 90 - full history cannot block streaming\n";
+        assert_eq!(
+            ci_failing_test_paths(log),
+            vec![
+                "e2e/map-manage.spec.ts".to_string(),
+                "e2e/worker-configurations.spec.ts".to_string(),
+                "crates/amux-server/tests/bilateral_peers.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_owners_rank_by_commits_and_skip_hand_commits() {
+        let trailers = "amux-cloud\n\namux,amux-app\namux\n(human)\namux-cloud\namux\n";
+        assert_eq!(
+            ci_rank_owners(trailers),
+            vec!["amux".to_string(), "amux-cloud".into(), "amux-app".into()]
+        );
+        assert!(ci_rank_owners("").is_empty());
+    }
+
+    /// The finding routes to the failing test's author and names the test; with
+    /// no author known it stays unowned, which `file` routes to
+    /// AMUX_AUTOFIX_SESSION exactly as before.
+    #[test]
+    fn a_red_run_routes_to_the_failing_tests_author() {
+        let mut runs = vec![ci_run("rust", 1, "success", 300.0)];
+        for i in 0..3 {
+            runs.push(ci_run("rust", 10 + i, "failure", 200.0 - i as f64 * 50.0));
+        }
+        let (f, _) = ci_findings(&runs, unix_now());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].owner, None, "no test named: unowned, as before");
+        assert!(!f[0].title.contains('('), "{}", f[0].title);
+        let newest = runs.last_mut().unwrap();
+        newest.failing_tests = vec!["e2e/map-manage.spec.ts".into()];
+        newest.test_owners = vec!["amux-cloud".into(), "amux".into()];
+        let (g, _) = ci_findings(&runs, unix_now());
+        assert_eq!(g[0].owner.as_deref(), Some("amux-cloud"));
+        assert!(
+            g[0].title.ends_with("(e2e/map-manage.spec.ts)"),
+            "{}",
+            g[0].title
+        );
+        assert_eq!(
+            g[0].signature, f[0].signature,
+            "naming the test must not refile"
+        );
+        let ev: BTreeMap<&str, &str> = g[0]
+            .evidence
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(ev["test_owners"], "amux-cloud, amux");
+    }
+
     #[tokio::test]
     async fn a_failing_workflow_produces_a_card_with_its_streak() {
         let (st, _d) = state();

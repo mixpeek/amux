@@ -1,0 +1,28 @@
+-- 0125: schedule lifecycle: bounds, owner lock, why it ended.
+--
+-- ADDITIVE ONLY (shared live DB).
+--
+-- WHY (GS-12 review, finding 5, 2026-10-18): schedules had a start and no end.
+-- 49 one-offs were written as yearly crons (40 now point at 2027), procedures
+-- were built from parallel polls with no stop condition, an owner's disable of
+-- SCHED-173 was re-enabled by a worker 70 minutes later, and schedules kept
+-- firing into archived lanes.
+--
+-- not_before   local "%Y-%m-%dT%H:%M": no fire before this (`after` in the API).
+-- until        local "%Y-%m-%dT%H:%M": no fire after this; the schedule ends.
+-- max_runs     scheduled fires allowed (Run now is not counted); then it ends.
+-- cron_runs    scheduled fires counted against max_runs. A fire the background
+--              reserve refused is not counted.
+-- locked_by / lock_reason / locked_at: an OWNER disable. A worker cannot
+--              re-enable (or Run now) a locked schedule; the owner can.
+-- disabled_reason why it is disabled (owner, worker, bound reached, owner archived),
+--              so a disabled row says why without opening the audit trail.
+
+-- ADDCOL: schedules not_before TEXT
+-- ADDCOL: schedules until TEXT
+-- ADDCOL: schedules max_runs INTEGER
+-- ADDCOL: schedules cron_runs INTEGER NOT NULL DEFAULT 0
+-- ADDCOL: schedules locked_by TEXT
+-- ADDCOL: schedules lock_reason TEXT
+-- ADDCOL: schedules locked_at INTEGER
+-- ADDCOL: schedules disabled_reason TEXT

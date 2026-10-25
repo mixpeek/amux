@@ -41,6 +41,14 @@ class ServerManager: ObservableObject {
         logger.info("Switched to server: \(urlString)")
     }
 
+    /// Opens a server through a one-time sign-in link (Sign in with Apple, via cloud.amux.io).
+    /// The server's address is what is remembered; the link only loads once, and the door's
+    /// cookie keeps the person signed in after that.
+    func openServer(_ urlString: String, signInLink: URL?) {
+        selectServer(urlString)
+        if let signInLink { serverURL = signInLink }
+    }
+
     func addServer(name: String, urlString: String) -> Bool {
         guard let _ = URL(string: urlString), urlString.hasPrefix("http") else { return false }
         let normalized = urlString.hasSuffix("/") ? String(urlString.dropLast()) : urlString

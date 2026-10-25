@@ -22,6 +22,8 @@ export TRACE
 export AMUX_AUTHORITY_SELF_HEAL=0
 # CI verdicts come from a file, one "sha verdict" per line; unlisted = green.
 VERDICTS="$TMP/verdicts"; : > "$VERDICTS"
+# Every cell writes its gate verdict here, never to the live ~/.amux copy.
+export AMUX_ACTIVATION_GATE_STATE="$TMP/gate.json"
 printf '#!/usr/bin/env bash\nv=$(awk -v s="$1" '"'"'$1==s {print $2}'"'"' "%s" | tail -1); echo "${v:-green}"\n' "$VERDICTS" > "$TMP/verdict"
 chmod +x "$TMP/verdict"
 
@@ -112,6 +114,8 @@ echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
 run_launcher
 expect grep -q "repo=$WORK sha=$GREEN" "$TRACE"
 expect grep -q "CI-GATE tip $PENDING is pending; activating newest green $GREEN .*verdict=ci_gate_held_back" "$LOG"
+# The verdict also reaches readers outside the log (amux requests).
+expect grep -q "\"verdict\":\"ci_gate_held_back\",\"tip\":\"$PENDING\",\"tip_state\":\"pending\",\"target\":\"$GREEN\",\"held\":1}" "$AMUX_ACTIVATION_GATE_STATE"
 # The builder must be told the ELECTED sha, or its own authority check refuses it.
 expect grep -q "sha=$GREEN authority=$GREEN" "$TRACE"
 # Once the tip goes green it is activated.
@@ -119,6 +123,7 @@ echo "$PENDING green" >> "$VERDICTS"
 : > "$TRACE"
 run_launcher
 expect grep -q "repo=$WORK sha=$PENDING" "$TRACE"
+expect grep -q "\"verdict\":\"ci_gate_clear\",\"tip\":\"$PENDING\"" "$AMUX_ACTIVATION_GATE_STATE"
 # A red tip whose newest green is older than live: hold, never roll back.
 RED=$(commit_next red)
 echo "$RED red" >> "$VERDICTS"
@@ -127,6 +132,18 @@ echo "{\"commit_full\":\"$RED\"}" > "$TMP/health.json"
 run_launcher
 expect test ! -s "$TRACE"
 expect grep -q "newest green $PENDING is older than the live image $RED.*verdict=ci_gate_no_rollback" "$LOG"
+expect grep -q "\"verdict\":\"ci_gate_no_rollback\",\"tip\":\"$RED\",\"tip_state\":\"red\"" "$AMUX_ACTIVATION_GATE_STATE"
+# A green commit buried under more than 40 red ones is still found and activated
+# (2026-10-24: 56 red commits after the newest green held every deploy, and a
+# hand build of a fork stayed live). Logged as ci_gate_green_deep.
+DEEP_GREEN=$PENDING
+for i in $(seq 1 45); do echo "$(commit_next "deep$i") red" >> "$VERDICTS"; done
+echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
+: > "$TRACE"; : > "$LOG"
+run_launcher
+expect grep -q "repo=$WORK sha=$DEEP_GREEN" "$TRACE"
+expect grep -q "newest green $DEEP_GREEN is 46 first-parent commits behind.*verdict=ci_gate_green_deep" "$LOG"
+: > "$TRACE"
 # Nothing green at all: refuse and keep the live image.
 for s in $(git -C "$STALE" rev-list origin/main); do echo "$s red" >> "$VERDICTS"; done
 echo "{}" > "$TMP/health.json"
@@ -149,7 +166,8 @@ cat > "$TMP/fetch" <<EOF
 #!/usr/bin/env bash
 v=\$(awk -v s="\$1" '\$1==s {print \$2}' "$FETCHED" | tail -1)
 case "\$v" in red) c=failure ;; *) c=success ;; esac
-printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1"}]}' "\$c"
+case "\$v" in green2) a=2 ;; *) a=1 ;; esac
+printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1","run_attempt":%s,"head_sha":"%s"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1","run_attempt":1}]}' "\$c" "\$a" "\$1"
 EOF
 chmod +x "$TMP/fetch"
 run_cached() {
@@ -172,6 +190,24 @@ expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
 run_cached env AMUX_CI_RED_RECHECK_S=0
 expect test "$(cat "$CACHE/$RERUN")" = green
 expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
+
+# A CANCELLED VERDICT IS RE-ASKED TOO (2026-10-24). f83afc792's checks run was
+# cancelled, so the cache held "none" as final and never read its re-run; the
+# Mac stayed 79 commits behind main. A cached none is re-asked like a red.
+REVIVED=$(commit_next revived)
+echo "{\"commit_full\":\"$RERUN\"}" > "$TMP/health.json"
+echo none > "$CACHE/$REVIVED"
+echo "$REVIVED green2" >> "$FETCHED"
+: > "$TRACE"
+run_cached env AMUX_CI_RED_RECHECK_S=3600
+expect test "$(cat "$CACHE/$REVIVED")" = none
+expect test "$(grep -c "sha=$REVIVED" "$TRACE")" = 0
+run_cached env AMUX_CI_RED_RECHECK_S=0
+expect test "$(cat "$CACHE/$REVIVED")" = green
+expect grep -q "repo=$WORK sha=$REVIVED" "$TRACE"
+# It went green on a re-run, which the builder log says once, by commit.
+expect grep -q "WARN CI-GATE ${REVIVED:0:9} green only after a re-run (rust attempt 2) verdict=ci_green_after_rerun" "$LOG"
+expect test "$(grep -c "ci_green_after_rerun" "$LOG")" = 1
 
 # A GATE THAT CANNOT MEASURE HEALS ITS OWN LAUNCHER (2026-10-16): 162e78e03
 # broke the CI judge, every pass refused as unmeasured, and the fixed launcher

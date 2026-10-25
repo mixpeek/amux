@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,7 +23,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
 
   <script type="application/ld+json">
   {
@@ -145,51 +144,61 @@
 
   <style>
     .comparison-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.9rem; }
-    .comparison-table th, .comparison-table td { padding: 0.65rem 0.9rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
-    .comparison-table th { font-weight: 600; background: var(--surface-2, #1a1f2e); }
+    .comparison-table th, .comparison-table td { padding: 0.65rem 0.9rem; text-align: left; border-bottom: 1px solid var(--tint-2); vertical-align: top; }
+    .comparison-table th { font-weight: 600; background: var(--surface-2, var(--panel)); }
     .comparison-table tr:last-child td { border-bottom: none; }
-    .win-ollama { color: #6ee7b7; font-weight: 600; }
-    .win-cloud { color: #93c5fd; font-weight: 600; }
-    .tie { color: var(--text-muted, #8892a4); }
+    .win-ollama { color: var(--c-green); font-weight: 600; }
+    .win-cloud { color: light-dark(oklch(0.48 0.096 251.8), #93c5fd); font-weight: 600; }
+    .tie { color: var(--text-muted, var(--fg-mute)); }
     [data-theme="light"] .comparison-table th { background: #f4f6fa; }
     [data-theme="light"] .comparison-table th, [data-theme="light"] .comparison-table td { border-color: rgba(0,0,0,0.08); }
 
-    .use-case-card { background: var(--surface-2, #1a1f2e); border-radius: 10px; padding: 1.25rem 1.5rem; margin-bottom: 1.1rem; border: 1px solid rgba(255,255,255,0.06); }
-    .use-case-card h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #6ee7b7; }
+    .use-case-card { background: var(--surface-2, var(--panel)); border-radius: 10px; padding: 1.25rem 1.5rem; margin-bottom: 1.1rem; border: 1px solid var(--tint); }
+    .use-case-card h3 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--c-green); }
     .use-case-card p { margin: 0; font-size: 0.92rem; color: var(--text-secondary, #b5bfd3); }
 
-    .code-block { background: #0d1117; border-radius: 8px; padding: 1.1rem 1.3rem; margin: 1.25rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; overflow-x: auto; border: 1px solid rgba(255,255,255,0.08); }
+    .code-block { background: var(--code-bg); border-radius: 8px; padding: 1.1rem 1.3rem; margin: 1.25rem 0; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; overflow-x: auto; border: 1px solid var(--tint-2); }
     .code-block .comment { color: #6a737d; }
-    .code-block .cmd { color: #6ee7b7; }
+    .code-block .cmd { color: var(--c-green); }
     [data-theme="light"] .code-block { background: #f6f8fa; border-color: rgba(0,0,0,0.1); }
     [data-theme="light"] .code-block .cmd { color: #0d7b50; }
 
     .callout-box { background: rgba(110,231,183,0.07); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.1rem 1.3rem; margin: 1.5rem 0; }
-    .callout-box strong { color: #6ee7b7; }
+    .callout-box strong { color: var(--c-green); }
     [data-theme="light"] .callout-box { background: rgba(16,185,129,0.06); border-color: rgba(16,185,129,0.2); }
     [data-theme="light"] .callout-box strong { color: #0d7b50; }
 
     .tradeoff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
     @media (max-width: 600px) { .tradeoff-grid { grid-template-columns: 1fr; } }
-    .tradeoff-col { background: var(--surface-2, #1a1f2e); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); }
+    .tradeoff-col { background: var(--surface-2, var(--panel)); border-radius: 10px; padding: 1.25rem; border: 1px solid var(--tint); }
     .tradeoff-col h4 { margin: 0 0 0.75rem; font-size: 0.95rem; }
     .tradeoff-col.pros { border-color: rgba(110,231,183,0.25); }
     .tradeoff-col.cons { border-color: rgba(248,113,113,0.2); }
     .tradeoff-col ul { margin: 0; padding-left: 1.1rem; font-size: 0.875rem; }
     .tradeoff-col li { margin-bottom: 0.4rem; color: var(--text-secondary, #b5bfd3); }
   </style>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
-  <header>
-    <a href="/" class="logo">amux</a>
-    <nav>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
 
@@ -206,16 +215,16 @@
     <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:12px;padding:1.25rem 1.5rem;margin:1.5rem 0 2rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
       <div>
         <div style="font-weight:600;font-size:1rem;margin-bottom:0.25rem;">Run Ollama agents from one dashboard</div>
-        <div style="font-size:0.875rem;color:var(--text-muted,#8892a4);">amux orchestrates local and cloud agents side by side. Free and open source.</div>
+        <div style="font-size:0.875rem;color:var(--text-muted,var(--fg-mute));">amux orchestrates local and cloud agents side by side. Free and open source.</div>
       </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.ph)ph.capture('exp039_ollama_guide_topofpage_cta_click')" style="background:#10b981;color:#fff;font-weight:600;padding:0.6rem 1.25rem;border-radius:8px;text-decoration:none;white-space:nowrap;font-size:0.9rem;">★ Star on GitHub</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.ph)ph.capture('exp039_ollama_guide_topofpage_cta_click')" style="background:#047857;color:#fff;font-weight:600;padding:0.6rem 1.25rem;border-radius:8px;text-decoration:none;white-space:nowrap;font-size:0.9rem;">★ Star on GitHub</a>
     </div>
 
     <div class="callout-box">
       <strong>Quick answer:</strong> Select "Ollama" as the provider when creating a new worker in amux. Make sure Ollama is running locally (<code>ollama serve</code>) and you have pulled <code>qwen3.8:27b</code>. amux connects to <code>http://localhost:11434</code> automatically.
     </div>
 
-    <nav class="toc" style="background:var(--surface-2,#1a1f2e);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0">
+    <nav class="toc" style="background:var(--surface-2,var(--panel));border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0">
       <strong style="font-size:0.85rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">On this page</strong>
       <ol style="margin:.5rem 0 0;padding-left:1.25rem;font-size:0.9rem">
         <li><a href="#why-ollama">Why use Ollama for AI coding agents?</a></li>
@@ -358,7 +367,7 @@
 
     <div class="tradeoff-grid">
       <div class="tradeoff-col pros">
-        <h4 style="color:#6ee7b7">Where local wins</h4>
+        <h4 style="color:var(--c-green)">Where local wins</h4>
         <ul>
           <li>Proprietary or regulated code</li>
           <li>High-volume routine tasks (tests, docs, boilerplate)</li>
@@ -368,7 +377,7 @@
         </ul>
       </div>
       <div class="tradeoff-col cons">
-        <h4 style="color:#f87171">Where cloud wins</h4>
+        <h4 style="color:var(--c-red)">Where cloud wins</h4>
         <ul>
           <li>Complex multi-file reasoning tasks</li>
           <li>Large context windows (200K+ tokens)</li>
@@ -383,40 +392,40 @@
 
     <h2 id="faq">Frequently asked questions</h2>
 
-    <div style="border-top: 1px solid rgba(255,255,255,0.08); margin-top: 1rem;">
+    <div style="border-top: 1px solid var(--tint-2); margin-top: 1rem;">
 
-      <details style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 1rem 0;">
+      <details style="border-bottom: 1px solid var(--tint-2); padding: 1rem 0;">
         <summary style="cursor:pointer; font-weight:600; font-size:0.95rem;">Can I run AI coding agents without an API key?</summary>
         <p style="margin:.75rem 0 0;color:var(--text-secondary,#b5bfd3);font-size:0.9rem;">Yes. When you select Ollama as the provider in amux, no API key prompt appears. amux talks directly to the Ollama server running on your machine at <code>http://localhost:11434</code>. The default model is <code>qwen3.8:27b</code>; pull it with <code>ollama pull qwen3.8:27b</code>.</p>
       </details>
 
-      <details style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 1rem 0;">
+      <details style="border-bottom: 1px solid var(--tint-2); padding: 1rem 0;">
         <summary style="cursor:pointer; font-weight:600; font-size:0.95rem;">What hardware do I need to run qwen3.8:27b locally?</summary>
         <p style="margin:.75rem 0 0;color:var(--text-secondary,#b5bfd3);font-size:0.9rem;">An NVIDIA RTX 3080 (10GB VRAM) runs the model with 4-bit quantization at reasonable speed for interactive coding tasks. RTX 4090 or an A100 is faster. Apple Silicon Macs with 32GB unified memory (M2 Pro or later) work well via Metal. CPU-only inference is possible but very slow for interactive use.</p>
       </details>
 
-      <details style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 1rem 0;">
+      <details style="border-bottom: 1px solid var(--tint-2); padding: 1rem 0;">
         <summary style="cursor:pointer; font-weight:600; font-size:0.95rem;">Does my code leave my machine when I use Ollama with amux?</summary>
         <p style="margin:.75rem 0 0;color:var(--text-secondary,#b5bfd3);font-size:0.9rem;">No. With the Ollama provider, all inference runs on your hardware. amux communicates with Ollama over localhost only. Your code, prompts, and responses stay on your machine. amux stores agent history in a local SQLite database at <code>~/.amux/amux.db</code>.</p>
       </details>
 
-      <details style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 1rem 0;">
+      <details style="border-bottom: 1px solid var(--tint-2); padding: 1rem 0;">
         <summary style="cursor:pointer; font-weight:600; font-size:0.95rem;">Can I mix Ollama and cloud agents in the same amux dashboard?</summary>
         <p style="margin:.75rem 0 0;color:var(--text-secondary,#b5bfd3);font-size:0.9rem;">Yes. Provider is a per-worker setting. Create one worker with Ollama for sensitive code, another with Claude Code for complex reasoning, and a third with Codex CLI if you have an OpenAI key. All workers appear in the same dashboard, share the same board, and are all reachable from the amux iOS app.</p>
       </details>
 
-      <details style="border-bottom: 1px solid rgba(255,255,255,0.08); padding: 1rem 0;">
+      <details style="border-bottom: 1px solid var(--tint-2); padding: 1rem 0;">
         <summary style="cursor:pointer; font-weight:600; font-size:0.95rem;">Is qwen3.8:27b good enough to replace Claude Sonnet for coding?</summary>
         <p style="margin:.75rem 0 0;color:var(--text-secondary,#b5bfd3);font-size:0.9rem;">For routine code generation, test writing, documentation, and small refactors: yes, it holds up well. For complex multi-file reasoning, architectural decisions, or tasks requiring very large context windows, Claude Sonnet and Opus still have a clear edge. The practical approach is to use both: Ollama for privacy-sensitive and high-volume routine work, cloud models when you need the best output quality on hard problems.</p>
       </details>
 
     </div>
 
-    <div style="background:var(--surface-2,#1a1f2e);border-radius:12px;padding:1.5rem;margin:2.5rem 0;text-align:center;">
+    <div style="background:var(--surface-2,var(--panel));border-radius:12px;padding:1.5rem;margin:2.5rem 0;text-align:center;">
       <p style="margin:0 0 1rem;font-size:1rem;font-weight:600;">Ready to run local AI coding agents?</p>
-      <p style="margin:0 0 1.25rem;color:var(--text-muted,#8892a4);font-size:0.9rem;">amux is free, MIT licensed, and installs in under 2 minutes. Run Ollama and cloud agents side by side from one dashboard.</p>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.ph)ph.capture('exp039_ollama_guide_bottomcta_click')" style="display:inline-block;background:#10b981;color:#fff;font-weight:600;padding:0.7rem 1.5rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">★ Star amux on GitHub</a>
-      <p style="margin:1rem 0 0;font-size:0.85rem;color:var(--text-muted,#8892a4);">Also see: <a href="/docs/">Installation docs</a> · <a href="/guides/">More guides</a> · <a href="/pricing/">Pricing</a></p>
+      <p style="margin:0 0 1.25rem;color:var(--text-muted,var(--fg-mute));font-size:0.9rem;">amux is free, open source (MIT + Commons Clause), and installs in under 2 minutes. Run Ollama and cloud agents side by side from one dashboard.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.ph)ph.capture('exp039_ollama_guide_bottomcta_click')" style="display:inline-block;background:#047857;color:#fff;font-weight:600;padding:0.7rem 1.5rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">★ Star amux on GitHub</a>
+      <p style="margin:1rem 0 0;font-size:0.85rem;color:var(--text-muted,var(--fg-mute));">Also see: <a href="/docs/">Installation docs</a> · <a href="/guides/">More guides</a> · <a href="/pricing/">Pricing</a></p>
     </div>
 
   </main>
@@ -458,10 +467,12 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

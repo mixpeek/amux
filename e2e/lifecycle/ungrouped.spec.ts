@@ -12,6 +12,8 @@ test('LC-COORD-UNGROUPED: workers without groups retain peer and task awareness'
       const made = await request.post('/api/sessions', { headers,
         data: { name, dir: '/tmp', tags: name === grouped ? [`lc-team-${suffix}`] : [] } });
       expect(made.status()).toBe(201);
+      // New workers start with every Board-tab switch off (no board); turn it on.
+      expect((await request.patch(`/api/sessions/${name}/config`, { headers, data: { board_enabled: true } })).ok()).toBeTruthy();
     }
     for (const [origin, target] of [[grouped, ungrouped], [ungrouped, grouped]]) {
       const peerHeaders = { ...headers, 'X-Amux-Worker': origin };

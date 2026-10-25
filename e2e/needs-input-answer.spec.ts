@@ -62,10 +62,17 @@ test('needs-input chip has its own row, is not clipped, and opens the card with 
     const t = document.getElementById('peek-title-row')!.getBoundingClientRect();
     const c = document.querySelector('#peek-needs-input-row .status-badge.needs-input') as HTMLElement;
     const cr = c.getBoundingClientRect();
-    return { rowTop: r.top, titleBottom: t.bottom, left: cr.left, right: cr.right, vw: innerWidth, h: cr.height,
+    const tb = document.querySelector('#peek-overlay .peek-toolbar')!.getBoundingClientRect();
+    return { rowTop: r.top, titleBottom: t.bottom, titleRight: t.right, toolbarLeft: tb.left, left: cr.left, right: cr.right, vw: innerWidth, h: cr.height,
+      // A wide desktop puts the ask in the header band, between the name and
+      // the toolbar (Ethan, 2026-10-23); everywhere else it is its own row.
+      wide: matchMedia('(min-width: 1100px) and (hover: hover) and (pointer: fine)').matches,
       titleHasChip: !!document.querySelector('#peek-title-row .status-badge.needs-input') };
   });
-  expect(geo.rowTop).toBeGreaterThanOrEqual(geo.titleBottom - 1);
+  if (geo.wide) {
+    expect(geo.left).toBeGreaterThanOrEqual(geo.titleRight - 1);
+    expect(geo.right).toBeLessThanOrEqual(geo.toolbarLeft + 1);
+  } else expect(geo.rowTop).toBeGreaterThanOrEqual(geo.titleBottom - 1);
   expect(geo.left).toBeGreaterThanOrEqual(0);
   expect(geo.right).toBeLessThanOrEqual(geo.vw + 0.5);
   expect(geo.h).toBeGreaterThanOrEqual(44);

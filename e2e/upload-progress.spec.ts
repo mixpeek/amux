@@ -122,3 +122,27 @@ test('a restarted upload gives every chunk an interaction id that names the new 
   expect(ids[1]).toContain('_fresh2_chunk_0');
   expect(new Set(ids).size).toBe(2);
 });
+
+// Finish is bound to its path the same way. Live 2026-10-22 on the Mac app: a
+// finish answered 404, the restart under a new upload id reused "_finish_1",
+// and every retry got 409 while the message carrying it sat unsent.
+test('a restarted upload gives finish an interaction id that names the new upload', async ({page}) => {
+  const finishes: string[] = [];
+  let starts = 0;
+  await page.route(/\/api\/upload\//, async r => {
+    const url = r.request().url();
+    if (url.endsWith('/start')) return r.fulfill({json: {id: ++starts === 1 ? 'gone1' : 'fresh2'}});
+    if (url.includes('/finish')) {
+      finishes.push(r.request().headers()['x-amux-interaction-id'] || '');
+      if (finishes.length === 1) return r.fulfill({status: 404, json: {error: 'unknown upload'}});
+      return r.fulfill({json: {path: '/uploads/clip.mov', url: '/api/uploads/clip.mov'}});
+    }
+    return r.fulfill({json: {ok: true}});
+  });
+  await setup(page);
+  await page.locator('#peek-file-input').setInputFiles(blob(1 * MB));
+  await expect(chip(page)).toContainText('✓', {timeout: 30000});
+  expect(finishes.length).toBe(2);
+  expect(finishes[0]).toContain('_gone1_finish_');
+  expect(finishes[1]).toContain('_fresh2_finish_');
+});

@@ -11,6 +11,7 @@ export AMUX_CLEANUP_FSEVENTSD_CMD=true
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
 export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"
+export AMUX_CLEANUP_CHURN_SAMPLE_CMD=off   # cells 1-2 pin the census; cell 3 drives the FSEvents sample
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable, no cell below ran"; exit 1; }
@@ -46,7 +47,7 @@ if [ "$(uname)" = Darwin ]; then
            AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 \
            AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_CPU_SHARE=99 AMUX_CLEANUP_SWAP_FREE_FLOOR_MB=0 \
            AMUX_CLEANUP_DISK_FLOOR_GB=0 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
-           AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_ESCALATE_CMD="$REC TARGET FILE" bash "$TICK" 2>&1; }
+           AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="${TICK_REC:-$REC} TARGET FILE" bash "$TICK" 2>&1; }
   out=$(tick "echo 0.01 3")
   check "control: a quiet fseventsd is under its thresholds" "yes" "$(has "$out" 'fseventsd 0.01G 3% CPU, under')"
   check "and escalates nothing"                         "no"  "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
@@ -68,6 +69,82 @@ if [ "$(uname)" = Darwin ]; then
   out=$(tick "$SEQ")
   check "it is not suppressed by an earlier cell's cooldown" "no" "$(has "$out" 'escalation suppressed')"
   check "hot before and after still escalates"          "yes" "$([ -f "$FIX/sent.log" ] && echo yes || echo no)"
+else
+  echo "  skip (the end-to-end tick needs macOS)"
+fi
+
+echo "3. with an FSEvents sampler the feed is named whatever the tree's size, deletions included"
+SAMP="$FIX/samp.sh"
+{ echo '#!/bin/bash'; echo 'echo "$1" > '"$FIX"'/samp.secs'
+  echo 'for i in $(seq 1 60); do echo "/Users/x/Dev/cust/runs/eng-R-A/bodies/f$i.resp.txt"; done'
+  echo 'for i in $(seq 1 3); do echo "/Users/x/Library/Caches/c$i/f"; done'
+  echo 'echo "/Users/x/Library/Application Support/Chrome/Profile 17/a"; echo "/Users/x/Library/Application Support/Chrome/Profile 17/b"'; } > "$SAMP"; chmod +x "$SAMP"
+AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP"
+CHURN_SAMPLE_CMD="$SAMP" CHURN_COMPLETE=no
+churn_sample 20 2 > "$FIX/s.out"; out=$(cat "$FIX/s.out")
+check "the busiest directory is named with its event count" "60 /Users/x/Dev/cust/runs/eng-R-A/bodies" "$(head -1 "$FIX/s.out")"
+check "a path with spaces keeps its directory"           "yes" "$(has "$out" "2 /Users/x/Library/Application Support/Chrome/Profile 17")"
+check "a directory under the floor is not named"         "no"  "$(has "$out" "Library/Caches")"
+check "off forces the census"                            "" "$(AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_CHURN_SAMPLE_CMD=off bash -c '. "$0" && printf %s "$CHURN_SAMPLE_CMD"' "$TICK")"
+check "the sampler gets the window"                      "20"  "$(cat "$FIX/samp.secs")"
+check "a sample says complete"                           "yes" "$CHURN_COMPLETE"
+if [ "$(uname)" = Darwin ]; then
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 30 120")
+  check "the tick samples rather than walks"             "yes" "$(has "$out" 'verdict=fseventsd_churn_sampled')"
+  check "and names the sampled feed"                     "yes" "$(has "$out" "fseventsd feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies")"
+  check "the escalation names it too"                    "yes" "$(grep -q "Top feed: 60 FSEvents in 20s under /Users/x/Dev/cust/runs/eng-R-A/bodies" "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+
+  echo "3b. hot on CPU with no churn is a stuck thread, not a writer (RCA fseventsd 20261021-135901)"
+  # Nothing reaches the floor (the 2026-10-21 sample: the busiest directory had
+  # 134 events in 20s against the census floor).
+  QUIET="$FIX/quiet.sh"; printf '#!/bin/bash\nexit 0\n' > "$QUIET"; chmod +x "$QUIET"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 0.81 98.8")
+  check "it says spinning, with a verdict"               "yes" "$(has "$out" 'verdict=fseventsd_spin_no_churn')"
+  check "the escalation names the stuck thread and the restart" "yes" "$(grep -q 'a stuck fseventsd thread, not a writer.*sudo killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  check "and does not ask anyone to stop churn"          "no"  "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 30 98.8")
+  # Over the memory threshold with no churn it is still the stuck thread: the
+  # restart returns the memory too (RCA 20261021-195930). With churn it stays the
+  # churn verdict (cell 3 above, 30G with a feed).
+  check "over the memory threshold with no churn it is still a spin" "yes" "$(has "$out" 'verdict=fseventsd_spin_no_churn')"
+  check "and the escalation names the memory and the restart" "yes" "$(grep -q 'holding 30G with no file churn.*sudo killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+  check "and does not ask anyone to stop churn or reboot" "no" "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+
+  echo "3c. the same spinning pid is escalated once; a new pid is escalated again (RCA fseventsd 20261021-195930)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  # Count fseventsd escalations only: a second tick also compares the live disk
+  # with the first one's reading and can escalate a burn this cell is not about.
+  fse_sent() { grep -c 'Mac fseventsd constraint' "$FIX/sent.log" 2>/dev/null || true; }
+  REC3="$FIX/rec3.sh"; printf '#!/bin/bash\nhead -1 "$2" >> %s/sent.log\n' "$FIX" > "$REC3"; chmod +x "$REC3"
+  spin() { TICK_REC="$REC3" AMUX_CLEANUP_FSEVENTSD_PID_CMD="echo $1" AMUX_CLEANUP_ESCALATE_COOLDOWN_H=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 0.81 99"; }
+  out=$(spin 34409)
+  check "the first spin escalates"                       "1" "$(fse_sent)"
+  check "and does not call itself a reboot case"         "no" "$(has "$out" 'a reboot is the only remedy')"
+  out=$(spin 34409)
+  check "the same pid is the owner's restart pending"    "yes" "$(has "$out" 'verdict=fseventsd_spin_owner_pending')"
+  check "and is not escalated again"                     "1" "$(fse_sent)"
+  check "and is not a constraint"                        "no" "$(has "$out" 'constraint fseventsd')"
+  out=$(spin 51234)
+  check "a new pid spinning is escalated"                "2" "$(fse_sent)"
+  out=$(AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
+  check "past the reminder window the same pid escalates" "3" "$(fse_sent)"
+
+  echo "3d. the escalated pid with ordinary churn stays the owner's; heavy churn is a new cause (RCA fseventsd 20261022-075928)"
+  # Cargo builds wrote 228 events in 20s on top of the stuck pid 34409 (14G),
+  # and the tick re-escalated it as "stop the churn".
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log"
+  churn() { TICK_REC="$REC3" AMUX_CLEANUP_FSEVENTSD_PID_CMD="echo $1" AMUX_CLEANUP_ESCALATE_COOLDOWN_H=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 14 102"; }
+  out=$(AMUX_CLEANUP_FSEVENTSD_CHURN_NEW_X=100 churn 34409)
+  check "first sight escalates"                          "1" "$(fse_sent)"
+  check "its remedy returns memory without a reboot"     "yes" "$(grep -q 'sudo killall fseventsd returns its memory' "$FIX/sent.log" "$FIX/sent.msg" 2>/dev/null; has "$out" 'sudo killall fseventsd to return its memory')"
+  out=$(AMUX_CLEANUP_FSEVENTSD_CHURN_NEW_X=100 churn 34409)
+  check "same pid, churn under the bar: owner pending"   "yes" "$(has "$out" 'with churn under 100x the floor.*verdict=fseventsd_spin_owner_pending')"
+  check "and not escalated again"                        "1" "$(fse_sent)"
+  out=$(churn 34409)
+  check "same pid, churn at 5x the floor: a new cause, escalated" "2" "$(fse_sent)"
 else
   echo "  skip (the end-to-end tick needs macOS)"
 fi

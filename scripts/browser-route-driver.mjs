@@ -1,5 +1,12 @@
 // One profile-aware browser ladder shared by the dashboard and workers.
-// No model loop: observation and decisions remain with the worker.
+// Observation and decisions remain with the worker, except for the `goal`
+// verb, which hands a natural-language task to an agent method configured in
+// browser-methods.toml and runs its loop over this route's own verbs.
+//
+// BACKENDS (where the browser runs) are a registry keyed by name, tried in the
+// configured ladder order; AGENTS (who decides) are adapters loaded by
+// protocol. Adding a method is a registry entry plus an adapter, not a new
+// branch in this file.
 import {request as httpRequest} from 'node:http';
 import {request as httpsRequest} from 'node:https';
 import {readFileSync, writeFileSync, mkdirSync, existsSync, cpSync, renameSync, rmSync, openSync, closeSync, lstatSync, realpathSync} from 'node:fs';
@@ -181,19 +188,42 @@ async function cua(ctx,state,verb,b) {
   const args=b.action==='scroll'?{dx:b.dx||0,dy:b.dy||b.amount||300}:b;
   return api(ctx.base,'/api/computer/'+b.action,'POST',{...args,session:ctx.session},ctx.session,ctx.token);
 }
+// The backends a route can run on. Each entry owns how it starts, serves a
+// verb and stops; launch() and route() only walk the ladder.
+const BACKENDS={
+  amux:{
+    // join:true: when another session already runs this profile, the server
+    // opens a tab of our own in that browser (live sign-ins) instead of
+    // refusing, so a busy profile no longer drops the route to the CDP copy.
+    async start(ctx,b,profile){const {profile_chosen_by,...body}=b;const result=await native(ctx,'start',{...body,profile,join:b.join!==false});return {result,state:{backend:'amux',profile:result.profile,url:b.url,...(result.joined?{joined:true,owner:result.owner}:{})}};},
+    verb:(ctx,state,verb,b)=>verb==='stop'?stopOwnedNative(ctx,state):native(ctx,verb,b),
+  },
+  cdp:{
+    async start(ctx,b,profile,attempts){const state=await directStart(ctx,b.url,attempts);return {state,result:{ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url}};},
+    verb:(ctx,state,verb,b)=>verb==='stop'?stopOwnedCdp(ctx,state):directVerb(ctx,state,verb,b),
+  },
+  cua:{
+    async start(ctx,b,profile){if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token,1980000);const result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);return {result,state:{backend:'cua',profile:ctx.config.cua_profile||profile,url:b.url}};},
+    verb:(ctx,state,verb,b)=>cua(ctx,state,verb,b),
+  },
+};
+// The configured order (browser-methods.toml `ladder`), restricted to
+// backends this driver implements; CUA only when enabled for the profile.
+export function ladder(ctx) {
+  const wanted=Array.isArray(ctx.methods?.ladder)&&ctx.methods.ladder.length?ctx.methods.ladder:['amux','cdp','cua'];
+  return wanted.filter((n,i)=>BACKENDS[n]&&wanted.indexOf(n)===i&&(n!=='cua'||ctx.config.allow_cua));
+}
+const nextRung=(ctx,backend)=>{const l=ladder(ctx);const i=l.indexOf(backend);return i<0?l.length:i+1;};
 async function launch(ctx,b,attempts=[],from=0) {
   if(!b.url)throw new RouteError('start requires a URL',400);
   if(!/^https?:|^about:/.test(b.url))throw new RouteError('route URL must be HTTP(S) or about:',400);
   const profile=b.profile||ctx.config.native_profile;
-  const rungs=['amux','cdp',...(ctx.config.allow_cua?['cua']:[])];
+  const rungs=ladder(ctx);
   for(let i=from;i<rungs.length;i++) {
     const backend=rungs[i];const begun=Date.now();
     try {
-      let state,result;
-      if(backend==='amux') {result=await native(ctx,'start',{...b,profile});state={backend,profile:result.profile,url:b.url};}
-      else if(backend==='cdp') {state=await directStart(ctx,b.url,attempts);result={ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url};}
-      else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token,1980000);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
-      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;state.previous_routes=ctx.previous_routes||[];atomic(ctx.receipt,state);
+      const {state,result}=await BACKENDS[backend].start(ctx,b,profile,attempts);
+      attempts.push({backend,verdict:result.joined?'joined':'ready',elapsed_ms:Date.now()-begun,...(result.joined?{owner:result.owner}:{})});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;if(b.profile_chosen_by)state.profile_chosen_by=b.profile_chosen_by;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;state.previous_routes=ctx.previous_routes||[];atomic(ctx.receipt,state);
       return {...result,ok:true,route:state,profile:state.profile};
     } catch(e) {
       attempts.push({backend,verdict:'failed',status:e.status||502,error:e.message,elapsed_ms:Date.now()-begun});
@@ -223,6 +253,86 @@ async function stopOwnedCdp(ctx,state) {
     return {ok:true,stopped:false,cleanup_verdict:'owned_cdp_already_closed',measured:true,n_considered:1};
   }
 }
+// ---- goal: an agent method drives this route --------------------------------
+// The loop is shared; the agent's adapter only builds the model request and
+// parses the reply (scripts/browser-agents/<protocol>.mjs). Every step goes
+// through this route's own screenshot/action verbs, so the same rules apply
+// as for a worker: one tab per session, no replay of an uncertain action, and
+// the trajectory is kept for review.
+function pngSize(buf){return buf.length>=24&&buf.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?{w:buf.readUInt32BE(16),h:buf.readUInt32BE(20)}:null;}
+export function pickAgent(ctx,name){
+  const agents=Array.isArray(ctx.methods?.agents)?ctx.methods.agents:[];
+  if(name){const a=agents.find(x=>x.id===name);if(!a)throw new RouteError(`no browser agent ${JSON.stringify(name)}; configured: ${agents.map(x=>x.id).join(', ')||'none'}`,400);if(a.enabled===false)throw new RouteError(`browser agent ${JSON.stringify(name)} is disabled; enable it in ~/.amux/browser-methods.toml once its endpoint is serving`,409);return a;}
+  const a=agents.find(x=>x.enabled!==false);
+  if(!a)throw new RouteError('no browser agent is enabled; see browser-methods.toml',409);
+  return a;
+}
+async function callAgent(agent,body){
+  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),Math.max(5,agent.timeout_s||180)*1000);
+  try {
+    const headers={'Content-Type':'application/json'};
+    if(agent.api_key_env&&process.env[agent.api_key_env])headers.Authorization=`Bearer ${process.env[agent.api_key_env]}`;
+    const r=await fetch(agent.endpoint,{method:'POST',headers,body:JSON.stringify(body),signal:ctl.signal});
+    const text=await r.text();
+    if(!r.ok)throw new RouteError(`agent endpoint answered HTTP ${r.status}: ${text.slice(0,300)}`,502);
+    try{return JSON.parse(text);}catch{return text;}
+  } catch(e){if(e instanceof RouteError)throw e;throw new RouteError(`agent endpoint ${agent.endpoint} unreachable: ${e.name==='AbortError'?'timed out':e.message}`,502);}
+  finally{clearTimeout(t);}
+}
+async function viewportOf(ctx,state){
+  if(state.backend==='cua')return null;
+  try{const r=await route(ctx,'action',{action:'eval',script:'({w:innerWidth,h:innerHeight})'});return r?.data?.result||r?.result||null;}catch{return null;}
+}
+async function perform(ctx,a,scale){
+  const px=v=>Math.round(v*scale);
+  const click=async(x,y)=>route(ctx,'action',{action:'click',x:px(x),y:px(y)});
+  switch(a.kind){
+    case 'click': return click(a.x,a.y);
+    case 'double_click': await click(a.x,a.y); return click(a.x,a.y);
+    case 'hover': return route(ctx,'action',{action:'eval',script:`(()=>{const e=document.elementFromPoint(${px(a.x)},${px(a.y)});e&&e.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));return !!e;})()`});
+    case 'type': if(Number.isFinite(a.x))await click(a.x,a.y); await route(ctx,'action',{action:'type',text:a.text||''}); return a.enter?route(ctx,'action',{action:'key',key:'Enter'}):{ok:true};
+    case 'key': if(Number.isFinite(a.x))await click(a.x,a.y); return route(ctx,'action',{action:'key',key:a.key||'Enter'});
+    case 'scroll': return route(ctx,'action',{action:'scroll',dx:a.dx||0,dy:a.dy||0});
+    case 'goto': if(!/^https?:/.test(a.url||''))throw new RouteError('agent asked to open a non-HTTP(S) URL',422); return route(ctx,'navigate',{url:a.url});
+    case 'back': return route(ctx,'action',{action:'back'});
+    case 'forward': return route(ctx,'action',{action:'eval',script:'history.forward(),true'});
+    case 'wait': await pause(Math.min(30,a.seconds||2)*1000); return {ok:true};
+    default: throw new RouteError(`unsupported agent action ${JSON.stringify(a.kind)}`,422);
+  }
+}
+async function goal(ctx,state,b){
+  const task=typeof b.task==='string'?b.task.trim():'';
+  if(!task)throw new RouteError('goal requires a task',400);
+  const agent=pickAgent(ctx,b.agent);
+  const modPath=agent.adapter_path||ctx.agent_modules?.[agent.protocol];
+  if(!modPath)throw new RouteError(`no adapter for protocol ${JSON.stringify(agent.protocol)}`,500);
+  const adapter=await import(pathToFileURL(modPath).href);
+  const maxSteps=Math.max(1,Math.min(50,b.max_steps||agent.max_steps||15));
+  const id=new Date().toISOString().replace(/[:.]/g,'-')+'-'+key(ctx.session).slice(0,8);
+  const log=join(ctx.home,'browser-routing','goals',id+'.json');
+  const record={id,session:ctx.session,task,agent:agent.id,protocol:agent.protocol,backend:state.backend,profile:state.profile,started_at:new Date().toISOString(),steps:[]};
+  const history=[];let failures=0;
+  const finish=(extra)=>{record.finished_at=new Date().toISOString();Object.assign(record,extra);atomic(log,record);return {...extra,steps:record.steps.length,agent:agent.id,backend:state.backend,trajectory:log,route:state};};
+  for(let n=1;n<=maxSteps;n++){
+    const shot=await route(ctx,'screenshot',{});
+    const png=readFileSync(shot.path);const image=pngSize(png)||{w:1280,h:800};
+    const vp=await viewportOf(ctx,state);
+    const scale=vp&&vp.w&&image.w?vp.w/image.w:1;
+    const step={task,screenshot_b64:png.toString('base64'),image,url:shot.url||state.url,history,agent};
+    const begun=Date.now();
+    const reply=await callAgent(agent,adapter.request(step));
+    const out=adapter.parse(reply,step);
+    const entry={n,think:out.think||null,tool:out.tool||null,action:out.action||null,done:out.done||null,error:out.error||null,model_ms:Date.now()-begun,url:step.url,screenshot:shot.path,image,scale};
+    record.steps.push(entry);atomic(log,record);
+    if(out.done)return finish({ok:true,done:true,answer:out.done.answer});
+    if(!out.action){if(++failures>=2)return finish({ok:false,done:false,reason:'the agent gave no usable action twice in a row',last_error:out.error});continue;}
+    failures=0;
+    try{await perform(ctx,out.action,scale);}catch(e){entry.error=e.message;atomic(log,record);return finish({ok:false,done:false,reason:'action failed',last_error:e.message});}
+    history.push({tool:out.tool,action:out.action});
+    await pause(agent.settle_ms??800);
+  }
+  return finish({ok:false,done:false,reason:`no answer within ${maxSteps} steps`});
+}
 export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
   ctx.cleanup_events=[];
@@ -248,9 +358,9 @@ export async function route(ctx,verb,b={}) {
   if(verb==='advance') {
     const reason=typeof b.reason==='string'?b.reason.trim():'';
     if(!reason)throw new RouteError('advance requires a reason describing the unmet goal',400);
-    if(state.backend==='cua')throw new RouteError('CUA is the final configured route; report the unmet goal instead of switching accounts',409);
+    if(nextRung(ctx,state.backend)>=ladder(ctx).length)throw new RouteError(`${state.backend} is the final configured route; report the unmet goal instead of switching accounts`,409);
     ctx.previous_routes.push({...state,previous_routes:undefined});
-    return launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'goal_unmet',reason:reason.slice(0,500)}],state.backend==='amux'?1:2);
+    return launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'goal_unmet',reason:reason.slice(0,500)}],nextRung(ctx,state.backend));
   }
   if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
     // Only release the original browser when this worker started it. A busy
@@ -269,12 +379,15 @@ export async function route(ctx,verb,b={}) {
     }
   }
   try {
-    const result=state.backend==='amux'?(verb==='stop'?await stopOwnedNative(ctx,state):await native(ctx,verb,b)):state.backend==='cdp'?(verb==='stop'?await stopOwnedCdp(ctx,state):await directVerb(ctx,state,verb,b)):await cua(ctx,state,verb,b);
+    if(verb==='goal')return await goal(ctx,state,b);
+    const backend=BACKENDS[state.backend];
+    if(!backend)throw new RouteError(`this route's backend ${JSON.stringify(state.backend)} is not available in this driver`,409);
+    const result=await backend.verb(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
   } catch(e) {
-    if(terminal(e)||state.backend==='cua'||verb==='stop')throw e;
+    if(terminal(e)||verb==='stop'||verb==='goal'||nextRung(ctx,state.backend)>=ladder(ctx).length)throw e;
     ctx.previous_routes.push({...state,previous_routes:undefined});
-    const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'failed',error:e.message}],state.backend==='amux'?1:2);
+    const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'failed',error:e.message}],nextRung(ctx,state.backend));
     // An uncertain mutation must never be repeated in a second identity/context.
     if(verb==='action')throw Object.assign(new RouteError('browser route changed; action was not replayed. Observe state/screenshot before retrying.',409),{route:next.route});
     return route(ctx,verb,b);

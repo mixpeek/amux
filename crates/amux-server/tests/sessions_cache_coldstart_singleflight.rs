@@ -84,29 +84,38 @@ fn cold_sessions_cache_has_exactly_one_builder_and_does_not_lease_the_request_po
     // loser RETURNS AN ERROR and does not build. Assert that on the arm itself,
     // so a regression that falls through to a duplicate build is caught and a
     // rename of the error machinery is not.
-    let busy_arm = {
-        let at = SRC
-            .find("match acquired {")
-            .expect("the single-flight acquire is in this file");
-        let tail = &SRC[at..];
-        &tail[..tail
-            .find("\n        }\n")
-            .map(|i| i + 10)
-            .unwrap_or(tail.len())]
-    };
+    // 2026-10-21: the acquire moved into `wait_for_flight`, which returns a
+    // FlightWait. Both Busy arms (plain timeout, and timeout with the stall's
+    // one shed already spent) must RETURN AN ERROR and never build.
+    for marker in ["FlightWait::Busy { stalled: None } =>", "FlightWait::Busy { stalled: Some("] {
+        let arm = SRC
+            .split(marker)
+            .nth(1)
+            .and_then(|tail| tail.split("\n        }\n").next())
+            .unwrap_or_else(|| panic!("the busy arm `{marker}` moved or disappeared"));
+        assert!(
+            arm.contains("return Err("),
+            "when the single builder is still busy past the overall bound, the loser must fail \
+             safely rather than start duplicate work on an already-struggling substrate: {arm}"
+        );
+        assert!(
+            !arm.contains("build_array("),
+            "the loser arm must NOT build: that is the N-builders-one-pool failure this file \
+             exists to prevent"
+        );
+    }
+    // The one deliberate exception: a build stuck past the stall line is shed
+    // ONCE (a compare-and-swap keyed on that build's start), so a stuck
+    // substrate gets one extra scan, never one per waiter. Behaviour is tested
+    // next to the function; this pins that the gate is keyed per stuck build.
+    let wait_fn = SRC
+        .split("pub(crate) fn wait_for_flight<'a>(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("wait_for_flight moved or disappeared");
     assert!(
-        busy_arm.contains("None => {"),
-        "the acquire must still have a loser arm: {busy_arm}"
-    );
-    assert!(
-        busy_arm.contains("return Err("),
-        "when the single builder is still busy past the overall bound, the loser must fail \
-         safely rather than start duplicate work on an already-struggling substrate"
-    );
-    assert!(
-        !busy_arm.contains("build_array("),
-        "the loser arm must NOT build: that is the N-builders-one-pool failure this file exists \
-         to prevent"
+        wait_fn.contains("shed_for") && wait_fn.contains("compare_exchange"),
+        "the shed must be claimed once per stuck build, not granted to every waiter"
     );
     assert!(
         SRC.contains("sessions_cache_stuck"),

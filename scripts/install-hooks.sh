@@ -350,6 +350,14 @@ if [ -d "$(dirname "$SHARED_GUARD_DEST")" ]; then
   install -m 0755 "$ROOT/scripts/git-hooks/git-shared-guard.py" "$SHARED_GUARD_DEST"
 fi
 
+# The PostToolUse post-push verify, same shape (mxp-gs12 review, 2026-10-18): it
+# lived only in ~/.amux/hooks, unversioned, and checked the wrong commit.
+POST_PUSH_DEST="${AMUX_POST_PUSH_VERIFY_DEST:-$HOME/.amux/hooks/post-push-verify.py}"
+POST_PUSH_SRC="$ROOT/scripts/git-hooks/post-push-verify.py"
+if [ -d "$(dirname "$POST_PUSH_DEST")" ] && [ -f "$POST_PUSH_SRC" ]; then
+  install -m 0755 "$POST_PUSH_SRC" "$POST_PUSH_DEST"
+fi
+
 # THE READ ROUTER, the same shape as the guard above (AMUX-4544). settings.json
 # runs `python3 ~/.amux/hooks/large-read-guard.py` on every Read and Bash call,
 # and only install.sh ever placed it, so a commit to the router reached no lane.
@@ -414,6 +422,14 @@ if [ -f "$REPORT_HOOK_SRC" ] && [ -d "$(dirname "$REPORT_HOOK_DEST")" ]; then
     echo "  ok   $REPORT_HOOK_DEST matches scripts/hooks/hook-report.sh"
   else
     echo "  FAIL $REPORT_HOOK_DEST differs from scripts/hooks/hook-report.sh" >&2
+    fail=1
+  fi
+fi
+if [ -f "$POST_PUSH_SRC" ] && [ -d "$(dirname "$POST_PUSH_DEST")" ]; then
+  if cmp -s "$POST_PUSH_SRC" "$POST_PUSH_DEST"; then
+    echo "  ok   $POST_PUSH_DEST matches scripts/git-hooks/post-push-verify.py"
+  else
+    echo "  FAIL $POST_PUSH_DEST differs from scripts/git-hooks/post-push-verify.py" >&2
     fail=1
   fi
 fi

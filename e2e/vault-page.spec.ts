@@ -28,7 +28,14 @@ async function addSecret(page: Page, key: string, scope: 'global' | 'group' | 'w
   await page.fill('#vault-e-note', note);
   await expect(page.locator('#vault-e-note-count')).toHaveText(`${note.length}/200`);
   await page.check(`input[name="vault-e-scope"][value="${scope}"]`);
-  if (scope === 'group') await page.selectOption('#vault-e-group', target);
+  if (scope === 'group') {
+    // Groups are checkboxes: exactly the comma-separated targets end up checked.
+    const want = target.split(',');
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
+      const v = await box.getAttribute('value');
+      if (want.includes(v || '')) await box.check(); else await box.uncheck();
+    }
+  }
   if (scope === 'worker') await page.selectOption('#vault-e-worker', target);
   await page.fill('#vault-e-value', value);
   await page.locator('#vault-e-save').click();
@@ -73,7 +80,7 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(vault.getByRole('heading', { name: 'Vault' })).toBeVisible();
     await expect(vault.getByRole('tab', { name: 'Secrets' })).toHaveAttribute('aria-selected', 'true');
     await expect(vault.locator('.vault-banner')).toContainText('Secure by design');
-    await expect(vault.locator('.vault-empty')).toContainText('No secrets yet');
+    await expect(vault.locator('#vault-secrets-table .vault-empty')).toContainText('No secrets yet');
 
     // Name validation: typing normalises to an env name; harness names refused.
     await page.locator('#vault-add-btn').click();
@@ -93,6 +100,42 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('.vault-row', { hasText: R })).toContainText('research');
     await expect(page.locator('.vault-row', { hasText: K })).toContainText(wb);
 
+    // One secret, two groups: it reaches a worker in either one, and the row
+    // names both (Ethan, 2026-10-17: "make sure we can add multiple groups").
+    const M = `VP_MULTI_${suffix.toUpperCase()}`;
+    await page.locator('#vault-add-btn').click();
+    await page.fill('#vault-e-key', M);
+    await page.check('input[name="vault-e-scope"][value="group"]');
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) await box.uncheck();
+    await expect(page.locator('#vault-e-group-chips')).toHaveText('No groups selected');
+    // Search narrows the list; Enter picks the first match and clears the box.
+    const q = page.locator('#vault-e-group-q');
+    await q.fill('resea');
+    await expect(page.locator('#vault-e-group-list .vault-check:visible')).toHaveCount(1);
+    await q.press('Enter');
+    await expect(q).toHaveValue('');
+    await expect(page.locator('#vault-e-group-list input[value="research"]')).toBeChecked();
+    await q.fill('zz-no-such-group');
+    await expect(page.locator('#vault-e-group-none')).toBeVisible();
+    await q.fill('devo');
+    await q.press('Enter');
+    await expect(page.locator('#vault-e-group-chips .vault-ms-name')).toHaveText(['devops', 'research']);
+    // A chip's x removes that group, and only that group.
+    await page.getByRole('button', { name: 'Remove research' }).click();
+    await expect(page.locator('#vault-e-group-list input[value="research"]')).not.toBeChecked();
+    await expect(page.locator('#vault-e-group-chips .vault-ms-name')).toHaveText(['devops']);
+    await q.fill('research');
+    await q.press('Enter');
+    await expect(page.locator('#vault-e-reach')).toContainText(wa);
+    await expect(page.locator('#vault-e-reach')).toContainText(wb);
+    await page.fill('#vault-e-value', VALUES.group);
+    await page.locator('#vault-e-save').click();
+    await expect(page.locator('#vault-edit')).toHaveCount(0);
+    await expect(page.locator('.vault-row', { hasText: M })).toContainText('devops, research');
+    const multi = (await (await request.get('/api/vault/secrets', { headers: auth })).json()).items.find((i: any) => i.key === M);
+    expect(multi.scope).toBe('group');
+    expect(multi.target).toBe('devops,research');
+
     // Search and filters.
     await page.fill('#vault-q', 'research only');
     await expect(page.locator('.vault-row')).toHaveCount(1);
@@ -101,12 +144,12 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('.vault-row')).toHaveCount(1);
     await page.selectOption('#vault-f-scope', '');
     await page.selectOption('#vault-f-group', 'research');
-    await expect(page.locator('.vault-row')).toHaveCount(1);
+    await expect(page.locator('.vault-row')).toHaveCount(2);
     await page.selectOption('#vault-f-group', '');
     // The per-worker view: what wa receives and from where.
     await page.selectOption('#vault-f-worker', wa);
-    await expect(page.locator('.vault-worker-card')).toContainText(`${wa} receives 2 secrets`);
-    await expect(page.locator('.vault-row')).toHaveCount(2);
+    await expect(page.locator('.vault-worker-card')).toContainText(`${wa} receives 3 secrets`);
+    await expect(page.locator('.vault-row')).toHaveCount(3);
     await expect(page.locator('.vault-worker-card')).toContainText('At next start');
     await page.selectOption('#vault-f-worker', '');
     await page.selectOption('#vault-sort', 'name-desc');
@@ -281,5 +324,137 @@ test('Vault: each secret and payment method shows a copyable id', async ({ page,
     await page.screenshot({ path: info.outputPath('vault-ids.png') });
   } finally {
     await cleanup('remove vault id fixtures', removeIds, info);
+  }
+});
+
+// Payment methods with spending limits, and API keys, both added through the
+// UI (Ethan, 2026-10-18: "payment methods i should be able to add new ones,
+// and each one have a spending limit (monthly, daily, yearly) ... api keys i
+// should able to create api keys (key value pair)"). The limits are then
+// checked where money moves, /api/browser/complete-order, and the API key is
+// checked against the same scope rules every secret obeys. Same file as the
+// lifecycle test so it never runs beside it; it removes what it adds.
+test('Vault: add a payment method with limits and an API key from the UI', async ({ page, request }, info) => {
+  test.setTimeout(120_000);
+  const suffix = info.project.name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const inW = `vlk-in-${suffix}`, outW = `vlk-out-${suffix}`, group = `vlk${suffix}`;
+  const keyName = `VPK_${suffix.toUpperCase()}`, keyValue = `vpk-canary-${suffix}-5d1e`;
+  const cardName = `Limits card ${suffix}`, number = '4242424242424242';
+  await boot(page);
+  const auth = { Authorization: `Bearer ${await token(page)}` };
+  const sessions: string[] = [];
+  let cardId = '', secretId = '';
+  const removeFixtures = async () => {
+    if (secretId) await request.delete(`/api/vault/secrets/${secretId}`, { headers: auth });
+    if (cardId) await request.delete(`/api/vault/${cardId}`, { headers: auth });
+    for (const n of sessions) await request.delete(`/api/sessions/${n}`, { headers: auth });
+  };
+  try {
+    for (const [name, tags] of [[inW, [group]], [outW, ['vlkother']]] as const) {
+      const r = await request.post('/api/sessions', { headers: auth, data: { name, dir: '/tmp', tags, start: false } });
+      expect(r.status(), await r.text()).toBeLessThan(300);
+      sessions.push(name);
+    }
+    await page.reload();
+    await boot(page);
+    await page.locator('#tab-vault').click();
+    const vault = page.locator('#vault-view');
+
+    // 1. Add a card with all three limits.
+    await vault.getByRole('tab', { name: 'Payment Methods' }).click();
+    await page.locator('#vault-card-add-btn').click();
+    const dialog = page.locator('#vault-card');
+    await expect(dialog.getByRole('heading', { name: 'Add Payment Method' })).toBeVisible();
+    await page.fill('#vault-c-name', cardName);
+    await page.fill('#vault-c-number', number);
+    await page.fill('#vault-c-exp', '12/30');
+    await page.fill('#vault-c-cvc', '123');
+    await page.fill('#vault-c-zip', '10001');
+    await page.fill('#vault-c-approval', '100');
+    await page.fill('#vault-c-daily', '25');
+    await page.fill('#vault-c-monthly', '300');
+    await page.fill('#vault-c-yearly', '2000');
+    const fit = await page.evaluate(() => {
+      const m = document.querySelector('#vault-card .modal') as HTMLElement;
+      return { over: m.scrollWidth - m.clientWidth, right: m.getBoundingClientRect().right, vw: innerWidth };
+    });
+    expect(fit.over, 'the add dialog has no horizontal scroll').toBeLessThanOrEqual(1);
+    expect(fit.right).toBeLessThanOrEqual(fit.vw);
+    await page.locator('#vault-c-save').click();
+    await expect(dialog).toHaveCount(0);
+    const row = page.locator('.vault-item', { hasText: cardName });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('ending 4242');
+    cardId = (await row.getAttribute('data-id')) || '';
+    expect(cardId).toMatch(/^vlt_/);
+    await expect(row.locator('.vault-spend-limit[data-window="daily"]')).toHaveValue('25');
+    await expect(row.locator('.vault-spent[data-window="monthly"]')).toContainText('of $300');
+    expect(await page.content(), 'the card number stayed in the page').not.toContain(number);
+
+    let list = await (await request.get('/api/vault', { headers: auth })).json();
+    let item = (list.items || []).find((i: any) => i.id === cardId);
+    expect(item.rules.spend_limits_usd).toEqual({ daily: 25, monthly: 300, yearly: 2000 });
+    expect(JSON.stringify(list)).not.toContain(number);
+
+    // 2. The limit holds where money moves: over the daily limit is refused
+    // before anything is filled; under it gets past the limit check.
+    const order = (amount: number) => request.post('/api/browser/complete-order', { headers: { ...auth, 'X-Amux-Session': inW },
+      data: { amount_usd: amount, currency: 'USD', merchant: 'E2E Shop', purpose: 'limit e2e', session: inW, item_name: cardName.toLowerCase() } });
+    const over = await order(30);
+    expect(over.status()).toBe(403);
+    const ob = await over.json();
+    expect(ob.limit_exceeded, JSON.stringify(ob)).toBe(true);
+    expect(ob.window).toBe('daily');
+    const under = await (await order(20)).json();
+    expect(under.limit_exceeded, JSON.stringify(under)).toBeUndefined();
+
+    // 3. Raise the daily limit in the UI.
+    await row.locator('.vault-spend-limit[data-window="daily"]').fill('40');
+    await row.locator('.vault-spend-limit[data-window="yearly"]').fill('');
+    await row.locator('.vault-save-limits').click();
+    await expect.poll(async () => {
+      const l = await (await request.get('/api/vault', { headers: auth })).json();
+      return (l.items || []).find((i: any) => i.id === cardId)?.rules?.spend_limits_usd;
+    }).toEqual({ daily: 40, monthly: 300 });
+    expect((await (await order(30)).json()).limit_exceeded, 'after the raise $30 fits').toBeUndefined();
+
+    // 4. Add an API key for one group from the API Keys tab.
+    await vault.getByRole('tab', { name: 'API Keys' }).click();
+    await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key'), 'the existing provider keys stay').toBeVisible();
+    await page.locator('#vault-apikey-add-btn').click();
+    const kd = page.locator('#vault-edit');
+    await expect(kd.getByRole('heading', { name: 'Add API Key' })).toBeVisible();
+    await page.fill('#vault-e-key', keyName);
+    await page.check('input[name="vault-e-scope"][value="group"]');
+    for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
+      if ((await box.getAttribute('value')) === group) await box.check(); else await box.uncheck();
+    }
+    await page.fill('#vault-e-value', keyValue);
+    await page.locator('#vault-e-save').click();
+    await expect(kd).toHaveCount(0);
+    const keyRow = page.locator('#vault-apikeys-table .vault-row', { hasText: keyName });
+    await expect(keyRow).toHaveCount(1);
+    await expect(keyRow.locator('.vault-chip-group')).toBeVisible();
+    expect(await page.content(), 'the API key value stayed in the page').not.toContain(keyValue);
+    secretId = (await keyRow.getAttribute('data-id')) || '';
+    expect(secretId).toMatch(/^sec_/);
+
+    // 5. Same scope rules as any secret: the worker outside the group does not get it.
+    const all = await (await request.get('/api/vault/secrets', { headers: auth })).json();
+    const sec = (all.items || []).find((i: any) => i.id === secretId);
+    expect(sec.kind).toBe('api_key');
+    expect(sec.scope).toBe('group');
+    expect(sec.target).toBe(group);
+    const resolvedFor = async (w: string) => ((await (await request.get(`/api/vault/secrets?worker=${w}`, { headers: auth })).json()).resolved || []).map((r: any) => r.key);
+    expect(await resolvedFor(inW)).toContain(keyName);
+    expect(await resolvedFor(outW)).not.toContain(keyName);
+    const asOut = await (await request.get('/api/vault/secrets', { headers: { ...auth, 'X-Amux-Session': outW } })).json();
+    expect((asOut.items || []).map((i: any) => i.key)).not.toContain(keyName);
+    // The Secrets tab lists it too, tagged as an API key.
+    await vault.getByRole('tab', { name: 'Secrets' }).click();
+    await expect(page.locator('#vault-secrets-table .vault-row', { hasText: keyName }).locator('.vault-chip-apikey')).toBeVisible();
+    await page.screenshot({ path: info.outputPath('vault-limits-keys.png') });
+  } finally {
+    await cleanup('remove vault limit and API key fixtures', removeFixtures, info);
   }
 });

@@ -305,7 +305,7 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
         "no server.env in the hermetic home"
     );
     assert_eq!(v["key_valid"], Value::Null);
-    for k in ["has_api_key", "has_oauth", "key_error"] {
+    for k in ["has_api_key", "has_any_model", "has_oauth", "key_error"] {
         assert!(v.get(k).is_some(), "identity payload missing {k}: {body}");
     }
 

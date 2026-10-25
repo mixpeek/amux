@@ -13,6 +13,8 @@ test('one active worker marks exactly its claimed card as Working now', async ({
       headers: auth,
       data: { name: worker, dir: '/tmp', tags: ['e2e-working-now'] },
     })).status()).toBe(201);
+    // New workers start with every Board-tab switch off (no board); turn it on.
+    expect((await request.patch(`/api/sessions/${worker}/config`, { headers: auth, data: { board_enabled: true } })).ok()).toBeTruthy();
 
     for (let i = 1; i <= 4; i += 1) {
       const made = await request.post('/api/board', {

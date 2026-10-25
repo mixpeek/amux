@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,21 +20,30 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenAI Symphony","item":"https://amux.io/compare/amux-vs-openai-symphony/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is OpenAI Symphony?","acceptedAnswer":{"@type":"Answer","text":"OpenAI Symphony (open-sourced June 2026) is a ticket-driven Codex orchestrator. It polls a Linear issue board, claims tickets, spawns Codex CLI agents in parallel, and produces GitHub pull requests — fully autonomous. Written in Elixir/OTP, MIT licensed. Designed as a reference implementation showing how to build autonomous coding pipelines on top of Codex."}},{"@type":"Question","name":"What is the main difference between amux and OpenAI Symphony?","acceptedAnswer":{"@type":"Answer","text":"The interaction model. Symphony is a fully autonomous pipeline — it picks tasks from Linear, runs Codex, opens PRs, no human input required during execution. amux is a developer-controlled fleet — you manage Claude Code sessions from a web dashboard, steer running agents, monitor token spend, and review the board. Symphony automates the issue-to-PR loop; amux gives you observability and control over the loop."}},{"@type":"Question","name":"Does OpenAI Symphony work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not officially. Symphony's reference implementation targets Codex CLI via the Codex App Server JSON-RPC protocol. Community ports to Claude Code exist but are not officially supported. amux is built natively for Claude Code — the self-healing watchdog, context overflow detection, and auto-compact are all tuned for Claude Code's terminal output patterns."}},{"@type":"Question","name":"Does Symphony require Linear?","acceptedAnswer":{"@type":"Answer","text":"Yes, in the reference implementation. The SPEC is designed to be pluggable (any issue tracker could be added), but as of the June 2026 open-source release, Linear is the only supported tracker. amux has a built-in SQLite kanban board — no external issue tracker required."}},{"@type":"Question","name":"Which is easier to set up?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary requiring only Python 3 and tmux. Run install.sh and you are live in 5 minutes. Symphony requires Elixir/OTP (an uncommon runtime for most developers), mise for version management, a Linear API key, and Codex access. The Elixir ecosystem is powerful but unfamiliar to most development teams."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
   <main>
@@ -50,12 +59,6 @@
     <p>For the deep-dive comparison including architecture breakdown, workflow analysis, fault tolerance details, and the "500% PR increase" claim, see the <a href="/compare/amux-vs-symphony/">complete amux vs Symphony comparison</a>.</p>
 
     <!-- EXP-007: GitHub CTA -->
-    <div style="border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.06);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px">
-        <p style="margin:0;font-size:0.93rem"><strong>Want a developer-controlled agent dashboard instead of a black-box pipeline?</strong> amux gives you observability, steering, and self-healing for Claude Code, Codex, and Gemini CLI fleets. Free, open source, single Rust binary.</p>
-      </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">Try it free — ⭐ on GitHub</a>
-    </div>
 
     <h2>The core difference: autonomous pipeline vs developer cockpit</h2>
 
@@ -75,7 +78,7 @@
         <tr><td>Mobile management</td><td>Native iOS app + PWA</td><td>None</td></tr>
         <tr><td>Self-healing</td><td>Python watchdog — context overflow, crash, stuck, rate-limit</td><td>Elixir/OTP supervision trees</td></tr>
         <tr><td>Fault tolerance</td><td>Auto-compact, restart with message replay, YOLO mode</td><td>Process supervision + exponential backoff</td></tr>
-        <tr><td>Runtime</td><td>Python 3 + tmux</td><td>Elixir/OTP (BEAM VM)</td></tr>
+        <tr><td>Runtime</td><td>one Rust binary</td><td>Elixir/OTP (BEAM VM)</td></tr>
         <tr><td>Setup complexity</td><td>Low — <code>./install.sh</code>, 5 min</td><td>High — Elixir, mise, Linear + Codex API keys</td></tr>
         <tr><td>Human-in-the-loop</td><td>Optional (YOLO mode for full autonomy)</td><td>Not in reference implementation</td></tr>
         <tr><td>License</td><td>MIT + Commons Clause</td><td>MIT</td></tr>
@@ -98,7 +101,7 @@
       <li><strong>You prefer Claude Code.</strong> amux is built specifically for Claude Code and its output patterns. Self-healing handles Claude-specific failure modes (context exhaustion, thinking-block corruption) that Codex doesn't have.</li>
       <li><strong>You want observability.</strong> The dashboard, mobile app, per-session token spend, and live peek give you visibility that Symphony's reference implementation doesn't provide.</li>
       <li><strong>You don't use Linear.</strong> amux's built-in SQLite kanban requires no external services.</li>
-      <li><strong>Quick setup.</strong> Python 3 + tmux + one script. Symphony requires Elixir and mise, which most developers don't have installed.</li>
+      <li><strong>Quick setup.</strong> one Rust binary + one script. Symphony requires Elixir and mise, which most developers don't have installed.</li>
       <li><strong>Long-term maintenance.</strong> OpenAI has said Symphony is a reference implementation, not a product they plan to maintain. amux is actively developed with a public roadmap and iOS app.</li>
     </ul>
 
@@ -113,7 +116,7 @@
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, Python 3 + tmux.</p>
+      <p>Run an AI engineering team from your dashboard or phone. Open source, one Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -158,10 +161,12 @@ amux serve  # → https://localhost:8824</code></pre>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
         <div class="footer-bottom-links">
           <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
           <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
         </div>
       </div>
     </div>

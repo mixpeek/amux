@@ -1,0 +1,135 @@
+/* Site header, shared by every page (homepage, content pages, concierge).
+   It carries its own palette so it renders identically whatever page
+   stylesheet sits under it. Theme is set on <html data-theme> by site.js. */
+
+:root {
+  --hdr-bg:      oklch(0.16 0.008 250 / 0.86);
+  --hdr-line:    oklch(0.30 0.012 250);
+  --hdr-fg:      oklch(0.95 0.005 90);
+  --hdr-dim:     oklch(0.72 0.010 250);
+  --hdr-surface: oklch(0.21 0.012 250);
+  --hdr-border:  oklch(0.36 0.015 250);
+  --hdr-accent:  oklch(0.82 0.17 85);
+  --hdr-on-accent: oklch(0.17 0.01 250);
+  --hdr-star:    oklch(0.82 0.17 85);
+  --hdr-shadow:  0 12px 32px -8px oklch(0 0 0 / 0.55);
+}
+[data-theme="light"] {
+  --hdr-bg:      oklch(0.985 0.003 90 / 0.88);
+  --hdr-line:    oklch(0.88 0.006 90);
+  --hdr-fg:      oklch(0.20 0.012 250);
+  --hdr-dim:     oklch(0.42 0.012 250);
+  --hdr-surface: oklch(1 0 0);
+  --hdr-border:  oklch(0.82 0.008 90);
+  --hdr-accent:  oklch(0.82 0.17 85);
+  --hdr-on-accent: oklch(0.20 0.012 250);
+  --hdr-star:    oklch(0.55 0.15 70);
+  --hdr-shadow:  0 12px 32px -10px oklch(0.3 0.02 250 / 0.25);
+}
+
+.site-header {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  height: 60px; padding: 0 28px;
+  padding-left: max(28px, env(safe-area-inset-left));
+  padding-right: max(28px, env(safe-area-inset-right));
+  background: var(--hdr-bg);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--hdr-line);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px; line-height: 1.5; box-sizing: border-box; color: var(--hdr-fg);
+}
+.site-header *, .site-header *::before, .site-header *::after { box-sizing: border-box; }
+.site-header a.logo {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  font-family: inherit; font-weight: 700; font-size: 16px; letter-spacing: -0.02em;
+  color: var(--hdr-fg); text-decoration: none;
+}
+.site-header a.logo::before {
+  content: "▌";
+  display: grid; place-items: center;
+  width: 22px; height: 22px;
+  border: 1px solid var(--hdr-border); border-radius: 4px;
+  background: var(--hdr-surface); color: var(--hdr-accent);
+  font-size: 12px; font-weight: 700;
+  animation: nav-blink 1.1s steps(2) infinite;
+}
+@keyframes nav-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .site-header a.logo::before { animation: none; } }
+
+.site-header nav { display: flex; align-items: center; gap: 22px; min-width: 0; }
+.site-header nav a {
+  font-family: inherit; font-size: 13px; font-weight: 400; line-height: 1.2;
+  color: var(--hdr-dim); text-decoration: none;
+  padding: 0; min-height: 0; background: none; border: 0;
+}
+.site-header nav a:hover { color: var(--hdr-fg); }
+.site-header nav a.nav-cta {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--hdr-border); border-radius: 4px;
+  background: var(--hdr-surface); color: var(--hdr-fg);
+}
+.site-header nav a.nav-cta:hover { border-color: var(--hdr-accent); color: var(--hdr-fg); }
+.site-header nav a.nav-cta-primary {
+  background: var(--hdr-accent); border-color: var(--hdr-accent);
+  color: var(--hdr-on-accent); font-weight: 600;
+}
+.site-header nav a.nav-cta-primary:hover { opacity: 0.88; color: var(--hdr-on-accent); }
+.site-header nav .gh-stars,
+.site-header nav .nav-stars {
+  font-size: 11px; font-weight: 600; color: var(--hdr-star); margin: 0;
+}
+
+/* Theme picker: one icon button, a three-item menu */
+.theme-pick { position: relative; display: flex; }
+.theme-btn {
+  display: grid; place-items: center;
+  width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--hdr-border); border-radius: 4px;
+  background: var(--hdr-surface); color: var(--hdr-fg);
+  cursor: pointer;
+}
+.theme-btn:hover { border-color: var(--hdr-accent); }
+.theme-btn:focus-visible, .theme-menu button:focus-visible,
+.site-header nav a:focus-visible { outline: 2px solid var(--hdr-accent); outline-offset: 2px; }
+.theme-btn svg, .theme-menu svg { width: 16px; height: 16px; flex: none; }
+.theme-btn .ti { display: none; }
+html[data-theme-pref="system"] .theme-btn .ti-system,
+html[data-theme-pref="light"]  .theme-btn .ti-light,
+html[data-theme-pref="dark"]   .theme-btn .ti-dark { display: block; }
+html:not([data-theme-pref]) .theme-btn .ti-system { display: block; }
+
+.theme-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 110;
+  min-width: 148px; padding: 4px;
+  border: 1px solid var(--hdr-border); border-radius: 8px;
+  background: var(--hdr-surface); box-shadow: var(--hdr-shadow);
+}
+.theme-menu[hidden] { display: none; }
+.theme-menu button {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  min-height: 36px; padding: 0 10px;
+  border: 0; border-radius: 5px; background: none;
+  font: inherit; font-size: 13px; color: var(--hdr-dim); text-align: left;
+  cursor: pointer;
+}
+.theme-menu button:hover { background: color-mix(in oklab, var(--hdr-fg) 8%, transparent); color: var(--hdr-fg); }
+.theme-menu button[aria-checked="true"] { color: var(--hdr-fg); font-weight: 600; }
+.theme-menu button[aria-checked="true"]::after { content: "✓"; margin-left: auto; color: var(--hdr-star); }
+
+@media (max-width: 760px) {
+  .site-header nav a.hide-mobile { display: none; }
+}
+@media (max-width: 600px) {
+  .site-header { height: 56px; padding: 0 16px; padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .site-header nav { gap: 8px; }
+  .site-header nav a.nav-cta { min-height: 44px; padding: 0 12px; }
+  .theme-btn { width: 44px; height: 44px; }
+  .theme-menu button { min-height: 44px; }
+  .site-header .gh-label { display: none; }
+}
+@media (max-width: 350px) {
+  .site-header a.logo span, .site-header a.logo { font-size: 14px; }
+  .site-header nav a.nav-cta { padding: 0 9px; }
+}

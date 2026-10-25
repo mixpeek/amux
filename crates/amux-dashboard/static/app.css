@@ -1108,6 +1108,9 @@
     border-bottom: 1px dashed rgba(255,255,255,0.15);
   }
   .peek-earlier-bar:active { color: var(--accent); }
+  .peek-logat-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; cursor: default; flex-wrap: wrap; }
+  .peek-logat-block { opacity: 1; }
+  .peek-logat-hit { background: rgba(255, 213, 79, 0.16); box-shadow: inset 3px 0 0 var(--accent); }
   .peek-earlier-block {
     opacity: 0.75; white-space: pre-wrap;
     border-left: 2px solid rgba(255,255,255,0.12); padding-left: 6px;
@@ -1447,7 +1450,10 @@
   mark.md-search-hit { background: rgba(255, 215, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
   mark.md-search-hit.current { background: #ffb000; color: #000; }
   /* Unified markdown content styling — used everywhere renderMarkdown() output appears */
-  .md-content { font-family: var(--font-ui); font-size: 0.88rem; line-height: 1.6; }
+  /* Rendered markdown is HTML: the raw view's pre-wrap must not reach it, or
+     every newline between blocks paints as a blank line (Ethan, 2026-10-20:
+     "make the preview mode cleaner", Obsidian beside ours). */
+  .md-content { font-family: var(--font-ui); font-size: 0.88rem; line-height: 1.6; white-space: normal; }
   .md-content > *:first-child { margin-top: 0 !important; }
   .md-content > *:last-child { margin-bottom: 0 !important; }
   .md-content p { margin: 0 0 10px; }
@@ -1464,6 +1470,25 @@
   .md-content blockquote { border-left: 3px solid var(--border); margin: 0 0 10px; padding: 2px 12px; color: var(--dim); }
   .md-content hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
   .md-content a { color: var(--accent); text-decoration: underline; }
+  /* Math (KaTeX) and Obsidian callouts in rendered markdown. */
+  .md-content .md-math-display { display: block; margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+  .md-content .md-math-error { color: var(--danger, #cf222e); font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85em; }
+  .md-content .md-callout { --c: 88,166,255; margin: 0.8em 0; padding: 10px 14px; border-radius: 8px;
+    background: rgba(var(--c), 0.08); border-left: 3px solid rgb(var(--c)); }
+  .md-content .md-callout-title { font-weight: 650; color: rgb(var(--c)); margin: 0 0 4px; }
+  .md-content details.md-callout > summary.md-callout-title { cursor: pointer; margin: 0; list-style-position: inside; }
+  .md-content details.md-callout[open] > summary.md-callout-title { margin-bottom: 4px; }
+  .md-content .md-callout-body > :last-child { margin-bottom: 0; }
+  .md-content .md-callout-abstract { --c: 0,191,188; }
+  .md-content .md-callout-tip { --c: 0,191,165; }
+  .md-content .md-callout-success { --c: 8,185,78; }
+  .md-content .md-callout-question { --c: 236,117,0; }
+  .md-content .md-callout-warning { --c: 236,117,0; }
+  .md-content .md-callout-danger { --c: 233,49,71; }
+  .md-content .md-callout-example { --c: 120,82,238; }
+  .md-content .md-callout-quote { --c: 158,158,158; }
+  .md-content .md-anchor-target { animation: md-anchor-flash 1.6s ease-out; border-radius: 4px; }
+  @keyframes md-anchor-flash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
   .md-content strong { font-weight: 700; }
   .md-content em { font-style: italic; }
   .md-content del { color: var(--dim); text-decoration: line-through; }
@@ -1476,6 +1501,11 @@
   .md-content td { padding: 5px 10px; border: 1px solid var(--border); }
   .md-content tbody tr:nth-child(even) { background: rgba(88,166,255,0.04); }
   .md-content tbody tr:hover { background: rgba(88,166,255,0.08); }
+  /* Mermaid diagrams: centred, scaled to the column, scrollable sideways when
+     a wide graph cannot shrink further. */
+  .md-mermaid { margin: 0.6em 0 1em; overflow-x: auto; text-align: center; }
+  .md-mermaid svg { max-width: 100%; height: auto; }
+  .md-mermaid-error { color: var(--dim); font-size: 0.78rem; margin: -6px 0 10px; }
   @media (max-width: 600px) {
     .md-content th, .md-content td { padding: 4px 7px; font-size: 0.8em; }
   }
@@ -1691,21 +1721,18 @@
     background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; margin-left: 8px; }
   #fc-container .fc-addEvent-button:hover { filter: brightness(1.08); }
   #fc-container .fc-eventsToggle-button,
-  #fc-container .fc-schedToggle-button,
   #fc-container .fc-issuesToggle-button,
   #fc-container .fc-gcalToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   /* On: a light accent-tinted fill so an active layer reads as "on" at a
      glance, not just "not dimmed". Off: dimmed, same as before — the label
      itself carries no glyph (see _fcLayerLabel), so this is the only signal. */
   #fc-container .fc-eventsToggle-button[aria-pressed="true"],
-  #fc-container .fc-schedToggle-button[aria-pressed="true"],
   #fc-container .fc-issuesToggle-button[aria-pressed="true"],
   #fc-container .fc-gcalToggle-button[aria-pressed="true"] {
     background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
     border-color: var(--accent) !important;
   }
   #fc-container .fc-eventsToggle-button[aria-pressed="false"],
-  #fc-container .fc-schedToggle-button[aria-pressed="false"],
   #fc-container .fc-issuesToggle-button[aria-pressed="false"],
   #fc-container .fc-gcalToggle-button[aria-pressed="false"] { opacity: 0.55; }
   #fc-container .fc-footer-toolbar .fc-button { padding: 8px 10px; min-width: 44px; }
@@ -2431,6 +2458,8 @@
   .usage-bar > span { display: block; height: 100%; border-radius: inherit; }
   .usage-reset { color: var(--dim); font-size: 0.62rem; margin-top: 2px; white-space: normal; }
   .usage-unavailable { color: var(--dim); font-size: 0.68rem; line-height: 1.35; padding-top: 4px; }
+  .usage-connect { margin-top: 8px; min-height: 36px; font-size: 0.78rem; }
+  @media (max-width: 600px) { .usage-connect { min-height: 44px; width: 100%; justify-content: center; } }
   .usage-provider-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .usage-provider-meta > span {
     color: var(--dim); background: var(--card); border: 1px solid var(--border);
@@ -2509,6 +2538,8 @@
   .peek-deep-head { padding: 8px 12px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
   .peek-deep-hit { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .peek-deep-hit:last-child { border-bottom: none; }
+  .peek-deep-hit[role="button"] { cursor: pointer; }
+  .peek-deep-hit[role="button"]:hover { background: rgba(127,127,127,0.08); }
   .peek-deep-meta { color: var(--dim); font-size: 0.7rem; margin-bottom: 2px; }
   .peek-deep-snip { white-space: pre-wrap; word-break: break-word; font-family: var(--mono, ui-monospace, monospace); }
   .peek-deep-snip mark { background: var(--accent); color: var(--bg, #000); border-radius: 2px; }
@@ -2586,8 +2617,18 @@
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
+  /* Another tab's items under the worker-view toolbar (_peekTabApply): the
+     current one is outlined like a terminal prompt, and a search or filter
+     hides the rest. */
+  .peek-tab-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+  .peek-tab-miss { display: none !important; }
   .peek-prompt { display: block; border-left: 3px solid transparent; padding-left: 4px; margin-left: -7px; }
   .peek-prompt-human    { border-left-color: #58a6ff; background: rgba(88,166,255,0.09); }
+  /* Messages delivered mid-turn that the terminal never echoed (_peekUnechoedHtml). */
+  .peek-unechoed { margin: 6px 0; white-space: normal; font-family: inherit; }
+  .peek-unechoed-row { display: flex; align-items: baseline; gap: 8px; margin: 2px 0; }
+  .peek-unechoed-row .peek-prompt { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  .peek-unechoed-time { flex: 0 0 auto; font-size: 0.7rem; color: var(--dim); }
   .peek-prompt-chat     { border-left-color: #db61a2; background: rgba(219,97,162,0.08); }
   .peek-prompt-session  { border-left-color: #a78bfa; background: rgba(137,87,229,0.10); }
   .peek-prompt-schedule { border-left-color: #3fb950; background: rgba(63,185,80,0.08); }
@@ -2628,7 +2669,92 @@
     border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
   .peek-focus-bar { display: none; }
+  /* Header grip and its stages (2026-10-22). */
+  .peek-head-grip { flex-shrink:0; height:10px; margin:-2px 0 0; cursor:row-resize; display:flex; align-items:center; justify-content:center; touch-action:none; }
+  .peek-head-grip span { width:46px; height:4px; border-radius:2px; background:var(--border); transition:background 0.12s; }
+  .peek-head-grip:hover span, .peek-head-grip.drag span, .peek-head-grip:focus-visible span { background:var(--accent); }
+  .peek-head-grip:focus-visible { outline:none; }
+  body.peek-embed .peek-head-grip { display:none; }
+  #peek-overlay[data-head="1"] .overlay-header, #peek-overlay[data-head="2"] .overlay-header {
+    flex-direction:row !important; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:3px 10px !important; padding-bottom:3px !important; }
+  #peek-overlay[data-head="1"] #peek-title-row, #peek-overlay[data-head="2"] #peek-title-row { width:auto !important; flex:1 1 auto; justify-content:flex-start !important; }
+  #peek-overlay[data-head="1"] .peek-toolbar, #peek-overlay[data-head="2"] .peek-toolbar { order:2; flex:0 0 auto; }
+  /* One line each, ending in an ellipsis. Display is left alone, so a hidden
+     row stays hidden; its parts run inline on that one line. */
+  #peek-overlay[data-head="1"] #peek-needs-input-row, #peek-overlay[data-head="1"] #peek-task-row {
+    order:3; flex:1 1 100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #peek-overlay[data-head="1"] #peek-needs-input-row > *, #peek-overlay[data-head="1"] #peek-task-row > * { display:inline; margin:0 6px 0 0; }
+  #peek-overlay[data-head="2"] #peek-needs-input-row, #peek-overlay[data-head="2"] #peek-task-row,
+  #peek-overlay[data-head="2"] .peek-dir-bar { display:none !important; }
+  #peek-overlay[data-head="3"] .overlay-header, #peek-overlay[data-head="3"] .peek-tabs,
+  #peek-overlay[data-head="3"] .peek-dir-bar { display:none !important; }
+  #peek-overlay[data-head="3"] .peek-focus-bar { display:flex; align-items:center; gap:8px; padding:4px 12px; border-bottom:1px solid var(--border); flex-shrink:0; }
   .peek-focus-bar h3 { margin: 0; font-size: 0.85rem; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* WORKER VIEW, COMPACT ON DESKTOP (Ethan, 2026-10-23: "i like the
+     ux/functionality and everything displayed but its too large a % of the
+     overall screen on worker views"). Measured at 1440x900: the bands above
+     and below the terminal took 368 of 900px. With a mouse, everything stays
+     shown and the 44px controls keep their size; the layout tightens:
+     the title and task stack on the left of one band with the toolbar on the
+     right (97px -> 55px), "Send command" sits on the status line instead of
+     its own row, and the chips and folder line slim down. Touch screens keep
+     the spacious layout. The grip stages are redrawn below so each still folds more. */
+  @media (min-width: 601px) and (hover: hover) and (pointer: fine) {
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header {
+      display: grid !important; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 0 !important;
+      align-items: center; padding-bottom: 3px !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > * { grid-column: 1; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-title-row {
+      justify-content: flex-start !important; width: auto !important; }
+    /* The task wraps: its full name stays readable (Ethan, 2026-10-16). */
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-task-row,
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-needs-input-row { justify-content: flex-start !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) #peek-needs-input-row { white-space: nowrap; overflow: hidden; }
+    /* THE GRIP STAGES STILL EACH GIVE ROOM. Stage 0 is already one band, so
+       here stage 1 drops the folder line (the task and ask go to one line, as
+       before), stage 2 swaps the band for the slim name bar and keeps the tabs,
+       and stage 3 is the slim bar alone. */
+    #peek-overlay[data-head="1"] .peek-dir-bar { display: none !important; }
+    #peek-overlay[data-head="2"] .overlay-header { display: none !important; }
+    #peek-overlay[data-head="2"] .peek-focus-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar {
+      grid-column: 2; grid-row: 1 / span 3; align-self: center; width: auto; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-find-wrap { grid-column: 1 / -1; }
+    #peek-overlay .peek-dir-bar { padding: 1px 14px; }
+    #peek-overlay .peek-head-grip { height: 7px; }
+    #peek-overlay .peek-cmd-bar { position: relative; }
+    #peek-overlay #peek-status { text-align: left; padding: 0 12px; margin-top: 1px; }
+    #peek-overlay .peek-cmd-toggle { position: absolute; right: 12px; top: -15px; width: auto; padding: 0 2px; line-height: 14px; font-size: 0.68rem; }
+    #peek-chips .chip { min-height: 28px; padding: 3px 10px; font-size: 0.75rem; }
+    #peek-overlay .peek-cmd-row { padding-top: 2px; }
+    /* The ask is one line: its label, then the question, ending in an
+       ellipsis (the full text is the button's title and its modal). */
+    #peek-needs-input-row .status-badge.needs-input { flex-direction: row; align-items: center; gap: 8px; width: auto; max-width: 100%; }
+    #peek-needs-input-row .status-badge.needs-input .ni-label { flex: 0 0 auto; }
+    #peek-needs-input-row .status-badge.needs-input .ni-ask { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap; -webkit-line-clamp: unset; }
+    /* The band needs room for both the toolbar (about 440px of 44px controls)
+       and a readable title. A Mac app pane is its own page about 640px wide,
+       past the 601px above, and there the toolbar left the task one letter
+       wide, a column down the whole pane (Ethan, 2026-10-24 screenshot). So
+       the side-by-side band follows the WORKER VIEW's width, not the window's:
+       narrower than 980px, the toolbar goes under the title, still one line. */
+    #peek-overlay { container: peekview / inline-size; }
+    @container peekview (max-width: 979px) {
+      #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header { grid-template-columns: minmax(0, 1fr); }
+      #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar { grid-column: 1; grid-row: auto; justify-self: stretch; }
+    }
+  }
+  /* Wide enough: the ask takes the middle of the header band, between the
+     worker's name and its toolbar, at the toolbar's own height, so a worker
+     that needs you costs no extra rows (Ethan, 2026-10-23, screenshot of
+     social-activities: "the real estate % per section is not reflective of
+     where the focus should be"). */
+  @media (min-width: 1100px) and (hover: hover) and (pointer: fine) {
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header { grid-template-columns: minmax(0, 1fr) auto auto; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > #peek-needs-input-row {
+      grid-column: 2; grid-row: 1 / span 3; width: auto; max-width: min(440px, 34vw); justify-content: flex-end !important; }
+    #peek-overlay:not([data-head="2"]):not([data-head="3"]) > .overlay-header > .peek-toolbar { grid-column: 3; }
+  }
 
   /* Peek compact mode — when visual viewport is constrained (pinch zoom / keyboard) */
   .overlay.vv-compact .peek-cmd-row .chips { display: none !important; }
@@ -3503,6 +3629,30 @@
   }
   .toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
 
+  /* amux Cloud offer for self-hosted owners (_cloudOfferShow) */
+  .cloud-offer {
+    position: fixed; z-index: 501; right: 20px;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    width: min(380px, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    box-sizing: border-box;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-dialog, 12px);
+    padding: var(--space-4, 16px); color: var(--text);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  }
+  .cloud-offer-title { font-weight: 600; font-size: 0.9rem; line-height: 1.35; margin-bottom: var(--space-1, 4px); }
+  .cloud-offer-text { color: var(--dim); font-size: 0.8rem; line-height: 1.45; }
+  .cloud-offer-actions { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); margin-top: var(--space-3, 12px); }
+  .cloud-offer-actions .btn { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+  .cloud-offer-settings-text { font-size: 0.78rem; color: var(--dim); line-height: 1.45; margin-bottom: var(--space-2, 8px); }
+  .cloud-offer-settings-text code { font-size: 0.74rem; word-break: break-word; }
+  @media (max-width: 600px) {
+    .cloud-offer {
+      left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px));
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: auto;
+    }
+    .cloud-offer-actions .btn { flex: 1 1 auto; }
+  }
+
   /* In-app notification banners */
   .notif-banners {
     position: fixed; top: calc(max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) + 8px); right: 12px; z-index: 1002;
@@ -4048,6 +4198,8 @@
   .chrome-tab-frames iframe.hidden { display: none; }
   body.in-tab .chrome-tabs-bar,
   body.in-tab .chrome-tab-frames { display: none !important; }
+  body.native-tabs .chrome-tabs-bar,
+  body.native-tabs .chrome-tab-frames { display: none !important; }
   body.in-tab { padding-top: 0 !important; }
   .chrome-tab-rename {
     background: transparent; border: none; outline: none;
@@ -5436,6 +5588,13 @@
   body.embed #tag-filters,
   body.embed #offline-banner,
   body.embed #pinned-notes-home { display: none !important; }
+  /* A short Files embed (a split pane in a short window) gives its height to the
+     list: the Quick and search rows fold away, the toolbar and rows stay. At
+     1280x350 they took the whole pane and no row showed (b20e23647). */
+  @media (max-height: 420px) {
+    body.embed #files-bookmarks,
+    body.embed .files-search-row { display: none !important; }
+  }
   /* The JS sizes the active view to fill the iframe (position:fixed inset:0). */
   body.embed .embed-filled { position: fixed !important; inset: 0 !important; height: 100dvh !important;
     max-height: none !important; margin: 0 !important; z-index: 30; }
@@ -5904,6 +6063,7 @@
   .map-pin-item.active { background: rgba(88,166,255,0.1); }
   .map-pin-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; border: 1.5px solid rgba(255,255,255,0.25); }
   .map-pin-info { flex: 1; min-width: 0; }
+  .map-pin-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: rgba(255,255,255,0.05); }
   .map-pin-name { font-size: 0.82rem; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .map-pin-tagrow { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
   .map-pin-tag { font-size: 0.68rem; padding: 1px 5px; border-radius: 8px; border: 1px solid; font-weight: 500; }
@@ -5947,6 +6107,53 @@
   .map-modal-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; align-items: center; }
   .map-btn-danger { background: var(--red) !important; color: #fff !important; border-color: transparent !important; }
   .map-btn-danger:hover { opacity: 0.85; }
+  /* Status, lists, table + bulk edits, duplicates (2026-10-20) */
+  .map-status-chips { margin-top: 6px; }
+  .map-list-select { width: 100%; margin-top: 6px; }
+  .map-chip-n { opacity: 0.6; font-variant-numeric: tabular-nums; }
+  .map-tag-cat { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+  .map-tag-cat-name { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); min-width: 52px; }
+  .map-pin-statusline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 0.7rem; margin: 2px 0; }
+  .map-status-pill { padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text); }
+  .map-status-want { border-color: var(--accent); color: var(--accent); }
+  .map-status-been { border-color: var(--green, #3fb950); color: var(--green, #3fb950); }
+  .map-status-favorite { border-color: #d4a106; color: #d4a106; }
+  .map-status-closed { border-color: var(--dim); color: var(--dim); text-decoration: line-through; }
+  .map-stars { color: #d4a106; letter-spacing: 1px; white-space: nowrap; }
+  .map-visit-note { color: var(--dim); }
+  .map-list-bar, .map-bulk-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 0.75rem; }
+  .map-list-bar[hidden], .map-bulk-bar[hidden] { display: none; }
+  .map-list-share-status { flex: 1 1 100%; color: var(--dim); overflow-wrap: anywhere; }
+  .map-bulk-bar .input { font-size: 0.75rem; padding: 2px 4px; max-width: 120px; }
+  .map-bulk-n { font-weight: 600; }
+  .map-pins-foot { padding: 8px 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .map-pins-foot .btn { width: 100%; font-size: 0.75rem; }
+  .map-sidebar.map-sidebar-wide { width: 560px; }
+  .map-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+  .map-table th { text-align: left; font-weight: 600; color: var(--dim); position: sticky; top: 0; background: var(--card); padding: 4px; border-bottom: 1px solid var(--border); }
+  .map-table td { padding: 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .map-table tr.selected td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .map-table a { color: var(--text); text-decoration: none; }
+  .map-modal-field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+  .map-pin-facts { font-size: 0.75rem; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  .map-pin-facts:empty { display: none; }
+  .map-pin-place-row .btn { font-size: 0.75rem; }
+  .map-pin-history { font-size: 0.72rem; max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+  .map-hist-row { padding: 2px 0; }
+  .map-dup-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
+  .map-dup-pair { border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 0.82rem; }
+  .map-dup-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  @media (max-width: 600px) {
+    .map-pinbar-btn, .map-list-bar .btn, .map-bulk-bar .btn, .map-bulk-bar .input, .map-dup-actions .btn, .map-pin-place-row .btn, .map-pins-foot .btn { min-height: 44px; }
+    .map-sort-select { min-height: 44px; }
+    .map-table th:nth-child(6), .map-table td:nth-child(6) { display: none; }
+    .map-pin-place-row { flex-wrap: wrap; }
+    /* On a phone the bars above the list (search, lists, bulk edits) can fill
+       the screen; the pane scrolls as one so the list always gets its height. */
+    .map-pins-pane { overflow-y: auto; }
+    .map-pins-pane > * { flex-shrink: 0; }
+    .map-pin-list { flex: none; overflow: visible; min-height: 50vh; }
+  }
   /* Geocoder search — lives inside sidebar, absolutely positioned over map on desktop */
   .map-geocoder-wrap { position: absolute; top: 12px; left: calc(50% + 130px); transform: translateX(-50%); z-index: 1003; width: min(420px, calc(100% - 292px)); }
   #map-view.sidebar-collapsed .map-geocoder-wrap { left: 50%; width: min(420px, calc(100% - 32px)); }
@@ -6065,6 +6272,46 @@
   .reclaim-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 4px; font-size: 0.68rem; color: var(--dim); }
   .reclaim-legend-item { display: inline-flex; align-items: center; gap: 4px; }
   .reclaim-legend-item i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .reclaim-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .reclaim-summary .metrics-card-title { display: flex; align-items: center; gap: 6px; }
+  .reclaim-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .reclaim-dot.safe { background: var(--green, #3fb950); }
+  .reclaim-dot.review { background: var(--yellow, #e3b341); }
+  .reclaim-split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+  .reclaim-split-main { min-width: 0; }
+  .reclaim-recs { border: 1px solid var(--border); border-radius: var(--radius-dialog, 12px); background: var(--card); margin-top: 18px; display: flex; flex-direction: column; max-height: 720px; }
+  .reclaim-recs-hdr { padding: 12px 14px 8px; }
+  .reclaim-recs-title { font-weight: 600; font-size: 0.92rem; }
+  .reclaim-recs-sub { font-size: 0.74rem; color: var(--dim); margin-top: 2px; }
+  .reclaim-recs-body { overflow-y: auto; padding: 0 8px 8px; flex: 1; min-height: 0; }
+  .reclaim-recs-group { display: flex; justify-content: space-between; align-items: center; padding: 10px 6px 4px; font-size: 0.74rem; color: var(--dim); }
+  .reclaim-chip { font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .reclaim-chip.safe { color: var(--green, #3fb950); background: rgba(63,185,80,0.12); }
+  .reclaim-chip.review { color: var(--yellow, #e3b341); background: rgba(227,179,65,0.14); }
+  .reclaim-chip.protected { color: var(--dim); background: rgba(110,118,129,0.18); }
+  .reclaim-rec.reclaim-protected { cursor: default; opacity: 0.6; }
+  .reclaim-rec.reclaim-protected:hover { background: none; }
+  .reclaim-protected-why { font-size: 0.7rem; color: var(--dim); white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
+  .metrics-table tr.reclaim-row-protected td { opacity: 0.6; }
+  .reclaim-rec { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-radius: var(--radius-control, 8px); cursor: pointer; min-height: 44px; }
+  .reclaim-rec:hover, .reclaim-rec.on { background: rgba(88,166,255,0.07); }
+  .reclaim-rec input { flex: none; width: 16px; height: 16px; }
+  .reclaim-rec-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .reclaim-rec-label { font-size: 0.82rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reclaim-rec-cmd { font-size: 0.7rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reclaim-rec-size { font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+  .reclaim-rec-more { font-size: 0.72rem; color: var(--dim); padding: 6px; }
+  .reclaim-recs-foot { border-top: 1px solid var(--border); padding: 10px 14px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; }
+  .reclaim-recs-btns { display: flex; gap: 8px; }
+  .reclaim-script { width: 100%; }
+  .reclaim-script summary { cursor: pointer; font-size: 0.74rem; color: var(--dim); }
+  .reclaim-script pre { max-height: 220px; overflow: auto; font-size: 0.7rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-control, 8px); padding: 8px; margin: 6px 0 0; white-space: pre; }
+  @media (max-width: 900px) { .reclaim-split { grid-template-columns: minmax(0, 1fr); } .reclaim-recs { max-height: none; } }
+  @media (max-width: 600px) {
+    .reclaim-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .reclaim-recs-btns { width: 100%; }
+    .reclaim-recs-btns .btn { flex: 1; min-height: 44px; }
+  }
   .reclaim-actionbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--card); border: 1px solid var(--accent, #58a6ff); border-radius: 8px; padding: 9px 12px; margin-bottom: 10px; font-size: 0.82rem; flex-wrap: wrap; }
   .reclaim-danger { border-color: var(--red, #f85149) !important; color: var(--red, #f85149) !important; }
   .reclaim-minibtn { font-size: 0.7rem !important; padding: 3px 9px !important; margin-left: 8px; text-transform: none; letter-spacing: 0; font-weight: 500; min-height: 28px; }
@@ -7419,6 +7666,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .tts-overlay,
 .mdai-picker-overlay,
 .conn-picker-overlay,
+.file-overlay,
 #conn-hist-modal.conn-hist-overlay { zoom: calc(1 / var(--root-zoom, 1)); }
 
 .edit-overlay > .edit-box,
@@ -7432,6 +7680,7 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .tts-overlay > .tts-dialog,
 .mdai-picker-overlay > .mdai-picker,
 .conn-picker-overlay > .conn-picker,
+.file-overlay > *,
 #conn-hist-modal > .conn-hist-box { zoom: var(--root-zoom, 1); }
 
 .amux-dialog-backdrop,
@@ -7550,6 +7799,22 @@ details.status-evidence > summary { cursor:pointer; font-weight:600; margin:4px 
 /* AF-754: production component contract; Settings → Style guide uses these classes. */
 .btn:disabled { opacity:.55; cursor:not-allowed; }
 .btn[aria-busy="true"] { cursor:progress; }
+/* A switch looks like one: a track and knob, with On/Off beside it, on every
+   .btn role="switch" (Ethan, 2026-10-21: "make the board toggle a toggle so
+   its easier to understand"; it read as a button labelled On or Off).
+   aria-checked drives it, so the look cannot disagree with the state. */
+.btn[role="switch"] { position:relative; display:inline-flex; align-items:center; gap:8px; padding-left:6px;
+  background:transparent; border-color:transparent; color:var(--text); font-weight:600; }
+.btn[role="switch"]:hover:not(:disabled) { background:var(--card); border-color:var(--border); }
+.btn[role="switch"]::before { content:""; flex:0 0 auto; width:36px; height:20px; border-radius:10px;
+  background:var(--border); transition:background .15s; }
+.btn[role="switch"]::after { content:""; position:absolute; left:8px; top:50%; width:16px; height:16px; margin-top:-8px;
+  border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.35); transition:transform .15s; }
+.btn[role="switch"][aria-checked="true"]::before { background:var(--accent); }
+.btn[role="switch"][aria-checked="true"]::after { transform:translateX(16px); }
+.btn[role="switch"][aria-checked="mixed"]::before { background:linear-gradient(90deg, var(--accent) 50%, var(--border) 50%); }
+.btn[role="switch"][aria-checked="mixed"]::after { transform:translateX(8px); }
+@media (prefers-reduced-motion: reduce) { .btn[role="switch"]::before, .btn[role="switch"]::after { transition:none; } }
 .btn:focus-visible, .input:focus-visible, .modal-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; box-shadow:var(--focus-ring); }
 .input[aria-invalid="true"] { border-color:var(--red); }
 select.input { height:var(--control-height); }
@@ -7898,6 +8163,16 @@ select.input { height:var(--control-height); }
 body:not(.light) .vault-chip-global { color: #7fb0ff; }
 body:not(.light) .vault-chip-group { color: #c4a2ff; }
 body:not(.light) .vault-chip-worker { color: #6fdc9b; }
+.vault-chip-apikey { color: #b7791f; background: color-mix(in srgb, #b7791f 14%, transparent); margin-left: 6px; }
+body:not(.light) .vault-chip-apikey { color: #f6c26b; }
+/* Payment method limits (vault_spend.rs): three optional windows side by side,
+   stacked on a phone. */
+.vault-limits { border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3) var(--space-3); margin: var(--space-2) 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); min-width: 0; }
+.vault-limits legend { font-weight: 600; font-size: 0.82rem; padding: 0 4px; }
+.vault-limit-field { display: grid; gap: 4px; font-size: 0.8rem; font-weight: 600; min-width: 0; }
+.vault-limit-field .input { min-height: 40px; width: 100%; box-sizing: border-box; }
+.vault-spent { font-weight: 400; }
+.vault-form-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); }
 .vault-prov { display: flex; flex-direction: column; gap: 2px; }
 .vault-state { display: inline-block; margin-top: 2px; padding: 1px 7px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--border); }
 .vault-state-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
@@ -7938,6 +8213,17 @@ body:not(.light) .vault-chip-worker { color: #6fdc9b; }
 .vault-radio-text > span { display: flex; flex-direction: column; }
 .vault-radio-text b { font-weight: 600; }
 .vault-target { margin-left: 30px; width: calc(100% - 30px) !important; }
+.vault-ms[hidden], .vault-check[hidden] { display: none; }
+.vault-ms { display: grid; gap: var(--space-2); }
+.vault-ms-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); min-height: 28px; align-items: center; }
+.vault-ms-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 0.85rem; }
+.vault-ms-x { background: none; border: none; color: inherit; cursor: pointer; min-width: 28px; min-height: 28px; border-radius: 999px; }
+.vault-ms-x:focus-visible { outline: 2px solid var(--on-accent); }
+.vault-ms-q { width: 100%; }
+.vault-checks { display: flex; flex-wrap: wrap; gap: 0 var(--space-3); max-height: 220px; overflow-y: auto; }
+@media (max-width: 600px) { .vault-ms-x { min-width: 44px; min-height: 44px; } }
+.vault-check { display: flex; align-items: center; gap: var(--space-2); min-height: 44px; cursor: pointer; }
+.vault-check input { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
 .vault-audit { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: grid; gap: 0; }
 .vault-audit li { display: grid; grid-template-columns: 6rem minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.83rem; }
 .vault-audit-what { overflow-wrap: anywhere; }
@@ -7958,6 +8244,8 @@ body:not(.light) .vault-chip-worker { color: #6fdc9b; }
   .vault-tab { flex: 1 0 auto; justify-content: center; }
   .vault-actions-row .btn, .vault-foot .btn { min-height: 44px; flex: 1 1 auto; }
   .vault-icon-btn { min-width: 44px; min-height: 44px; }
+  .vault-limits { grid-template-columns: minmax(0, 1fr); }
+  .vault-limit-field .input { min-height: 44px; }
   .vault-table, .vault-table tbody, .vault-table tr, .vault-table td { display: block; width: 100%; box-sizing: border-box; }
   .vault-table { border: none; }
   .vault-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -8157,6 +8445,9 @@ body.light .bd-answer-head { color: #bc4c00; }
 /* Worker Messages tab: Ask and Export sit in the row on wide screens and fold
    into an ellipsis menu on a phone. */
 #peek-messages-panel .pm-more { display: none; margin-left: 0; flex: 0 0 auto; }
+#peek-msgs-kind { display: none; }
+.pm-menu-phone { display: none !important; }
+@media (max-width: 600px) { .pm-menu-phone { display: block !important; } }
 @media (max-width: 600px) {
   #peek-messages-panel .pm-wide { display: none; }
   #peek-messages-panel .pm-more { display: block; }
@@ -8166,6 +8457,29 @@ body.light .bd-answer-head { color: #bc4c00; }
   #peek-messages-search { min-width: 150px !important; }
   #peek-messages-count { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #peek-messages-panel .pm-date-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; font-size: .8rem; color: var(--text); min-height: 44px; }
+  /* One toolbar row: search, kind picker, menu. The count repeats the
+     picker's own number, and the chip row is the picker, so both go. */
+  #peek-messages-panel .peek-tasks-add { padding: 6px 8px !important; gap: 6px !important; }
+  #peek-messages-search { min-width: 0 !important; min-height: 44px; font-size: 16px !important; }
+  #peek-messages-count, #peek-messages-filter { display: none !important; }
+  #peek-msgs-kind { display: block; flex: 0 0 auto; max-width: 34%; text-overflow: ellipsis; min-height: 44px; font-size: 0.85rem; padding: 0 8px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+  /* Rows: the text gets the full width. Checkbox and caret move into the row
+     menu (Select / Collapse), the id into "Copy MSG-n", the menu button sits
+     in the header's corner, and the green "direct" chip (the normal path) is
+     dropped the way the confirmed submit chip already is. */
+  #peek-messages-list { padding: 6px !important; gap: 6px !important; }
+  #peek-messages-list .pm-row { padding: 8px 10px !important; display: block !important; }
+  #peek-messages-list .pm-row .msg-caret,
+  #peek-messages-list .pm-row .msg-id-badge,
+  #peek-messages-list .pm-row .msg-deliv-direct { display: none !important; }   /* beats the chip's inline display */
+  #peek-messages-panel:not(.pm-selecting) .pm-row .pm-check { display: none; }
+  #peek-messages-list .pm-row .pm-check { float: left; margin: 2px 8px 0 0; }
+  #peek-messages-list .pm-row .pm-actions { position: absolute; top: 0; right: 0; }
+  #peek-messages-list .pm-row .pm-dots { min-width: 44px; min-height: 40px; border: 0; background: transparent; padding: 0; }
+  #peek-messages-list .pm-row .msg-menu { right: 0; left: auto; }
+  #peek-messages-list .pm-row > div:first-of-type > div:first-child { padding-right: 36px; }
+  #peek-messages-list .pm-row .msg-body { font-size: 0.95rem; }
   #peek-messages-panel .pm-date-item input { font-size: .8rem; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
 }
 
@@ -8335,6 +8649,19 @@ body.light .bd-answer-head { color: #bc4c00; }
 .psp-opt.active { color:var(--text); border-color:var(--accent); background:var(--surface); }
 .psp-close { margin-left:auto; font-size:0.7rem; padding:2px 8px; }
 .psp-frame { flex:1; min-height:0; width:100%; border:0; background:var(--bg); }
+/* Split panes (2026-10-22): 1-3 panes beside the worker page, stacked, each its
+   own view picker over the embedded page. */
+.psp-panes { flex:1; min-height:0; display:flex; flex-direction:column; }
+.psp-pane { flex:1 1 0; min-height:60px; display:flex; flex-direction:column; border-top:1px solid var(--border); overflow:hidden; }
+.psp-pane:first-child { border-top:0; }
+.psp-drag-handle { flex-shrink:0; height:6px; cursor:row-resize; background:var(--border); position:relative; touch-action:none; user-select:none; -webkit-user-select:none; }
+.psp-drag-handle:hover, .psp-drag-handle.dragging { background:var(--accent); }
+.psp-drag-handle::after { content:''; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:32px; height:2px; border-radius:1px; background:var(--dim); opacity:0.5; }
+.psp-drag-handle:hover::after, .psp-drag-handle.dragging::after { opacity:1; background:var(--on-accent); }
+.psp-pane-bar { display:flex; gap:6px; align-items:center; padding:5px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.psp-pane-view { flex:0 1 220px; min-width:0; font-size:0.75rem; padding:3px 8px; min-height:30px; }
+.psp-pane-spacer { flex:1; }
+.psp-pane-add, .psp-pane-close { font-size:0.75rem; min-width:30px; min-height:30px; padding:2px 8px; }
 .peek-split-files.psp-embed .peek-split-files-header,
 .peek-split-files.psp-embed .psf-col-headers,
 .peek-split-files.psp-embed .peek-split-files-body { display:none !important; }
@@ -8357,6 +8684,11 @@ body.light .bd-answer-head { color: #bc4c00; }
 }
 /* A worker's active Claude Code /goal (AMUX-5746). */
 .badge.goal { color:var(--accent); border-color:var(--accent); }
+/* Goal tile states (goal_keeper::resolve): the checker decides met. */
+.badge.goal.met { color:var(--green); border-color:var(--green); }
+.badge.goal.unknown { color:var(--yellow); border-color:var(--yellow); }
+.badge.goal.stalled { color:var(--red); border-color:var(--red); }
+.badge.goal.cleared, .badge.goal.none { color:var(--dim); border-color:var(--border); }
 
 /* Scratchpad files and expiry (Ethan, 2026-10-09). */
 .sp-retain-wrap { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }
@@ -8370,6 +8702,11 @@ body.light .bd-answer-head { color: #bc4c00; }
 #peek-split-toggle .psp-btn-lbl { font-size:0.8rem; font-weight:600; }
 #peek-split-toggle .psp-btn-caret { font-size:0.65rem; opacity:0.7; }
 #peek-split-toggle .psp-ico-folder { display:none; }
+/* The shared toolbar rule pins every button at flex 0 0 44px; width:auto above
+   cannot undo a flex-basis, so the icon shrank to nothing and "Split" sat
+   cramped against its caret (Ethan, 2026-10-19 screenshot). */
+@media (min-width: 601px) { #peek-split-toggle { flex:0 0 auto; } }
+#peek-split-toggle > * { flex-shrink:0; }
 @media (max-width: 600px) {
   #peek-split-toggle .psp-ico-split, #peek-split-toggle .psp-btn-lbl, #peek-split-toggle .psp-btn-caret { display:none; }
   #peek-split-toggle .psp-ico-folder { display:inline; }
@@ -8657,14 +8994,32 @@ button.cv-sec:hover { color:var(--text); }
   .cv-hint { display:none; }
   .cv-head-people { display:none; }
   #msgs-log-pane { padding:8px 10px; }
-  /* The search takes its own row on a phone so the two filters below it get
-     half the width each instead of being squeezed beside it to "All w". */
-  #msgs-controls > .search-wrap { flex:1 1 100% !important; min-width:0 !important; }
-  /* Worker and From filters share one row at 375px and stay 44px tall. */
+  /* Worker and From filters stay 44px tall. */
   /* WebKit ignores min-height on a native menulist select, so the control
      drops its native chrome here and draws its own chevron. */
-  #msgs-session-filter, #msgs-sender-filter { flex:1 1 calc(50% - 5px); min-width:0; max-width:none !important; min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
+  #msgs-session-filter, #msgs-sender-filter { min-height:44px; -webkit-appearance:none; appearance:none; padding-right:26px !important; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E") !important; background-repeat:no-repeat !important; background-position:right 10px center !important; }
   .cv-attach-bar { padding:0 10px; }
+  /* ONE ROW ABOVE THE LIST AND ONE BELOW (Ethan, 2026-10-21). The back button,
+     the Messages/Trends/Ask switch, search, both filters, the date, the count,
+     refresh and the kind chips were six rows over a list that got the bottom
+     third of the screen. They are one row now that scrolls sideways; the inner
+     rows dissolve (display:contents) so their controls join it. */
+  #msgs-topbar { display:flex; flex-wrap:nowrap; align-items:center; gap:6px; overflow-x:auto; overflow-y:hidden;
+    -webkit-overflow-scrolling:touch; scrollbar-width:none; margin:0 -10px 8px; padding:0 10px 2px; flex-shrink:0; }
+  #msgs-topbar::-webkit-scrollbar { display:none; }
+  #msgs-topbar > #msgs-modes, #msgs-topbar > #msgs-controls, #msgs-topbar > #msgs-kind-filter { display:contents !important; }
+  #msgs-topbar > * , #msgs-topbar > div > * { flex:0 0 auto !important; margin:0 !important; }
+  #msgs-topbar .cv-back { font-size:0; min-width:44px; min-height:44px; padding:0 12px; }
+  #msgs-topbar .cv-back::before { content:'\2039'; font-size:1.3rem; }
+  #msgs-topbar .msg-mode-btn { min-height:44px; white-space:nowrap; }
+  #msgs-controls > .search-wrap { flex:0 0 190px !important; width:190px; min-width:0 !important; }
+  #msgs-session-filter, #msgs-sender-filter { flex:0 0 auto !important; width:auto; min-width:140px !important; max-width:170px !important; }
+  #msgs-date-jump { min-height:44px; }
+  #msgs-count { align-self:center; }
+  #msgs-pager { flex-wrap:nowrap !important; justify-content:flex-start !important; overflow-x:auto; -webkit-overflow-scrolling:touch;
+    scrollbar-width:none; margin:0 -10px; padding:8px 10px 0 !important; }
+  #msgs-pager::-webkit-scrollbar { display:none; }
+  #msgs-pager > * { flex:0 0 auto; }
 }
 
 /* ── Converse tab (worker view): hands-free voice chat with the worker ──────
@@ -9170,6 +9525,27 @@ button.cv-sec:hover { color:var(--text); }
 .draw-recent-title { font-size:0.86rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .draw-recent-when { font-size:0.76rem; color:var(--dim); }
 .draw-lib-scrim { display:none; }
+/* A row or tile with a ⋯ menu (rename, delete) at its right edge. */
+.draw-row { position:relative; }
+.draw-row > .draw-recent, .draw-row > .draw-pop-row { padding-right:40px; }
+.draw-row-more { position:absolute; right:4px; top:50%; transform:translateY(-50%); min-width:32px; min-height:32px;
+  display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid transparent;
+  border-radius:var(--radius-control); color:var(--dim); font:inherit; font-size:1rem; cursor:pointer; }
+.draw-row > .draw-recent + .draw-row-more { top:calc(50% - 3px); }
+.draw-row-more:hover, .draw-row-more:focus-visible { color:var(--text); border-color:var(--border); background:var(--card); }
+.draw-lib-cell > .draw-lib-item { width:100%; }
+.draw-lib-cell > .draw-row-more { top:4px; right:4px; transform:none; }
+.draw-item-menu { min-width:160px; }
+/* Above the phone library sheet they open from; below dialogs. */
+#draw-view .draw-item-menu, #draw-view .draw-dir-pop { z-index:calc(var(--layer-dialog, 1100) - 1); }
+.draw-menu > button.draw-menu-danger { color:var(--red); }
+.draw-lib-subrow { display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); }
+.draw-link-btn { background:none; border:none; color:var(--accent); font:inherit; font-size:0.8rem; padding:4px 2px; cursor:pointer;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.draw-link-btn:hover { text-decoration:underline; }
+.draw-default-dir { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:0.8rem; color:var(--dim);
+  padding:var(--space-2) 0; border-bottom:1px solid var(--border); }
+.draw-default-dir .draw-link-btn:first-of-type { flex:1 1 auto; max-width:100%; text-align:left; }
 
 .draw-main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
 .draw-head { display:flex; align-items:center; gap:var(--space-3); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); min-width:0; }
@@ -9324,6 +9700,7 @@ html.draw-active { overflow:hidden; }
   .draw-host .excalidraw { --sab:0px; }
   .draw-selbar { top:auto; bottom:calc(76px + env(safe-area-inset-bottom)); right:var(--space-2); }
   .draw-selbar .btn { min-height:44px; }
+  .draw-row-more, .draw-link-btn { min-width:44px; min-height:44px; }
   .draw-dir-pop { left:8px !important; right:8px; width:auto; }
 }
 
@@ -9597,6 +9974,20 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   .fsel-bar .btn { min-height: 44px; flex: 1 1 auto; }
   .fsel-bar .fsel-count { flex: 1 0 100%; text-align: center; }
 }
+/* The shared row/header selection checkbox (Files, Split view, Scratchpad). One
+   reusable control, so a bulk action looks and works the same everywhere. */
+.fe-check, .fe-check-all {
+  flex: 0 0 auto; width: 15px; height: 15px; margin: 0 6px 0 0;
+  cursor: pointer; accent-color: var(--accent); vertical-align: middle;
+}
+.fe-col-hdr > .fe-check-all, .fe-cell-name > .fe-check-all { margin-right: 6px; }
+@media (max-width: 600px) {
+  /* Bigger hit area on touch; the whole row also long-presses to select. */
+  .fe-check, .fe-check-all { width: 20px; height: 20px; }
+}
+/* A real checkbox now stands in for the touch-mode circle on fe-rows; keep the
+   circle only on explore rows, which have no checkbox. */
+.fsel-mode .fe-row .fe-cell-name::before { content: none; }
 
 /* Phone tops for Email, Connectors, Scheduler and Board (Ethan, 2026-10-14:
    "do the same for the other mobile pages", after the MDAI header): the page's
@@ -9654,6 +10045,307 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* The worker's task name is shown in full: on the card and the details page it
    wraps instead of being cut with an ellipsis (Ethan, 2026-10-16). */
 .card-preview.card-task-full { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
-.peek-task-history-btn { font-size:0.72rem; padding:1px 8px; flex-shrink:0; }
-@media (max-width: 600px) { .peek-task-history-btn { min-height:44px; } }
 .task-history-list li { overflow-wrap:anywhere; }
+
+/* Worker Board tab: one board switch (Ethan, 2026-10-17). */
+/* Wraps: on a phone the two buttons took most of the row and squeezed the
+   description into a column a few words wide (Ethan, 2026-10-20 screenshot).
+   The text asks for 16rem; under that, the buttons drop below it, right-aligned. */
+.pbc-one { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; justify-content:space-between; }
+.pbc-one .pbc-text { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1 1 16rem; }
+.board-one-switch { min-height:44px; min-width:72px; flex:0 0 auto; margin-left:auto; }
+/* MDAI chat: a composer docked under the node, and the conversation in the Chat tab. */
+.mdai-chatbar { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding: 8px 18px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
+.mdai-chatbar[hidden] { display: none; }
+.mdai-chatbar textarea { flex: 1; min-width: 0; min-height: 44px; max-height: 160px; resize: none; line-height: 1.4; font-size: 0.88rem; }
+.mdai-chatbar .btn { min-height: 44px; min-width: 64px; }
+.mdai-chat { display: flex; flex-direction: column; gap: 10px; }
+.mdai-msg { display: flex; flex-direction: column; gap: 3px; max-width: 92%; }
+.mdai-msg.me { align-self: flex-end; align-items: flex-end; }
+.mdai-msg.ai { align-self: flex-start; align-items: stretch; width: 92%; }
+.mdai-bubble { border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; font-size: 0.86rem; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+.mdai-msg.me .mdai-bubble { background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.35); }
+.mdai-bubble.bad { color: var(--red, #f85149); border-color: var(--red, #f85149); background: rgba(248,81,73,0.08); display: block; }
+.mdai-chat-wait { flex-direction: row; align-items: center; color: var(--dim); }
+.mdai-msg-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.72rem; color: var(--dim); white-space: normal; }
+.mdai-diff-wrap > summary { cursor: pointer; font-size: 0.78rem; color: var(--accent); min-height: 32px; display: flex; align-items: center; }
+.mdai-diff { border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; font-size: 0.76rem; line-height: 1.5; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
+.mdai-diff-l { display: grid; grid-template-columns: 16px 1fr; padding: 0 8px; }
+.mdai-diff-l > span { color: var(--dim); user-select: none; }
+.mdai-diff-l.add { background: rgba(63,185,80,0.14); }
+.mdai-diff-l.del { background: rgba(248,81,73,0.14); text-decoration: line-through; text-decoration-color: rgba(248,81,73,0.5); }
+.mdai-diff-gap { color: var(--dim); text-align: center; font-size: 0.7rem; }
+.mdai-chat-acts { white-space: normal; }
+.mdai-chat-opt { font-size: 0.78rem; color: var(--dim); min-height: 44px; }
+@media (max-width: 600px) {
+  .mdai-chatbar { padding: 6px 8px max(8px, env(safe-area-inset-bottom)); }
+  .mdai-msg, .mdai-msg.ai { max-width: 100%; width: 100%; }
+  .mdai-msg.me { width: auto; max-width: 92%; }
+  .mdai-chat-acts .btn { min-height: 44px; }
+}
+/* A short window keeps its height for the node; the composer shows on the Chat tab only. */
+@media (max-height: 520px) {
+  .mdai-chatbar:not([data-tab="chat"]) { display: none; }
+}
+
+/* Messages: the task the receiving worker was on when a message arrived
+   (app.js _msgTaskChipsFill). */
+.msg-task-chip { display:block; margin:0 0 4px; }
+.msg-task-chip[hidden] { display:none; }
+.msg-task-link { background:rgba(128,128,128,0.10); border:1px solid transparent; border-radius:10px; padding:1px 8px; font-size:0.72rem; color:var(--dim); cursor:pointer; min-height:24px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msg-task-link:hover, .msg-task-link:focus-visible { border-color:var(--accent); color:var(--text); }
+@media (max-width: 600px) { .msg-task-link { min-height:32px; } }
+
+/* Describe what you want (openOutcome) */
+.outcome-form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+.outcome-text { width: 100%; min-height: 96px; resize: vertical; font-size: 0.95rem; box-sizing: border-box; }
+.outcome-settings { border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; }
+.outcome-settings > summary { cursor: pointer; padding: 10px 0; min-height: 24px; font-size: 0.85rem; color: var(--dim); list-style: none; }
+.outcome-settings > summary::-webkit-details-marker { display: none; }
+.outcome-settings > summary::before { content: '\25B8'; display: inline-block; width: 1.1em; }
+.outcome-settings[open] > summary::before { content: '\25BE'; }
+.outcome-settings[open] { padding-bottom: 10px; }
+.outcome-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--dim); margin-top: 8px; }
+.outcome-field .input { width: 100%; box-sizing: border-box; }
+.outcome-check { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 0.82rem; margin-top: 4px; }
+@media (max-width: 600px) {
+  .outcome-settings > summary { min-height: 44px; display: flex; align-items: center; }
+  .outcome-check { min-height: 44px; }
+}
+
+/* Command palette (Cmd/Ctrl-K): the shared .modal-overlay > .modal, held near
+   the top like Spotlight so the list grows downward as you type. */
+.modal-overlay.cmdk-overlay { align-items: flex-start; padding-top: max(12vh, env(safe-area-inset-top)); }
+.modal-overlay .modal.cmdk { max-width: 640px; max-height: min(70dvh, 560px); overflow: hidden; }
+.cmdk-input.input { margin: 12px; width: calc(100% - 24px); min-height: 44px; font-size: 1rem; box-sizing: border-box; }
+.cmdk-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
+.cmdk-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-control); cursor: pointer; min-height: 44px; box-sizing: border-box; }
+.cmdk-row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cmdk-kind { flex: 0 0 76px; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
+.cmdk-text { display: flex; flex-direction: column; min-width: 0; }
+.cmdk-title { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmdk-sub { color: var(--dim); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmdk-empty { color: var(--dim); padding: 16px 12px; }
+.cmdk-foot { border-top: 1px solid var(--border); color: var(--dim); font-size: 0.7rem; padding: 6px 8px 6px 14px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.cmdk-foot-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmdk-foot .cmdk-hidden-toggle { flex-shrink: 0; font-size: 0.7rem; min-height: 28px; padding: 2px 10px; }
+.cmdk-foot .cmdk-hidden-toggle[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cmdk-row mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.cmdk-section { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); padding: 8px 10px 2px; }
+.cmdk-row.cmdk-meta .cmdk-title { font-weight: 500; color: var(--accent); }
+.cmdk-snippet { font-style: italic; }
+@media (max-width: 600px) { .cmdk-kind { flex-basis: 60px; } .cmdk-foot .cmdk-hidden-toggle { min-height: 44px; } }
+.header-search-btn { min-width: 44px; min-height: 44px; }
+.header-search-btn[hidden] { display: none; }
+
+/* Worker groups editor (the edit modal's multiselect): a phone needs a real
+   target to remove a group, not a 10px x. */
+#eg-groups .be-tag-suggestions { max-height: 220px; overflow-y: auto; }
+@media (max-width: 600px) {
+  #eg-groups .be-tag-chip { font-size: 0.82rem; padding: 4px 4px 4px 10px; }
+  #eg-groups .be-tag-chip-remove { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; font-size: 1rem; }
+  #eg-groups .be-tag-input { min-height: 36px; font-size: 1rem; }
+}
+
+/* The file viewer's markdown preview reads like a note (Obsidian as the
+   reference): body-sized text at a readable line length, headings without
+   rules, muted bullets, and a thin guide down nested lists. Every file view
+   shares it: Files, Scratchpad, the peek's file split and MDAI previews. */
+.file-overlay-body.md-content, #peek-split-files .file-overlay-body.md-content {
+  font-size: 1rem; line-height: 1.65; padding: 20px max(20px, calc((100% - 46rem) / 2));
+}
+.file-overlay-body.md-content h1 { font-size: 1.75em; line-height: 1.25; margin: 0.9em 0 0.35em; padding: 0; border: none; letter-spacing: -0.01em; }
+.file-overlay-body.md-content h2 { font-size: 1.4em; line-height: 1.3; margin: 1.1em 0 0.3em; padding: 0; border: none; }
+.file-overlay-body.md-content h3 { font-size: 1.18em; margin: 1em 0 0.25em; }
+.file-overlay-body.md-content h4, .file-overlay-body.md-content h5, .file-overlay-body.md-content h6 { font-size: 1em; margin: 0.9em 0 0.2em; }
+.file-overlay-body.md-content p { margin: 0 0 0.7em; }
+.file-overlay-body.md-content ul, .file-overlay-body.md-content ol { margin: 0.2em 0 0.7em; padding-left: 1.5em; }
+.file-overlay-body.md-content li { margin: 0.12em 0; }
+.file-overlay-body.md-content li > p { margin: 0; }
+.file-overlay-body.md-content li::marker { color: var(--dim); }
+.file-overlay-body.md-content li > ul, .file-overlay-body.md-content li > ol {
+  margin: 0.1em 0 0.2em -1.05em; padding-left: 2.05em; border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.file-overlay-body.md-content hr { margin: 1.4em 0; }
+.file-overlay-body.md-content a { text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.file-overlay-body.md-content blockquote { margin: 0.4em 0 0.8em; }
+@media (max-width: 600px) {
+  .file-overlay-body.md-content, #peek-split-files .file-overlay-body.md-content { font-size: 0.98rem; padding: 14px; }
+}
+.file-overlay-body.md-content ul ul { list-style-type: disc; }
+
+/* Tables in a note: cells wrap between words, never inside one ("Acqui|re"
+   in Ethan's 2026-10-20 screenshot came from the body's break-word), and the
+   table scrolls sideways inside its frame instead of squeezing every column.
+   _mdFitTables gives prose columns a reading width. */
+.md-content th, .md-content td { word-break: normal; overflow-wrap: normal; hyphens: none; vertical-align: top; }
+.md-content .table-scroll { max-width: 100%; overscroll-behavior-x: contain; }
+.md-content .md-mermaid { overscroll-behavior-x: contain; }
+
+/* Diagrams open full screen on tap (_mdDiagramOpen). */
+.md-content .md-mermaid { cursor: zoom-in; position: relative; }
+@media (hover: none), (max-width: 600px) {
+  .md-content .md-mermaid::after { content: 'Tap to zoom'; position: absolute; right: 6px; bottom: 6px; font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 10px; background: var(--card); border: 1px solid var(--border); color: var(--dim); pointer-events: none; }
+}
+.md-dv { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.md-dv-bar { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.md-dv-hint { flex: 1; min-width: 0; font-size: 0.78rem; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.md-dv-close { min-width: 44px; min-height: 44px; }
+.md-dv-wrap { flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; touch-action: none; background: var(--bg); }
+.md-dv-img { transform-origin: center center; will-change: transform; line-height: 0; }
+
+/* Reading progress on touch screens: iOS hides a scrolling div's scrollbar,
+   so the file viewer draws its own (thumb + percentage), draggable. */
+.file-scroll-rail { display: none; position: absolute; right: 0; width: 22px; pointer-events: none; z-index: 5; }
+.file-scroll-thumb { position: absolute; top: 0; right: 0; width: 22px; pointer-events: auto; touch-action: none; cursor: grab; }
+.file-scroll-thumb::after { content: ''; position: absolute; top: 2px; bottom: 2px; right: 3px; width: 4px; border-radius: 3px;
+  background: color-mix(in srgb, var(--dim) 70%, transparent); transition: width 0.12s, background 0.12s; }
+.file-scroll-rail.drag .file-scroll-thumb::after { width: 7px; background: var(--accent); }
+.file-scroll-pct { position: absolute; right: 26px; padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-variant-numeric: tabular-nums;
+  background: var(--card); border: 1px solid var(--border); color: var(--dim); opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 5; }
+.file-scroll-pct.on { opacity: 1; }
+@media (hover: none), (max-width: 600px) {
+  .file-scroll-rail.on { display: block; }
+}
+
+/* Phone: the note gets the screen (Obsidian as the reference). No frame
+   around the body, a one-row header, and Preview/Raw collapse to the one
+   button that switches to the other mode. */
+@media (max-width: 600px) {
+  #file-overlay { padding: max(2px, env(safe-area-inset-top)) 0 0; }
+  #file-overlay .file-overlay-header { margin: 0; padding: 0 6px 2px 12px; border-bottom: 1px solid var(--border); }
+  #file-overlay .file-overlay-body { border: none; border-radius: 0; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  #file-overlay .file-overlay-body.md-content { padding-left: 16px; padding-right: 18px; }
+  #file-overlay .file-view-tab.active { display: none; }
+  #file-overlay .file-view-tabs .file-view-tab { min-height: 40px; padding: 6px 10px; color: var(--text); }
+  #file-overlay .file-subpath.clickable { min-height: 0; padding: 2px 0 4px; }
+}
+
+/* Host pressure dialog: each suggested fix with its command and actions. */
+.host-fix-list li p { margin: 0 0 6px; }
+.host-fix-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.host-fix-cmd { flex: 1 1 220px; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.75rem;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 6px 8px; }
+@media (max-width: 600px) { .host-fix-row .btn { min-height: 44px; } }
+
+/* Composer resize grip (top-left corner of the peek's message box): drag up
+   to make the box taller. A user-set height becomes the floor; content can
+   still grow it, to 70% of the screen. */
+.send-input.user-sized,
+#peek-overlay #peek-cmd-input.user-sized { min-height: var(--composer-h, 44px); max-height: 70dvh; }
+.composer-grip {
+  position: absolute; top: -7px; left: -7px; width: 18px; height: 18px; z-index: 4;
+  cursor: ns-resize; touch-action: none; border-radius: 50%;
+  background:
+    linear-gradient(135deg, transparent 38%, var(--dim) 38%, var(--dim) 46%, transparent 46%,
+      transparent 58%, var(--dim) 58%, var(--dim) 66%, transparent 66%);
+  opacity: 0.55;
+}
+.composer-grip:hover, .composer-grip.dragging { opacity: 1; background-color: var(--card); }
+@media (max-width: 600px) {
+  /* A 44px target around a small visible grip. */
+  .composer-grip { width: 22px; height: 22px; top: -11px; left: -11px; }
+  .composer-grip::before { content: ''; position: absolute; inset: -11px; }
+}
+
+/* Disk Cleanup: quarantine banner and safe one-click cleanups (2026-10-20). */
+.reclaim-actions { margin: 4px 0 12px; }
+.reclaim-staged-banner { border: 1px solid var(--red, #f85149); background: rgba(248,81,73,0.08); border-radius: 8px; padding: 10px 12px; font-size: 0.82rem; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.reclaim-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.reclaim-safe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.reclaim-safe-card { display: flex; flex-direction: column; gap: 8px; }
+.reclaim-safe-head { font-weight: 600; font-size: 0.86rem; }
+.reclaim-safe-text { font-size: 0.76rem; color: var(--dim); line-height: 1.5; flex: 1; }
+.reclaim-safe-card .btn, .reclaim-actions-row .btn { min-height: 44px; }
+.reclaim-host-note { font-size: 0.78rem; color: var(--dim); margin-top: 8px; }
+.reclaim-host-out { font-size: 0.72rem; white-space: pre-wrap; overflow-x: auto; background: var(--surface, rgba(127,127,127,0.08)); border-radius: 6px; padding: 8px; margin-top: 6px; max-height: 260px; }
+
+/* Keep each command fragment whole so a flag never breaks between its two dashes. */
+.cloud-offer-settings-text code { white-space: nowrap; }
+
+/* Pages tab (api/pages.rs) */
+.pages-list-wrap { display:flex; flex-direction:column; gap:12px; padding:4px 0; max-width:960px; width:100%; }
+.pages-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.pages-head h2 { margin:0; font-size:1.1rem; }
+.pages-head p { margin:4px 0 0; }
+.pages-list { display:flex; flex-direction:column; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.pages-row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; min-height:44px; background:var(--surface); }
+.pages-row:last-child { border-bottom:0; }
+.pages-row:hover, .pages-row:focus-visible { background:var(--bg); outline:none; }
+.pages-row-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.pages-row-main b, .pages-row-main span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pages-row-when { white-space:nowrap; }
+.pages-empty { padding:24px 16px; color:var(--dim); font-size:0.88rem; line-height:1.5; }
+.pages-open { flex-direction:column; flex:1; min-height:0; gap:8px; }
+.pages-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.pages-title { font-size:0.95rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:40ch; }
+.pages-status { flex:1; min-width:0; }
+.pages-bar-actions { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+.pages-frame { flex:none; min-height:320px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:#fff; }
+.pages-frame iframe { width:100%; height:100%; border:0; display:block; }
+.pages-asks { display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow:auto; }
+.pages-ask { border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:0.84rem; }
+.pages-ask-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:4px; }
+.pages-ask-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.pages-version { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.pages-edit-html { width:100%; font:12px/1.45 ui-monospace, monospace; min-height:40vh; }
+.amux-page-err { padding:24px; color:var(--dim); }
+@media (max-width: 600px) {
+  .pages-bar-actions { margin-left:0; width:100%; }
+  .pages-bar-actions .btn { min-height:44px; flex:1 1 auto; }
+  .pages-title { max-width:60vw; }
+  .pages-row-when { display:none; }
+}
+
+/* Phone real estate per worker tab (Ethan, 2026-10-23: "analyze every tab
+   contents for the most important part"). Each tab's content is what it is
+   for; chrome that serves another tab goes. The filter, up/down and Find
+   work on every tab's own items (Ethan, 2026-10-24: "the header should work
+   on every tab"), so they stay. The folder path is context for the terminal, Shell,
+   Transcript, Commits and Worktree; the rest show their own content. A tab
+   absent from both lists keeps everything, so a new tab is never stripped. */
+@media (max-width: 600px) {
+  #peek-overlay[data-peek-tab="simple"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="chat"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="converse"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="steering"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="schedules"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="scope"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="messages"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="tasks"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="dictation"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="readalouds"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="issues"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="cost"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="memory"] .peek-dir-bar,
+  #peek-overlay[data-peek-tab="logs"] .peek-dir-bar { display: none !important; }
+}
+
+/* ONE CONTROL ROW PER WORKER TAB (Ethan, 2026-10-23: "everything below the dir
+   path and above the contents should be a single row"). A notice or an
+   explanation that used to take its own row is a .row-note at the end of the
+   row: an info button whose text opens as a panel over the content. The panel
+   is placed against the tab panel (.row-note-host), outside the row's
+   sideways scroller, so the scroller cannot clip it. */
+.row-note-host{position:relative;}
+.row-note{flex:none;margin:0;}
+.row-note>summary{list-style:none;cursor:pointer;min-width:44px;min-height:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:1.05rem;color:var(--dim);}
+.row-note>summary::-webkit-details-marker{display:none;}
+.row-note.warn>summary{color:var(--yellow,#d29922);}
+.row-note[open]>summary{color:var(--accent);border-color:var(--accent);}
+.row-note-body{position:absolute;left:12px;right:12px;z-index:20;margin-top:6px;padding:4px 12px 8px;font-size:0.78rem;line-height:1.4;color:var(--dim);background:var(--card,var(--bg));border:1px solid var(--border);border-radius:var(--radius-control,6px);box-shadow:0 6px 20px rgba(0,0,0,0.18);text-align:left;white-space:normal;}
+.row-note-body b{color:var(--text);font-weight:600;}
+.row-note-body p{margin:6px 0 2px;}
+.peek-board-config .pbc-one{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap;}
+.peek-board-config .pbc-label{font-size:0.78rem;font-weight:600;color:var(--dim);}
+.peek-board-config .board-one-switch{min-height:44px;}
+@media (max-width:600px){
+  /* The Board toolbar is one row that scrolls sideways on a phone, like every
+     tab's (css-mobile rule); search keeps a usable 160px instead of its own row. */
+  #peek-issues-panel .peek-tasks-add{flex-wrap:nowrap !important;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  #peek-issues-panel .peek-tasks-add > *{flex-shrink:0;}
+  #peek-issues-panel .peek-tasks-add > .board-search-wrap{flex:1 0 160px !important;order:6;}
+}
+#peek-board-config.peek-board-config{flex-direction:row;align-items:center;padding:0;}

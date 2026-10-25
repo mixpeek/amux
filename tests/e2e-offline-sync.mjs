@@ -11,18 +11,27 @@
  *      server-side; transient failures are RETAINED (never silently lost)
  *      with their original msg_id; online mutations pass through untouched.
  *
- * Run: node tests/e2e-offline-sync.mjs   (server must be running on :8824)
+ * Run: AMUX_E2E_SEND_TARGET=<stopped session> node tests/e2e-offline-sync.mjs
+ *      (server must be running on :8824)
  * Cleans up every board item it creates.
  */
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
 
 const URL = process.env.AMUX_E2E_URL || 'https://localhost:8824/';
 // A session that exists but cannot accept a send right now (archived/stopped)
 // exercises the retention path; if the send settles instead, the test degrades
 // gracefully and only asserts the queue reached a terminal state.
-const SEND_TARGET = process.env.AMUX_E2E_SEND_TARGET || 'amux-helper';
+// No default: the send is a real owner message. The old default, amux-helper,
+// became a live isolated worker, and a 2026-10-23 run put
+// "[e2e-offline] outbox test ..." among its open owner requests (MSG-93616).
+const SEND_TARGET = process.env.AMUX_E2E_SEND_TARGET || '';
+if (!SEND_TARGET) {
+  console.error('AMUX_E2E_SEND_TARGET is required: name an archived or stopped session.\n' +
+    'This test sends a real owner message to it, so it must not be a working worker.');
+  process.exit(2);
+}
+const { chromium } = require('playwright');
 const MARK = '[e2e-offline] outbox test ' + Date.now();
 
 const fails = [];

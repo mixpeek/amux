@@ -17,6 +17,10 @@ Required: `--amount` (USD), `--merchant` (who), `--purpose` (what for).
 
 The harness checks the owner's rules. Within the approved limit: fills
 immediately. Above: requests owner approval (retry after dashboard approval).
+A card can also carry daily, monthly and yearly spending limits. A charge that
+would take the card past one is refused with `limit_exceeded` and the window
+it hit; an approval does not lift it. Report it to the owner rather than
+retrying, splitting the charge, or trying another card.
 
 ### What this is
 
@@ -26,5 +30,8 @@ parameters, and the harness does the rest.
 
 ### After filling
 
-The command reports which fields it filled. Cross-origin iframes cannot be
-reached and show as `not_found`. After filling, click the submit button.
+The command reports which fields it filled. Card fields inside a payment
+provider's iframe (Stripe Elements, Braintree hosted fields, Adyen) are filled
+there and listed under `frames`; an iframe from any other host is never given
+card data and is listed under `frames_skipped`. Anything unreached shows as
+`not_found`. After filling, click the submit button.

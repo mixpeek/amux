@@ -24,9 +24,11 @@
 #     a trend line from spot reads is not.
 #   - swap free. The last cushion before the kernel has nowhere to put pages.
 #
-# WHAT IT DELIBERATELY DOES NOT DO. It does not kill anything, stop any lane, or
-# restart any daemon. Every remedy for these conditions is Ethan's under the
-# 24/7 rule in ~/Dev/CLAUDE.md, so this reports and pages; it never acts.
+# WHAT IT DOES AND DOES NOT DO. It kills nothing itself, stops no lane and
+# restarts no daemon (those remedies are Ethan's under the 24/7 rule in
+# ~/Dev/CLAUDE.md). It does act early: at the warn level it starts the hourly
+# cleanup pass (SCHED-465) ahead of its slot, which works only inside that
+# pass's own bounded rules, then pages at the critical level.
 #
 # The alarm is a fire alarm (~/.claude/CLAUDE.md: "USE VERY SPARINGLY"), so it
 # fires only on conditions a human must act on, and at most once per cooldown.
@@ -56,10 +58,16 @@ FSEVENTSD_GB=${AMUX_TRIPWIRE_FSEVENTSD_GB:-20}    # 12.8 GB seen 09-14; 20 is a 
 SWAP_FREE_MB=${AMUX_TRIPWIRE_SWAP_FREE_MB:-512}   # last cushion
 COOLDOWN_S=${AMUX_TRIPWIRE_COOLDOWN_S:-10800}     # 3h, so a 15m schedule cannot spam
 STATE=${AMUX_TRIPWIRE_STATE:-$HOME/.amux/mac-pressure-tripwire.last}
+ACT_PRESSURE=${AMUX_TRIPWIRE_ACT_PRESSURE:-2}     # >= this starts the cleanup; it acts, so 2 is fine
+CLEANUP_SCHEDULE=${AMUX_TRIPWIRE_CLEANUP_SCHEDULE:-SCHED-465}
+ACT_COOLDOWN_S=${AMUX_TRIPWIRE_ACT_COOLDOWN_S:-3600}
+ACT_STATE=${AMUX_TRIPWIRE_ACT_STATE:-$HOME/.amux/mac-pressure-tripwire.act}
+ACT_TRIGGER_CMD=${AMUX_TRIPWIRE_ACT_TRIGGER_CMD:-act_trigger_default}
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
-level=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)
+# AMUX_TRIPWIRE_LEVEL stands in for the kernel reading (tests only).
+level=${AMUX_TRIPWIRE_LEVEL:-$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)}
 [ -n "$level" ] || level=-1
 swap_line=$(sysctl -n vm.swapusage 2>/dev/null)
 swap_free=$(printf '%s' "$swap_line" | sed -E 's/.*free = ([0-9.]+)M.*/\1/')
@@ -104,6 +112,36 @@ awk_ge "$fse_gb" "$FSEVENTSD_GB" && \
   add "swap free ${swap_free} MB of the ${swap_used} MB in use"
 
 echo "mac-tripwire: measured=$measured level=$level reclaimable=${reclaim_gb}GB free=${free_gb}GB fseventsd=${fse_gb}GB(median of 3) swap_free=${swap_free}MB swap_used=${swap_used}MB"
+
+# ACT BEFORE PAGING (Ethan 2026-10-22: "make sure its proactive"). The page tier
+# above waits for level 3, where only a human can help. At the warn level the
+# hourly cleanup (SCHED-465: idle VMs, stale shells, test orphans, build output,
+# renice) can still free memory, so start it now instead of waiting up to an
+# hour for its slot. It is the same bounded pass that runs every hour, so an
+# early start costs one extra pass at most, and the cooldown keeps a level that
+# oscillates 1 <-> 2 from starting it more than once an hour.
+act_trigger_default() { # prints the HTTP status of the run request
+  curl -sk --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H "X-Amux-Session: desktop" \
+    "$(amux url 2>/dev/null || echo https://localhost:8824)/api/schedules/$CLEANUP_SCHEDULE/run"
+}
+if [ "$level" != "-1" ] && awk_ge "$level" "$ACT_PRESSURE" || [ -n "$reasons" ]; then
+  act_last=0
+  [ -f "$ACT_STATE" ] && act_last=$(cat "$ACT_STATE" 2>/dev/null || echo 0)
+  case "$act_last" in ''|*[!0-9]*) act_last=0 ;; esac
+  act_since=$(( $(date +%s) - act_last ))
+  if [ "$DRY" = "1" ]; then
+    echo "mac-tripwire: level $level >= $ACT_PRESSURE: would start the cleanup ($CLEANUP_SCHEDULE) (dry run)"
+  elif [ "$act_since" -lt "$ACT_COOLDOWN_S" ]; then
+    echo "mac-tripwire: level $level >= $ACT_PRESSURE: cleanup started ${act_since}s ago, under ${ACT_COOLDOWN_S}s (verdict=cleanup_cooldown)"
+  else
+    acode=$($ACT_TRIGGER_CMD 2>/dev/null)
+    case "$acode" in
+      2??) printf '%s' "$(date +%s)" > "$ACT_STATE" 2>/dev/null
+           echo "mac-tripwire: level $level >= $ACT_PRESSURE: started the cleanup ($CLEANUP_SCHEDULE) (verdict=cleanup_triggered)" ;;
+      *)   echo "mac-tripwire: level $level >= $ACT_PRESSURE: could not start the cleanup (http ${acode:-none}) (verdict=cleanup_trigger_failed)" ;;
+    esac
+  fi
+fi
 
 if [ -z "$reasons" ]; then
   echo "mac-tripwire: no threshold tripped (pressure>=$PRESSURE_ALERT, fseventsd>=${FSEVENTSD_GB}GB, swap_free<=${SWAP_FREE_MB}MB)"
