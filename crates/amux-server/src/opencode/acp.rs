@@ -622,8 +622,26 @@ impl AcpSession {
                     )
                     .await;
                 match resumed {
-                    Ok(v) => {
+                    Ok(mut v) => {
                         out.resumed = true;
+                        // ACP 1: `session/resume` answers with the session's
+                        // CONFIG (its current model and the options to switch
+                        // to) and NOT its id — the id is the one we asked to
+                        // resume. Measured 2026-10-26 against opencode 2.1.4:
+                        // `{"result":{"configOptions":[…]}}`, no `sessionId`.
+                        // Treating that as a failed `session/new` (the ok_or_else
+                        // below) marked EVERY resumed turn failed, so an ACP
+                        // worker could take exactly one turn in its life and
+                        // every later card on it died as
+                        // `acp_session_unavailable`. Found live: M2ACP-1 sat in
+                        // `todo` while the worker's own completed session ref
+                        // made each dispatch fail.
+                        match &mut v {
+                            Value::Object(map) => {
+                                map.entry("sessionId").or_insert_with(|| json!(id));
+                            }
+                            _ => v = json!({"sessionId": id}),
+                        }
                         Ok(v)
                     }
                     Err(e) => {
@@ -640,7 +658,18 @@ impl AcpSession {
             .get("sessionId")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                ProtocolError::Transport("session/new returned no sessionId".to_string())
+                // Name the method that actually failed: a resume answers
+                // differently from a create, and a message that always says
+                // `session/new` sent the 2026-10-26 investigation looking at
+                // the wrong half of the handshake.
+                ProtocolError::Transport(format!(
+                    "{} returned no sessionId",
+                    if out.resumed {
+                        "session/resume"
+                    } else {
+                        "session/new"
+                    }
+                ))
             })?
             .to_string();
         *self.session_id.lock().unwrap() = id.clone();
@@ -1005,8 +1034,7 @@ async fn log_stderr(worker: String, stderr: ChildStderr) {
 /// emits a tool call plus a message chunk so the M2 event path is visible.
 /// Shared with `structured.rs`'s protocol-pump test.
 #[cfg(test)]
-pub(crate) fn acp_fixture_script(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let path = dir.join(name);
+pub(crate) fn acp_fixture_script(dir: &std::path::Path, name: &str) -> std::path::PathBuf {    let path = dir.join(name);
     let runs = dir.join(format!("{name}.runs"));
     let argv = dir.join(format!("{name}.argv"));
     let config = dir.join(format!("{name}.config"));
@@ -1048,11 +1076,28 @@ done
     path
 }
 
+/// The same fixture with a `session/resume` that SUCCEEDS, answering the way
+/// opencode 2.1.4 really does: `{"result":{"configOptions":[…]}}` and NO
+/// `sessionId` (measured 2026-10-26 against the live agent). The plain fixture
+/// REFUSES resume, so only this one exercises a live resume at all.
+#[cfg(test)]
+pub(crate) fn acp_fixture_script_resuming(
+    dir: &std::path::Path,
+    name: &str,
+) -> std::path::PathBuf {
+    let path = acp_fixture_script(dir, name);
+    let body = std::fs::read_to_string(&path).unwrap().replace(
+        r#""error":{"code":-32602,"message":"session not found"}"#,
+        r#""result":{"configOptions":[]}"#,
+    );
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
     fn turn() -> TurnId {
         TurnId::from_ulid(ulid::Ulid::new())
     }
@@ -1537,6 +1582,38 @@ mod tests {
             .filter(|a| !a.is_empty())
             .collect();
         assert_eq!(args, ["acp"], "spawn argv was {args:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MEASURED DEFECT (2026-10-26): opencode 2.1.4's `session/resume` answers
+    /// with the session's CONFIG OPTIONS and no `sessionId` — the id is the one
+    /// the caller asked to resume. The handshake read a missing id as a failed
+    /// `session/new`, so every RESUMED turn failed while every fresh one
+    /// worked: one good ACP turn per worker process, forever, reported as
+    /// `acp_session_unavailable` / `session/new returned no sessionId`.
+    /// Live symptom: a card asking a worker to send a Telegram message sat in
+    /// `todo` while each dispatch died on the handshake.
+    #[tokio::test]
+    async fn a_resume_that_omits_its_id_establishes_the_same_session() {
+        let dir = std::env::temp_dir().join(format!("amux-acp-resume-{}", ulid::Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = acp_fixture_script_resuming(&dir, "fixture-acp-resume");
+        let (events_tx, _rx) = broadcast::channel(256);
+        let mut start = AcpStart::new("resuming-worker", dir.clone(), binary, events_tx);
+        start.resume = Some("ses_kept".to_string());
+        let (session, handshake) = AcpSession::spawn(start)
+            .await
+            .expect("a resume that answers without its id is a SUCCESS, not a failed session/new");
+        assert!(handshake.resumed, "the session was resumed, not created");
+        assert_eq!(
+            handshake.session_id, "ses_kept",
+            "the resumed id is the one we asked for"
+        );
+        assert_eq!(session.session_id(), "ses_kept");
+        assert_eq!(
+            handshake.resume_dropped, None,
+            "a successful resume drops nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
