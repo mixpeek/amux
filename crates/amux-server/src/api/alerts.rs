@@ -1013,6 +1013,17 @@ async fn post_owner(
 
     let home = amux_home();
     let mut out_channels = Map::new();
+    // A link that opens the worker that raised the alarm (Ethan, 2026-10-26:
+    // "i need to be able to direct click these and it opens up the worker").
+    // The text is read on the phone, where only an https link opens amux, so
+    // the SMS carries that; the email adds the Mac app's amux:// link.
+    let link = worker_link(&home, &session);
+    match &link {
+        Ok(url) => tracing::info!(session = %session, url = %url, verdict = "alert_worker_link",
+            measured = true, n_considered = 1, "urgent alert carries a link to its worker"),
+        Err(why) => tracing::warn!(session = %session, why = %why, verdict = "alert_worker_link_missing",
+            measured = true, n_considered = 1, "urgent alert has no link to its worker"),
+    }
     // Track ACTUAL delivery, not the per-channel string. The CLI used to infer
     // "sent" from the presence of a channels map and printed "alert sent" + exit
     // 0 even when push reached zero subscriptions AND sms had no phone — a lying
@@ -1065,7 +1076,8 @@ async fn post_owner(
             "amux URGENT: ".to_string()
         };
         let (ok, detail) = channels
-            .sms(&phone, &format!("{sms_prefix}{}", msg.replace('\n', " — ")))
+            .sms(&phone, &format!("{sms_prefix}{}{}", msg.replace('\n', " — "),
+                link.as_ref().map(|u| format!(" {u}")).unwrap_or_default()))
             .await;
         sms_delivered = ok;
         out_channels.insert(
@@ -1112,7 +1124,11 @@ async fn post_owner(
             } else {
                 format!("amux URGENT [{session}]")
             };
-            let (ok, detail) = channels.email(to, &subject, &msg).await;
+            let body = match &link {
+                Ok(url) => format!("{msg}\n\nOpen the worker: {url}\n\nIn the Mac app: amux://worker/{session}"),
+                Err(_) => msg.clone(),
+            };
+            let (ok, detail) = channels.email(to, &subject, &body).await;
             email_delivered = ok;
             if !owner_email_pinned {
                 tracing::warn!(
@@ -1175,6 +1191,10 @@ async fn post_owner(
         "origin": origin, "claimed": session, "provenance_mismatch": mismatch,
         "delivered": delivered, "delivered_any": delivered_any,
     });
+    match &link {
+        Ok(url) => resp["worker_link"] = json!(url),
+        Err(why) => resp["worker_link_missing"] = json!(why),
+    }
     if let Some(n) = sa_note {
         // Why the owner WAS paged when an approval came close (cap spent, or
         // no match): the lane can see it was checked.
@@ -1277,6 +1297,21 @@ async fn get_owner_ledger(
 // ---------------------------------------------------------------------------
 // Tests — channels are ALWAYS mocked; no push, no osascript, no network.
 // ---------------------------------------------------------------------------
+
+/// The https link that opens `session` in the dashboard, built from the
+/// address the owner reaches this amux at. Err says why there is none.
+fn worker_link(home: &std::path::Path, session: &str) -> Result<String, String> {
+    if session.is_empty() {
+        return Err("no originating worker".into());
+    }
+    if !session.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.@".contains(&b)) {
+        return Err("worker name is not link-safe".into());
+    }
+    let base = crate::api::static_files::public_links::public_url(home).ok_or_else(|| {
+        "this amux's address is unknown: set AMUX_PUBLIC_URL in server.env, or open the dashboard at the address you use".to_string()
+    })?;
+    Ok(format!("{}/#peek={session}", base.trim_end_matches('/')))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1763,6 +1798,27 @@ mod tests {
         assert_eq!(row["channels"]["sms"], json!("imessage"));
         assert_eq!(row["deduped"], json!(false));
         assert_eq!(row["provenance_mismatch"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn an_alert_links_to_the_worker_that_raised_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = test_env::set_home(dir.path());
+        set_server_env_key(dir.path(), "AMUX_OWNER_PHONE", "+15550000001").unwrap();
+        set_server_env_key(dir.path(), "AMUX_PUBLIC_URL", "https://mac.example.ts.net:8824").unwrap();
+        let mock = MockChannels::ok();
+        let app = app(mock.clone());
+        let body = json!({ "message": "disk is low", "session": "sender-a" });
+        let (_, v) = send(&app, "POST", "/api/alert/owner", &[], Some(body)).await;
+        assert_eq!(v["worker_link"], json!("https://mac.example.ts.net:8824/#peek=sender-a"), "{v}");
+        let smses = mock.smses.lock().unwrap().clone();
+        assert_eq!(smses[0].1,
+            "amux URGENT [sender-a]: disk is low https://mac.example.ts.net:8824/#peek=sender-a");
+        // With no known address the alert still goes out and says why it has no link.
+        let dir2 = tempfile::tempdir().unwrap();
+        assert!(worker_link(dir2.path(), "sender-a").unwrap_err().contains("AMUX_PUBLIC_URL"));
+        assert!(worker_link(dir2.path(), "").is_err());
+        assert!(worker_link(dir.path(), "a b").is_err());
     }
 
     #[tokio::test]

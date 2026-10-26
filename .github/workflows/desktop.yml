@@ -1,4 +1,5 @@
-# Builds the native Mac app (desktop/) as one universal zip and publishes it to
+# Builds the native Mac app (desktop/) as one universal zip and a disk image
+# (Amux-macOS.dmg, double-click and drag to Applications) and publishes both to
 # the `desktop-latest` release, which the README's download link points at.
 # Pull requests build and check it; only main publishes.
 name: desktop
@@ -62,10 +63,15 @@ jobs:
       - name: Zip
         run: ditto -c -k --keepParent Amux.app Amux-macOS.zip && ls -l Amux-macOS.zip
 
+      - name: Disk image
+        run: ./desktop/make-dmg.sh Amux.app Amux-macOS.dmg
+
       - uses: actions/upload-artifact@v4
         with:
           name: Amux-macOS
-          path: Amux-macOS.zip
+          path: |
+            Amux-macOS.zip
+            Amux-macOS.dmg
           retention-days: 14
 
       - name: Publish to the desktop-latest release
@@ -81,7 +87,7 @@ jobs:
 
               curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/desktop-latest/Amux-macOS.zip -o /tmp/Amux-macOS.zip && ditto -x -k /tmp/Amux-macOS.zip /Applications && open /Applications/Amux.app
 
-          Or download Amux-macOS.zip below, unzip it into Applications, and open it. The app is not notarized yet, so the first time macOS blocks it: open System Settings, Privacy & Security, and click Open Anyway.
+          Or download Amux-macOS.dmg below, open it, and drag Amux to Applications (Amux-macOS.zip is the same app, unzipped into Applications). The app is not notarized yet, so the first time macOS blocks it: open System Settings, Privacy & Security, and click Open Anyway.
 
           It connects to your amux server (https://localhost:8824 by default, or any URL you enter).
           NOTES
@@ -93,4 +99,4 @@ jobs:
             # Move the tag to this commit so the release names what it ships.
             git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA:refs/tags/desktop-latest"
           fi
-          gh release upload desktop-latest Amux-macOS.zip --clobber
+          gh release upload desktop-latest Amux-macOS.zip Amux-macOS.dmg --clobber

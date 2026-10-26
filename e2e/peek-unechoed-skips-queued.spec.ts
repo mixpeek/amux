@@ -100,3 +100,40 @@ test('a message taken mid-turn is drawn above the input box, for the current tur
   });
   expect(order).toBe(true);
 });
+
+// Ethan, 2026-10-25, "this is still stuck": tubescience-parity's 6:21 PM
+// message stayed above the input box as "taken mid-turn" under a turn that
+// printed "done 7:33 PM", because no newer printed prompt came from the ledger.
+// A message sent before the newest finished turn went to a turn that is over.
+test('a message taken by a turn that has since finished is no longer listed', async ({page}) => {
+  const now = Date.now();
+  const fmt = (ms: number) => new Date(ms).toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+  const stale = 'Root audit CLEAR one shared platform dispatch';
+  const fresh = 'and post the reconcile receipt';
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json: [{
+    name: 'donew', running: true, status: 'active', dir: '/tmp', session_created: Math.floor(now / 1000) - 7200, steering: [],
+  }]}));
+  await page.route(/\/api\/history(?:\?.*)?$/, r => r.fulfill({json: [
+    {id: 3, session: 'donew', type: 'user', kind: 'human', text: fresh, ts: now - 30_000, delivery: 'direct'},
+    {id: 2, session: 'donew', type: 'user', kind: 'human', text: stale, ts: now - 75 * 60_000, delivery: 'direct'},
+    {id: 1, session: 'donew', type: 'user', kind: 'human', text: 'run the parity plane', ts: now - 90 * 60_000, delivery: 'direct'},
+  ]}));
+  await page.route(/\/api\/sessions\/donew\/peek\?/, r => r.fulfill({json: {
+    name: 'donew', history: '',
+    live: `❯ run the parity plane\n\n⏺ Started.\n\n✻ Cogitated for 8s · done ${fmt(now - 5 * 60_000)}\n\n⏺ Next pass running\n\n✻ Booping… (12s)\n`,
+  }}));
+  await page.route('**/api/sessions/donew/subagents', r => r.fulfill({json: {session: 'donew', subagents: []}}));
+  await page.goto('/');
+  await page.evaluate(() => (window as any).openPeek('donew'));
+  const block = page.locator('#peek-body .peek-unechoed');
+  // Control: a message sent after that turn ended is still listed.
+  await expect(block).toContainText(fresh, {timeout: 15000});
+  await expect(block).not.toContainText('Root audit');
+  // The time sits under the message, so the message keeps the full width.
+  const g = await page.evaluate(() => {
+    const p = document.querySelector('#peek-body .peek-unechoed-row .peek-prompt')!.getBoundingClientRect();
+    const t = document.querySelector('#peek-body .peek-unechoed-row .peek-unechoed-time')!.getBoundingClientRect();
+    return {timeBelow: t.top >= p.bottom - 1};
+  });
+  expect(g.timeBelow).toBe(true);
+});

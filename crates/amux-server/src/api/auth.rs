@@ -58,7 +58,7 @@ const PUBLIC_PREFIXES: &[&str] = &[
     "/s/",
     "/api/share/",
     "/invite/",
-    "/proxy/",
+    "/pub/",
     "/api/branding/",
 ];
 
@@ -129,7 +129,7 @@ pub async fn require_bearer(State(state): State<AppState>, req: Request, next: N
     if PUBLIC_PATHS.contains(&path) || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) {
         return next.run(req).await;
     }
-    if req.method() == Method::GET && !path.starts_with("/api/") && !path.starts_with("/proxy/") {
+    if req.method() == Method::GET && !path.starts_with("/api/") {
         return next.run(req).await;
     }
     let owner_session = super::static_files::owner_session_status(&state, req.headers());

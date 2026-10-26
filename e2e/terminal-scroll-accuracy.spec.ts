@@ -117,6 +117,10 @@ test('Find reveals text inside a wide terminal table', async ({ page }) => {
 
 for (const mode of ['message', 'search']) for (const tail of [50, 0]) {
   test(`a working worker refresh keeps the selected ${mode} and its position with ${tail} trailing lines`, async ({ page }) => {
+    // A stable, empty subagent list: the fixture worker has none, and the
+    // refresh's failing fetch showed the navigator mid-test, which moves the
+    // output on its own (that case has its own test below).
+    await page.route('**/api/sessions/scroll-worker/subagents', route => route.fulfill({ json: { session: 'scroll-worker', subagents: [] } }));
     const raw = 'before\n'.repeat(45) + '› selected original text\nAssistant\n' + 'after\n'.repeat(tail);
     await render(page, raw);
     if (mode === 'search') {
@@ -139,6 +143,23 @@ for (const mode of ['message', 'search']) for (const tail of [50, 0]) {
   });
 }
 
+
+// The subagent navigator appearing adds top padding to the output; a selected
+// hit near the bottom must stay in view (680b0ecd3's CI red on iPhone).
+for (const mode of ['message', 'search']) {
+  test(`the ${mode} stays in view when the subagent navigator appears`, async ({ page }) => {
+    await render(page, 'before\n'.repeat(45) + '› selected original text\nAssistant\n');
+    if (mode === 'search') {
+      await page.getByRole('button', { name: 'Find in terminal', exact: true }).click();
+      await page.getByRole('searchbox', { name: 'Find in terminal', exact: true }).fill('selected original text');
+    } else await page.getByRole('button', { name: 'Next message', exact: true }).click();
+    const selector = mode === 'search' ? '.peek-highlight.current' : '.peek-msg-current';
+    await readable(page, selector);
+    await page.evaluate(() => { (window as any).eval("_peekAgents.error = 'unavailable'; _peekAgentsPaint();"); });
+    await expect(page.locator('#peek-agent-nav')).toBeVisible();
+    await readable(page, selector);
+  });
+}
 
 test('saved Codex input hints stay out of navigation while recorded messages remain', async ({ page }) => {
   const raw = '› Ask Codex to do anything\n\n  gpt-6-astra xhigh · ~/project\n'

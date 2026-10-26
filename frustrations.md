@@ -6086,3 +6086,59 @@ FIX: scripts/worker-stall-watch.sh, run every 5 min as a shell schedule for the
   a line, and a stall logs a WARN line, to ~/.amux/logs/worker-stall-watch.log.
   Fixture controls cover blocked->alert once, idle->wake, fresh->ok,
   no-unread->ok, unreadable API->unmeasured.
+
+## A shell schedule's `amux send` to an isolated worker is refused, and the sender's script never knew
+AREA: messages
+SEVERITY: degrades
+STATUS: fixed
+DATE: 2026-10-26
+SESSION: amux-helper
+CARD: none (amux-helper is isolated and has no board)
+SYMPTOM: tubescience-parity's hourly reminder SCHED-819 (kind shell, command
+  `amux send tubescience-parity ...`) never woke it. The scheduler row read
+  last_delivery=error, last_refusal_reason "send to tubescience-parity FAILED:
+  target is an isolated (raw-agent) worker: amux automation is not delivered into
+  it". The stall watchdog (scripts/worker-stall-watch.sh) woke idle lanes the same
+  way, with output to /dev/null, and logged action=wake_sent whatever happened,
+  so every wake to the three isolated orchestrating lanes would have failed
+  silently. A send with an explicit X-Amux-Session from a paired peer is
+  accepted from the same scheduler shell (probe SCHED-821, http 200, ok:true).
+COST: one missed overnight hourly status (05:5xZ) on a deadline night, found only
+  because the orchestrator noticed the gap; the watchdog's wake path was
+  unproven in its real context for ~18 h.
+FIX: the watchdog wakes through POST /api/sessions/<w>/send with an explicit
+  X-Amux-Session (STALL_WAKE_ORIGIN), requires a 2xx AND ok:true, logs
+  action=wake_sent http=... origin=..., and on failure logs WARN
+  action=wake_failed with the response body and pages the owner once per
+  stall. SCHED-812 exports STALL_WAKE_ORIGIN=amux-helper. Isolated lanes' own
+  reminders should be kind=tmux, which owner-configured schedules deliver.
+
+## The subagent cap refuses the owner's #1 priority and has no way to rank it
+AREA: boundaries
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-26
+SESSION: amux-helper
+CARD: none (amux-helper is isolated and has no board)
+SYMPTOM: the owner made TubeScience latency the #1 priority at 16:22Z and asked
+  for a sub-second design study. mxp-gs12 had 8 subagents running
+  (AMUX_MAX_SUBAGENTS), two of them sub-agents spawned by a reviewer, and the
+  boundary-guard refused the new Agent call. A stopped agent keeps its slot
+  until its meta reads finished or its transcript has been quiet for stale_s
+  (1800 s), so stopping a lower-value agent freed nothing for up to 30 min. The
+  cap counts agents, not what they are for: a review's own sub-agents and a
+  deferrable converter build held slots while the work the owner ranked first
+  waited.
+COST: the lever-5 study was refused at ~17:20Z and had still not started at
+  17:35Z, on the one question the owner asked directly ("is it possible?").
+  The orchestrator spent three message rounds finding and freeing a slot by
+  hand.
+FIX: (proposed) priority-aware preemption in the subagents boundary. (1) An
+  Agent call may carry a priority (an owner-set tag, for example a
+  `priority: owner-1` line in the brief, or an env flag on the worker). At the
+  cap, a priority call is admitted by pausing the newest non-priority agent,
+  not refused. (2) A stopped agent's slot is released at once: the guard marks
+  its meta finished when the worker stops it, instead of waiting for stale_s.
+  (3) The refusal message names the running agents, their ages, and the one
+  that would be preempted, so the worker can decide without reading files.
+  The usage-headroom floor stays as it is, because preemption does not add load.

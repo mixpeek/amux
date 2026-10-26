@@ -180,6 +180,9 @@ class InstallCLI(unittest.TestCase):
         self.assertFalse(self.dest.is_symlink())
         helper = self.bin / "scripts/amux-grid.sh"
         self.assertEqual(helper.read_bytes(), (ROOT / "scripts/amux-grid.sh").read_bytes())
+        for name in ("amux-remote", "amux-cloud"):
+            self.assertEqual((self.bin / name).read_bytes(), (ROOT / name).read_bytes(), name)
+            self.assertFalse((self.bin / name).is_symlink(), name)
         self.shim("curl", "exit 7\n")
         self.shim("tmux", "exit 1\n")
         result = subprocess.run([str(self.dest), "grid", "--help"], cwd=self.root,

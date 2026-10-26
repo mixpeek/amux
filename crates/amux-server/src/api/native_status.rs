@@ -42,6 +42,186 @@ pub(crate) fn ensure_observer(home: &Path) -> std::io::Result<bool> {
         "installed passive observer now matches this server's bundled bytes");
     Ok(true)
 }
+/// The Claude events the observer listens on, as scripts/hooks/
+/// install-native-status-hooks.py registers them (keep the two in step).
+const CLAUDE_HOOK_EVENTS: &[&str] = &[
+    "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+    "PostToolUse", "PreCompact", "PostCompact", "Stop", "Notification", "PostToolUseFailure",
+    "StopFailure",
+];
+
+/// `shlex.quote`, so the command is byte-identical to what install.sh writes.
+fn sh_word(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"@%+=:,./-_".contains(&b)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
+}
+
+/// Register the observer in Claude's settings when it is missing there, the
+/// same entries the installer writes. Returns whether the file was written.
+///
+/// Only install.sh and the cloud bootstrap/update scripts used to register it,
+/// so a host that missed them had no hooks: on the sandbox (2026-10-25) every
+/// worker read "unknown" with "hooks are not reaching amux", mtp-demo included
+/// while five of its subagents were running. Settings that already carry every
+/// entry are left byte-for-byte alone; otherwise only amux's own entries are
+/// replaced, never another hook.
+pub(crate) fn ensure_claude_hooks(settings: &Path, script: &Path) -> std::io::Result<bool> {
+    let command = format!("python3 {} claude", sh_word(&script.to_string_lossy()));
+    let mut data: Value = match std::fs::read_to_string(settings) {
+        Ok(t) => serde_json::from_str(&t)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {e}", settings.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    let ours = |h: &Value| h["command"].as_str().is_some_and(|c| c.contains("native-status.py"));
+    let present = |data: &Value, ev: &str| {
+        data["hooks"][ev].as_array().is_some_and(|gs| gs.iter().any(|g| {
+            g["hooks"].as_array().is_some_and(|hs| hs.iter().any(|h| h["command"] == json!(command)))
+        }))
+    };
+    let total = data["hooks"].as_object().map_or(0, |o| {
+        o.values().filter_map(Value::as_array).flatten()
+            .filter_map(|g| g["hooks"].as_array()).flatten().filter(|h| ours(h)).count()
+    });
+    if CLAUDE_HOOK_EVENTS.iter().all(|ev| present(&data, ev)) && total == CLAUDE_HOOK_EVENTS.len() {
+        return Ok(false);
+    }
+    if !data.is_object() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "settings is not a JSON object"));
+    }
+    if !data["hooks"].is_object() {
+        data["hooks"] = json!({});
+    }
+    let hooks = data["hooks"].as_object_mut().expect("hooks is an object");
+    for groups in hooks.values_mut() {
+        if let Some(gs) = groups.as_array_mut() {
+            for g in gs.iter_mut() {
+                if let Some(hs) = g.get_mut("hooks").and_then(Value::as_array_mut) {
+                    hs.retain(|h| !ours(h));
+                }
+            }
+            gs.retain(|g| g["hooks"].as_array().is_none_or(|hs| !hs.is_empty()));
+        }
+    }
+    for ev in CLAUDE_HOOK_EVENTS {
+        let mut group = json!({"hooks": [{"type": "command", "command": command, "timeout": 3}]});
+        if matches!(*ev, "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure") {
+            group["matcher"] = json!(".*");
+        }
+        let slot = hooks.entry(ev.to_string()).or_insert_with(|| json!([]));
+        if !slot.is_array() {
+            *slot = json!([]);
+        }
+        slot.as_array_mut().expect("array").push(group);
+    }
+    if let Some(dir) = settings.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = settings.with_extension(format!("status-hook-{}.tmp", ulid::Ulid::new()));
+    let result = (|| {
+        std::fs::write(&tmp, serde_json::to_string_pretty(&data).unwrap_or_default() + "\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(settings).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(&tmp, settings)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(true)
+}
+
+/// The tools amux denies every Claude on the host. The Artifact tool publishes to
+/// claude.ai, outside amux, where the owner cannot list, serve or turn the page
+/// off: on sandbox.amux.io (2026-10-25) PPD-payroll-demo answered with
+/// claude.ai/artifact/... and left nothing in its workspace, because that host's
+/// settings carried no deny (the owner's Mac denies it by hand).
+const CLAUDE_DENIED_TOOLS: &[&str] = &["Artifact", "Artifact(*)"];
+
+/// Add [`CLAUDE_DENIED_TOOLS`] to `permissions.deny` when any is missing; every
+/// other key and entry is kept. Returns whether the file was written.
+pub(crate) fn ensure_claude_denies(settings: &Path) -> std::io::Result<bool> {
+    let mut data: Value = match std::fs::read_to_string(settings) {
+        Ok(t) => serde_json::from_str(&t)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {e}", settings.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    let has = |data: &Value, t: &str| data["permissions"]["deny"].as_array().is_some_and(|a| a.iter().any(|v| v == t));
+    if CLAUDE_DENIED_TOOLS.iter().all(|t| has(&data, t)) {
+        return Ok(false);
+    }
+    if !data.is_object() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "settings is not a JSON object"));
+    }
+    if !data["permissions"].is_object() {
+        data["permissions"] = json!({});
+    }
+    if !data["permissions"]["deny"].is_array() {
+        data["permissions"]["deny"] = json!([]);
+    }
+    for t in CLAUDE_DENIED_TOOLS {
+        if !has(&data, t) {
+            data["permissions"]["deny"].as_array_mut().expect("array").push(json!(t));
+        }
+    }
+    if let Some(dir) = settings.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = settings.with_extension(format!("deny-{}.tmp", ulid::Ulid::new()));
+    let result = (|| {
+        std::fs::write(&tmp, serde_json::to_string_pretty(&data).unwrap_or_default() + "\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(settings).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(&tmp, settings)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(true)
+}
+
+/// [`ensure_claude_hooks`] for this server's own Claude, logged. Only when the
+/// server uses the default home (`~/.amux`): a test server runs under a
+/// throwaway AMUX_HOME with the real HOME, and must not point the user's
+/// Claude at a temporary observer.
+pub(crate) fn ensure_claude_hooks_here() {
+    let home = crate::config::amux_home();
+    let default_home = std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".amux"));
+    if default_home.as_deref() != Some(home.as_path()) {
+        return;
+    }
+    let settings = super::session_verbs::claude_home().join("settings.json");
+    match ensure_claude_hooks(&settings, &home.join("native-status.py")) {
+        Ok(true) => tracing::warn!(measured = true, n_considered = 1, verdict = "claude_status_hooks_installed",
+            settings = %settings.display(),
+            "Claude settings did not register the status observer; registered it so workers report their state"),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, measured = false, n_considered = 1, verdict = "claude_status_hooks_install_failed",
+            settings = %settings.display(), "could not register the status observer; Claude workers will read unknown"),
+    }
+    match ensure_claude_denies(&settings) {
+        Ok(true) => tracing::warn!(measured = true, n_considered = 1, verdict = "claude_tool_denies_installed",
+            settings = %settings.display(), denied = ?CLAUDE_DENIED_TOOLS,
+            "Claude settings allowed tools amux denies (claude.ai Artifacts); denied them"),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, measured = false, n_considered = 1, verdict = "claude_tool_denies_install_failed",
+            settings = %settings.display(), "could not deny the claude.ai Artifact tool in Claude settings"),
+    }
+}
+
 fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -376,6 +556,7 @@ pub(crate) fn replay(state: &AppState) {
             "observer installation drift could not be repaired; retained status spool still replays");
     }
     observer_error_census(&crate::config::amux_home());
+    ensure_claude_hooks_here();
     let Ok(workers) = std::fs::read_dir(root()) else {
         return;
     };
@@ -551,6 +732,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_artifact_tool_is_denied_once_and_other_permissions_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"model":"opus","permissions":{"allow":["Bash"],"deny":["WebFetch"]}}"#).unwrap();
+        assert!(ensure_claude_denies(&settings).unwrap());
+        let d: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(d["model"], "opus");
+        assert_eq!(d["permissions"]["allow"], json!(["Bash"]));
+        assert_eq!(d["permissions"]["deny"], json!(["WebFetch", "Artifact", "Artifact(*)"]));
+        let written = std::fs::read(&settings).unwrap();
+        assert!(!ensure_claude_denies(&settings).unwrap(), "already denied: not rewritten");
+        assert_eq!(std::fs::read(&settings).unwrap(), written);
+        let fresh = dir.path().join("none").join("settings.json");
+        assert!(ensure_claude_denies(&fresh).unwrap());
+        assert!(std::fs::read_to_string(&fresh).unwrap().contains("Artifact(*)"));
+    }
+
+    #[test]
+    fn claude_hooks_are_registered_once_and_other_hooks_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let script = Path::new("/home/amux/.amux/native-status.py");
+        std::fs::write(&settings, r#"{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"python3 guard.py"}]},{"hooks":[{"type":"command","command":"python3 /old/native-status.py claude"}]}]}}"#).unwrap();
+        assert!(ensure_claude_hooks(&settings, script).unwrap());
+        let d: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(d["model"], "opus");
+        let pre = d["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre[0]["hooks"][0]["command"], "python3 guard.py", "another hook is kept");
+        assert!(!d.to_string().contains("/old/"), "a stale observer path is replaced");
+        for ev in CLAUDE_HOOK_EVENTS {
+            assert!(d["hooks"][ev].to_string().contains("python3 /home/amux/.amux/native-status.py claude"), "{ev}");
+        }
+        let written = std::fs::read(&settings).unwrap();
+        assert!(!ensure_claude_hooks(&settings, script).unwrap(), "complete settings are not rewritten");
+        assert_eq!(std::fs::read(&settings).unwrap(), written);
+        let fresh = dir.path().join("none").join("settings.json");
+        assert!(ensure_claude_hooks(&fresh, Path::new("/a path/native-status.py")).unwrap());
+        assert!(std::fs::read_to_string(&fresh).unwrap().contains("python3 '/a path/native-status.py' claude"));
+    }
 
     #[test]
     fn bundled_observer_repairs_drift_atomically_without_rewriting_current_bytes() {

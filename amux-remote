@@ -12,7 +12,20 @@
 #   AMUX_SSH_USER  SSH user for `attach` (defaults to current $USER)
 #   AMUX_CC        iTerm2 native attach (control mode): 1/0 to force, "auto" (default) = on in iTerm2
 #
+# Named remotes (~/.amux/remotes/<name>.env, made by `connect`): a box you can
+# SSH into, such as an amux Cloud instance, where the dashboard sits behind a
+# sign-in door that a token cannot pass. Every command then runs over SSH as the
+# box's amux user against its loopback API, so no token is needed.
+#   AMUX_SSH_KEY   identity file for ssh
+#   AMUX_SSH_AS    the user amux runs as on the box (e.g. amux, when you SSH in as root)
+#   AMUX_VIA_SSH   1 = API calls go over SSH to https://127.0.0.1:$AMUX_REMOTE_PORT
+#
 # Usage:
+#   amux-remote connect <name> [user@]host [--key F] [--as USER] [--url URL]
+#                                      save a named remote reached over SSH and use it
+#   amux-remote remotes                list named remotes (* = in use)
+#   amux-remote use <name>             switch to a named remote
+#   amux-remote -r <name> <command>    run one command against a named remote
 #   amux-remote ls                     list sessions
 #   amux-remote attach <name> [--cc|--plain]   SSH in and attach (native iTerm2 tabs in -CC mode)
 #   amux-remote peek <name> [lines]    print a session's recent output (default 80)
@@ -27,24 +40,81 @@ set -euo pipefail
 
 BOLD=$'\033[1m' DIM=$'\033[2m' GREEN=$'\033[32m' CYAN=$'\033[36m' RED=$'\033[31m' RESET=$'\033[0m'
 
-# Optional config file (process env always wins).
-REMOTE_ENV="${HOME}/.amux/remote.env"
-if [[ -f "$REMOTE_ENV" ]]; then
-  # shellcheck disable=SC1090
-  set -a; source "$REMOTE_ENV"; set +a
-fi
-
 die() { echo "${RED}error:${RESET} $*" >&2; exit 1; }
 
+REMOTE_ENV="${HOME}/.amux/remote.env"
+REMOTES_DIR="${HOME}/.amux/remotes"
+
+# A named remote: `-r NAME` first, else AMUX_REMOTE_NAME, else the one `use`
+# picked. With none, the single ~/.amux/remote.env as before.
+if [[ "${1:-}" == "-r" || "${1:-}" == "--remote" ]]; then
+  [[ -n "${2:-}" ]] || die "usage: amux-remote -r <name> <command>"
+  AMUX_REMOTE_NAME="$2"; shift 2
+fi
+if [[ -z "${AMUX_REMOTE_NAME:-}" && -f "$REMOTES_DIR/current" ]]; then
+  AMUX_REMOTE_NAME="$(head -1 "$REMOTES_DIR/current")"
+fi
+case "${1:-}" in connect|remotes|use) ;; *)
+  if [[ -n "${AMUX_REMOTE_NAME:-}" ]]; then
+    [[ "$AMUX_REMOTE_NAME" =~ ^[A-Za-z0-9._-]+$ && -f "$REMOTES_DIR/$AMUX_REMOTE_NAME.env" ]] \
+      || die "no remote named '$AMUX_REMOTE_NAME' (amux-remote remotes lists them)"
+    set -a
+    # shellcheck disable=SC1090
+    source "$REMOTES_DIR/$AMUX_REMOTE_NAME.env"
+    set +a
+  elif [[ -f "$REMOTE_ENV" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$REMOTE_ENV"
+    set +a
+  fi
+;; esac
+
 require_config() {
+  if [[ "${AMUX_VIA_SSH:-0}" == 1 ]]; then
+    [[ -n "${AMUX_SSH_HOST:-}" ]] || die "remote '${AMUX_REMOTE_NAME:-}' has no AMUX_SSH_HOST"
+    AMUX_URL="${AMUX_URL:-ssh://${AMUX_SSH_HOST}}"; AMUX_URL="${AMUX_URL%/}"
+    return 0
+  fi
   [[ -n "${AMUX_URL:-}" ]]   || die "AMUX_URL is not set (export it or put it in $REMOTE_ENV)"
   [[ -n "${AMUX_TOKEN:-}" ]] || die "AMUX_TOKEN is not set (get it from the remote's ~/.amux/auth_token)"
   AMUX_URL="${AMUX_URL%/}"  # strip trailing slash
 }
 
+# ssh options for a remote: its key, and fail fast instead of hanging.
+_ssh_opts() {
+  SSH_OPTS=(-o ConnectTimeout=15 -o ServerAliveInterval=30)
+  [[ -n "${AMUX_SSH_KEY:-}" ]] && SSH_OPTS+=(-i "${AMUX_SSH_KEY/#\~/$HOME}" -o IdentitiesOnly=yes)
+  return 0
+}
+
+# A command line for the box, run as AMUX_SSH_AS when that differs from the
+# ssh user (root SSHes in; amux and its tmux run as the amux user). Every
+# argument is quoted for the remote shell, so payloads arrive byte for byte.
+_remote_cmd() {
+  local inner="" a
+  for a in "$@"; do inner+="$(printf '%q' "$a") "; done
+  # shellcheck disable=SC2016
+  inner='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; '"$inner"
+  local as="${AMUX_SSH_AS:-}" user="${AMUX_SSH_USER:-$USER}"
+  if [[ -n "$as" && "$as" != "$user" ]]; then
+    printf 'su - %q -c %q' "$as" "$inner"
+  else
+    printf '%s' "$inner"
+  fi
+}
+
 # api <METHOD> <path> [curl args...]
 api() {
   local method="$1" path="$2"; shift 2
+  if [[ "${AMUX_VIA_SSH:-0}" == 1 ]]; then
+    # The box's own loopback API: no door, no token (a cloud box's amux sits
+    # behind its sign-in door and trusts loopback).
+    local host; host=$(_ssh_host); _ssh_opts
+    ssh "${SSH_OPTS[@]}" -o BatchMode=yes "${AMUX_SSH_USER:-$USER}@${host}" \
+      "$(_remote_cmd curl -sk -m 30 -X "$method" "$@" "https://127.0.0.1:${AMUX_REMOTE_PORT:-8824}${path}")"
+    return
+  fi
   curl -sk -X "$method" \
     -H "Authorization: Bearer ${AMUX_TOKEN}" \
     "$@" \
@@ -171,12 +241,85 @@ cmd_attach() {
   else
     note=" ${DIM}(plain — set AMUX_CC=1 or run in iTerm2 for native tabs)${RESET}"
   fi
-  # A non-login ssh command shell has a minimal PATH (/usr/bin:/bin) that omits
-  # Homebrew, so `tmux` isn't found. Prepend the usual install dirs on the REMOTE
-  # ($HOME/$PATH are escaped so they expand there, not locally).
-  local remote_pre='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH";'
-  echo "${DIM}→ ssh ${user}@${host} — ${tmux_cmd} -t ${tname}${RESET}${note}"
-  exec ssh "${user}@${host}" -t "${remote_pre} ${tmux_cmd} -t '${tname}' || { echo 'Session ${tname} not found. Running sessions:'; tmux ls 2>/dev/null; exit 1; }"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a worker name: $name"
+  _ssh_opts
+  # _remote_cmd prepends the usual install dirs (a non-login ssh shell's PATH
+  # omits Homebrew) and switches to AMUX_SSH_AS, where the box's tmux lives.
+  local body="${tmux_cmd} -t '${tname}' || { echo 'Session ${tname} not found. Running sessions:'; tmux ls 2>/dev/null; exit 1; }"
+  local as_note=""; [[ -n "${AMUX_SSH_AS:-}" && "${AMUX_SSH_AS}" != "$user" ]] && as_note=" as ${AMUX_SSH_AS}"
+  echo "${DIM}→ ssh ${user}@${host}${as_note} — ${tmux_cmd} -t ${tname}${RESET}${note}"
+  exec ssh "${SSH_OPTS[@]}" "${user}@${host}" -t "$(_remote_cmd bash -c "$body")"
+}
+
+# connect <name> [user@]host [--key F] [--as USER] [--url URL] [--port P]
+cmd_connect() {
+  local name="${1:-}" target="${2:-}"
+  [[ -n "$name" && -n "$target" ]] || die "usage: amux-remote connect <name> [user@]host [--key F] [--as USER] [--url URL] [--port P]"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "a remote name is letters, digits, . _ and - only"
+  shift 2
+  local key="" as="" url="" port=8824
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --key)  key="${2:?--key needs a file}"; shift 2 ;;
+      --as)   as="${2:?--as needs a user}"; shift 2 ;;
+      --url)  url="${2:?--url needs a URL}"; shift 2 ;;
+      --port) port="${2:?--port needs a number}"; shift 2 ;;
+      *) die "unknown connect option: $1" ;;
+    esac
+  done
+  local user="$USER" host="$target"
+  [[ "$target" == *@* ]] && { user="${target%@*}"; host="${target#*@}"; }
+  [[ "$host" =~ ^[A-Za-z0-9.:-]+$ ]] || die "not a host name: $host"
+  [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a user name: $user"
+  [[ -z "$as" || "$as" =~ ^[A-Za-z0-9._-]+$ ]] || die "not a user name: $as"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "not a port: $port"
+  [[ -z "$key" || -f "${key/#\~/$HOME}" ]] || die "no such key file: $key"
+  AMUX_SSH_HOST="$host" AMUX_SSH_USER="$user" AMUX_SSH_KEY="$key" AMUX_SSH_AS="$as" AMUX_VIA_SSH=1 AMUX_REMOTE_PORT="$port"
+  # Prove it before saving: SSH in, and the box's amux answers on loopback.
+  local health
+  health=$(api GET /health 2>&1) || die "could not reach amux on ${user}@${host} over SSH: ${health:0:300}"
+  local commit
+  commit=$(printf '%s' "$health" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("commit") or "?")' 2>/dev/null) \
+    || die "SSH worked but amux did not answer on 127.0.0.1:${port} (as ${as:-$user}): ${health:0:200}"
+  mkdir -p "$REMOTES_DIR"; chmod 700 "$REMOTES_DIR"
+  local f="$REMOTES_DIR/$name.env" tmp
+  tmp=$(mktemp "$REMOTES_DIR/.$name.XXXXXX")
+  {
+    printf 'AMUX_VIA_SSH=1\n'
+    printf 'AMUX_SSH_HOST=%q\n' "$host"
+    printf 'AMUX_SSH_USER=%q\n' "$user"
+    [[ -n "$key" ]] && printf 'AMUX_SSH_KEY=%q\n' "$key"
+    [[ -n "$as" ]] && printf 'AMUX_SSH_AS=%q\n' "$as"
+    printf 'AMUX_REMOTE_PORT=%q\n' "$port"
+    [[ -n "$url" ]] && printf 'AMUX_URL=%q\n' "$url"
+    true
+  } > "$tmp"
+  chmod 600 "$tmp"; mv "$tmp" "$f"
+  printf '%s\n' "$name" > "$REMOTES_DIR/current"
+  echo "${GREEN}✓${RESET} connected ${BOLD}${name}${RESET}: ${user}@${host}${as:+ as $as}, amux at commit ${commit}"
+  echo "${DIM}  next: ls · attach <worker> · peek <worker> · send <worker> <text>${RESET}"
+}
+
+cmd_remotes() {
+  local cur=""; [[ -f "$REMOTES_DIR/current" ]] && cur="$(head -1 "$REMOTES_DIR/current")"
+  local f n any=0 h u a mark
+  for f in "$REMOTES_DIR"/*.env; do
+    [[ -f "$f" ]] || continue
+    any=1; n="$(basename "$f" .env)"
+    h=$(sed -n 's/^AMUX_SSH_HOST=//p' "$f"); u=$(sed -n 's/^AMUX_SSH_USER=//p' "$f"); a=$(sed -n 's/^AMUX_SSH_AS=//p' "$f")
+    mark=" "; [[ "$n" == "$cur" ]] && mark="${GREEN}*${RESET}"
+    printf '%s %-16s %s@%s%s\n' "$mark" "$n" "$u" "$h" "${a:+ as $a}"
+  done
+  [[ "$any" == 1 ]] || echo "no named remotes (amux-remote connect <name> [user@]host adds one)"
+}
+
+cmd_use() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: amux-remote use <name>  (or: amux-remote use --none for ~/.amux/remote.env)"
+  if [[ "$name" == --none ]]; then rm -f "$REMOTES_DIR/current"; echo "using $REMOTE_ENV"; return; fi
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ && -f "$REMOTES_DIR/$name.env" ]] || die "no remote named '$name'"
+  printf '%s\n' "$name" > "$REMOTES_DIR/current"
+  echo "using ${BOLD}${name}${RESET}"
 }
 
 usage() {
@@ -189,6 +332,12 @@ ${BOLD}Config${RESET} (env or ${REMOTE_ENV}):
   AMUX_SSH_HOST  ${DIM}SSH host for attach (default: host from AMUX_URL)${RESET}
   AMUX_SSH_USER  ${DIM}SSH user for attach (default: \$USER)${RESET}
   AMUX_CC        ${DIM}native iTerm2 attach: 1/0 to force, auto (default) = on in iTerm2${RESET}
+
+${BOLD}Named remotes${RESET} (~/.amux/remotes; everything runs over SSH, no token)
+  ${CYAN}connect${RESET} <name> [user@]host [--key F] [--as USER] [--url URL]
+  ${CYAN}remotes${RESET}                 list them (* = in use)
+  ${CYAN}use${RESET} <name>              switch (--none: back to remote.env)
+  ${CYAN}-r${RESET} <name> <command>     one command against a named remote
 
 ${BOLD}Commands${RESET}
   ${CYAN}ls${RESET}                      list sessions
@@ -205,6 +354,9 @@ EOF
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  connect)       cmd_connect "$@" ;;
+  remotes)       cmd_remotes ;;
+  use)           cmd_use "$@" ;;
   ls|list)       cmd_ls "$@" ;;
   attach|a)      cmd_attach "$@" ;;
   peek)          cmd_peek "$@" ;;

@@ -1,7 +1,9 @@
 //! Recordings (AMUX-4624). The dashboard's Record tab keeps audio on the
 //! device until it is online, then uploads it here. This module files it in
 //! the folder the person chose, and the `recordings-transcribe` job turns it
-//! into text with a local model.
+//! into text with the engine the shared transcription setting picks
+//! (`api/transcription.rs`): a local whisper.cpp model, or Gemini with the
+//! key Dictate uses.
 //!
 //! THE FOLDER IS THE STORE. One recording is up to four files sharing a base
 //! name, `<YYYY-MM-DD_HH-MM-SS>_<id>`, in the recording's own local time:
@@ -666,7 +668,12 @@ pub(crate) fn transcriber() -> Result<Transcriber, String> {
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| super::file_viewer::find_bin("whisper-cli"))
-        .ok_or_else(|| "whisper-cli is not installed (brew install whisper-cpp)".to_string())?;
+        .ok_or_else(|| {
+            format!(
+                "whisper-cli is not installed on this server ({})",
+                super::transcription::install_hint("whisper-cpp", "build it from github.com/ggml-org/whisper.cpp")
+            )
+        })?;
     let model = model_path();
     if !model.is_file() {
         return Err(format!(
@@ -690,6 +697,125 @@ pub(crate) struct Segment {
     pub from_ms: i64,
     pub to_ms: i64,
     pub text: String,
+}
+
+fn ffmpeg_missing() -> String {
+    format!("ffmpeg is not installed ({})", super::transcription::install_hint("ffmpeg", "apt install ffmpeg"))
+}
+
+/// The local engine for the transcription setting: `Ok(model)` when
+/// whisper.cpp and ffmpeg can run here, else why not.
+pub(crate) fn local_status() -> Result<String, String> {
+    super::file_viewer::find_bin("ffmpeg").ok_or_else(ffmpeg_missing)?;
+    let t = transcriber()?;
+    Ok(t.model.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// Everything a transcription pass needs from the database, read once by the
+/// job so the pass itself runs without a connection.
+#[derive(Clone, Debug)]
+pub(crate) struct Plan {
+    pub pref: super::transcription::Pref,
+    /// (key, vocabulary prompt) when a Gemini key is configured.
+    pub gemini: Option<(String, String)>,
+}
+
+impl Plan {
+    pub(crate) fn read(conn: &rusqlite::Connection) -> Plan {
+        let (key, _) = super::transcription::gemini_key(conn);
+        Plan {
+            pref: super::transcription::pref(conn),
+            gemini: (!key.is_empty()).then(|| (key, super::dictation::dictation_vocab(conn))),
+        }
+    }
+    /// The engine this plan resolves to on this host.
+    pub(crate) fn engine(&self) -> (super::transcription::Engine, Result<(PathBuf, Transcriber), String>) {
+        let local = super::file_viewer::find_bin("ffmpeg")
+            .ok_or_else(ffmpeg_missing)
+            .and_then(|ff| transcriber().map(|t| (ff, t)));
+        let e = super::transcription::choose(
+            self.pref,
+            local.as_ref().map(|_| ()).map_err(String::as_str),
+            self.gemini.is_some(),
+        );
+        (e, local)
+    }
+}
+
+/// Gemini takes audio inline up to about 20 MB per request.
+const GEMINI_MAX_AUDIO: usize = 18 * 1024 * 1024;
+
+/// Run a future from the blocking transcription pass: the job runs it on a
+/// blocking thread inside the runtime, a unit test on a bare thread.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => h.block_on(f),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime")
+            .block_on(f),
+    }
+}
+
+/// Transcribe one stored recording with Gemini, the engine Dictate uses on a
+/// server without a local one. One segment: Gemini returns text, not offsets.
+pub(crate) fn transcribe_one_gemini(
+    dir: &Path,
+    sidecar: &Value,
+    ffmpeg: Option<&Path>,
+    key: &str,
+    vocab: &str,
+) -> Result<Value, String> {
+    let t0 = Instant::now();
+    let file = sidecar["file"].as_str().ok_or("the sidecar names no audio file")?;
+    let audio = dir.join(file);
+    if !audio.is_file() {
+        return Err(format!("the audio file is missing: {}", audio.display()));
+    }
+    let dur_s = (sidecar["dur_ms"].as_i64().unwrap_or(0) / 1000).max(0) as u64;
+    let work = tempfile::tempdir().map_err(|e| e.to_string())?;
+    // Small mono speech audio when ffmpeg is here: 32 kbps is about 14 MB an hour.
+    let (bytes, mime) = match ffmpeg {
+        Some(ff) => {
+            let mp3 = work.path().join("audio.mp3");
+            let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+            a.push(audio.display().to_string());
+            a.extend(["-ac", "1", "-ar", "16000", "-b:a", "32k"].iter().map(|s| s.to_string()));
+            a.push(mp3.display().to_string());
+            run_bounded(ff, &a, Duration::from_secs(120 + dur_s / 4))?;
+            (std::fs::read(&mp3).map_err(|e| e.to_string())?, "audio/mpeg".to_string())
+        }
+        None => (
+            std::fs::read(&audio).map_err(|e| e.to_string())?,
+            sidecar["mime"].as_str().unwrap_or("audio/webm").split(';').next().unwrap_or("audio/webm").to_string(),
+        ),
+    };
+    if bytes.len() > GEMINI_MAX_AUDIO {
+        return Err(format!(
+            "the audio is {} MB, more than the {} MB Gemini takes in one request; choose a local engine in {}",
+            bytes.len() >> 20,
+            GEMINI_MAX_AUDIO >> 20,
+            super::transcription::SETTING
+        ));
+    }
+    let mut prompt = String::from(
+        "Transcribe this audio recording verbatim, in the language spoken. Output only the transcript text: \
+         no commentary, headings or timestamps. If nobody speaks, output nothing.",
+    );
+    if !vocab.is_empty() {
+        prompt.push('\n');
+        prompt.push_str(vocab);
+    }
+    let timeout = (90 + dur_s / 2).min(600);
+    let text = block_on(super::transcription::gemini_transcribe(key, &mime, &bytes, &prompt, timeout))?;
+    let model = super::dictation::dictation_model();
+    let segments: Vec<Segment> = if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![Segment { from_ms: 0, to_ms: sidecar["dur_ms"].as_i64().unwrap_or(0), text: text.trim().to_string() }]
+    };
+    write_transcript(dir, sidecar, &segments, "gemini", &model, Value::Null, t0)
 }
 
 /// whisper-cli's `-oj` output as segments, blank ones dropped.
@@ -735,6 +861,7 @@ fn human_duration(ms: i64) -> String {
 pub(crate) fn render_transcript(
     sidecar: &Value,
     segments: &[Segment],
+    engine: &str,
     model: &str,
     transcribed_at: &str,
 ) -> String {
@@ -758,7 +885,7 @@ pub(crate) fn render_transcript(
     let _ = writeln!(s, "audio: {}", sidecar["file"].as_str().unwrap_or(""));
     let _ = writeln!(
         s,
-        "engine: whisper.cpp\nmodel: {model}\ntranscribed_at: {transcribed_at}\n---\n"
+        "engine: {engine}\nmodel: {model}\ntranscribed_at: {transcribed_at}\n---\n"
     );
     if segments.is_empty() {
         s.push_str("(no speech detected)\n");
@@ -843,14 +970,30 @@ pub(crate) fn transcribe_one(
     let v: Value =
         serde_json::from_slice(&raw).map_err(|e| format!("whisper-cli JSON is unreadable: {e}"))?;
     let segments = parse_whisper_json(&v);
+    write_transcript(dir, sidecar, &segments, "whisper.cpp", &model_name, v["result"]["language"].clone(), t0)
+}
+
+/// Write `<base>.md` and `<base>.transcript.json` and return the transcript
+/// state to record, whichever engine produced the segments.
+fn write_transcript(
+    dir: &Path,
+    sidecar: &Value,
+    segments: &[Segment],
+    engine: &str,
+    model_name: &str,
+    language: Value,
+    t0: Instant,
+) -> Result<Value, String> {
+    let file = sidecar["file"].as_str().ok_or("the sidecar names no audio file")?;
     let base = file.rsplit_once('.').map(|(b, _)| b).unwrap_or(file);
     let started = sidecar["started_at"].as_i64().unwrap_or(0);
     let tz = sidecar["tz_offset_min"].as_i64().unwrap_or(0) as i32;
     let md_name = format!("{base}.md");
     let md = render_transcript(
         sidecar,
-        &segments,
-        &model_name,
+        segments,
+        engine,
+        model_name,
         &local_of(now_ms(), tz).to_rfc3339(),
     );
     write_atomic(&dir.join(&md_name), md.as_bytes()).map_err(|e| e.to_string())?;
@@ -858,9 +1001,9 @@ pub(crate) fn transcribe_one(
     let seg_name = format!("{base}.transcript.json");
     let seg_json = json!({
         "id": sidecar["id"],
-        "engine": "whisper.cpp",
+        "engine": engine,
         "model": model_name,
-        "language": v["result"]["language"],
+        "language": language,
         "segments": segments.iter().map(|s| json!({"from_ms": s.from_ms, "to_ms": s.to_ms, "text": s.text})).collect::<Vec<_>>(),
     });
     write_atomic(
@@ -876,7 +1019,7 @@ pub(crate) fn transcribe_one(
         .join(" ");
     Ok(json!({
         "status": "done",
-        "engine": "whisper.cpp",
+        "engine": engine,
         "model": model_name,
         "md": md_name,
         "segments_file": seg_name,
@@ -927,7 +1070,7 @@ pub(crate) fn mark_unavailable(owed: &[(PathBuf, Value)], why: &str) {
 /// One pass over `dir`: every recording that still owes a transcript, oldest
 /// first, one at a time, until the tick budget is spent. Returns how many
 /// transcripts were written.
-pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
+pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration, plan: &Plan) -> usize {
     let now = now_ms();
     let mut owed: Vec<(PathBuf, Value)> = read_sidecars(dir)
         .into_iter()
@@ -937,16 +1080,17 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
         return 0;
     }
     owed.reverse();
-    let engine = super::file_viewer::find_bin("ffmpeg")
-        .ok_or_else(|| "ffmpeg is not installed (brew install ffmpeg)".to_string())
-        .and_then(|ff| transcriber().map(|t| (ff, t)));
-    let (ffmpeg, tr) = match engine {
-        Ok(e) => e,
-        Err(why) => {
+    use super::transcription::Engine;
+    let (engine, local) = plan.engine();
+    let local = match engine {
+        Engine::Unavailable(why) => {
             mark_unavailable(&owed, &why);
             return 0;
         }
+        Engine::Local => local.ok(),
+        Engine::Gemini => None,
     };
+    let ffmpeg_for_gemini = super::file_viewer::find_bin("ffmpeg");
     LAST_UNAVAILABLE
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -967,7 +1111,12 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
         {
             continue;
         }
-        match transcribe_one(dir, &v, &tr, &ffmpeg) {
+        let result = match (&local, &plan.gemini) {
+            (Some((ffmpeg, tr)), _) => transcribe_one(dir, &v, tr, ffmpeg),
+            (None, Some((key, vocab))) => transcribe_one_gemini(dir, &v, ffmpeg_for_gemini.as_deref(), key, vocab),
+            (None, None) => Err("no transcription engine".to_string()),
+        };
+        match result {
             Ok(mut t) => {
                 t["attempts"] = json!(attempts);
                 tracing::info!(
@@ -1001,29 +1150,54 @@ pub async fn transcribe_pending(state: AppState) {
             return;
         }
     };
-    let _ = tokio::task::spawn_blocking(move || transcribe_pending_in(&dir, TICK_BUDGET)).await;
+    let store = state.store.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let plan = match store.read() {
+            Ok(conn) => Plan::read(&conn),
+            Err(e) => {
+                tracing::warn!("[recordings] could not read the transcription setting: {e}");
+                return 0;
+            }
+        };
+        transcribe_pending_in(&dir, TICK_BUDGET, &plan)
+    })
+    .await;
 }
 
 // ---- handlers --------------------------------------------------------------------
 
 async fn config_json(state: &AppState) -> anyhow::Result<Value> {
     let (dir, source) = current_dir(state).await?;
-    let (engine, ffmpeg) =
-        tokio::task::spawn_blocking(|| (transcriber(), super::file_viewer::find_bin("ffmpeg")))
-            .await?;
+    let store = state.store.clone();
+    let (engine, ffmpeg, resolved, plan) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let plan = Plan::read(&*store.read()?);
+        let (resolved, _) = plan.engine();
+        Ok((transcriber(), super::file_viewer::find_bin("ffmpeg"), resolved, plan))
+    })
+    .await??;
     let model = model_path();
     let model_name = model
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let transcriber = match (engine, ffmpeg.is_some()) {
-        (Ok(t), true) => json!({
+    use super::transcription::Engine;
+    let setting = json!({"engine": plan.pref.as_str(), "where": super::transcription::SETTING});
+    let transcriber = match (resolved, engine) {
+        (Engine::Local, Ok(t)) => json!({
             "available": true, "engine": "whisper.cpp", "bin": t.bin.display().to_string(),
             "model": model_name, "model_path": t.model.display().to_string(), "threads": t.threads,
+            "setting": setting,
         }),
-        (engine, _) => json!({
-            "available": false, "engine": "whisper.cpp", "model": model_name, "model_path": model.display().to_string(),
-            "why_unavailable": engine.err().unwrap_or_else(|| "ffmpeg is not installed (brew install ffmpeg)".into()),
+        (Engine::Gemini, _) => json!({
+            "available": true, "engine": "gemini", "model": super::dictation::dictation_model(),
+            "setting": setting,
+        }),
+        (Engine::Unavailable(why), _) => json!({
+            "available": false, "engine": "none", "model": model_name, "model_path": model.display().to_string(),
+            "why_unavailable": why, "setting": setting,
+        }),
+        (Engine::Local, Err(why)) => json!({
+            "available": false, "engine": "none", "why_unavailable": why, "setting": setting,
         }),
     };
     Ok(json!({
@@ -1168,7 +1342,14 @@ async fn retranscribe(State(state): State<AppState>, AxPath(id): AxPath<String>)
         return err(StatusCode::NOT_FOUND, "no such recording");
     };
     let triggered = registry::trigger(registry::ids::RECORDINGS_TRANSCRIBE);
-    Json(json!({"ok": true, "id": id, "transcript": v["transcript"], "triggered": triggered}))
+    if !triggered {
+        // The person pressed "Transcribe again"; a job that is switched off (or
+        // a server without its loop) must not turn that into a silent no-op.
+        tracing::info!(id = %id, measured = true, n_considered = 1, verdict = "recordings_transcribe_direct",
+            "recordings-transcribe job is not running here; transcribing this request directly");
+        tokio::spawn(transcribe_pending(state.clone()));
+    }
+    Json(json!({"ok": true, "id": id, "transcript": v["transcript"], "triggered": triggered, "direct": !triggered}))
         .into_response()
 }
 
@@ -1541,7 +1722,7 @@ mod tests {
         ]});
         let segs = parse_whisper_json(&whisper);
         assert_eq!(segs.len(), 2, "blank segments are dropped");
-        let md = render_transcript(&sc, &segs, "ggml-base.en", "2026-09-14T19:00:00-04:00");
+        let md = render_transcript(&sc, &segs, "whisper.cpp", "ggml-base.en", "2026-09-14T19:00:00-04:00");
         assert!(md.starts_with("---\nrecorded_at: 2026-09-14T18:51:03-04:00\nduration: 12s\nlocation: 40.71280, -74.00600\n"), "{md}");
         assert!(
             md.contains("\n[00:00] Pick up the van keys.\n[01:05] Then call the landlord.\n"),
@@ -1733,5 +1914,76 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    /// One second of 16 kHz mono silence as a WAV file.
+    fn wav() -> Vec<u8> {
+        let n: u32 = 16_000 * 2;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + n).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&16_000u32.to_le_bytes());
+        b.extend_from_slice(&32_000u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&n.to_le_bytes());
+        b.resize(b.len() + n as usize, 0);
+        b
+    }
+
+    /// The sandbox case (2026-10-25): no whisper-cli, Dictate on Gemini. A
+    /// recording under Gemini only (and under Automatic with no local engine)
+    /// is transcribed by Gemini with Dictate's key, and Local only names the
+    /// setting instead of a brew command.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recording_uses_the_shared_setting_and_dictates_gemini_key() {
+        let _guard = super::super::dictation::tests::ENGINE_LOCK.lock().await;
+        let (base, seen) = super::super::dictation::tests::fake_upstream(
+            StatusCode::OK,
+            r#"{"candidates":[{"content":{"parts":[{"text":"Pick up the van keys."}]}}]}"#,
+        )
+        .await;
+        *super::super::dictation::tests::GEMINI_BASE_OVERRIDE.lock().unwrap() = Some(base);
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = meta("rGem01");
+        m.mime = "audio/wav".into();
+        m.ext = "wav";
+        store_upload(dir.path(), &m, &wav(), None).unwrap();
+        let d = dir.path().to_path_buf();
+        let gemini = Plan { pref: super::super::transcription::Pref::Gemini, gemini: Some(("test-key".into(), String::new())) };
+        let done = tokio::task::spawn_blocking(move || transcribe_pending_in(&d, TICK_BUDGET, &gemini)).await.unwrap();
+        *super::super::dictation::tests::GEMINI_BASE_OVERRIDE.lock().unwrap() = None;
+        assert_eq!(done, 1);
+        let (_, v) = find_sidecar(dir.path(), "rGem01").unwrap();
+        assert_eq!(v["transcript"]["status"], "done", "{v}");
+        assert_eq!(v["transcript"]["engine"], "gemini");
+        let md = std::fs::read_to_string(dir.path().join(v["transcript"]["md"].as_str().unwrap())).unwrap();
+        assert!(md.contains("engine: gemini\n") && md.contains("[00:00] Pick up the van keys.\n"), "{md}");
+        {
+            let req = seen.lock().unwrap();
+            assert_eq!(req.len(), 1);
+            assert!(req[0].path_and_query.contains("key=test-key"), "Dictate's key is the one used");
+            assert!(String::from_utf8_lossy(&req[0].body).contains("inline_data"), "the audio is sent inline");
+        }
+
+        // Local only, on a host whose local engine is missing: the reason names the setting.
+        store_upload(dir.path(), &meta("rLoc01"), b"x", None).unwrap();
+        let local = Plan { pref: super::super::transcription::Pref::Local, gemini: Some(("test-key".into(), String::new())) };
+        if local_status().is_err() {
+            let d = dir.path().to_path_buf();
+            tokio::task::spawn_blocking(move || transcribe_pending_in(&d, TICK_BUDGET, &local)).await.unwrap();
+            let (_, v) = find_sidecar(dir.path(), "rLoc01").unwrap();
+            assert_eq!(v["transcript"]["status"], "unavailable");
+            let why = v["transcript"]["error"].as_str().unwrap();
+            assert!(why.contains(super::super::transcription::SETTING) && why.contains("Local only"), "{why}");
+            assert_eq!(why.contains("brew "), cfg!(target_os = "macos"), "{why}");
+        } else {
+            eprintln!("SKIPPED the Local only half: this host has whisper.cpp");
+        }
     }
 }

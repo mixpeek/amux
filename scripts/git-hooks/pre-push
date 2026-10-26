@@ -16,7 +16,7 @@
 # Fail-open by design: any error lets the push proceed. Outside amux
 # ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
 # Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
-import datetime, json, os, ssl, subprocess, sys, urllib.parse, urllib.request
+import datetime, glob, json, os, re, shutil, ssl, subprocess, sys, tempfile, urllib.parse, urllib.request
 
 ZERO = "0" * 40
 
@@ -269,6 +269,154 @@ def _audit(kind, detail):
         pass
 
 
+# SPA GATES BEFORE THE PUSH (velocity audit 2026-10-26). rust.yml's spa-gates
+# job runs the dashboard's node:test suites 20-30 minutes after a push, and a
+# red there holds every deploy. On 2026-10-25 it went red twice from dashboard
+# commits: b095589a0 (36 failures, reverted 69 minutes later) and b920ec409
+# (4 failures in peek-freshness). The same suites take about 7 seconds here.
+#
+# They run on the PUSHED COMMIT'S bytes (git archive), never the worktree,
+# which on a shared checkout holds peers' drafts. A test that also fails on
+# the remote's tip is not this push's doing and does not block it.
+_SPA_SUITE_DIRS = ("crates/amux-dashboard/static/", "skills/chrome-cdp/scripts/")
+_SPA_SUITE_FILES = ("tests/dashboard-outage-recovery.mjs", "package.json", "package-lock.json")
+_SPA_NOT_OK = re.compile(r"^\s*not ok \d+ - (.+?)(?:\s+#.*)?$")
+
+
+def _spa_touched(path):
+    return (path.startswith(_SPA_SUITE_DIRS) or path in _SPA_SUITE_FILES
+            or (path.startswith("e2e/") and path.endswith(".test.mjs")))
+
+
+def _spa_failures(sha, node_modules):
+    """Run the suites on `sha`'s tree. Returns (tests, failing names) or None
+    when the run could not be measured."""
+    tmp = tempfile.mkdtemp(prefix="amux-spa-gate-")
+    try:
+        arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
+                              capture_output=True, text=True, timeout=60)
+        if arch.returncode != 0:
+            return None
+        os.symlink(node_modules, os.path.join(tmp, "node_modules"))
+        suites = [s for s in ["tests/dashboard-outage-recovery.mjs"]
+                  if os.path.exists(os.path.join(tmp, s))]
+        suites += sorted(os.path.relpath(p, tmp)
+                         for p in glob.glob(os.path.join(tmp, "e2e", "*.test.mjs")))
+        if not suites:
+            return 0, []
+        r = subprocess.run(["node", "--test"] + suites, cwd=tmp, capture_output=True,
+                           text=True, timeout=180)
+        m = re.search(r"^# tests (\d+)$", r.stdout, re.M)
+        if not m:
+            return None
+        names = sorted({x.group(1) for x in map(_SPA_NOT_OK.match, r.stdout.splitlines()) if x})
+        if r.returncode != 0 and not names:
+            return None
+        return int(m.group(1)), names
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _harness_guard(sha):
+    """AF-561's guard (scripts/test-harness-guard.sh: every verdict-printing
+    test-*.sh carries `set -e`) on `sha`'s tree. It reddened `checks` twice in
+    24h to 2026-10-26 (b219fbda1, 2642d3295) and takes about a second. Returns
+    (rc, output), or None when it could not run."""
+    tmp = tempfile.mkdtemp(prefix="amux-harness-guard-")
+    try:
+        arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
+                              capture_output=True, text=True, timeout=60)
+        guard = os.path.join(tmp, "scripts", "test-harness-guard.sh")
+        if arch.returncode != 0 or not os.path.exists(guard):
+            return None
+        r = subprocess.run(["bash", guard], cwd=tmp, capture_output=True, text=True, timeout=120)
+        return r.returncode, r.stdout + r.stderr
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _harness_guard_gate(refs):
+    for local, remote, touched in refs:
+        if not any(p.startswith("scripts/test-") and p.endswith(".sh") for p in touched):
+            continue
+        got = _harness_guard(local)
+        if not got or got[0] == 0:
+            continue
+        base = _harness_guard(remote) if remote != ZERO else None
+        if base and base[0] != 0:
+            sys.stderr.write("amux pre-push: the AF-561 harness guard also fails on the remote's "
+                             "tip, so not blocking this push verdict=harness_guard_inherited\n")
+            continue
+        _audit("harness_guard", "verdict=harness_guard_fail sha=%s" % local[:9])
+        sys.stderr.write("\nBLOCKED: a test harness in this push prints a verdict without "
+                         "`set -e` (AF-561).\nThis is the step `checks` runs:\n\n")
+        sys.stderr.write("\n".join(l for l in got[1].splitlines() if not l.startswith("  ok"))[-3000:])
+        sys.stderr.write("\n\nOverride for this push:\n  AMUX_SKIP_HARNESS_GUARD=1 git push ...\n")
+        if os.environ.get("AMUX_SKIP_HARNESS_GUARD", "").strip().lower() not in (
+                "1", "true", "yes", "on"):
+            return 1
+    return 0
+
+
+def _spa_gates(refs):
+    """refs: [(local_sha, remote_sha, touched paths)]. Returns 1 to refuse."""
+    if os.environ.get("AMUX_SKIP_SPA_GATES", "").strip().lower() in ("1", "true", "yes", "on"):
+        _audit("spa_gates", "verdict=spa_gates_skipped")
+        return 0
+    for local, remote, touched in refs:
+        if not any(_spa_touched(p) for p in touched):
+            continue
+        root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+        common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        nm = next((c for c in (os.environ.get("AMUX_SPA_GATE_NODE_MODULES", ""),
+                               os.path.join(root, "node_modules"),
+                               os.path.join(os.path.dirname(common), "node_modules"))
+                   if c and os.path.isdir(c)), "")
+        short = local[:9]
+        if not nm or not shutil.which("node"):
+            sys.stderr.write("amux pre-push: SPA gates not run on %s: no node or node_modules "
+                             "here; CI's spa-gates still runs verdict=spa_gates_unmeasured\n" % short)
+            _audit("spa_gates", "verdict=spa_gates_unmeasured sha=%s" % short)
+            continue
+        t0 = datetime.datetime.now()
+        got = _spa_failures(local, nm)
+        secs = (datetime.datetime.now() - t0).total_seconds()
+        if got is None:
+            sys.stderr.write("amux pre-push: SPA gates on %s could not be read; CI's spa-gates "
+                             "still runs verdict=spa_gates_unmeasured\n" % short)
+            _audit("spa_gates", "verdict=spa_gates_unmeasured sha=%s" % short)
+            continue
+        tests, failing = got
+        inherited = []
+        if failing:
+            base = remote if remote != ZERO else subprocess.run(
+                ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
+                text=True, timeout=10).stdout.strip()
+            was = _spa_failures(base, nm) if base else None
+            if was is not None:
+                inherited = [n for n in failing if n in was[1]]
+        mine = [n for n in failing if n not in inherited]
+        verdict = "spa_gates_fail" if mine else "spa_gates_pass"
+        sys.stderr.write("amux pre-push: SPA gates on %s: %d tests, %d failing from this push, "
+                         "%d already failing on the remote, %.0fs verdict=%s\n"
+                         % (short, tests, len(mine), len(inherited), secs, verdict))
+        _audit("spa_gates", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f"
+               % (verdict, short, tests, len(mine), len(inherited), secs))
+        if mine:
+            sys.stderr.write("\nBLOCKED: this push fails the dashboard suites rust.yml's "
+                             "spa-gates job runs:\n")
+            for n in mine[:20]:
+                sys.stderr.write("  not ok - %s\n" % n)
+            sys.stderr.write(
+                "\nReproduce on your commit: node --test tests/dashboard-outage-recovery.mjs "
+                "e2e/*.test.mjs\nOverride for this push, if you are deliberately landing it red:\n"
+                "  AMUX_SKIP_SPA_GATES=1 git push ...\n")
+            return 1
+    return 0
+
+
 def main():
     # DATA-LOSS GUARD FIRST, and BEFORE the session early-returns: a stale
     # shared-file republish (MG-1483 — 10 pushed entry-lines silently reverted,
@@ -352,6 +500,24 @@ def main():
                     sys.stderr.write("AMUX_SKIP_HARNESS_WIRED set — landing it anyway.\n")
     except Exception:
         pass  # fail open, same rule as the guard above
+
+    # SPA GATES (_spa_gates above). Also before the session early-returns: a
+    # red spa-gates holds the deploy for everyone, whoever pushed it.
+    try:
+        _refs = []
+        for _line in stdin_text.splitlines():
+            _p = _line.split()
+            if len(_p) < 4 or _p[1].strip("0") == "":
+                continue
+            _rng = [_p[1], "--not", "--remotes=origin"] + ([_p[3]] if _p[3] != ZERO else [])
+            _r = subprocess.run(["git", "log", "--name-only", "--format="] + _rng,
+                                capture_output=True, text=True, timeout=30)
+            _refs.append((_p[1], _p[3], [x for x in _r.stdout.splitlines() if x.strip()]))
+        if _spa_gates(_refs) or _harness_guard_gate(_refs):
+            return 1
+    except Exception as e:
+        sys.stderr.write("amux pre-push: the pushed-commit gates errored (%s); CI still runs "
+                         "them verdict=spa_gates_unmeasured\n" % e)
 
     sess = os.environ.get("AMUX_SESSION", "")
     if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):

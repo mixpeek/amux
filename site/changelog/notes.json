@@ -1,5 +1,183 @@
 [
   {
+    "hash": "4180992c9a4ed2728f0a3558e375738e87651aaf",
+    "short": "4180992c",
+    "title": "An urgent alert opens the worker that raised it",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "alerts",
+      "mobile",
+      "workers"
+    ],
+    "description": "When a worker sends an urgent alert, the text message now ends with a link that opens that worker in amux, and the email adds a link for the Mac app. Tap it on your phone and you land on the worker that needs you. If amux does not know its public address yet, the alert still goes out and says why it has no link."
+  },
+  {
+    "hash": "a6791c7bbdac60db339f205cfaee51daaadc4378",
+    "short": "a6791c7b",
+    "title": "17 dependency advisories patched, plus a daily vulnerability watch",
+    "date": "2026-10-26",
+    "type": "fix",
+    "tags": [
+      "security",
+      "dependencies"
+    ],
+    "description": "amux updated its TLS, HTTP/2, async runtime and spreadsheet libraries to close 17 published advisories, including the compromised certificate intermediates behind Tailscale's recent CVE. A new daily scheduled check audits main for new advisories and reports which ones affect what actually ships."
+  },
+  {
+    "hash": "3ed1e2946347db09d7002f35458cf83c7508cbc7",
+    "short": "3ed1e294",
+    "title": "Another website cannot act on your amux server through your browser",
+    "date": "2026-10-25",
+    "type": "fix",
+    "tags": [
+      "security",
+      "cloud"
+    ],
+    "description": "amux now refuses any write or WebSocket connection that your browser marks as coming from a different site. On amux Cloud, where every server lives under amux.io, a page on one server could otherwise have made your browser send commands to another. The CLI, workers, webhooks and native apps are unaffected."
+  },
+  {
+    "hash": "1ccf7ab7b7a0e319b1387e1fb2eae2d76107c45b",
+    "short": "1ccf7ab7",
+    "title": "One Pages tab for internal apps, public apps and shared files",
+    "date": "2026-10-25",
+    "type": "feat",
+    "tags": [
+      "pages",
+      "sharing",
+      "apps"
+    ],
+    "description": "The Pages tab now lists three things in one place: apps only you can open inside amux, apps with a public link, and files or folders you chose to share. Add them from the tab or with amux publish. Nothing a worker adds opens until you approve it, and a shared page runs sandboxed so it cannot act as you."
+  },
+  {
+    "hash": "ef4478a32e7d456257805fefe951569da172ef05",
+    "short": "ef4478a3",
+    "title": "Present a PDF or slide deck full screen",
+    "date": "2026-10-25",
+    "type": "feat",
+    "tags": [
+      "files",
+      "presentations"
+    ],
+    "description": "A Present button in the file viewer shows a PDF one page per screen in full screen, with keyboard, click and swipe navigation and clickable links. A PowerPoint, Keynote or ODP deck presents the PDF export saved beside it. Use it to walk a client through an agent's report from your laptop or iPad."
+  },
+  {
+    "hash": "02b40cbb0981022d52819c491fb823acd9e09f31",
+    "short": "02b40cbb",
+    "title": "Filter Messages by several workers and groups at once",
+    "date": "2026-10-25",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "search"
+    ],
+    "description": "The global Messages tab has a picker with search and checkboxes for groups and workers, so you can read the conversation of a whole team or any mix of workers in one list. The button always shows what is applied, and opening Messages from a group's page preselects that group."
+  },
+  {
+    "hash": "d59d88fc2b2ca55c2fb0696edf468744c16a7848",
+    "short": "d59d88fc",
+    "title": "Post to YouTube from amux and track each video's results",
+    "date": "2026-10-25",
+    "type": "feat",
+    "tags": [
+      "social",
+      "youtube",
+      "marketing"
+    ],
+    "description": "Workers can upload a video to YouTube through amux and get the video id and link back, then amux reads its views and engagement at 24 hours, 72 hours and 7 days. Publishing publicly stays behind an owner switch. It closes the loop for agents that make and post marketing videos."
+  },
+  {
+    "hash": "2fcc84d978cf79bcb3b54657fee4689f8c9262c2",
+    "short": "2fcc84d9",
+    "title": "Send your amux change upstream with /amux-contribute",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "skills",
+      "open source",
+      "contributing"
+    ],
+    "description": "Type /amux-contribute followed by the change you want, and amux makes it in a fresh copy of main, checks it and opens a pull request to mixpeek/amux, from your fork if you cannot push upstream. You see the pull request before anything leaves your machine. /amux-contribute pull brings your copy back in line with the latest amux."
+  },
+  {
+    "hash": "d40fe47378467beb2eed090bbaeb3fa36fabab1c",
+    "short": "d40fe473",
+    "title": "Cmd+K puts the best match first",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "search",
+      "dashboard",
+      "navigation"
+    ],
+    "description": "The Cmd+K palette now ranks exact names and ids first, then prefix and whole-word matches, then text inside titles, then body text, then fuzzy matches. Within each group, busy workers and open cards rise and completed work sinks, while archived and discarded items stay hidden unless you ask for them."
+  },
+  {
+    "hash": "5788d555bf3a36d1d27646330aaffde3606d1a9e",
+    "short": "5788d555",
+    "title": "Ask your amux database questions in plain English",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "database",
+      "sql",
+      "ai"
+    ],
+    "description": "The Database tab has a new Ask mode. Type a question, and amux writes one read-only SELECT, runs it and shows the SQL next to the rows, ready to copy, edit, re-run or open in the Query pane. Follow-up questions build on the earlier answers."
+  },
+  {
+    "hash": "aeb399fc44f92770aa84fa2196327aca6cc8f660",
+    "short": "aeb399fc",
+    "title": "Open several files side by side",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "files",
+      "split view",
+      "desktop"
+    ],
+    "description": "Right-click a file link, a Files row or a board artifact and choose Open in split view, and each file gets its own pane, so files sit side by side. A file already on screen is not added twice, and when every pane is in use the newest file takes the last pane."
+  },
+  {
+    "hash": "84a4300bbbc291eca4d7b3909ab379957ae5250d",
+    "short": "84a4300b",
+    "title": "Find, filter and step through every worker tab",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "worker view",
+      "search",
+      "dashboard"
+    ],
+    "description": "The filter, up and down buttons and Find in the worker view header used to work only on the terminal. They now work on every tab: chat messages, schedules and their runs, logs, commits, board items and more. Find highlights matches and hides items without them, and the counter shows where you are."
+  },
+  {
+    "hash": "526a0c151b5cea6b4075b1b5379f4c1872c94cab",
+    "short": "526a0c15",
+    "title": "Each pane in the Mac app has its own tabs",
+    "date": "2026-10-24",
+    "type": "feat",
+    "tags": [
+      "mac app",
+      "desktop",
+      "split view"
+    ],
+    "description": "In the Mac app, every pane in a window now holds its own stack of tabs, up to four panes per window tab. Drop a tab in the middle of a pane to add it there, or on an edge to split. Tabs drag between panes, and closing a pane's last tab removes the pane."
+  },
+  {
+    "hash": "0dccddad05de740cdeb3090e5fb352d5e40bc303",
+    "short": "0dccddad",
+    "title": "amux Cloud uses your Claude subscription before an API key",
+    "date": "2026-10-24",
+    "type": "fix",
+    "tags": [
+      "cloud",
+      "claude",
+      "reliability"
+    ],
+    "description": "When you sign in to Claude on amux Cloud and an API key in the environment has run out of credit, amux now uses your subscription for workers and helper tasks. Workers started before you signed in switch over at their next idle moment, on the same conversation."
+  },
+  {
     "hash": "4065457ea47290ae50f59d1ec279983e21055626",
     "short": "4065457e",
     "title": "Each worker tab shows that worker's data",

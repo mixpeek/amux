@@ -158,12 +158,21 @@ fn update_meta(name: &str, updates: &[(&str, Value)]) {
     }
 }
 
+/// True when a Chat tab send's caller is a signed-in person rather than a lane.
+/// The member middleware (org::local_member_identity) stamps `x-amux-session:
+/// member:<email>` on a member's request and strips any inbound copy of the
+/// verified actor, so a lane cannot pass itself off as a member this way.
+pub(crate) fn caller_is_person(headers: &axum::http::HeaderMap, caller: &str) -> bool {
+    !caller.is_empty() && super::org::local_member_actor(headers) == Some(caller)
+}
+
 /// The session routes for `<worker>@chat` (AMUX-5350 redesign). Only `send`
 /// is served: the Chat tab's composer posts there through the dashboard's
 /// normal outbox, so offline retries carry the same `msg_id` and are answered
 /// from the dedupe list instead of running the turn twice. A GET on `send`
 /// with `msg_id` is the outbox's receipt check. Anything else names the
 /// worker to use instead, since the Chat tab is not a worker.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn companion_route(
     state: &AppState,
     worker: &str,
@@ -172,6 +181,7 @@ pub(crate) async fn companion_route(
     receipt_msg_id: Option<&str>,
     body: &Value,
     caller: &str,
+    person: bool,
 ) -> Response {
     let key = companion_key(worker);
     if !env_path(worker).exists() {
@@ -208,9 +218,19 @@ pub(crate) async fn companion_route(
     // be recorded as the owner's, so a helper's test message drew an
     // "[amux accountability] ... no board card" nudge as if Ethan had asked.
     // The dashboard sends with no session header and stays the owner's.
-    let from_owner = caller.trim().is_empty();
+    //
+    // A PERSON IS NOT A LANE (sandbox, 2026-10-25). On a cloud server every
+    // request from the signed-in owner carries `x-amux-session:
+    // member:<email>`, so the rule above read the owner as automation, and
+    // automation may not start a stopped Chat tab: every message to mtp-demo's
+    // Chat tab was refused with "chat worker is not running". `person` is the
+    // server-verified member actor, which no lane can forge.
+    let from_owner = person || caller.trim().is_empty();
     let origin = if from_owner { SendOrigin::Owner } else { SendOrigin::Automation };
-    if !from_owner {
+    if person {
+        tracing::info!(session = %key, caller, verdict = "chat_companion_send_from_member",
+            "a signed-in member sent to a Chat tab; treated as a person");
+    } else if !from_owner {
         tracing::info!(session = %key, caller, verdict = "chat_companion_send_from_lane",
             "a lane sent to a Chat tab; recorded as that lane, not the owner");
     }
@@ -233,7 +253,7 @@ pub(crate) async fn companion_route(
         worker,
         &text,
         "chat",
-        if from_owner { "chat-companion" } else { caller },
+        if caller.trim().is_empty() { "chat-companion" } else { caller },
         true,
         super::session_verbs::DeliveryMeta::default(),
     )
@@ -2815,6 +2835,49 @@ mod companion_tests {
     /// they were typed; a peer's send is not presented as the owner's; a
     /// fresh conversation carries the last exchanges; and every turn carries
     /// the accuracy rule.
+    #[test]
+    fn only_the_verified_member_actor_is_a_person() {
+        let mut h = axum::http::HeaderMap::new();
+        assert!(!caller_is_person(&h, "member:ethan@x.com"), "a header alone, with no verified member, is a lane");
+        crate::api::org::stamp_member_headers(&mut h, "ethan@x.com", &crate::api::org::MemberScope::Global);
+        assert!(caller_is_person(&h, "member:ethan@x.com"));
+        assert!(!caller_is_person(&h, "some-helper"), "a lane's own session header is still the lane");
+        assert!(!caller_is_person(&h, "member:other@x.com"), "only the verified member's own actor");
+        assert!(!caller_is_person(&h, ""));
+    }
+
+    // Sandbox, 2026-10-25: every Chat tab message the signed-in owner sent to
+    // mtp-demo was refused with "chat worker is not running", because the
+    // member's session header made the send look like a lane's.
+    #[tokio::test]
+    async fn a_signed_in_member_starts_a_stopped_chat_tab_and_a_lane_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(tmp.path());
+        // The turn this send starts must not run a real provider.
+        unsafe { std::env::set_var("AMUX_CHAT_CLAUDE_BIN", "/usr/bin/false") };
+        let dir = tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        let w = "chat-member-probe";
+        std::fs::write(tmp.path().join(format!("sessions/{w}.env")), format!("CC_DIR=\"{}\"\nCC_PROVIDER=claude\n", dir.display())).unwrap();
+        let state = AppState {
+            store: Arc::new(crate::db::Store::open(&tmp.path().join("test.db")).unwrap()),
+            started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: Arc::new(AtomicBool::new(true)),
+        };
+        let key = companion_key(w);
+        let body = json!({"text": "is the page public?", "msg_id": "m-1"});
+        let r = companion_route(&state, w, true, "send", None, &body, "some-helper", false).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT, "a lane cannot start a stopped Chat tab");
+        assert!(!running(&key));
+        let r = companion_route(&state, w, true, "send", None, &body, "member:ethan@x.com", true).await;
+        assert_eq!(r.status(), StatusCode::OK, "a signed-in member is a person and starts it");
+        assert!(running(&key), "the Chat tab is running after the member's send");
+        let r = companion_route(&state, w, true, "send", None, &body, "member:ethan@x.com", true).await;
+        let b = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["deduped"], true, "a retry of the same msg_id runs nothing twice");
+    }
+
     #[tokio::test]
     async fn a_companion_gets_the_owners_words_verbatim_and_the_accuracy_rule() {
         let dir = tempfile::tempdir().unwrap();

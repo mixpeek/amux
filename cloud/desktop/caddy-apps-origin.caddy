@@ -1,0 +1,26 @@
+# Apps inside amux (Pages > Inside amux) on their OWN origin, https://<domain>:8443, so an
+# app never shares the dashboard's origin and cannot act as the owner
+# (crates/amux-server/src/api/static_files/apps_origin.rs). Imported by the :8443 site block
+# that bootstrap.sh and update.sh write. No forward_auth: amux admits a browser here only with
+# the one-time handoff the dashboard gives a signed-in person, traded for a cookie bound to
+# that one app. Only /app/<32 lowercase hex>/ reaches amux's apps listener (port 8825), which
+# serves nothing else.
+@app_link path_regexp app_link ^/app/[0-9a-f]{32}(/|$)
+handle @app_link {
+  request_header -X-Amux-Member
+  request_header -X-Amux-Session
+  request_header -X-Amux-Worker
+  request_header -X-Amux-Worker-Token
+  request_header -X-Door-User
+  reverse_proxy https://127.0.0.1:8825 {
+    transport http {
+      tls_insecure_skip_verify
+    }
+    header_up Host {host}
+    header_up -Authorization
+    flush_interval -1
+  }
+}
+handle {
+  respond "Not found" 404
+}

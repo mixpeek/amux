@@ -17,7 +17,7 @@ test('an epic root shows child progress', () => {
   ];
   const chip = make(items)('LV-102', {}, items[0]);
   assert.match(text(chip), /LV-102 · 1 of 3 done/);
-  assert.match(chip, /#d29922/, 'coloured as in progress');
+  assert.match(chip, /var\(--yellow\)/, 'coloured as in progress');
 });
 test('a plain card still shows its own status', () => {
   const items = [{ id: 'LV-104', type: 'code', status: 'doing' }];

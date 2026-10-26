@@ -1,9 +1,12 @@
-//! `/api/tunnel` — the client controls for the cloud tunnel relay (AMUX-2888).
+//! `/api/tunnel` — the controls for the ChatGPT app's relay (AMUX-2888,
+//! AMUX-5396).
 //!
-//! The relay itself is `runtime_jobs::tunnel`. This module is the HTTP surface
-//! the dashboard's tunnel panel (`app.js` `_tunnelStatus` /
-//! `_tunnelSettingsStart` / `_tunnelSettingsStop`) and the `amux tunnel` CLI
-//! (`cmd_tunnel`) already call.
+//! The relay itself is `runtime_jobs::tunnel`. The dashboard's ChatGPT app
+//! panel (`app.js` `_chatgptPublish`) starts it with `{"mcp":true}`.
+//!
+//! Publishing an arbitrary local port through this route is retired with the
+//! Proxies tab and `/proxy` (MSG-95893). A start without `mcp` answers 410
+//! and names Pages, so an old caller learns where the feature went.
 //!
 //! HISTORY, because the shape of this file is the argument. The routes were
 //! never mounted while the callers stayed, so `GET /api/tunnel/status` 404'd
@@ -12,10 +15,8 @@
 //! them with an honest 501 on the actions and a real 200 on status; this
 //! commit replaces the 501s with the ported relay.
 //!
-//! `start` is the one route here with a REFUSAL rather than a failure:
-//! tunnelling amux's own port publishes an unauthenticated control plane, so it
-//! answers 400 with the override named. That is a 400 and not a 500 because
-//! nothing is broken — amux is declining.
+//! A missing token is a REFUSAL rather than a failure, so it answers 400:
+//! nothing is broken, amux is declining with a remedy.
 
 use super::AppState;
 use axum::extract::State;
@@ -57,9 +58,8 @@ fn status_body() -> Value {
         "requests": s.requests,
         "dropped": tun::dropped(),
         "error": s.error,
-        "proxy_id": s.proxy_id,
-        "mcp_only": s.mcp_only,
-        "mcp_url": if s.mcp_only { s.url.as_deref().map(|u| format!("{}/mcp", u.trim_end_matches('/'))) } else { None },
+        "mcp_only": true,
+        "mcp_url": s.url.as_deref().map(|u| format!("{}/mcp", u.trim_end_matches('/'))),
         "mcp_paths_refused": tun::mcp_refused(),
         "configured": tun::configured(),
         "gateway": tun::gateway(),
@@ -72,18 +72,17 @@ fn status_body() -> Value {
     })
 }
 
+/// What a start without `mcp` answers: the general relay is gone.
+const RETIRED: &str = "publishing a local port is retired: add the app on the Pages tab instead";
+
 async fn start(State(_state): State<AppState>, body: Option<Json<Value>>) -> Response {
-    let port = body
-        .as_ref()
-        .and_then(|Json(b)| b.get("port").cloned())
-        .and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
-        })
-        .and_then(|p| u16::try_from(p).ok());
     let mcp = body.as_ref().and_then(|Json(b)| b.get("mcp")).and_then(Value::as_bool).unwrap_or(false);
-    let started = if mcp { tun::start_mcp().await } else { tun::start(port).await };
-    if mcp && started.is_ok() {
+    if !mcp {
+        tracing::info!(verdict = "tunnel_port_start_retired", "tunnel: refused a general start (retired, see Pages)");
+        return (StatusCode::GONE, Json(json!({ "ok": false, "error": RETIRED, "use": "/#view=pages" }))).into_response();
+    }
+    let started = tun::start_mcp().await;
+    if started.is_ok() {
         // Survive restarts: maybe_boot_start reads this (see the marker's doc).
         if let Err(e) = std::fs::write(tun::mcp_published_marker(), b"1\n") {
             tracing::warn!(error = %e, verdict = "tunnel_mcp_marker_unwritten", "tunnel: connector published but will not survive a restart");
@@ -111,7 +110,6 @@ async fn start(State(_state): State<AppState>, body: Option<Json<Value>>) -> Res
 async fn stop(State(_state): State<AppState>) -> Response {
     tun::stop();
     let _ = std::fs::remove_file(tun::mcp_published_marker());
-    tun::set_proxy_id(None);
     (
         StatusCode::OK,
         Json(json!({ "ok": true, "running": false })),
@@ -140,8 +138,8 @@ mod tests {
             json!(true),
             "the relay is ported now (AMUX-2888)"
         );
-        // The policy the Proxies tab renders must come from the same place the
-        // limiter reads, or the UI shows a cap the relay does not enforce.
+        // The policy reported must come from the same place the limiter
+        // reads, or the report shows a cap the relay does not enforce.
         assert_eq!(b["rate_per_min"], json!(tun::rate_per_min()));
         assert_eq!(b["max_concurrent"], json!(tun::max_concurrent()));
         assert_eq!(b["gateway"], json!(tun::gateway()));
@@ -164,7 +162,7 @@ mod tests {
             eprintln!("AMUX_TUNNEL_TOKEN is set here; the no-token arm is not exercised");
             return;
         }
-        let e = tun::start(Some(3000))
+        let e = tun::start_mcp()
             .await
             .expect_err("no token must refuse");
         assert!(e.contains("AMUX_TUNNEL_TOKEN"), "name the var to set: {e}");

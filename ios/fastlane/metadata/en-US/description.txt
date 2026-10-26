@@ -35,6 +35,6 @@ REQUIREMENTS
 
 - amux server running on Mac or Linux (free, open source: github.com/mixpeek/amux)
 - Claude Code, OpenAI Codex CLI, or Gemini CLI installed on your server
-- Wi-Fi, Tailscale, or amux tunnel for remote access
+- Wi-Fi, Tailscale, or amux cloud for remote access
 
 Learn more at amux.io

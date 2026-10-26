@@ -104,6 +104,13 @@ if [[ -f "$HOOKS" ]]; then
   fi
 fi
 
+# Pull from remote sends local amux changes upstream as a pull request before replacing them
+# (bootstrap.sh sets it on new servers). Added once; an owner who sets it to 0 keeps 0.
+EF="$HOME_DIR/.amux/server.env"
+if [[ -f "$EF" ]] && ! grep -q '^AMUX_PULL_SENDS_LOCAL_AS_PR=' "$EF"; then
+  printf 'AMUX_PULL_SENDS_LOCAL_AS_PR=1\n' >> "$EF" && say "verdict=pull_sends_local_as_pr_enabled"
+fi
+
 # Config fixes that bootstrap.sh now writes, applied to servers bootstrapped before them. Each is
 # idempotent, validated before it is used, and reverted if Caddy rejects it.
 CF=/etc/caddy/Caddyfile
@@ -130,6 +137,65 @@ if [[ -f $CF && -f "$SRC/cloud/desktop/caddy-errors.caddy" ]] && ! cmp -s "$SRC/
     mv $CF.prev $CF
     if [[ $had == 1 ]]; then mv /etc/caddy/amux-errors.caddy.prev /etc/caddy/amux-errors.caddy; else rm -f /etc/caddy/amux-errors.caddy; fi
     systemctl reload caddy; say "WARN verdict=caddy_error_page_rejected previous Caddyfile kept"
+  fi
+fi
+
+# Public links (/pub/<id>/, `amux publish`): the snippet that lets them past the door, refreshed
+# from the checkout every run; a Caddyfile from before it gains the import line once.
+PUB="$SRC/cloud/desktop/caddy-public-links.caddy"
+if [[ -f $CF && -f "$PUB" ]] && { ! cmp -s "$PUB" /etc/caddy/amux-public-links.caddy || ! grep -q 'import /etc/caddy/amux-public-links.caddy' $CF; }; then
+  had=$([[ -f /etc/caddy/amux-public-links.caddy ]] && echo 1 || echo 0)
+  cp -p $CF $CF.prev; [[ $had == 1 ]] && cp -p /etc/caddy/amux-public-links.caddy /etc/caddy/amux-public-links.caddy.prev
+  install -m 644 "$PUB" /etc/caddy/amux-public-links.caddy
+  grep -q 'import /etc/caddy/amux-public-links.caddy' $CF \
+    || sed -i '0,/^  handle {$/s||  import /etc/caddy/amux-public-links.caddy\n  handle {|' $CF
+  if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+    say "verdict=caddy_public_links_installed"
+  else
+    mv $CF.prev $CF
+    if [[ $had == 1 ]]; then mv /etc/caddy/amux-public-links.caddy.prev /etc/caddy/amux-public-links.caddy; else rm -f /etc/caddy/amux-public-links.caddy; fi
+    systemctl reload caddy; say "WARN verdict=caddy_public_links_rejected previous Caddyfile kept"
+  fi
+fi
+
+# Apps inside amux on their own origin (https://<domain>:8443, caddy-apps-origin.caddy), for
+# servers bootstrapped before it: the snippet refreshed from the checkout, a :8443 site block
+# added once, port 8443 opened, and AMUX_APPS_URL set. Validated before reload; rolled back if
+# Caddy rejects it.
+APPS="$SRC/cloud/desktop/caddy-apps-origin.caddy"
+if [[ -f $CF && -f "$APPS" ]]; then
+  site=$(grep -m1 -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,} *\{' $CF | cut -d' ' -f1)
+  if [[ -n "$site" ]] && { ! cmp -s "$APPS" /etc/caddy/amux-apps-origin.caddy || ! grep -q "^$site:8443 {" $CF; }; then
+    had=$([[ -f /etc/caddy/amux-apps-origin.caddy ]] && echo 1 || echo 0)
+    cp -p $CF $CF.prev; [[ $had == 1 ]] && cp -p /etc/caddy/amux-apps-origin.caddy /etc/caddy/amux-apps-origin.caddy.prev
+    install -m 644 "$APPS" /etc/caddy/amux-apps-origin.caddy
+    if ! grep -q "^$site:8443 {" $CF; then
+      tls=$(grep -m1 -E '^ *tls /etc/amux/origin' $CF || true)
+      printf '%s:8443 {\n%s\n  import /etc/caddy/amux-apps-origin.caddy\n}\n' "$site" "$tls" >> $CF
+    fi
+    if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+      say "verdict=caddy_apps_origin_installed site=$site:8443"
+    else
+      mv $CF.prev $CF
+      if [[ $had == 1 ]]; then mv /etc/caddy/amux-apps-origin.caddy.prev /etc/caddy/amux-apps-origin.caddy; else rm -f /etc/caddy/amux-apps-origin.caddy; fi
+      systemctl reload caddy; say "WARN verdict=caddy_apps_origin_rejected previous Caddyfile kept"
+    fi
+  fi
+  command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^8443/tcp' || ufw allow 8443/tcp >/dev/null 2>&1 || true
+  ENVA="$HOME_DIR/.amux/server.env"
+  if [[ -n "$site" && -f "$ENVA" ]] && ! grep -q '^AMUX_APPS_URL=' "$ENVA"; then
+    printf 'AMUX_APPS_URL=https://%s:8443\n' "$site" >> "$ENVA" && say "verdict=apps_url_set url=https://$site:8443"
+  fi
+fi
+
+# The address workers build their links from, for servers bootstrapped before bootstrap.sh wrote
+# it: the site name Caddy serves. Read per call by the server, so no restart is needed.
+ENVF="$HOME_DIR/.amux/server.env"
+if [[ -f $CF && -f $ENVF ]] && ! grep -q '^AMUX_PUBLIC_URL=' "$ENVF"; then
+  site=$(grep -m1 -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,} *\{' $CF | cut -d' ' -f1)
+  if [[ -n "$site" ]]; then
+    printf 'AMUX_PUBLIC_URL=https://%s\n' "$site" >> "$ENVF"
+    say "verdict=public_url_set url=https://$site"
   fi
 fi
 

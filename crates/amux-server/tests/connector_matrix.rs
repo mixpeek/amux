@@ -282,7 +282,7 @@ async fn provider(
         s.refresh.insert(refresh.clone(), identity.clone());
         return reply(
             200,
-            json!({"ok":true,"access_token":format!("access-{identity}"),"refresh_token":refresh,"expires_in":3600,"scope":"https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/admin.directory.user https://www.googleapis.com/auth/admin.directory.group channels:read,chat:write,channels:history","team":{"name":identity}}),
+            json!({"ok":true,"access_token":format!("access-{identity}"),"refresh_token":refresh,"expires_in":3600,"scope":"https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/admin.directory.user https://www.googleapis.com/auth/admin.directory.group https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly channels:read,chat:write,channels:history","team":{"name":identity}}),
         );
     }
     if path.ends_with("/users/login") {
@@ -523,6 +523,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         "google-calendar",
         "google-drive",
         "google-admin",
+        "google-youtube",
         "slack",
         "telegram",
         "mattermost",
@@ -757,11 +758,11 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         json!({"SLACK_CLIENT_ID":"matrix-client","SLACK_CLIENT_SECRET":"matrix-secret"}),
     )
     .await;
-    for id in &ids[1..6] {
+    for id in &ids[1..7] {
         rig.grant(id, "alice@example.test").await;
         rig.grant(id, "beth@example.test").await;
     }
-    for id in &ids[1..6] {
+    for id in &ids[1..7] {
         let (_, begin) = rig
             .post(
                 &format!("/api/connectors/{id}/auth?account=alice@example.test"),
@@ -836,7 +837,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
             200
         );
     }
-    for id in [&ids[1..6], &ids[7..]].concat() {
+    for id in [&ids[1..7], &ids[8..]].concat() {
         rig.scope(id, "beth@example.test", true).await;
         let (status, token) = rig
             .call(
@@ -999,7 +1000,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         .unwrap()
         .revoked
         .push("beth@example.test".into());
-    for id in [&ids[1..6], &ids[7..]].concat() {
+    for id in [&ids[1..7], &ids[8..]].concat() {
         let (_, v) = rig
             .post(&format!("/api/connectors/{id}/test"), json!({}))
             .await;
@@ -1119,7 +1120,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         sa.display()
     ));
     std::fs::write(&env, data).unwrap();
-    for id in &ids[1..5] {
+    for id in &ids[1..6] {
         let (code, v) = rig
             .call(
                 reqwest::Method::POST,

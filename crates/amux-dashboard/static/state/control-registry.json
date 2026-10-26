@@ -18,6 +18,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyTheme": {
+      "kind": "command._applyTheme",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -770,6 +776,12 @@
     },
     "_chipChatAction": {
       "kind": "command._chipChatAction",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chipKeySequence": {
+      "kind": "command._chipKeySequence",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2376,6 +2388,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_lockRequest": {
+      "kind": "command._lockRequest",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mapBulk": {
       "kind": "command._mapBulk",
       "feedback_required": true,
@@ -3000,6 +3018,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openXlsxEditor": {
+      "kind": "command._openXlsxEditor",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openXlsxPreview": {
       "kind": "command._openXlsxPreview",
       "feedback_required": true,
@@ -3030,6 +3054,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxEditMessage": {
+      "kind": "command._outboxEditMessage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxFastConfirm": {
       "kind": "command._outboxFastConfirm",
       "feedback_required": true,
@@ -3038,6 +3068,12 @@
     },
     "_outboxFetch": {
       "kind": "command._outboxFetch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outboxLock": {
+      "kind": "command._outboxLock",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3068,6 +3104,12 @@
     },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pagesEnter": {
+      "kind": "command._pagesEnter",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3176,6 +3218,12 @@
     },
     "_peekGeoBeacon": {
       "kind": "command._peekGeoBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekHistExpand": {
+      "kind": "command._peekHistExpand",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3726,30 +3774,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_proxyDelete": {
-      "kind": "command._proxyDelete",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStart": {
-      "kind": "command._proxyStart",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStartOnce": {
-      "kind": "command._proxyStartOnce",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_proxyStop": {
-      "kind": "command._proxyStop",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_psfAcceptResponse": {
       "kind": "command._psfAcceptResponse",
       "feedback_required": true,
@@ -3776,6 +3800,30 @@
     },
     "_psfViewFile": {
       "kind": "command._psfViewFile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubMenu": {
+      "kind": "command._pubMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubNew": {
+      "kind": "command._pubNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubUploadShare": {
+      "kind": "command._pubUploadShare",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pullContributeNote": {
+      "kind": "command._pullContributeNote",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4022,12 +4070,6 @@
     },
     "_renderGroupsTab": {
       "kind": "command._renderGroupsTab",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_renderIcalBody": {
-      "kind": "command._renderIcalBody",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4596,6 +4638,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_steeringEdit": {
+      "kind": "command._steeringEdit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_steeringSendNow": {
       "kind": "command._steeringSendNow",
       "feedback_required": true,
@@ -4752,6 +4800,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_themeDelete": {
+      "kind": "command._themeDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeEditSave": {
+      "kind": "command._themeEditSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeSelectChanged": {
+      "kind": "command._themeSelectChanged",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeSyncCustom": {
+      "kind": "command._themeSyncCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_themeUse": {
+      "kind": "command._themeUse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_themesRefresh": {
       "kind": "command._themesRefresh",
       "feedback_required": true,
@@ -4800,6 +4878,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_transcriptionOpenSettings": {
+      "kind": "command._transcriptionOpenSettings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_transcriptionSave": {
+      "kind": "command._transcriptionSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_trendsFocusTheme": {
       "kind": "command._trendsFocusTheme",
       "feedback_required": true,
@@ -4814,36 +4904,6 @@
     },
     "_ttsSpeak": {
       "kind": "command._ttsSpeak",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelSettingsStart": {
-      "kind": "command._tunnelSettingsStart",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelSettingsStop": {
-      "kind": "command._tunnelSettingsStop",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStartUI": {
-      "kind": "command._tunnelStartUI",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStatus": {
-      "kind": "command._tunnelStatus",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_tunnelStopUI": {
-      "kind": "command._tunnelStopUI",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5238,8 +5298,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_xlsxEditorTeardown": {
+      "kind": "command._xlsxEditorTeardown",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_xlsxSave": {
       "kind": "command._xlsxSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_zoomFontModeSync": {
+      "kind": "command._zoomFontModeSync",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5786,12 +5858,6 @@
     },
     "loadReportData": {
       "kind": "command.loadReportData",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "loadTunnelSettings": {
-      "kind": "command.loadTunnelSettings",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6378,12 +6444,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "showIcalInfo": {
-      "kind": "command.showIcalInfo",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "showSendingIndicator": {
       "kind": "command.showSendingIndicator",
       "feedback_required": true,
@@ -6452,6 +6512,30 @@
     },
     "tailnetLeave": {
       "kind": "command.tailnetLeave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeActivate": {
+      "kind": "command.themeActivate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeDeleteCustom": {
+      "kind": "command.themeDeleteCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeSaveCustom": {
+      "kind": "command.themeSaveCustom",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "themeSyncPending": {
+      "kind": "command.themeSyncPending",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6698,6 +6782,12 @@
     },
     "toggleTagGroup": {
       "kind": "command.toggleTagGroup",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "toggleTheme": {
+      "kind": "command.toggleTheme",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

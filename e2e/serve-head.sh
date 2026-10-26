@@ -52,9 +52,15 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _scrubbed=""
 for _k in ${!AMUX_@}; do
   case "$_k" in
-    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_E2E_*) ;;
+    AMUX_HOME|AMUX_RS_PORT|AMUX_RS_NO_LOOPBACK_BYPASS|AMUX_NO_SELF_ADOPT|AMUX_VAULT_KEYSTORE|AMUX_DASHBOARD_DIR|AMUX_GEMINI_BASE|AMUX_E2E_*) ;;
     *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
   esac
+done
+# A real Gemini key in the developer's shell must not reach a test server: with it,
+# a spec's request to the stub carries the real key, and a server whose stub base
+# was lost would spend it. Test servers have no Gemini key unless a spec saves one.
+for _k in GOOGLE_API_KEY GEMINI_API_KEY; do
+  [ -n "${!_k:-}" ] && { unset "$_k"; _scrubbed="$_scrubbed $_k"; }
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
 
@@ -111,6 +117,17 @@ export AMUX_NO_SELF_ADOPT=1
 # keeps every suppressed job visible with this exact reason, so isolation does
 # not turn monitoring into a silent absence.
 export AMUX_ISOLATED=1
+
+# AMUX_ISOLATED stops the loops, not the fleet reads. Started from a worker's
+# pane, this server inherited $TMUX and the fleet shim on PATH, so it listed
+# and captured every real worker's pane (about 15 wrapper processes a sweep,
+# 274% CPU averaged over 30s on 2026-10-26, cpu RCA 20261026-100223) and made
+# any session a test created in the fleet's own tmux server. It gets a private
+# tmux server in its throwaway home instead.
+unset TMUX TMUX_PANE
+export TMUX_TMPDIR="$AMUX_HOME/tmux"
+mkdir -p "$TMUX_TMPDIR"
+echo "[e2e] tmux: a private server under $TMUX_TMPDIR, so the fleet's panes are not read or written (verdict=e2e_tmux_private)."
 
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 

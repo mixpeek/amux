@@ -86,3 +86,37 @@ test('a worker tab preset is saved on the server, loads back, and stays out of t
     await cleanup('restore the worker-view tabs', () => page.evaluate(h => { (0, eval)('peekHiddenTabs = new Set(' + h + '); _savePeekTabPrefs(); _applyPeekTabVisibility()'); }, before), info);
   }
 });
+
+// Ethan, 2026-10-25, the Mac app: "drag & tab not working or draggable". The
+// menu's rows are dragged by the pointer, so this drags with the mouse the way
+// a person does and checks the tab bar, the saved order and the checkbox.
+test('dragging a row in the worker tab menu reorders the worker tabs, and says so', async ({ page }) => {
+  test.skip((page.viewportSize()?.width || 0) <= 600, 'phones get the bottom sheet; the drag is covered on desktop');
+  const beacons: any[] = [];
+  await page.route('**/api/client-debug', async r => { beacons.push(r.request().postDataJSON()); await r.fulfill({ json: { ok: true } }); });
+  await openWorkerView(page);
+  const before = await page.evaluate(() => (0, eval)('JSON.stringify([...peekTabOrder])'));
+  try {
+    await page.locator('#peek-tab-customize').click();
+    const menu = page.locator('#peek-tab-customizer-menu');
+    await expect(menu).toBeVisible();
+    const rows = menu.locator('.tab-customizer-item[data-ptab-id]');
+    const ids = () => rows.evaluateAll(els => els.map(e => (e as HTMLElement).dataset.ptabId));
+    const first = (await ids())[0];
+    const wasChecked = await rows.first().locator('input').isChecked();
+    const a = (await rows.nth(0).locator('.tab-drag-handle').boundingBox())!;
+    const c = (await rows.nth(3).boundingBox())!;
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 20; i++) await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2 + (c.y + c.height * 0.75 - a.y) * i / 20);
+    await page.mouse.up();
+    await expect.poll(async () => (await ids()).indexOf(first!)).toBeGreaterThan(0);
+    const order = await page.evaluate(() => (0, eval)('[...peekTabOrder]'));
+    expect(order.indexOf(first), 'the saved order moved with the row').toBe((await ids()).indexOf(first!));
+    expect(await menu.locator(`label[data-ptab-id="${first}"] input`).isChecked(), 'a drop is not a click on the checkbox').toBe(wasChecked);
+    await expect(menu, 'the menu stays open after a drop').toBeVisible();
+    await expect.poll(() => beacons.find(b => b.kind === 'tabcust-drag' && b.which === 'peek')?.verdict).toBe('reordered');
+  } finally {
+    await cleanup('restore the worker tab order', () => page.evaluate(o => { (0, eval)('peekTabOrder = ' + o + '; _savePeekTabPrefs(); _applyPeekTabVisibility()'); }, before), test.info());
+  }
+});

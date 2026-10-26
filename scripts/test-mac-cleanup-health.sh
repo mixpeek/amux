@@ -5,6 +5,8 @@
 # one it tests, and the processes a cell stops are real children of this script
 # so the kill path runs for real. Each cell fails if its guard is removed.
 set -euo pipefail
+export AMUX_CLEANUP_OPEN_WRITERS_CMD=false   # a disk bundle must not read the live lsof
+export AMUX_CLEANUP_TARGET_KEEP=/nonexistent/amux-test-keep   # never prune the live shared target
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane

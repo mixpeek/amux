@@ -2557,6 +2557,15 @@ pub async fn stop_profile_as_reason(
     // flush Cookies and Local Storage. `run_kill` validates before spawning.
     // Browser.close runs Chrome's normal shutdown path, which commits cookies
     // installed through CDP. TERM alone can exit before that store is flushed.
+    // The login a site keeps in session cookies goes to disk first, so the
+    // next start of this profile is still signed in (keep_session_cookies).
+    match keep_session_cookies(running.cdp_port).await {
+        Ok(n) if n > 0 => tracing::info!(profile = %running.profile, kept = n, verdict = "browser_session_cookies_kept",
+            measured = true, n_considered = n, "browser stop: session cookies kept so the login survives (values not logged)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(profile = %running.profile, error = %e, verdict = "browser_session_cookies_not_kept",
+            measured = false, n_considered = 0, "browser stop: could not keep session cookies; a session login may be lost"),
+    }
     if let Ok(tabs)=cdp_list(running.cdp_port).await {
         if let Some(ws)=tabs.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()) {
             if let Ok(mut c)=CdpClient::connect(ws).await {
@@ -2610,6 +2619,55 @@ pub async fn stop_profile_as_reason(
         clean_exit: Some(clean_exit),
         locks_cleaned,
     }
+}
+
+/// A running profile's SESSION cookies, made persistent for
+/// `browser_login_sync::SESSION_TTL_DAYS` (2026-10-26, a NetSuite worker:
+/// "browser profiles drop login sessions when the browser stops, so every
+/// closure means a full NetSuite login again"). Chrome writes only persistent
+/// cookies to disk, so a login a site keeps in a session cookie was lost on
+/// every stop, reap or restart: measured on Chrome 151, a session cookie never
+/// survived a relaunch, after Browser.close, SIGTERM or SIGKILL alike. Made
+/// persistent, it survived Browser.close and (once Chrome's ~30s cookie flush
+/// ran) SIGKILL. Same bounded policy as imported and synced logins; the site
+/// can still end the session on its side.
+///
+/// Pure over the Storage.getCookies rows, so it is tested without a browser.
+pub(crate) fn session_cookies_to_keep(rows: &[Value], now: i64) -> Vec<Value> {
+    let until = now + crate::integrations::browser_login_sync::SESSION_TTL_DAYS * 86_400;
+    rows.iter()
+        .filter(|c| c.get("session").and_then(Value::as_bool).unwrap_or(false))
+        .map(|c| {
+            let mut c = c.clone();
+            c["expires"] = serde_json::json!(until);
+            c["session"] = serde_json::json!(false);
+            c
+        })
+        .collect()
+}
+
+/// Apply [`session_cookies_to_keep`] to the browser on `port`. Called by the
+/// reaper on every tick for each running profile, and by a stop before
+/// Browser.close. Counts only; values are never logged.
+pub async fn keep_session_cookies(port: u16) -> anyhow::Result<usize> {
+    let tabs = cdp_list(port).await?;
+    let Some(ws) = tabs
+        .as_array()
+        .and_then(|a| a.iter().find(|t| t["type"] == "page"))
+        .and_then(|t| t["webSocketDebuggerUrl"].as_str())
+    else {
+        return Ok(0);
+    };
+    let mut c = CdpClient::connect(ws).await?;
+    let seen = c.call("Storage.getCookies", serde_json::json!({}), Duration::from_secs(10)).await?;
+    let rows = seen["cookies"].as_array().cloned().unwrap_or_default();
+    let keep = session_cookies_to_keep(&rows, chrono::Utc::now().timestamp());
+    if keep.is_empty() {
+        return Ok(0);
+    }
+    let params = crate::integrations::computer::cookie_params(&keep);
+    c.call("Storage.setCookies", serde_json::json!({ "cookies": params }), Duration::from_secs(10)).await?;
+    Ok(keep.len())
 }
 
 /// CDP over plain HTTP: the tab list. (Command traffic — screenshot, eval,
@@ -8015,6 +8073,24 @@ mod adoption_activity_tests {
 #[cfg(test)]
 mod running_file_ownership_tests {
     use super::*;
+    #[test]
+    fn session_cookies_are_kept_for_the_bounded_ttl_and_others_left_alone() {
+        let rows = vec![
+            serde_json::json!({"name": "JSESSIONID", "value": "v", "domain": ".netsuite.com", "path": "/", "session": true, "expires": -1}),
+            serde_json::json!({"name": "pref", "value": "x", "domain": ".netsuite.com", "path": "/", "session": false, "expires": 2_000_000_000.0}),
+        ];
+        let kept = session_cookies_to_keep(&rows, 1_000);
+        assert_eq!(kept.len(), 1, "only the session cookie needs keeping");
+        assert_eq!(kept[0]["name"], "JSESSIONID");
+        assert_eq!(kept[0]["session"], false);
+        let ttl = crate::integrations::browser_login_sync::SESSION_TTL_DAYS * 86_400;
+        assert_eq!(kept[0]["expires"], serde_json::json!(1_000 + ttl));
+        // The CDP parameters carry the new expiry, so Chrome stores it on disk.
+        let params = crate::integrations::computer::cookie_params(&kept);
+        assert_eq!(params[0]["expires"], serde_json::json!((1_000 + ttl) as f64));
+        assert!(session_cookies_to_keep(&rows[1..], 1_000).is_empty());
+    }
+
     #[test]
     fn parallel_profile_updates_preserve_peer_restart_records() {
         let home = tempfile::tempdir().unwrap();

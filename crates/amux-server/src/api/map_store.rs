@@ -203,8 +203,7 @@ pub fn doc(c: &Connection) -> R<Value> {
 }
 
 fn new_id() -> String {
-    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
-    format!("pin_{}_{:04x}", chrono::Utc::now().timestamp_millis(), OsRng.next_u32() & 0xffff)
+    format!("pin_{}_{:04x}", chrono::Utc::now().timestamp_millis(), getrandom::u32().expect("OS random source") & 0xffff)
 }
 
 /// Check and fill a pin. Coordinates become numbers; an unknown status or a
@@ -690,9 +689,8 @@ pub fn share(c: &Connection, list_id: &str) -> R<String> {
     {
         return Ok(t);
     }
-    use p256::elliptic_curve::rand_core::{OsRng, RngCore};
     let mut b = [0u8; 18];
-    OsRng.fill_bytes(&mut b);
+    getrandom::fill(&mut b).expect("OS random source");
     let token = hex::encode(b);
     c.execute("INSERT INTO map_shares(token,list_id,created_at) VALUES(?1,?2,?3)", params![token, list_id, now()])?;
     Ok(token)

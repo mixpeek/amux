@@ -172,7 +172,92 @@ async fn pull_status() -> Response {
     Json(deploy_status(repo_dir().as_deref()).await).into_response()
 }
 
+/// The scoped switch that makes "Pull from remote" send local work upstream as
+/// a pull request and then replace it with remote main (`amux contribute
+/// --then-pull`). Cloud servers turn it on (cloud/desktop bootstrap.sh and
+/// update.sh): one owner, one checkout. Off by default, because a shared
+/// checkout holds other workers' uncommitted drafts, which are not the owner's
+/// to publish or replace.
+pub(crate) const PULL_SENDS_LOCAL_KEY: &str = "AMUX_PULL_SENDS_LOCAL_AS_PR";
+
+fn pull_sends_local_as_pr() -> bool {
+    super::settings::effective_env(&crate::config::amux_home(), PULL_SENDS_LOCAL_KEY)
+        .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+}
+
+/// The amux CLI beside this server's binary (both install to the same bin
+/// dir), else whatever `amux` the PATH finds.
+fn amux_cli() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("amux")))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("amux"))
+}
+
+/// The `AMUX_CONTRIBUTE {...}` line `amux contribute --json` ends with.
+pub(crate) fn contribute_result(output: &str) -> Option<serde_json::Value> {
+    output
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("AMUX_CONTRIBUTE "))
+        .and_then(|j| serde_json::from_str(j).ok())
+}
+
+/// Send the checkout's local work as a pull request, then match remote main.
+/// Ok carries the CLI's result; Err is the whole reply for a pull that must
+/// not go on, because the local work is not safely on GitHub yet.
+async fn contribute_then_override(dir: &Path) -> Result<serde_json::Value, serde_json::Value> {
+    let cli = amux_cli();
+    let run = tokio::process::Command::new(&cli)
+        .args(["contribute", "--then-pull", "--json", "--repo"])
+        .arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true)
+        .output();
+    let out = match tokio::time::timeout(Duration::from_secs(300), run).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, cli = %cli.display(), measured = false, n_considered = 1,
+                verdict = "pull_contribute_unavailable", "Pull from remote could not run amux contribute; nothing was replaced");
+            return Err(json!({"ok": false, "output": format!("Could not run amux contribute ({e}). Nothing was replaced.")}));
+        }
+        Err(_) => {
+            tracing::warn!(measured = false, n_considered = 1, verdict = "pull_contribute_timed_out",
+                "amux contribute did not finish within 300s; nothing was replaced");
+            return Err(json!({"ok": false, "output": "Sending your local changes as a pull request took over 5 minutes. Nothing was replaced."}));
+        }
+    };
+    let text = out_of(&out);
+    let result = contribute_result(&text).unwrap_or_else(|| json!({"verdict": "no_result"}));
+    let verdict = result["verdict"].as_str().unwrap_or("no_result").to_string();
+    let shown: String = text.lines().filter(|l| !l.starts_with("AMUX_CONTRIBUTE ")).collect::<Vec<_>>().join("\n");
+    match out.status.code() {
+        Some(0) => {
+            tracing::info!(verdict = %verdict, pr_url = result["pr_url"].as_str().unwrap_or(""), measured = true, n_considered = 1,
+                "Pull from remote: local work handled by amux contribute");
+            Ok(json!({"verdict": verdict, "pr_url": result["pr_url"], "output": shown}))
+        }
+        code => {
+            tracing::warn!(verdict = %verdict, exit = ?code, measured = true, n_considered = 1,
+                "Pull from remote stopped: the local work could not be sent as a pull request, so nothing was replaced");
+            Err(json!({"ok": false, "needs_github": code == Some(4) && verdict == "github_not_connected",
+                "contribute": {"verdict": verdict}, "output": shown}))
+        }
+    }
+}
+
 async fn pull() -> Response {
+    let mut contribute = serde_json::Value::Null;
+    if let (Some(dir), true) = (repo_dir(), pull_sends_local_as_pr()) {
+        match contribute_then_override(&dir).await {
+            Ok(v) => contribute = v,
+            Err(v) => return Json(v).into_response(),
+        }
+    }
     let resp = pull_checkout().await;
     let (parts, body) = resp.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
@@ -184,6 +269,9 @@ async fn pull() -> Response {
         v["builder"] = kick_builder().await;
     }
     v["deploy"] = deploy_status(dir.as_deref()).await;
+    if !contribute.is_null() {
+        v["contribute"] = contribute;
+    }
     (parts.status, Json(v)).into_response()
 }
 
@@ -755,5 +843,21 @@ mod tests {
         assert_eq!(https_equiv("git@github.com"), None, "no colon, no path");
         assert_eq!(https_equiv(""), None);
         assert_eq!(https_equiv("/local/path/repo.git"), None);
+    }
+}
+
+#[cfg(test)]
+mod contribute_tests {
+    use super::contribute_result;
+
+    #[test]
+    fn reads_the_last_contribute_line_and_nothing_else() {
+        let out = "  local commits not on origin/main: 1\n  Pull request: https://github.com/mixpeek/amux/pull/7\n\
+            AMUX_CONTRIBUTE {\"verdict\": \"pr_opened\", \"exit\": 0, \"pr_url\": \"https://github.com/mixpeek/amux/pull/7\"}\n";
+        let v = contribute_result(out).unwrap();
+        assert_eq!(v["verdict"], "pr_opened");
+        assert_eq!(v["pr_url"], "https://github.com/mixpeek/amux/pull/7");
+        assert!(contribute_result("no result line\n").is_none());
+        assert!(contribute_result("AMUX_CONTRIBUTE not json\n").is_none());
     }
 }

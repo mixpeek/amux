@@ -272,10 +272,22 @@ pub async fn dictate(
     let mut text = String::new();
     let mut werr = String::new();
     let mut engine = "";
+    // The shared transcription setting (Settings > Connect > Transcription)
+    // decides which engines may run; Recordings follow the same one.
+    let pref = {
+        let store = state.store.clone();
+        tokio::task::spawn_blocking(move || store.read().map(|c| super::transcription::pref(&c)))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(super::transcription::Pref::Auto)
+    };
+    let use_local = pref != super::transcription::Pref::Gemini;
+    let use_gemini = pref != super::transcription::Pref::Local;
     // LOCAL FIRST (py:72108-72119). Whisper's raw output mangles every
     // session name, so the deterministic pass is not optional — it is what
     // makes this path usable (0/7 -> 7/7 names in the benchmark).
-    if whisper_available().await {
+    if use_local && whisper_available().await {
         let raw = match raw_audio {
             Some(r) => Some(r),
             None => match b64_decode_lenient(&b64) {
@@ -357,6 +369,14 @@ pub async fn dictate(
     // it is what turned silence into invented instructions. Once the local
     // engine has ANSWERED — even with nothing — the question is settled and
     // there is nothing left to fall back from.
+    if text.is_empty() && engine.is_empty() && !use_gemini {
+        let why = if werr.is_empty() { local_status().await.err().unwrap_or_default() } else { werr };
+        let msg = match super::transcription::choose(pref, Err(&why), false) {
+            super::transcription::Engine::Unavailable(m) => m,
+            _ => why,
+        };
+        return err(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": msg }));
+    }
     if text.is_empty() && engine.is_empty() {
         let store = state.store.clone();
         let sess = session.clone();
@@ -375,12 +395,10 @@ pub async fn dictate(
             Err(e) => return internal(e),
         };
         if key.is_empty() {
-            let msg = if werr.is_empty() {
-                "no transcription available — install a local Whisper model, add your own Gemini \
-                 key in the Dictation tab, or set GOOGLE_API_KEY in server.env"
-                    .to_string()
-            } else {
-                werr
+            let local_why = if werr.is_empty() { local_status().await.err().unwrap_or_default() } else { werr };
+            let msg = match super::transcription::choose(pref, Err(&local_why), false) {
+                super::transcription::Engine::Unavailable(m) => m,
+                _ => local_why,
             };
             return err(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": msg }));
         }
@@ -871,7 +889,7 @@ pub async fn delete_dict(State(state): State<AppState>, Path(id): Path<String>) 
 const DICTATION_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 /// py:27222 `_DICTATION_MODEL`.
-fn dictation_model() -> String {
+pub(crate) fn dictation_model() -> String {
     std::env::var("AMUX_DICTATION_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into())
 }
 
@@ -897,7 +915,7 @@ fn env_gemini_key() -> String {
 /// py:27226 `_dictation_key` — (key, source). BYO key from prefs wins
 /// (WRITE-ONLY: readable by the server, never returned to a client); else
 /// the server's env key.
-fn dictation_key(conn: &rusqlite::Connection) -> (String, &'static str) {
+pub(crate) fn dictation_key(conn: &rusqlite::Connection) -> (String, &'static str) {
     let byo: Option<String> = conn
         .query_row(
             "SELECT value FROM prefs WHERE key='dictation_gemini_key'",
@@ -915,7 +933,7 @@ fn dictation_key(conn: &rusqlite::Connection) -> (String, &'static str) {
 }
 
 /// py:27237 `_dictation_vocab` — personal vocabulary as prompt context.
-fn dictation_vocab(conn: &rusqlite::Connection) -> String {
+pub(crate) fn dictation_vocab(conn: &rusqlite::Connection) -> String {
     let mut terms: Vec<String> = Vec::new();
     let mut fixes: Vec<String> = Vec::new();
     let rows = conn
@@ -1019,13 +1037,19 @@ fn gemini_base() -> String {
     {
         return v;
     }
-    "https://generativelanguage.googleapis.com".into()
+    // AMUX_GEMINI_BASE points every Gemini call at another host: the e2e
+    // suite's stub, so no test reaches the real, billed API.
+    std::env::var("AMUX_GEMINI_BASE")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://generativelanguage.googleapis.com".into())
 }
 
 /// py:27604 `_gemini_generate` — POST generateContent, returns
 /// (text, error). Error strings match Python's exactly so the SPA's error
 /// surfaces read the same from either origin.
-async fn gemini_generate(key: &str, parts: Value, timeout_s: u64) -> (String, String) {
+pub(crate) async fn gemini_generate(key: &str, parts: Value, timeout_s: u64) -> (String, String) {
     let url = format!(
         "{}/v1beta/models/{}:generateContent?key={}",
         gemini_base(),
@@ -1340,6 +1364,22 @@ async fn whisper_available() -> bool {
         .ok()
         .flatten()
         .is_some()
+}
+
+/// Dictate's local engine for the transcription setting: `Ok(model)` when it
+/// can run, else why not.
+pub(crate) async fn local_status() -> Result<String, String> {
+    if whisper_available().await {
+        return Ok(whisper_model_name());
+    }
+    let name = whisper_model_name();
+    Err(if name.is_empty() || ["off", "none", "0"].contains(&name.to_lowercase().as_str()) {
+        "local Whisper is turned off by AMUX_WHISPER_MODEL".to_string()
+    } else if whisper_weights_path(&name).is_none() {
+        format!("no Whisper '{name}' model in ~/.amux/models/whisper")
+    } else {
+        "no Python with openai-whisper and torch".to_string()
+    })
 }
 
 /// py:27373 `_whisper_start` — spawn the WARM worker (model resident;
@@ -2571,7 +2611,9 @@ pub(crate) mod tests {
         let (st, e) = send(&app, "POST", "/api/dictate", Some(json!({ "audio": b64 }))).await;
         assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{e}");
         let msg = e["error"].as_str().unwrap();
-        assert!(msg.contains("install a local Whisper model"), "{msg}");
+        // The shared transcription setting's words: where to fix it, and how.
+        assert!(msg.contains(crate::api::transcription::SETTING), "{msg}");
+        assert!(msg.contains("install a local engine"), "{msg}");
         assert!(msg.contains("GOOGLE_API_KEY"), "{msg}");
 
         // Python's 413s, both shapes.

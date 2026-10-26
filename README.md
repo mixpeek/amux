@@ -38,7 +38,7 @@ Every app connects to your amux server (or your amux Cloud address).
 
 | Device | Get it |
 |---|---|
-| **Mac** (macOS 12+, Apple silicon and Intel) | [Download Amux-macOS.zip](https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip), or install with the one-liner below |
+| **Mac** (macOS 12+, Apple silicon and Intel) | [Download Amux-macOS.dmg](https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.dmg) (open it, drag Amux to Applications), [the .zip](https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip), or install with the one-liner below |
 | **iPhone and iPad** | [App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) (one app for both) |
 | **Android and any browser** | Open your dashboard URL and choose **Install app** or **Add to Home Screen** |
 
@@ -48,7 +48,7 @@ Mac, one command:
 curl -fsSL https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.zip -o /tmp/Amux-macOS.zip && ditto -x -k /tmp/Amux-macOS.zip /Applications && open /Applications/Amux.app
 ```
 
-The Mac app is a native window on the system WebKit (about 1.5 MB). It opens several windows and tabs, keeps pinned notes floating above other apps, shows a menu bar readout and a Dock badge when agents need you, and toggles with Control-Option-Space. Every window keeps its place: quit, crash or restart and each one reopens on the same display and Desktop, showing the same worker, tab or file. Save the arrangement as a named workspace and switch with Control-Command-1 to 9. Windows snap to a grid as you drag, and Window > Arrange tiles them. It is not notarized yet: if you download the zip in a browser, macOS blocks the first open, so go to System Settings, Privacy & Security, and click **Open Anyway**. To build it yourself: `make desktop`.
+The Mac app is a native window on the system WebKit (about 1.5 MB). It opens several windows and tabs, keeps pinned notes floating above other apps, shows a menu bar readout and a Dock badge when agents need you, and toggles with Control-Option-Space. Every window keeps its place: quit, crash or restart and each one reopens on the same display and Desktop, showing the same worker, tab or file. Save the arrangement as a named workspace and switch with Control-Command-1 to 9. Windows snap to a grid as you drag, and Window > Arrange tiles them. It is not notarized yet: if you download the .dmg or .zip in a browser, macOS blocks the first open, so go to System Settings, Privacy & Security, and click **Open Anyway**. To build it yourself: `make desktop`.
 
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard running parallel agents" width="920"/></a></p>
 

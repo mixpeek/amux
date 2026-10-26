@@ -294,6 +294,16 @@ def disk_paths(session: str) -> list[str]:
     return [p for p in paths if os.path.exists(p)]
 
 
+# The detached du's deadline. It was 240s, and du on mxp-gs12's 236 GB scratch
+# takes 896s on this machine under load (Mac disk RCA 20261025-190143), so
+# every measurement timed out, the reading stayed "unmeasured" and the 100 GB
+# budget never applied to the worker furthest past it: the bigger the tree,
+# the less the budget could see it. The walk runs detached, so a long deadline
+# costs no command anything; the lock above stays fresh for the whole run so
+# two measurements never overlap.
+DISK_DU_TIMEOUT_S = float(os.environ.get("AMUX_DISK_DU_TIMEOUT_S") or 1800)
+
+
 def disk_cache_path(session: str) -> str:
     return os.path.join(amux_home(), "state", "disk-usage", session + ".json")
 
@@ -354,7 +364,7 @@ def disk_usage(session: str, ttl_s: float) -> dict:
     if age > ttl_s:
         lock = cp + ".measuring"
         try:
-            fresh_lock = os.path.exists(lock) and time.time() - os.stat(lock).st_mtime < 300
+            fresh_lock = os.path.exists(lock) and time.time() - os.stat(lock).st_mtime < DISK_DU_TIMEOUT_S + 300
         except OSError:
             fresh_lock = False
         if not fresh_lock:
@@ -662,8 +672,32 @@ def usage_headroom() -> dict:
             "window": top.get("kind") or top.get("group") or "", "resets_at": top.get("resets_at") or ""}
 
 
+def scoped_env_value(key: str) -> str | None:
+    """The worker's live scoped value for key, from $AMUX_HOME/sessions/<worker>.env.
+
+    The process env is fixed at launch, so a cap the owner raises in the Scope
+    tab used to apply only after a restart (2026-10-26: a doubled cap for three
+    lanes mid-incident read the old value). The env file is what the server
+    writes on every scope change, so it wins when it names the key.
+    """
+    if not WORKER:
+        return None
+    try:
+        with open(os.path.join(amux_home(), "sessions", WORKER + ".env")) as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k == key:
+                    return v.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    return None
+
+
 def subagent_max(cfg: dict) -> int | None:
-    raw = os.environ.get(cfg.get("env_max") or "AMUX_MAX_SUBAGENTS")
+    key = cfg.get("env_max") or "AMUX_MAX_SUBAGENTS"
+    raw = scoped_env_value(key)
+    if raw is None:
+        raw = os.environ.get(key)
     try:
         n = int(raw) if raw not in (None, "") else int(cfg.get("max_running_default", 4))
     except ValueError:
@@ -721,7 +755,7 @@ def main() -> None:
         # The detached measurement disk_usage() starts. Bounded so a wedged
         # filesystem cannot leave it running; the lock is removed either way.
         try:
-            measure_disk(sys.argv[2], float(os.environ.get("AMUX_DISK_DU_TIMEOUT_S") or 240))
+            measure_disk(sys.argv[2], DISK_DU_TIMEOUT_S)
         finally:
             try:
                 os.unlink(disk_cache_path(sys.argv[2]) + ".measuring")

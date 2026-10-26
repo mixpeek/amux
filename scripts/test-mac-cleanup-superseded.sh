@@ -10,6 +10,9 @@ TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
 export AMUX_CLEANUP_FSEVENTSD_CMD=true AMUX_CLEANUP_SQLITE_PS_CMD=true AMUX_CLEANUP_HEALTH_PROBES=off
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp" AMUX_CLEANUP_SCOPE_FILE=/dev/null AMUX_CLEANUP_SESSIONS_CMD=false
+# The pruner now always adds TARGET_KEEP, whose default is the live shared target:
+# a test must never prune the real ~/.amux/rust-build-target.
+export AMUX_CLEANUP_TARGET_KEEP="$FIX/no-keep"
 trap 'rm -rf -- "${FIX:?}"' EXIT
 mkdir -p "$FIX/tmp"; export TMPDIR="$FIX/tmp"
 fails=0
@@ -55,6 +58,16 @@ check "an rlib is never an executable target" yes "$(ex "$D/libmvs_shard-aaaaaaa
 check "an old orphaned .rcgu.o pruned"        no  "$(ex "$D/mvs_shard-9999999999999999.mvs_shard.x-cgu.01.rcgu.o")"
 check "a fresh .rcgu.o (compile in flight) kept" yes "$(ex "$D/mvs_shard-8888888888888888.mvs_shard.x-cgu.02.rcgu.o")"
 check "the summary counts them" yes "$(grep -q 'pruned 2 superseded executable(s) + 1 orphaned .rcgu.o' "$FIX/out.txt" && echo yes || echo no)"
+
+echo "1b. a shared target with no CACHEDIR.TAG is still pruned (disk RCA 20261025-190143)"
+mk; rm -f "$T/CACHEDIR.TAG"
+TARGET_KEEP_SAVED=$TARGET_KEEP; TARGET_KEEP="$FIX/elsewhere:$T"
+run 3 60
+TARGET_KEEP=$TARGET_KEEP_SAVED
+check "its old orphaned .rcgu.o pruned"        no  "$(ex "$D/mvs_shard-9999999999999999.mvs_shard.x-cgu.01.rcgu.o")"
+check "its oldest superseded copy pruned"      no  "$(ex "$D/mvs_shard-1111111111111111")"
+check "its newest copy kept"                   yes "$(ex "$D/mvs_shard-5555555555555555")"
+check "the summary says it came from the keep list" yes "$(grep -q 'targets 1 (1 shared without CACHEDIR.TAG)' "$FIX/out.txt" && echo yes || echo no)"
 
 echo "2. the age floor: a superseded copy younger than the floor stays"
 mk; run 3 360      # 6h floor: every copy is younger

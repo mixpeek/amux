@@ -27,6 +27,57 @@ struct Connection: Codable {
     var url: String
 }
 
+/// Which server a page is on, as a color for its tab (Ethan, 2026-10-25: "put
+/// a color code based on the location/connection (so if its localhost/desktop
+/// vs sandbox, etc.) in the tabs"). This Mac is green, amux cloud (a sandbox
+/// on *.amux.io) blue, and any other server keeps one color of its own, picked
+/// from its host so it never changes between launches.
+struct ConnectionBadge {
+    let color: NSColor
+    let name: String
+    let host: String
+
+    private static var cache: [String: ConnectionBadge] = [:]
+
+    static func of(_ url: URL?) -> ConnectionBadge? {
+        guard let url = url, let host = url.host, url.scheme == "https" || url.scheme == "http" else { return nil }
+        let key = host + ":" + String(url.port ?? 0)
+        if let hit = cache[key] { return hit }
+        let named = loadConfig().connections.first { c in
+            URL(string: c.url).map { $0.host == host && ($0.port ?? 0) == (url.port ?? 0) } ?? false
+        }?.name
+        let local = ["localhost", "127.0.0.1", "::1"].contains(host) || host.hasSuffix(".local")
+            || host == ProcessInfo.processInfo.hostName
+        let color: NSColor
+        if local {
+            color = .systemGreen
+        } else if host == "amux.io" || host.hasSuffix(".amux.io") {
+            color = .systemBlue
+        } else {
+            let palette: [NSColor] = [.systemOrange, .systemPurple, .systemPink, .systemTeal, .systemYellow, .systemIndigo, .systemBrown]
+            var h: UInt32 = 5381
+            for b in host.utf8 { h = (h &* 33) ^ UInt32(b) }
+            color = palette[Int(h % UInt32(palette.count))]
+        }
+        let badge = ConnectionBadge(color: color, name: named ?? (local ? "This Mac" : host), host: host)
+        cache[key] = badge
+        return badge
+    }
+
+    /// The dot a tab shows beside its title.
+    func dot() -> NSView {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 4
+        v.layer?.backgroundColor = color.cgColor
+        v.toolTip = "Connected to \(name) (\(host))"
+        v.identifier = NSUserInterfaceItemIdentifier("amux-connection-" + host)
+        v.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([v.widthAnchor.constraint(equalToConstant: 8), v.heightAnchor.constraint(equalToConstant: 8)])
+        return v
+    }
+}
+
 struct SavedWindow: Codable {
     var url: String
     var frame: String
@@ -46,6 +97,8 @@ struct SavedWindow: Codable {
     var title: String?
     // Added 2026-10-23 (amux-panes.swift): the window split into panes.
     var grid: SavedGrid?
+    // Added 2026-10-25: a name the owner gave the tab (right-click > Rename Tab).
+    var name: String?
 }
 
 struct Config: Codable {
@@ -234,15 +287,24 @@ let viewHashBody = """
     const bd = document.getElementById('board-detail-overlay');
     if (bd && bd.classList.contains('active') && typeof boardDetailId !== 'undefined' && boardDetailId)
       return '#issue=' + encodeURIComponent(boardDetailId);
+    // An open file is saved by its real path: the title can read as a
+    // markdown heading, "name (new)" or "name • cached 3m".
     const fo = document.getElementById('file-overlay');
     if (fo && fo.classList.contains('active')) {
-      const dir = (document.getElementById('file-subpath') || {}).textContent || '';
-      const name = (document.getElementById('file-title') || {}).textContent || '';
-      if (dir.startsWith('/') && name) return '#path=' + encodeURIComponent((dir === '/' ? '' : dir) + '/' + name);
+      let p = '';
+      try { if (typeof _fileData !== 'undefined' && _fileData && !_fileData._isNew && _fileData.path) p = _fileData.path; } catch (e) {}
+      p = p || fo.dataset.path || '';
+      if (p.startsWith('/')) return '#path=' + encodeURIComponent(p);
+    }
+    const mo = document.getElementById('mdai-overlay');
+    if (mo && mo.classList.contains('active')) {
+      try { if (typeof _mdaiCur !== 'undefined' && _mdaiCur && _mdaiCur.abs) return '#path=' + encodeURIComponent(_mdaiCur.abs); } catch (e) {}
     }
     if (typeof activeView !== 'undefined' && activeView) {
       try { if (activeView === 'files' && _filesPath && _filesPath !== '/') return '#path=' + encodeURIComponent(_filesPath); } catch (e) {}
       try { if (activeView === 'browser' && _bwSession) return '#browser=' + encodeURIComponent(_bwSession); } catch (e) {}
+      // A hidden tab's drawing waits in pendingOpen until the editor mounts.
+      try { if (activeView === 'draw') { const d = _drawS(), dp = (d && (d.path || d.pendingOpen)) || ''; if (dp.startsWith('/')) return '#path=' + encodeURIComponent(dp); } } catch (e) {}
       return '#view=' + encodeURIComponent(activeView);
     }
   } catch (e) {}
@@ -300,8 +362,33 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     var pageLabel = ""
     // What the page shows, posted by windowLabelJS; saved with the window.
     var viewHash = ""
+    /// When this page was last on screen (the memory guard reloads only pages
+    /// that have been out of sight a while).
+    var lastShown = Date()
+    var lastMemoryReload = Date.distantPast
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
+
+    /// The amux server this tab is on (scheme, host and port): the page it shows,
+    /// or the last one it showed while it sits on the connect page.
+    var serverOrigin: URL? {
+        let page = webView.url.flatMap { ($0.scheme == "https" || $0.scheme == "http") ? $0 : nil } ?? lastServerURL
+        guard let u = page, let scheme = u.scheme, let host = u.host else { return nil }
+        let h = host.contains(":") ? "[\(host)]" : host
+        return URL(string: "\(scheme)://\(h)" + (u.port.map { ":\($0)" } ?? ""))
+    }
+    /// A restored tab that is not showing waits to load (launch speed, 2026-10-25):
+    /// the shown tabs load first, then these one at a time, or at once when picked.
+    var deferredURL: URL?
+
+    func loadDeferred(_ why: String) {
+        guard let u = deferredURL else { return }
+        deferredURL = nil
+        dlog("verdict=deferred_tab_loaded why=\(why) url=\(u.fragment ?? "")")
+        load(u)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { loadDeferred("selected") }
     // Where you last put it (amux-workspace.swift).
     var home: SavedWindow?
     var lastSpace: Spaces.Info?
@@ -333,8 +420,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         if !cfg.userContentController.userScripts.contains(where: { $0.source == windowLabelJS }) {
             cfg.userContentController.addUserScript(WKUserScript(source: windowLabelJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
+        // WebKit's own user agent with the app's name after it. A custom agent of
+        // only "Amux-Desktop/2.0" hid that this is WebKit, so the dashboard took
+        // its CSS-zoom path, and at 110% the spreadsheet editor selected the
+        // wrong cell (2026-10-26; the page's zoom-mode beacon read apple_webkit:false).
+        cfg.applicationNameForUserAgent = "Amux-Desktop/2.0"
         webView = WKWebView(frame: .zero, configuration: cfg)
-        webView.customUserAgent = "Amux-Desktop/2.0"
         webView.allowsMagnification = true
         webView.allowsBackForwardNavigationGestures = true
 
@@ -388,13 +479,34 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     /// The page's own name ("mixpeek-general", "Board").
+    /// A name the owner gave this tab (Ethan, 2026-10-25: "right click a tab
+    /// and name it"). It wins over the page's own name until cleared, and is
+    /// saved with the window and its workspace.
+    var customName: String?
+
     var pageTitle: String {
+        if let n = customName, !n.isEmpty { return n }
         let page = (webView.title ?? "").trimmingCharacters(in: .whitespaces)
         return !pageLabel.isEmpty ? pageLabel : (page.isEmpty ? "amux" : page)
     }
 
+    func rename(_ name: String?) {
+        let n = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        customName = (n?.isEmpty ?? true) ? nil : n
+        dlog("verdict=tab_renamed named=\(customName == nil ? 0 : 1) view=\(viewHash)")
+        updateTitle()
+        (paneHost ?? self).updateTitle()
+        app?.saveWindowsSoon()
+    }
+
     func updateTitle() {
         window?.title = pageTitle
+        // The tab's dot says which server this page is on.
+        if let w = window, let badge = ConnectionBadge.of(webView.url ?? lastServerURL),
+           w.tab.accessoryView?.identifier?.rawValue != "amux-connection-" + badge.host {
+            w.tab.accessoryView = badge.dot()
+            w.tab.toolTip = pageTitle + " · " + badge.name
+        }
         // A grid's window is named by its panes, each pane by its page.
         if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
             g.refreshStrips()
@@ -469,7 +581,11 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func windowDidExitFullScreen(_ notification: Notification) { normalFrame = nil; app?.windowPlaced(self) }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if let u = webView.url, app?.isServerURL(u) == true { lastServerURL = u }
+        // Any amux server this tab shows, not only the default connection: a tab on
+        // sandbox.amux.io must remember sandbox, or its new tabs and its saved place
+        // fall back to the default server (Ethan, 2026-10-26).
+        if let u = webView.url, u.scheme == "https" || u.scheme == "http" { lastServerURL = u }
+        app?.loadNextDeferred(after: self)
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -523,14 +639,22 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             decisionHandler(.cancel)
             return
         }
-        // Links off the amux server open in the default browser.
-        if navigationAction.navigationType == .linkActivated, !(app?.isServerURL(url) ?? true) {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
+        // A download first: a page saving a file (an <a download> on a blob: or
+        // data: URL, as the file viewer's Download does) is not a link to
+        // another site. Checked after the link rule, a blob: URL is not a server
+        // URL, so it went to macOS, which offered to find an app for
+        // "blob:https://..." (Ethan, 2026-10-26 screenshot).
+        if navigationAction.shouldPerformDownload {
+            dlog("verdict=download_started url_scheme=\(url.scheme ?? "-")")
+            decisionHandler(.download)
             return
         }
-        if navigationAction.shouldPerformDownload {
-            decisionHandler(.download)
+        // Links off the amux server open in the default browser. blob: and
+        // data: belong to this page, never to another app.
+        if navigationAction.navigationType == .linkActivated, !(app?.isServerURL(url) ?? true),
+           url.scheme != "blob", url.scheme != "data" {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
             return
         }
         decisionHandler(.allow)
@@ -569,7 +693,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     // ── WKDownloadDelegate: into ~/Downloads, never overwriting ──
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        // AMUX_DESKTOP_DOWNLOADS_DIR: where a test copy saves (download-e2e.py).
+        let dir = ProcessInfo.processInfo.environment["AMUX_DESKTOP_DOWNLOADS_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         var dest = dir.appendingPathComponent(suggestedFilename)
         let base = dest.deletingPathExtension().lastPathComponent
         let ext = dest.pathExtension
@@ -582,7 +708,16 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        dlog("verdict=download_finished")
         NSSound(named: "Glass")?.play()
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        dlog("verdict=download_failed error=\(error.localizedDescription)")
+        let a = NSAlert()
+        a.messageText = "The download did not finish"
+        a.informativeText = error.localizedDescription
+        a.runModal()
     }
 
     // ── WKUIDelegate ──
@@ -595,6 +730,13 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 dlog("verdict=page_opened_window url=\(url.absoluteString) from=\(webView.url?.absoluteString ?? "-")")
                 let c = app.openWindow(url: nil, frame: nil, configuration: configuration)
                 return c.webView
+            }
+            // A blob: or data: URL opened in a new window (target=_blank) is a
+            // file this page made: save it, rather than asking macOS for an app.
+            if url.scheme == "blob" || url.scheme == "data" {
+                dlog("verdict=download_started url_scheme=\(url.scheme ?? "-") via=new_window")
+                webView.startDownload(using: navigationAction.request) { $0.delegate = self }
+                return nil
             }
             NSWorkspace.shared.open(url)
         }
@@ -753,6 +895,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         needsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.pollNeedsInput() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.reportResources() }
         resourcesTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.reportResources() }
+        memoryGuardTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60), repeats: true) { [weak self] _ in self?.guardTabMemory() }
         NSApp.activate(ignoringOtherApps: true)
         // `amux amux://worker/x` on the command line, once the pins are known.
         let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
@@ -763,12 +906,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     // ── Windows ──
     @discardableResult
-    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true) -> DashboardWindowController {
+    func openWindow(url: URL?, frame: NSRect?, configuration: WKWebViewConfiguration? = nil, activate: Bool = true, load: Bool = true) -> DashboardWindowController {
         let c = DashboardWindowController(app: self, frame: frame ?? cascadeFrame(), configuration: configuration)
         controllers.append(c)
         // Every new window or tab says so, so a tab nobody asked for is traceable.
-        dlog("verdict=window_opened url=\(url?.absoluteString ?? (configuration != nil ? "page-window.open" : "server")) windows=\(controllers.count)")
-        if let url = url { c.load(url) } else if configuration == nil {
+        dlog("verdict=window_opened url=\(url?.absoluteString ?? (configuration != nil ? "page-window.open" : load ? "server" : "deferred")) windows=\(controllers.count)")
+        if !load {
+        } else if let url = url { c.load(url) } else if configuration == nil {
             if let s = serverURL { c.load(s) } else { c.showConnectPage() }
         }
         if activate {
@@ -790,10 +934,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// A new tab opens on the worker list (Ethan, 2026-10-22). The bare server
     /// address restores the page's last view, which is usually the worker the
     /// tab beside it already shows.
+    /// A new tab opens on the server of the tab it was opened from (Ethan,
+    /// 2026-10-26: "if i open a new tab from an active one that has a certain
+    /// connection (like sandbox) it should open the tab in that"); only a tab on
+    /// no server falls back to the default connection.
     func newTab(nextTo c: DashboardWindowController) {
         let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
         controllers.append(n)
-        if let u = url(withHash: "#view=sessions") { n.load(u) } else { n.showConnectPage() }
+        let u = url(withHash: "#view=sessions", on: c.serverOrigin)
+        dlog("verdict=new_tab_server server=\(u.flatMap { $0.host } ?? "-") from_tab=\(c.serverOrigin != nil)")
+        if let u = u { n.load(u) } else { n.showConnectPage() }
         if let w = c.window, let nw = n.window {
             w.addTabbedWindow(nw, ordered: .above)
             nw.makeKeyAndOrderFront(nil)
@@ -819,8 +969,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return c
     }
 
-    func url(withHash hash: String) -> URL? {
-        guard let s = serverURL else { return nil }
+    /// `hash` on server `base`, or on the default connection when `base` is nil.
+    func url(withHash hash: String, on base: URL? = nil) -> URL? {
+        guard let s = base ?? serverURL else { return nil }
         return URL(string: normalized(s.absoluteString) + "/" + hash)
     }
 
@@ -981,6 +1132,55 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // through a dashboard page (the page's beacon path needs no token). A
     // verdict of memory_pressure says the tabs are pushing this Mac into swap.
     var resourcesTimer: Timer?
+    var memoryGuardTimer: Timer?
+    var tabMenuMonitor: Any?
+    var lastDuplicateWarned = Set<String>()
+    weak var tabMenuTarget: DashboardWindowController?
+    var deferredTimer: Timer?
+
+    func envSeconds(_ key: String, _ fallback: Double) -> Double {
+        ProcessInfo.processInfo.environment[key].flatMap(Double.init) ?? fallback
+    }
+
+    /// On screen: the selected tab of a visible window, or a pane of one.
+    func isShown(_ c: DashboardWindowController) -> Bool {
+        let host = c.paneHost?.window ?? c.window
+        return (host?.isVisible ?? false) && (host?.tabGroup?.selectedWindow ?? host) === host
+            && (c.paneHost == nil || c.webView.window != nil)
+    }
+
+    // ── Memory guard (Ethan, 2026-10-25: "reduce footprint ... with zero
+    // degradation of capability") ──
+    // A page normally settles at 150-500 MB, but the desktop-resources reports
+    // show single tabs at 1.8, 3.2 and 6.3 GB. A page that has been out of
+    // sight for a while and is over the limit is reloaded on the same URL: its
+    // view, worker and tab come back from the URL, drafts from local storage,
+    // and the shown page is never touched. Each reload is logged and reported.
+    func guardTabMemory() {
+        let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
+        let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
+        let now = Date()
+        for c in controllers {
+            if isShown(c) { c.lastShown = now; continue }
+            let hidden = now.timeIntervalSince(c.lastShown)
+            // At most one reload per page per cooldown: a page that grows straight
+            // back is a leak to find (its view is in the log), not one to churn.
+            guard hidden >= grace, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600),
+                  let pid = webPID(c), let mb = footprintMB(pid), mb > limit,
+                  let url = c.webView.url, isServerURL(url) else { continue }
+            c.lastMemoryReload = now
+            dlog("verdict=tab_reloaded_for_memory mb=\(mb) limit=\(limit) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
+            let payload: [String: Any] = ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
+                                          "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash]
+            if let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
+               let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) {
+                r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
+            }
+            // The saved URL carries what the page had open (a file, a drawing, a
+            // worker's tab); the web view's own URL may have dropped that hash.
+            c.webView.load(URLRequest(url: c.savedURL().flatMap { URL(string: $0) } ?? url))
+        }
+    }
 
     func footprintMB(_ pid: pid_t) -> Int? {
         var info = rusage_info_v2()
@@ -990,6 +1190,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         return r == 0 ? Int(info.ri_phys_footprint / 1_048_576) : nil
     }
 
+    /// CPU seconds a process has used. proc_pid_rusage counts in mach time units,
+    /// which are not nanoseconds on Apple silicon.
+    func cpuSeconds(_ pid: pid_t) -> Double? {
+        var info = rusage_info_v2()
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+        }
+        guard r == 0 else { return nil }
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        let ticks = Double(info.ri_user_time + info.ri_system_time)
+        return ticks * Double(tb.numer) / Double(tb.denom) / 1e9
+    }
+
+    /// One page's web process, when WebKit exposes it.
+    func webPID(_ c: DashboardWindowController) -> pid_t? {
+        let key = NSSelectorFromString("_webProcessIdentifier")
+        guard c.webView.responds(to: key), let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 else { return nil }
+        return pid
+    }
+
     func reportResources() {
         let pidKey = NSSelectorFromString("_webProcessIdentifier")
         var seen = Set<pid_t>(), tabs: [[String: Any]] = [], total = 0, shown = 0
@@ -997,7 +1218,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             let w = c.window
             let visible = (w?.isVisible ?? false) && (w?.occlusionState.contains(.visible) ?? false)
             if visible { shown += 1 }
-            var row: [String: Any] = ["shown": visible ? 1 : 0]
+            var row: [String: Any] = ["shown": visible ? 1 : 0, "view": c.viewHash]
             if c.webView.responds(to: pidKey), let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 {
                 if let mb = footprintMB(pid) {
                     row["mb"] = mb
@@ -1017,6 +1238,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             "why_unmeasured": measured ? "" : "no tab exposed its web process",
             "tabs": tabs.count, "shown": shown, "web_processes": seen.count, "web_mb_total": total,
             "tab_mb": tabs.compactMap { $0["mb"] as? Int }, "ram_mb": ramMB, "swap_used_mb": swapMB,
+            // Which page each figure is, so a 6 GB tab names its view (2026-10-25).
+            "tab_views": tabs.filter { $0["mb"] != nil }.map { ($0["view"] as? String) ?? "" },
             "pressure_level": pressure, "app_mb": footprintMB(getpid()) ?? -1,
             "verdict": pressure >= 2 ? "memory_pressure" : (measured ? "ok" : "unmeasured"),
         ]
@@ -1316,7 +1539,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
             guard let self = self else { return }
             let hash = (result as? String) ?? ""
-            self.openWindow(url: hash.isEmpty ? c.webView.url : self.url(withHash: hash), frame: nil)
+            self.openWindow(url: hash.isEmpty ? c.webView.url : self.url(withHash: hash, on: c.serverOrigin), frame: nil)
         }
     }
 

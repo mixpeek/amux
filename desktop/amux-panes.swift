@@ -241,6 +241,9 @@ final class PaneView: NSView {
         while items.count < t.count {
             let it = PaneTabItem()
             it.onClose = { [weak self, weak it] in if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }) { s.closeTab(i) } }
+            it.onRename = { [weak self, weak it] in
+                if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }), i < s.tabs.count { s.grid?.host?.app?.promptRename(s.tabs[i]) }
+            }
             items.append(it)
             header.addSubview(it)
         }
@@ -314,7 +317,19 @@ final class PaneTabItem: NSView {
     private let label = NSTextField(labelWithString: "")
     private let close = NSButton()
     var onClose: (() -> Void)?
+    var onRename: (() -> Void)?
     private var active = false
+
+    // Right-click a strip tab to name it, as a window tab can be.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard onRename != nil else { return nil }
+        let m = NSMenu()
+        let r = NSMenuItem(title: "Rename Tab…", action: #selector(renameTapped), keyEquivalent: "")
+        r.target = self
+        m.addItem(r)
+        return m
+    }
+    @objc private func renameTapped() { onRename?() }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -377,11 +392,13 @@ final class PaneHeader: NSView {
 struct SavedTab: Codable {
     var url: String
     var title: String?
+    var name: String?   // the owner's name for the tab, when given
 }
 
 struct SavedPane: Codable {
     var url: String
     var title: String?
+    var name: String?
     /// The pane's other tabs, after this one, and which tab it shows
     /// (0 is this one). Absent in a file saved before panes had tabs.
     var tabs: [SavedTab]?
@@ -647,7 +664,9 @@ extension AppDelegate {
         guard let host = g.host else { return }
         let n = DashboardWindowController(app: self, frame: host.window?.frame, configuration: nil)
         controllers.append(n)
-        if let u = url(withHash: "#view=sessions") { n.load(u) } else { n.showConnectPage() }
+        // On the server of the tab showing in that pane, like any new tab.
+        let from = g.members[id]?.serverOrigin ?? host.serverOrigin
+        if let u = url(withHash: "#view=sessions", on: from) { n.load(u) } else { n.showConnectPage() }
         dockPane(n, into: host, at: id, edge: .center, zone: "new_tab")
     }
 
@@ -760,20 +779,28 @@ extension AppDelegate {
         func tab(_ m: DashboardWindowController) -> SavedTab? {
             guard let url = m.savedURL() else { return nil }
             let t = m.window?.title ?? ""
-            return SavedTab(url: url, title: t.isEmpty || t == "amux" ? nil : t)
+            return SavedTab(url: url, title: t.isEmpty || t == "amux" ? nil : t, name: m.customName)
         }
         var panes: [SavedPane] = []
         for id in others {
             let stack = g.tabs(id).compactMap(tab)
             guard stack.count == g.tabs(id).count, let first = stack.first else { return nil }
             let active = g.tabs(id).firstIndex { $0 === g.members[id] } ?? 0
-            panes.append(SavedPane(url: first.url, title: first.title, tabs: stack.count > 1 ? Array(stack.dropFirst()) : nil, active: active == 0 ? nil : active))
+            panes.append(SavedPane(url: first.url, title: first.title, name: first.name, tabs: stack.count > 1 ? Array(stack.dropFirst()) : nil, active: active == 0 ? nil : active))
         }
         // The host's pane: the host first, its other tabs after.
         let hostStack = [c] + g.tabs(hostLeaf).filter { $0 !== c }
         let hostTabs = hostStack.dropFirst().compactMap(tab)
         guard hostTabs.count == hostStack.count - 1 else { return nil }
         let hostActive = hostStack.firstIndex { $0 === g.members[hostLeaf] } ?? 0
+        // A page twice in one window (Ethan's 2026-10-25 screenshot: one worker
+        // in both panes) is saved as it is, but said, so the next one is traceable.
+        let urls = [c.savedURL()].compactMap { $0 } + hostTabs.map { $0.url } + panes.flatMap { [$0.url] + ($0.tabs ?? []).map { $0.url } }
+        let dups = Set(urls.filter { u in urls.filter { $0 == u }.count > 1 })
+        if !dups.isEmpty, dups != lastDuplicateWarned {
+            lastDuplicateWarned = dups
+            dlog("verdict=pane_grid_duplicate_page pages=\(dups.sorted().joined(separator: ",")) grid=\(g.tree.encoded)")
+        }
         return SavedGrid(tree: g.tree.mapped { index[$0] ?? 0 }.encoded, panes: panes,
                          hostTabs: hostTabs.isEmpty ? nil : hostTabs, hostActive: hostActive == 0 ? nil : hostActive,
                          zoomed: g.zoomed.flatMap { index[$0] })
@@ -787,7 +814,7 @@ extension AppDelegate {
             dlog("verdict=pane_grid_restore_skipped reason=bad_tree tree=\(s.tree)")
             return
         }
-        func page(_ url: String, _ title: String?) -> DashboardWindowController {
+        func page(_ url: String, _ title: String?, _ name: String? = nil) -> DashboardWindowController {
             let c: DashboardWindowController
             if let j = pool.firstIndex(where: { $0.savedURL() == url }) {
                 c = pool.remove(at: j)
@@ -801,14 +828,15 @@ extension AppDelegate {
                 cw.contentView = NSView()
             }
             c.paneHost = host
+            if let n = name, !n.isEmpty { c.customName = n }
             return c
         }
         let g = PaneGrid(host: host)
-        let hostStack = [host] + (s.hostTabs ?? []).map { page($0.url, $0.title) }
+        let hostStack = [host] + (s.hostTabs ?? []).map { page($0.url, $0.title, $0.name) }
         g.stacks[0] = hostStack
         g.members[0] = hostStack[min(s.hostActive ?? 0, hostStack.count - 1)]
         for (i, p) in s.panes.enumerated() {
-            let stack = [page(p.url, p.title)] + (p.tabs ?? []).map { page($0.url, $0.title) }
+            let stack = [page(p.url, p.title, p.name)] + (p.tabs ?? []).map { page($0.url, $0.title, $0.name) }
             g.stacks[i + 1] = stack
             g.members[i + 1] = stack[min(p.active ?? 0, stack.count - 1)]
         }

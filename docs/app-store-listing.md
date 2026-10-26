@@ -57,19 +57,19 @@ amux runs on your Mac or Linux server, launching and managing dozens of parallel
 
 **Two access modes**
 
-Native iOS app (this app): SwiftUI, optimized touch targets, full peek panel and plan strip. Connects to your amux server over Wi-Fi, Tailscale, or the amux cloud tunnel.
+Native iOS app (this app): SwiftUI, optimized touch targets, full peek panel and plan strip. Connects to your amux server over Wi-Fi or Tailscale.
 
 Progressive Web App: Open your amux dashboard URL in Safari on any iPhone — install to home screen for a full-screen experience without the App Store.
 
 **Remote access**
 
-amux tunnel (requires amux cloud subscription) gives you a stable public HTTPS URL for your dashboard. Tailscale is free and works great for personal use. Both work with this app.
+Tailscale is free and works great for personal use, and an amux cloud box has its own HTTPS address. Both work with this app.
 
 **Requirements**
 
 - amux server running on Mac or Linux (free, open source: github.com/mixpeek/amux)
 - Claude Code, OpenAI Codex CLI, or Gemini CLI installed on your server
-- Wi-Fi, Tailscale, or amux tunnel for remote access
+- Wi-Fi, Tailscale, or amux cloud for remote access
 
 ---
 

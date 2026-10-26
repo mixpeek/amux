@@ -198,6 +198,7 @@ extension AppDelegate {
                 s.url = url
                 let t = m.pageTitle
                 if !t.isEmpty, t != "amux" { s.title = t }
+                s.name = m.customName
                 s.tabGroup = group
                 if group != nil { s.selected = m.window === selected }
                 s.grid = self.savedGrid(m)
@@ -215,15 +216,29 @@ extension DashboardWindowController {
     /// The deep link this window reopens: the page it is on (or was on, while
     /// the server restarts and it shows the connect page) and its view.
     func savedURL() -> String? {
-        let page = webView.url.flatMap { app?.isServerURL($0) == true ? $0 : nil } ?? lastServerURL
+        // The tab's own server, so a tab on sandbox reopens on sandbox, not on the
+        // default connection.
+        let page = webView.url.flatMap { ($0.scheme == "https" || $0.scheme == "http") ? $0 : nil } ?? lastServerURL
         guard let base = page else { return nil }
-        if !viewHash.isEmpty, let u = app?.url(withHash: viewHash) { return u.absoluteString }
+        if !viewHash.isEmpty, let u = app?.url(withHash: viewHash, on: serverOrigin) { return u.absoluteString }
         return base.absoluteString
     }
 }
 
 // ── Restore ──
 extension AppDelegate {
+    /// After a page finishes loading, start the next restored tab that is waiting,
+    /// so tabs behind others load one at a time instead of all at launch. A
+    /// fallback timer keeps the queue moving if a page never finishes.
+    func loadNextDeferred(after c: DashboardWindowController?) {
+        guard let next = controllers.first(where: { $0.deferredURL != nil }) else { return }
+        deferredTimer?.invalidate()
+        deferredTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_DEFER_STEP_S", 4), repeats: false) { [weak self] _ in
+            self?.loadNextDeferred(after: nil)
+        }
+        next.loadDeferred(c == nil ? "timer" : "queue")
+    }
+
     /// Opens saved windows where they were: display, frame, Desktop, tabs,
     /// minimized and full screen. Windows already showing the same page are
     /// reused rather than opened again, so switching workspaces keeps their
@@ -253,11 +268,20 @@ extension AppDelegate {
                     if let f = frame { w.setFrame(f, display: false) }
                     w.orderFront(nil)
                 }
+            } else if s.tabGroup != nil, s.selected != true, s.grid == nil, let u = URL(string: s.url),
+                      ProcessInfo.processInfo.environment["AMUX_DESKTOP_DEFER_TABS"] != "0" {
+                // A tab behind another: it loads after the shown ones (loadNextDeferred).
+                c = openWindow(url: nil, frame: frame, activate: false, load: false)
+                c.deferredURL = u
+                c.lastServerURL = u
+                if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
             } else {
                 c = openWindow(url: URL(string: s.url), frame: frame, activate: false)
                 if let t = s.title, !t.isEmpty { c.pageLabel = t; c.updateTitle() }
             }
             c.home = s
+            c.customName = s.name
+            if s.name != nil { c.updateTitle() }
             c.home?.display = s.display ?? screen?.uuid
             c.home?.grid = nil
             if let g = s.grid { restoreGrid(g, in: c, pool: &pool) }
@@ -307,6 +331,12 @@ extension AppDelegate {
         // came back showing Workers where Calendar had been).
         if let front = placed.reversed().first(where: { $0.0.window?.isOnActiveSpace == true && $0.1.minimized != true && $0.1.selected != false })?.0 {
             front.window?.makeKeyAndOrderFront(nil)
+        }
+        if controllers.contains(where: { $0.deferredURL != nil }) {
+            // The queue also starts on its own if no shown page ever finishes.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                if self?.deferredTimer == nil { self?.loadNextDeferred(after: nil) }
+            }
         }
         NSLog("amux-desktop: verdict=windows_restored n_considered=%d desktops_moved=%d desktops_current=%d desktops_unavailable=%d spaces_readable=%d spaces_movable=%d displays=%d",
               saved.count, moved, stayed, missing, Spaces.canRead ? 1 : 0, Spaces.canMove ? 1 : 0, NSScreen.screens.count)
@@ -584,6 +614,9 @@ extension AppDelegate {
             self?.tabPressed(e)
             return e
         }
+        tabMenuMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] e in
+            (self?.tabRightClicked(e) ?? false) ? nil : e
+        }
         // The fallback that needs no press: a window that leaves a tab group
         // while the button is down is a tab being dragged out, however AppKit
         // delivered (or did not deliver) the press.
@@ -718,6 +751,53 @@ extension AppDelegate {
         }
         RunLoop.main.add(t, forMode: .common)
         tabDragTimer = t
+    }
+
+    /// A right-click on a tab: its own menu, with Rename Tab (Ethan,
+    /// 2026-10-25: "right click a tab and name it"). AppKit offers no way to add
+    /// to the tab bar's menu, so this replaces it, keeping the items it had
+    /// that matter: move to a new window, close, close the others.
+    func tabRightClicked(_ e: NSEvent) -> Bool {
+        guard let w = e.window, controllers.contains(where: { $0.window === w }), !w.styleMask.contains(.fullScreen),
+              e.locationInWindow.y >= (w.contentView?.frame.maxY ?? .infinity) else { return false }
+        let group = w.tabbedWindows ?? [w]
+        guard group.count > 1, let tw = tabWindow(at: e.locationInWindow, in: w, group: group),
+              let c = controllers.first(where: { $0.window === tw }) else { return false }
+        tabMenuTarget = c
+        let m = NSMenu()
+        func add(_ title: String, _ sel: Selector) { let i = NSMenuItem(title: title, action: sel, keyEquivalent: ""); i.target = self; m.addItem(i) }
+        add("Rename Tab…", #selector(renameTargetTab(_:)))
+        if c.customName != nil { add("Use Page Name", #selector(clearTargetTabName(_:))) }
+        m.addItem(.separator())
+        add("Move Tab to New Window", #selector(moveTargetTab(_:)))
+        add("Close Tab", #selector(closeTargetTab(_:)))
+        add("Close Other Tabs", #selector(closeOtherTabs(_:)))
+        NSMenu.popUpContextMenu(m, with: e, for: w.contentView?.superview ?? w.contentView!)
+        return true
+    }
+    @objc func renameTargetTab(_ sender: Any?) { if let c = tabMenuTarget { promptRename(c) } }
+    @objc func clearTargetTabName(_ sender: Any?) { tabMenuTarget?.rename(nil) }
+    @objc func moveTargetTab(_ sender: Any?) { tabMenuTarget?.window?.moveTabToNewWindow(nil) }
+    @objc func closeTargetTab(_ sender: Any?) { tabMenuTarget?.window?.performClose(nil) }
+    @objc func closeOtherTabs(_ sender: Any?) {
+        guard let w = tabMenuTarget?.window else { return }
+        for o in (w.tabbedWindows ?? []) where o !== w { o.performClose(nil) }
+    }
+
+    /// Ask for a tab's name; empty puts the page's own name back.
+    func promptRename(_ c: DashboardWindowController) {
+        let a = NSAlert()
+        a.messageText = "Rename Tab"
+        a.informativeText = "Leave it empty to use the page's own name."
+        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        f.stringValue = c.customName ?? c.pageTitle
+        a.accessoryView = f
+        a.addButton(withTitle: "Rename")
+        a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = f
+        let win = (c.paneHost ?? c).window
+        let done: (NSApplication.ModalResponse) -> Void = { r in if r == .alertFirstButtonReturn { c.rename(f.stringValue) } }
+        if let win = win { a.beginSheetModal(for: win, completionHandler: done) } else { done(a.runModal()) }
     }
 
     /// Which tab of `group` is at `p` (window coordinates) in `w`'s tab bar:
@@ -902,11 +982,34 @@ extension AppDelegate {
                     dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
                 }
             }
+        // Name a tab, as Rename Tab does (empty clears it).
+        case "/rename-tab":
+            let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
+            // A tab still waiting to load has no view yet; its saved URL names it.
+            controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }?
+                .rename(q.first { $0.name == "name" }?.value)
+        // Run a script in the shown tab's page (download-e2e.py starts a page
+        // download with it). Test mode only, like every hook here.
+        case "/js":
+            if let code = q.first(where: { $0.name == "code" })?.value,
+               let c = controllers.first(where: { isShown($0) }) ?? controllers.first {
+                c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
+            }
+        // Show the tab whose page is on #<view> (perf-bench.py times the switch).
+        case "/select-view":
+            let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
+            if let c = controllers.first(where: { $0.viewHash == want || $0.webView.url?.fragment.map { "#" + $0 } == want
+                                                  || $0.savedURL()?.hasSuffix(want) == true }), let w = c.window {
+                w.tabGroup?.selectedWindow = w
+                w.orderFrontRegardless()
+            }
         case "/state":
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
-                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w]
+                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w,
+                                        "connection": w.tab.accessoryView?.toolTip ?? "",
+                                        "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? ""]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
                     d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }
@@ -931,6 +1034,13 @@ extension AppDelegate {
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
                                      "windows": ws,
+                                     // Every page, shown or not: its web process and what it costs.
+                                     "pages": controllers.map { c -> [String: Any] in
+                                         let pid = webPID(c)
+                                         return ["view": c.viewHash, "shown": isShown(c), "pid": pid ?? 0,
+                                                 "mb": pid.flatMap { footprintMB($0) } ?? -1, "cpu_s": pid.flatMap { cpuSeconds($0) } ?? -1]
+                                     },
+                                     "app_mb": footprintMB(getpid()) ?? -1, "app_cpu_s": cpuSeconds(getpid()) ?? -1,
                                      "update": ["state": "\(Updater.shared.state)", "detail": Updater.shared.detail,
                                                 "commit": Updater.shared.commit, "latest": Updater.shared.latest]]
             if let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"],

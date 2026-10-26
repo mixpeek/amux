@@ -206,6 +206,13 @@ test.describe('desktop split', () => {
     await second.locator('.psp-pane-view').selectOption('steering');
     await expect.poll(() => inner.locator('body').evaluate(() => (window as any).eval('_peekTab'))).toBe('steering');
     expect(await second.locator('.psp-frame').getAttribute('src'), 'no reload').toBe(before);
+    // Its own address follows the switch, so when that page reloads by itself
+    // (a new dashboard version reloads every page) it comes back on Steering,
+    // not on the tab it was first opened on (Ethan, 2026-10-26: "Chat" in the
+    // dropdown over a terminal).
+    expect(await inner.locator('body').evaluate(() => location.search)).toContain('peekTab=steering');
+    await inner.locator('body').evaluate(() => location.reload());
+    await expect.poll(() => inner.locator('body').evaluate(() => (window as any).eval('_peekTab')), { timeout: 15000 }).toBe('steering');
     // Close the middle pane; the others stay, and the split survives a reload.
     await second.locator('.psp-pane-close').click();
     await expect(panes).toHaveCount(2);

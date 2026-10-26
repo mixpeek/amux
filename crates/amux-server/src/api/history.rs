@@ -598,6 +598,37 @@ pub(crate) fn redact_secrets(text: &str) -> (String, usize) {
 /// Sessions whose env file carries `group` in CC_TAGS, minus blocked names.
 /// Same inputs as Python's `list_sessions()` tag derivation:
 /// `<home>/sessions/<name>.env` CC_TAGS + `<home>/blocked-sessions.txt`.
+/// The workers a Messages query covers: the named workers plus every member
+/// of the named groups, each a comma-separated list. None when neither is
+/// given (every worker); Some(empty) when the names resolve to nobody.
+pub(crate) fn message_scope(home: &Path, session: Option<&str>, group: Option<&str>) -> Option<Vec<String>> {
+    let split = |v: Option<&str>| -> Vec<String> {
+        v.unwrap_or("").split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
+    };
+    let (sessions, groups) = (split(session), split(group));
+    if sessions.is_empty() && groups.is_empty() {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for name in sessions.into_iter().chain(groups.iter().flat_map(|g| group_members(home, g))) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Some(out)
+}
+
+/// `session IN (?,..)` for a scope, binding its names; `1=0` for an empty one.
+fn scope_clause(members: &[String], params: &mut Vec<rusqlite::types::Value>) -> String {
+    if members.is_empty() {
+        return "1=0".into();
+    }
+    for m in members {
+        params.push(rusqlite::types::Value::Text(m.clone()));
+    }
+    format!("session IN ({})", vec!["?"; members.len()].join(","))
+}
+
 pub(crate) fn group_members(home: &Path, group: &str) -> Vec<String> {
     let blocked: std::collections::HashSet<String> =
         std::fs::read_to_string(home.join("blocked-sessions.txt"))
@@ -794,7 +825,11 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 .as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
-            let session = p.session.clone().unwrap_or_default();
+            // Which workers' messages: `session` and `group` each take a
+            // comma-separated list, and together they are a union (Ethan,
+            // 2026-10-25: "multiselect/search for workers + groups" in the
+            // Messages tab). None = every worker.
+            let scope = message_scope(&amux_home(), p.session.as_deref(), p.group.as_deref());
 
             // ?sessions=1 — every session with ANY history, from the STORE, not
             // the loaded page (AMUX-2548: the dropdown must see the corpus).
@@ -821,11 +856,13 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                     let n = out.get(k).and_then(Value::as_i64).unwrap_or(0);
                     out.insert(k.to_string(), json!(n + c));
                 };
-                if !session.is_empty() {
-                    let mut stmt = conn.prepare(
-                        "SELECT type, COUNT(*) c FROM cmd_history WHERE session=?1 GROUP BY type",
-                    )?;
-                    let rows = stmt.query_map([&session], |r| {
+                if let Some(members) = &scope {
+                    let mut sp: Vec<rusqlite::types::Value> = Vec::new();
+                    let clause = scope_clause(members, &mut sp);
+                    let mut stmt = conn.prepare(&format!(
+                        "SELECT type, COUNT(*) c FROM cmd_history WHERE {clause} GROUP BY type"
+                    ))?;
+                    let rows = stmt.query_map(rusqlite::params_from_iter(sp.iter()), |r| {
                         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
                     })?;
                     for (t, c) in rows.flatten() {
@@ -865,18 +902,17 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                     "SELECT json_extract(client_meta,'$.{field}') v, COUNT(*) c FROM cmd_history \
                      WHERE json_extract(client_meta,'$.{field}') IS NOT NULL"
                 );
-                    if !session.is_empty() {
-                        sql.push_str(" AND session=?1");
+                    let mut sp: Vec<rusqlite::types::Value> = Vec::new();
+                    if let Some(members) = &scope {
+                        sql.push_str(" AND ");
+                        sql.push_str(&scope_clause(members, &mut sp));
                     }
                     sql.push_str(" GROUP BY v ORDER BY c DESC, v ASC");
                     let mut stmt = conn.prepare(&sql)?;
                     let map_row =
                         |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?));
-                    let rows: Vec<(String, i64)> = if session.is_empty() {
-                        stmt.query_map([], map_row)?.flatten().collect()
-                    } else {
-                        stmt.query_map([&session], map_row)?.flatten().collect()
-                    };
+                    let rows: Vec<(String, i64)> =
+                        stmt.query_map(rusqlite::params_from_iter(sp.iter()), map_row)?.flatten().collect();
                     if !rows.is_empty() {
                         let facet: Map<String, Value> =
                             rows.into_iter().map(|(v, c)| (v, json!(c))).collect();
@@ -891,9 +927,8 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 {
                     let mut fparams: Vec<rusqlite::types::Value> = Vec::new();
                     let mut fwhere: Vec<String> = Vec::new();
-                    if !session.is_empty() {
-                        fwhere.push("session=?".into());
-                        fparams.push(rusqlite::types::Value::Text(session.clone()));
+                    if let Some(members) = &scope {
+                        fwhere.push(scope_clause(members, &mut fparams));
                     }
                     if let Some(pred) = kind_predicate(p.senders_for.as_deref(), &mut fparams) {
                         fwhere.push(pred);
@@ -927,10 +962,14 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 // The age sweep is now the only bound; say what it is beside
                 // the oldest row, so a short history reads as "began here" or
                 // "retention cut it here" rather than as the whole story.
-                let oldest: Option<i64> = if session.is_empty() {
-                    conn.query_row("SELECT MIN(ts) FROM cmd_history", [], |r| r.get(0))?
-                } else {
-                    conn.query_row("SELECT MIN(ts) FROM cmd_history WHERE session=?1", [&session], |r| r.get(0))?
+                let oldest: Option<i64> = match &scope {
+                    None => conn.query_row("SELECT MIN(ts) FROM cmd_history", [], |r| r.get(0))?,
+                    Some(members) => {
+                        let mut sp: Vec<rusqlite::types::Value> = Vec::new();
+                        let clause = scope_clause(members, &mut sp);
+                        conn.query_row(&format!("SELECT MIN(ts) FROM cmd_history WHERE {clause}"),
+                            rusqlite::params_from_iter(sp.iter()), |r| r.get(0))?
+                    }
                 };
                 out.insert("oldest_ts".into(), json!(oldest));
                 out.insert("retain_days".into(), json!(history_retain_days()));
@@ -949,27 +988,11 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 where_cl.push("ts<?".into());
                 params.push(rusqlite::types::Value::Integer(ms));
             }
-            if !session.is_empty() {
-                where_cl.push("session=?".into());
-                params.push(rusqlite::types::Value::Text(session.clone()));
-            }
-            let group = p.group.as_deref().unwrap_or("").trim().to_string();
-            if !group.is_empty() && session.is_empty() {
-                let members = group_members(&amux_home(), &group);
-                if !members.is_empty() {
-                    where_cl.push(format!(
-                        "session IN ({})",
-                        vec!["?"; members.len()].join(",")
-                    ));
-                    for m in members {
-                        params.push(rusqlite::types::Value::Text(m));
-                    }
-                } else {
-                    // An empty group must return NOTHING, not everything — the
-                    // whole fleet's history under a group name is a wrong answer
-                    // that looks like a working feature.
-                    where_cl.push("1=0".into());
-                }
+            if let Some(members) = &scope {
+                // An empty scope (a group with no members) returns NOTHING, not
+                // everything: the whole fleet under a group name is a wrong answer
+                // that looks like a working feature.
+                where_cl.push(scope_clause(members, &mut params));
             }
             let q = p.q.as_deref().unwrap_or("").trim().to_string();
             if !q.is_empty() {
@@ -2981,9 +3004,21 @@ mod tests {
         // An unknown group returns NOTHING — not the whole fleet.
         let (_, none) = send(&app, "GET", "/api/history?group=marketing", None).await;
         assert_eq!(none.as_array().unwrap().len(), 0);
-        // ?session= wins over ?group= (Python: group applies only without session).
-        let (_, beta) = send(&app, "GET", "/api/history?group=sales&session=beta", None).await;
-        assert_eq!(beta.as_array().unwrap().len(), 2);
+        // Workers and groups together are a union (the Messages filter picks
+        // several of each, 2026-10-25): sales (alpha, 3) plus beta (2).
+        let (_, both) = send(&app, "GET", "/api/history?group=sales&session=beta", None).await;
+        assert_eq!(both.as_array().unwrap().len(), 5);
+        // Each takes a comma-separated list.
+        let (_, two) = send(&app, "GET", "/api/history?session=alpha,beta", None).await;
+        assert_eq!(two.as_array().unwrap().len(), 5);
+        let (_, groups) = send(&app, "GET", "/api/history?group=sales,eng", None).await;
+        assert_eq!(groups.as_array().unwrap().len(), 5);
+        // Counts follow the same scope.
+        let (_, counts) = send(&app, "GET", "/api/history?counts=1&group=sales", None).await;
+        assert_eq!(counts["all"], json!(3), "{counts}");
+        // A list that resolves to nobody is still nothing.
+        let (_, nobody) = send(&app, "GET", "/api/history?group=marketing,nope", None).await;
+        assert_eq!(nobody.as_array().unwrap().len(), 0);
     }
 
     /// AMUX-4590. The linked-cards join must look children up through

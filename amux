@@ -5847,7 +5847,7 @@ if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
 print("logged", d.get("id", ""))'
       ;;
     followups|fu)
-      # Read the body defensively, like `tunnel status` and `alert` already do.
+      # Read the body defensively, like `alert` already does.
       # Unparseable input used to reach `json.load` directly and print a raw
       # Python traceback — loud, but naming json/__init__.py rather than the
       # server, so "amux is down" and "amux crm is broken" looked identical.
@@ -6493,6 +6493,9 @@ ${BOLD}Coordination:${RESET}
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
+  amux social post youtube <file> --caption-stdin [--title T] [--privacy P]
+                                 Publish a video; prints the post id. Results land at 24h, 72h, 7d
+  amux social track|ls|stats     Measure a post made elsewhere, list posts, read one post live
 
 ${BOLD}Info:${RESET}
   amux ls                        List all workers with status and previews
@@ -6569,11 +6572,9 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}asking anyone to sign in — amux opens a SECOND${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
-${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${RESET}
-  amux tunnel status             Show tunnel state and public URL
-  amux tunnel url                Print just the public URL
-  amux tunnel start [PORT]       Expose a port (default: the amux server)
-  amux tunnel stop               Stop the tunnel
+${BOLD}Pages links (apps and files, managed in the Pages tab):${RESET}
+  amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
+  amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
@@ -6835,122 +6836,116 @@ if d.get("submitted") is False: print("  nothing was submitted")' 2>/dev/null ||
 }
 
 cmd_tunnel() {
-  local AMUX_API="${AMUX_API:-https://localhost:8824}"
-  local subcmd="${1:-status}"; shift 2>/dev/null || true
-
-  # PREFLIGHT (AF-63). /api/tunnel/* is NOT routed in the rust server -- the
-  # endpoints were never ported at the python cutover, so every verb here hits a
-  # 404. Without this guard the CLI lies in two different directions:
-  #   status: the 404 body has no "configured" key, so `not d.get(configured)`
-  #           was true and it printed "not configured -- set AMUX_TUNNEL_TOKEN
-  #           in ~/.amux/server.env", exit 0. That sends the reader to add a
-  #           CREDENTIAL for a route that does not exist; they would edit
-  #           server.env, restart the server, and be exactly as broken.
-  #   stop:   `curl ... >/dev/null && echo "tunnel stopped"` -- curl exits 0 on
-  #           an HTTP 404 without -f, so it reported success for an operation
-  #           that reached no handler at all.
-  # Found by the 2026-08-16 log sweep via route.callers_have_routes, which names
-  # all 7 call sites; nothing else could see it, because a CLI that exits 0 is
-  # invisible to every check that looks at exit codes.
-  local _tunnel_code
-  _tunnel_code=$(_curl -sk -o /dev/null -w '%{http_code}' "$AMUX_API/api/tunnel/status" 2>/dev/null || echo 000)
-  if [[ "$_tunnel_code" == "404" ]]; then
-    echo "amux tunnel: not available in this server build (HTTP 404 -- /api/tunnel/* is not routed)." >&2
-    echo "  The verb exists in this CLI but the endpoints were never ported to the rust server." >&2
-    echo "  Setting AMUX_TUNNEL_TOKEN will NOT help; that is a different failure." >&2
-    echo "  Tracked as AF-63." >&2
-    return 1
-  fi
-
-  case "$subcmd" in
-    start)
-      local port="${1:-}"
-      local payload='{}'
-      [[ -n "$port" ]] && payload="{\"port\":$port}"
-      _curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
-        "$AMUX_API/api/tunnel/start" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except ValueError:
-    # amux-server restarts on save; a mid-restart request returns nothing.
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-if d.get('error'):
-    sys.exit('error: ' + str(d['error']))
-print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.get('url') or '(registering)'))
-"
-      ;;
-    stop)
-      # Check the STATUS, not curl's exit code: curl returns 0 for a 404/500
-      # unless -f is passed, which is how this printed "tunnel stopped" against
-      # a route that does not exist (AF-63).
-      local _stop_code
-      _stop_code=$(_curl -sk -o /dev/null -w '%{http_code}' -X POST "$AMUX_API/api/tunnel/stop" 2>/dev/null || echo 000)
-      if [[ "$_stop_code" == 2* ]]; then
-        echo "tunnel stopped"
-      else
-        echo "amux tunnel stop: server returned HTTP $_stop_code -- tunnel NOT stopped" >&2
-        return 1
-      fi
-      ;;
-    status|"")
-      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except ValueError:
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-if not d.get('configured'):
-    print('not configured — set AMUX_TUNNEL_TOKEN in ~/.amux/server.env')
-    print('(the tunnel needs an active amux cloud subscription)')
-    sys.exit(0)
-print('running :', d.get('running'))
-print('url     :', d.get('url') or '-')
-print('target  :', d.get('target') or '-')
-print('requests:', d.get('requests', 0))
-if d.get('error'): print('error   :', d['error'])
-"
-      ;;
-    url)
-      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
-import sys, json
-raw = sys.stdin.read()
-try:
-    u = json.loads(raw).get('url')
-except ValueError:
-    sys.exit('amux server not responding (restarting?) — retry in a moment')
-print(u) if u else sys.exit('tunnel not running')
-"
-      ;;
-    help|-h|--help)
-      _tunnel_help
-      ;;
-    *)
-      # Same exit-0-on-unknown trap as `amux board` had: fail loudly instead,
-      # so a caller can distinguish "ran" from "silently printed help".
-      echo "${RED}unknown tunnel subcommand:${RESET} $subcmd" >&2
-      _tunnel_help >&2
-      exit 2
-      ;;
-  esac
+  # Retired with the Proxies tab and /proxy (MSG-95893): Pages is the one way
+  # to share a local app. The ChatGPT app's connector relay is published from
+  # its panel in the dashboard, not here. Exit non-zero so a script that still
+  # calls this learns it did nothing.
+  echo "amux tunnel is retired. Share a local app from the Pages tab, or:" >&2
+  echo "  amux publish --internal PORT [TITLE]   inside amux only" >&2
+  echo "  amux publish PORT [TITLE]              anyone with the link" >&2
+  return 2
 }
 
-_tunnel_help() {
-  cat <<EOF
-${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
+cmd_publish() {
+  # The Pages tab's links (static_files/public_links.rs): an app for the owner
+  # inside amux (--internal), an app for anyone with the link, or a file or
+  # folder for anyone with the link (--file). All listed and removable in Pages.
+  local AMUX_API="${AMUX_API:-$(cmd_url)}"
+  local kind=app target title
+  case "${1:-}" in
+    ""|-h|--help|help)
+      cat <<EOF
+${BOLD}amux publish${RESET} — apps and files in the Pages tab
 
-  amux tunnel status          Show tunnel state and public URL
-  amux tunnel url             Print just the public URL
-  amux tunnel start [PORT]    Start the tunnel (default: the amux server itself)
-  amux tunnel stop            Stop the tunnel
+  amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
+  amux publish --internal --file PATH [TITLE]  A file or folder for you, inside amux; no server needed
+  amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
+  amux publish --file PATH [TITLE]             A file or folder for anyone with the link
+  amux publish --list                          List them
 
-Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
-Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
-~/.amux/server.env, then restart the server to reload:
-\`launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs\`.
+To show an HTML file, publish the file itself with --file. Do not start a web
+server for static files: it serves every file beside them.
+  amux publish --revoke ID               Remove one (a public link stops working)
+
+Anything a worker adds stays PENDING (a public link serves nobody, an app
+inside amux does not open) until the owner approves it in the Pages tab.
 EOF
+      return 0
+      ;;
+    --list|-l|list)
+      _curl -sk -m 15 "$AMUX_API/api/page-links" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit("amux server not responding")
+if "error" in d:
+    sys.exit("error: " + str(d["error"]))
+links = d.get("links") or []
+if not d.get("public_url"):
+    print("(this amux address is not known yet; set AMUX_PUBLIC_URL in server.env)")
+if not links:
+    print("nothing published")
+for l in links:
+    what = l["file"] if l.get("file") else "port %s" % l["port"]
+    state = "PENDING" if l.get("pending") else ("public" if l.get("public") else "inside")
+    print(l["id"], l["kind"], state, what, l.get("url") or l["path"], ("  " + l["title"]) if l.get("title") else "")
+'
+      return 0
+      ;;
+    --revoke|revoke)
+      [[ -n "${2:-}" ]] || die "usage: amux publish --revoke ID"
+      local code
+      code=$(_curl -sk -m 15 -o /dev/null -w '%{http_code}' -X DELETE -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        "$AMUX_API/api/page-links/$2" 2>/dev/null || echo 000)
+      [[ "$code" == 2* ]] || die "not removed: server answered HTTP $code"
+      echo "removed $2"
+      return 0
+      ;;
+    --internal) kind=internal; shift ;;
+    --file) kind="file"; shift ;;
+  esac
+  local is_path=0
+  [[ "$kind" == file ]] && is_path=1
+  if [[ "$kind" == internal && "${1:-}" == --file ]]; then is_path=1; shift; fi
+  target="${1:-}"; title="${2:-}"
+  if [[ "$is_path" == 1 ]]; then
+    [[ -n "$target" ]] || die "usage: amux publish [--internal] --file PATH [TITLE]"
+    [[ -e "$target" ]] || die "no such file or folder: $target"
+    target="$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+  else
+    [[ "$target" =~ ^[0-9]+$ ]] || die "usage: amux publish [--internal] PORT [TITLE]"
+  fi
+  local body
+  body=$(python3 -c '
+import json, sys
+kind, target, title, is_path = sys.argv[1:5]
+d = {"kind": kind, "title": title}
+if is_path == "1":
+    d["path"] = target
+else:
+    d["port"] = int(target)
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path")
+  _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    -d "$body" "$AMUX_API/api/page-links" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit("amux server not responding")
+if "error" in d:
+    sys.exit("not published: " + str(d["error"]))
+print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
+if not d.get("file") and not d.get("listening"):
+    print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
+if d.get("pending"):
+    print("PENDING: it does not open until the owner approves it in the Pages tab. Tell the owner it is waiting there.", file=sys.stderr)
+elif d.get("public"):
+    print("public: anyone with the link can open it.", file=sys.stderr)
+else:
+    print("only you, signed in.", file=sys.stderr)
+print("Listed in Pages; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
+'
 }
 
 cmd_pin() {
@@ -9081,6 +9076,175 @@ _sync_checkout_override() { # <remote> <branch|""> <check 0|1>
   echo "  Restore what was replaced: git switch -c restored-local $ref"
 }
 
+# `amux contribute`: send this checkout's local amux work upstream as a pull
+# request, and with --then-pull make the checkout match remote main afterwards.
+# Ethan, 2026-10-25: a cloud box that changes amux locally should be able to
+# submit that as a PR easily, and "Pull from remote" should then override the
+# local work, "but their local shit needs to be a PR complete and PR in the
+# remote branch". So the override runs only after the PR is open on GitHub and
+# its head is the exact snapshot taken here; otherwise nothing is replaced.
+#
+# The snapshot is local commits plus staged, unstaged and untracked files
+# (ignored files excluded), built in a private index so the shared one is not
+# touched. It goes to mixpeek/amux when the GitHub user can push there,
+# otherwise to their fork. Every run is a line in ~/.amux/logs/contribute.log.
+# Exit: 0 PR open (or nothing to send); 4 GitHub not connected or gh missing;
+# 1 anything else, with nothing replaced.
+_contrib_gh() { # prints a gh binary, installing a private copy in ~/.amux/bin when none is on PATH
+  local own="${AMUX_HOME:-$HOME/.amux}/bin/gh"
+  if command -v gh >/dev/null 2>&1; then command -v gh; return 0; fi
+  [ -x "$own" ] && { echo "$own"; return 0; }
+  local os arch ver tmp
+  case "$(uname -s)" in Linux) os=linux ;; Darwin) os=macOS ;; *) return 1 ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;; esac
+  ver="$(curl -fsSL --connect-timeout 10 --max-time 20 https://api.github.com/repos/cli/cli/releases/latest \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')" || return 1
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-gh.XXXXXX")"
+  if [ "$os" = linux ]; then
+    curl -fsSL --connect-timeout 10 --max-time 120 "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_linux_${arch}.tar.gz" \
+      | tar -xz -C "$tmp" || { rm -rf "$tmp"; return 1; }
+  else
+    curl -fsSL --connect-timeout 10 --max-time 120 -o "$tmp/gh.zip" "https://github.com/cli/cli/releases/download/v$ver/gh_${ver}_macOS_${arch}.zip" \
+      && (cd "$tmp" && unzip -q gh.zip) || { rm -rf "$tmp"; return 1; }
+  fi
+  mkdir -p "${own%/*}"
+  install -m 755 "$tmp"/gh_*/bin/gh "$own" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+  echo "amux: installed gh $ver at $own" >&2
+  echo "$own"
+}
+
+# `amux github login|status`: connect this machine's GitHub account for
+# `amux contribute`. login prints a one-time code and github.com/login/device
+# (the dashboard's Connect GitHub runs exactly this in a server terminal).
+cmd_github() {
+  local gh; gh="$(_contrib_gh)" || die "amux github: gh is not installed and could not be downloaded"
+  case "${1:-status}" in
+    login) exec "$gh" auth login --hostname github.com --git-protocol https --web --skip-ssh-key </dev/null ;;
+    status) "$gh" auth status --hostname github.com ;;
+    *) die "usage: amux github login|status" ;;
+  esac
+}
+
+cmd_contribute() {
+  local title="" then_pull=0 check=0 json=0 dir="" up="${AMUX_CONTRIBUTE_UPSTREAM:-mixpeek/amux}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) title="${2:?}"; shift 2 ;;
+      --then-pull) then_pull=1; shift ;;
+      --check) check=1; shift ;;
+      --json) json=1; shift ;;
+      --repo) dir="${2:?}"; shift 2 ;;
+      -h|--help) echo "usage: amux contribute [--title T] [--then-pull] [--check] [--json] [--repo DIR]"; return 0 ;;
+      *) die "amux contribute: unknown argument $1" ;;
+    esac
+  done
+  [ -n "$dir" ] || dir="$(git rev-parse --show-toplevel 2>/dev/null)" || true
+  [ -n "$dir" ] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "amux contribute: not inside a git checkout (use --repo DIR)"
+  local top log host
+  top="$(git -C "$dir" rev-parse --show-toplevel)"; log="${AMUX_HOME:-$HOME/.amux}/logs/contribute.log"
+  host="$(hostname -s 2>/dev/null || hostname)"
+  mkdir -p "${log%/*}"
+  _ct_done() { # <exit> <verdict> [key=value ...]: log, print, and the --json line
+    local rc=$1 verdict=$2; shift 2
+    printf '%s %s repo=%s verdict=%s %s\n' "$(date -u +%FT%TZ)" "${AMUX_SESSION:-?}" "$top" "$verdict" "$*" >> "$log"
+    if [ "$json" = 1 ]; then
+      python3 -c 'import json,sys; d={"verdict":sys.argv[1],"exit":int(sys.argv[2])}; d.update(a.split("=",1) for a in sys.argv[3:]); print("AMUX_CONTRIBUTE " + json.dumps(d))' "$verdict" "$rc" "$@"
+    fi
+    return "$rc"
+  }
+  git -C "$top" fetch -q origin main || { echo "amux contribute: git fetch origin main failed; nothing was changed"; _ct_done 1 fetch_failed; return; }
+  local head upr ahead dirty
+  head="$(git -C "$top" rev-parse HEAD)"; upr="$(git -C "$top" rev-parse origin/main)"
+  ahead="$(git -C "$top" rev-list --count "$upr..HEAD")"
+  dirty="$(git -C "$top" status --porcelain --untracked-files=all | wc -l | tr -d ' ')"
+  echo "  local commits not on origin/main: $ahead"
+  [ "$ahead" != 0 ] && git -C "$top" log --format='    %h %s' "$upr..HEAD" | head -10
+  echo "  changed or untracked paths: $dirty"
+  [ "$dirty" != 0 ] && git -C "$top" status --porcelain --untracked-files=all | head -10 | sed 's/^/    /'
+  if [ "$ahead" = 0 ] && [ "$dirty" = 0 ]; then
+    echo "  Nothing local to send."
+    if [ "$then_pull" = 1 ]; then (cd "$top" && _sync_checkout_override origin main 0) || { _ct_done 1 pull_failed; return; }; fi
+    _ct_done 0 nothing_to_send; return
+  fi
+  if [ "$check" = 1 ]; then _ct_done 0 would_send "ahead=$ahead" "dirty=$dirty"; return; fi
+  local gh
+  gh="$(_contrib_gh)" || { echo "  gh is not installed and could not be downloaded; nothing was changed."; _ct_done 4 gh_unavailable; return; }
+  if ! "$gh" auth status --hostname github.com >/dev/null 2>&1; then
+    echo "  GitHub is not connected, so the local work cannot be sent yet. Nothing was changed."
+    echo "  Connect it with Connect GitHub under About > Pull from remote, or run: amux github login"
+    _ct_done 4 github_not_connected; return
+  fi
+  local me name email
+  me="$("$gh" api user --jq .login 2>/dev/null)" || { _ct_done 1 github_unreadable; return; }
+  name="$(git -C "$top" config user.name || true)"; email="$(git -C "$top" config user.email || true)"
+  [ -n "$name" ] || name="$me"
+  [ -n "$email" ] || email="$("$gh" api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
+  # The snapshot: HEAD's commits plus the whole working tree, in a private index.
+  local snap="$head" idx tree
+  if [ "$dirty" != 0 ]; then
+    idx="$(mktemp "${TMPDIR:-/tmp}/amux-contribute-idx.XXXXXX")"
+    cp "$(git -C "$top" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null || true
+    GIT_INDEX_FILE="$idx" git -C "$top" add -A . 2>/dev/null \
+      && tree="$(GIT_INDEX_FILE="$idx" git -C "$top" write-tree)" \
+      && snap="$(GIT_AUTHOR_NAME="$name" GIT_AUTHOR_EMAIL="$email" GIT_COMMITTER_NAME="$name" GIT_COMMITTER_EMAIL="$email" \
+           git -C "$top" commit-tree "$tree" -p "$head" -m "${title:-Local changes from $host}" -m "Uncommitted work on $host, sent with amux contribute.")"
+    rm -f "$idx"
+    [ -n "$snap" ] && [ "$snap" != "$head" ] || { echo "  Could not snapshot the local work; nothing was changed."; _ct_done 1 snapshot_failed; return; }
+  fi
+  local branch dest headref
+  # The snapshot's sha keeps two runs in one second apart: on a fast host the
+  # second run pushed a different snapshot to the same name and was refused
+  # (push_failed), which red main CI on aeb2a5d59.
+  branch="contrib/$(printf '%s' "$host" | tr -c 'A-Za-z0-9-' '-' | cut -c1-30)-$(date -u +%Y%m%d-%H%M%S)-${snap:0:7}"
+  if [ "$("$gh" api "repos/$up" --jq .permissions.push 2>/dev/null)" = true ]; then
+    dest="https://github.com/$up.git"; headref="$branch"
+  else
+    "$gh" repo fork "$up" --clone=false >/dev/null 2>&1 || true
+    local fork=""
+    for _ in 1 2 3 4 5 6; do
+      fork="$("$gh" repo list "$me" --fork --limit 200 --json nameWithOwner,parent \
+        --jq ".[] | select(.parent.owner.login + \"/\" + .parent.name == \"$up\") | .nameWithOwner" 2>/dev/null | head -1)"
+      [ -n "$fork" ] && break; sleep 5
+    done
+    [ -n "$fork" ] || { echo "  Could not find or create your fork of $up; nothing was changed."; _ct_done 1 fork_unavailable; return; }
+    dest="https://github.com/$fork.git"; headref="$me:$branch"
+  fi
+  git -C "$top" -c credential.helper= -c "credential.helper=!'$gh' auth git-credential" \
+    push -q "$dest" "$snap:refs/heads/$branch" 2>&1 | tail -3 || true
+  if [ "$(git -C "$top" -c credential.helper= -c "credential.helper=!'$gh' auth git-credential" ls-remote "$dest" "refs/heads/$branch" | cut -f1)" != "$snap" ]; then
+    echo "  The push to $dest did not land; nothing was changed."; _ct_done 1 push_failed "dest=$dest"; return
+  fi
+  [ -n "$title" ] || title="$(git -C "$top" log -1 --format=%s "$upr..HEAD" 2>/dev/null)"
+  [ -n "$title" ] || title="Local changes from $host"
+  local body; body="$(mktemp "${TMPDIR:-/tmp}/amux-contribute-body.XXXXXX")"
+  {
+    echo "Local amux changes from \`$host\`, sent with \`amux contribute\`."
+    echo
+    echo "- Local commits: $ahead"
+    echo "- Uncommitted paths: $dirty"
+    echo
+    if [ "$ahead" != 0 ]; then echo "Commits:"; echo; git -C "$top" log --format='- %h %s' "$upr..HEAD" | head -50; echo; fi
+    echo "Files:"; echo; echo '```'; git -C "$top" diff --stat "$upr" "$snap" | tail -40; echo '```'
+  } > "$body"
+  local url
+  url="$("$gh" pr create --repo "$up" --base main --head "$headref" --title "$title" --body-file "$body" 2>&1 | grep -Eo 'https://github\.com/[^ ]+/pull/[0-9]+' | tail -1)"
+  rm -f "$body"
+  [ -n "$url" ] || { echo "  The branch is pushed ($dest $branch) but the pull request was not opened; nothing was replaced."; _ct_done 1 pr_not_opened "branch=$branch"; return; }
+  # The override below discards the local work, so the PR must be verifiably it.
+  local got
+  got="$("$gh" pr view "$url" --json headRefOid,state --jq '.state + " " + .headRefOid' 2>/dev/null)"
+  if [ "$got" != "OPEN $snap" ]; then
+    echo "  Opened $url, but it does not show this snapshot yet ($got); nothing was replaced."
+    _ct_done 1 pr_unverified "pr_url=$url"; return
+  fi
+  echo "  Pull request: $url"
+  if [ "$then_pull" = 1 ]; then
+    (cd "$top" && _sync_checkout_override origin main 0) || { _ct_done 1 pull_failed "pr_url=$url"; return; }
+  fi
+  _ct_done 0 pr_opened "pr_url=$url" "branch=$branch" "ahead=$ahead" "dirty=$dirty"
+}
+
 # `amux ci wait <run-id> [--repo owner/name] [--timeout S] [--poll S] [--json]`:
 # ONE poller per GitHub Actions run, fleet-wide (mxp-gs12 review, 2026-10-18).
 # On 2026-10-17 the shared GitHub App installation returned 403 rate-limit on
@@ -10701,6 +10865,72 @@ print(f"saved to {os.environ['WHO']}'s amux memory ({d.get('bytes', '?')} bytes)
 PY2
 }
 
+cmd_social() {
+  # Social posting and results (api/social.rs). The caption comes from stdin
+  # with --caption-stdin, so backticks and $(...) in it stay literal.
+  local sub="${1:-status}"; shift 2>/dev/null || true
+  local me="${AMUX_SESSION:-}"
+  case "$sub" in
+    status|"")
+      _curl -sk "$AMUX_API/api/social" | python3 -m json.tool ;;
+    post)
+      local platform="${1:-}" file="${2:-}"; shift 2 2>/dev/null || true
+      [[ -n "$platform" && -n "$file" ]] || die "Usage: amux social post <platform> <file> [--title T] [--privacy public|unlisted|private] [--tag T]... [--account A] (--caption-stdin | --caption TEXT)"
+      local title="" privacy="" account="" caption="" tags=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --title) title="${2:-}"; shift 2 ;;
+          --privacy) privacy="${2:-}"; shift 2 ;;
+          --account) account="${2:-}"; shift 2 ;;
+          --tag) tags+=("${2:-}"); shift 2 ;;
+          --caption) caption="${2:-}"; shift 2 ;;
+          --caption-stdin) caption="$(cat)"; shift ;;
+          *) die "amux social post: unknown option $1" ;;
+        esac
+      done
+      [[ "$file" == /* ]] || file="$PWD/$file"
+      P="$platform" F="$file" T="$title" V="$privacy" A="$account" C="$caption" G="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 -c '
+import json, os
+b = {"platform": os.environ["P"], "file": os.environ["F"], "caption": os.environ["C"]}
+for k, e in (("title", "T"), ("privacy", "V"), ("account", "A")):
+    if os.environ[e]: b[k] = os.environ[e]
+b["tags"] = [t for t in os.environ["G"].splitlines() if t]
+print(json.dumps(b))' | _curl -sk --max-time 900 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts" | python3 -m json.tool ;;
+    track)
+      local platform="${1:-}" pid="${2:-}"; shift 2 2>/dev/null || true
+      [[ -n "$platform" && -n "$pid" ]] || die "Usage: amux social track <platform> <post_id> [--posted-at EPOCH] [--url URL] [--account A]"
+      local at="" url="" account=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --posted-at) at="${2:-}"; shift 2 ;;
+          --url) url="${2:-}"; shift 2 ;;
+          --account) account="${2:-}"; shift 2 ;;
+          *) die "amux social track: unknown option $1" ;;
+        esac
+      done
+      P="$platform" I="$pid" W="$at" U="$url" A="$account" python3 -c '
+import json, os
+b = {"platform": os.environ["P"], "post_id": os.environ["I"]}
+if os.environ["W"]: b["posted_at"] = int(os.environ["W"])
+if os.environ["U"]: b["url"] = os.environ["U"]
+if os.environ["A"]: b["account"] = os.environ["A"]
+print(json.dumps(b))' | _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts/track" | python3 -m json.tool ;;
+    ls)
+      _curl -sk "$AMUX_API/api/social/posts${1:+?platform=$1}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for p in d.get("posts", []):
+    w = p.get("windows", {})
+    snap = " ".join("%s=%s" % (k, (v.get("metrics") or {}).get("views", "-") if v.get("measured") else "-") for k, v in w.items())
+    print("%-5s %-9s %-14s %-9s views %s  %s" % (p["id"], p["platform"], p["post_id"], p.get("visibility") or "?", snap, p.get("title") or p.get("url")))
+print("%d post(s)" % len(d.get("posts", [])))' ;;
+    stats)
+      [[ -n "${1:-}" ]] || die "Usage: amux social stats <id>"
+      _curl -sk "$AMUX_API/api/social/posts/$1/metrics" | python3 -m json.tool ;;
+    *) die "Usage: amux social [status|post|track|ls|stats]" ;;
+  esac
+}
+
 cmd_signal() {
   local sub="${1:-help}"; shift 2>/dev/null || true
   local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
@@ -10822,10 +11052,14 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
+    social)           shift; cmd_social "$@" ;;
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
     ci)               shift; cmd_ci "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;
+    publish)          shift; cmd_publish "$@" ;;
+    contribute)       shift; cmd_contribute "$@" ;;
+    github)           shift; cmd_github "$@" ;;
     requests)         shift; cmd_requests "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;

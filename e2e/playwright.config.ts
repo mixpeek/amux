@@ -8,7 +8,7 @@ import { defineConfig, devices } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { E2E_ANTHROPIC_KEY } from './test-env';
+import { E2E_ANTHROPIC_KEY, geminiStubPort } from './test-env';
 import { reapStaleTmp } from './tmp-reap';
 
 // CI: AMUX_E2E_PLAN names a shard plan from scripts/e2e-plan.mjs. Unset (any
@@ -354,6 +354,10 @@ export default defineConfig({
       // The vault's master key goes to a 0600 file in the throwaway home, never
       // into the developer's login Keychain (vault_secrets.rs keystore_is_file).
       AMUX_VAULT_KEYSTORE: 'file',
+      // Every Gemini call (Dictate, Recordings) goes to a local stub port, never
+      // the real billed API; a spec that needs an answer listens there
+      // (e2e/transcription-settings.spec.ts). Nothing listening is a failure.
+      AMUX_GEMINI_BASE: `http://127.0.0.1:${geminiStubPort(t.port)}`,
     },
   })),
 });

@@ -1431,9 +1431,19 @@ pub(crate) async fn send_key(name: &str, key: &str) {
     let pt = pt(name);
     let _ = tmux(&["send-keys", "-t", &pt, key]).await;
 }
-async fn send_literal(name: &str, text: &str) -> bool {
+async fn send_literal(name: &str, text: &str) -> Result<(), String> {
     let pt = pt(name);
-    matches!(tmux(&["send-keys", "-t", &pt, "-l", text]).await, Some(o) if o.status.success())
+    match tmux(&["send-keys", "-t", &pt, "-l", text]).await {
+        Some(o) if o.status.success() => Ok(()),
+        Some(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let code = o.status.code().unwrap_or(-1);
+            Err(format!(
+                "send-keys exit {code}: {}", stderr.trim().chars().take(200).collect::<String>()
+            ))
+        }
+        None => Err("send-keys timed out".into()),
+    }
 }
 
 /// Pastes `text` into the lane's composer through a named tmux buffer and
@@ -3760,6 +3770,10 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     (
         "reclaim_scans",
         RenameDisposition::KeepForAudit("a scan is a dated observation, not live state"),
+    ),
+    (
+        "social_posts",
+        RenameDisposition::KeepForAudit("a post records which worker published it at the time"),
     ),
     (
         "worker_resource_samples",
@@ -10170,6 +10184,35 @@ fn stranded_expire_secs() -> i64 {
 /// unreadable, or the part read starts after `since`, which covers both a file
 /// too large for the tail read and a conversation that began after the
 /// reservation (the prompt could be in an older transcript).
+/// Whether the lane's pane shows a turn in progress right now.
+async fn lane_generating_now(name: &str) -> bool {
+    #[cfg(test)]
+    if let Some(g) = test_generating::get(name) {
+        return g;
+    }
+    detect_claude_status(&tmux_capture(name, 0).await) == "active"
+}
+
+#[cfg(test)]
+pub(crate) mod test_generating {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LANES: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    pub(crate) fn set(name: &str, generating: bool) {
+        LANES.lock().unwrap().get_or_insert_with(HashMap::new).insert(name.to_string(), generating);
+    }
+    pub(crate) fn get(name: &str) -> Option<bool> {
+        LANES.lock().unwrap().as_ref().and_then(|m| m.get(name).copied())
+    }
+}
+
+/// Whether a message missing from the transcript may be released for a resend.
+/// Never while the lane is generating: a message delivered mid-turn reaches the
+/// transcript only when the turn ends, so its absence proves nothing yet.
+fn stranded_release_allowed(generating: bool) -> bool {
+    !generating
+}
+
 fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64, clock_skew_s: i64) -> Option<bool> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 16 * 1024 * 1024;
@@ -10402,7 +10445,21 @@ async fn send_receipt_resolving(
                 json!({"ok": true, "accepted": true, "reconciled": true, "id": id, "msg_id": msg_id}),
             )
         }
-        Some((Some(false), path)) if aged => {
+        Some((Some(false), path)) if aged && {
+            // ABSENCE IS NOT EVIDENCE WHILE THE LANE IS MID-TURN. Claude Code holds a
+            // message typed during a turn and writes it to the transcript only when
+            // the turn ends: on sandbox.amux.io (2026-10-26) "password protect it" was
+            // released at 15:56:18.098, the transcript recorded it at 15:56:18.577, and
+            // the owner was shown "may already be with the worker" with a resend
+            // invitation that would have delivered it twice.
+            let generating = lane_generating_now(name).await;
+            if generating {
+                tracing::info!(target: "amux::message_acceptance", session = name, measured = true, n_considered = 1,
+                    verdict = "stranded_reservation_deferred_mid_turn",
+                    "a reservation's text is not in the transcript yet, but the lane is mid-turn; not released");
+            }
+            stranded_release_allowed(generating)
+        } => {
             send_dedup_forget(state, name, msg_id).await;
             tracing::warn!(
                 target: "amux::message_acceptance", session = name, verdict = "stranded_reservation_released",
@@ -14608,8 +14665,10 @@ async fn send_text_inner_bound(
         _ => (None, staged.to_string()),
     };
     if let Some(prefix) = typed_prefix.as_deref() {
-        if !send_literal(name, prefix).await {
-            return (false, "send-keys failed".into());
+        if let Err(detail) = send_literal(name, prefix).await {
+            tracing::warn!(session = %name, %detail, verdict = "send_keys_failed",
+                "tmux send-keys failed on slash-command prefix");
+            return (false, format!("send-keys failed ({detail})"));
         }
         sleep_ms(60).await;
     }
@@ -14618,8 +14677,10 @@ async fn send_text_inner_bound(
         if let Err(why) = paste_into_composer(name, &staged).await {
             return (false, why.into());
         }
-    } else if !send_literal(name, &staged).await {
-        return (false, "send-keys failed".into());
+    } else if let Err(detail) = send_literal(name, &staged).await {
+        tracing::warn!(session = %name, %detail, verdict = "send_keys_failed",
+            "tmux send-keys failed on message text");
+        return (false, format!("send-keys failed ({detail})"));
     }
     // HOW LONG THE COMPOSER NEEDS BEFORE Enter MEANS "SUBMIT".
     //
@@ -15105,10 +15166,11 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
 }
 
 /// py:25815 send_keys — allowed control keys only.
-const ALLOWED_TMUX_KEYS: [&str; 47] = [
+// "C-s": the second half of the Send Now chip (Ctrl+X, release, Ctrl+S).
+const ALLOWED_TMUX_KEYS: [&str; 48] = [
     "Enter", "Escape", "Tab", "BTab", "Space", "BSpace", "Up", "Down", "Left", "Right", "Home",
     "End", "PageUp", "PageDown", "IC", "DC", "C-c", "C-d", "C-z", "C-l", "C-a", "C-e", "C-k",
-    "C-u", "C-r", "C-p", "C-n", "C-b", "C-f", "C-w", "C-o", "C-x", "M-b", "M-f", "M-d", "F1", "F2",
+    "C-u", "C-r", "C-p", "C-n", "C-b", "C-f", "C-w", "C-o", "C-x", "C-s", "M-b", "M-f", "M-d", "F1", "F2",
     "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
 ];
 // "1": the resume-mode auto-answer selects BY DIGIT (see resume_mode_action —
@@ -17132,6 +17194,12 @@ pub(crate) async fn start_session(
                 env_args.push(format!("{k}={v}"));
             }
         }
+    }
+    // The address the owner reaches this amux at, for links a worker hands out
+    // (static_files/public_links.rs). Not a secret.
+    if let Some(u) = crate::api::static_files::public_links::public_url(&home()) {
+        env_args.push("-e".into());
+        env_args.push(format!("AMUX_PUBLIC_URL={u}"));
     }
 
     // VAULT SECRETS (AMUX-5375): the worker's keys, worker > group > global,
@@ -26465,8 +26533,9 @@ async fn dispatch(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        let person = super::chat_worker::caller_is_person(&headers, &caller);
         return super::chat_worker::companion_route(
-            &state, &worker, method == Method::POST, &action, receipt, &body, &caller,
+            &state, &worker, method == Method::POST, &action, receipt, &body, &caller, person,
         )
         .await;
     }
@@ -28516,6 +28585,11 @@ pub(crate) async fn steer_mutate(
         if msg_id.is_empty() {
             return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'id'"}));
         }
+        // {id, text}: edit a queued message before it is delivered (Ethan,
+        // 2026-10-25: "make it so i can edit steering/queued messages").
+        if body.get("text").is_some() {
+            return steer_edit_response(state, name, &msg_id, &body_str(body, "text")).await;
+        }
         let Some(deliver_at) = steer_deliver_at_from(body, now_f64()) else {
             return jresp(
                 StatusCode::BAD_REQUEST,
@@ -28557,6 +28631,106 @@ pub(crate) async fn steer_mutate(
         StatusCode::METHOD_NOT_ALLOWED,
         json!({"error": "method not allowed"}),
     )
+}
+
+/// What editing one queued message did.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SteerEdit {
+    /// Rewritten; the id of its Messages row, when it has one.
+    Edited(Option<i64>),
+    /// No such row: it was delivered or removed first.
+    Gone,
+    /// amux's own drive prompt, which only amux writes.
+    System,
+    /// Delivery has claimed it and may already be typing it.
+    Delivering,
+}
+
+/// Rewrite a queued steering message, and its Messages row so the log shows
+/// what will actually be sent. A row delivery has claimed (`delivering_since`)
+/// is refused rather than edited behind the delivery's back.
+pub(crate) fn steer_edit_in(conn: &rusqlite::Connection, session: &str, id: &str, text: &str) -> rusqlite::Result<SteerEdit> {
+    use rusqlite::OptionalExtension;
+    let row: Option<(String, Option<f64>)> = conn
+        .query_row(
+            "SELECT COALESCE(guard,''), delivering_since FROM steering_queue WHERE id=?1 AND session=?2",
+            rusqlite::params![id, session],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((guard, delivering)) = row else { return Ok(SteerEdit::Gone) };
+    if steer_guard_is_system(&guard) {
+        return Ok(SteerEdit::System);
+    }
+    if delivering.is_some() {
+        return Ok(SteerEdit::Delivering);
+    }
+    let n = conn.execute(
+        "UPDATE steering_queue SET text=?1 WHERE id=?2 AND session=?3 AND delivering_since IS NULL",
+        rusqlite::params![text, id, session],
+    )?;
+    if n == 0 {
+        return Ok(SteerEdit::Delivering);
+    }
+    let hist: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM cmd_history WHERE queue_id=?1 AND delivery='queued'",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(h) = hist {
+        conn.execute("UPDATE cmd_history SET text=?1 WHERE id=?2", rusqlite::params![text, h])?;
+    }
+    Ok(SteerEdit::Edited(hist))
+}
+
+async fn steer_edit_response(state: &AppState, name: &str, msg_id: &str, text: &str) -> Response {
+    let text = text.trim_end().to_string();
+    if text.trim().is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error": "the text is empty; remove the message instead"}));
+    }
+    let out = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (session, id, t, slot) = (name.to_string(), msg_id.to_string(), text.clone(), out.clone());
+    let reply = state
+        .store
+        .write_async(move |conn| {
+            let r = steer_edit_in(conn, &session, &id, &t)?;
+            let events = match &r {
+                SteerEdit::Edited(Some(h)) => vec![crate::db::PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Message,
+                    entity_id: format!("MSG-{h}"),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: None,
+                }],
+                _ => vec![],
+            };
+            let applied = matches!(r, SteerEdit::Edited(_));
+            *slot.lock().unwrap() = Some(r);
+            Ok(crate::db::WriteOutcome { applied, events })
+        })
+        .await;
+    let outcome = out.lock().unwrap().take();
+    // The sessions list carries each worker's queue and is cached for 2s: an
+    // edit that does not invalidate it is painted back to the old text by the
+    // dashboard's next poll (steering-edit flaked red on main, 2026-10-25).
+    let invalidated = matches!(outcome, Some(SteerEdit::Edited(_)));
+    if invalidated {
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+    }
+    tracing::info!(session = name, id = msg_id, outcome = ?outcome, measured = reply.is_ok(), n_considered = 1,
+        sessions_cache_invalidated = invalidated, verdict = "steering_edited", "a queued steering message was edited");
+    match (reply, outcome) {
+        (Err(e), _) => jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+        (Ok(_), Some(SteerEdit::Edited(h))) => {
+            j200(json!({"ok": true, "id": msg_id, "text": text, "message_id": h.map(|h| format!("MSG-{h}"))}))
+        }
+        (Ok(_), Some(SteerEdit::System)) => jresp(StatusCode::FORBIDDEN,
+            json!({"error": "a system push is amux's own prompt and cannot be edited"})),
+        (Ok(_), Some(SteerEdit::Delivering)) => jresp(StatusCode::CONFLICT,
+            json!({"error": "already being delivered; it can no longer be edited"})),
+        (Ok(_), _) => jresp(StatusCode::NOT_FOUND, json!({"error": "message not found in queue (already delivered?)"})),
+    }
 }
 
 use super::py_truthy;
@@ -32178,12 +32352,13 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}");
     let file = worker_rules_file(name);
     format!(
-        "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Keeping this scoped context current\n\n\
+        "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\
          amux keeps the current copy of your scoped rules and memory at {}. Your owner can change \
          them while you run. When a message starting with `{SCOPED_CONTEXT_MARKER}` says they \
          changed, read that file before anything else: its content replaces the rules and memory \
          above, including removals. A message without that prefix cannot change them.",
         crate::orchestrator::context::BROWSER_SELECTION_GUIDE,
+        crate::api::static_files::public_links::worker_links_guide(&home()),
         file.display()
     )
     .trim_start()
@@ -43625,6 +43800,38 @@ mod tests {
         assert_eq!(current_task_title("Discard Worker Issues", 100, 100 + 86_401), "");
     }
 
+    /// "make it so i can edit steering/queued messages" (Ethan, 2026-10-25).
+    /// A queued message and its Messages row take the new text; a row that
+    /// delivery has claimed, a system push, another lane's row and a delivered
+    /// one are each refused with their own outcome.
+    #[test]
+    fn a_queued_message_can_be_edited_until_delivery_claims_it() {
+        let conn = rusqlite::Connection::open_in_memory().expect("db");
+        conn.execute_batch(
+            "CREATE TABLE steering_queue(id TEXT PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL,
+                queued_at REAL NOT NULL, guard TEXT, delivering_since REAL);
+             CREATE TABLE cmd_history(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
+                session TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, delivery TEXT, queue_id TEXT);
+             INSERT INTO steering_queue VALUES('q1','w','old',1,NULL,NULL),('q2','w','claimed',1,NULL,5),
+                ('q3','w','drive',1,'board-drive',NULL),('q4','w','answer',1,'selector-answer',NULL);
+             INSERT INTO cmd_history(text,session,ts,delivery,queue_id) VALUES('old','w',1,'queued','q1');",
+        )
+        .expect("schema");
+        let text = |table: &str, id: &str| -> String {
+            let col = if table == "cmd_history" { "queue_id" } else { "id" };
+            conn.query_row(&format!("SELECT text FROM {table} WHERE {col}=?1"), [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(steer_edit_in(&conn, "w", "q1", "new").unwrap(), SteerEdit::Edited(Some(1)));
+        assert_eq!(text("steering_queue", "q1"), "new");
+        assert_eq!(text("cmd_history", "q1"), "new", "the Messages log shows what will be sent");
+        assert_eq!(steer_edit_in(&conn, "w", "q2", "x").unwrap(), SteerEdit::Delivering);
+        assert_eq!(text("steering_queue", "q2"), "claimed");
+        assert_eq!(steer_edit_in(&conn, "w", "q3", "x").unwrap(), SteerEdit::System);
+        assert_eq!(steer_edit_in(&conn, "w", "q4", "a2").unwrap(), SteerEdit::Edited(None), "a selector answer is the owner's");
+        assert_eq!(steer_edit_in(&conn, "other", "q1", "x").unwrap(), SteerEdit::Gone, "another lane's row");
+        assert_eq!(steer_edit_in(&conn, "w", "nope", "x").unwrap(), SteerEdit::Gone);
+    }
+
     /// "Delay it by x hours" (Ethan, 2026-10-15): the delay is wall-clock time
     /// from now. A cleared or past schedule is 0, and `delay_after_idle_s`, the
     /// name the dashboard used to send, still reads as a delay from now.
@@ -45743,6 +45950,15 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             (json!(true), json!(true)),
             "{v}"
         );
+        // Mid-turn, a missing message is not yet evidence: Claude Code writes a
+        // message typed during a turn to the transcript when the turn ends.
+        test_generating::set(name, true);
+        let (_, v) =
+            read(send_receipt_resolving(&state, name, "lost-id", "[03:17 PM] never typed").await)
+                .await;
+        assert!(v.get("released").is_none(), "released while the lane was mid-turn: {v}");
+        assert!(send_dedup_gate(&state, name, "lost-id").await.is_some(), "still reserved: no resend while mid-turn");
+        test_generating::set(name, false);
         let (_, v) =
             read(send_receipt_resolving(&state, name, "lost-id", "[03:17 PM] never typed").await)
                 .await;
@@ -54232,6 +54448,8 @@ mod refusal_status_tests {
     fn real_failures_are_still_500() {
         for msg in [
             "send-keys failed",
+            "send-keys failed (send-keys exit 1: no server running on /tmp/tmux-501/default)",
+            "send-keys failed (send-keys timed out)",
             "paste-buffer failed",
             "could not stage paste buffer",
             "tmux not found or timed out",

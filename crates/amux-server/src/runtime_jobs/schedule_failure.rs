@@ -544,6 +544,19 @@ async fn handle(
             return Ok(());
         }
     }
+    // A pass answers any open "keeps failing" ask: the harness closes its own
+    // card rather than leaving the owner a question about a schedule that is
+    // fine (Ethan, 2026-10-26: SCHED-754 passed every run for six days while
+    // AMUX-6257 still asked whether to fix, move or disable it). Checked on
+    // every pass, not only at the streak reset, so a card left open by an
+    // earlier build is answered too.
+    if matches!(verdict, Verdict::Pass) {
+        if let Some(card) = resolve_owner_card(store, &id, now).await? {
+            tracing::info!(schedule = %id, card = %card, verdict = "schedule_failure_card_resolved",
+                measured = true, n_considered = 1,
+                "schedule passed again; closed its open failure card");
+        }
+    }
     let f = match (&verdict, action) {
         (_, Action::Reset) => {
             tracing::info!(schedule = %id, worker = %worker, verdict = "schedule_failure_streak_reset",
@@ -588,6 +601,48 @@ async fn handle(
         "schedule failed and its worker cannot be told; routed to the owner");
     notice.delivery = Some(card);
     store_notice(store, &id, &notice).await
+}
+
+/// Close the harness's open failure card for `id`, if there is one, saying the
+/// schedule passed again. Returns the card's id.
+async fn resolve_owner_card(store: &SharedStore, id: &str, now: i64) -> anyhow::Result<Option<String>> {
+    let source_ref = owner_card_ref(id);
+    let note = format!("\n\n---\n{}\nResolved by the harness: the schedule passed again.", fmt_ts(now));
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let slot_w = slot.clone();
+    store
+        .write_async(move |conn| {
+            use rusqlite::OptionalExtension;
+            let open: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM issues WHERE source_ref=?1 AND COALESCE(archived,0)=0 \
+                     AND status NOT IN ('done','verified','discarded') ORDER BY rowid DESC LIMIT 1",
+                    [&source_ref],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(card) = open else {
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            };
+            conn.execute(
+                "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
+                 rev = COALESCE(rev,0) + 1 WHERE id=?3",
+                rusqlite::params![note, now, card],
+            )?;
+            *slot_w.lock().expect("card slot") = Some(card.clone());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![PendingEvent {
+                    entity_type: amux_core::revision::EntityType::Task,
+                    entity_id: card.clone(),
+                    mutation: amux_core::revision::MutationKind::Updated,
+                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
+                }],
+            })
+        })
+        .await?;
+    let card = slot.lock().expect("card slot").take();
+    Ok(card)
 }
 
 /// Disable the schedule and close the harness's own open card for it with the
@@ -1040,6 +1095,28 @@ mod tests {
         let cards = owner_cards(&store, "SCHED-9").await;
         assert_eq!(cards.len(), 1, "one open owner card per schedule");
         assert!(cards[0].3.contains("other"), "{}", cards[0].3);
+    }
+
+    /// A pass closes the open "keeps failing" ask, including one whose streak
+    /// had already reset before this check existed.
+    #[tokio::test]
+    async fn a_passing_run_closes_the_open_failure_card() {
+        let (fx, _g) = fixture(&[("raw", "CC_TAGS=plg\nCC_ISOLATED=1\n")]);
+        let store = fx.store.clone();
+        add(&store, sched("SCHED-11", "raw")).await;
+        on_run_outcome_with(&store, &sched("SCHED-11", "raw"), &exit(127, "No such file"), "cron-rs", &Up(true)).await;
+        assert_eq!(owner_cards(&store, "SCHED-11").await[0].1, "needsyou");
+        on_run_outcome_with(&store, &sched("SCHED-11", "raw"), &ok(), "cron-rs", &Up(true)).await;
+        let cards = owner_cards(&store, "SCHED-11").await;
+        assert_eq!(cards[0].1, "done", "{cards:?}");
+        assert!(cards[0].3.contains("passed again"), "{}", cards[0].3);
+        // A card left open while the streak was already 0 is closed by the next pass.
+        let card = cards[0].0.clone();
+        store.write_async(move |c| { c.execute("UPDATE issues SET status='needsyou' WHERE id=?1", [&card])?;
+            Ok(WriteOutcome { applied: true, events: vec![] }) }).await.unwrap();
+        assert_eq!(state(&store, "SCHED-11").await.0, 0);
+        on_run_outcome_with(&store, &sched("SCHED-11", "raw"), &ok(), "cron-rs", &Up(true)).await;
+        assert_eq!(owner_cards(&store, "SCHED-11").await[0].1, "done");
     }
 
     /// An archived worker is not woken or unarchived; the owner is told why.

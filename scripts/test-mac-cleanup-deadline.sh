@@ -6,6 +6,8 @@
 # 600s. tick_arm shrinks each arm's budget to what the tick has left before its
 # verdict reserve, and skips (and names) an arm with nothing left.
 set -euo pipefail
+export AMUX_CLEANUP_OPEN_WRITERS_CMD=false   # a disk bundle must not read the live lsof
+export AMUX_CLEANUP_TARGET_KEEP=/nonexistent/amux-test-keep   # never prune the live shared target
 HERE=$(cd "$(dirname "$0")" && pwd)
 TICK="$HERE/mac-cleanup-tick.sh"
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/dl.XXXXXX")

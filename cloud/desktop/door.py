@@ -536,6 +536,15 @@ class Door(BaseHTTPRequestHandler):
             # forward_auth: the original request's method/URI arrive as headers.
             uri = self.headers.get("X-Forwarded-Uri", "/")
             method = self.headers.get("X-Forwarded-Method", "GET")
+            # Another site (every amux Cloud server is under amux.io, so a customer's
+            # neighbour is the "same site") may not change anything with this cookie.
+            # amux refuses the same (api/cross_site.rs); this stops it at the door.
+            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            ws = (self.headers.get("Upgrade") or "").lower() == "websocket"
+            if site in ("cross-site", "same-site") and (method not in ("GET", "HEAD", "OPTIONS") or ws) \
+                    and not uri.startswith("/pub/"):
+                log(event="check", verdict="door_cross_site_refused", method=method, site=site)
+                return self.send(403, b'{"error":"cross-site request refused"}', [("Content-Type", "application/json")])
             cookies = self.headers.get("Cookie")
             user = cookie_user(cookies) or basic_user(self.headers.get("Authorization"))
             if not user and method == "GET" and uri.startswith(VIEW_PATH):

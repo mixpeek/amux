@@ -523,6 +523,10 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // through a channel lanes already read (GET /api/health/invariants),
     // read-only and additive.
     out.extend(unrecorded_schedule_outcomes_check(state));
+    // The run-row checks above need the scheduler to have fired. This one reads
+    // the ABSENCE of fires: an enabled schedule silent past 3/2 of its cadence
+    // (the stall watchdog SCHED-812 is the specimen that asked for it).
+    out.extend(enabled_schedule_firing_check(state));
 
     tm.mark(&out, "6f. does the frustrations LEDGER agree with the boar");
     // -- 6e. is the invariant system's OWN evaluation log bounded? (AMUX-3489:
@@ -1116,6 +1120,203 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
         })
         .unwrap_or_default();
     checks::unrecorded_schedule_outcomes_are_visible(window_h, &rows)
+}
+
+/// The query `schedule.enabled_is_firing` runs, as a `const` so a test drives
+/// the SHIPPED SQL. `deleted IS NULL AND enabled = 1` is the scheduler's own
+/// due predicate (scheduler.rs `due_schedules`), so this check judges exactly
+/// the rows the scheduler would fire. Column 8 is the newest re-enable or
+/// expression change from `schedule_audit`: a schedule switched back on today
+/// has not been silent since its last fire a month ago.
+pub(crate) const ENABLED_SCHEDULE_CLOCK_SQL: &str =
+    "SELECT s.id, COALESCE(s.title,''), COALESCE(s.schedule_expr,''), \
+            COALESCE(s.sched_type,'recurring'), s.last_run, s.created, \
+            COALESCE(s.next_run,''), s.not_before, \
+            (SELECT MAX(a.ts) FROM schedule_audit a WHERE a.schedule_id = s.id \
+               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr')) \
+     FROM schedules s WHERE s.deleted IS NULL AND s.enabled = 1";
+
+/// `last_run` is declared TEXT and has held unix ints, floats and digit
+/// strings over its life (scheduler.rs notes the affinity); read any of them.
+fn epoch_of(v: rusqlite::types::Value) -> Option<i64> {
+    use rusqlite::types::Value;
+    match v {
+        Value::Integer(i) => Some(i),
+        Value::Real(f) => Some(f as i64),
+        Value::Text(t) => t.trim().parse::<f64>().ok().map(|f| f as i64),
+        _ => None,
+    }
+    .filter(|t| *t > 0)
+}
+
+/// `(cadence_s, first_due_s)` for a schedule silent since `since_ts`: the first
+/// fire it owed after that instant, and the gap from that fire to the next.
+/// Stepped by `ScheduleExpr::next_run_after`, the function the scheduler fires
+/// on, so this cannot disagree with when the schedule was actually due.
+/// `(None, None)` when the expression does not parse or has no future fire.
+fn owed_fire(expr: &str, since_ts: i64) -> (Option<i64>, Option<i64>) {
+    use crate::runtime_jobs::scheduler::ScheduleExpr;
+    use chrono::TimeZone;
+    let Ok(parsed) = ScheduleExpr::parse(expr) else {
+        return (None, None);
+    };
+    let Some(since) = chrono::Local.timestamp_opt(since_ts, 0).single() else {
+        return (None, None);
+    };
+    let Some(due) = parsed.next_run_after(since) else {
+        return (None, None);
+    };
+    let Some(after) = parsed.next_run_after(due) else {
+        return (None, None);
+    };
+    let cadence = (after - due).num_seconds();
+    if cadence <= 0 {
+        return (None, None);
+    }
+    (Some(cadence), Some((due - since).num_seconds().max(0)))
+}
+
+/// Build the rows for [`checks::enabled_schedules_are_firing`] from the store.
+/// Separate from the check wrapper so a test can drive it against a temp db.
+pub(crate) fn enabled_schedule_clocks(
+    conn: &rusqlite::Connection,
+    now_ts: i64,
+    now_local: chrono::DateTime<chrono::Local>,
+    uptime_s: i64,
+) -> rusqlite::Result<(Vec<checks::EnabledScheduleClock>, checks::ScheduleFiringScope)> {
+    type Raw = (
+        String,
+        String,
+        String,
+        String,
+        rusqlite::types::Value,
+        rusqlite::types::Value,
+        String,
+        Option<String>,
+        Option<i64>,
+    );
+    let raw: Vec<Raw> = conn
+        .prepare(ENABLED_SCHEDULE_CLOCK_SQL)?
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut scope = checks::ScheduleFiringScope {
+        total_enabled: raw.len() as i64,
+        uptime_s,
+        ..Default::default()
+    };
+    let mut rows = Vec::new();
+    for (id, title, expr, sched_type, last_run, created, next_run, not_before, touched) in raw {
+        if sched_type == "once" {
+            scope.one_shot += 1;
+            continue;
+        }
+        let not_before = not_before
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(crate::runtime_jobs::scheduler::parse_minute);
+        if not_before.is_some_and(|nb| nb > now_local) {
+            scope.not_started += 1;
+            continue;
+        }
+        let last = epoch_of(last_run);
+        let since = [
+            last,
+            epoch_of(created),
+            touched,
+            not_before.map(|nb| nb.timestamp()),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(now_ts);
+        // The fire the schedule owed after the silence began, and the gap to
+        // the one after that, stepped by the scheduler's own `next_run_after`.
+        let (cadence_s, first_due_s) = owed_fire(&expr, since);
+        rows.push(checks::EnabledScheduleClock {
+            schedule_id: id,
+            title,
+            cadence_s,
+            first_due_s,
+            expr,
+            silent_s: (now_ts - since).max(0),
+            never_ran: last.is_none(),
+            next_run,
+        });
+    }
+    Ok((rows, scope))
+}
+
+/// `schedule.enabled_is_firing`: has every enabled schedule fired within 3/2
+/// of its own cadence? The run-row checks above cannot see a scheduler that
+/// stopped, because a stopped scheduler writes no rows.
+///
+/// LOG SIGNAL: the monitor's own WARN ("invariant incidents opened") carries a
+/// count and no id, so this check WARNs by name whenever the SET of silent
+/// schedules changes, and INFOs when it clears. On the transition, not every
+/// pass, so it cannot wallpaper the log.
+fn enabled_schedule_firing_check(state: &AppState) -> Vec<InvariantResult> {
+    const ID: &str = "schedule.enabled_is_firing";
+    static LAST_SILENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let Ok(conn) = state.store.read() else {
+        return vec![InvariantResult::unknown(ID, "could not read the store")];
+    };
+    let uptime_s = state.started.elapsed().as_secs() as i64;
+    let built = enabled_schedule_clocks(
+        &conn,
+        chrono::Utc::now().timestamp(),
+        chrono::Local::now(),
+        uptime_s,
+    );
+    drop(conn);
+    let (rows, scope) = match built {
+        Ok(v) => v,
+        // A failed query is not a fleet with nothing silent in it.
+        Err(e) => {
+            return vec![InvariantResult::unknown(
+                ID,
+                format!("schedule clock query failed: {e}"),
+            )]
+        }
+    };
+    let out = checks::enabled_schedules_are_firing(&rows, scope);
+    let ids: Vec<String> = out
+        .first()
+        .and_then(|r| r.evidence["silent_schedules"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r["schedule_id"].as_str().map(str::to_string))
+        .collect();
+    let now_set = ids.join(",");
+    if let Ok(mut last) = LAST_SILENT.lock() {
+        if *last != now_set {
+            if ids.is_empty() {
+                tracing::info!(target: "amux::invariants", invariant = ID,
+                    verdict = "schedules_firing_again", previously = %last,
+                    measured = true, n_considered = rows.len(),
+                    "every enabled schedule is firing within 3/2 of its cadence again");
+            } else {
+                tracing::warn!(target: "amux::invariants", invariant = ID,
+                    verdict = "schedule_silent", silent = %now_set,
+                    measured = true, n_considered = rows.len(),
+                    "enabled schedule(s) stopped firing: {}",
+                    out.first().map(|r| r.observed.as_str()).unwrap_or(""));
+            }
+            *last = now_set;
+        }
+    }
+    out
 }
 
 fn provider_launch_check() -> Vec<InvariantResult> {
@@ -4810,5 +5011,107 @@ mod builder_kick_tests {
         assert!(builder_kick_due(Some(7000.0), None, 900.0));
         assert!(!builder_kick_due(Some(7000.0), Some(60.0), 900.0), "bounded");
         assert!(builder_kick_due(Some(7000.0), Some(901.0), 900.0));
+    }
+}
+
+#[cfg(test)]
+mod enabled_schedule_clock_sql_tests {
+    use super::enabled_schedule_clocks;
+    use crate::invariants::{checks, Status};
+    use rusqlite::Connection;
+
+    const NOW: i64 = 1_800_000_000;
+
+    /// Drives the SHIPPED `ENABLED_SCHEDULE_CLOCK_SQL` and row builder.
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE schedules(id TEXT PRIMARY KEY, title TEXT, session TEXT, \
+                schedule_expr TEXT, sched_type TEXT, enabled INTEGER, deleted INTEGER, \
+                last_run TEXT, created INTEGER, next_run TEXT, not_before TEXT);
+             CREATE TABLE schedule_audit(id INTEGER PRIMARY KEY, schedule_id TEXT, ts INTEGER, \
+                field TEXT, old_value TEXT, new_value TEXT, source TEXT, by_who TEXT);",
+        )
+        .unwrap();
+        c
+    }
+    fn add(c: &Connection, id: &str, expr: &str, enabled: i64, last_run: Option<i64>, created: i64) {
+        c.execute(
+            "INSERT INTO schedules(id,title,session,schedule_expr,sched_type,enabled,deleted,\
+             last_run,created,next_run) VALUES(?1,'t','lane',?2,'recurring',?3,NULL,?4,?5,'')",
+            rusqlite::params![id, expr, enabled, last_run.map(|t| t.to_string()), created],
+        )
+        .unwrap();
+    }
+    fn verdict(c: &Connection) -> (Status, String, serde_json::Value) {
+        let (rows, scope) =
+            enabled_schedule_clocks(c, NOW, chrono::Local::now(), 86_400).unwrap();
+        let r = checks::enabled_schedules_are_firing(&rows, scope).remove(0);
+        (r.status, r.observed, r.evidence)
+    }
+
+    #[test]
+    fn a_disabled_stale_schedule_is_ignored_and_an_enabled_one_is_not() {
+        let c = db();
+        add(&c, "OFF", "every 5m", 0, Some(NOW - 86_400), NOW - 90_000);
+        let (st, _, ev) = verdict(&c);
+        assert_eq!(st, Status::Pass);
+        assert_eq!(ev["total_enabled"], 0);
+        add(&c, "ON", "every 5m", 1, Some(NOW - 3600), NOW - 90_000);
+        let (st, obs, _) = verdict(&c);
+        assert_eq!(st, Status::Fail);
+        assert!(obs.contains("ON 't'") && !obs.contains("OFF"), "{obs}");
+    }
+
+    #[test]
+    fn never_ran_measures_from_creation_and_a_reenable_resets_the_clock() {
+        let c = db();
+        add(&c, "NEW", "every 5m", 1, None, NOW - 100);
+        assert_eq!(verdict(&c).0, Status::Pass, "created 100s ago is not late");
+        add(&c, "OLD", "every 5m", 1, None, NOW - 7200);
+        let (st, obs, _) = verdict(&c);
+        assert_eq!(st, Status::Fail);
+        assert!(obs.contains("OLD 't'") && obs.contains("never ran"), "{obs}");
+        // Re-enabled 60s ago: silent since then, not since creation.
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value) \
+             VALUES('OLD',?1,'enabled','0','1')",
+            [NOW - 60],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Pass);
+    }
+
+    #[test]
+    fn one_shot_and_unparseable_rows_are_counted_not_judged() {
+        let c = db();
+        add(&c, "BAD", "whenever it feels right", 1, Some(NOW - 9_000_000), 1);
+        c.execute(
+            "INSERT INTO schedules(id,title,session,schedule_expr,sched_type,enabled,created) \
+             VALUES('ONCE','t','lane','','once',1,1)",
+            [],
+        )
+        .unwrap();
+        let (st, _, ev) = verdict(&c);
+        assert_eq!(st, Status::Pass);
+        assert_eq!(ev["total_enabled"], 2);
+        assert_eq!(ev["one_shot"], 1);
+        assert_eq!(ev["unparseable"], 1);
+        assert_eq!(ev["checked"], 0);
+    }
+
+    #[test]
+    fn a_seasonal_cron_owes_nothing_before_its_season() {
+        use chrono::TimeZone;
+        // Created 2026-09-01 noon; fires daily 04:30 on Oct 13-31 only.
+        let since = chrono::Local
+            .with_ymd_and_hms(2026, 9, 1, 12, 0, 0)
+            .unwrap()
+            .timestamp();
+        let (cad, owed) = super::owed_fire("30 4 13-31 10 *", since);
+        assert_eq!(cad, Some(86_400));
+        assert!(owed.unwrap() > 40 * 86_400, "{owed:?}");
+        assert_eq!(super::owed_fire("every 5m", since), (Some(300), Some(300)));
+        assert_eq!(super::owed_fire("whenever", since), (None, None));
     }
 }

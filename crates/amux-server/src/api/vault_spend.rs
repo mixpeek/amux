@@ -268,8 +268,7 @@ pub(crate) fn reserve(home: &Path, item: &Value, c: &Charge) -> Result<String, R
     }
     let mut rnd = [0u8; 6];
     {
-        use p256::elliptic_curve::rand_core::{OsRng, RngCore};
-        OsRng.fill_bytes(&mut rnd);
+        getrandom::fill(&mut rnd).expect("OS random source");
     }
     let id = format!("spd_{}", hex::encode(rnd));
     let entry = json!({"ev": "spend", "id": id, "ts": now, "item": item["id"], "amount_usd": c.amount_usd,

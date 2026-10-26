@@ -56,7 +56,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -78,7 +77,7 @@ pub(crate) const FRONT_DOOR_CALLBACK: &str = "https://cloud.amux.io/oauth/worksp
 
 fn rand_hex(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
-    OsRng.fill_bytes(&mut b);
+    getrandom::fill(&mut b).expect("OS random source");
     hex::encode(b)
 }
 
@@ -1136,9 +1135,11 @@ async fn owner_list(State(state): State<AppState>, headers: HeaderMap, uri: Uri)
     match rows {
         Ok(Ok(items)) => {
             let tun = crate::runtime_jobs::tunnel::snapshot();
-            let mcp_url = if tun.running && tun.mcp_only { tun.url.as_deref().map(|u| format!("{}/mcp", u.trim_end_matches('/'))) } else { None };
+            let mcp_url = if tun.running { tun.url.as_deref().map(|u| format!("{}/mcp", u.trim_end_matches('/'))) } else { None };
+            // The relay has one mode now (MSG-95893), so `tunnel_mcp_only` is
+            // always true; kept for clients that read it.
             Json(json!({"ok": true, "measured": true, "n_considered": items.len(), "items": items,
-                "public_mcp_url": mcp_url, "tunnel_running": tun.running, "tunnel_mcp_only": tun.mcp_only})).into_response()
+                "public_mcp_url": mcp_url, "tunnel_running": tun.running, "tunnel_mcp_only": true})).into_response()
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "measured": false, "why_unmeasured": "store unreadable"}))).into_response(),
     }

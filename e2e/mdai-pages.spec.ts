@@ -476,13 +476,19 @@ test('MDAI: last opened sorts the list, shows in Files, and Escape goes back', a
     await expect(page.locator('#mdai-view [data-sort-col=opened]')).toHaveClass(/sorted/);
 
     // Opening Alpha records it; Escape closes the node page back to the list,
-    // which now leads with Alpha.
+    // which now leads with Alpha. The record is held 1.5s so Escape always
+    // lands first, as it did on CI (run 40214810594): the list must wait for it.
+    await page.route('**/api/fs/opened', async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
     await page.evaluate(p => (window as any).openMdaiNode(p, { autorun: false }), join(dir, 'Alpha.mdai'));
     await expect(page.locator('#mdai-overlay')).toHaveClass(/active/);
     await page.keyboard.press('Escape');
     await expect(page.locator('#mdai-overlay')).not.toHaveClass(/active/);
     await expect(files.nth(0)).toContainText('Alpha.mdai');
     await expect(files.nth(0).locator('.fe-cell-opened')).not.toHaveText('');
+    await page.unroute('**/api/fs/opened');
 
     // Escape on the New MDAI page goes back to the list too.
     await page.evaluate(() => (window as any)._mdaiCreatePage());

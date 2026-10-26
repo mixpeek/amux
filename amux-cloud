@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# amux-cloud — open an amux Cloud instance's workers from this terminal.
+#
+# A Cloud instance's dashboard sits behind its sign-in door, so the API token
+# amux-remote uses cannot reach it. Its operator can SSH in, though, so this
+# saves the instance as a named amux-remote remote that runs everything over
+# SSH as the box's amux user: `ls`, `peek`, `send`, and `attach`, which opens a
+# worker's terminal here (iTerm2 native tabs with -CC).
+#
+#   amux-cloud connect sandbox [--key ~/.ssh/id] [--user root] [--as amux]
+#       sandbox -> sandbox.amux.io; a full host name is used as given.
+#       The key defaults to AMUX_CLOUD_SSH_KEY, else your ssh config/agent.
+#   amux-cloud attach <worker>       open a worker in this terminal
+#   amux-cloud ls | peek | send | start | stop | info | remotes | use
+#       anything else is amux-remote's command, against the instance in use
+#   amux-cloud -r <instance> <command>
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+remote="$here/amux-remote"
+[[ -x "$remote" ]] || remote="$(command -v amux-remote || true)"
+[[ -n "$remote" ]] || { echo "amux-cloud needs amux-remote beside it or on PATH" >&2; exit 1; }
+
+if [[ "${1:-}" == connect ]]; then
+  shift
+  target="${1:-}"
+  [[ -n "$target" ]] || { echo "usage: amux-cloud connect <instance|host> [--key F] [--user U] [--as U] [--name N]" >&2; exit 1; }
+  shift
+  host="$target"; [[ "$host" == *.* ]] || host="$host.amux.io"
+  name="${host%%.*}"
+  user=root as=amux key="${AMUX_CLOUD_SSH_KEY:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --key)  key="${2:?--key needs a file}"; shift 2 ;;
+      --user) user="${2:?--user needs a user}"; shift 2 ;;
+      --as)   as="${2:?--as needs a user}"; shift 2 ;;
+      --name) name="${2:?--name needs a name}"; shift 2 ;;
+      *) echo "unknown connect option: $1" >&2; exit 1 ;;
+    esac
+  done
+  args=(connect "$name" "$user@$host" --as "$as" --url "https://$host")
+  [[ -n "$key" ]] && args+=(--key "$key")
+  exec "$remote" "${args[@]}"
+fi
+
+case "${1:-}" in
+  ""|-h|--help|help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  open) shift; set -- attach "$@" ;;
+esac
+exec "$remote" "$@"

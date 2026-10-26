@@ -40,6 +40,12 @@ refuses when local work would be lost, and this mode replaces local work. Every
 local commit, edit and untracked file is saved under
 `refs/amux/pre-override/<time>` first, so nothing is gone for good.
 
+On a server with `AMUX_PULL_SENDS_LOCAL_AS_PR=1` (every amux Cloud server), the
+button itself runs `amux contribute --then-pull`: the local work goes upstream as
+a pull request first, and the checkout is replaced only once that PR is open with
+the exact local state as its head. Use that here too when the user wants their
+local changes kept as a PR: `cd "$REPO" && amux contribute --then-pull`.
+
 1. Show what would be replaced, changing nothing:
 
    ```bash
@@ -124,7 +130,12 @@ plainly: no em-dashes, no "it's not X, it's Y".
 
 ### 7. Push and open the pull request
 
-Push to `mixpeek/amux` when the user can, otherwise to their fork:
+`amux contribute --title "<title>"` (run in the worktree) does this whole step:
+it pushes to `mixpeek/amux` when the user can, otherwise to their fork, opens the
+pull request, checks that its head is what was pushed, and prints the URL. Exit 4
+means GitHub is not connected: tell the user to use About > Pull from remote > Connect GitHub or
+run `! amux github login`. Its body is generic, so edit the PR body after with
+`gh pr edit <url> --body-file <file>`. The manual equivalent:
 
 ```bash
 UP=mixpeek/amux

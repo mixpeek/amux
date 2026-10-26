@@ -204,6 +204,23 @@ Required repo secrets: `CLOUD_SSH_KEY`, `STRIPE_SECRET_KEY`, `ANTHROPIC_API_KEY`
 `STRIPE_PLATFORM_FEE_PRICE_ID`, `STRIPE_PLATFORM_PRICE_ID`. `GITHUB_TOKEN` is
 automatic and is what pushes to ghcr.io.
 
+## Opening an instance's workers from a terminal
+
+A dedicated instance's dashboard sits behind its sign-in door, so `amux-remote`'s
+API token cannot reach it. An operator who can SSH in uses `amux-cloud`
+(installed by `make install-cli`), which runs everything over SSH as the box's
+`amux` user against its loopback API:
+
+```bash
+amux-cloud connect sandbox --key ~/.ssh/<your key>   # sandbox -> root@sandbox.amux.io, proves amux answers, saves it
+amux-cloud attach <worker>                           # the worker's terminal here (iTerm2 native tabs with -CC)
+amux-cloud ls | peek <worker> | send <worker> <text>
+amux-cloud -r <instance> <command>                   # another saved instance
+```
+
+Saved instances live in `~/.amux/remotes/<name>.env` (mode 600; `amux-remote
+remotes` lists them). Test: `scripts/test-amux-cloud.sh`.
+
 ## The python that is still here, and why
 
 None of these ever imported the python server; all are stdlib HTTP clients.

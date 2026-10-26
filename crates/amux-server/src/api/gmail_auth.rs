@@ -46,7 +46,6 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -192,7 +191,7 @@ fn html(status: StatusCode, body: String) -> Response {
 
 fn token_urlsafe(nbytes: usize) -> String {
     let mut bytes = vec![0u8; nbytes];
-    OsRng.fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("OS random source");
     crate::integrations::email::base64url_nopad(&bytes)
 }
 

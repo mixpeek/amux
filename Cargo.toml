@@ -66,7 +66,7 @@ cron = "0.12"
 # calamine: pure-Rust reader for .xlsx/.xls/.ods, so the Files viewer can render a
 # spreadsheet as a table server-side (AMUX-3343) without shipping a heavy client
 # library to a mobile-first PWA.
-calamine = "0.26"
+calamine = "0.37"
 # jsonwebtoken: RS256 signing of the Google service-account JWT assertion for
 # domain-wide delegation (AMUX-3347), so amux mints impersonated access tokens
 # for the Mixpeek Google connectors without a per-user browser grant.
@@ -88,7 +88,10 @@ libc = "0.2"
 # feature additions to the same crate: ecdh for the RFC 8291 key agreement,
 # pem so the Python server's PKCS#8 PEM VAPID key (~/.amux/vapid_private.pem)
 # loads unchanged and existing dashboard subscriptions keep verifying.
-p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pem"] }
+p256 = { version = "0.14", features = ["ecdsa", "ecdh", "pem", "getrandom"] }
+# OS randomness for nonces, keys and tokens. Taken directly rather than through
+# p256's re-exported rand_core, which moved in 0.14 (RUSTSEC-2026-0387 bump).
+getrandom = "0.4"
 hkdf = "0.12"
 aes-gcm = "0.10"
 aes = "0.8"

@@ -1345,11 +1345,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/proxy/{port}",
+        path: "/pub/{id}",
         methods: &["*"],
     },
     RouteEntry {
-        path: "/proxy/{port}/{*rest}",
+        path: "/pub/{id}/",
+        methods: &["*"],
+    },
+    RouteEntry {
+        path: "/pub/{id}/{*rest}",
         methods: &["*"],
     },
     RouteEntry {
@@ -2326,6 +2330,22 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/page-links",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}",
+        methods: &["DELETE"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/open",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/scope",
         methods: ANY,
     },
@@ -2811,6 +2831,27 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/layout-presets/{name}",
         methods: &["DELETE"],
     },
+    // -- Social posting (api/social.rs, AA-42)
+    RouteEntry {
+        path: "/api/social",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/social/posts",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/track",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/social/posts/{id}/metrics",
+        methods: &["GET"],
+    },
     // -- New Worker / Connect modals (api/worker_create.rs, AMUX-2871)
     RouteEntry {
         path: "/api/templates",
@@ -3168,22 +3209,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/pull",
         methods: &["GET", "POST"],
-    },
-    RouteEntry {
-        path: "/api/proxies",
-        methods: &["GET", "POST"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}",
-        methods: &["PATCH", "DELETE"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}/start",
-        methods: &["POST"],
-    },
-    RouteEntry {
-        path: "/api/proxies/{id}/stop",
-        methods: &["POST"],
     },
     // AMUX-2888: mounted ahead of the tunnel client port so the SPA panel and
     // `amux tunnel` stop getting a 404 (status) and a 405 (the POSTs, from the
@@ -3727,6 +3752,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/dictate",
         methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/transcription",
+        methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/recordings",

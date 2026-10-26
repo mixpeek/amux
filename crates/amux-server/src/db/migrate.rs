@@ -729,6 +729,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0133_layout_presets_scope",
         sql: include_str!("../../migrations/0133_layout_presets_scope.sql"),
     },
+    Migration {
+        version: 134,
+        name: "0134_social_posts",
+        sql: include_str!("../../migrations/0134_social_posts.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

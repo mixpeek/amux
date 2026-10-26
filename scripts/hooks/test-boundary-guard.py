@@ -202,6 +202,19 @@ def main() -> int:
                 expect(f"{b['id']} measures real scratch with du and refuses past a 1 MB budget", code == 2 and hit and hit[0].get("used_bytes", 0) >= 3 * 1024 * 1024, f"exit {code} {ev}")
                 code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1"})
                 expect(f"{b['id']} the same real scratch passes a 1 GB budget", code == 0 and not any(e.get("verdict") == "disk_budget_refused" for e in ev), f"exit {code} {ev}")
+                # Mac disk RCA 20261025-190143: du on a 236 GB scratch took 896s, past the
+                # old 240s deadline, so the budget never applied. A measurement 10 minutes
+                # in must still hold the lock: no second du starts beside it.
+                lock = os.path.join(home, "state", "disk-usage", "boundary-test.json.measuring")
+                cache = os.path.join(home, "state", "disk-usage", "boundary-test.json")
+                with open(cache, "w") as fh:
+                    json.dump({"worker": "boundary-test", "ts": time.time() - 7200, "measured": True, "bytes": 1, "paths": {}, "n_considered": 1}, fh)
+                open(lock, "w").close()
+                ten_min_ago = time.time() - 600
+                os.utime(lock, (ten_min_ago, ten_min_ago))
+                code, ev = run("cargo build", home, {"AMUX_WORKER_DISK_GB": "1"})
+                expect(f"{b['id']} a disk measurement 10 minutes in keeps its lock (no second du)", abs(os.stat(lock).st_mtime - ten_min_ago) < 1, f"lock mtime moved by {os.stat(lock).st_mtime - ten_min_ago:.0f}s")
+                os.unlink(lock)
 
         # Subagent cap (mxp-gs12 review, 2026-10-18), each verdict with its twin.
         n_sub = sum(1 for b in boundaries if b.get("kind") == "subagents")
@@ -255,6 +268,19 @@ def main() -> int:
             expect("subagents: AMUX_MAX_SUBAGENTS=2 lowers the cap", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
             code, ev = run_payload(agent_call(tp), home, {"AMUX_MAX_SUBAGENTS": "0"})
             expect("subagents: AMUX_MAX_SUBAGENTS=0 turns the count cap off", code == 0 and not refused(ev, "running_cap"), f"exit {code} {ev}")
+            # A scope change writes sessions/<worker>.env; the guard reads it live,
+            # and it wins over the launch-time process env.
+            sess_dir = os.path.join(home, "sessions"); os.makedirs(sess_dir, exist_ok=True)
+            env_file = os.path.join(sess_dir, "boundary-test.env")
+            with open(env_file, "w") as f:
+                f.write('# updated: test\nAMUX_MAX_SUBAGENTS="6"\n')
+            code, ev = run_payload(agent_call(tp), home)
+            expect("subagents: a scoped AMUX_MAX_SUBAGENTS in sessions/<worker>.env applies without a restart", code == 0, f"exit {code} {ev}")
+            with open(env_file, "w") as f:
+                f.write("AMUX_MAX_SUBAGENTS=2\n")
+            code, ev = run_payload(agent_call(tp), home, {"AMUX_MAX_SUBAGENTS": "6"})
+            expect("subagents: the scoped value wins over the launch env", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
+            os.unlink(env_file)
             code, ev = run_payload(agent_call(None), home)
             un = [e for e in ev if e.get("verdict") == "subagent_cap_allowed_unmeasured"]
             expect("subagents: an unmeasured count (no transcript_path) is allowed and logged measured=false",

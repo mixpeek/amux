@@ -61,7 +61,7 @@ test('LC-BOARD: create through UI, inspect, reload, search and export exact new 
 // Enumerated product surfaces, not a BFS that blindly starts workers or sends email.
 // Each runs independently so one broken panel does not hide all later panels.
 for (const surface of ['sessions', 'board', 'groups', 'calendar', 'scheduler', 'files',
-  'mdai', 'proxies', 'email', 'connectors', 'logs', 'messages', 'skills', 'sql',
+  'mdai', 'pages', 'email', 'connectors', 'logs', 'messages', 'skills', 'sql',
   'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser']) {
   test(`LC-VIEW: ${surface} opens with an inspectable control inventory`, async ({ page }, info) => {
     await boot(page);

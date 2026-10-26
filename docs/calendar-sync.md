@@ -34,11 +34,14 @@ Click **Subscribe** in the calendar. amux hands you a public feed URL and button
 for Google and Apple. The URL comes from whichever exposure you have configured,
 in priority order:
 
-1. **Tunnel** — `https://<id>.t.amux.io/api/calendar.ics`. The intended path: no
-   extra infra, no port forwarding. (Requires the [tunnel](../README.md#tunnel).)
-2. **S3** — set `AMUX_S3_BUCKET`; the feed auto-uploads on every event change and
+1. **S3**: set `AMUX_S3_BUCKET`; the feed auto-uploads on every event change and
    is always reachable, even when your machine is off.
-3. **Download .ics** — a static, one-time import. Zero infra, but no live updates.
+2. **The server's own address**, when amux is reachable from where the calendar
+   app runs (a cloud box, or Tailscale for Apple Calendar on your own devices).
+3. **Download .ics**: a static, one-time import. Zero infra, but no live updates.
+
+The public tunnel that used to sit first in this list was retired with the
+Proxies tab (MSG-95893).
 
 ### Adding it to Google Calendar (step by step)
 
@@ -59,14 +62,6 @@ Google to pick it up immediately, publish to a **new URL** and re-subscribe (bum
 the S3 key, e.g. `calendar.ics` → `calendar-v2.ics`; the old URL keeps serving the
 stale cache). See `CLAUDE.md` § iCal / Google Calendar sync for the S3 mechanics.
 
-**A tunnel feed is only reachable while your machine + tunnel are up.** Google polls
-periodically; if your laptop is asleep at poll time, Google just keeps the last
-snapshot. For an always-fresh feed regardless of your machine, use the S3 exposure.
-
-**One tunnel serves one target.** If you point the tunnel at some other local port
-(e.g. a dev server), `/api/calendar.ics` is no longer exposed through it. Point the
-tunnel back at the dashboard (`amux tunnel start`, no port) for the calendar.
-
 **Timezones are handled for you.** Timed events are emitted as UTC (`DTSTART:…Z`)
 so Google/Apple display the correct local time; all-day events use `VALUE=DATE`. If
 an event shows hours off, you're looking at a stale cached fetch (see above), not a
@@ -74,8 +69,6 @@ bug.
 
 ## Verifying it worked
 
-- Watch `amux tunnel status` — the **request count** ticks up when Google fetches
-  the feed through the tunnel.
 - Check the event shows at the **right local time** in Google/Apple.
 - If you have `curl`, `curl -s <feed-url> | grep SUMMARY` should list your events.
 
@@ -84,6 +77,6 @@ bug.
 Subscriptions live in *your* Google account, not amux — remove them in Google
 Calendar (*Settings → the calendar → Unsubscribe*). Because feed URLs are
 long-lived and Google names calendars from the feed's `X-WR-CALNAME`, you can end
-up with duplicates named "amux" if you subscribe to more than one exposure (tunnel
-+ S3). Keep the one you want and unsubscribe the rest; each calendar's **Settings**
+up with duplicates named "amux" if you subscribe to more than one exposure (S3
++ the server's address). Keep the one you want and unsubscribe the rest; each calendar's **Settings**
 page shows its source URL so you can tell them apart.

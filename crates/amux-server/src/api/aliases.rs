@@ -125,7 +125,7 @@ fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
 ///
 /// A blanket strip is what `NormalizePathLayer` does, and it would reach
 /// surfaces this card is not about: the SPA shell fallback, the `{*path}` file
-/// servers, `/proxy/`. Asking [`super::request_log::routed_methods_at`] instead
+/// servers, the `/pub/` relay. Asking [`super::request_log::routed_methods_at`] instead
 /// confines the rewrite to requests that would have matched a DECLARED route but
 /// for the slash, which is exactly the population the invariant matcher already
 /// counts as mounted. One fact, one definition, and the two consumers can no
@@ -145,6 +145,12 @@ fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
 fn trim_trailing_slash(uri: &Uri) -> Option<Uri> {
     let path = uri.path();
     let bare = path.strip_suffix('/').filter(|b| !b.is_empty())?;
+    // A public link's slash is the app's: `/pub/<id>` redirects to `/pub/<id>/`
+    // so the app's relative URLs resolve, and stripping it here looped that
+    // redirect (public_links.rs).
+    if bare.starts_with("/pub/") {
+        return None;
+    }
     // Only a path a declared route claims. An unrouted `/api/nope/` keeps its
     // 404, with the catalog and nearest_routes it already gets.
     if super::request_log::routed_methods_at(bare).is_empty() {
@@ -479,7 +485,7 @@ mod tests {
 
     /// The predicate is "is the bare path a DECLARED route", not "ends with a
     /// slash". A blanket strip would reach the SPA shell, the `{*path}` file
-    /// servers and `/proxy/`, none of which this card is about.
+    /// servers and the `/pub/` relay, none of which this card is about.
     #[test]
     fn only_a_routed_bare_path_loses_its_slash() {
         let u = |s: &str| s.parse::<Uri>().unwrap();

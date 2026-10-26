@@ -143,11 +143,6 @@ self.addEventListener('fetch', e => {
   // API requests: network only (app JS handles offline queue)
   if (url.pathname.startsWith('/api/')) return;
 
-  // A dev server reached through /proxy/<port>/ is the owner's app, not an amux asset. Left to
-  // the browser: the static branch below cached its pages and answered its redirects from this
-  // worker, and on WebKit a link that redirects inside the proxy never navigated
-  // (e2e/port-proxy.spec.ts on ios-safari).
-  if (url.pathname.startsWith('/proxy/')) return;
 
   // Main HTML (SPA): network-first, always cache as canonical '/' key
   // Hash fragments (#path=...) are client-side only — SW sees bare '/' regardless

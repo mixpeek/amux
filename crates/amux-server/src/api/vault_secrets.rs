@@ -69,7 +69,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -279,7 +278,7 @@ pub(crate) fn master_key(home: &Path, create: bool) -> Result<Option<[u8; 32]>, 
         Some(k) => k,
         None if create => {
             let mut k = [0u8; 32];
-            OsRng.fill_bytes(&mut k);
+            getrandom::fill(&mut k).expect("OS random source");
             if file { write_key_file(home, &k)? } else { write_keychain(home, &k)? }
             // Read back: a write the store silently dropped must not become
             // a vault whose values nothing can open.
@@ -348,7 +347,7 @@ fn aad(id: &str, key: &str, scope: &Scope) -> String {
 fn seal(master: &[u8; 32], id: &str, key: &str, scope: &Scope, value: &str) -> Result<(String, String), String> {
     let cipher = Aes256Gcm::new_from_slice(master).map_err(|e| e.to_string())?;
     let mut nonce = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce);
+    getrandom::fill(&mut nonce).expect("OS random source");
     let a = aad(id, key, scope);
     let ct = cipher
         .encrypt(Nonce::from_slice(&nonce), Payload { msg: value.as_bytes(), aad: a.as_bytes() })
@@ -920,7 +919,7 @@ fn body_note(body: &Value) -> Option<Result<String, String>> {
 
 fn new_id() -> String {
     let mut b = [0u8; 6];
-    OsRng.fill_bytes(&mut b);
+    getrandom::fill(&mut b).expect("OS random source");
     format!("sec_{}", hex::encode(b))
 }
 
@@ -1481,6 +1480,27 @@ mod tests {
         // A different master key is reported as a key change.
         let err = open(&[8u8; 32], &items[0]).unwrap_err();
         assert!(err.contains("different master key"), "{err}");
+    }
+
+    /// A fixed item as stored on disk, sealed by an independent AES-256-GCM
+    /// (Python `cryptography`) with this store's AAD layout. Stored values are
+    /// production data: a dependency bump or refactor that changes the format
+    /// breaks every existing vault, so the bytes are pinned here.
+    #[test]
+    fn a_value_sealed_by_earlier_code_still_opens() {
+        let master = [0x5au8; 32];
+        let item = json!({"id": "sec_pin", "key": "GITHUB_TOKEN", "scope": "worker", "target": "w1",
+            "nonce": "AAECAwQFBgcICQoL", "ct": "PchDC1unk7pvWLiLl1Fk+QDoJO2luATCaEJb6U2BGg==",
+            "key_fp": "60bf07c4"});
+        assert_eq!(fingerprint(&master), "60bf07c4");
+        assert_eq!(open(&master, &item).unwrap(), "pinned-value-v1");
+        // And what this build seals, it opens: the round trip through the RNG.
+        let (nonce, ct) = seal(&master, "sec_pin", "GITHUB_TOKEN", &Scope::Worker("w1".into()), "pinned-value-v1").unwrap();
+        assert_ne!(nonce, item["nonce"].as_str().unwrap(), "a fresh nonce per seal");
+        let mut resealed = item.clone();
+        resealed["nonce"] = json!(nonce);
+        resealed["ct"] = json!(ct);
+        assert_eq!(open(&master, &resealed).unwrap(), "pinned-value-v1");
     }
 
     #[test]

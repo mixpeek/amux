@@ -679,66 +679,39 @@ async fn view_from_git(cwd: &str, fpath: &str) -> Option<Response> {
 /// Entries like ".env"/".gitignore" are reachable only as real suffixes
 /// ("foo.env") — a FILE named ".env" has no suffix and passes the
 /// extensionless branch, exactly as in python.
-const WRITABLE_EXTS: &[&str] = &[
-    ".md",
-    ".markdown",
-    ".mdx",
-    ".mdai",
-    ".txt",
-    ".json",
-    ".yml",
-    ".yaml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".py",
-    ".js",
-    ".ts",
-    ".jsx",
-    ".tsx",
-    ".mjs",
-    ".cjs",
-    ".css",
-    ".scss",
-    ".less",
-    ".html",
-    ".htm",
-    ".xml",
-    ".svg",
-    ".csv",
-    ".sql",
-    ".graphql",
-    ".proto",
-    ".go",
-    ".rs",
-    ".java",
-    ".rb",
-    ".php",
-    ".swift",
-    ".kt",
-    ".c",
-    ".cpp",
-    ".h",
-    ".cs",
-    ".r",
-    ".lua",
-    ".pl",
-    ".env",
-    ".gitignore",
-    ".dockerignore",
-    ".tf",
-    ".hcl",
-    ".conf",
-    ".log",
-    ".makefile",
-    // The Draw tab autosaves drawings and its shared component library as
-    // these (standard Excalidraw JSON).
-    ".excalidraw",
-    ".excalidrawlib",
+/// Formats that are bytes, never text: a text save over one would corrupt it.
+/// Every other file may be saved as text from the viewer (Ethan, 2026-10-26:
+/// "make sure we have a file editor for every file, i cannot edit html
+/// files"), unless the file on disk is itself not text (`existing_is_text`),
+/// which catches a binary under an extension this list does not name.
+const TEXT_UNWRITABLE_EXTS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".icns", ".tif", ".tiff", ".heic", ".avif",
+    ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".tar", ".dmg", ".iso", ".pkg",
+    ".mp3", ".mp4", ".m4a", ".m4v", ".mov", ".wav", ".flac", ".ogg", ".webm", ".mkv", ".avi", ".aac",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".exe", ".dll", ".so", ".dylib", ".a", ".o", ".class", ".jar", ".wasm", ".pyc", ".node", ".bin",
+    ".sqlite", ".sqlite3", ".db", ".parquet", ".arrow", ".npy", ".pt", ".onnx", ".safetensors",
+    ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".odt", ".ods", ".key", ".numbers", ".pages",
+    ".epub", ".mobi", ".psd", ".sketch", ".fig",
 ];
+
+/// Whether the file already at `p` reads as text (UTF-8, no NUL in its first
+/// 64 KB). A missing file is a new one and counts as text.
+fn existing_is_text(p: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(p) else { return true };
+    let mut buf = vec![0u8; 65536];
+    let n = f.read(&mut buf).unwrap_or(0);
+    let head = &buf[..n];
+    if head.contains(&0) {
+        return false;
+    }
+    // A multi-byte character cut at the 64 KB edge is still text.
+    match std::str::from_utf8(head) {
+        Ok(_) => true,
+        Err(e) => e.error_len().is_none(),
+    }
+}
 
 async fn put_file(req: Request) -> Response {
     let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
@@ -771,10 +744,12 @@ async fn put_file(req: Request) -> Response {
                 json!({"error": format!("binary content not writable for: {ext}")}),
             );
         }
-    } else if !ext.is_empty() && !WRITABLE_EXTS.contains(&ext.as_str()) {
+    } else if TEXT_UNWRITABLE_EXTS.contains(&ext.as_str()) || !existing_is_text(&p) {
+        tracing::info!(path = %p.display(), ext = %ext, verdict = "file_text_write_refused_binary",
+            measured = true, n_considered = 1, "text save refused: the file is binary");
         return j(
             400,
-            json!({"error": format!("file type not writable: {ext}")}),
+            json!({"error": format!("file type not writable: {}", if ext.is_empty() { "binary file".to_string() } else { ext.clone() })}),
         );
     }
     // Code-execution-vector writes are refused even when extensionless
@@ -839,7 +814,7 @@ async fn put_file(req: Request) -> Response {
     }
 }
 
-/// Formats the viewer may write as bytes. Kept separate from WRITABLE_EXTS:
+/// Formats the viewer may write as bytes. Kept separate from TEXT_UNWRITABLE_EXTS:
 /// those are text the editor round-trips as a string.
 const BINARY_WRITABLE_EXTS: &[&str] = &[".xlsx"];
 
@@ -1118,6 +1093,23 @@ async fn raw_path(req: Request) -> Response {
         );
     }
     resp
+}
+
+/// GET one file exactly as `/api/file/raw` does (MIME, ETag, Range, inline or
+/// download), for a caller that has already decided the path may be served
+/// (public file links, static_files/public_links.rs).
+pub(crate) async fn serve_file(path: &Path, headers: &axum::http::HeaderMap) -> Response {
+    let uri = format!("/api/file/raw?path={}", pct_encode_query(&path.to_string_lossy()));
+    let mut b = Request::builder().method(Method::GET).uri(uri);
+    for k in ["range", "if-none-match", "if-range"] {
+        if let Some(v) = headers.get(k) {
+            b = b.header(k, v);
+        }
+    }
+    match b.body(Body::empty()) {
+        Ok(req) => raw(req).await,
+        Err(_) => (StatusCode::BAD_REQUEST, "bad path").into_response(),
+    }
 }
 
 async fn raw(req: Request) -> Response {
@@ -3184,6 +3176,35 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "file type not writable: .exe");
+
+        // Every other text file saves: HTML, and a type no list ever named.
+        for name in ["page.html", "App.vue", "notes.rst"] {
+            let p = dir.path().join(name);
+            let (status, _, body) = send(
+                &app,
+                HttpRequest::builder().method("PUT").uri("/api/file")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"path": p.to_str().unwrap(), "content": "<b>hi</b>\n"}).to_string()))
+                    .unwrap(),
+            )
+            .await;
+            let v: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(status, StatusCode::OK, "{name} must be writable: {v}");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "<b>hi</b>\n");
+        }
+        // A binary file under an extension no list names is still not overwritten as text.
+        let blob = dir.path().join("model.weights");
+        std::fs::write(&blob, [0u8, 159, 146, 150, 0, 1]).unwrap();
+        let (status, _, body) = send(
+            &app,
+            HttpRequest::builder().method("PUT").uri("/api/file")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"path": blob.to_str().unwrap(), "content": "x"}).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(std::fs::read(&blob).unwrap(), vec![0u8, 159, 146, 150, 0, 1], "the binary file is untouched");
 
         // Extensionless code-execution vector → 403 refused.
         let ak = dir.path().join("authorized_keys");

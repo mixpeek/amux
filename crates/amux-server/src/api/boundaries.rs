@@ -26,6 +26,17 @@ use super::AppState;
 /// The registry as committed, so a box without the installed copy still has
 /// the text to show and to compose into worker context.
 pub const DEFAULT_REGISTRY: &str = include_str!("../../../../boundaries.toml");
+/// The guard this build ships. `install.sh` copies it to ~/.amux/hooks; until
+/// someone reruns that, a fix to it on main does not run (Mac disk RCA
+/// 20261025-190143: the disk-budget timeout fix sat installed-behind while the
+/// old guard kept timing out). `guard_matches_build` says so.
+pub const DEFAULT_GUARD: &str = include_str!("../../../../scripts/hooks/boundary-guard.py");
+
+/// Whether the installed guard is the one this build ships. `None` when it
+/// could not be read (not installed, or unreadable).
+fn guard_matches_build(installed: Option<&str>) -> Option<bool> {
+    installed.map(|t| t == DEFAULT_GUARD)
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -142,8 +153,10 @@ fn hook_status() -> Value {
     let settings_text = std::fs::read_to_string(&settings).ok();
     let wired = settings_text.as_deref().map(|t| t.contains("boundary-guard.py"));
     let installed_text = std::fs::read_to_string(installed_registry()).ok();
+    let guard_text = std::fs::read_to_string(&guard).ok();
     json!({
         "guard_installed": guard.exists(),
+        "guard_matches_build": guard_matches_build(guard_text.as_deref()),
         "registry_installed": installed_text.is_some(),
         "registry_matches_build": installed_text.as_deref().map(|t| t == DEFAULT_REGISTRY),
         "wired_in_settings": wired,
@@ -395,6 +408,14 @@ async fn resources(headers: HeaderMap, Query(q): Query<ResQuery>) -> impl IntoRe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_installed_guard_is_compared_to_the_one_this_build_ships() {
+        assert_eq!(super::guard_matches_build(Some(super::DEFAULT_GUARD)), Some(true));
+        assert_eq!(super::guard_matches_build(Some("# an older guard\n")), Some(false));
+        assert_eq!(super::guard_matches_build(None), None, "unreadable is unknown, not a mismatch");
+        assert!(super::DEFAULT_GUARD.contains("DISK_DU_TIMEOUT_S"), "the embedded guard is the repo's current one");
+    }
+
     use super::*;
 
     #[test]

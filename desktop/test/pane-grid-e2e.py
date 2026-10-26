@@ -22,7 +22,7 @@ tab bar), because macOS refuses this agent synthetic mouse events. A pane's
 header drag and its buttons go through the same handlers a click reaches
 (amux://test/pane-*), not through a real mouse.
 """
-import json, os, re, signal, subprocess, sys, tempfile, time
+import json, os, re, signal, subprocess, sys, tempfile, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "Amux.app")
@@ -93,12 +93,15 @@ TABS = ["board", "calendar", "map", "sessions", "messages"]
 
 
 class App:
-    def __init__(self, fresh=True):
+    def __init__(self, fresh=True, extra=()):
         if fresh:
+            # extra: hashes of more tabs; the last one is the tab shown.
             with open(CFG, "w") as f:
                 json.dump({"connections": [{"name": "localhost", "url": url}], "lastUrl": url, "cleanExit": True,
-                           "windows": [{"url": f"{url}/#view={v}", "frame": src_s, "tabGroup": 1, "selected": v == "messages"}
-                                       for v in TABS]}, f)
+                           "windows": [{"url": f"{url}/#view={v}", "frame": src_s, "tabGroup": 1, "selected": v == "messages" and not extra}
+                                       for v in TABS]
+                           + [{"url": f"{url}/{h}", "frame": src_s, "tabGroup": 1, "selected": i == len(extra) - 1}
+                              for i, h in enumerate(extra)]}, f)
         n = log().count("verdict=windows_restored")
         self.p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1",
                                   AMUX_DESKTOP_TEST_STATE=STATE), stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
@@ -469,6 +472,114 @@ try:
     app.send("pane-action?a=zoom", 1)
     g = grid_window(app.state())
     check("zooming again puts the layout back", g is not None and g["zoomed"] == -1 and g["pane_shown"] == [True, True] and g["grid"] == "r0.500(0,1)", str(g))
+finally:
+    app.stop()
+
+print("17. panes with their own tabs survive a workspace save and reopen, and a quit and relaunch")
+app = App()
+try:
+    st = app.state()
+    cx, cy, cw, ch = rect(st["content_frame"])
+    drag_tab(app, "Messages", cx + cw * 0.9, cy + ch * 0.5)
+    g = grid_window(app.state())
+    right = rect(g["pane_frames"][1]) if g else (0, 0, 0, 0)
+    drag_tab(app, "Calendar", right[0] + right[2] * 0.5, right[1] + right[3] * 0.5)
+    g0 = grid_window(app.state())
+    want = (g0["grid"], g0["pane_tabs"], g0["pane_active"]) if g0 else None
+    check("set up: two panes, the right one with two tabs", g0 is not None and len(g0["pane_tabs"][1]) == 2, str(g0))
+    n = log().count("verdict=layout_saved")
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://save-workspace/pane-ws")
+    end = time.time() + 5
+    while log().count("verdict=layout_saved") <= n and time.time() < end:
+        time.sleep(0.1)
+    saved = json.load(open(CFG))
+    ws = [l for l in saved.get("layouts", []) if l["name"] == "pane-ws"]
+    check("the workspace records the grid", bool(ws) and any(w.get("grid") for w in ws[0]["windows"]), str(ws)[:400])
+    # Change the layout: close the right pane.
+    app.send("pane-close?i=1", 1)
+    g1 = grid_window(app.state())
+    check("changed: the grid is gone", g1 is None, str(g1))
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://workspace/pane-ws")
+    time.sleep(4)
+    g2 = grid_window(app.state())
+    got = (g2["grid"], g2["pane_tabs"], g2["pane_active"]) if g2 else None
+    check("opening the workspace brings the panes and their tabs back", got == want, f"{got} vs {want}")
+    app.stop()
+    app = App(fresh=False)
+    g3 = grid_window(app.state())
+    got = (g3["grid"], g3["pane_tabs"], g3["pane_active"]) if g3 else None
+    check("a quit and relaunch keeps the panes and their tabs", got == want, f"{got} vs {want}")
+    pages = [w["title"] for w in app.state()["windows"]]
+    check("no page is open twice", len(pages) == len(set(pages)), str(pages))
+    # Opening the workspace again while its panes are showing (the Workspaces
+    # menu, 2026-10-25 09:54:01 in Ethan's log): the same panes, no page twice.
+    sh(os.path.join(TMP, "wsctl"), "send", str(app.p.pid), "amux://workspace/pane-ws")
+    time.sleep(4)
+    st = app.state()
+    g4 = grid_window(st)
+    got = (g4["grid"], g4["pane_tabs"], g4["pane_active"]) if g4 else None
+    check("reopening the shown workspace keeps the panes and their tabs", got == want, f"{got} vs {want}")
+    tabs = [t for w in st["windows"] for t in ([w["title"]] if "grid" not in w else [x for pt in w["pane_tabs"] for x in pt])]
+    check("reopening opens no page twice", len(tabs) == len(set(tabs)), str(tabs))
+    saved = json.load(open(CFG))
+    dup = [w for w in saved.get("windows", []) if w.get("grid")]
+    urls = [u for w in dup for u in [w["url"]] + [t["url"] for t in (w["grid"].get("hostTabs") or [])]
+            + [x for p in w["grid"]["panes"] for x in [p["url"]] + [t["url"] for t in (p.get("tabs") or [])]]]
+    check("the saved grid names no page twice", len(urls) == len(set(urls)), str(urls))
+finally:
+    app.stop()
+
+print("18. a tab named by its owner keeps the name, across a relaunch, until cleared")
+app = App()
+try:
+    app.send("rename-tab?view=view=board&name=Planning", 1)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("the tab shows its new name", "Planning" in titles and "Board" not in titles, str(titles))
+    check("the rename is logged", "verdict=tab_renamed named=1" in log())
+    time.sleep(2)   # the debounced save
+    app.stop()
+    app = App(fresh=False)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("a relaunch keeps the name", "Planning" in titles, str(titles))
+    app.send("rename-tab?view=view=board&name=", 1)
+    titles = [w["title"] for w in app.state()["windows"]]
+    check("clearing it brings the page's own name back", "Board" in titles and "Planning" not in titles, str(titles))
+finally:
+    app.stop()
+
+print("19. an open file, drawing or MDAI node stays open across a relaunch (Ethan, 2026-10-25)")
+FILES = os.path.join(os.path.expanduser("~"), ".amux", "tmp", "pane-grid-e2e-files")
+os.makedirs(FILES, exist_ok=True)
+md = os.path.join(FILES, "notes-file.md")
+with open(md, "w") as f:
+    f.write("# A heading that is not the file name\n\nbody\n")   # the title shows the heading
+dr = os.path.join(FILES, "sketch.excalidraw")
+with open(dr, "w") as f:
+    json.dump({"type": "excalidraw", "version": 2, "elements": [], "appState": {}}, f)
+enc = lambda p: "#path=" + urllib.parse.quote(p, safe="")
+app = App(extra=[enc(dr), enc(md)])
+try:
+    def views():
+        return {w.get("view") for w in app.state()["windows"]}
+    end = time.time() + 20
+    while time.time() < end and enc(md) not in views():
+        time.sleep(0.5)
+    check("the shown tab reports the open file by its path", enc(md) in views(), str(views()))
+    app.send("select-view?view=" + enc(dr)[1:], 1)   # a #path= tab still deferred is found by its URL
+    end = time.time() + 20
+    while time.time() < end and enc(dr) not in views():
+        time.sleep(0.5)
+    check("the drawing tab reports its drawing", enc(dr) in views(), str(views()))
+    time.sleep(2)   # the debounced save
+    app.stop()
+    saved = [w["url"] for w in json.load(open(CFG))["windows"]]
+    check("the saved tabs name both files", any(u.endswith(enc(md)) for u in saved) and any(u.endswith(enc(dr)) for u in saved), str(saved))
+    app = App(fresh=False)
+    end = time.time() + 60   # hidden tabs load one at a time after the shown one
+    while time.time() < end and not {enc(md), enc(dr)} <= views():
+        time.sleep(0.5)
+    check("after a relaunch the file is open again", enc(md) in views(), str(views()))
+    check("and the drawing", enc(dr) in views(), str(views()))
 finally:
     app.stop()
 

@@ -32,7 +32,6 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -776,7 +775,7 @@ fn ev(entity: &str, id: &str, mutation: MutationKind) -> PendingEvent {
 /// `secrets.token_urlsafe(n)`: n CSPRNG bytes, base64url, no padding.
 fn token_urlsafe(nbytes: usize) -> String {
     let mut bytes = vec![0u8; nbytes];
-    OsRng.fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("OS random source");
     base64url_nopad(&bytes)
 }
 

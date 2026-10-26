@@ -741,11 +741,13 @@ async fn async_main() {
         tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_startup_install_failed",
             "passive observer could not be installed at startup; status_history's tick will retry");
     }
+    api::native_status::ensure_claude_hooks_here();
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
     drop(runtime_jobs::browser_login_sync::spawn());
     drop(runtime_jobs::connector_maintenance::spawn());
+    drop(runtime_jobs::social_metrics::spawn(state.clone()));
     drop(runtime_jobs::episodes::spawn(state.clone()));
     // CDC poller (migration 0061): tails board_change_log so the catch-up
     // endpoint (/api/board/changes) stays current.
@@ -803,6 +805,8 @@ async fn async_main() {
     // spawned further down (after the listener is up) and now needs the store to
     // tell a lane its browser was released (AF-497).
     let reaper_store = state.store.clone();
+    // Read once at boot for the retired-Proxies note (MSG-95893).
+    let proxies_store = state.store.clone();
     api::board_intake::initialize();
     api::history_ask::initialize();
     boot_watch::step("router");
@@ -1175,19 +1179,29 @@ async fn async_main() {
     // reaper nor disk_watch covers these.
     drop(runtime_jobs::mac_health::spawn());
 
-    // AUTO-START THE TUNNEL RELAY, and only with an explicit target port
-    // (AMUX-2888, py:78089). Both halves are required: a token alone would
-    // default the target to amux's OWN port, and this port has no request auth
-    // — publishing it is unauthenticated RCE on a YOLO lane. `maybe_boot_start`
-    // owns that decision and returns what it did, so the log records a fact
-    // rather than an intention.
+    // AUTO-START THE CHATGPT APP RELAY when the owner published the connector
+    // (AMUX-5396). `maybe_boot_start` owns that decision and returns what it
+    // did, so the log records a fact rather than an intention.
     //
     // Not a `spawn_loop`: it is a one-shot that ADOPTS the relay's own task
     // under `ids::TUNNEL` if it manages to start one.
-    tokio::spawn(async {
+    //
+    // The same shot notes saved Proxies-tab rows. That tab is retired
+    // (MSG-95893) and nothing reads the table any more; the rows are the
+    // owner's data, so they stay on disk and get one line saying so.
+    tokio::spawn(async move {
         let outcome = runtime_jobs::tunnel::maybe_boot_start().await;
-        if outcome != "no token" && outcome != "no AMUX_TUNNEL_PORT" {
+        if outcome != "no token" && outcome != "not published" {
             tracing::info!(outcome, "tunnel: boot autostart");
+        }
+        let saved = proxies_store
+            .read()
+            .ok()
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM proxies", [], |r| r.get::<_, i64>(0)).ok())
+            .unwrap_or(0);
+        if saved > 0 {
+            tracing::info!(saved, verdict = "retired_proxies_data_present",
+                "proxies: the Proxies tab is retired; its saved rows are kept on disk and no longer read (use Pages)");
         }
     });
 
@@ -1246,6 +1260,24 @@ async fn async_main() {
     } else {
         "listener_bound"
     }, "listening (https, plain-http redirected)");
+    // The apps origin (api/static_files/apps_origin.rs): a second listener that
+    // serves only /app/<id>/, so an app inside amux never shares the dashboard's
+    // origin. A failure to bind is logged and leaves the dashboard serving.
+    if let Some(apps_port) = api::static_files::apps_origin::apps_port(cfg.port) {
+        let apps_addr = std::net::SocketAddr::new(addr.ip(), apps_port);
+        let apps_tls = rustls_cfg.clone();
+        tokio::spawn(async move {
+            tracing::info!(%apps_addr, measured = true, n_considered = 1, verdict = "apps_origin_listening",
+                "apps origin listening: /app/<id>/ only");
+            if let Err(error) = axum_server::bind_rustls(apps_addr, apps_tls)
+                .serve(api::apps_router().into_make_service())
+                .await
+            {
+                tracing::warn!(%apps_addr, %error, measured = true, n_considered = 1, verdict = "apps_origin_bind_failed",
+                    "the apps origin could not listen; apps inside amux will not open");
+            }
+        });
+    }
     let acceptor = tls::RedirectingAcceptor::new(
         axum_server::tls_rustls::RustlsAcceptor::new(rustls_cfg),
         format!("localhost:{}", cfg.port),

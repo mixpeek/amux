@@ -20,6 +20,8 @@ has() { if printf '%s' "$1" | grep -q -- "$2"; then echo yes; else echo no; fi; 
 export AMUX_CLEANUP_SCOPE_FILE=/dev/null   # the live global scope must not configure a test (DESKT-72)
 export AMUX_CLEANUP_SESSIONS_CMD=false        # the VM-reference report must not read the live fleet (AMUX-5491)
 export AMUX_CLEANUP_VM_WRITERS_CMD=false      # the bundle's container writers must not read the live VMs
+export AMUX_CLEANUP_OPEN_WRITERS_CMD=false    # nor the open-file writers the live lsof (and its 10s second sample)
+export AMUX_CLEANUP_TARGET_KEEP=/nonexistent/amux-test-keep   # never prune the live shared target
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 # No end-to-end cell here may prune a real VM (DESKT-69) or reap real build output.
 export AMUX_CLEANUP_VM_LIST_CMD="true"
@@ -89,6 +91,8 @@ check "swap nearly used but normal pressure and disk to grow it: not a constrain
 check "same swap at pressure 2 trips whatever the disk" "memory" "$(classify_constraints 600 - - 2 385 10 28 0 12288 | grep -o '^memory')"
 check "load over the CPU share"                       "cpu"  "$(classify_constraints 600 - - 1 2000 30 28 0 20000 | awk '{print $1}')"
 check "a runaway family"                              "family" "$(classify_constraints 600 - - 1 2000 10 28 1 20000 | awk '{print $1}')"
+check "the family line names the family"               "yes" "$(FAMILY_DESC='16.4G (17.1% of RAM, share 15%) in 10 children of pid 64720, lane mxp-gs12: pytest' classify_constraints 600 - - 1 2000 10 28 1 20000 | grep -q 'over its share of RAM: 16.4G .* pid 64720, lane mxp-gs12: pytest$' && echo yes || echo no)"
+check "with no description it still reads as a family" "family a process family is over its share of RAM" "$(FAMILY_DESC= classify_constraints 600 - - 1 2000 10 28 1 20000)"
 check "unmeasured inputs (-1) never trip a class"     ""   "$(classify_constraints -1 - - -1 -1 -1 28 0 -1)"
 
 echo "2b. swap_total=0 means no swapfile was ever created, not exhaustion (MO-3629/MO-3638, 3 escalations in one day: swap_free=0.00MB, pressure=1/normal, >=90% memory free every time)"

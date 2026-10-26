@@ -164,6 +164,15 @@ fn spawn_pty(cols: u16, rows: u16) -> Result<String, String> {
     for (key, value) in super::settings::runtime_provider_env(&super::settings::amux_home()) {
         cmd.env(key, value);
     }
+    // The amux CLI installs beside this server binary (~/.local/bin on an amux Cloud
+    // server), and only a LOGIN shell's ~/.profile puts that on PATH. This shell is not
+    // one, so `amux` was "command not found" here, and the dashboard's Connect GitHub,
+    // which runs `amux github login` in this terminal, waited forever (sandbox.amux.io,
+    // 2026-10-25).
+    let cli_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+    if let Some(path) = cli_dir.as_deref().and_then(|d| path_with_cli_dir(&std::env::var("PATH").unwrap_or_default(), d)) {
+        cmd.env("PATH", path);
+    }
     if let Ok(home) = std::env::var("HOME") {
         cmd.cwd(home);
     }
@@ -401,9 +410,29 @@ fn b64_std_decode(s: &str) -> Result<Vec<u8>, String> {
     crate::integrations::email::base64url_decode(s)
 }
 
+/// `path` with `dir` in front when `dir` holds the amux CLI and is not on it yet.
+fn path_with_cli_dir(path: &str, dir: &std::path::Path) -> Option<String> {
+    if !dir.join("amux").is_file() || path.split(':').any(|p| std::path::Path::new(p) == dir) {
+        return None;
+    }
+    Some(if path.is_empty() { dir.display().to_string() } else { format!("{}:{path}", dir.display()) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_finds_the_amux_cli_installed_beside_the_server() {
+        let bin = tempfile::tempdir().unwrap();
+        let d = bin.path();
+        assert_eq!(path_with_cli_dir("/usr/bin:/bin", d), None, "no amux CLI there: PATH untouched");
+        std::fs::write(d.join("amux"), "#!/bin/sh\n").unwrap();
+        assert_eq!(path_with_cli_dir("/usr/bin:/bin", d), Some(format!("{}:/usr/bin:/bin", d.display())));
+        let already = format!("/usr/bin:{}", d.display());
+        assert_eq!(path_with_cli_dir(&already, d), None, "already on PATH: not added twice");
+        assert_eq!(path_with_cli_dir("", d), Some(d.display().to_string()));
+    }
 
     #[test]
     fn base64_roundtrip_matches_standard_alphabet() {

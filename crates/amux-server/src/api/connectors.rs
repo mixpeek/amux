@@ -53,7 +53,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -195,6 +194,20 @@ const REGISTRY: &[Provider] = &[
         setup_note: "Needs a Workspace super-admin. Enable the Admin SDK API and consent the admin.directory scopes as the super-admin, or use a service account with domain-wide delegation.",
         docs: "https://console.cloud.google.com/apis/library/admin.googleapis.com",
         test_url: "https://admin.googleapis.com/admin/directory/v1/users?maxResults=1&customer=my_customer",
+    },
+    Provider {
+        id: "google-youtube",
+        label: "YouTube",
+        category: "Google",
+        auth: Auth::OAuth2 {
+            client_id_env: "GOOGLE_OAUTH_CLIENT_ID",
+            client_secret_env: "GOOGLE_OAUTH_CLIENT_SECRET",
+            callback_path: "/api/connectors/google/callback",
+            scopes: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
+        },
+        setup_note: "Enable the YouTube Data API v3 and YouTube Analytics API. For a Workspace channel, delegate these scopes to the domain's service account (GOOGLE_SA_KEY_FILE_<DOMAIN>). Uploads stay private until Google's YouTube API audit passes. Posting goes through /api/social.",
+        docs: "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
+        test_url: "https://www.googleapis.com/youtube/v3/channels?part=id&mine=true",
     },
     Provider {
         id: "slack",
@@ -680,10 +693,17 @@ fn family_of(p: &Provider) -> &'static str {
 /// excluded from the default union (its scopes need a Workspace super-admin
 /// and fail on consumer accounts like a personal gmail); a grant STARTED from
 /// google-admin adds them.
+/// Rows a Google grant includes when it was started from ANOTHER row. Admin
+/// needs a super-admin, and YouTube adds upload scopes nobody connecting Gmail
+/// meant to grant; each joins a grant only when the grant starts from it.
+fn in_default_google_grant(id: &str) -> bool {
+    !matches!(id, "google-admin" | "google-youtube")
+}
+
 fn google_union_scopes(requesting: &Provider) -> String {
     let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for p in REGISTRY.iter().filter(|p| p.category == "Google") {
-        if p.id == "google-admin" && requesting.id != "google-admin" {
+        if p.id != requesting.id && !in_default_google_grant(p.id) {
             continue;
         }
         if let Auth::OAuth2 { scopes, .. } = p.auth {
@@ -855,7 +875,7 @@ fn pending_take(home: &std::path::Path, state: &str) -> Option<(String, String, 
 
 fn token_urlsafe(nbytes: usize) -> String {
     let mut bytes = vec![0u8; nbytes];
-    OsRng.fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("OS random source");
     base64url_nopad(&bytes)
 }
 
@@ -3560,6 +3580,43 @@ pub async fn maintenance_pass(ctx: &ConnectorsCtx) -> Value {
 
 pub fn routes() -> Router<AppState> {
     routes_with(default_ctx())
+}
+
+/// A bearer for builtin connector `id`, resolved exactly as
+/// `POST /api/connectors/{id}/token?account=` resolves it (the account's stored
+/// grant, else the domain-wide service account), for server-side callers that
+/// spend the token and never return it (`api/social.rs`). `headers` carries the
+/// calling worker, so the same entitlement check applies; empty headers are the
+/// server itself. The error is the mint's JSON with any bearer removed.
+pub(crate) async fn bearer_for(
+    state: AppState,
+    headers: HeaderMap,
+    id: &str,
+    account: &str,
+) -> Result<String, Value> {
+    let q = std::collections::HashMap::from([("account".to_string(), account.to_string())]);
+    let resp = mint_connector_token(
+        State(state),
+        Extension(default_ctx()),
+        Path(id.to_string()),
+        headers,
+        Query(q),
+    )
+    .await;
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap_or_default();
+    let mut v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    match v["access_token"].as_str() {
+        Some(t) if status.is_success() => Ok(t.to_string()),
+        _ => {
+            if let Some(o) = v.as_object_mut() {
+                o.remove("access_token");
+            }
+            Err(json!({"http_status": status.as_u16(), "mint": v}))
+        }
+    }
 }
 
 pub fn routes_with(ctx: Arc<ConnectorsCtx>) -> Router<AppState> {

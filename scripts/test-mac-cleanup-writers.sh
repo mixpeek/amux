@@ -39,6 +39,26 @@ echo "2. a VM docker cannot reach lists nothing and does not fail the tick"
 VM_WRITERS_CMD="false"
 check "no lines"                                "" "$(vm_container_writers goal-shared "$NOW")"
 
+echo "3. a file open for write is named by its growth, wherever it lives (RCA 20261025-100211)"
+# Two samples, 1s apart: the dump grows 1G, the VM disk grows 64K (0.2G/h,
+# under the 1G/h floor), a big file shrinks, and a file that appears only in the second sample
+# has no rate.
+printf '0' > "$FIX/n"
+fake_open() {
+  local n; n=$(cat "$FIX/n"); printf '%s' $((n + 1)) > "$FIX/n"
+  printf '68285\tpg_dump\t%s\t/Users/x/.config/ts-parity/item7-dump/ss_s1.dir/5040.dat.gz\n' $(( (34 + n) * 1073741824 ))
+  printf '41602\tcom.apple\t%s\t/Users/x/.colima/_lima/_disks/colima-goal-shared/datadisk\n' $(( 160000000000 + n * 65536 ))
+  printf '11205\tamux-serv\t%s\t/Users/x/.amux/amux.db\n' $(( 16000000000 - n * 1000 ))
+  [ "$n" -eq 0 ] || printf '777\tnew\t%s\t/Users/x/new.bin\n' 9000000000
+}
+OPEN_WRITERS_CMD=fake_open
+out=$(open_file_writers 1)
+check "the growing file is named first, with its rate" "yes" "$(printf '%s\n' "$out" | head -1 | grep -q '5040.dat.gz growing 3600.0G/h (35.0G now) by pid=68285 pg_dump' && echo yes || echo no)"
+check "and carries the verdict"                   "1" "$(printf '%s\n' "$out" | grep -c 'verdict=open_file_writer')"
+check "a VM disk under 1G/h, a shrinking file and a new one are not writers" "1" "$(printf '%s\n' "$out" | grep -c .)"
+OPEN_WRITERS_CMD=false
+check "no lsof answer lists nothing"               "" "$(open_file_writers 0)"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-writers — all checks passed"; exit 0; fi
 echo "mac-cleanup-writers: $fails check(s) FAILED"; exit 1

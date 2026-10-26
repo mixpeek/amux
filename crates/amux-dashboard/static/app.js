@@ -123,31 +123,31 @@
       // it must not depend on a class that a later refactor could rename away.
       // env(safe-area-inset-top) so it clears the iOS status bar in standalone.
       bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:100000;' +
-        'padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 12px;' +
-        'background:#7c2d12;color:#fff;font:500 13px/1.45 -apple-system,system-ui,sans-serif;' +
-        'box-shadow:0 2px 12px rgba(0,0,0,.4);';
+        'padding:calc(env(safe-area-inset-top,0px) + var(--space-2-5)) var(--space-3-5) var(--space-3);' +
+        'background:color-mix(in srgb, var(--red) 49%, var(--shade));color:var(--on-solid);font:500 13px/1.45 -apple-system,system-ui,sans-serif;' +
+        'box-shadow:var(--shadow-sm);';
       const msg = standalone
         ? 'This app is pinned to amux’s <b>retired address</b> (port ' + (window._AMUX_LEGACY_PORT | 0) + '). ' +
           'Re-adding it is the only way to move it: open <b>' + target.replace(/\/$/, '') + '</b> in Safari, ' +
           'accept the certificate, then <b>Share → Add to Home Screen</b> and delete the old icon.'
         : 'amux moved to port ' + canonical + '. This page is on the retired address and could not reach the new one ' +
           '— you may need to accept its certificate once.';
-      bar.innerHTML = '<div style="max-width:720px;margin:0 auto;display:flex;gap:12px;align-items:flex-start;">' +
+      bar.innerHTML = '<div style="max-width:720px;margin:0 auto;display:flex;gap:var(--space-3);align-items:flex-start;">' +
         '<div style="flex:1;">' + msg + '</div></div>';
       const actions = document.createElement('div');
-      actions.style.cssText = 'max-width:720px;margin:8px auto 0;display:flex;gap:8px;';
+      actions.style.cssText = 'max-width:720px;margin:var(--space-2) auto 0;display:flex;gap:var(--space-2);';
       const go = document.createElement('button');
       go.textContent = 'Open ' + canonical;
       // 44px min touch target (mobile rule).
-      go.style.cssText = 'min-height:44px;padding:0 16px;border-radius:8px;border:0;' +
-        'background:#fff;color:#7c2d12;font-weight:600;font-size:13px;cursor:pointer;';
+      go.style.cssText = 'min-height:44px;padding:0 var(--space-4);border-radius:var(--radius-lg);border:0;' +
+        'background:var(--on-solid);color:color-mix(in srgb, var(--red) 49%, var(--shade));font-weight:600;font-size:var(--fs-md);cursor:pointer;';
       // Always available even when the probe failed: the user can click through
       // a certificate warning, a background fetch cannot.
       go.onclick = () => { location.href = target; };
       const dismiss = document.createElement('button');
       dismiss.textContent = 'Later';
-      dismiss.style.cssText = 'min-height:44px;padding:0 16px;border-radius:8px;' +
-        'border:1px solid rgba(255,255,255,.4);background:transparent;color:#fff;font-size:13px;cursor:pointer;';
+      dismiss.style.cssText = 'min-height:44px;padding:0 var(--space-4);border-radius:var(--radius-lg);' +
+        'border:1px solid color-mix(in srgb, var(--on-solid) 40%, transparent);background:transparent;color:var(--on-solid);font-size:var(--fs-md);cursor:pointer;';
       dismiss.onclick = () => bar.remove();
       actions.appendChild(go);
       actions.appendChild(dismiss);
@@ -267,16 +267,350 @@ function _amuxClientIdentity() {
 })();
 
 // ── Theme ──
-function _applyTheme(light) {
+// One theme engine (Ethan, 2026-10-26: "unify the entire Amux UI around a
+// single, extensible design system"). A theme is a versioned JSON document
+// (schema "amux-theme", version 1) naming a base (dark or light) and colors
+// for the semantic tokens in app.css's :root. Activating one writes those
+// tokens once, on <body>, so every surface that reads var(--token) changes at
+// once and no component knows themes exist. Themes carry colors only: layout,
+// spacing, type and behavior stay in app.css (theme isolation).
+const THEME_SCHEMA = 'amux-theme';
+const THEME_VERSION = 1;
+// Token key (camelCase in JSON) -> CSS custom property. Required keys must be
+// in every theme; the rest fall back to the base theme's value.
+const THEME_TOKENS = [
+  ['bg', '--bg', 'Background', true], ['bgInset', '--bg-inset', 'Inset background'],
+  ['card', '--card', 'Surface', true], ['border', '--border', 'Border', true],
+  ['text', '--text', 'Text', true], ['dim', '--dim', 'Secondary text', true],
+  ['accent', '--accent', 'Accent', true], ['onAccent', '--on-accent', 'Text on accent'],
+  ['onSolid', '--on-solid', 'Text on status fills'],
+  ['green', '--green', 'Success'], ['red', '--red', 'Danger'], ['yellow', '--yellow', 'Warning'],
+  ['cyan', '--cyan', 'Info'], ['orange', '--orange', 'Attention'], ['purple', '--purple', 'Purple'],
+  ['pink', '--pink', 'Pink'], ['termBg', '--term-bg', 'Terminal background'],
+  ['termText', '--term-text', 'Terminal text'], ['termDim', '--term-dim', 'Terminal secondary text'],
+  ['termAccent', '--term-accent', 'Terminal links'], ['termBorder', '--term-border', 'Terminal border'],
+  ['termGreen', '--term-green', 'Terminal green'], ['termRed', '--term-red', 'Terminal red'],
+  ['termYellow', '--term-yellow', 'Terminal yellow'], ['termCyan', '--term-cyan', 'Terminal cyan'],
+  ['shade', '--shade', 'Shadow and scrim'],
+];
+// ── design tokens: theme palettes ── (the built-in themes ARE token values)
+// The terminal and code views stay dark in light themes; these are their colors there.
+const _TERM_GH = { termDim: '#8b949e', termAccent: '#58a6ff', termBorder: '#30363d', termGreen: '#3fb950', termRed: '#f85149', termYellow: '#d29922', termCyan: '#39d2c0' };
+const _GH_DARK = { bg: '#0d1117', bgInset: '#010409', card: '#161b22', border: '#30363d', text: '#e6edf3', dim: '#8b949e',
+  accent: '#58a6ff', onAccent: '#0d1117', onSolid: '#ffffff', green: '#3fb950', red: '#f85149', yellow: '#d29922',
+  cyan: '#39d2c0', orange: '#f0883e', purple: '#a371f7', pink: '#db61a2', termBg: '#1c2128', termText: '#cdd9e5', ..._TERM_GH, shade: '#000000' };
+const _GH_LIGHT = { bg: '#ffffff', bgInset: '#eaeef2', card: '#f6f8fa', border: '#d0d7de', text: '#1f2328', dim: '#656d76',
+  accent: '#0969da', onAccent: '#ffffff', onSolid: '#ffffff', green: '#1a7f37', red: '#cf222e', yellow: '#9a6700',
+  cyan: '#0550ae', orange: '#bc4c00', purple: '#8250df', pink: '#bf3989', termBg: '#1c2128', termText: '#cdd9e5', ..._TERM_GH, shade: '#000000' };
+const _th = (id, name, base, colors) => ({ schema: THEME_SCHEMA, version: THEME_VERSION, id, name, base, builtin: true, colors });
+// Amux Dark and Amux Light are the looks amux has always had: GitHub's
+// palettes, with the dark one taking the brand color (Settings > Branding,
+// green unless set) as its accent. Their ids predate the engine.
+const BUILTIN_THEMES = [
+  _th('amux-dark', 'Amux Dark', 'dark', { ..._GH_DARK, accent: '#3fb950' }),
+  _th('amux-light', 'Amux Light', 'light', _GH_LIGHT),
+  _th('github-dark', 'GitHub Dark', 'dark', _GH_DARK),
+  _th('github-light', 'GitHub Light', 'light', _GH_LIGHT),
+  _th('github-dark-dimmed', 'GitHub Dark Dimmed', 'dark', { bg: '#22272e', bgInset: '#1c2128', card: '#2d333b', border: '#444c56',
+    text: '#adbac7', dim: '#828f9c', accent: '#539bf5', onAccent: '#22272e', onSolid: '#22272e', green: '#57ab5a', red: '#d66e6b', yellow: '#c69026',
+    cyan: '#39c5cf', orange: '#c67b4b', purple: '#9c7cdd', pink: '#c375a2', termBg: '#1c2128', termText: '#adbac7' }),
+  _th('one-dark-pro', 'One Dark Pro', 'dark', { bg: '#282c34', bgInset: '#1e2227', card: '#21252b', border: '#3e4452',
+    text: '#abb2bf', dim: '#8d939e', accent: '#61afef', onAccent: '#282c34', onSolid: '#282c34', green: '#98c379', red: '#db737c', yellow: '#e5c07b',
+    cyan: '#56b6c2', orange: '#d19a66', purple: '#c678dd', pink: '#cf6bda', termBg: '#21252b', termText: '#abb2bf' }),
+  _th('dracula', 'Dracula', 'dark', { bg: '#282a36', bgInset: '#191a21', card: '#21222c', border: '#44475a',
+    text: '#f8f8f2', dim: '#8b93b8', accent: '#bd93f9', onAccent: '#282a36', onSolid: '#282a36', green: '#50fa7b', red: '#ff5555', yellow: '#f1fa8c',
+    cyan: '#8be9fd', orange: '#ffb86c', purple: '#bd93f9', pink: '#ff79c6', termBg: '#21222c', termText: '#f8f8f2' }),
+  _th('atom-one-light', 'Atom One Light', 'light', { bg: '#fafafa', bgInset: '#eaeaeb', card: '#f0f0f1', border: '#d3d3d5',
+    text: '#383a42', dim: '#696c77', accent: '#3366d6', onAccent: '#ffffff', green: '#40813f', red: '#c44a3f', yellow: '#986801',
+    cyan: '#0179ad', orange: '#9a6a01', purple: '#a626a4', pink: '#ca1243', termBg: '#282c34', termText: '#abb2bf',
+    termDim: '#7f848e', termAccent: '#61afef', termBorder: '#3e4452', termGreen: '#98c379', termRed: '#e06c75', termYellow: '#e5c07b', termCyan: '#56b6c2' }),
+  _th('ayu-dark', 'Ayu Dark', 'dark', { bg: '#0d1017', bgInset: '#05070a', card: '#131721', border: '#2d3640',
+    text: '#bfbdb6', dim: '#7c838f', accent: '#e6b450', onAccent: '#0d1017', onSolid: '#0d1017', green: '#aad94c', red: '#f07178', yellow: '#ffb454',
+    cyan: '#95e6cb', orange: '#ff8f40', purple: '#d2a6ff', pink: '#f29668', termBg: '#0b0e14', termText: '#bfbdb6' }),
+  _th('ayu-mirage', 'Ayu Mirage', 'dark', { bg: '#1f2430', bgInset: '#191e2a', card: '#242936', border: '#3a4558',
+    text: '#cccac2', dim: '#8a919e', accent: '#ffcc66', onAccent: '#1f2430', onSolid: '#1f2430', green: '#d5ff80', red: '#f28779', yellow: '#ffd173',
+    cyan: '#95e6cb', orange: '#ffad66', purple: '#dfbfff', pink: '#f29e74', termBg: '#1c212b', termText: '#cccac2' }),
+  _th('ayu-light', 'Ayu Light', 'light', { bg: '#fcfcfc', bgInset: '#eef0f2', card: '#f3f4f5', border: '#d8dbe0',
+    text: '#5c6166', dim: '#717478', accent: '#2470b6', onAccent: '#ffffff', green: '#577e19', red: '#ca4646', yellow: '#9b6a00',
+    cyan: '#307f77', orange: '#ac6222', purple: '#8664a7', pink: '#b85567', termBg: '#1f2430', termText: '#cccac2',
+    termDim: '#8a919e', termAccent: '#ffcc66', termBorder: '#3a4558', termGreen: '#d5ff80', termRed: '#f28779', termYellow: '#ffd173', termCyan: '#95e6cb' }),
+// Completed through the validator, so a built-in carries every token (and
+// exports as a whole theme), filled from its base where it names none.
+].map(t => ({ ...themeValidate(t).theme, builtin: true }));
+// ── end theme palettes ──
+const _THEME_KEY = 'amux_theme', _THEMES_KEY = 'amux_themes', _THEME_CSS_KEY = 'amux_theme_css';
+// A token's current value as a hex color, for the consumers that cannot read
+// var(): xterm.js, canvas. They are repainted when the theme changes.
+// A stable color per name or account (avatars, worker badges): one of the
+// theme's categorical colors, picked by a hash, so it follows the theme.
+const THEME_CATEGORICAL = ['accent', 'green', 'purple', 'orange', 'pink', 'cyan', 'yellow', 'red'];
+function themeCategorical(n) { return 'var(--' + THEME_CATEGORICAL[Math.abs(Math.floor(n)) % THEME_CATEGORICAL.length] + ')'; }
+function themeColor(prop) {
+  return (getComputedStyle(document.body).getPropertyValue(prop) || '').trim() || '#808080';   // design-tokens: allow (fallback before app.css loads)
+}
+const _themeXterms = new Set();
+function _xtermTheme() {
+  const c = themeColor, light = document.body.classList.contains('light');
+  return {
+    background: light ? c('--term-bg') : c('--bg'), foreground: c('--term-text'),
+    cursor: c('--term-accent'), cursorAccent: light ? c('--term-bg') : c('--bg'),
+    selectionBackground: c('--term-accent') + '4d',
+    black: c('--term-border'), red: c('--term-red'), green: c('--term-green'), yellow: c('--term-yellow'),
+    blue: c('--term-accent'), magenta: c('--purple'), cyan: c('--term-cyan'), white: c('--term-text'),
+    brightBlack: c('--term-dim'), brightRed: c('--term-red'), brightGreen: c('--term-green'), brightYellow: c('--term-yellow'),
+    brightBlue: c('--term-accent'), brightMagenta: c('--purple'), brightCyan: c('--term-cyan'), brightWhite: c('--term-text'),
+  };
+}
+function _themeHex(c) {
+  if (typeof c !== 'string') return null;
+  const m = c.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].replace(/./g, x => x + x) : m[1];
+  return '#' + h.toLowerCase();
+}
+function _themeLum(hex) {
+  const v = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+}
+function _themeContrast(a, b) {
+  const x = _themeLum(a), y = _themeLum(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+// Validates a theme document and returns it completed (every token filled
+// from its base), with errors that block activation and warnings that do not.
+function themeValidate(doc) {
+  const errors = [], warnings = [];
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return { ok: false, errors: ['A theme is a JSON object.'], warnings, theme: null };
+  if (doc.schema !== THEME_SCHEMA) errors.push('"schema" must be "' + THEME_SCHEMA + '".');
+  if (doc.version !== THEME_VERSION) errors.push('"version" must be ' + THEME_VERSION + ' (this amux reads version ' + THEME_VERSION + ').');
+  const name = typeof doc.name === 'string' ? doc.name.trim() : '';
+  if (!name || name.length > 60) errors.push('"name" must be 1 to 60 characters.');
+  if (doc.base !== 'dark' && doc.base !== 'light') errors.push('"base" must be "dark" or "light".');
+  const colors = doc.colors && typeof doc.colors === 'object' && !Array.isArray(doc.colors) ? doc.colors : null;
+  if (!colors) errors.push('"colors" must be an object of token: "#rrggbb".');
+  const known = new Set(THEME_TOKENS.map(t => t[0]));
+  const filled = {};
+  const base = doc.base === 'light' ? _GH_LIGHT : _GH_DARK;
+  for (const [key, , label, required] of THEME_TOKENS) {
+    const raw = colors ? colors[key] : undefined;
+    if (raw === undefined) { if (required) errors.push('"colors.' + key + '" (' + label + ') is required.'); filled[key] = base[key]; continue; }
+    const hex = _themeHex(raw);
+    if (!hex) { errors.push('"colors.' + key + '" must be a hex color like #1f2328, not ' + JSON.stringify(raw) + '.'); filled[key] = base[key]; continue; }   // design-tokens: allow (example text in a message)
+    filled[key] = hex;
+  }
+  // A dark theme's terminal uses the theme's own colors unless it names others.
+  if (doc.base === 'dark' && colors) {
+    const own = { termBg: 'card', termText: 'text', termDim: 'dim', termAccent: 'accent', termBorder: 'border', termGreen: 'green', termRed: 'red', termYellow: 'yellow', termCyan: 'cyan' };
+    for (const [k, from] of Object.entries(own)) if (colors[k] === undefined && colors[from] !== undefined && _themeHex(colors[from])) filled[k] = _themeHex(colors[from]);
+  }
+  if (colors) for (const k of Object.keys(colors)) if (!known.has(k)) warnings.push('"colors.' + k + '" is not a theme token and is ignored.');
+  if (!errors.length) {
+    const c = filled, need = (a, b, min, what, hard) => {
+      const r = _themeContrast(c[a], c[b]);
+      if (r < min) (hard ? errors : warnings).push(what + ' contrast is ' + r.toFixed(2) + ':1; needs ' + min + ':1.');
+    };
+    need('text', 'bg', 4.5, 'Text on background', true);
+    need('text', 'card', 4.5, 'Text on surface', true);
+    need('termText', 'termBg', 4.5, 'Terminal text', true);
+    need('dim', 'bg', 3, 'Secondary text on background', false);
+    need('accent', 'bg', 3, 'Accent on background', false);
+    need('onAccent', 'accent', 4.5, 'Text on accent', true);
+    need('onSolid', 'green', 3, 'Text on a green fill', false);
+    // Status colors are also text (labels, chips, "online"): readable on the background.
+    for (const k of ['green', 'red', 'yellow']) need(k, 'bg', 3, k[0].toUpperCase() + k.slice(1) + ' on background', false);
+  }
+  const theme = errors.length ? null : { schema: THEME_SCHEMA, version: THEME_VERSION,
+    id: typeof doc.id === 'string' && /^[a-z0-9-]{1,48}$/.test(doc.id) ? doc.id : 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40),
+    name, base: doc.base, colors: filled };
+  return { ok: !errors.length, errors, warnings, theme };
+}
+function themeCustomList() {
+  try { const v = JSON.parse(localStorage.getItem(_THEMES_KEY) || '[]'); return Array.isArray(v) ? v.filter(t => themeValidate(t).ok) : []; } catch (e) { return []; }
+}
+function themeAll() { return BUILTIN_THEMES.concat(themeCustomList()); }
+function themeById(id) {
+  if (id === 'dark') id = 'amux-dark';
+  if (id === 'light') id = 'amux-light';
+  return themeAll().find(t => t.id === id) || null;
+}
+// The theme in use: the one chosen, else the one showing (the device's light or
+// dark preference, before anything was chosen). A preview is not "in use".
+function themeActiveId() {
+  const t = themeById(localStorage.getItem(_THEME_KEY) || '');
+  if (t) return t.id;
+  return _themePreviewing !== null ? _themePreviewing : (document.body && document.body.dataset.theme) || '';
+}
+// The CSS a theme becomes: its tokens on <body>. `html body` outranks app.css's
+// `body.light` token block, so a light theme's colors win over the defaults.
+function themeCss(t) {
+  const v = themeValidate(t);
+  if (!v.ok) return '';
+  const decl = THEME_TOKENS.map(([k, prop]) => prop + ':' + v.theme.colors[k]).join(';');
+  return 'html body,html body.light{' + decl + ';color-scheme:' + v.theme.base + '}';
+}
+// Settings > Branding's color is Amux Dark's accent (applyBranding sets it).
+let _themeBrandAccent = '';
+function _themeFullCss(th) {
+  let css = themeCss(th);
+  const b = _themeHex(_themeBrandAccent);
+  if (b && th.id === 'amux-dark') css += 'html body{--accent:' + b + ';--green:' + b + '}';
+  return css;
+}
+function themeSetBrandAccent(color) {
+  _themeBrandAccent = color || '';
+  const now = themeById(document.body.dataset.theme || '') || themeById(themeActiveId());
+  if (now) _themePaint(now);
+}
+let _themePreviewing = null;   // the id a preview replaced, restored on cancel
+function _themePaint(t) {
+  const v = themeValidate(t);
+  if (!v.ok) return false;
+  const th = v.theme, light = th.base === 'light';
+  let el = document.getElementById('amux-theme-vars');
+  if (!el) { el = document.createElement('style'); el.id = 'amux-theme-vars'; document.head.appendChild(el); }
+  el.textContent = _themeFullCss(th);
   document.body.classList.toggle('light', light);
+  document.body.dataset.theme = th.id;
   const cb = document.getElementById('theme-checkbox');
   if (cb) cb.checked = light;
   const lbl = document.getElementById('theme-label');
   if (lbl) lbl.textContent = light ? 'Light mode' : 'Dark mode';
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = light ? '#ffffff' : '#0d1117';
+  if (meta) meta.content = th.colors.bg;
+  const sel = document.getElementById('theme-select');
+  if (sel && !_themePreviewing) sel.value = th.id;
   _hljsApplyTheme(light);
+  for (const x of _themeXterms) { try { x.options.theme = _xtermTheme(); } catch (e) {} }
+  return true;
 }
+// Activate: paint, remember (this device and the server, so a new device or a
+// Mac app window gets it), and tell other pages of this origin (split panes,
+// Mac app tabs) through the storage event they already receive.
+function themeActivate(id, opts) {
+  const t = themeById(id);
+  if (!t) return false;
+  _themePreviewing = null;
+  if (!_themePaint(t)) return false;
+  try {
+    localStorage.setItem(_THEME_KEY, t.id);
+    localStorage.setItem(_THEME_CSS_KEY, JSON.stringify({ css: _themeFullCss(themeValidate(t).theme), light: t.base === 'light', bg: t.colors.bg }));
+  } catch (e) {}
+  if (!(opts && opts.local)) {
+    fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'ui_theme', value: t.id }) }).catch(() => {});
+  }
+  return true;
+}
+// Preview without saving: the whole UI shows the theme until it is activated
+// or the preview ends, when the active theme comes back.
+function themePreview(t) {
+  if (_themePreviewing === null) _themePreviewing = themeActiveId() || 'amux-dark';
+  return _themePaint(t);
+}
+function themePreviewEnd() {
+  if (_themePreviewing === null) return;
+  const back = _themePreviewing;
+  _themePreviewing = null;
+  _themePaint(themeById(back) || BUILTIN_THEMES[0]);
+}
+function themeSaveCustom(doc) {
+  const v = themeValidate(doc);
+  if (!v.ok) return v;
+  if (BUILTIN_THEMES.some(b => b.id === v.theme.id)) v.theme.id = v.theme.id + '-custom';
+  const list = themeCustomList().filter(t => t.id !== v.theme.id);
+  list.push(v.theme);
+  try { localStorage.setItem(_THEMES_KEY, JSON.stringify(list)); } catch (e) {}
+  _themeSyncCustom(v.theme, null);
+  _themeSelectFill();
+  return v;
+}
+function themeDeleteCustom(id) {
+  const list = themeCustomList().filter(t => t.id !== id);
+  try { localStorage.setItem(_THEMES_KEY, JSON.stringify(list)); } catch (e) {}
+  _themeSyncCustom(null, id);
+  _themeSelectFill();
+  if (themeActiveId() === '' || localStorage.getItem(_THEME_KEY) === id) themeActivate('amux-dark');
+}
+// The server keeps every device's themes: change ONE theme in its list (read,
+// change, write) rather than writing this device's list over the others'.
+// A change waits in amux_themes_pending until the server has it, so a reload
+// or a dropped connection mid-save is retried on the next load (themeSyncPending).
+const _THEMES_PENDING_KEY = 'amux_themes_pending';
+function _themePending() { try { const v = JSON.parse(localStorage.getItem(_THEMES_PENDING_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; } }
+function _themePendingSet(id, op) {
+  const p = _themePending();
+  if (op) p[id] = op; else delete p[id];
+  try { localStorage.setItem(_THEMES_PENDING_KEY, JSON.stringify(p)); } catch (e) {}
+}
+function themeSyncPending() {
+  const p = _themePending();
+  for (const [id, op] of Object.entries(p)) {
+    const t = op === 'save' ? themeCustomList().find(x => x.id === id) : null;
+    if (op === 'save' && !t) { _themePendingSet(id, null); continue; }
+    _themeSyncCustom(t, op === 'delete' ? id : null);
+  }
+}
+let _themeSyncChain = Promise.resolve();
+function _themeSyncCustom(upsert, removeId) {
+  const id = upsert ? upsert.id : removeId;
+  _themePendingSet(id, upsert ? 'save' : 'delete');
+  _themeSyncChain = _themeSyncChain.then(async () => {
+    let list = [];
+    try { const r = await fetch('/api/prefs?key=ui_themes'); const d = r.ok ? await r.json() : null; list = d && d.value ? JSON.parse(d.value) : []; } catch (e) { list = []; }
+    if (!Array.isArray(list)) list = [];
+    list = list.filter(t => t && t.id !== (upsert ? upsert.id : removeId));
+    if (upsert) list.push(upsert);
+    const r = await fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ key: 'ui_themes', value: JSON.stringify(list) }) });
+    if (r.ok) _themePendingSet(id, null);
+  }).catch(() => {});
+  return _themeSyncChain;
+}
+function themeExport(id) {
+  const t = themeById(id);
+  if (!t) return null;
+  const { builtin, ...doc } = t;
+  return JSON.stringify(doc, null, 2) + '\n';
+}
+// Kept for the existing callers (the Dark mode switch, the style guide).
+function _applyTheme(light) { themeActivate(light ? 'amux-light' : 'amux-dark', { local: true }); }
+function toggleTheme(checked) {
+  const isLight = checked !== undefined ? checked : !document.body.classList.contains('light');
+  themeActivate(isLight ? 'amux-light' : 'amux-dark');
+}
+(function initTheme() {
+  const saved = localStorage.getItem(_THEME_KEY);
+  const t = (saved && themeById(saved)) || themeById(window.matchMedia('(prefers-color-scheme: light)').matches ? 'amux-light' : 'amux-dark');
+  if (!_themePaint(t)) _themePaint(BUILTIN_THEMES[0]);
+  _themeSelectFill();
+  // Another page of this origin (a split pane, another Mac app tab) changed it.
+  window.addEventListener('storage', e => {
+    if (e.key !== _THEME_KEY && e.key !== _THEMES_KEY) return;
+    const now = themeById(localStorage.getItem(_THEME_KEY) || '');
+    if (now && _themePreviewing === null) _themePaint(now);
+    if (typeof _themeDialogRender === 'function') _themeDialogRender();
+    _themeSelectFill();
+  });
+  // The server's copy wins on a device that has none, and brings custom themes.
+  fetch('/api/prefs').then(r => r.ok ? r.json() : null).then(p => {
+    if (!p) return;
+    // Themes made on another device join this one's (by id; this device's
+    // copy of a theme it already has wins until it saves again).
+    if (p.ui_themes) {
+      try {
+        const remote = JSON.parse(p.ui_themes);
+        if (Array.isArray(remote)) {
+          const mine = themeCustomList(), have = new Set(mine.map(t => t.id));
+          const merged = mine.concat(remote.filter(t => t && !have.has(t.id) && themeValidate(t).ok).map(t => themeValidate(t).theme));
+          if (merged.length !== mine.length) { localStorage.setItem(_THEMES_KEY, JSON.stringify(merged)); _themeSelectFill(); }
+        }
+      } catch (e) {}
+    }
+    themeSyncPending();
+    if (p.ui_theme && !saved && themeById(p.ui_theme)) themeActivate(p.ui_theme, { local: true });
+  }).catch(() => {});
+})();
+
 // The highlight.js theme is ALWAYS the dark one, because its only consumer is
 // always dark (Ethan, 2026-08-25: "when i open a python file it's just dark i
 // cant read it").
@@ -306,16 +640,6 @@ function _hljsApplyTheme() {
   if (l) l.href =
     'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css';
 }
-function toggleTheme(checked) {
-  const isLight = checked !== undefined ? checked : !document.body.classList.contains('light');
-  localStorage.setItem('amux_theme', isLight ? 'light' : 'dark');
-  _applyTheme(isLight);
-}
-(function initTheme() {
-  const saved = localStorage.getItem('amux_theme');
-  const preferLight = saved ? saved === 'light' : window.matchMedia('(prefers-color-scheme: light)').matches;
-  _applyTheme(preferLight);
-})();
 
 async function toggleAutotask(checked) {
   await fetch('/api/prefs', {
@@ -459,7 +783,7 @@ async function toggleCrossGroupDefault(checked) {
       note.textContent = d.gate_enforcing === false
         ? 'AMUX_GROUP_SEND_ENFORCE is off, so ALL cross-group sends pass regardless of this switch.'
         : (d.note || 'An explicit empty group or worker setting can deny this for that scope.');
-      if (d.gate_enforcing === false) note.style.color = '#b8860b';
+      if (d.gate_enforcing === false) note.style.color = 'color-mix(in srgb, var(--yellow) 87%, var(--shade))';
     }
   } catch (e) {}
 })();
@@ -572,25 +896,25 @@ function _showUpgradeModal(d) {
   const budget = (d.budget_usd != null) ? Number(d.budget_usd).toFixed(2) : null;
   const wrap = document.createElement('div');
   wrap.id = 'upgrade-modal';
-  wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,5,10,0.88);display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));';
+  wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:color-mix(in srgb, color-mix(in srgb, var(--purple) 4%, var(--shade)) 88%, transparent);display:flex;align-items:center;justify-content:center;padding:max(var(--space-4),env(safe-area-inset-top)) var(--space-4) max(var(--space-4),env(safe-area-inset-bottom));';
   wrap.innerHTML =
-    '<div style="background:#14142a;color:#e6edf3;border:1px solid #3a3a5c;border-radius:14px;max-width:440px;width:100%;padding:26px 22px;text-align:center;max-height:90dvh;overflow-y:auto;">' +
-      '<div style="font-size:1.15rem;font-weight:700;margin-bottom:6px;">' +
+    '<div style="background:color-mix(in srgb, var(--purple) 7%, var(--bg));color:var(--text);border:1px solid color-mix(in srgb, var(--purple) 28%, var(--card));border-radius:var(--radius-3xl);max-width:440px;width:100%;padding:var(--space-6) var(--space-5);text-align:center;max-height:90dvh;overflow-y:auto;">' +
+      '<div style="font-size:var(--fs-3xl);font-weight:700;margin-bottom:var(--space-1-5);">' +
         (isBudget ? 'Your trial budget is used up' : 'Your trial has ended') + '</div>' +
-      (isBudget && spent ? '<div style="color:#f0b429;font-size:1.05rem;font-weight:600;margin-bottom:10px;">$' + spent + ' of $' + budget + ' used</div>' : '') +
-      '<div style="color:#999;font-size:0.86rem;margin-bottom:16px;line-height:1.5;">Your workspace and workers are safe. Upgrade to keep your agents running.</div>' +
-      '<div style="background:#0f0f22;border:1px solid #2a2a4a;border-radius:10px;padding:14px 16px;text-align:left;margin-bottom:18px;">' +
-        '<div style="color:#c4b5fd;font-size:0.82rem;font-weight:600;margin-bottom:8px;">What you get when you upgrade</div>' +
+      (isBudget && spent ? '<div style="color:color-mix(in srgb, var(--yellow) 91%, var(--on-solid));font-size:var(--fs-3xl);font-weight:600;margin-bottom:var(--space-2-5);">$' + spent + ' of $' + budget + ' used</div>' : '') +
+      '<div style="color:var(--dim);font-size:var(--fs-lg);margin-bottom:var(--space-4);line-height:1.5;">Your workspace and workers are safe. Upgrade to keep your agents running.</div>' +
+      '<div style="background:color-mix(in srgb, var(--purple) 12%, var(--bg));border:1px solid color-mix(in srgb, var(--purple) 17%, var(--card));border-radius:var(--radius-xl);padding:var(--space-3-5) var(--space-4);text-align:left;margin-bottom:var(--space-4);">' +
+        '<div style="color:color-mix(in srgb, var(--purple) 47%, var(--text));font-size:var(--fs-md);font-weight:600;margin-bottom:var(--space-2);">What you get when you upgrade</div>' +
         ['Your workers made production-grade, with our team onboarding you',
          'A dedicated, isolated machine for your workloads',
          'Support and maintenance from the amux team',
          'Ongoing workflow creation, tuning, and teaching'].map(f =>
-          '<div style="color:#aaa;font-size:0.8rem;padding:3px 0 3px 20px;position:relative;"><span style="position:absolute;left:2px;color:#3fb950;font-weight:700;">✓</span>' + f + '</div>').join('') +
+          '<div style="color:var(--dim);font-size:var(--fs-md);padding:var(--space-0-5) 0 var(--space-0-5) var(--space-5);position:relative;"><span style="position:absolute;left:2px;color:var(--green);font-weight:700;">✓</span>' + f + '</div>').join('') +
       '</div>' +
-      '<div style="font-size:1.15rem;font-weight:700;color:#c4b5fd;margin-bottom:2px;">$5,000/month</div>' +
-      '<div style="color:#888;font-size:0.76rem;margin-bottom:14px;">amux Platform · includes implementation &amp; enablement</div>' +
-      '<button onclick="_upgradeCheckout(\'platform\')" style="display:block;width:100%;min-height:44px;background:#7c6fcd;color:#fff;border:none;border-radius:9px;padding:12px;font-size:0.92rem;font-weight:600;cursor:pointer;margin-bottom:8px;">Talk to us &amp; get started</button>' +
-      '<div id="upgrade-modal-err" style="color:#f87171;font-size:0.8rem;min-height:1.1em;"></div>' +
+      '<div style="font-size:var(--fs-3xl);font-weight:700;color:color-mix(in srgb, var(--purple) 47%, var(--text));margin-bottom:var(--space-0-5);">$5,000/month</div>' +
+      '<div style="color:var(--dim);font-size:var(--fs-sm);margin-bottom:var(--space-3-5);">amux Platform · includes implementation &amp; enablement</div>' +
+      '<button onclick="_upgradeCheckout(\'platform\')" style="display:block;width:100%;min-height:44px;background:color-mix(in srgb, var(--purple) 80%, var(--card));color:var(--on-solid);border:none;border-radius:var(--radius-xl);padding:var(--space-3);font-size:var(--fs-xl);font-weight:600;cursor:pointer;margin-bottom:var(--space-2);">Talk to us &amp; get started</button>' +
+      '<div id="upgrade-modal-err" style="color:color-mix(in srgb, var(--red) 80%, var(--on-solid));font-size:var(--fs-md);min-height:1.1em;"></div>' +
     '</div>';
   document.body.appendChild(wrap);
 }
@@ -614,7 +938,7 @@ async function _loadCloudPlan() {
     sec.style.display = '';
     const lines = [];
     if (d.plan === 'pro') {
-      lines.push('<span style="color:#3fb950;font-weight:600;">Pro</span> — unlimited workers');
+      lines.push('<span style="color:var(--green);font-weight:600;">Pro</span> — unlimited workers');
     } else {
       lines.push('<span style="font-weight:600;color:var(--text);">Trial</span>');
       if (d.trial_ends_at) {
@@ -628,7 +952,7 @@ async function _loadCloudPlan() {
         if (meter && fill) {
           meter.style.display = '';
           fill.style.width = pct + '%';
-          fill.style.background = pct >= 100 ? 'var(--red)' : (pct >= 60 ? '#f0b429' : 'var(--accent)');
+          fill.style.background = pct >= 100 ? 'var(--red)' : (pct >= 60 ? 'color-mix(in srgb, var(--yellow) 91%, var(--on-solid))' : 'var(--accent)');
         }
       }
     }
@@ -1083,7 +1407,22 @@ if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
 // Safari, the macOS web app and other WebKit browsers that are not Chromium.
 function _isAppleWebKit() {
   const ua = navigator.userAgent || '';
-  return /AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
+  // The Mac app is WebKit too. Its user agent used to be only "Amux-Desktop/2.0"
+  // (no "AppleWebKit"), so it took the CSS-zoom path WebKit cannot use: at the
+  // owner's 110% its zoom-mode beacon read apple_webkit:false, mode css-zoom,
+  // and the spreadsheet editor clicked the wrong cell (2026-10-26).
+  return /Amux-Desktop/.test(ua) || (/AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua));
+}
+// Canvas editors map the pointer for an unzoomed page, so under the root's CSS
+// zoom a click lands on the wrong place: Draw's strokes 100-200px off (Ethan,
+// 2026-10-13), and the spreadsheet editor's clicks on the wrong cell (Ethan,
+// 2026-10-26: "i click somewhere the cell clicked is wrong"; measured in
+// Chromium at 125%, a click on row 20 selected row 13). While either is open
+// the root zooms by font size instead, which leaves canvases at scale 1.
+let _xlsxCanvasOpen = false;
+function _zoomFontModeSync(view) {
+  const fm = (view || activeView) === 'draw' || _xlsxCanvasOpen;
+  if (fm !== !!window._zoomFontMode) { window._zoomFontMode = fm; _applyZoom(); }
 }
 function _applyZoom() {
   // CSS zoom on the root breaks position:fixed geometry in WebKit — a zoomed
@@ -1197,9 +1536,47 @@ function _readQueue() {
   if (!Array.isArray(value)) throw new Error('Pending changes need recovery: invalid queue');
   return value;
 }
+// A HOLDER WHOSE LOCK IS STOLEN IS NOT A FAILURE (Ethan, 2026-10-25: "keep
+// getting 'lock was stolen by another request'"). The outbox steals a lock from
+// a frozen holder (a background Mac app tab) on purpose, 161 times by then. The
+// holder's work keeps running, but WebKit rejects its lock request with that
+// AbortError, and the rejection surfaced: as "Sync failed: ..." from a replay
+// pass, and in the delivery lock it ran the message's delivery a second time,
+// whose own lock could be stolen in turn. A request granted and then stolen
+// now resolves with its own work's result; only a request that never ran
+// still rejects. Beaconed as verdict=outbox_lock_stolen_while_held.
+// A REQUEST STOLEN BEFORE ITS WORK STARTED waits its turn once (Ethan,
+// 2026-10-25, "still" after the fix above). With several Mac app windows
+// shown, each steals the replay lock from the others, and WebKit grants a
+// lock before it calls the callback, so a steal landing in that gap rejected
+// a request whose work never ran, and the toast read "Sync failed: Lock was
+// stolen by another request". It now queues once more without stealing,
+// bounded by _DELIVERY_STEAL_MS (verdict=outbox_lock_stolen_before_run). The
+// thief runs the same work, and every delivery re-reads the queue under its
+// own lock, so running after it is safe.
+function _lockRequest(name, opts, work, retried) {
+  let ran = null;
+  const held = lock => (ran = Promise.resolve().then(() => work(lock)));
+  return navigator.locks.request(name, opts || {}, held).catch(e => {
+    if (!e || e.name !== 'AbortError') throw e;
+    if (ran) {
+      _outboxDiagnostic('outbox_lock_stolen_while_held', {lock:name.split(':')[0]});
+      return ran;
+    }
+    // A message's delivery lock stolen before its work ran means another window
+    // has taken that message over: yield, as before a4ebf0ba4. Retrying it ran
+    // the same delivery a second time (outbox-stalled-window red on f47ddbe29:
+    // 2 posts of one message). Storage and replay re-read the queue, so they may
+    // retry safely.
+    if (retried || opts?.signal?.aborted || /^amux-outbox-delivery:/.test(name)) throw e;
+    _outboxDiagnostic('outbox_lock_stolen_before_run', {lock:name.split(':')[0], steal:opts?.steal ? 1 : 0});
+    const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
+    return _lockRequest(name, signal ? {signal} : {}, work, true);
+  });
+}
 function _outboxLock(name, work) {
   if (!navigator.locks) return Promise.reject(new Error('Safe pending-change storage is unavailable in this browser; keep your draft and use a secure connection'));
-  return navigator.locks.request(name, work);
+  return _lockRequest(name, {}, work);
 }
 // A message's delivery lock, taken over from a holder that has stopped.
 // Every window of the Mac app shares one website data store and so one set of
@@ -1216,12 +1593,15 @@ const _DELIVERY_STEAL_MS = 30000;
 function _outboxDeliveryLock(name, work) {
   if (!navigator.locks) return _outboxLock(name, work);
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
-  if (!signal) return navigator.locks.request(name, work);
-  return navigator.locks.request(name, {signal}, work).catch(e => {
+  if (!signal) return _lockRequest(name, {}, work);
+  // _lockRequest resolves a granted-then-stolen request with its own result, so
+  // an error reaching this catch is always a wait that timed out before the
+  // work started: the work never runs twice.
+  return _lockRequest(name, {signal}, work).catch(e => {
     if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
-    if (document.hidden) return navigator.locks.request(name, work);
+    if (document.hidden) return _lockRequest(name, {}, work);
     _outboxDiagnostic('outbox_delivery_lock_stolen', {waited_ms:_DELIVERY_STEAL_MS, lock:name.split(':')[0]});
-    return navigator.locks.request(name, {steal:true}, work);
+    return _lockRequest(name, {steal:true}, work);
   });
 }
 // User intent has priority over reproducible offline caches. Safari's measured
@@ -1429,12 +1809,12 @@ function _fmtClock(ts) {
 // because a single sample on a mobile radio is mostly noise. Cache-busted so a
 // 304 does not time an empty round trip.
 function _pingWidgetHtml() {
-  return '<div id="ping-box" style="border-top:1px solid var(--border);padding:10px 0 4px;">'
-    + '<div style="display:flex;align-items:center;gap:8px;">'
-    + '<button id="ping-btn" onclick="_runPing()" style="min-height:36px;padding:5px 12px;border:1px solid var(--border);'
-    + 'border-radius:7px;background:var(--card);color:var(--text);font-size:0.8rem;font-weight:600;cursor:pointer;">Ping server</button>'
-    + '<span id="ping-out" style="font-size:0.8rem;color:var(--dim);font-variant-numeric:tabular-nums;">measure round-trip latency</span>'
-    + '</div><div id="ping-detail" style="font-size:0.72rem;color:var(--dim);margin-top:5px;"></div></div>';
+  return '<div id="ping-box" style="border-top:1px solid var(--border);padding:var(--space-2-5) 0 var(--space-1);">'
+    + '<div style="display:flex;align-items:center;gap:var(--space-2);">'
+    + '<button id="ping-btn" onclick="_runPing()" style="min-height:36px;padding:var(--space-1) var(--space-3);border:1px solid var(--border);'
+    + 'border-radius:var(--radius-lg);background:var(--card);color:var(--text);font-size:var(--fs-md);font-weight:600;cursor:pointer;">Ping server</button>'
+    + '<span id="ping-out" style="font-size:var(--fs-md);color:var(--dim);font-variant-numeric:tabular-nums;">measure round-trip latency</span>'
+    + '</div><div id="ping-detail" style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1);"></div></div>';
 }
 
 async function _runPing(n) {
@@ -1461,14 +1841,14 @@ async function _runPing(n) {
   }
   if (btn) { btn.disabled = false; btn.style.opacity = ''; }
   if (!ms.length) {
-    out.innerHTML = '<span style="color:#f85149;">unreachable</span>';
+    out.innerHTML = '<span style="color:var(--red);">unreachable</span>';
     if (det) det.textContent = N + '/' + N + ' requests failed — the server is not answering from this device.';
     return;
   }
   const sorted = [...ms].sort((a, b) => a - b);
   const med = sorted[Math.floor(sorted.length / 2)];
   const lo = sorted[0], hi = sorted[sorted.length - 1];
-  const col = med < 80 ? '#3fb950' : med < 250 ? '#facc15' : '#f85149';
+  const col = med < 80 ? 'var(--green)' : med < 250 ? 'color-mix(in srgb, var(--yellow) 93%, var(--on-solid))' : 'var(--red)';
   out.innerHTML = '<b style="color:' + col + ';">' + Math.round(med) + ' ms</b>'
                 + '<span style="color:var(--dim);"> median</span>';
   if (det) {
@@ -1480,22 +1860,22 @@ async function _runPing(n) {
 }
 
 function _localWriteNotice() {
-  return _localWriteError ? '<div role="alert" style="padding:10px 0;color:var(--red);">'
+  return _localWriteError ? '<div role="alert" style="padding:var(--space-2-5) 0;color:var(--red);">'
     + esc(_localWriteError) + '. The message has not left this device. Keep the draft and retry Send.</div>' : '';
 }
 function showConnHistory() {
   const eps = _connEpisodes();
   const stateLabel = { live: '● Live', polling: '● Polling', offline: '● Offline', auth: '● Access required', error: '● Sync error' }[_connState] || '● —';
-  const stateColor = { live: '#3fb950', polling: '#facc15', offline: '#f85149', auth: '#f85149', error: '#f85149' }[_connState] || 'var(--dim)';
+  const stateColor = { live: 'var(--green)', polling: 'color-mix(in srgb, var(--yellow) 93%, var(--on-solid))', offline: 'var(--red)', auth: 'var(--red)', error: 'var(--red)' }[_connState] || 'var(--dim)';
   const _now = Date.now();
   const kinds = eps.map(ep => _connEpisodeKind(ep, _now));
   const blips = eps.filter((_, i) => kinds[i] === 'blip');
   const shown = eps.filter((_, i) => kinds[i] !== 'blip');
   let rows = '';
   if (!eps.length) {
-    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No interruptions recorded on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
+    rows = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-2-5) var(--space-0-5);">No interruptions recorded on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
   } else if (!shown.length) {
-    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No outages on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
+    rows = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-2-5) var(--space-0-5);">No outages on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
   } else {
     rows = shown.map(ep => {
       const kind = _connEpisodeKind(ep, _now);
@@ -1509,20 +1889,20 @@ function showConnHistory() {
                   : sleep ? 'Device asleep or app backgrounded'
                   : isOff ? 'Disconnected (offline)'
                   : 'Degraded to polling';
-      const when = _fmtClock(ep.start) + ' → ' + (ongoing ? '<span style="color:' + (isOff ? '#f85149' : '#facc15') + '">ongoing</span>' : _fmtClock(ep.end));
+      const when = _fmtClock(ep.start) + ' → ' + (ongoing ? '<span style="color:' + (isOff ? 'var(--red)' : 'color-mix(in srgb, var(--yellow) 93%, var(--on-solid))') + '">ongoing</span>' : _fmtClock(ep.end));
       // WHAT THE RECORD CANNOT SAY, said in the row rather than left to the
       // reader (AMUX-3917). An offline episode stored before this build carries
       // no visibility flag, so a sleeping phone and a real outage are the same
       // bytes. Claiming either would be a guess; naming the gap is not.
       const note = sleep
-        ? '<div style="color:var(--dim);font-size:0.72rem;">Not an amux outage: the browser reports offline while the page is hidden. Data resumed on wake.</div>'
+        ? '<div style="color:var(--dim);font-size:var(--fs-xs);">Not an amux outage: the browser reports offline while the page is hidden. Data resumed on wake.</div>'
         : (isOff && ep.hid === null
-            ? '<div style="color:var(--dim);font-size:0.72rem;">Cause not recorded on this build — a sleeping or backgrounded device looks identical to an outage here.</div>'
+            ? '<div style="color:var(--dim);font-size:var(--fs-xs);">Cause not recorded on this build — a sleeping or backgrounded device looks identical to an outage here.</div>'
             : '');
-      return '<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid var(--border);font-size:0.82rem;">'
+      return '<div style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1-5) var(--space-0-5);border-top:1px solid var(--border);font-size:var(--fs-md);">'
         + '<span style="flex-shrink:0;">' + ico + '</span>'
         + '<div style="flex:1;min-width:0;"><div style="font-weight:600;">' + label + '</div>'
-        + '<div style="color:var(--dim);font-size:0.76rem;">' + when + '</div>' + note + '</div>'
+        + '<div style="color:var(--dim);font-size:var(--fs-sm);">' + when + '</div>' + note + '</div>'
         + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;">' + dur + '</span></div>';
     }).join('');
     // Collapsed by default (Ethan, 2026-10-03: "make these entire lists an
@@ -1536,7 +1916,7 @@ function showConnHistory() {
   // dropped: "no outages" and "no data" must not render the same, and a client
   // that starts flapping should show it as a rising number here.
   const blipHtml = blips.length
-    ? '<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid var(--border);font-size:0.82rem;color:var(--dim);">'
+    ? '<div style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1-5) var(--space-0-5);border-top:1px solid var(--border);font-size:var(--fs-md);color:var(--dim);">'
       + '<span style="flex-shrink:0;">✅</span><div style="flex:1;min-width:0;">'
       + blips.length + ' momentary fallback' + (blips.length === 1 ? '' : 's') + ' to polling, under '
       + Math.round(_CONN_BLIP_MS / 1000) + 's each, recovered automatically. Not listed above.</div></div>'
@@ -1555,34 +1935,34 @@ function showConnHistory() {
       const ico = blocked ? '🔴' : uncertain ? '🟡' : '⏳';
       const status = blocked ? 'failed' : uncertain ? 'checking' : 'queued';
       const dismissId = 'conn-dismiss-' + esc(q.id);
-      return '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 2px;font-size:0.82rem;">'
+      return '<div style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1) var(--space-0-5);font-size:var(--fs-md);">'
         + '<span style="flex-shrink:0;">' + ico + '</span>'
         + '<div style="flex:1;min-width:0;"><div>' + esc(describeOp(q)) + '</div>'
-        + (q.error ? '<div style="color:' + (uncertain ? 'var(--yellow,#d29922)' : 'var(--red,#e55)') + ';font-size:0.72rem;">' + esc(q.error).substring(0, 100) + '</div>' : '')
+        + (q.error ? '<div style="color:' + (uncertain ? 'var(--yellow)' : 'var(--red)') + ';font-size:var(--fs-xs);">' + esc(q.error).substring(0, 100) + '</div>' : '')
         + '</div>'
-        + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;font-size:0.76rem;">' + timeStr + '</span>'
+        + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;font-size:var(--fs-sm);">' + timeStr + '</span>'
         + (_outboxIsMessage(q) && (blocked || uncertain) ? ' <button type="button" class="btn conn-op-retry" onclick="_outboxRetryNow(\'' + escJs(q.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send again">Send again</button>' : '')
         + (blocked ? ' <button type="button" class="conn-op-dismiss" aria-label="Dismiss failed change" onclick="_dismissQueuedOp(\'' + escJs(q.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();showConnHistory();" title="Dismiss">&#x2715;</button>' : '')
         + '</div>';
     }).join('');
     const draftRows = drafts.map(d =>
-      '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 2px;font-size:0.82rem;">'
+      '<div style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1) var(--space-0-5);font-size:var(--fs-md);">'
         + '<span style="flex-shrink:0;">📝</span>'
         + '<div style="flex:1;min-width:0;">Create &amp; start ' + esc(d.name) + '</div>'
-        + '<span style="color:var(--dim);flex-shrink:0;font-size:0.76rem;">draft</span></div>'
+        + '<span style="color:var(--dim);flex-shrink:0;font-size:var(--fs-sm);">draft</span></div>'
     ).join('');
-    pendingHtml = '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);">'
-      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><b style="font-size:0.85rem;">Pending operations</b>'
-      + '<span style="font-size:0.72rem;color:var(--dim);">' + pending + '</span></div>'
+    pendingHtml = '<div style="margin-top:var(--space-2-5);padding-top:var(--space-2);border-top:1px solid var(--border);">'
+      + '<div style="display:flex;align-items:center;gap:var(--space-1-5);margin-bottom:var(--space-1);"><b style="font-size:var(--fs-lg);">Pending operations</b>'
+      + '<span style="font-size:var(--fs-xs);color:var(--dim);">' + pending + '</span></div>'
       + draftRows + itemRows
       // forceRetry, not runSyncBanner: replay skips blocked changes, and since
       // 07b42586 this modal is the only place a failed change is shown, so
       // its Retry has to re-arm them or a failed change can never be retried.
-      + '<div style="margin-top:6px;"><button class="btn" id="conn-retry-now" onclick="event.preventDefault();document.getElementById(\'conn-hist-modal\').remove();forceRetry();" style="font-size:0.75rem;">Retry now</button></div>'
+      + '<div style="margin-top:var(--space-1-5);"><button class="btn" id="conn-retry-now" onclick="event.preventDefault();document.getElementById(\'conn-hist-modal\').remove();forceRetry();" style="font-size:var(--fs-sm);">Retry now</button></div>'
       + '</div>';
   }
   const clearHtml = _connEvents.length
-    ? '<button onclick="_connEvents=[];localStorage.removeItem(\'amux_conn_events\');document.getElementById(\'conn-hist-modal\').remove();" style="margin-top:12px;background:none;border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.75rem;color:var(--dim);cursor:pointer;">Clear history</button>'
+    ? '<button onclick="_connEvents=[];localStorage.removeItem(\'amux_conn_events\');document.getElementById(\'conn-hist-modal\').remove();" style="margin-top:var(--space-3);background:none;border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-1) var(--space-2-5);font-size:var(--fs-sm);color:var(--dim);cursor:pointer;">Clear history</button>'
     : '';
   const modal = document.createElement('div');
   modal.id = 'conn-hist-modal';
@@ -1989,7 +2369,7 @@ async function _mlPollOutput(run) {
           if (await _mlSignedIn(run)) return;
           await new Promise(res => setTimeout(res, 1000));
         }
-        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: 'The sign-in exited. Try again, or use an API key below.' });
+        _mlShow({ status: a.label + ' sign-in stopped before finishing.', error: a.notModel ? 'The sign-in exited. Try again.' : 'The sign-in exited. Try again, or use an API key below.' });
         return;
       }
       if (run.codeSent) { _mlShow({ status: 'Checking…', url: p.url }); continue; }
@@ -2009,7 +2389,7 @@ async function _mlPollIdentity(run) {
     await new Promise(res => setTimeout(res, 3000));
     if (await _mlSignedIn(run)) return;
   }
-  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: 'Try again, or use an API key below.' });
+  if (_modelLogin === run && !run.done) _mlShow({ status: a.label + ' sign-in did not finish.', error: a.notModel ? 'Try again.' : 'Try again, or use an API key below.' });
 }
 
 // True once the server reports the provider signed in by THIS run, and then finishes it:
@@ -2022,7 +2402,7 @@ async function _mlSignedIn(run) {
   if (a.succeeded && !window.AmuxState.cliLogin.parseLogin(run.provider, run.raw).succeeded) return false;
   let d;
   try { d = await (await fetch(API + '/api/identity')).json(); } catch (e) { return false; }
-  if (!a.done(d.model_auth) || run.done || _modelLogin !== run) return false;
+  if (!a.done(d.model_auth, d) || run.done || _modelLogin !== run) return false;
   run.done = true;
   if (a.clearEnv && a.clearEnv.length) {
     const body = {}; a.clearEnv.forEach(k => { body[k] = ''; });
@@ -2033,7 +2413,7 @@ async function _mlSignedIn(run) {
   modelLoginCancel(true);
   const m = _mlEl('apikey-setup-modal'); if (m) m.style.display = 'none';
   const banner = _mlEl('no-apikey-banner'); if (banner) banner.style.display = 'none';
-  showToast(a.label + ' is connected. Your workers can use it now.');
+  showToast(a.label + (a.notModel ? ' is connected.' : ' is connected. Your workers can use it now.'));
   if (document.getElementById('settings-usage-body')) loadUsage();   // the row stops saying "Connect account"
   return true;
 }
@@ -2057,8 +2437,11 @@ async function modelLoginSubmitCode() {
     // "Paste code here" forever (amux Cloud e2e, 2026-10-19).
     await _mlInput(run, code);
     await new Promise(res => setTimeout(res, 400));
-    await _mlInput(run, '\r');
+    // Marked before the Enter: a CLI that refuses the code and exits at once can answer
+    // while this write is still in flight, and an answer read before codeSent was taken
+    // for a sign-in that stopped on its own (sandbox, 2026-10-25, "Login failed").
     run.codeSent = true;
+    await _mlInput(run, '\r');
     inp.value = '';
     _mlEl('model-login-err').textContent = '';
     _mlEl('model-login-status').textContent = 'Checking…';
@@ -2158,9 +2541,9 @@ function _renderOrgSwitcher() {
     wsList.innerHTML = _gatewayOrgs.map(o => {
       const isCurrent = current && o.id === current.id;
       const label = o.is_personal ? 'My workspace' : (o.name || o.id);
-      return `<div onclick="_switchOrg('${esc(o.id)}');closeSettings();" style="padding:8px 12px;border-radius:6px;cursor:pointer;font-size:0.82rem;${isCurrent ? 'background:rgba(56,139,253,0.12);font-weight:600;border:1px solid var(--accent);' : 'border:1px solid var(--border);'}display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent;" onmouseover="if(!${isCurrent})this.style.background='var(--bg3)'" onmouseout="if(!${isCurrent})this.style.background=''">
+      return `<div onclick="_switchOrg('${esc(o.id)}');closeSettings();" style="padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);cursor:pointer;font-size:var(--fs-md);${isCurrent ? 'background:color-mix(in srgb, color-mix(in srgb, var(--accent) 92%, var(--shade)) 12%, transparent);font-weight:600;border:1px solid var(--accent);' : 'border:1px solid var(--border);'}display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent;" onmouseover="if(!${isCurrent})this.style.background='var(--card)'" onmouseout="if(!${isCurrent})this.style.background=''">
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(label)}</span>
-        ${isCurrent ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : ''}
+        ${isCurrent ? '<span style="color:var(--accent);font-size:var(--fs-3xs);">current</span>' : ''}
       </div>`;
     }).join('');
   } else if (wsSection && wsSep) {
@@ -2171,7 +2554,7 @@ function _renderOrgSwitcher() {
   // Tint settings gear when viewing another workspace
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) {
-    settingsBtn.style.color = inOtherOrg ? '#818cf8' : '';
+    settingsBtn.style.color = inOtherOrg ? 'var(--purple)' : '';
   }
 
   // Banner: viewing another workspace
@@ -2199,7 +2582,7 @@ function _renderOrgSwitcher() {
     undismissedOrgs.forEach(o => {
       const btn = document.createElement('button');
       btn.textContent = `Switch to ${o.name || o.id}`;
-      btn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;margin-left:4px;';
+      btn.style.cssText = 'background:color-mix(in srgb, var(--green) 84%, var(--shade));color:var(--on-solid);border:none;border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-2-5);font-size:var(--fs-base);cursor:pointer;margin-left:var(--space-1);';
       btn.onclick = () => _switchOrg(o.id);
       inviteBannerText.appendChild(btn);
     });
@@ -2451,30 +2834,30 @@ function _renderInstanceSwitcher() {
       const allConns = [...conns, ...(conns.some(x => x.url.replace(/\/+$/,'')===location.origin) ? [] : [{name:location.host,url:location.origin}])];
       const payload = btoa(JSON.stringify({servers:allConns,deviceName:localStorage.getItem('amux_device_name')||''}));
       const syncUrl = isCurr ? '' : (c.url + '/?_sync=' + encodeURIComponent(payload));
-      return `<a href="${syncUrl}" style="display:block;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:0.8rem;${isCurr ? 'background:var(--accent10);font-weight:600;' : ''}display:flex;justify-content:space-between;align-items:center;text-decoration:none;color:inherit;"
+      return `<a href="${syncUrl}" style="display:block;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);cursor:pointer;font-size:var(--fs-md);${isCurr ? 'background:color-mix(in srgb, var(--accent) 10%, transparent);font-weight:600;' : ''}display:flex;justify-content:space-between;align-items:center;text-decoration:none;color:inherit;"
         onclick="event.stopPropagation();${isCurr ? 'event.preventDefault();' : `closeSettings();_switchServerUrl(${i},event);`}"
-        onmouseover="if(!${isCurr})this.style.background='var(--bg3)'"
-        onmouseout="this.style.background='${isCurr ? 'var(--accent10)' : ''}'">
+        onmouseover="if(!${isCurr})this.style.background='var(--card)'"
+        onmouseout="this.style.background='${isCurr ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : ''}'">
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
-        ${isCurr ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : `<span style="color:var(--dim);font-size:0.7rem;">${esc(c.url.replace(/^https?:\/\//, ''))}</span>`}
+        ${isCurr ? '<span style="color:var(--accent);font-size:var(--fs-3xs);">current</span>' : `<span style="color:var(--dim);font-size:var(--fs-xs);">${esc(c.url.replace(/^https?:\/\//, ''))}</span>`}
       </a>`;
     }).join('') + '<button class="btn connection-security-summary" onclick="_openConnectionSecurity(event)">Connection &amp; security</button>';
   }
 
   if (list) {
     list.innerHTML = conns.length === 0
-      ? `<div style="font-size:0.78rem;color:var(--dim);">No connections saved. Add your local or Tailscale URL.</div>`
+      ? `<div style="font-size:var(--fs-base);color:var(--dim);">No connections saved. Add your local or Tailscale URL.</div>`
       : conns.map((c, i) => {
           const isCurr = c.url.replace(/\/$/, '') === origin.replace(/\/$/, '');
-          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+          return `<div style="display:flex;align-items:center;gap:var(--space-1-5);padding:var(--space-1) 0;">
             <div style="flex:1;min-width:0;">
-              <div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</div>
-              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}${_connLoginFor(c.url) ? ' &middot; signs in as ' + esc(_connLoginFor(c.url).user) : ''}</div>
+              <div style="font-size:var(--fs-md);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</div>
+              <div style="font-size:var(--fs-xs);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}${_connLoginFor(c.url) ? ' &middot; signs in as ' + esc(_connLoginFor(c.url).user) : ''}</div>
             </div>
             ${isCurr
-              ? '<span style="font-size:0.68rem;color:var(--accent);flex-shrink:0;">current</span>'
-              : `<a href="${c.url+'/?_sync='+encodeURIComponent(btoa(JSON.stringify({servers:[...conns,...(conns.some(x=>x.url.replace(/\/+$/,'')===location.origin)?[]:[{name:location.host,url:location.origin}])],deviceName:localStorage.getItem('amux_device_name')||''})))}" onclick="event.stopPropagation();closeSettings();_switchServerUrl(${i},event);" style="background:var(--accent);color:#000;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;cursor:pointer;flex-shrink:0;text-decoration:none;">Open</a>`}
-            <button onclick="_removeConnection(${i})" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.85rem;padding:0 2px;flex-shrink:0;" title="Remove">&#x2715;</button>
+              ? '<span style="font-size:var(--fs-2xs);color:var(--accent);flex-shrink:0;">current</span>'
+              : `<a href="${c.url+'/?_sync='+encodeURIComponent(btoa(JSON.stringify({servers:[...conns,...(conns.some(x=>x.url.replace(/\/+$/,'')===location.origin)?[]:[{name:location.host,url:location.origin}])],deviceName:localStorage.getItem('amux_device_name')||''})))}" onclick="event.stopPropagation();closeSettings();_switchServerUrl(${i},event);" style="background:var(--accent);color:var(--shade);border:none;border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-2);font-size:var(--fs-xs);cursor:pointer;flex-shrink:0;text-decoration:none;">Open</a>`}
+            <button onclick="_removeConnection(${i})" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:var(--fs-lg);padding:0 var(--space-0-5);flex-shrink:0;" title="Remove">&#x2715;</button>
           </div>`;
         }).join('');
   }
@@ -2772,18 +3155,191 @@ function showToast(msg) {
   }, 3000);
 }
 
+// ── Themes dialog (Settings > Appearance > Themes) ──
+// Pick, preview, create, edit, import and export themes. It is the standard
+// dialog (.modal-overlay > .modal) with production .btn/.input controls; a
+// preview paints the whole UI and ends when the dialog closes unless used.
+let _themeEditing = null;   // the draft document while the editor is open
+function openThemes() {
+  closeSettings();
+  if (document.getElementById('theme-dialog')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'theme-dialog'; overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `<section class="modal theme-dialog" role="dialog" aria-modal="true" aria-labelledby="theme-dialog-title">
+    <header class="modal-header"><div><h3 id="theme-dialog-title">Themes</h3><p class="ui-help">Colors for all of amux. A theme changes how amux looks, never what it does.</p></div><button class="modal-close" aria-label="Close themes" onclick="closeThemes()">×</button></header>
+    <div class="modal-body"><div id="theme-list" class="theme-list" role="list"></div><div id="theme-editor" class="theme-editor" hidden></div></div>
+    <footer class="modal-footer theme-footer">
+      <button class="btn" onclick="_themeNew()">New theme</button>
+      <button class="btn" onclick="document.getElementById('theme-import-file').click()">Import…</button>
+      <input type="file" id="theme-import-file" accept="application/json,.json" hidden onchange="_themeImport(this)">
+      <span id="theme-status" class="ui-help" role="status" aria-live="polite"></span>
+    </footer></section>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeThemes(); });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') closeThemes(); });
+  document.body.appendChild(overlay);
+  _themeDialogRender();
+  overlay.querySelector('.modal-close').focus();
+}
+function closeThemes() {
+  themePreviewEnd();
+  _themeEditing = null;
+  document.getElementById('theme-dialog')?.remove();
+}
+function _themeStatus(text) { const el = document.getElementById('theme-status'); if (el) el.textContent = text; }
+function _themeSwatches(t) {
+  return '<span class="theme-swatches" aria-hidden="true">' + ['bg', 'card', 'text', 'accent', 'green', 'yellow', 'red', 'purple']
+    .map(k => '<i style="background:' + esc(t.colors[k]) + '"></i>').join('') + '</span>';
+}
+function _themeDialogRender() {
+  const list = document.getElementById('theme-list');
+  if (!list) return;
+  const active = themeActiveId();
+  list.innerHTML = themeAll().map(t => {
+    const id = esc(t.id), on = t.id === active, prev = _themePreviewing !== null && document.body.dataset.theme === t.id;
+    return `<div class="theme-item${on ? ' active' : ''}" role="listitem" data-theme-id="${id}">
+      ${_themeSwatches(t)}
+      <span class="theme-name">${esc(t.name)}<span class="ui-help"> ${t.base === 'light' ? 'Light' : 'Dark'}${t.builtin ? '' : ' · yours'}${on ? ' · in use' : ''}</span></span>
+      <span class="theme-actions">
+        <button class="btn" onclick="_themePreviewToggle('${id}')" aria-pressed="${prev}">${prev ? 'End preview' : 'Preview'}</button>
+        <button class="btn${on ? '' : ' primary'}" onclick="_themeUse('${id}')" ${on ? 'disabled' : ''}>${on ? 'In use' : 'Use'}</button>
+        <button class="btn" onclick="_themeEdit('${id}')">${t.builtin ? 'Copy' : 'Edit'}</button>
+        <button class="btn" onclick="_themeDownload('${id}')">Export</button>
+        ${t.builtin ? '' : `<button class="btn danger" onclick="_themeDelete('${id}')">Delete</button>`}
+      </span></div>`;
+  }).join('');
+}
+function _themePreviewToggle(id) {
+  if (_themePreviewing !== null && document.body.dataset.theme === id) { themePreviewEnd(); _themeStatus('Preview ended.'); }
+  else { themePreview(themeById(id)); _themeStatus('Previewing ' + themeById(id).name + '. Use it to keep it.'); }
+  _themeDialogRender();
+}
+function _themeUse(id) {
+  if (themeActivate(id)) _themeStatus(themeById(id).name + ' is in use.');
+  _themeDialogRender();
+}
+function _themeDownload(id) {
+  const text = themeExport(id);
+  if (!text) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = id + '.amux-theme.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  _themeStatus('Exported ' + themeById(id).name + '.');
+}
+async function _themeDelete(id) {
+  const t = themeById(id);
+  if (!t || t.builtin) return;
+  if (!(await showConfirm('Delete the theme "' + t.name + '"? Export it first to keep a copy.', 'Delete', true))) return;
+  themeDeleteCustom(id);
+  _themeStatus('Deleted ' + t.name + '.');
+  _themeDialogRender();
+}
+function _themeNew() {
+  const from = themeById(themeActiveId()) || BUILTIN_THEMES[0];
+  _themeEditOpen({ schema: THEME_SCHEMA, version: THEME_VERSION, name: 'My theme', base: from.base, colors: { ...from.colors } }, true);
+}
+function _themeEdit(id) {
+  const t = themeById(id);
+  if (!t) return;
+  const doc = { schema: THEME_SCHEMA, version: THEME_VERSION, name: t.builtin ? t.name + ' (copy)' : t.name, base: t.base, colors: { ...t.colors } };
+  if (!t.builtin) doc.id = t.id;
+  _themeEditOpen(doc, t.builtin);
+}
+async function _themeImport(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  let doc;
+  try { doc = JSON.parse(await f.text()); } catch (e) { _themeStatus('Not imported: ' + f.name + ' is not JSON.'); return; }
+  const v = themeValidate(doc);
+  if (!v.ok) { _themeStatus('Not imported: ' + v.errors.join(' ')); return; }
+  // Opens in the editor, previewed, so it is seen and checked before it is saved.
+  _themeEditOpen({ ...doc, id: undefined }, true);
+  _themeStatus('Imported ' + v.theme.name + ' for review: save it to keep it.');
+}
+function _themeEditOpen(doc, isNew) {
+  _themeEditing = { doc, isNew };
+  document.querySelector('.theme-dialog')?.classList.add('editing');
+  document.getElementById('theme-list').hidden = true;
+  const ed = document.getElementById('theme-editor');
+  ed.hidden = false;
+  ed.innerHTML = `<div class="theme-edit-head">
+      <label class="theme-field"><span>Name</span><input class="input" id="theme-edit-name" maxlength="60" value="${esc(doc.name || '')}"></label>
+      <label class="theme-field"><span>Base</span><select class="input" id="theme-edit-base"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+    </div>
+    <div class="theme-edit-grid">${THEME_TOKENS.map(([k, , label, req]) => `<label class="theme-color" for="theme-c-${k}">
+      <input type="color" id="theme-c-${k}" data-k="${k}" value="${esc(_themeHex(doc.colors[k]) || '#000000')}"><!-- design-tokens: allow (input type=color needs hex) -->
+      <span>${esc(label)}${req ? '' : ' <span class="ui-help">(optional)</span>'}</span>
+      <input class="input theme-hex" data-k="${k}" aria-label="${esc(label)} hex" value="${esc(doc.colors[k] || '')}" spellcheck="false"></label>`).join('')}</div>
+    <ul id="theme-edit-problems" class="theme-problems" aria-live="polite"></ul>
+    <div class="theme-edit-actions"><button class="btn" onclick="_themeEditClose()">Cancel</button>
+      <button class="btn" id="theme-edit-save" onclick="_themeEditSave(false)">Save</button>
+      <button class="btn primary" id="theme-edit-use" onclick="_themeEditSave(true)">Save and use</button></div>`;
+  document.getElementById('theme-edit-base').value = doc.base === 'light' ? 'light' : 'dark';
+  ed.addEventListener('input', _themeEditChanged);
+  ed.addEventListener('change', _themeEditChanged);
+  _themeEditChanged();
+}
+// Every edit is validated and previewed across the whole UI at once.
+function _themeEditChanged(e) {
+  const st = _themeEditing;
+  if (!st) return;
+  const t = e && e.target;
+  if (t && t.dataset && t.dataset.k) {
+    const hex = _themeHex(t.value);
+    st.doc.colors[t.dataset.k] = t.value.trim();
+    const twin = document.querySelector(t.type === 'color' ? `.theme-hex[data-k="${t.dataset.k}"]` : `#theme-c-${t.dataset.k}`);
+    if (twin && hex) twin.value = hex;
+  }
+  st.doc.name = document.getElementById('theme-edit-name').value;
+  st.doc.base = document.getElementById('theme-edit-base').value;
+  const v = themeValidate(st.doc);
+  const box = document.getElementById('theme-edit-problems');
+  box.innerHTML = v.errors.map(x => '<li class="theme-error">' + esc(x) + '</li>').join('')
+    + v.warnings.map(x => '<li class="theme-warning">' + esc(x) + '</li>').join('');
+  document.getElementById('theme-edit-save').disabled = !v.ok;
+  document.getElementById('theme-edit-use').disabled = !v.ok;
+  if (v.ok) themePreview(v.theme);
+}
+function _themeEditClose() {
+  _themeEditing = null;
+  document.querySelector('.theme-dialog')?.classList.remove('editing');
+  themePreviewEnd();
+  document.getElementById('theme-editor').hidden = true;
+  document.getElementById('theme-list').hidden = false;
+  _themeDialogRender();
+}
+function _themeEditSave(use) {
+  const st = _themeEditing;
+  if (!st) return;
+  if (st.isNew) delete st.doc.id;
+  const v = themeSaveCustom(st.doc);
+  if (!v.ok) return;
+  _themeEditClose();
+  if (use) themeActivate(v.theme.id);
+  _themeStatus('Saved ' + v.theme.name + (use ? ' and it is in use.' : '.'));
+  _themeDialogRender();
+}
+function _themeSelectChanged(sel) { themeActivate(sel.value); }
+function _themeSelectFill() {
+  const sel = document.getElementById('theme-select');
+  if (!sel) return;
+  sel.innerHTML = themeAll().map(t => '<option value="' + esc(t.id) + '">' + esc(t.name) + '</option>').join('');
+  sel.value = themeActiveId();
+}
+
 // AF-754: the guide renders production classes, so it cannot quietly become a second theme.
 function openStyleGuide() {
   closeSettings();
   if (document.getElementById('ui-guide-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'ui-guide-overlay'; overlay.className = 'modal-overlay active';
-  overlay.dataset.originalLight = String(document.body.classList.contains('light'));
   overlay.innerHTML = `<section class="modal ui-guide" role="dialog" aria-modal="true" aria-labelledby="ui-guide-title">
     <header class="modal-header"><div><h3 id="ui-guide-title">Style guide</h3><p class="ui-help">The components used throughout amux</p></div><button class="modal-close" aria-label="Close style guide" onclick="closeStyleGuide()">×</button></header>
     <div class="modal-body">
-      <section class="ui-guide-section"><h4>One shared visual language</h4><p class="ui-help">Original icons. Clear actions. Compact layouts with room to tap. These examples use the same CSS as the app; preview changes here before applying them across screens.</p><div class="ui-guide-row"><button id="ui-guide-theme" class="btn" onclick="_uiGuideTheme()">Preview other theme</button><span class="ui-help">Theme preview is restored when you close this guide.</span></div></section>
-      <section class="ui-guide-section"><h4>Color and surfaces</h4><div class="ui-guide-grid">${['bg','card','text','dim','accent','green','red','yellow'].map(token=>`<div class="ui-guide-swatch"><i style="background:var(--${token})" aria-hidden="true"></i><code>--${token}</code></div>`).join('')}</div><p class="ui-help">Use surface and text tokens in both themes. Pair accent fills with <code>--on-accent</code>. Status colors always have a text label.</p></section>
+      <section class="ui-guide-section"><h4>One shared visual language</h4><p class="ui-help">Original icons. Clear actions. Compact layouts with room to tap. These examples use the same CSS as the app; preview changes here before applying them across screens.</p><div class="ui-guide-row"><button id="ui-guide-theme" class="btn" onclick="_uiGuideTheme()">Preview next theme</button><span class="ui-help" id="ui-guide-theme-name">Your theme comes back when you close this guide.</span></div></section>
+      <section class="ui-guide-section"><h4>Color and surfaces</h4><div class="ui-guide-grid">${THEME_TOKENS.map(t=>t[1].slice(2)).map(token=>`<div class="ui-guide-swatch"><i style="background:var(--${token})" aria-hidden="true"></i><code>--${token}</code></div>`).join('')}</div><p class="ui-help">Use surface and text tokens in both themes. Pair accent fills with <code>--on-accent</code>. Status colors always have a text label.</p></section>
       <section class="ui-guide-section"><h4>Actions</h4><div class="ui-guide-row"><button id="ui-guide-primary" class="btn primary" onclick="_uiGuideAction(this)">Primary action</button><button class="btn" onclick="_uiGuideAction(this)">Secondary action</button><button class="btn danger" onclick="_uiGuideAction(this)">Destructive example</button><button class="btn" disabled>Unavailable</button><button class="btn" aria-busy="true" disabled>Working…</button></div><div class="ui-guide-row"><button class="btn" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">On</button><button class="btn" role="switch" aria-checked="false" onclick="this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'));this.textContent=this.getAttribute('aria-checked') === 'true' ? 'On' : 'Off'">Off</button><button class="btn" role="switch" aria-checked="mixed">Partly on</button><span class="ui-help">A setting that is on or off is a switch: <code>.btn role="switch"</code> with <code>aria-checked</code>.</span></div><p class="ui-help">Use one primary action per group. Destructive actions keep a clear label and require confirmation when they affect real data. Examples here change no account or worker data.</p><output id="ui-guide-feedback" class="ui-help" role="status" aria-live="polite">Try an action to preview feedback.</output></section>
       <section class="ui-guide-section"><h4>Fields and validation</h4><div class="ui-guide-grid"><label class="ui-field">Name<input class="input" placeholder="Example name" autocomplete="off"><span class="ui-help">A label stays visible after typing.</span></label><label class="ui-field">Choice<select class="input"><option>First option</option><option>Second option</option></select><span class="ui-help">Use the native picker on mobile.</span></label><label class="ui-field">Invalid example<input class="input" value="Example" aria-invalid="true" aria-describedby="ui-guide-error"><span id="ui-guide-error" class="ui-error">Explain what to change, beside the field.</span></label><label class="ui-field">Notes<textarea class="input" rows="3" placeholder="An example draft"></textarea><span class="ui-help">Long content scrolls without hiding actions.</span></label></div></section>
       <section class="ui-guide-section"><h4>Icons and status</h4><div class="ui-guide-row"><button class="settings-btn" aria-label="Example settings" onclick="_uiGuideAction(this)">&#x2699;</button><button class="btn" aria-label="Example notifications" onclick="_uiGuideAction(this)">&#x1F514;</button><span class="status-badge active">Working</span><span class="status-badge idle">Idle</span><span class="ui-help"><span style="color:var(--red)">18</span> limited</span></div><p class="ui-help">Keep the original toolbar symbols. Icon-only controls need an accessible label and a 44-pixel touch target. The compact mobile header uses a, a live dot, and counts.</p></section>
@@ -2806,10 +3362,18 @@ function openStyleGuide() {
 function closeStyleGuide() {
   const overlay = document.getElementById('ui-guide-overlay');
   if (!overlay) return;
-  document.body.classList.toggle('light', overlay.dataset.originalLight === 'true');
+  // Whatever the guide previewed, the theme in use comes back.
+  if (_themePreviewing !== null) themePreviewEnd(); else _themePaint(themeById(themeActiveId()) || BUILTIN_THEMES[0]);
   overlay.remove(); document.getElementById('settings-btn')?.focus();
 }
-function _uiGuideTheme() { document.body.classList.toggle('light'); }
+// Steps through every theme, so each component is seen in each one.
+function _uiGuideTheme() {
+  const all = themeAll(), now = document.body.dataset.theme;
+  const next = all[(all.findIndex(t => t.id === now) + 1) % all.length];
+  themePreview(next);
+  const n = document.getElementById('ui-guide-theme-name');
+  if (n) n.textContent = 'Previewing ' + next.name + '. Your theme comes back when you close this guide.';
+}
 function _uiGuideAction(button) {
   document.getElementById('ui-guide-feedback').textContent = (button.getAttribute('aria-label') || button.textContent) + ' completed. Example only; no data changed.';
 }
@@ -2817,6 +3381,15 @@ async function _uiGuideDialog() {
   const confirmed = await showConfirm('Example confirmation. This changes no account or worker data.');
   const output = document.getElementById('ui-guide-feedback');
   if (output) output.textContent = confirmed ? 'Example confirmed.' : 'Example cancelled.';
+}
+// A computed color's channels on a 0-255 scale, plus alpha when present.
+// getComputedStyle reports color-mix() and other modern colors as
+// color(srgb r g b / a) with channels 0-1; reading those as 0-255 made every
+// themed surface look black on black (680b0ecd3's CI red: upgrade-modal
+// "low-contrast" on a readable dialog).
+function _cssColorChannels(value) {
+  const n = (String(value || '').match(/-?[\d.]+(?:e-?\d+)?/g) || []).map(Number);
+  return /^\s*color\(srgb\b/.test(value || '') ? n.map((v, i) => i < 3 ? v * 255 : v) : n;
 }
 function _uiComponentCheck(root = document) {
   let considered = 0;
@@ -2830,7 +3403,7 @@ function _uiComponentCheck(root = document) {
     considered++;
     if (innerWidth <= 600 && rect.height < 43.5) issues.push((button.id || button.tagName.toLowerCase()) + ':small-control');
     if (!button.matches('.btn.primary:not(:disabled)')) return;
-    const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
+    const rgb = _cssColorChannels;
     const bg = rgb(style.backgroundColor), fg = rgb(style.color);
     if (bg.length < 3 || fg.length < 3 || (bg.length === 4 && bg[3] !== 1)) return;
     const a = luminance(bg), b = luminance(fg);
@@ -2875,9 +3448,6 @@ function _modalLayoutCheck() {
   document.querySelectorAll(_dialogSelector).forEach(root => {
     if (root.id === 'psf-body' && !root.classList.contains('psf-file-view')) return;
     const style = getComputedStyle(root);
-    if (root.id === 'proxy-form-overlay' && root.style.display === 'flex' && !root.classList.contains('active')) {
-      n++; clipped.push('proxy-form-overlay:inactive'); return;
-    }
     if (style.display === 'none' || style.opacity === '0' || style.pointerEvents === 'none') return;
     // File overlays are themselves the flex frame. Their first child is only
     // the header; measuring that missed a scrollport ending below the window.
@@ -2901,7 +3471,7 @@ function _modalLayoutCheck() {
     }
     const surface = box.matches('.conn-picker') || root.matches('#team-scope-modal,#jrnl-config-overlay,.amux-workspace-dialog,#upgrade-modal') ? getComputedStyle(box) : null;
     if (surface) {
-      const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
+      const rgb = _cssColorChannels;
       const bg = rgb(surface.backgroundColor), fg = rgb(surface.color);
       const lum = color => color.slice(0,3).reduce((sum, v, i) => {
         v /= 255; return sum + [0.2126,0.7152,0.0722][i] * (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
@@ -3128,7 +3698,7 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
   return new Promise(resolve => {
     _modalResolve = resolve;
     document.getElementById('modal-msg').innerHTML =
-      '<div style="font-weight:700;font-size:0.95rem;margin-bottom:12px;">' + esc(title) + '</div>' + innerHTML;
+      '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-3);">' + esc(title) + '</div>' + innerHTML;
     document.getElementById('modal-btns').innerHTML =
       `<button class="btn primary" onclick="_modalClose(true)">${esc(confirmLabel)}</button>` +
       `<button class="btn" onclick="_modalClose(false)">Cancel</button>`;
@@ -3153,13 +3723,13 @@ async function showPrompt(msg, placeholder = '', value = '') {
 // ── Bulk actions modal ──
 function _rlRow(s, accent) {
   const reset = s.rate_limited_until
-    ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">resets ${_fmtResetTime(s.rate_limited_until)}</span>` : '';
-  return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:${accent};flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${reset}</div>`;
+    ? `<span style="margin-left:auto;color:var(--dim);font-size:var(--fs-sm);white-space:nowrap;">resets ${_fmtResetTime(s.rate_limited_until)}</span>` : '';
+  return `<div style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--fs-md);padding:var(--space-1) var(--space-2);border-radius:var(--radius-md);background:color-mix(in srgb, var(--on-solid) 4%, transparent);"><span style="color:${accent};flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${reset}</div>`;
 }
 function _clRow(s) {
   const model = s.credit_limit_model
-    ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">${esc(s.credit_limit_model)}</span>` : '';
-  return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:#e0555b;flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${model}</div>`;
+    ? `<span style="margin-left:auto;color:var(--dim);font-size:var(--fs-sm);white-space:nowrap;">${esc(s.credit_limit_model)}</span>` : '';
+  return `<div style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--fs-md);padding:var(--space-1) var(--space-2);border-radius:var(--radius-md);background:color-mix(in srgb, var(--on-solid) 4%, transparent);"><span style="color:color-mix(in srgb, var(--red) 92%, var(--card));flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${model}</div>`;
 }
 // Limited NOW: a future reset time, or the server's `rate_limited` status with no
 // reset time it could read. The second case used to be dropped by every bulk
@@ -3191,33 +3761,33 @@ function openBulkActions() {
   // blunt broadcast (most idle sessions are idle because they finished and are
   // awaiting a human), so it's demoted to a secondary option at the bottom.
   if (transient.length) {
-    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Rate-limited sessions</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${transient.length} session${transient.length>1?'s':''} stuck on an API rate-limit error:</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    html += `<div style="padding:var(--space-3) var(--space-3-5);border:1px solid var(--border);border-radius:var(--radius-xl);margin-bottom:var(--space-2-5);">`;
+    html += `<div style="font-weight:600;font-size:var(--fs-xl);margin-bottom:var(--space-2);">Rate-limited sessions</div>`;
+    html += `<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-3);">${transient.length} session${transient.length>1?'s':''} stuck on an API rate-limit error:</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:var(--space-1);margin-bottom:var(--space-3-5);max-height:180px;overflow-y:auto;">`;
     transient.forEach(s => { html += _rlRow(s, 'var(--accent)'); });
     html += `</div>`;
     html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinue(false)">Send "continue" to ${transient.length} session${transient.length>1?'s':''}</button>`;
     html += `</div>`;
   }
   if (capped.length) {
-    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x1F4C5; Usage limit reached</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${capped.length} session${capped.length>1?'s':''} hit a usage cap (weekly or 5-hour session). amux auto-resumes each at the reset time shown — no action needed.</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
-    capped.forEach(s => { html += _rlRow(s, '#f0a020'); });
+    html += `<div style="padding:var(--space-3) var(--space-3-5);border:1px solid var(--border);border-radius:var(--radius-xl);margin-bottom:var(--space-2-5);">`;
+    html += `<div style="font-weight:600;font-size:var(--fs-xl);margin-bottom:var(--space-2);">&#x1F4C5; Usage limit reached</div>`;
+    html += `<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-3);">${capped.length} session${capped.length>1?'s':''} hit a usage cap (weekly or 5-hour session). amux auto-resumes each at the reset time shown — no action needed.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:var(--space-1);margin-bottom:var(--space-3-5);max-height:180px;overflow-y:auto;">`;
+    capped.forEach(s => { html += _rlRow(s, 'var(--yellow)'); });
     html += `</div>`;
     html += `<button class="btn" style="width:100%;" onclick="bulkSendContinue(true)">Send "continue" anyway to ${capped.length} session${capped.length>1?'s':''}</button>`;
     html += `</div>`;
   }
   if (creditLimited.length) {
-    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x26A0;&#xFE0F; Model usage limit reached</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${creditLimited.length} session${creditLimited.length>1?'s':''} hit a per-model credit limit. There's no reset time, so switching the model is what unblocks them — each switch also sends "continue" so the interrupted turn resumes. Or top up at /usage-credits.</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    html += `<div style="padding:var(--space-3) var(--space-3-5);border:1px solid var(--border);border-radius:var(--radius-xl);margin-bottom:var(--space-2-5);">`;
+    html += `<div style="font-weight:600;font-size:var(--fs-xl);margin-bottom:var(--space-2);">&#x26A0;&#xFE0F; Model usage limit reached</div>`;
+    html += `<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-3);">${creditLimited.length} session${creditLimited.length>1?'s':''} hit a per-model credit limit. There's no reset time, so switching the model is what unblocks them — each switch also sends "continue" so the interrupted turn resumes. Or top up at /usage-credits.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:var(--space-1);margin-bottom:var(--space-3-5);max-height:180px;overflow-y:auto;">`;
     creditLimited.forEach(s => { html += _clRow(s); });
     html += `</div>`;
-    html += `<div style="display:flex;gap:8px;">`;
+    html += `<div style="display:flex;gap:var(--space-2);">`;
     html += `<button class="btn primary" style="flex:1;" onclick="bulkSwitchModel('sonnet')">Switch to Sonnet &amp; continue</button>`;
     html += `<button class="btn" style="flex:1;" onclick="bulkSwitchModel('opus')">Switch to Opus &amp; continue</button>`;
     html += `</div>`;
@@ -3226,16 +3796,16 @@ function openBulkActions() {
   if (apiErr.length) {
     const codes = [...new Set(apiErr.map(s => s.api_error_code).filter(Boolean))].join('/');
     const looping = apiErr.filter(s => (s.api_error_count || 0) > 1);
-    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x26A0;&#xFE0F; API error${codes ? ' ' + esc(codes) : ''} &mdash; server-side</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">`
+    html += `<div style="padding:var(--space-3) var(--space-3-5);border:1px solid var(--border);border-radius:var(--radius-xl);margin-bottom:var(--space-2-5);">`;
+    html += `<div style="font-weight:600;font-size:var(--fs-xl);margin-bottom:var(--space-2);">&#x26A0;&#xFE0F; API error${codes ? ' ' + esc(codes) : ''} &mdash; server-side</div>`;
+    html += `<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-3);">`
       + `${apiErr.length} session${apiErr.length>1?'s':''} stopped on a transient API error (Overloaded / 5xx). `
       + `There is no reset time and no model to switch &mdash; it is retryable now, so "continue" is the fix. `
       + (looping.length ? `<b>${looping.length}</b> ${looping.length>1?'are':'is'} in a retry loop and will keep failing until the upstream recovers. ` : '')
       + `Check <a href="https://status.claude.com" target="_blank" rel="noopener" style="color:var(--accent);">status.claude.com</a> if it persists.</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    html += `<div style="display:flex;flex-direction:column;gap:var(--space-1);margin-bottom:var(--space-3-5);max-height:180px;overflow-y:auto;">`;
     apiErr.forEach(s => {
-      html += `<div style="display:flex;align-items:center;gap:8px;font-size:0.8rem;">`
+      html += `<div style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--fs-md);">`
         + `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">${esc(s.name)}</span>`
         + `<span style="color:var(--dim);">${esc(s.api_error_code || '5xx')}${(s.api_error_count||0) > 1 ? ' &times;' + s.api_error_count : ''}</span>`
         + `</div>`;
@@ -3253,14 +3823,14 @@ function openBulkActions() {
     .filter(s => !_seen.has(s.name) && _seen.add(s.name));
   const _n = allLimited.length;
   if (_n) {
-    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;color:var(--dim);">&#x25B6; Continue all limited workers</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">Send "continue" to every limited worker (${_n}) at once. Rate-limited resume immediately; credit-limited resume only if you've already switched model or topped up credits (otherwise use the switch above).</div>`;
+    html += `<div style="padding:var(--space-3) var(--space-3-5);border:1px solid var(--border);border-radius:var(--radius-xl);margin-bottom:var(--space-2-5);">`;
+    html += `<div style="font-weight:600;font-size:var(--fs-xl);margin-bottom:var(--space-2);color:var(--dim);">&#x25B6; Continue all limited workers</div>`;
+    html += `<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-3);">Send "continue" to every limited worker (${_n}) at once. Rate-limited resume immediately; credit-limited resume only if you've already switched model or topped up credits (otherwise use the switch above).</div>`;
     html += `<button class="btn" style="width:100%;" onclick="bulkContinueLimited()">Send &quot;continue&quot; to ${_n} limited worker${_n === 1 ? '' : 's'}</button>`;
     html += `</div>`;
   }
   if (!limited.length && !creditLimited.length) {
-    html += `<div style="padding:8px 0;text-align:center;color:var(--dim);font-size:0.82rem;">No limited workers.</div>`;
+    html += `<div style="padding:var(--space-2) 0;text-align:center;color:var(--dim);font-size:var(--fs-md);">No limited workers.</div>`;
   }
   body.innerHTML = html;
   document.getElementById('bulk-actions-overlay').classList.add('open');
@@ -3315,7 +3885,7 @@ function openVisibleWorkerActions() {
   const names = _visibleWorkerNames();
   const body = document.getElementById('bulk-actions-body');
   if (!names.length) { showToast('No workers are shown'); return; }
-  body.innerHTML = '<div style="font-size:0.85rem;margin-bottom:8px;">' + names.length + ' worker' + (names.length === 1 ? '' : 's') + ' shown:</div>'
+  body.innerHTML = '<div style="font-size:var(--fs-lg);margin-bottom:var(--space-2);">' + names.length + ' worker' + (names.length === 1 ? '' : 's') + ' shown:</div>'
     + '<div class="bulk-visible-names">' + names.map(n => '<span>' + esc(n) + '</span>').join('') + '</div>'
     + '<div class="bulk-visible-actions">'
     + Object.entries(_VISIBLE_ACTIONS).map(([k, a]) =>
@@ -3604,11 +4174,11 @@ async function showSessionInfo(name) {
   const r = await fetch(API + '/api/sessions/' + name + '/meta');
   const m = await r.json();
   const ts = t => t ? new Date(t * 1000).toLocaleString() : '—';
-  const row = (label, val) => val ? `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:0.85rem;"><span style="color:var(--dim);min-width:110px;flex-shrink:0;">${label}</span><span style="word-break:break-all;">${val}</span></div>` : '';
+  const row = (label, val) => val ? `<div style="display:flex;gap:var(--space-2);padding:var(--space-1) 0;border-bottom:1px solid var(--border);font-size:var(--fs-lg);"><span style="color:var(--dim);min-width:110px;flex-shrink:0;">${label}</span><span style="word-break:break-all;">${val}</span></div>` : '';
   const provider = sessionProvider(m);
   const configuredModel = m.configured_model || flagValue(m.flags || '', '--model') || providerDefaultModel(provider);
   const html = `<div style="text-align:left;">
-    <div style="font-size:1.05rem;font-weight:700;margin-bottom:12px;">${esc(name)}</div>
+    <div style="font-size:var(--fs-3xl);font-weight:700;margin-bottom:var(--space-3);">${esc(name)}</div>
     ${row('Created', ts(m.created_at))}
     ${row('Creator', m.creator)}
     ${row('Last started', ts(m.last_started))}
@@ -4035,9 +4605,10 @@ function _syncLockRequest(run) {
   let granted = false;
   const held = () => { granted = true; return run(); };
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(waitMs) : undefined;
-  return navigator.locks.request('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
+  return _lockRequest('amux-outbox-replay', signal ? {signal} : {}, held).catch(async e => {
     if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
-    // Our own lock was stolen by a shown tab after we started: the pass ran.
+    // A stolen-after-grant request resolves in _lockRequest with the pass's own
+    // result; this guard only keeps a late timeout from running it twice.
     if (granted) return undefined;
     let nHeld = -1, pending = -1;
     try { const q = await navigator.locks.query(); nHeld = (q.held || []).filter(l => l.name === 'amux-outbox-replay').length; pending = (q.pending || []).filter(l => l.name === 'amux-outbox-replay').length; } catch (_) {}
@@ -4050,7 +4621,13 @@ function _syncLockRequest(run) {
     // A shown window takes the lock over, so the frozen holder stops blocking
     // every later pass too.
     _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:waitMs, held:nHeld, pending, hidden:0, action:'stole'});
-    return navigator.locks.request('amux-outbox-replay', {steal:true}, held);
+    // Another shown window kept the lock past the retry: it is running this
+    // same pass, so this one yields, and the caller schedules the next pass.
+    return _lockRequest('amux-outbox-replay', {steal:true}, held).catch(e2 => {
+      if (granted || !e2 || (e2.name !== 'AbortError' && e2.name !== 'TimeoutError')) throw e2;
+      _outboxDiagnostic('outbox_replay_lock_stalled', {waited_ms:_DELIVERY_STEAL_MS, hidden:0, action:'yielded'});
+      return undefined;
+    });
   });
 }
 function runSyncBanner(quiet = false) {
@@ -6093,7 +6670,7 @@ function _sessionReadNotice() {
         : ' Commands you send will be queued and delivered when the server returns.')
     : '';
   const errDetail = _sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error';
-  const troubleshoot = auth ? '' : '<div style="margin-top:8px;font-size:0.78rem;color:var(--dim);">'
+  const troubleshoot = auth ? '' : '<div style="margin-top:var(--space-2);font-size:var(--fs-base);color:var(--dim);">'
     + '<b>Troubleshooting:</b> '
     + (_sessionLoadError.status >= 500
       ? 'The server returned an error. Check the server health and logs if retries do not recover.'
@@ -6118,7 +6695,7 @@ function _sessionReadNotice() {
 function _amuxAuthWithheldBanner() {
   if(!document.body || document.getElementById('amux-auth-withheld') || (document.getElementById('settings-menu')?.classList.contains('open') && document.getElementById('stab-integrations')?.classList.contains('active'))) return;
   const bar=document.createElement('div');bar.id='amux-auth-withheld';
-  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:100000;min-height:44px;padding:calc(12px + env(safe-area-inset-top,0px)) 12px 12px;background:#7c2d12;color:white;font:14px system-ui;';
+  bar.style.cssText='position:fixed;left:0;right:0;top:0;z-index:100000;min-height:44px;padding:calc(var(--space-3) + env(safe-area-inset-top,0px)) var(--space-3) var(--space-3);background:color-mix(in srgb, var(--red) 49%, var(--shade));color:var(--on-solid);font:14px system-ui;';
   bar.innerHTML='<b>Not signed in to this server.</b> Cached information may be stale. <button class="btn" onclick="_openConnectionSecurity(event)">Connection &amp; security · Sign in</button>';
   document.body.appendChild(bar);
 }
@@ -7005,7 +7582,7 @@ function _waitingTitle(s) {
 // transcripts (server-verified from subagent JSONL mtimes, not the status bar).
 function _agentsChip(s) {
   return s.agents_working
-    ? '<span class="status-badge active" style="margin-left:4px;" title="Background agents are actively writing their transcripts">⚙ agents</span>'
+    ? '<span class="status-badge active" style="margin-left:var(--space-1);" title="Background agents are actively writing their transcripts">⚙ agents</span>'
     : '';
 }
 
@@ -7183,7 +7760,7 @@ function _stalledChip(s) {
       + '</button>';
   }
   _reportWorkFrontier(s, w, 'stalled');
-  return '<span class="status-badge rate-limited" style="margin-left:6px;" title="'
+  return '<span class="status-badge rate-limited" style="margin-left:var(--space-1-5);" title="'
     + w.ready + ' card(s) ready, 0 claimable, and no current work explains the block.'
     + '">stalled &middot; '
     + w.ready + ' ready</span>';
@@ -7291,8 +7868,8 @@ async function _openStatusDetail(name) {
       const pr = reason.projection;
       if (pr) {
         const t = pr.telemetry || {};
-        const row = (k, v) => '<tr><th style="text-align:left;padding:2px 12px 2px 0;font-weight:500;color:var(--dim)">' + k + '</th><td>' + esc(String(v ?? '—')) + '</td></tr>';
-        html += '<table class="status-projection" style="margin:6px 0 10px;font-size:0.85rem">'
+        const row = (k, v) => '<tr><th style="text-align:left;padding:var(--space-0-5) var(--space-3) var(--space-0-5) 0;font-weight:500;color:var(--dim)">' + k + '</th><td>' + esc(String(v ?? '—')) + '</td></tr>';
+        html += '<table class="status-projection" style="margin:var(--space-1-5) 0 var(--space-2-5);font-size:var(--fs-lg)">'
           + row('Agent', pr.agent_state) + row('Process', pr.process_state) + row('Turn', pr.turn_state)
           + row('Activity', (pr.activity || '').replaceAll('_', ' ')) + row('Authority', pr.authority)
           + row('Telemetry', (t.health || '') + (t.reason ? ' · ' + t.reason : ''))
@@ -7307,10 +7884,10 @@ async function _openStatusDetail(name) {
     if (blocked.length) {
       html += '<h3>Blocked cards</h3>';
       for (const c of blocked) {
-        html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:var(--surface)">'
+        html += '<div style="margin-bottom:var(--space-2);padding:var(--space-2);border-radius:var(--radius-md);background:var(--card)">'
           + '<strong>' + esc(c.id) + '</strong> ' + esc(c.title || '') + '<br>';
         if (c.blocked_on) html += '<span style="color:var(--red)">Blocked on: ' + esc(c.blocked_on) + '</span><br>';
-        if (c.depends_on && c.depends_on.length) html += '<span style="color:var(--orange,var(--yellow))">Waiting on: ' + c.depends_on.map(d => esc(d)).join(', ') + '</span><br>';
+        if (c.depends_on && c.depends_on.length) html += '<span style="color:var(--orange)">Waiting on: ' + c.depends_on.map(d => esc(d)).join(', ') + '</span><br>';
         html += '</div>';
       }
     }
@@ -7318,7 +7895,7 @@ async function _openStatusDetail(name) {
       const lines = stripAnsi(peekRes.output || '').split('\n').filter(l => l.trim());
       const last = lines.slice(-12);
       if (last.length) {
-        html += '<h3>Terminal</h3><pre style="font-size:0.8rem;max-height:200px;overflow:auto;padding:8px;border-radius:6px;background:var(--surface);white-space:pre-wrap;word-break:break-all;margin:0">'
+        html += '<h3>Terminal</h3><pre style="font-size:var(--fs-md);max-height:200px;overflow:auto;padding:var(--space-2);border-radius:var(--radius-md);background:var(--card);white-space:pre-wrap;word-break:break-all;margin:0">'
           + esc(last.join('\n')) + '</pre>';
       }
     }
@@ -7428,7 +8005,7 @@ function updatePeekStatus() {
   if (s.running && s.status === 'idle') badge += _stalledChip(s);
   if (s.running && s.rate_limited_until) {
     const _lbl = s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until';
-    badge += `<span class="status-badge rate-limited" style="margin-left:6px;">${_lbl} ${_fmtResetTime(s.rate_limited_until)}</span>`;
+    badge += `<span class="status-badge rate-limited" style="margin-left:var(--space-1-5);">${_lbl} ${_fmtResetTime(s.rate_limited_until)}</span>`;
   }
   el.innerHTML = badge;
   // The status pill IS the button (Ethan, 2026-09-24: "make the status pill
@@ -7706,7 +8283,7 @@ function _runtimeBoardSyncBadge() {
 }
 
 function _runtimeBoardCardlessBadge() {
-  return '<span class="status-badge" style="margin-left:4px;" title="The server measured this as an explicit informational or control turn, not board work.">cardless turn</span>';
+  return '<span class="status-badge" style="margin-left:var(--space-1);" title="The server measured this as an explicit informational or control turn, not board work.">cardless turn</span>';
 }
 
 function _runtimeBoardSplitBadge(s) {
@@ -7778,9 +8355,20 @@ function _nudgeWorkersOnBoardChange() {
     // The needs-you bell counts board cards too, and refreshed only every 5
     // minutes: answering a card left it counted while the board had moved on.
     // It follows any board change now, a few seconds after the last one. This
-    // runs for live updates and for the polling fallback alike.
-    clearTimeout(window._needsYouSoonTimer);
-    window._needsYouSoonTimer = setTimeout(() => { try { _needsYouFetch(); } catch (_) {} }, 3000);
+    // runs for live updates and for the polling fallback alike. The fetch is
+    // due 3s after the FIRST change it has not covered: restarting the timer
+    // on every change let a steady stream of board updates hold the bell
+    // stale indefinitely (AMUX-6386). Changes inside the window are counted
+    // and reported with the fetch that covers them.
+    window._needsYouSoonPending = (window._needsYouSoonPending || 0) + 1;
+    if (!window._needsYouSoonTimer) {
+      window._needsYouSoonTimer = setTimeout(() => {
+        const covered = window._needsYouSoonPending || 0;
+        window._needsYouSoonTimer = null; window._needsYouSoonPending = 0;
+        try { amuxTrack('needsyou_soon_fetch', {changes: covered, measured: true, n_considered: covered}); } catch (_) {}
+        try { _needsYouFetch(); } catch (_) {}
+      }, 3000);
+    }
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
@@ -7806,7 +8394,7 @@ function _grpSummary(g) {
   const parts = [
     `<span style="color:var(--text);">${m.length} worker${m.length === 1 ? '' : 's'}</span>`,
     bit(by.active, 'active', 'var(--green)'),
-    bit(by.waiting, 'waiting', '#d29922'),
+    bit(by.waiting, 'waiting', 'var(--yellow)'),
     bit(by.idle, 'idle'),
     (doing || todo) ? `<span>${doing} doing · ${todo} todo</span>` : '',
     sched ? `<span>${sched.n} schedule${sched.n === 1 ? '' : 's'} on</span>` : '',
@@ -8239,11 +8827,11 @@ function render() {
       _setCardsHtml(el, consecutiveFailures > 0
         ? '<div class="empty">Can\u2019t reach the server \u2014 ' + consecutiveFailures +
           ' failed attempt' + (consecutiveFailures === 1 ? '' : 's') + '.<br>' +
-          '<span style="color:var(--dim);font-size:0.85rem;">This is a connection problem, not an ' +
+          '<span style="color:var(--dim);font-size:var(--fs-lg);">This is a connection problem, not an ' +
           'empty workspace. Workers may exist and be unreachable.</span><br>' +
-          '<a href="/api/_clear_sw" style="color:var(--accent);font-size:0.8rem;">Clear cache &amp; reload</a></div>'
+          '<a href="/api/_clear_sw" style="color:var(--accent);font-size:var(--fs-md);">Clear cache &amp; reload</a></div>'
         : '<div class="empty"><span class="loading-spinner"></span>Connecting to server…<br>' +
-          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>');
+          '<a href="/api/_clear_sw" style="color:var(--dim);font-size:var(--fs-sm);margin-top:var(--space-2);display:inline-block;">Stuck? Clear cache</a></div>');
     } else {
       _setCardsHtml(el, '<div class="empty">' + (sessions.some(s => s.project) ? 'Project workers are grouped below.' : sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
         (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>');
@@ -8269,7 +8857,7 @@ function render() {
         <button class="card-menu-btn" onclick="event.stopPropagation();removeDraft('${esc(d.name)}');render();" title="Remove draft">&#x2716;</button>
       </div>
       ${d.dir ? '<div class="card-dir">' + esc(d.dir) + '</div>' : ''}
-      ${d.creator ? '<div class="card-dir" style="font-size:0.72rem;">' + esc(d.creator) + '</div>' : ''}
+      ${d.creator ? '<div class="card-dir" style="font-size:var(--fs-xs);">' + esc(d.creator) + '</div>' : ''}
       ${d.prompt ? '<div class="draft-prompt">' + esc(d.prompt) + '</div>' : ''}
     </div>`;
   }).join('');
@@ -8405,7 +8993,7 @@ function render() {
         </div>` : ''}
       </div>
       ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}">${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}</span></div>` : ''}
-      ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
+      ${s.creator ? `<div class="card-dir" style="font-size:var(--fs-xs);">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
 
@@ -8417,7 +9005,7 @@ function render() {
           ? `<div class="card-preview card-task-full" style="font-weight:600;color:var(--text);">${esc(llmTask)}</div>`
           : '')
         + (displayTaskName
-          ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+          ? `<div class="card-preview card-task-full${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:var(--fs-base);font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
           : '');
       })() : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
@@ -8440,7 +9028,7 @@ function render() {
         ${(s.tags||[]).map(g => `<span class="grp-chip" title="Filter by group ${esc(g)}" onclick="event.stopPropagation();toggleTagFilter('${escJs(g)}')">${esc(g)}</span>`).join('')}
         ${model ? `<span class="badge model card-model-inline" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
       </div>` : ''}
-      ${!s.running ? `<div style="padding:6px 0 2px;" onclick="event.stopPropagation()">
+      ${!s.running ? `<div style="padding:var(--space-1-5) 0 var(--space-0-5);" onclick="event.stopPropagation()">
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
@@ -8458,9 +9046,9 @@ function render() {
             ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
             : '')
           + (displayTaskName
-            ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" title="Open the active board card" style="${showLlm ? 'font-size:0.82rem;font-weight:400;' : 'font-weight:600;'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+            ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" title="Open the active board card" style="${showLlm ? 'font-size:var(--fs-md);font-weight:400;' : 'font-weight:600;'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
             : '')
-          + (cardDesc && !showLlm ? `<div class="card-task-desc" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 0 0;">${esc(cardDesc)}</div>` : '');
+          + (cardDesc && !showLlm ? `<div class="card-task-desc" style="font-size:var(--fs-sm);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:var(--space-0-5) 0 0;">${esc(cardDesc)}</div>` : '');
         })() : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
@@ -8725,7 +9313,7 @@ function _taskIdChip(s) {
   if (!id) return '';
   return ' <span class="task-id-chip" onclick="event.stopPropagation();_openIssue(\'' + escJs(id) + '\')" '
     + 'title="Open board card ' + esc(id) + '" '
-    + 'style="cursor:pointer;font-size:0.7rem;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;margin-left:4px;white-space:nowrap;">' + esc(id) + '</span>';
+    + 'style="cursor:pointer;font-size:var(--fs-xs);font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-md);padding:0 var(--space-1-5);margin-left:var(--space-1);white-space:nowrap;">' + esc(id) + '</span>';
 }
 
 // A rendered worker/card pair is one immutable selection. If either side has
@@ -8753,8 +9341,8 @@ function _activeTaskLink(worker, cardId, title) {
     + 'aria-label="Open active task ' + esc(cardId) + ' for ' + esc(worker) + '" '
     + 'title="Open board card ' + esc(cardId) + '" style="background:none;border:0;padding:0;'
     + 'font:inherit;font-weight:inherit;color:inherit;text-align:left;cursor:pointer;">'
-    + esc(title) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);'
-    + 'border:1px solid var(--accent);border-radius:6px;padding:0 6px;white-space:nowrap;">'
+    + esc(title) + ' <span class="task-id-chip" style="font-size:var(--fs-xs);color:var(--accent);'
+    + 'border:1px solid var(--accent);border-radius:var(--radius-md);padding:0 var(--space-1-5);white-space:nowrap;">'
     + esc(cardId) + '</span></button>';
 }
 
@@ -8776,8 +9364,8 @@ function _bindPeekTaskIdentity(s, identity) {
   const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
   row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
   if (showBoth) {
-    label.innerHTML = esc(llmTask) + '<br><span style="font-size:0.82rem;color:var(--dim);font-weight:400;">'
-      + (cardId ? esc(boardTitle) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;">' + esc(cardId) + '</span>' : esc(boardTitle))
+    label.innerHTML = esc(llmTask) + '<br><span style="font-size:var(--fs-md);color:var(--dim);font-weight:400;">'
+      + (cardId ? esc(boardTitle) + ' <span class="task-id-chip" style="font-size:var(--fs-xs);color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-md);padding:0 var(--space-1-5);">' + esc(cardId) + '</span>' : esc(boardTitle))
       + '</span>';
   } else {
     label.textContent = boardTitle || llmTask;
@@ -9059,15 +9647,15 @@ function showBranchPopover(name, e) {
   pop.onclick = ev => ev.stopPropagation();
   if (hasBranch) {
     pop.innerHTML = `
-      <div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;font-weight:600;">⎇ ${esc(displayBranch)}</div>
-      ${gi._conflict ? '<div style="font-size:0.78rem;color:var(--red);margin-bottom:6px;">⚠ Another worker shares this branch — conflicts possible</div>' : gi.project_checkout ? '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Shared project checkout</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Project tasks run one at a time on this branch. Approval publishes the reviewed project result.</div>' : '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Isolated from other workers</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Not on main, so nothing here reaches anyone until it is merged or pushed. Isolation is not delivery.</div>'}
+      <div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1-5);font-weight:600;">⎇ ${esc(displayBranch)}</div>
+      ${gi._conflict ? '<div style="font-size:var(--fs-base);color:var(--red);margin-bottom:var(--space-1-5);">⚠ Another worker shares this branch — conflicts possible</div>' : gi.project_checkout ? '<div style="font-size:var(--fs-base);color:var(--green);margin-bottom:var(--space-1-5);">✓ Shared project checkout</div><div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1-5);">Project tasks run one at a time on this branch. Approval publishes the reviewed project result.</div>' : '<div style="font-size:var(--fs-base);color:var(--green);margin-bottom:var(--space-1-5);">✓ Isolated from other workers</div><div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1-5);">Not on main, so nothing here reaches anyone until it is merged or pushed. Isolation is not delivery.</div>'}
       <button class="btn" style="width:100%;" onclick="document.querySelectorAll('.branch-popover').forEach(p=>p.remove())">Close</button>`;
   } else {
     const suggested = 'session/' + name;
     pop.innerHTML = `
-      <div style="font-size:0.75rem;color:var(--dim);margin-bottom:8px;font-weight:600;">⎇ Create worker branch</div>
-      <div style="font-size:0.78rem;color:var(--dim);margin-bottom:8px;">Isolate changes from other workers on <strong>${esc(displayBranch || 'main')}</strong></div>
-      <input class="search-input" id="bp-input-${name}" value="${esc(suggested)}" style="font-size:0.82rem;margin-bottom:8px;">
+      <div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-2);font-weight:600;">⎇ Create worker branch</div>
+      <div style="font-size:var(--fs-base);color:var(--dim);margin-bottom:var(--space-2);">Isolate changes from other workers on <strong>${esc(displayBranch || 'main')}</strong></div>
+      <input class="search-input" id="bp-input-${name}" value="${esc(suggested)}" style="font-size:var(--fs-md);margin-bottom:var(--space-2);">
       <div class="branch-popover-actions">
         <button class="btn primary" style="flex:1;" onclick="doCreateBranch('${name}')">Create &amp; checkout</button>
         <button class="btn" onclick="document.querySelectorAll('.branch-popover').forEach(p=>p.remove())">✕</button>
@@ -9449,14 +10037,14 @@ function _renderTabCustomizerMenu() {
   const orderedTabs = tabOrder.map(id => ALL_TABS.find(t => t.id === id)).filter(Boolean);
   let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
     + '<input type="text" id="tab-cust-search" class="input" placeholder="Filter tabs…" '
-    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterTabCustomizer(this.value)">'
+    + 'style="width:100%;font-size:var(--fs-md);padding:var(--space-1) var(--space-2);margin:0;" oninput="_filterTabCustomizer(this.value)">'
     + '</div>';
   html += orderedTabs.map(t => {
     const checked = !hiddenTabs.has(t.id);
     const req = t.required ? ' required' : '';
     const disabled = t.required ? ' disabled' : '';
     return `<label class="tab-customizer-item${req}" data-tab-id="${t.id}" onclick="event.stopPropagation()">
-      <span class="tab-drag-handle" title="Drag to reorder" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">&#x2807;</span>
+      <span class="tab-drag-handle" title="Drag to reorder" style="cursor:grab;color:var(--dim);padding:0 var(--space-1) 0 0;font-size:var(--fs-md);">&#x2807;</span>
       <input type="checkbox" ${checked ? 'checked' : ''}${disabled} onchange="toggleTabVisibility('${t.id}',this.checked)">
       ${t.label}
     </label>`;
@@ -9469,20 +10057,48 @@ function _renderTabCustomizerMenu() {
   // section). Destroy any prior instance first — the menu re-renders on every
   // toggle, and stacking a fresh Sortable each time left multiple drag handlers
   // bound to the same node.
-  if (window.Sortable) {
-    if (_tabMenuSortable) { try { _tabMenuSortable.destroy(); } catch(e) {} }
-    _tabMenuSortable = Sortable.create(menu, {
-      handle: '.tab-drag-handle',
-      draggable: '.tab-customizer-item',
-      animation: 100,
-      onEnd(evt) {
-        const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
-        tabOrder = [...new Set(ids)];
-        _saveTabOrder();
-        _applyTabVisibility();
-      }
-    });
+  if (_tabMenuSortable) { try { _tabMenuSortable.destroy(); } catch(e) {} }
+  _tabMenuSortable = _tabMenuSortableCreate(menu, 'global', '.tab-customizer-item', () => {
+    const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
+    tabOrder = [...new Set(ids)];
+    _saveTabOrder();
+    _applyTabVisibility();
+  });
+}
+
+// ONE DRAG FOR BOTH TAB MENUS, driven by the pointer (Ethan, 2026-10-25, the
+// Mac app's worker-view menu: "drag & tab not working or draggable"). Sortable's
+// default is the browser's native drag and drop, and in the Mac app that is an
+// AppKit drag session in the same window whose tab and pane drags the app
+// tracks itself (desktop/amux-workspace.swift, amux-panes.swift); the rows did
+// not move there while Chromium and Playwright's WebKit reordered them.
+// forceFallback moves the row with pointer events, which every engine and
+// web view delivers the same way, and a drop no longer swallows the click.
+// Each drag is beaconed as kind=tabcust-drag: verdict=reordered or unchanged,
+// and drag_not_started when a handle was pressed and moved with no drag, so a
+// menu that stops dragging again says so.
+function _tabMenuSortableCreate(menu, which, draggable, onReorder) {
+  const beacon = (verdict, extra) => { try { window._clientDebug && window._clientDebug('tabcust-drag',
+    { which, verdict, measured: true, n_considered: menu.querySelectorAll(draggable).length, ...(extra || {}) }); } catch (_) {} };
+  if (!window.Sortable) {
+    if (!menu._tabDragNoSortable) { menu._tabDragNoSortable = true; beacon('sortable_missing'); }
+    return null;
   }
+  let press = null, started = false;
+  menu.onpointerdown = e => { press = e.target.closest && e.target.closest('.tab-drag-handle') ? {x: e.clientX, y: e.clientY} : null; started = false; };
+  menu.onpointerup = e => {
+    if (press && !started && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 12) beacon('drag_not_started', {moved: Math.round(Math.hypot(e.clientX - press.x, e.clientY - press.y))});
+    press = null;
+  };
+  return Sortable.create(menu, {
+    handle: '.tab-drag-handle', draggable, animation: 100,
+    forceFallback: true, fallbackTolerance: 3,
+    onStart() { started = true; },
+    onEnd(evt) {
+      beacon(evt.oldIndex === evt.newIndex ? 'unchanged' : 'reordered', {from: evt.oldIndex, to: evt.newIndex});
+      if (evt.oldIndex !== evt.newIndex) onReorder();
+    }
+  });
 }
 
 function _filterTabCustomizer(q) {
@@ -9840,26 +10456,26 @@ function _renderPeekTabCustomizer() {
   const ordered = peekTabOrder.map(id => PEEK_TABS.find(t => t.id === id)).filter(Boolean);
   let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
     + '<input type="text" id="peek-tab-cust-search" class="input" placeholder="Filter tabs\u2026" '
-    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterPeekTabCustomizer(this.value)">'
+    + 'style="width:100%;font-size:var(--fs-md);padding:var(--space-1) var(--space-2);margin:0;" oninput="_filterPeekTabCustomizer(this.value)">'
     + '</div>';
   html += '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
-    + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
+    + '<span style="padding:0 var(--space-1) 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
   html += ordered.map(t => {
     const req = PEEK_REQUIRED_TABS.has(t.id);
     const checked = req || !peekHiddenTabs.has(t.id);
     return '<label class="tab-customizer-item' + (req ? ' required' : '') + '" data-ptab-id="' + t.id + '" onclick="event.stopPropagation()">'
-      + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">\u2807</span>'
+      + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 var(--space-1) 0 0;font-size:var(--fs-md);">\u2807</span>'
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
   html += _layoutPresetSectionHtml('peek');
   menu.innerHTML = html;
   requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
   _loadLayoutPresetList('peek');
-  if (window.Sortable) {
-    if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
-    _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
-      onEnd() { peekTabOrder = [...new Set([...menu.querySelectorAll('.tab-customizer-item[data-ptab-id]')].map(el => el.dataset.ptabId))]; _savePeekTabPrefs(); _applyPeekTabVisibility(); } });
-  }
+  if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
+  _peekTabMenuSortable = _tabMenuSortableCreate(menu, 'peek', '.tab-customizer-item[data-ptab-id]', () => {
+    peekTabOrder = [...new Set([...menu.querySelectorAll('.tab-customizer-item[data-ptab-id]')].map(el => el.dataset.ptabId))];
+    _savePeekTabPrefs(); _applyPeekTabVisibility();
+  });
 }
 function togglePeekTabVisibility(id, show) {
   if (PEEK_REQUIRED_TABS.has(id)) show = true;
@@ -9891,11 +10507,11 @@ function toggleTabVisibility(id, show) {
 // bar, `peek` the worker view's tabs (Ethan, 2026-10-24). Presets live server
 // side (/api/layout-presets?scope=), so every device sees the same ones.
 function _layoutPresetSectionHtml(scope) {
-  return '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">'
+  return '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:var(--space-1-5);padding:var(--space-1-5) var(--space-3-5) var(--space-1);">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;">'
-    + '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>'
-    + '<button onclick="saveLayoutPreset(\'' + scope + '\')" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>'
-    + '</div><div class="preset-list" data-scope="' + scope + '"' + (scope === 'global' ? ' id="preset-list"' : '') + ' style="font-size:0.82rem;"></div></div>';
+    + '<span style="font-size:var(--fs-sm);font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>'
+    + '<button onclick="saveLayoutPreset(\'' + scope + '\')" style="font-size:var(--fs-sm);color:var(--accent);background:none;border:none;cursor:pointer;padding:var(--space-0-5) var(--space-1);">+ Save current</button>'
+    + '</div><div class="preset-list" data-scope="' + scope + '"' + (scope === 'global' ? ' id="preset-list"' : '') + ' style="font-size:var(--fs-md);"></div></div>';
 }
 function _layoutPresetsUrl(scope) {
   return '/api/layout-presets' + (scope && scope !== 'global' ? '?scope=' + encodeURIComponent(scope) : '');
@@ -9904,13 +10520,13 @@ function _loadLayoutPresetList(scope) {
   fetch(_layoutPresetsUrl(scope)).then(r => r.json()).then(presets => {
     const list = document.querySelector('.preset-list[data-scope="' + scope + '"]');
     if (!list || !Array.isArray(presets)) return;
-    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
+    if (!presets.length) { list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-base);padding:var(--space-1) 0;">No saved presets</div>'; return; }
     list.innerHTML = presets.map(p => {
       const n = escJs(p.name);
-      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
-      <button onclick="loadLayoutPreset('${n}','${scope}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${esc(p.name)}</button>`
-      + (scope === 'global' ? `<button onclick="shareLayoutPreset('${n}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>` : '')
-      + `<button onclick="deleteLayoutPreset('${n}','${scope}')" title="Delete" aria-label="Delete preset ${esc(p.name)}" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
+      return `<div style="display:flex;align-items:center;gap:var(--space-1);padding:var(--space-0-5) 0;">
+      <button onclick="loadLayoutPreset('${n}','${scope}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:var(--fs-md);padding:var(--space-0-5) 0;">${esc(p.name)}</button>`
+      + (scope === 'global' ? `<button onclick="shareLayoutPreset('${n}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5);">&#x1F517;</button>` : '')
+      + `<button onclick="deleteLayoutPreset('${n}','${scope}')" title="Delete" aria-label="Delete preset ${esc(p.name)}" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5);">&times;</button>
     </div>`;
     }).join('');
   }).catch(() => {});
@@ -10088,12 +10704,12 @@ function _embedFitZoom() {
 // notes: removed with the subsystem (AMUX-2389's last splinter — the dead key
 // let ?embed=notes pass the allowlist and set a view with no element, inside
 // the very allowlist meant to contain it; found by amux-frustrations with an
-// 18-entries/17-resolve control). groups/proxies/messages/sql/mcp added the
+// 18-entries/17-resolve control). groups/messages/sql/mcp added the
 // same day for the mirror this comment promises — every entry verified
 // against a real id= in this file.
 const _EMBED_VIEW_EL = {
   sessions:'session-view', board:'board-view', groups:'groups-view', calendar:'calendar-view',
-  scheduler:'scheduler-view', files:'files-view', proxies:'proxies-view', logs:'logs-view',
+  scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
   messages:'messages-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view', sql:'sql-view',
   graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view',
@@ -10379,7 +10995,7 @@ function _renderExpiredSection() {
   let html = _workerGroupFooter('expired',label+stale,expiredExpanded,'toggleExpired');
   if (expiredExpanded) {
     const TERMINAL = _CLOSED_STATUSES;
-    const STATUS_DOT = { doing: 'var(--accent)', todo: 'var(--dim)', backlog: 'var(--dim)', done: '#4ade80', verified: '#4ade80', discarded: '#888', cancelled: '#888' };
+    const STATUS_DOT = { doing: 'var(--accent)', todo: 'var(--dim)', backlog: 'var(--dim)', done: 'color-mix(in srgb, var(--green) 82%, var(--on-solid))', verified: 'color-mix(in srgb, var(--green) 82%, var(--on-solid))', discarded: 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))', cancelled: 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))' };
     html += '<div class="expired-body">';
     filtered.forEach(w => {
       const doneCt = w.cards.filter(c => TERMINAL.has(c.status)).length;
@@ -10402,14 +11018,14 @@ function _renderExpiredSection() {
         <div class="paused-card-meta"><code>${esc(w.name)}</code>
           ${w.parent ? `<span style="opacity:0.4;">&middot;</span> parent: <code>${esc(w.parent)}</code>` : ''}
           ${epicCard ? `<span style="opacity:0.4;">&middot;</span> project outcome: ${esc(epicCard.title)}` : ''}</div>
-        <div style="margin-top:4px;">`;
+        <div style="margin-top:var(--space-1);">`;
       w.cards.forEach(c => {
         const st = c.status || 'todo';
         const dot = STATUS_DOT[st] || 'var(--dim)';
-        html += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;font-size:.8rem;" onclick="switchView('board');setTimeout(function(){openBoardDetail('${escJs(c.id)}')},300)">
-          <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex-shrink:0;"></span>
+        html += `<div style="display:flex;align-items:center;gap:var(--space-1-5);padding:var(--space-0-5) 0;cursor:pointer;font-size:var(--fs-md);" onclick="switchView('board');setTimeout(function(){openBoardDetail('${escJs(c.id)}')},300)">
+          <span style="width:8px;height:8px;border-radius:var(--radius-round);background:${dot};flex-shrink:0;"></span>
           <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.title)}</span>
-          <span style="color:var(--dim);font-size:.7rem;">${esc(st)}</span>
+          <span style="color:var(--dim);font-size:var(--fs-xs);">${esc(st)}</span>
         </div>`;
       });
       html += '</div></div>';
@@ -12256,7 +12872,7 @@ async function loadPeekTranscript(showLoading) {
   const status = document.getElementById('peek-transcript-status');
   if (!peekSession || !body) return;
   const name = peekSession;
-  if (showLoading && !body.innerHTML) body.innerHTML = '<div style="color:var(--dim);padding:20px;">Loading transcript…</div>';
+  if (showLoading && !body.innerHTML) body.innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">Loading transcript…</div>';
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/transcript');
     const d = await r.json();
@@ -12265,7 +12881,7 @@ async function loadPeekTranscript(showLoading) {
     // we render Claude-like. Claude keeps its server-rendered ANSI `output`.
     if (d.events) {
       if (!d.events.length) {
-        body.innerHTML = '<div style="color:var(--dim);padding:20px;">No structured transcript yet for this '
+        body.innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">No structured transcript yet for this '
           + esc(d.provider || 'worker') + ' worker. The <a href="#" onclick="event.preventDefault();setPeekTab(\'terminal\')" style="color:var(--accent);">Terminal</a> tab shows the live view.</div>';
         if (status) status.textContent = '';
         return;
@@ -12281,7 +12897,7 @@ async function loadPeekTranscript(showLoading) {
       return;
     }
     if (d.empty || !d.output) {
-      body.innerHTML = '<div style="color:var(--dim);padding:20px;">No JSONL transcript found for this worker.</div>';
+      body.innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">No JSONL transcript found for this worker.</div>';
       if (status) status.textContent = '';
       return;
     }
@@ -12446,10 +13062,8 @@ function _grpGoto(g, where) {
     // select is single-session, so for a group we set the deep-search box to a
     // group: token instead and let the server scope it.
     setTimeout(() => {
-      const sel = document.getElementById('msgs-session-filter');
-      if (sel) sel.value = '';
-      _msgsGroup = label || '';
-      _msgsRenderGroupChip();
+      _msgsScope = { workers: new Set(), groups: new Set(label ? [label] : []) };
+      _msgsScopeLabel();
       _messagesLoad(true);
     }, 60);
     return;
@@ -12630,7 +13244,7 @@ async function _scopeEditSave() {
     value = out;
   } else {
     try { value = JSON.parse(ta.value || '{}'); }
-    catch (e) { msg.textContent = 'Not valid JSON: ' + e.message; msg.style.color = '#f85149'; return; }
+    catch (e) { msg.textContent = 'Not valid JSON: ' + e.message; msg.style.color = 'var(--red)'; return; }
   }
   msg.textContent = 'Saving…'; msg.style.color = 'var(--dim)';
   try {
@@ -12644,7 +13258,7 @@ async function _scopeEditSave() {
       // Show the server's REASON verbatim — a 403 here is a real policy answer
       // ("a session may not write the group layer"), not a glitch.
       msg.textContent = d.error || ('save failed (' + r.status + ')');
-      msg.style.color = '#f85149';
+      msg.style.color = 'var(--red)';
       return;
     }
     _scopeEditDirty = false;
@@ -12655,7 +13269,7 @@ async function _scopeEditSave() {
     _scopeLoad(lvl === 'global' ? { level: 'global' } : { level: lvl, name: name },
                _scopeTargetId(lvl, name));
   } catch (e) {
-    msg.textContent = 'Save failed: ' + e.message; msg.style.color = '#f85149';
+    msg.textContent = 'Save failed: ' + e.message; msg.style.color = 'var(--red)';
   }
 }
 
@@ -12775,7 +13389,7 @@ function _workerConfigurationRow(key, label, value, note, controls) {
 function _workerWorktreeRow(s, q) {
   const id = 'wt-detail-' + String(s.name || '').replace(/[^A-Za-z0-9_-]/g, '_');
   setTimeout(() => _workerWorktreeFill(s.name, id), 0);
-  const btn = (fn, label) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
+  const btn = (fn, label) => '<button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
   return _workerConfigurationRow('worktree', 'Worktree folders', s.worktree_profile || 'Repo default',
     'Profile applies when the worktree is created. ', btn('_workerWorktreeWiden', 'Widen') + ' ' + btn('_workerWorktreeProfile', 'Profile'))
@@ -12843,11 +13457,11 @@ function _workerPrimaryConfigurationsHTML(name) {
   const model = sessionConfiguredModel(s);
   const effort = flagValue(s.flags || '', '--effort') || ((s.flags || '').match(/model_reasoning_effort=["']?([a-z]+)/) || [])[1] || '';
   const q = escJs(name);
-  const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
+  const edit = (field, current, extra) => '<button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
     + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
   const sw = (on, fn, label) => '<button class="btn" role="switch" aria-checked="'
-    + !!on + '" style="font-size:0.68rem;min-height:32px;"'
+    + !!on + '" style="font-size:var(--fs-2xs);min-height:32px;"'
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
@@ -12858,7 +13472,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   ];
   const wtype = _workerTypeInfo(s.worker_type);
   const typeButtons = _workerTypes.map(t => '<button class="btn' + (t.id === wtype.id ? ' primary' : '') + '"'
-    + ' style="font-size:0.68rem;min-height:32px;padding:4px 8px;" title="' + esc(t.description || '') + '"'
+    + ' style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);" title="' + esc(t.description || '') + '"'
     + (t.id === wtype.id ? ' aria-pressed="true"' : ' aria-pressed="false"')
     + ' onclick="event.stopPropagation();_workerTypeSet(\'' + q + '\',\'' + escJs(t.id) + '\')">' + esc(t.label) + '</button>').join(' ');
   const runtime = [
@@ -12879,7 +13493,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   ];
   const advanced = [
     _workerConfigurationRow('pinned', 'Pinned in worker list', s.pinned ? 'Pinned' : 'Not pinned', 'Presentation preference; does not change execution priority.', sw(!!s.pinned, 'togglePin', 'Toggle pinned state')),
-    _workerConfigurationRow('advanced_environment', 'Advanced environment', 'backend: ' + (s.backend || 'tmux') + (s.creator ? ' · creator: ' + s.creator : ''), 'Edit arbitrary worker-level keys. Startup-only values apply on restart.', '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;" onclick="event.stopPropagation();_scopeEditOpen(\'worker\',\'' + q + '\',\'env\')">Edit environment</button>'),
+    _workerConfigurationRow('advanced_environment', 'Advanced environment', 'backend: ' + (s.backend || 'tmux') + (s.creator ? ' · creator: ' + s.creator : ''), 'Edit arbitrary worker-level keys. Startup-only values apply on restart.', '<button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);" onclick="event.stopPropagation();_scopeEditOpen(\'worker\',\'' + q + '\',\'env\')">Edit environment</button>'),
   ];
   setTimeout(() => _niAutoWorkerLoad(name), 0);
   return '<div class="worker-config-intro">Every durable worker setting, grouped by what it changes. Lifecycle commands remain in the worker menu.</div>'
@@ -12914,9 +13528,9 @@ function _workerEmailPermissionControls(name, s) {
   const on = !!s.external_email_allowed;
   const own = !!s.external_email_allowed_own;
   const set = '<button class="btn" role="switch" aria-checked="' + on + '"'
-    + ' style="font-size:0.68rem;min-height:32px;"'
+    + ' style="font-size:var(--fs-2xs);min-height:32px;"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',' + (!on) + ')">' + (on ? 'On' : 'Off') + '</button>';
-  const inherit = own ? '<button class="btn" style="font-size:0.65rem;min-height:32px;padding:4px 7px;"'
+  const inherit = own ? '<button class="btn" style="font-size:var(--fs-3xs);min-height:32px;padding:var(--space-1) var(--space-1-5);"'
     + ' onclick="event.stopPropagation();_workerExternalEmailSet(\'' + escJs(name) + '\',null)">Inherit</button>' : '';
   return set + inherit;
 }
@@ -13050,7 +13664,7 @@ async function _scopeLoad(scope, targetId) {
       }
       return String(v);
     };
-    const chips = (arr) => arr.map(g => '<span class="msg-tag" style="background:rgba(88,166,255,0.14);color:var(--accent);">' + esc(g) + '</span>').join(' ');
+    const chips = (arr) => arr.map(g => '<span class="msg-tag" style="background:color-mix(in srgb, var(--accent) 14%, transparent);color:var(--accent);">' + esc(g) + '</span>').join(' ');
     let detail = '';
     // Identity and tiles sit side by side on anything with room (Ethan: "the
     // group thing should be horizontal above the workers below the pills"), and
@@ -13058,7 +13672,7 @@ async function _scopeLoad(scope, targetId) {
     // already horizontal.
     let h = (lvl === 'worker' ? _workerPrimaryConfigurationsHTML(w) : '')
           + '<div class="grp-scope-row">'
-          + '<div class="grp-scope-ident" style="color:var(--text);font-size:0.86rem;">'
+          + '<div class="grp-scope-ident" style="color:var(--text);font-size:var(--fs-lg);">'
           + '<b>' + esc(lvl === 'global' ? 'Global' : w) + '</b>'
           + (lvl === 'worker' ? ' \u00b7 groups: ' + (groups.length ? chips(groups) : '<i>none</i>') : '')
           + (lvl === 'group' ? ' \u00b7 ' + members.length + ' worker' + (members.length === 1 ? '' : 's')
@@ -13087,7 +13701,7 @@ async function _scopeLoad(scope, targetId) {
       let win = c;
       if (here) { src = lvl; srcC = 'var(--accent)'; }
       else if (grpHit.length) {
-        src = 'group:' + grpHit[0]; srcC = '#d29922';
+        src = 'group:' + grpHit[0]; srcC = 'var(--yellow)';
         win = (Gr[groups.indexOf(grpHit[0])] || {})[c.key] || c;
       } else if (gset) { src = 'global'; srcC = 'var(--dim)'; win = G[c.key] || c; }
       const errors = [{ level: lvl, name: w || '', cap: c }];
@@ -13125,41 +13739,41 @@ async function _scopeLoad(scope, targetId) {
     if (_selCap) {
       const _l = _selCap;
       h += '<div class="scope-detail">'
-        + '<div style="color:var(--text);font-weight:600;font-size:0.8rem;margin-bottom:3px;">' + esc(_l.label) + '</div>'
-        + '<div style="font-size:0.75rem;margin-bottom:4px;">' + esc(sum(_l._win || _l))
+        + '<div style="color:var(--text);font-weight:600;font-size:var(--fs-md);margin-bottom:var(--space-0-5);">' + esc(_l.label) + '</div>'
+        + '<div style="font-size:var(--fs-sm);margin-bottom:var(--space-1);">' + esc(sum(_l._win || _l))
         + (_l._src && _l._src !== 'unset' && _l._src !== lvl
-             ? ' <span style="color:var(--dim);font-size:0.68rem;">(from ' + esc(_l._src) + ')</span>'
+             ? ' <span style="color:var(--dim);font-size:var(--fs-2xs);">(from ' + esc(_l._src) + ')</span>'
              : '') + '</div>'
-        + '<div style="font-size:0.7rem;color:var(--dim);">'
+        + '<div style="font-size:var(--fs-xs);color:var(--dim);">'
         + (_l.order || []).map(x => '<span style="opacity:' + (x === (_selCap._src || '') ? '1' : '0.45') + ';">' + esc(x) + '</span>').join(' <span style="opacity:0.3;">&rsaquo;</span> ')
         + ' <span style="opacity:0.6;">\u00b7 ' + esc(_l.merge) + '</span>'
-        + (_l.supported ? '' : ' <span style="color:#d29922;">\u00b7 not settable at this level</span>')
+        + (_l.supported ? '' : ' <span style="color:var(--yellow);">\u00b7 not settable at this level</span>')
         + '</div>'
-        + (_l._errors || []).map(x => '<div role="alert" style="color:var(--red);font-size:0.75rem;margin-top:6px;">'
+        + (_l._errors || []).map(x => '<div role="alert" style="color:var(--red);font-size:var(--fs-sm);margin-top:var(--space-1-5);">'
           + esc(x.level + (x.name ? ' ' + x.name : '') + ': ' + x.cap.error)
           + (x.cap.supported ? ' <button class="btn" onclick="event.stopPropagation();_scopeEditOpen(\''
               + escJs(x.level) + '\',\'' + escJs(x.name) + '\',\'' + escJs(_l.key) + '\')">Repair saved scope</button>' : '')
           + '</div>').join('')
         + (_l.supported
-            ? '<div style="margin-top:7px;"><button class="btn primary" '
-              + 'style="font-size:0.7rem;min-height:36px;padding:5px 11px;" '
+            ? '<div style="margin-top:var(--space-1-5);"><button class="btn primary" '
+              + 'style="font-size:var(--fs-xs);min-height:36px;padding:var(--space-1) var(--space-2-5);" '
               + 'onclick="event.stopPropagation();_scopeEditOpen(\'' + escJs(lvl) + '\',\''
               + escJs(w || '') + '\',\'' + escJs(_l.key) + '\')">Edit ' + esc(_l.label)
               + ' at this level</button></div>'
-            : '<div style="margin-top:6px;font-size:0.68rem;color:#d29922;">Not settable at this level.</div>')
+            : '<div style="margin-top:var(--space-1-5);font-size:var(--fs-2xs);color:var(--yellow);">Not settable at this level.</div>')
         + '</div>';
     }
-    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;">'
-      + '<span style="font-size:0.66rem;color:var(--dim);">'
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);margin-top:var(--space-1-5);">'
+      + '<span style="font-size:var(--fs-3xs);color:var(--dim);">'
       + (_selCap ? 'Tap the tile again to close.' : 'Tap a config to see its precedence order.')
       + '</span>'
       + (lvl === 'group' || lvl === 'global'
           ? (() => {
               const _g = escJs(w);
               // Go to the real page, not the panel's miniature of it.
-              const _b = (k, t) => '<button class="btn" style="font-size:0.7rem;min-height:32px;padding:4px 9px;flex:0 0 auto;"'
+              const _b = (k, t) => '<button class="btn" style="font-size:var(--fs-xs);min-height:32px;padding:var(--space-1) var(--space-2);flex:0 0 auto;"'
                 + ' onclick="event.stopPropagation();_grpGoto(\'' + _g + '\',\'' + k + '\')">' + t + ' \u2197</button>';
-              return '<span style="display:flex;gap:4px;flex-wrap:wrap;">'
+              return '<span style="display:flex;gap:var(--space-1);flex-wrap:wrap;">'
                 + _b('messages', 'Messages') + _b('board', 'Board') + _b('cost', 'Cost') + '</span>';
             })()
           : '')
@@ -13361,20 +13975,20 @@ function _simpleCfgRender() {
   const cfg = _simpleCfg(name);
   const scope = _simpleCfgScope();
   el.innerHTML =
-    '<div style="font-size:0.72rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Translate</div>'
+    '<div style="font-size:var(--fs-xs);font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-2);">Translate</div>'
     // The prompt leads (Ethan 2026-08-20: the tab IS the prompt — plain
     // English is just the default translation).
-    + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Translation prompt'
-    +   '<textarea rows="3" placeholder="Leave blank for the default plain-English prompt" onchange="_simpleCfgSet(\'prompt\',this.value)" style="width:100%;margin-top:3px;font-size:0.75rem;">' + esc(cfg.prompt || '') + '</textarea></label>'
-    + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Applies to'
-    +   '<select onchange="localStorage.setItem(\'amux_simple_cfg_scope\',this.value);_simpleCfgRender();_simpleRender()" style="width:100%;margin-top:3px;">'
+    + '<label style="display:block;font-size:var(--fs-base);margin-bottom:var(--space-2);">Translation prompt'
+    +   '<textarea rows="3" placeholder="Leave blank for the default plain-English prompt" onchange="_simpleCfgSet(\'prompt\',this.value)" style="width:100%;margin-top:var(--space-0-5);font-size:var(--fs-sm);">' + esc(cfg.prompt || '') + '</textarea></label>'
+    + '<label style="display:block;font-size:var(--fs-base);margin-bottom:var(--space-2);">Applies to'
+    +   '<select onchange="localStorage.setItem(\'amux_simple_cfg_scope\',this.value);_simpleCfgRender();_simpleRender()" style="width:100%;margin-top:var(--space-0-5);">'
     +     '<option value="global"' + (scope === 'global' ? ' selected' : '') + '>All workers (default)</option>'
     +     '<option value="worker"' + (scope === 'worker' ? ' selected' : '') + '>Just ' + esc(name || 'this worker') + '</option>'
     +   '</select></label>'
-    + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Font size: ' + esc(cfg.px) + 'px'
+    + '<label style="display:block;font-size:var(--fs-base);margin-bottom:var(--space-2);">Font size: ' + esc(cfg.px) + 'px'
     +   '<input type="range" min="12" max="28" value="' + esc(cfg.px) + '" oninput="_simpleCfgSet(\'px\',this.value)" style="width:100%;"></label>'
-    + '<label style="display:block;font-size:0.78rem;">Font'
-    +   '<select onchange="_simpleCfgSet(\'font\',this.value)" style="width:100%;margin-top:3px;">'
+    + '<label style="display:block;font-size:var(--fs-base);">Font'
+    +   '<select onchange="_simpleCfgSet(\'font\',this.value)" style="width:100%;margin-top:var(--space-0-5);">'
     +     '<option value=""' + (!cfg.font ? ' selected' : '') + '>Default</option>'
     +     '<option value="system-ui"' + (cfg.font === 'system-ui' ? ' selected' : '') + '>System</option>'
     +     '<option value="Georgia,serif"' + (cfg.font === 'Georgia,serif' ? ' selected' : '') + '>Serif</option>'
@@ -13459,7 +14073,7 @@ async function _simpleRender(gen) {
     const busy = cfg.prompt
       ? (gen === true ? 'Running your translation prompt…' : 'Translating…')
       : (gen === true ? 'Writing a new plain-English summary…' : 'Putting it in plain English…');
-    body.innerHTML = '<div style="color:var(--dim);display:flex;align-items:center;gap:8px;padding:8px 2px;">'
+    body.innerHTML = '<div style="color:var(--dim);display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-0-5);">'
       + '<span class="simple-spin"></span>' + busy + '</div>';
   }
   try {
@@ -13473,15 +14087,15 @@ async function _simpleRender(gen) {
     _simpleEntries = (d && d.entries) || [];
     body.dataset.simpleFor = name;
     if (!_simpleEntries.length) {
-      body.innerHTML = '<div style="color:var(--dim);padding:8px 2px;">'
+      body.innerHTML = '<div style="color:var(--dim);padding:var(--space-2) var(--space-0-5);">'
         + esc(d.reason || d.error || 'No summaries yet — tap Generate.') + '</div>';
       return;
     }
     let html = '';
     _simpleEntries.forEach((e, i) => {
-      html += '<div style="border-bottom:1px solid var(--border);padding:12px 2px;">'
-        + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
-        +   '<span style="font-size:0.72rem;color:var(--dim);">'
+      html += '<div style="border-bottom:1px solid var(--border);padding:var(--space-3) var(--space-0-5);">'
+        + '<div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1-5);">'
+        +   '<span style="font-size:var(--fs-xs);color:var(--dim);">'
         +     esc(_simpleWhen(e.generated_at)) + (e.via ? ' · ' + esc(e.via) : '') + '</span>'
         +   '<span style="flex:1;"></span>'
         +   '<button class="btn" onclick="_simplePlayEntry(' + i + ',this)" title="Read aloud">&#x25B6;</button>'
@@ -13489,11 +14103,11 @@ async function _simpleRender(gen) {
         + '<div style="white-space:pre-wrap;word-break:break-word;">' + esc(e.summary) + '</div>'
         + '</div>';
     });
-    html += '<div style="font-size:0.72rem;color:var(--dim);padding:10px 2px;">Newest first. Live in-flight work is in the '
+    html += '<div style="font-size:var(--fs-xs);color:var(--dim);padding:var(--space-2-5) var(--space-0-5);">Newest first. Live in-flight work is in the '
       + '<a href="#" onclick="event.preventDefault();setPeekTab(\'terminal\')" style="color:var(--accent);">Terminal</a> tab.</div>';
     body.innerHTML = html;
   } catch (e) {
-    body.innerHTML = '<div style="color:var(--dim);padding:8px 2px;">Couldn’t reach the server — try again.</div>';
+    body.innerHTML = '<div style="color:var(--dim);padding:var(--space-2) var(--space-0-5);">Couldn’t reach the server — try again.</div>';
   }
 }
 
@@ -13563,9 +14177,9 @@ async function _peekChatSet(on) {
 function _peekChatPanelRender() {
   const p = document.getElementById('peek-chat-panel');
   if (!p) return;
-  p.innerHTML = '<div style="padding:24px 16px;max-width:520px;">'
-    + '<div style="font-weight:600;margin-bottom:8px;">Chat is off for ' + esc(peekSession || '') + '</div>'
-    + '<p style="color:var(--dim);font-size:0.85rem;line-height:1.5;margin:0 0 14px;">Turn it on to talk about this worker\u2019s work in plain language. The chat knows its current card, what waits on you, its board, git state and last reply, can look deeper with the amux CLI, and can direct the worker for you. Its history is saved like a coding transcript.</p>'
+  p.innerHTML = '<div style="padding:var(--space-6) var(--space-4);max-width:520px;">'
+    + '<div style="font-weight:600;margin-bottom:var(--space-2);">Chat is off for ' + esc(peekSession || '') + '</div>'
+    + '<p style="color:var(--dim);font-size:var(--fs-lg);line-height:1.5;margin:0 0 var(--space-3-5);">Turn it on to talk about this worker\u2019s work in plain language. The chat knows its current card, what waits on you, its board, git state and last reply, can look deeper with the amux CLI, and can direct the worker for you. Its history is saved like a coding transcript.</p>'
     + '<button class="btn primary" onclick="_peekChatSet(true)">Turn on chat</button></div>';
 }
 // The on/off control lives in the worker's ⋯ menu (Ethan via amux-chat,
@@ -13841,43 +14455,47 @@ function _steeringRender() {
   _steeringUpdateBadge();
   const row = m => {
     const ago = timeAgo(m.queued_at);
-    const sysTag = m.system ? `<span style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.15);color:var(--dim);margin-right:6px;">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
+    const sysTag = m.system ? `<span style="font-size:var(--fs-2xs);font-weight:600;padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:color-mix(in srgb, color-mix(in srgb, var(--card) 27%, var(--term-text)) 15%, transparent);color:var(--dim);margin-right:var(--space-1-5);">SYSTEM${m.guard ? ' · ' + esc(m.guard) : ''}</span>` : '';
     const hasDelay = m.deliver_at > Date.now() / 1000 && !m.system;
-    const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border:0;border-radius:3px;background:rgba(99,102,241,0.15);color:var(--accent,#6366f1);margin-right:6px;cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
+    const delayTag = hasDelay ? `<button type="button" class="steer-delay-tag" style="font-size:var(--fs-2xs);font-weight:600;padding:1px var(--space-1-5);border:0;border-radius:var(--radius-sm);background:color-mix(in srgb, color-mix(in srgb, var(--purple) 85%, var(--bg)) 15%, transparent);color:var(--accent);margin-right:var(--space-1-5);cursor:pointer;" onclick="_steeringSetDelay('${m.id}',0)" title="Delivered at the worker's first turn boundary after ${esc(new Date(m.deliver_at * 1000).toLocaleString())}. Click to remove the delay.">${esc(_steerDeliverLabel(m.deliver_at))} ✕</button>` : '';
     const ps = m.local ? _pendingMsgState(m) : null;
-    const pendTag = ps ? `<span class="steer-pending-state" style="font-size:0.68rem;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${esc(ps.label)}</span><span class="steer-pending-note" style="font-size:0.7rem;color:var(--dim);">${esc(ps.note)}${m.error && m.decision ? ': ' + esc(m.error) : ''}</span>` : '';
+    const pendTag = ps ? `<span class="steer-pending-state" style="font-size:var(--fs-2xs);font-weight:600;padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:color-mix(in srgb, var(--yellow) 16%, transparent);color:var(--yellow);margin-right:var(--space-1-5);">${esc(ps.label)}</span><span class="steer-pending-note" style="font-size:var(--fs-xs);color:var(--dim);">${esc(ps.note)}${m.error && m.decision ? ': ' + esc(m.error) : ''}</span>` : '';
     if (ps) _steerReportStuck(m, ps);
     // A server row that is still pending has nothing to act on yet; a row saved
     // on this device always does (send again, or remove it).
-    const dis = m.pending && !m.local ? 'disabled style="opacity:0.5;font-size:0.7rem;padding:2px 8px;"' : 'style="font-size:0.7rem;padding:2px 8px;"';
+    const dis = m.pending && !m.local ? 'disabled style="opacity:0.5;font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);"' : 'style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);"';
     const sendBtn = m.local
       ? `<button class="btn primary steer-pending-retry" ${dis} onclick="_outboxRetryNow('${escJs(m.id)}')">${esc(ps.retry)}</button>`
       : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`;
     const cancelBtn = m.local
       ? `<button class="btn steer-pending-remove" ${dis} onclick="_outboxRemoveMessage('${escJs(m.id)}')" title="Remove from this device" aria-label="Remove from this device">✕</button>`
       : `<button class="btn" ${dis} onclick="_steeringCancel('${m.id}')">✕</button>`;
-    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
-    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:${m.system ? 'rgba(255,255,255,0.02)' : 'var(--card-bg)'};border:1px solid ${hasDelay ? 'rgba(99,102,241,0.25)' : m.pending ? 'rgba(210,153,34,0.45)' : 'var(--border)'};border-radius:8px;${m.system ? 'opacity:0.85;' : ''}">
+    // Edit before it goes out (Ethan, 2026-10-25). System pushes are amux's own
+    // prompts; a server row still settling has nothing to edit yet.
+    const editBtn = (!m.system && (m.local || !m.pending)) ? `<button class="btn steer-edit" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_steeringEdit('${escJs(m.id)}')" title="Edit message" aria-label="Edit message">✎</button>` : '';
+    const delayBtn = (!m.system && !m.pending && !hasDelay) ? `<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_steeringDelayPrompt('${m.id}')" title="Delay delivery" aria-label="Delay delivery">⏱</button>` : '';
+    return `<div class="steer-row" style="display:flex;align-items:flex-start;gap:var(--space-2-5);padding:var(--space-2-5) var(--space-3);background:${m.system ? 'color-mix(in srgb, var(--on-solid) 2%, transparent)' : 'var(--card)'};border:1px solid ${hasDelay ? 'color-mix(in srgb, color-mix(in srgb, var(--purple) 85%, var(--bg)) 25%, transparent)' : m.pending ? 'color-mix(in srgb, var(--yellow) 45%, transparent)' : 'var(--border)'};border-radius:var(--radius-lg);${m.system ? 'opacity:0.85;' : ''}">
       <div style="flex:1;min-width:0;">
-        ${(sysTag || delayTag || pendTag) ? `<div style="margin-bottom:4px;">${sysTag}${delayTag}${pendTag}</div>` : ''}
-        <div style="font-size:0.85rem;color:${m.system ? 'var(--dim)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
+        ${(sysTag || delayTag || pendTag) ? `<div style="margin-bottom:var(--space-1);">${sysTag}${delayTag}${pendTag}</div>` : ''}
+        <div style="font-size:var(--fs-lg);color:${m.system ? 'var(--dim)' : 'var(--text)'};white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
         ${m.blocked_reason ? `<p class="steering-held">Held: ${esc(m.blocked_reason)}. Input stays queued until an authorized working claim can receive it.</p>` : ''}
-        <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
-        ${m.waiting_for ? `<div class="steer-waiting" style="font-size:0.75rem;color:var(--yellow,#d29922);margin-top:2px;">Waiting for ${esc(m.waiting_for)}</div>` : ''}
+        <div style="font-size:var(--fs-sm);color:var(--dim);margin-top:var(--space-1);">Queued ${ago}</div>
+        ${m.waiting_for ? `<div class="steer-waiting" style="font-size:var(--fs-sm);color:var(--yellow);margin-top:var(--space-0-5);">Waiting for ${esc(m.waiting_for)}</div>` : ''}
       </div>
-      <div style="display:flex;gap:4px;flex-shrink:0;">
-        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : sendBtn}
+      <div class="steer-row-actions" style="display:flex;gap:var(--space-1);flex-shrink:0;">
+        ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:var(--fs-sm);color:var(--dim);">Automatic next turn</span>' : sendBtn}
+        ${editBtn}
         ${delayBtn}
         ${cancelBtn}
       </div>
     </div>`;
   };
   if (!queue.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;text-align:center;">No steering messages queued.<br>Send a message while the worker is active to queue it.</div>';
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) 0;text-align:center;">No steering messages queued.<br>Send a message while the worker is active to queue it.</div>';
   } else {
     let html = human.map(row).join('');
     if (sys.length) {
-      html += `<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;letter-spacing:0.04em;">SYSTEM PUSHES — amux's own drive prompts; delivered at the next turn boundary, not cleared by Clear all</div>`
+      html += `<div style="font-size:var(--fs-xs);color:var(--dim);margin:var(--space-2) 0 var(--space-0-5);letter-spacing:0.04em;">SYSTEM PUSHES — amux's own drive prompts; delivered at the next turn boundary, not cleared by Clear all</div>`
         + sys.map(row).join('');
     }
     list.innerHTML = html;
@@ -13904,10 +14522,10 @@ async function _steeringLoadHistory() {
     if (!Array.isArray(hist) || !hist.length) { wrap.style.display = 'none'; return; }
     wrap.style.display = 'block';
     hCount.textContent = hist.length >= 100 ? 'last 100' : hist.length + ' sent';
-    hList.innerHTML = hist.map(m => `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px;">
+    hList.innerHTML = hist.map(m => `<div style="display:flex;align-items:flex-start;gap:var(--space-2-5);padding:var(--space-2) var(--space-3);background:color-mix(in srgb, var(--on-solid) 2%, transparent);border:1px solid var(--border);border-radius:var(--radius-lg);">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:0.82rem;color:var(--dim);white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
-        <div style="font-size:0.72rem;color:var(--dim);margin-top:4px;">Sent ${timeAgo(m.delivered_at)}</div>
+        <div style="font-size:var(--fs-md);color:var(--dim);white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
+        <div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1);">Sent ${timeAgo(m.delivered_at)}</div>
       </div>
     </div>`).join('');
     _steerHistApply();   // keep the accordion state (collapsed by default)
@@ -13969,24 +14587,24 @@ async function _steeringSetDelay(msgId, delaySecs) {
 function _steeringDelayPrompt(msgId) {
   const bg = document.createElement('div');
   bg.className = 'amux-dialog-backdrop';
-  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;display:flex;align-items:center;justify-content:center;';
+  bg.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 50%, transparent);z-index:400;display:flex;align-items:center;justify-content:center;';
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:340px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.4);';
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-5);max-width:340px;width:90%;box-shadow:var(--shadow-lg);';
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-label', 'Delay delivery');
-  box.innerHTML = `<div style="font-weight:600;margin-bottom:12px;">Delay delivery</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85rem;">
+  box.innerHTML = `<div style="font-weight:600;margin-bottom:var(--space-3);">Delay delivery</div>
+    <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2);font-size:var(--fs-lg);">
       <label for="steer-dp-val" style="color:var(--dim);white-space:nowrap;">Deliver in</label>
-      <input id="steer-dp-val" type="number" min="1" step="1" inputmode="numeric" value="2" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:16px;text-align:center;">
-      <select id="steer-dp-unit" style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:0.85rem;">
+      <input id="steer-dp-val" type="number" min="1" step="1" inputmode="numeric" value="2" style="width:64px;padding:var(--space-1) var(--space-1-5);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);font-size:var(--fs-2xl);text-align:center;">
+      <select id="steer-dp-unit" style="padding:var(--space-1) var(--space-1-5);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);font-size:var(--fs-lg);">
         <option value="60">min</option>
         <option value="3600" selected>hours</option>
       </select>
     </div>
-    <div id="steer-dp-when" style="font-size:0.78rem;color:var(--dim);margin-bottom:16px;"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn" id="steer-dp-cancel" style="font-size:0.82rem;">Cancel</button>
-      <button class="btn primary" id="steer-dp-set" style="font-size:0.82rem;">Set delay</button>
+    <div id="steer-dp-when" style="font-size:var(--fs-base);color:var(--dim);margin-bottom:var(--space-4);"></div>
+    <div style="display:flex;gap:var(--space-2);justify-content:flex-end;">
+      <button class="btn" id="steer-dp-cancel" style="font-size:var(--fs-md);">Cancel</button>
+      <button class="btn primary" id="steer-dp-set" style="font-size:var(--fs-md);">Set delay</button>
     </div>`;
   bg.appendChild(box);
   document.body.appendChild(bg);
@@ -14041,6 +14659,65 @@ async function _steeringSendNow(msgId) {
   } catch(e) { if (btn) { btn.textContent = 'Send now'; btn.disabled = false; btn.style.opacity = ''; } showToast('Failed to send'); }
 }
 
+// Edit a queued message in the shared dialog: several lines, and a live
+// re-render of the list cannot wipe the edit halfway. The server refuses once
+// delivery has claimed the message, and says so.
+async function _steeringEdit(msgId) {
+  if (!peekSession) return;
+  const forSess = peekSession;
+  const m = _steerQueueFor(sessions.find(s => s.name === forSess)).find(x => x.id === msgId);
+  if (!m) { showToast('Already delivered'); return; }
+  const shown = showFormModal('Edit queued message',
+    '<textarea id="steer-edit-input" class="dict-modal-input" rows="6" style="width:100%;resize:vertical;font:inherit;"'
+    + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">'
+    + esc(m.text) + '</textarea>'
+    + '<div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1-5);">Still delivers at the worker\'s next pause. ⌘↩ saves.</div>', 'Save');
+  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
+  if (!await shown) return;
+  const text = (document.getElementById('steer-edit-input')?.value || '').replace(/\s+$/, '');
+  if (!text.trim()) { showToast('Empty. Use ✕ to remove the message instead'); return; }
+  if (text === m.text) return;
+  if (m.local) { await _outboxEditMessage(msgId, text); return; }
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(forSess) + '/steer', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: msgId, text})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(r.status === 404 ? 'Already delivered; not changed' : r.status === 409 ? 'Already being delivered; not changed' : 'Could not edit: ' + (d.error || r.status));
+      fetchSessions();
+      return;
+    }
+    const row = (sessions.find(s => s.name === forSess)?.steering || []).find(x => x.id === msgId);
+    if (row) row.text = d.text || text;
+    if (peekSession === forSess) _steeringRender();
+    showToast('Edited');
+  } catch (e) { showToast('Could not edit the message'); }
+}
+// A message still on this device (not yet accepted by the server): its saved
+// request carries the text, so the edit goes there.
+async function _outboxEditMessage(id, text) {
+  const q = (offlineQueue || []).find(entry => entry.id === id);
+  if (!q) { showToast('Already sent'); return; }
+  if (q.attempted_at || q.attempts || !q.not_attempted) {
+    const worker = decodeURIComponent((q.url.match(/\/api\/sessions\/([^/]+)\//) || [])[1] || 'the worker');
+    const ok = await showConfirm('This message may already be with ' + worker + ' as it was. Check its terminal first.\n\nSave the edit anyway?', 'Save', false);
+    if (!ok) return;
+  }
+  let edited = false;
+  await _mutateQueue(current => {
+    const entry = current.find(e => e.id === id);
+    if (!entry) return;
+    try {
+      const body = JSON.parse(entry.options.body);
+      body.text = text;
+      entry.options.body = JSON.stringify(body);
+      edited = true;
+    } catch (_) {}
+  });
+  showToast(edited ? 'Edited' : 'Already sent');
+}
 async function _steeringCancel(msgId) {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);
@@ -14094,7 +14771,7 @@ let _commitsActiveHash = null;
 async function _commitsLoad() {
   if (!peekSession) return;
   const list = document.getElementById('commits-list');
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">Loading commits…</div>';
+  list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) var(--space-4);">Loading commits…</div>';
   try {
     const asked = peekSession;
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/git/commits?count=15');
@@ -14103,7 +14780,7 @@ async function _commitsLoad() {
     _commitsData = d.commits || [];
     _commitsRenderList();
   } catch(e) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">Failed to load commits.</div>';
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) var(--space-4);">Failed to load commits.</div>';
   }
 }
 
@@ -14114,14 +14791,14 @@ function _sessionColor(name) {
   return h;
 }
 function _sessionBadgeStyle(name) {
-  const h = _sessionColor(name);
-  return `background:hsl(${h} 70% 22%);color:hsl(${h} 90% 80%);border:1px solid hsl(${h} 60% 42%);`;
+  const c = themeCategorical(_sessionColor(name));
+  return `background:color-mix(in srgb, ${c} 22%, var(--bg));color:color-mix(in srgb, ${c} 60%, var(--text));border:1px solid color-mix(in srgb, ${c} 55%, var(--bg));`;
 }
 
 function _commitsRenderList() {
   const list = document.getElementById('commits-list');
   if (!_commitsData.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">No commits found.</div>';
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) var(--space-4);">No commits found.</div>';
     return;
   }
   let html = '';
@@ -14132,7 +14809,7 @@ function _commitsRenderList() {
       lastDate = d;
       const dt = new Date(d + 'T00:00:00');
       const label = dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
-      html += `<div style="padding:8px 14px 4px;font-size:0.72rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.03em;background:var(--bg);position:sticky;top:0;z-index:1;">${esc(label)}</div>`;
+      html += `<div style="padding:var(--space-2) var(--space-3-5) var(--space-1);font-size:var(--fs-xs);font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.03em;background:var(--bg);position:sticky;top:0;z-index:1;">${esc(label)}</div>`;
     }
     const active = c.hash === _commitsActiveHash ? ' active' : '';
     const shortHash = c.hash.slice(0, 7);
@@ -14164,14 +14841,14 @@ async function _commitsSelect(hash) {
   const diffEl = document.getElementById('commits-detail-diff');
   empty.style.display = 'none';
   content.style.display = 'flex';
-  hdr.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;">Loading…</div>';
+  hdr.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);">Loading…</div>';
   diffEl.innerHTML = '';
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/commit-detail?sha=' + hash);
     const d = await r.json();
     let headerHtml = `<h3>${esc(d.subject || '')}</h3>`;
     headerHtml += `<div class="commits-meta-row">`;
-    headerHtml += `<span style="font-family:monospace;color:var(--accent);">${(d.hash || hash).slice(0, 10)}</span>`;
+    headerHtml += `<span style="font-family:var(--font-mono);color:var(--accent);">${(d.hash || hash).slice(0, 10)}</span>`;
     headerHtml += `<span>${esc(d.author || '')}</span>`;
     if (d.date) {
       const dt = new Date(d.date.replace(' ', 'T'));
@@ -14193,10 +14870,10 @@ async function _commitsSelect(hash) {
       });
       diffEl.innerHTML = `<pre>${lines.join('\n')}</pre>`;
     } else {
-      diffEl.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">No diff available</div>';
+      diffEl.innerHTML = '<div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-lg);">No diff available</div>';
     }
   } catch(e) {
-    hdr.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;">Failed to load commit details.</div>';
+    hdr.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);">Failed to load commit details.</div>';
   }
 }
 
@@ -14396,7 +15073,7 @@ function _renderGitTreePanel(files, committedFiles, ahead, aheadBase) {
       el.style.paddingLeft = '8px';
       el.style.cursor = 'default';
       el.title = rest.join(' ');
-      el.innerHTML = `<span style="color:var(--dim);font-size:0.67rem;flex-shrink:0;">${esc(hash.slice(0,7))}</span><span style="overflow:hidden;text-overflow:ellipsis;">${esc(rest.join(' '))}</span>`;
+      el.innerHTML = `<span style="color:var(--dim);font-size:var(--fs-2xs);flex-shrink:0;">${esc(hash.slice(0,7))}</span><span style="overflow:hidden;text-overflow:ellipsis;">${esc(rest.join(' '))}</span>`;
       treeEl.appendChild(el);
     });
   }
@@ -14404,7 +15081,7 @@ function _renderGitTreePanel(files, committedFiles, ahead, aheadBase) {
   const hasAny = files.length || committedFiles.length || ahead.length;
   if (!hasAny) {
     const msg = document.createElement('div');
-    msg.style.cssText = 'color:var(--dim);font-size:0.85rem;padding:20px 16px;text-align:center;';
+    msg.style.cssText = 'color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) var(--space-4);text-align:center;';
     msg.textContent = 'Working tree clean — no changes.';
     treeEl.appendChild(msg);
     return;
@@ -14606,9 +15283,9 @@ function _nudgesRow(label, enabled, level, name) {
   // Use data attributes so onclick strings stay simple and quote-safe.
   // Absent is OFF: every board toggle defaults off since 0d2a0757.
   const on = enabled === true;
-  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);">'
-    + '<span style="color:var(--text);font-size:0.76rem;">' + esc(label) + '</span>'
-    + '<button class="btn' + (on ? '' : ' primary') + '" data-nlvl="' + esc(level) + '" data-nname="' + esc(name || '') + '" data-nen="' + (!on) + '" style="font-size:0.7rem;min-height:28px;padding:3px 9px;flex:0 0 auto;" onclick="_nudgesRowClick(this)">'
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2-5);padding:var(--space-1) 0;border-bottom:1px solid var(--border);">'
+    + '<span style="color:var(--text);font-size:var(--fs-sm);">' + esc(label) + '</span>'
+    + '<button class="btn' + (on ? '' : ' primary') + '" data-nlvl="' + esc(level) + '" data-nname="' + esc(name || '') + '" data-nen="' + (!on) + '" style="font-size:var(--fs-xs);min-height:28px;padding:var(--space-0-5) var(--space-2);flex:0 0 auto;" onclick="_nudgesRowClick(this)">'
     + (on ? 'On' : 'Off') + '</button>'
     + '</div>';
 }
@@ -14626,7 +15303,7 @@ function _nudgesRender() {
   const s = _nudgesState;
   if (!s) { el.innerHTML = '<div style="color:var(--dim);">Loading…</div>'; return; }
 
-  let h = '<div style="font-size:0.7rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Board nudges</div>';
+  let h = '<div style="font-size:var(--fs-xs);font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-2);">Board nudges</div>';
 
   // Global row: null/undefined means the key is absent, which is off
   h += _nudgesRow('Global (all workers)', s.global, 'global', null);
@@ -14635,7 +15312,7 @@ function _nudgesRender() {
   const grps = s.groups || {};
   const grpNames = Object.keys(grps).sort();
   if (grpNames.length) {
-    h += '<div style="color:var(--dim);font-size:0.68rem;margin:6px 0 2px;">Groups with overrides</div>';
+    h += '<div style="color:var(--dim);font-size:var(--fs-2xs);margin:var(--space-1-5) 0 var(--space-0-5);">Groups with overrides</div>';
     grpNames.forEach(g => { h += _nudgesRow(g, grps[g], 'group', g); });
   }
 
@@ -14643,22 +15320,22 @@ function _nudgesRender() {
   const wkrs = s.workers || {};
   const wkrNames = Object.keys(wkrs).sort();
   if (wkrNames.length) {
-    h += '<div style="color:var(--dim);font-size:0.68rem;margin:6px 0 2px;">Workers with overrides</div>';
+    h += '<div style="color:var(--dim);font-size:var(--fs-2xs);margin:var(--space-1-5) 0 var(--space-0-5);">Workers with overrides</div>';
     wkrNames.forEach(w => { h += _nudgesRow(w, wkrs[w], 'worker', w); });
   }
 
   // Quick-set for the currently open worker peek
   if (peekSession) {
-    h += '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">'
-      + '<div style="color:var(--dim);font-size:0.68rem;margin-bottom:4px;">Set for: <b>' + esc(peekSession) + '</b></div>'
-      + '<div style="display:flex;gap:6px;">'
-      + '<button class="btn" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="true" style="font-size:0.7rem;min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">On</button>'
-      + '<button class="btn primary" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="false" style="font-size:0.7rem;min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">Off</button>'
+    h += '<div style="margin-top:var(--space-2);border-top:1px solid var(--border);padding-top:var(--space-2);">'
+      + '<div style="color:var(--dim);font-size:var(--fs-2xs);margin-bottom:var(--space-1);">Set for: <b>' + esc(peekSession) + '</b></div>'
+      + '<div style="display:flex;gap:var(--space-1-5);">'
+      + '<button class="btn" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="true" style="font-size:var(--fs-xs);min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">On</button>'
+      + '<button class="btn primary" data-nlvl="worker" data-nname="' + esc(peekSession) + '" data-nen="false" style="font-size:var(--fs-xs);min-height:28px;flex:1;" onclick="_nudgesRowClick(this)">Off</button>'
       + '</div></div>';
   }
 
-  if (typeof s.effective_on === 'number') h += '<div style="color:var(--text);font-size:0.72rem;margin-top:8px;">Nudged now: <b>' + s.effective_on + '</b> of ' + s.effective_total + ' workers</div>';
-  h += '<div style="color:var(--dim);font-size:0.66rem;margin-top:4px;">Off is the default. On sets CC_STANDING_ORDERS=1 at that scope; a worker is nudged when its auto-continue is also on. Worker beats group beats global.</div>';
+  if (typeof s.effective_on === 'number') h += '<div style="color:var(--text);font-size:var(--fs-xs);margin-top:var(--space-2);">Nudged now: <b>' + s.effective_on + '</b> of ' + s.effective_total + ' workers</div>';
+  h += '<div style="color:var(--dim);font-size:var(--fs-3xs);margin-top:var(--space-1);">Off is the default. On sets CC_STANDING_ORDERS=1 at that scope; a worker is nudged when its auto-continue is also on. Worker beats group beats global.</div>';
   el.innerHTML = h;
 }
 
@@ -14869,7 +15546,7 @@ function _renderPeekIssuesBody() {
   if (!items.length) {
     // "No matches" and "no issues" are different facts — saying the board is
     // empty when a query simply matched nothing sends you looking for a bug.
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">' +
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-3) var(--space-1);">' +
       (_q ? 'No issues match <b>' + esc(_q) + '</b>' + (scoped.length ? ' (' + scoped.length + ' hidden)' : '')
           : !(boardItems || []).length
               // Say which of the three it is. "No issues for this worker yet" is a
@@ -14901,7 +15578,7 @@ function _renderPeekIssuesKanban(items, list) {
   // data. A blank panel next to a count of 30 is the worst possible output —
   // it looks like a broken board rather than a missing status list.
   if (!Array.isArray(boardStatuses) || !boardStatuses.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">'
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-3) var(--space-1);">'
       + 'Board columns unavailable — showing a flat list.</div>'
       + items.map(item => _issueRowHTML(item, {})).join('');
     return;
@@ -15086,7 +15763,7 @@ async function _peekShellRun(id) {
 async function _peekLoadSchedules() {
   const list = document.getElementById('peek-schedules-list');
   if (!peekSession || !list) return;
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Loading…</div>';
+  list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-3) var(--space-1);">Loading…</div>';
   const _paint = () => {
     _peekRenderSchedules();
     const sched = schedules.filter(s => s.session === peekSession && !s.deleted);
@@ -15100,7 +15777,7 @@ async function _peekLoadSchedules() {
   } catch(e) {
     const cached = await _idb.get('schedules_all');   // offline fallback
     if (Array.isArray(cached)) { try { schedules.length = 0; schedules.push(...cached); } catch(_) {} _paint(); }
-    else list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Failed to load schedules.</div>';
+    else list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-3) var(--space-1);">Failed to load schedules.</div>';
   }
 }
 async function _peekToggleSchedule(id, val) {
@@ -15201,7 +15878,7 @@ function _peekLogsRender() {
     );
   }
   if (!evts.length) {
-    el.innerHTML = '<div style="padding:32px 16px;text-align:center;color:var(--dim);font-size:0.82rem;">' +
+    el.innerHTML = '<div style="padding:var(--space-8) var(--space-4);text-align:center;color:var(--dim);font-size:var(--fs-md);">' +
       (_peekLogsFilter || _peekLogsSearchQ ? 'No matching requests' : 'No request log for this worker yet') + '</div>';
     return;
   }
@@ -15212,21 +15889,21 @@ function _peekLogsRender() {
     const when = new Date(e.ts * 1000);
     const timeStr = when.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
     const dateStr = when.toLocaleDateString([], {month:'short',day:'numeric'});
-    const statusColor = isErr ? 'var(--red)' : (isSlow ? '#e07000' : 'var(--green,#3fb950)');
+    const statusColor = isErr ? 'var(--red)' : (isSlow ? 'color-mix(in srgb, var(--yellow) 93%, var(--shade))' : 'var(--green)');
     const methodColor = e.method === 'GET' ? 'var(--accent)' :
-                        e.method === 'POST' ? 'var(--green,#3fb950)' :
-                        e.method === 'PATCH' ? '#e07000' :
+                        e.method === 'POST' ? 'var(--green)' :
+                        e.method === 'PATCH' ? 'color-mix(in srgb, var(--yellow) 93%, var(--shade))' :
                         e.method === 'DELETE' ? 'var(--red)' : 'var(--dim)';
     const latStr = e.latency_ms < 1 ? '<1ms' : (e.latency_ms >= 1000 ? (e.latency_ms/1000).toFixed(1) + 's' : Math.round(e.latency_ms) + 'ms');
     const hasPay = !!(e.resp || e.req);
     const meta = [];
-    if (e.answered_by && e.answered_by !== 'native') meta.push('<span style="color:var(--purple,#a78bfa);">via ' + escHtml(e.answered_by) + '</span>');
+    if (e.answered_by && e.answered_by !== 'native') meta.push('<span style="color:var(--purple);">via ' + escHtml(e.answered_by) + '</span>');
     if (e.ip && e.ip !== '127.0.0.1' && e.ip !== '::1') meta.push('<span style="color:var(--dim);">' + escHtml(e.ip) + '</span>');
     if (e.req_bytes) meta.push('<span style="color:var(--dim);">' + _fmtBytes(e.req_bytes) + ' in</span>');
     if (e.resp_bytes) meta.push('<span style="color:var(--dim);">' + _fmtBytes(e.resp_bytes) + ' out</span>');
     if (e.user_agent) {
       const ua = _shortUA(e.user_agent);
-      if (ua) meta.push('<span style="color:var(--dim);font-size:0.62rem;" title="' + escHtml(e.user_agent) + '">' + escHtml(ua) + '</span>');
+      if (ua) meta.push('<span style="color:var(--dim);font-size:var(--fs-4xs);" title="' + escHtml(e.user_agent) + '">' + escHtml(ua) + '</span>');
     }
     html += '<div class="wlog-row' + (hasPay ? ' wlog-row-x' : '') + (isErr ? ' wlog-err' : '') + (isSlow ? ' wlog-slow' : '') + '"' +
       (hasPay ? ' onclick="_peekLogsToggle(this)"' : '') + '>' +
@@ -15310,7 +15987,7 @@ let _peekNotesRawContent = '';
 async function _peekLoadInherited() {
   const box = document.getElementById('peek-memory-inherited');
   if (!box) return;
-  box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">Loading…</div>';
+  box.innerHTML = '<div style="color:var(--dim);padding:var(--space-3) var(--space-1);">Loading…</div>';
   const asked = peekSession;
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(asked) + '/memory-inherited');
@@ -15318,7 +15995,7 @@ async function _peekLoadInherited() {
     if (_peekStale(asked, 'memory_inherited')) return;
     const found = d.found || [], missing = d.missing || [];
     if (!found.length) {
-      box.innerHTML = '<div style="color:var(--dim);padding:12px 4px;">No ' +
+      box.innerHTML = '<div style="color:var(--dim);padding:var(--space-3) var(--space-1);">No ' +
         esc((d.filenames || ['CLAUDE.md']).join(', ')) + ' found between ~ and <code>' +
         esc(d.dir || '?') + '</code>.</div>';
       return;
@@ -15326,32 +16003,32 @@ async function _peekLoadInherited() {
     // Nearest-last, matching how the files actually compose: the deepest
     // directory is the most specific and is read last.
     const kb = n => (n >= 1024 ? (n/1024).toFixed(1) + ' KB' : n + ' B');
-    let h = '<div style="color:var(--dim);padding:6px 4px 10px;line-height:1.45;">' +
+    let h = '<div style="color:var(--dim);padding:var(--space-1-5) var(--space-1) var(--space-2-5);line-height:1.45;">' +
       esc(String(found.length)) + ' file(s), ' + kb(d.total_bytes || 0) +
       ' — loaded by Claude Code itself, <strong>not</strong> composed by amux, so this is what ' +
       'constrains the worker on top of its amux memory. Least specific first.</div>';
     found.forEach((f, i) => {
       const id = 'inh-' + i;
-      h += '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:8px;overflow:hidden;">' +
-        '<div onclick="_peekToggleInherited(\'' + id + '\')" style="cursor:pointer;padding:8px 10px;' +
-        'display:flex;gap:8px;align-items:center;background:var(--panel);">' +
+      h += '<div style="border:1px solid var(--border);border-radius:var(--radius-md);margin-bottom:var(--space-2);overflow:hidden;">' +
+        '<div onclick="_peekToggleInherited(\'' + id + '\')" style="cursor:pointer;padding:var(--space-2) var(--space-2-5);' +
+        'display:flex;gap:var(--space-2);align-items:center;background:var(--card);">' +
         '<span id="' + id + '-chev" style="color:var(--dim);">▶</span>' +
         '<span style="color:var(--accent);font-weight:600;">' + esc(f.layer) + '</span>' +
         '<span style="color:var(--dim);">' + esc(f.name || 'CLAUDE.md') + '</span>' +
         '<span style="margin-left:auto;color:var(--dim);">' + kb(f.bytes) + '</span></div>' +
-        '<div id="' + id + '" style="display:none;padding:10px;border-top:1px solid var(--border);">' +
-        '<div style="color:var(--dim);font-size:0.7rem;margin-bottom:8px;word-break:break-all;">' +
+        '<div id="' + id + '" style="display:none;padding:var(--space-2-5);border-top:1px solid var(--border);">' +
+        '<div style="color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-2);word-break:break-all;">' +
         esc(f.path) + '</div>' +
         '<div class="md-content">' + renderMarkdown(f.text || '') + '</div></div></div>';
     });
     if (missing.length) {
-      h += '<div style="color:var(--dim);padding:8px 4px;font-size:0.72rem;line-height:1.5;">' +
+      h += '<div style="color:var(--dim);padding:var(--space-2) var(--space-1);font-size:var(--fs-xs);line-height:1.5;">' +
         'Not present (would be inherited if created): ' +
         missing.map(m => '<code>' + esc(m.path) + '</code>').join(', ') + '</div>';
     }
     box.innerHTML = h;
   } catch (e) {
-    box.innerHTML = '<div style="color:var(--red,#f88);padding:12px 4px;">Failed to load inherited files.</div>';
+    box.innerHTML = '<div style="color:var(--red);padding:var(--space-3) var(--space-1);">Failed to load inherited files.</div>';
   }
 }
 function _peekToggleInherited(id) {
@@ -15398,7 +16075,7 @@ function peekMemoryTab(tab) {
     if (tab === 'preview') {
       inp.style.display = 'none';
       preview.style.display = '';
-      preview.innerHTML = renderMarkdown(inp.value) || '<span style="color:var(--dim);font-size:0.85rem;">Nothing to preview</span>';
+      preview.innerHTML = renderMarkdown(inp.value) || '<span style="color:var(--dim);font-size:var(--fs-lg);">Nothing to preview</span>';
     } else {
       inp.style.display = '';
       preview.style.display = 'none';
@@ -15453,7 +16130,7 @@ function _fileSearchHi(text, spans) {
   spans.slice().sort((x, y) => x[0] - y[0]).forEach(([s, e]) => {
     if (s == null || e == null || s < pos) return;
     out += esc(dec.decode(b.slice(pos, s)))
-        + '<mark style="background:rgba(210,153,34,0.35);color:inherit;border-radius:2px;">'
+        + '<mark style="background:color-mix(in srgb, var(--yellow) 35%, transparent);color:inherit;border-radius:var(--radius-xs);">'
         + esc(dec.decode(b.slice(s, e))) + '</mark>';
     pos = e;
   });
@@ -15900,7 +16577,7 @@ function _paintCachedPeek(cached) {
   if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
   _peekModePainted = null;
-  _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
+  _peekHistoryHTML = cached.history ? _peekHistHtmlFor(cached.history) : (cached.histHTML || '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
   applyPeekSearch();
@@ -16328,6 +17005,23 @@ async function _chatReadAloud(btn) {
   evs.forEach(ev => el.addEventListener(ev, done));
 }
 
+// A send still in this device's outbox. Waiting is the only state with nothing to
+// do; a send the server refused (or could not confirm) says so in the same words as
+// the Messages tab and offers the same Send again / Remove. It used to read
+// "waiting to send" whatever happened: on the sandbox (2026-10-25) two messages
+// to mtp-demo's Chat tab sat that way for hours after the server had refused both.
+function _chatPendingBubble(p) {
+  const text = esc(p.text).replace(/\n/g, '<br>');
+  if (!online) return _chatBubble('user', text, 'saved offline &middot; sends when connected', 'chat-pending');
+  if (!p.decision && !p.attempted && !p.checking) return _chatBubble('user', text, 'waiting to send', 'chat-pending');
+  const st = _pendingMsgState(p), id = escJs(p.id);
+  const meta = '<span class="chat-pending-state">' + esc(st.label) + '</span> &middot; ' + esc(st.note)
+    + (p.decision && p.error ? ': ' + esc(p.error) : '')
+    + ' <button type="button" class="btn chat-pending-retry" onclick="_outboxRetryNow(\'' + id + '\')">' + esc(st.retry) + '</button>'
+    + ' <button type="button" class="btn chat-pending-remove" onclick="_outboxRemoveMessage(\'' + id + '\')">Remove</button>';
+  return _chatBubble('user', text, meta, 'chat-pending' + (p.decision === 'refused' ? ' is-refused' : ''), ' data-pending-id="' + esc(p.id) + '"');
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -16441,7 +17135,7 @@ function _chatRender(errorText) {
   let html = '';
   if (_chat.offlineNote) html += '<div class="chat-offline-note" role="status">' + esc(_chat.offlineNote) + '</div>';
   if (errorText) html += '<div class="chat-empty">' + esc(errorText)
-    + ' <button class="btn" style="margin-top:8px;font-size:0.78rem;" onclick="_chatReconnect()">Reconnect</button></div>';
+    + ' <button class="btn" style="margin-top:var(--space-2);font-size:var(--fs-base);" onclick="_chatReconnect()">Reconnect</button></div>';
   if (!errorText && !_chat.es && _chat.name && !_chat.streaming) {
     html += '<div class="chat-offline-note" role="status" style="cursor:pointer;" onclick="_chatReconnect()">'
       + 'Stream disconnected. <u>Reconnect</u></div>';
@@ -16462,8 +17156,7 @@ function _chatRender(errorText) {
   for (const m of _chat.messages) html += _chatMessageHtml(m);
   // Messages sent while offline, shown in the conversation where they will
   // land (a coding worker shows them only in the pending pill).
-  for (const p of pendingSends) html += _chatBubble('user', esc(p.text).replace(/\n/g, '<br>'),
-    online ? 'waiting to send' : 'saved offline &middot; sends when connected', 'chat-pending');
+  for (const p of pendingSends) html += _chatPendingBubble(p);
   body.innerHTML = '<div class="chat-log">' + html + '<div class="chat-live-slot"></div>'
     + '<div class="chat-queued-slot">' + (_chat.queued > 0 ? '<div class="chat-queued">' + _chat.queued + ' message'
       + (_chat.queued > 1 ? 's' : '') + ' queued</div>' : '') + '</div></div>'
@@ -16757,7 +17450,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekHistAll = false; _peekHistHidden = 0; _peekHistSrc = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -16915,7 +17608,21 @@ function _peekAgentsPaint() {
   if (!nav) return;
   const state = _peekAgents;
   const isChat = _peekTab === 'chat' || (typeof _peekChatTarget === 'function' && !!_peekChatTarget());
+  // Showing or hiding the navigator changes #peek-body's top padding (CSS
+  // :has rule, 58px on phones), which moves the output under a fixed
+  // scrollTop. A selected search hit or message that this leaves out of view
+  // (pushed off the bottom, or under the navigator) is brought back the way a
+  // jump places it (680b0ecd3's CI red: the subagent list arriving pushed a
+  // search hit below a phone's visible output).
+  const wasHidden = nav.hidden;
   nav.hidden = isChat || (!state.items.length && !state.error);
+  if (wasHidden !== nav.hidden && !isChat) {
+    const sel = document.querySelector('#peek-body .peek-highlight.current, #peek-body .peek-msg-current');
+    if (sel && !_peekJumpGeometry(sel).visible) {
+      _peekJumpTo(sel);
+      try { amuxTrack('peek_agent_nav_selection_kept', {measured: true, n_considered: 1}); } catch (_) {}
+    }
+  }
   const index = state.selected ? state.items.findIndex(s=>s.id===state.selected.id && s.conversation===state.selected.conversation)+1 : 0;
   const label = document.getElementById('peek-agent-label');
   const silent = state.items.filter(s => s.state === 'silent').length;
@@ -17239,7 +17946,10 @@ function _peekSplitRenderPanes() {
       const prev = frame.dataset.src || '';
       let switched = false;
       if (view !== 'files' && prev.indexOf('peekEmbed=' + encodeURIComponent(peekSession) + '&') >= 0) {
-        try { frame.contentWindow.setPeekTab(view); switched = true; } catch (e) {}
+        // The pane's own address follows, or its next reload (a new dashboard
+        // version reloads every page) reopens the old tab while this pane's
+        // dropdown names the new one (Ethan, 2026-10-26: Chat over a terminal).
+        try { frame.contentWindow.setPeekTab(view); frame.contentWindow.history.replaceState(null, '', src); switched = true; } catch (e) {}
       }
       frame.dataset.src = src;
       if (!switched) frame.src = src;
@@ -17679,19 +18389,19 @@ async function _psfLoad(dirPath) {
     crumbHtml += '<span style="color:var(--dim)"> › </span><span class="psf-crumb" onclick="_psfLoad(\'' + cp.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
   }
   bc.innerHTML = crumbHtml;
-  body.innerHTML = '<div style="padding:12px;color:var(--dim)">Loading...</div>';
+  body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">Loading...</div>';
   if (hdrs) hdrs.style.display = 'none';
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dirPath));
     const data = await r.json();
     if (!_psfAcceptResponse(generation)) return;
-    if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    if (data.error) { body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _psfLastData = { dirPath, data };
     _psfUpdateSortHeaders();
     _psfRenderEntries(dirPath, data);
   } catch(e) {
     if (!_psfAcceptResponse(generation)) return;
-    body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
+    body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">Error: ' + esc(e.message) + '</div>';
   }
 }
 
@@ -17708,14 +18418,14 @@ async function _psfViewFile(filePath) {
   const dir = filePath.substring(0, filePath.lastIndexOf('/')) || '/';
   const fname = filePath.split('/').pop();
   bc.innerHTML = '<span class="psf-crumb" onclick="_psfLoad(\'' + dir.replace(/'/g, "\\'") + '\')">← back</span><span style="color:var(--dim)"> / </span><span style="color:var(--text)">' + esc(fname) + '</span>';
-  body.innerHTML = '<div style="padding:12px;color:var(--dim)">Loading...</div>';
+  body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">Loading...</div>';
   try {
     let url = API + '/api/file?path=' + encodeURIComponent(filePath);
     if (peekSessionDir) url += '&cwd=' + encodeURIComponent(peekSessionDir);
     const r = await fetch(url);
     const data = await r.json();
     if (!_psfAcceptResponse(generation)) return;
-    if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(data.error) + '</div>'; return; }
+    if (data.error) { body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">Error: ' + esc(data.error) + '</div>'; return; }
     body.innerHTML = '';
     const content = document.createElement('div');
     content.style.cssText = 'flex:1;min-height:0;margin:0;border-radius:0;overflow:auto;';
@@ -17755,7 +18465,7 @@ async function _psfViewFile(filePath) {
       const iframe = document.createElement('iframe');
       iframe.sandbox = 'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
       iframe.setAttribute('scrolling', 'yes');
-      iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
+      iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:var(--on-solid);';
       content.appendChild(iframe);
       // Same as the file overlay: load from the file's own URL so in-page
       // anchors and relative links stay inside the document (see _htmlPreviewUrl).
@@ -17767,12 +18477,12 @@ async function _psfViewFile(filePath) {
     } else {
       content.className = 'file-overlay-body file-image';
       const sizeMB = data.size ? (typeof _fmtBytes === 'function' ? _fmtBytes(data.size) : Math.round(data.size / 1024) + ' KB') : '';
-      content.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">📦</div><div style="font-size:0.95rem;color:var(--muted);">' + esc(fname) + (sizeMB ? ' · ' + sizeMB : '') + '</div></div>';
+      content.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:var(--space-3);padding:var(--space-8);"><div style="font-size:var(--fs-7xl);">📦</div><div style="font-size:var(--fs-2xl);color:var(--dim);">' + esc(fname) + (sizeMB ? ' · ' + sizeMB : '') + '</div></div>';
     }
     body.appendChild(content);
   } catch(e) {
     if (!_psfAcceptResponse(generation)) return;
-    body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
+    body.innerHTML = '<div style="padding:var(--space-3);color:var(--dim)">Error: ' + esc(e.message) + '</div>';
   }
 }
 
@@ -17964,22 +18674,22 @@ function _geoRuler() {
   const envTop = _measureEnv('top'), envBot = _measureEnv('bottom');
   const vv = window.visualViewport || {};
   let h = '';
-  h += '<div style="position:fixed;top:0;left:0;right:0;height:' + envTop + 'px;background:rgba(248,81,73,0.30);border-bottom:2px solid #f85149;"></div>';
-  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:' + envBot + 'px;background:rgba(63,185,80,0.30);border-top:2px solid #3fb950;"></div>';
-  h += '<div style="position:fixed;top:0;left:0;right:0;height:3px;background:#58a6ff;"></div>';
-  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:3px;background:#d29922;"></div>';
+  h += '<div style="position:fixed;top:0;left:0;right:0;height:' + envTop + 'px;background:color-mix(in srgb, var(--red) 30%, transparent);border-bottom:2px solid var(--red);"></div>';
+  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:' + envBot + 'px;background:color-mix(in srgb, var(--green) 30%, transparent);border-top:2px solid var(--green);"></div>';
+  h += '<div style="position:fixed;top:0;left:0;right:0;height:3px;background:var(--accent);"></div>';
+  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:3px;background:var(--yellow);"></div>';
   for (let y = 0; y <= window.innerHeight; y += 50) {
-    h += '<div style="position:fixed;top:' + y + 'px;left:0;right:0;height:1px;background:rgba(255,255,255,0.22);"></div>';
-    h += '<div style="position:fixed;top:' + y + 'px;left:2px;color:#fff;background:rgba(0,0,0,0.65);padding:0 3px;">' + y + '</div>';
+    h += '<div style="position:fixed;top:' + y + 'px;left:0;right:0;height:1px;background:color-mix(in srgb, var(--on-solid) 22%, transparent);"></div>';
+    h += '<div style="position:fixed;top:' + y + 'px;left:2px;color:var(--on-solid);background:color-mix(in srgb, var(--shade) 65%, transparent);padding:0 var(--space-0-5);">' + y + '</div>';
   }
-  h += '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.88);color:#fff;padding:12px 14px;border-radius:8px;border:1px solid #fff;text-align:left;">'
+  h += '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:color-mix(in srgb, var(--shade) 88%, transparent);color:var(--on-solid);padding:var(--space-3) var(--space-3-5);border-radius:var(--radius-lg);border:1px solid var(--on-solid);text-align:left;">'
      + 'screen ' + screen.width + 'x' + screen.height + '<br>'
      + 'inner ' + window.innerWidth + 'x' + window.innerHeight + '<br>'
      + 'vv.offsetTop ' + Math.round(vv.offsetTop || 0) + ' &nbsp; vv.h ' + Math.round(vv.height || 0) + '<br>'
      + 'env(top) ' + envTop + ' &nbsp; env(bottom) ' + envBot + '<br>'
      + 'standalone ' + navigator.standalone + ' &nbsp; dpr ' + window.devicePixelRatio + '<br>'
-     + '<span style="color:#58a6ff">blue=fixed top:0</span> &nbsp; <span style="color:#d29922">orange=fixed bottom:0</span><br>'
-     + '<span style="color:#f85149">red=env-top</span> &nbsp; <span style="color:#3fb950">green=env-bottom</span>'
+     + '<span style="color:var(--accent)">blue=fixed top:0</span> &nbsp; <span style="color:var(--yellow)">orange=fixed bottom:0</span><br>'
+     + '<span style="color:var(--red)">red=env-top</span> &nbsp; <span style="color:var(--green)">green=env-bottom</span>'
      + '</div>';
   el.innerHTML = h;
   document.body.appendChild(el);
@@ -18177,15 +18887,15 @@ function _vvTick() {
   }, {passive: true});
 })();
 
-// Rewrite localhost/127.0.0.1/0.0.0.0 URLs to use the port proxy
-// so links work when viewing the dashboard from another device or cloud
+// A worker's localhost/127.0.0.1/0.0.0.0 link to an app on this machine opens
+// that app's Pages entry (or offers to add it), which serves it on the apps
+// origin. There is no proxy URL any more (2026-10-25: "remove the proxies").
 function rewriteLocalhostUrls(html) {
   return html.replace(/(https?):\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)(\/[^\s<>"']*)?/g,
-    (match, scheme, host, port, path) => {
+    (match, scheme, host, port) => {
       const p = port ? port.slice(1) : '';
-      if (!p || p === location.port) return match;  // don't proxy amux's own port
-      const base = location.origin + '/proxy/' + p;
-      return base + (path || '/');
+      if (!p || p === location.port) return match;  // amux's own port stays as written
+      return location.origin + '/#view=pages&add-internal=' + p;
     });
 }
 
@@ -18281,12 +18991,12 @@ function _openLinkedPath(el, ev) {
 }
 function ansiToHtml(text) {
   // Convert ANSI SGR color codes to HTML spans. Also HTML-escapes and linkifies text.
-  const C16 = ['#1c1c1c','#cc0000','#4e9a06','#c4a000','#3465a4','#75507b','#06989a','#d3d7cf',
-               '#888a85','#ef2929','#8ae234','#fce94f','#729fcf','#ad7fa8','#34e2e2','#eeeeec'];
+  const C16 = ['color-mix(in srgb, var(--shade) 89%, var(--on-solid))','color-mix(in srgb, var(--red) 69%, var(--shade))','color-mix(in srgb, var(--green) 76%, var(--shade))','var(--yellow)','color-mix(in srgb, var(--accent) 63%, var(--shade))','color-mix(in srgb, var(--pink) 56%, var(--card))','color-mix(in srgb, var(--cyan) 73%, var(--shade))','color-mix(in srgb, var(--shade) 17%, var(--on-solid))',
+               'color-mix(in srgb, var(--shade) 47%, var(--on-solid))','color-mix(in srgb, var(--red) 89%, var(--shade))','color-mix(in srgb, var(--green) 83%, var(--on-solid))','color-mix(in srgb, var(--yellow) 67%, var(--on-solid))','color-mix(in srgb, var(--accent) 86%, var(--card))','color-mix(in srgb, var(--shade) 39%, var(--on-solid))','var(--cyan)','color-mix(in srgb, var(--shade) 7%, var(--on-solid))'];
   const c256 = n => {
     if (n < 16) return C16[n];
-    if (n < 232) { const i=n-16,b=i%6,g=Math.floor(i/6)%6,r=Math.floor(i/36),v=x=>x?55+x*40:0; return `rgb(${v(r)},${v(g)},${v(b)})`; }
-    const v=8+(n-232)*10; return `rgb(${v},${v},${v})`;
+    if (n < 232) { const i=n-16,b=i%6,g=Math.floor(i/6)%6,r=Math.floor(i/36),v=x=>x?55+x*40:0; return `rgb(${v(r)},${v(g)},${v(b)})`; }   // design-tokens: allow (a program's own 256-color/truecolor output)
+    const v=8+(n-232)*10; return `rgb(${v},${v},${v})`;   // design-tokens: allow (a program's own 256-color/truecolor output)
   };
   // ── OSC-8 hyperlinks (AMUX-2636) ────────────────────────────────────
   // Wire form: ESC ] 8 ; <params> ; <URL> ST   LABEL   ESC ] 8 ; ; ST
@@ -18379,9 +19089,9 @@ function ansiToHtml(text) {
         else if(c>=90&&c<=97)fg=C16[c-82];
         else if(c>=100&&c<=107)bg=C16[c-92];
         else if(c===38&&codes[j+1]===5){fg=c256(codes[j+2]);j+=2;}
-        else if(c===38&&codes[j+1]===2){fg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}
+        else if(c===38&&codes[j+1]===2){fg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}   // design-tokens: allow (a program's own 256-color/truecolor output)
         else if(c===48&&codes[j+1]===5){bg=c256(codes[j+2]);j+=2;}
-        else if(c===48&&codes[j+1]===2){bg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}
+        else if(c===48&&codes[j+1]===2){bg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}   // design-tokens: allow (a program's own 256-color/truecolor output)
         j++;
       }
       out+=openSpan();
@@ -18414,8 +19124,8 @@ function ansiToHtml(text) {
 function _osc8Resolve(html, urls) {
   if (!urls || !urls.length) return html;
   const href = u => {
-    // Localhost URLs go through the same port-proxy rewrite as every other
-    // link in the peek, so an OSC-8 link works from a phone or the cloud.
+    // Localhost URLs go through the same rewrite as every other link in the
+    // peek: to the app's Pages entry, so an OSC-8 link works from a phone or the cloud.
     const s = rewriteLocalhostUrls(String(u == null ? '' : u).trim());
     if (!/^(?:https?|file):\/\//i.test(s)) return null;
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -18850,23 +19560,23 @@ async function _peekShowRenderSteps() {
   }
   const t = _peekTrace;
   const row = (on, name, what, note) =>
-    '<tr style="' + (on ? '' : 'opacity:0.45;') + '"><td style="padding:2px 8px 2px 0;white-space:nowrap;">' + (on ? '&#x2713;' : '&middot;')
-    + ' <code>' + esc(name) + '</code></td><td style="padding:2px 0;">' + esc(what) + (note ? '<div style="color:var(--dim);font-size:0.75rem;">' + esc(note) + '</div>' : '') + '</td></tr>';
-  const table = rows => '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;margin:4px 0 10px;">' + rows.join('') + '</table>';
-  const h = text => '<div style="font-weight:700;margin-top:8px;">' + esc(text) + '</div>';
-  const folded = (label, inner) => '<details style="margin:0 0 10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;min-height:32px;">' + esc(label) + '</summary>' + inner + '</details>';
-  let html = '<div style="font-weight:700;font-size:0.95rem;margin-bottom:6px;">Rendering steps</div>';
+    '<tr style="' + (on ? '' : 'opacity:0.45;') + '"><td style="padding:var(--space-0-5) var(--space-2) var(--space-0-5) 0;white-space:nowrap;">' + (on ? '&#x2713;' : '&middot;')
+    + ' <code>' + esc(name) + '</code></td><td style="padding:var(--space-0-5) 0;">' + esc(what) + (note ? '<div style="color:var(--dim);font-size:var(--fs-sm);">' + esc(note) + '</div>' : '') + '</td></tr>';
+  const table = rows => '<table style="width:100%;border-collapse:collapse;font-size:var(--fs-md);margin:var(--space-1) 0 var(--space-2-5);">' + rows.join('') + '</table>';
+  const h = text => '<div style="font-weight:700;margin-top:var(--space-2);">' + esc(text) + '</div>';
+  const folded = (label, inner) => '<details style="margin:0 0 var(--space-2-5);"><summary style="cursor:pointer;color:var(--dim);font-size:var(--fs-md);min-height:32px;">' + esc(label) + '</summary>' + inner + '</details>';
+  let html = '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-1-5);">Rendering steps</div>';
   if (!t) {
-    html += '<div style="color:var(--dim);font-size:0.85rem;">No frame has been rendered in this peek yet.</div>';
+    html += '<div style="color:var(--dim);font-size:var(--fs-lg);">No frame has been rendered in this peek yet.</div>';
   } else {
-    html += '<div style="color:var(--dim);font-size:0.8rem;">' + esc(t.name || '') + ' &middot; ' + esc(t.provider) + ' (pipeline: ' + esc(t.pipeline) + ') &middot; '
+    html += '<div style="color:var(--dim);font-size:var(--fs-md);">' + esc(t.name || '') + ' &middot; ' + esc(t.provider) + ' (pipeline: ' + esc(t.pipeline) + ') &middot; '
       + (t.thin ? 'thin pass-through' : 'full') + ' &middot; ' + (t.live_only ? 'live poll' : 'full fetch') + ' &middot; ' + esc(new Date(t.at).toLocaleTimeString()) + '</div>';
     const full = _peekServerFull, live = _peekServerLive;
     const when = x => x ? ' (' + new Date(x.at).toLocaleTimeString() + ')' : '';
     html += h('1. Server: history from ' + (full ? full.path : 'not fetched yet') + when(full)
       + (live ? '; live screen from ' + live.path + when(live) : ''));
     const ran = new Set([...((full && full.steps) || []), ...((live && live.steps) || [])]);
-    if (!full && !live) html += '<div style="color:var(--dim);font-size:0.8rem;">This server did not report its steps (older server).</div>';
+    if (!full && !live) html += '<div style="color:var(--dim);font-size:var(--fs-md);">This server did not report its steps (older server).</div>';
     // What ran, in order, first; the rest folded so a phone is not a scroll
     // through greyed rows to find what happened.
     const ranRows = _peekServerSteps.filter(st => ran.has(st.id)).map(st => row(true, st.id, st.what,
@@ -18878,7 +19588,7 @@ async function _peekShowRenderSteps() {
     for (const region of ['history', 'live']) {
       const last = _peekLastRegion[region];
       for (const run of (last ? last.runs : [])) {
-        html += '<div style="font-size:0.8rem;margin-top:4px;">' + esc(region) + ' &middot; ' + esc(run.mode) + ' &middot; rendered ' + esc(new Date(last.at).toLocaleTimeString()) + '</div>';
+        html += '<div style="font-size:var(--fs-md);margin-top:var(--space-1);">' + esc(region) + ' &middot; ' + esc(run.mode) + ' &middot; rendered ' + esc(new Date(last.at).toLocaleTimeString()) + '</div>';
         html += table(run.steps.map(st => row(true, st.id, PEEK_STEPS[st.id].what, st.chars_in + ' \u2192 ' + st.chars_out + ' chars, ' + st.ms + ' ms')));
       }
     }
@@ -19179,7 +19889,27 @@ let _peekKindHintsFor = '';
 // claimed. They are drawn as ❯ prompts above the input box, so search, message
 // navigation and the kind colours treat them like any prompt.
 const _PEEK_UNECHOED_GRACE_MS = 8000;   // a prompt sent at idle takes a moment to draw
+// A FINISHED TURN TOOK ITS MESSAGES WITH IT (Ethan, 2026-10-25, "this is still
+// stuck"): tubescience-parity's 6:21 PM message stayed above the input box
+// under a turn that printed "done 7:33 PM". Its later turns began from input
+// the ledger does not hold as this worker's prompt, so the newest printed
+// prompt stayed at 6:21 and kept claiming the message for the running turn.
+// Claude Code prints "✻ <verb> for <time> · done 7:33 PM" when a turn ends; a
+// message sent before the newest such minute went to a turn that is over.
+function _peekLastTurnDoneMs(text, now) {
+  let last = null;
+  for (const m of String(text || '').matchAll(/✻ [^\n]*? for [^\n]*?· done (\d{1,2}):(\d{2}) ?([AP]M)/g)) last = m;
+  if (!last) return 0;
+  let h = Number(last[1]) % 12;
+  if (last[3] === 'PM') h += 12;
+  const d = new Date(now);
+  d.setHours(h, Number(last[2]), 0, 0);
+  // A time later than now was printed yesterday.
+  if (d.getTime() > now + 60000) d.setDate(d.getDate() - 1);
+  return d.getTime();
+}
 let _peekUnechoedReported = '';
+let _peekUnechoedEndedReported = '';
 function _peekUnechoedHtml(output, historyRaw) {
   if (!peekSession) return '';
   const canon = t => String(t || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '');
@@ -19225,7 +19955,18 @@ function _peekUnechoedHtml(output, historyRaw) {
   let anchor = -1;
   for (let i = recent.length - 1; i >= 0; i--) if (recent[i].shown) { anchor = i; break; }
   if (anchor < 0) return '';
-  const out = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS).slice(-5);
+  const doneMs = _peekLastTurnDoneMs(_stripAnsi((historyRaw || '') + '\n' + (output || '')), now);
+  const unprinted = recent.slice(anchor + 1).filter(r => !r.shown && now - r.ts >= _PEEK_UNECHOED_GRACE_MS);
+  const out = unprinted.filter(r => r.ts >= doneMs).slice(-5);
+  const ended = unprinted.length - unprinted.filter(r => r.ts >= doneMs).length;
+  if (ended) {
+    const endedTag = peekSession + ':ended:' + doneMs;
+    if (_peekUnechoedEndedReported !== endedTag) {
+      _peekUnechoedEndedReported = endedTag;
+      try { window._clientDebug && window._clientDebug('peek-unechoed-messages', { session: peekSession, hidden: ended,
+        verdict: 'taken_message_turn_ended', measured: true, n_considered: unprinted.length }); } catch (_) {}
+    }
+  }
   if (!out.length) return '';
   const tag = peekSession + ':' + out.map(r => r.ts).join(',');
   if (_peekUnechoedReported !== tag) {
@@ -19916,11 +20657,56 @@ function _peekLogAtClose() {
   const body = document.getElementById('peek-body');
   if (body) body.scrollTop = body.scrollHeight;
 }
+// A worker's scrollback can be 20,000 lines (2 MB of ANSI text). Drawn whole it
+// is ~57,000 elements, rebuilt on every history refresh, and the Mac app's
+// worker tabs grew with it to 1-1.7 GB (desktop-resources, 2026-10-25: tab
+// memory tracked scrollback size). Only the most recent lines are drawn; the
+// rest is one tap away, and a search, a message jump or earlier saved output
+// draws all of it first, so nothing becomes unreachable.
+const _PEEK_HIST_DRAWN_LINES = 3000;
+let _peekHistAll = false;      // the reader asked for the whole scrollback
+let _peekHistHidden = 0;       // scrollback lines not drawn right now
+let _peekHistSrc = '';         // the scrollback text _peekHistoryHTML was drawn from
+function _peekHistHtmlFor(raw) {
+  _peekHistSrc = raw || '';
+  _peekHistHidden = 0;
+  if (!raw) return '';
+  const all = _peekHistAll || (typeof peekSearchQuery === 'string' && peekSearchQuery.trim())
+    || _peekEarlier.chunks.length || _peekEarlier.conversation;
+  if (!all) {
+    let cut = raw.length;
+    for (let n = 0; n < _PEEK_HIST_DRAWN_LINES && cut > 0; n++) cut = raw.lastIndexOf('\n', cut - 1);
+    if (cut > 0) {
+      let hidden = 1;
+      for (let i = raw.indexOf('\n'); i >= 0 && i < cut; i = raw.indexOf('\n', i + 1)) hidden++;
+      _peekHistHidden = hidden;
+      return '<div class="peek-earlier-bar peek-hist-more" onclick="_peekHistExpand(true)">&#x25B2; Show '
+        + hidden.toLocaleString() + ' earlier lines</div>' + _peekHtml(raw.slice(cut + 1));
+    }
+  }
+  return _peekHtml(raw);
+}
+// Draw the whole scrollback in place, keeping the reader's line where it is.
+function _peekHistExpand(paint) {
+  if (!_peekHistHidden) return false;
+  _peekHistAll = true;
+  _peekHistoryHTML = _peekHistHtmlFor(_peekHistSrc);
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  if (paint) {
+    const body = document.getElementById('peek-body');
+    const fromBottom = body ? body.scrollHeight - body.scrollTop : 0;
+    applyPeekSearch(true, false);
+    if (body) body.scrollTop = body.scrollHeight - fromBottom;
+  }
+  return true;
+}
 function _peekEarlierHTML() {
   if (_peekLogAt && _peekLogAt.name === peekSession) return _peekLogAtHTML();
   // Thin mode: tmux's scrollback is already the whole history; the bar would
   // page in the transcript re-render this mode exists to drop.
   if (_peekEarlier.hidden || _peekThin) return '';
+  // Undrawn scrollback has its own bar, and tapping either draws it first.
+  if (_peekHistHidden && !_peekEarlier.chunks.length) return '';
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
@@ -19962,6 +20748,8 @@ async function _peekLoadEarlier(options) {
   // Thin peek already holds the pane's whole tmux scrollback; transcript
   // pages are never drawn there, so loading them can find nothing and the
   // old message ("Earlier output could not be loaded") was false.
+  // Scrollback already in memory comes before saved pages from the server.
+  if (_peekHistExpand(true)) return 'loaded';
   if (_peekThin) return 'scrollback';
   const quiet = !!(options && options.quiet);
   const name = peekSession;
@@ -20017,7 +20805,8 @@ async function _peekLoadEarlier(options) {
           // The first record page contains the current transcript tail too.
           // Replace that tail once, then keep only new records from polls.
           earlier.tailRaw = text;
-          _peekHistoryHTML = _peekHtml(_peekAfterConversation(text, _peekHistoryRaw));
+          earlier.conversation = r.headers.get('X-Log-Conversation');
+          _peekHistoryHTML = _peekHistHtmlFor(_peekAfterConversation(text, _peekHistoryRaw));
         }
         earlier.conversation = r.headers.get('X-Log-Conversation');
         earlier.before = remaining;
@@ -20160,7 +20949,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // browser tab left open on a deleted session produced 5,382 peek + 1,737
     // tasks 404s in 15h (~8/min), 95% of every error in the window, and the UI
     // said "(no output)" rather than "this session is gone".
-    // Same r.json()-without-r.ok shape as _tunnelStatus (AF-63). Stop the poll
+    // The r.json()-without-r.ok shape (AF-63). Stop the poll
     // and SAY what happened; a poller that cannot fail is how a dead tab bills
     // the server forever.
     if (r.status === 404) {
@@ -20257,7 +21046,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     let histChanged = false;
     if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
-      _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
+      _peekHistoryHTML = _peekHistHtmlFor(historyTail);
       _peekHistoryRaw = histRaw;
       histChanged = true;
     }
@@ -20339,7 +21128,13 @@ async function _refreshPeekFrame(liveOnly, request) {
     // Cache BOTH slices — since the live-split, `output` alone is just the tiny
     // live frame (sometimes ''), which painted an EMPTY black peek from cache
     // (social, 2026-07-16). Never write an entry with no content.
-    if (_peekHistoryRaw || _lastPeekRaw) _idb.set(_PEEK_CACHE_KEY(name), { output: _lastPeekRaw, history: _peekHistoryRaw, liveHTML: _lastLiveHTML, histHTML: _peekHistoryHTML, time: Date.now() });
+    // The drawn history HTML is not cached: it is the largest value here, a
+    // reopen redraws it from `history`, and a busy worker's live frame changes
+    // every tick, so the write is also limited to history changes or every 10s.
+    if ((_peekHistoryRaw || _lastPeekRaw) && (histChanged || performance.now() - _peekCacheWroteMs > 10000)) {
+      _peekCacheWroteMs = performance.now();
+      _idb.set(_PEEK_CACHE_KEY(name), { output: _lastPeekRaw, history: _peekHistoryRaw, liveHTML: _lastLiveHTML, time: Date.now() });
+    }
   } catch(e) {
     if (!_peekIdentityCurrent(identity)) return;
     console.error('peek:', e);
@@ -20367,6 +21162,7 @@ async function _refreshPeekFrame(liveOnly, request) {
   } finally { clearTimeout(_peekTimeout); }
 }
 
+let _peekCacheWroteMs = 0;   // last terminal cache write (refreshPeek)
 let _peekChatPaintSkips = 0;   // terminal paints refused while the Chat tab owned #peek-body
 // Split DOM: history lives in a stable container and the live frame in its own,
 // so a live tick swaps ONLY #pk-live (a few hundred bytes) instead of
@@ -20438,6 +21234,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     if (countEl) countEl.textContent = '';
     return;
   }
+  if (_peekHistHidden) _peekHistExpand(false);
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
   // Rebuilding the DOM costs a full relayout plus two prompt reclassifies
@@ -21383,7 +22180,7 @@ function _closeSavedMessages() {
 async function _smRefresh() {
   const listEl = document.getElementById('sm-list');
   if (!listEl) return;
-  listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
+  listEl.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-3);">Loading…</div>';
   let items = [];
   const url = _smScope === 'all'
     ? (API + '/api/saved-messages')
@@ -21396,7 +22193,7 @@ async function _smRefresh() {
     const c = await _idb.get(_ck); if (Array.isArray(c)) items = c;   // offline fallback
   }
   if (!Array.isArray(items) || !items.length) {
-    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">'
+    listEl.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6) var(--space-3);text-align:center;">'
       + (_smScope === 'all' ? 'No saved messages on any worker yet.' : 'No saved messages for this worker yet.')
       + '<br>Type above and tap Save.</div>';
     return;
@@ -21407,10 +22204,10 @@ async function _smRefresh() {
     // In the all-sessions view, label each item with the session it came from.
     const badge = (_smScope === 'all')
       ? '<span class="sm-sess" title="Saved from this worker">' + esc(it.session || '—') + '</span>' : '';
-    return '<div class="sm-item" data-id="'+it.id+'" style="display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid var(--border);background:var(--card);">'
-      + '<span style="flex:1;min-width:0;font-size:0.88rem;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
+    return '<div class="sm-item" data-id="'+it.id+'" style="display:flex;gap:var(--space-2);align-items:flex-start;padding:var(--space-2-5) var(--space-3);border-radius:var(--radius-lg);cursor:pointer;border:1px solid var(--border);background:var(--card);">'
+      + '<span style="flex:1;min-width:0;font-size:var(--fs-xl);color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
       + badge
-      + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:0.72rem;padding:3px 8px;color:var(--red);">&#x2715;</button>'
+      + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);color:var(--red);">&#x2715;</button>'
       + '</div>';
   }).join('');
   listEl.querySelectorAll('.sm-item').forEach(el => {
@@ -21509,9 +22306,9 @@ function _renderPeekFileChips() {
         `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">Retry</button>`;
     } else if (isUploading) {
       const pct = _uploadPct(f);
-      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`;
+      statusHtml = `<span style="color:var(--dim);font-size:var(--fs-4xs);">${esc(f.status || (pct + '%'))}</span>`;
     } else {
-      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span>`;
+      statusHtml = `<span style="color:var(--green);font-size:var(--fs-sm);margin-right:var(--space-0-5);">✓</span>`;
     }
     const cls = f.path ? '' : (f.error ? ' failed' : ' uploading');
     return `<div class="peek-attach-chip${cls}">
@@ -21679,11 +22476,11 @@ function _renderCardFileChips(name) {
     if (f.isImage && f.previewUrl) thumb = `<img src="${f.previewUrl}" alt="">`;
     else thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     let status;
-    if (f.path) status = `<span style="color:var(--green);font-size:0.75rem;">✓</span>`;
+    if (f.path) status = `<span style="color:var(--green);font-size:var(--fs-sm);">✓</span>`;
     else if (f.error) status = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
       `<button type="button" class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">Retry</button>`;
     else { const pct = _uploadPct(f);
-           status = `<span style="color:var(--dim);font-size:0.6rem;">${esc(f.status || (pct + '%'))}</span>`; }
+           status = `<span style="color:var(--dim);font-size:var(--fs-4xs);">${esc(f.status || (pct + '%'))}</span>`; }
     // The × is on EVERY chip in EVERY state — an escape hatch that only exists
     // once an upload finishes is not one (the peek's own AMUX-85 lesson).
     const rm = `<button type="button" class="chip-remove" aria-label="Remove attachment" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</button>`;
@@ -22527,16 +23324,16 @@ function _showSteerPrompt(text) {
   return new Promise(resolve => {
     const bg = document.createElement('div');
     bg.className = 'amux-dialog-backdrop';
-    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:400;display:flex;align-items:center;justify-content:center;';
+    bg.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 50%, transparent);z-index:400;display:flex;align-items:center;justify-content:center;';
     const box = document.createElement('div');
-    box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.4);max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;';
-    box.innerHTML = `<div style="font-weight:600;margin-bottom:8px;">Worker is working</div>
-      <div style="font-size:0.85rem;color:var(--dim);margin-bottom:12px;">This worker is actively running. How should your message be delivered?</div>
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:0.82rem;margin-bottom:16px;max-height:60px;overflow:hidden;word-break:break-word;">${text.length > 120 ? text.slice(0,120) + '...' : text}</div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="btn" id="steer-cancel" style="font-size:0.82rem;">Cancel</button>
-        <button class="btn" id="steer-send-now" style="font-size:0.82rem;">Send now</button>
-        <button class="btn primary" id="steer-queue" style="font-size:0.82rem;">Queue for next turn</button>
+    box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-5);max-width:400px;width:90%;box-shadow:var(--shadow-lg);max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;';
+    box.innerHTML = `<div style="font-weight:600;margin-bottom:var(--space-2);">Worker is working</div>
+      <div style="font-size:var(--fs-lg);color:var(--dim);margin-bottom:var(--space-3);">This worker is actively running. How should your message be delivered?</div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-2) var(--space-2-5);font-size:var(--fs-md);margin-bottom:var(--space-4);max-height:60px;overflow:hidden;word-break:break-word;">${text.length > 120 ? text.slice(0,120) + '...' : text}</div>
+      <div style="display:flex;gap:var(--space-2);justify-content:flex-end;">
+        <button class="btn" id="steer-cancel" style="font-size:var(--fs-md);">Cancel</button>
+        <button class="btn" id="steer-send-now" style="font-size:var(--fs-md);">Send now</button>
+        <button class="btn primary" id="steer-queue" style="font-size:var(--fs-md);">Queue for next turn</button>
       </div>`;
     bg.appendChild(box);
     document.body.appendChild(bg);
@@ -22614,24 +23411,24 @@ async function peekShowTranscripts() {
   const base = API + '/api/sessions/' + encodeURIComponent(sess);
   let bodyHtml;
   if (!list.length) {
-    bodyHtml = '<p style="font-size:0.82rem;color:var(--dim);margin:0 0 16px">No backups yet. Click "Backup Now" to save the current conversation transcript.</p>';
+    bodyHtml = '<p style="font-size:var(--fs-md);color:var(--dim);margin:0 0 var(--space-4)">No backups yet. Click "Backup Now" to save the current conversation transcript.</p>';
   } else {
     bodyHtml = list.map(t => {
       const kb = (t.size / 1024).toFixed(1);
       const dt = new Date(t.mtime * 1000).toLocaleString();
       const url = base + '/transcripts/' + encodeURIComponent(t.name);
-      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-subtle,rgba(128,128,128,.15))">
-        <span style="flex:1;font-size:0.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t.name)}">${esc(t.name)}</span>
-        <span style="font-size:0.7rem;color:var(--dim);flex-shrink:0">${kb} KB</span>
-        <span style="font-size:0.68rem;color:var(--dim);flex-shrink:0">${dt}</span>
-        <a href="${url}" download="${esc(t.name)}" style="font-size:0.72rem;color:var(--accent);text-decoration:none;flex-shrink:0">&#11015;</a>
+      return `<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-1-5) 0;border-bottom:1px solid var(--border)">
+        <span style="flex:1;font-size:var(--fs-xs);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t.name)}">${esc(t.name)}</span>
+        <span style="font-size:var(--fs-xs);color:var(--dim);flex-shrink:0">${kb} KB</span>
+        <span style="font-size:var(--fs-2xs);color:var(--dim);flex-shrink:0">${dt}</span>
+        <a href="${url}" download="${esc(t.name)}" style="font-size:var(--fs-xs);color:var(--accent);text-decoration:none;flex-shrink:0">&#11015;</a>
       </div>`;
     }).join('');
   }
   _modalResolve = null;
   document.getElementById('modal-msg').innerHTML = `<div style="text-align:left;min-width:320px;max-width:500px">
-    <div style="font-size:1rem;font-weight:700;margin-bottom:4px">Transcripts — ${esc(sess)}</div>
-    <p style="font-size:0.75rem;color:var(--dim);margin:0 0 12px">JSONL conversation backups (auto-saved before compaction).</p>
+    <div style="font-size:var(--fs-2xl);font-weight:700;margin-bottom:var(--space-1)">Transcripts — ${esc(sess)}</div>
+    <p style="font-size:var(--fs-sm);color:var(--dim);margin:0 0 var(--space-3)">JSONL conversation backups (auto-saved before compaction).</p>
     <div style="max-height:260px;overflow-y:auto">${bodyHtml}</div>
   </div>`;
   document.getElementById('modal-btns').innerHTML = `
@@ -22932,11 +23729,11 @@ function _atAttach(inp) {
 function _atStatusBadge(s) {
   const k = _sessStatusKey(s);
   if (k === 'stopped') {
-    return '<span class="status-badge" style="background:rgba(255,255,255,0.06);' +
-      'color:var(--dim);border:1px solid var(--border);margin-right:6px;">stopped</span>';
+    return '<span class="status-badge" style="background:color-mix(in srgb, var(--on-solid) 6%, transparent);' +
+      'color:var(--dim);border:1px solid var(--border);margin-right:var(--space-1-5);">stopped</span>';
   }
   const b = (cls, txt, extra) =>
-    `<span class="status-badge ${cls}" style="margin-right:6px;"${extra || ''}>${txt}</span>`;
+    `<span class="status-badge ${cls}" style="margin-right:var(--space-1-5);"${extra || ''}>${txt}</span>`;
   if (k === 'working') return b('active', 'working') + _atAgentsChip(s);
   if (k === 'waiting' && s.waiting_reason === 'owner') return b('needs-input', esc(_waitingLabel(s)));
   if (k === 'waiting') return b('waiting', esc(_waitingLabel(s)), _waitingTitle(s));
@@ -22949,7 +23746,7 @@ function _atStatusBadge(s) {
 // between "idle, say what you like" and "mid-delegation" (AMUX-4024).
 function _atAgentsChip(s) {
   return s.agents_working
-    ? '<span class="status-badge active" style="margin-right:6px;" ' +
+    ? '<span class="status-badge active" style="margin-right:var(--space-1-5);" ' +
       'title="Background agents are live">\u2699 agents</span>'
     : '';
 }
@@ -23101,6 +23898,9 @@ function _slashAcRow(c) {
 const DEFAULT_CHIPS = [
   { id: 'continue', label: 'Continue', action: 'send', value: 'continue' },
   { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter' },
+  // Ctrl+X, release, then Ctrl+S (Ethan, 2026-10-26). A keys value with spaces
+  // is a sequence: each key is pressed and released in turn.
+  { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s' },
   { id: 'up', label: '\u2191 Up', action: 'keys', value: 'Up' },
   { id: 'down', label: '\u2193 Down', action: 'keys', value: 'Down' },
   { id: 'space', label: 'Space', action: 'keys', value: 'Space' },
@@ -23115,6 +23915,9 @@ const DEFAULT_CHIPS = [
 ];
 // Prior built-in default sets \u2014 users still on one of these (never customized)
 // are migrated to the current DEFAULT_CHIPS; genuine customizations are untouched.
+// Defaults added after people had customized their chips; each is added to a
+// customized set once (_getChips).
+const _NEW_DEFAULT_CHIPS = ['sendnow'];
 const _OLD_DEFAULT_CHIP_SETS = [
   'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc',
   'continue,enter,up,down,space,ctrlc,esc',
@@ -23124,6 +23927,7 @@ const _OLD_DEFAULT_CHIP_SETS = [
 const _ACTION_CHIPS = [
     { id: 'continue', label: 'continue', action: 'send', value: 'continue', desc: 'Send "continue"' },
     { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter', desc: 'Press Enter' },
+    { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s', desc: 'Ctrl+X, release, then Ctrl+S' },
     { id: 'up', label: '\u2191', action: 'keys', value: 'Up', desc: 'Arrow Up' },
     { id: 'down', label: '\u2193', action: 'keys', value: 'Down', desc: 'Arrow Down' },
     { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush', desc: 'Git push' },
@@ -23260,8 +24064,8 @@ async function _approvalsRefresh() {
     let html = '<div style="max-width:860px;margin:0 auto;">'
       + '<div onclick="_apprToggle()" role="button" tabindex="0" '
       + 'style="font-weight:600;cursor:pointer;display:flex;'
-      + 'align-items:center;gap:8px;min-height:44px;'
-      + (collapsed ? '' : 'margin-bottom:6px;') + '" '
+      + 'align-items:center;gap:var(--space-2);min-height:44px;'
+      + (collapsed ? '' : 'margin-bottom:var(--space-1-5);') + '" '
       + 'title="' + (collapsed ? 'Show the drafts' : 'Collapse') + '">'
       + '<span style="display:inline-block;width:1em;transition:transform .12s;'
       + 'transform:rotate(' + (collapsed ? '-90' : '0') + 'deg);">&#x25BE;</span>'
@@ -23274,22 +24078,22 @@ async function _approvalsRefresh() {
     for (const g of grants) {
       const gp = g.payload || {};
       const gmins = Math.max(1, Math.round((g.expires_in_s || 0) / 60));
-      html += '<details open style="margin:4px 0;text-align:left;">'
-        + '<summary style="cursor:pointer;display:flex;align-items:center;gap:10px;min-height:34px;">'
+      html += '<details open style="margin:var(--space-1) 0;text-align:left;">'
+        + '<summary style="cursor:pointer;display:flex;align-items:center;gap:var(--space-2-5);min-height:34px;">'
         + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         + '&#x1F511; <b>' + esc(g.requested_by || '?') + '</b> wants to message <b>'
         + esc(gp.target || '?') + '</b> across a group boundary</span>'
-        + '<span style="opacity:0.7;font-size:0.76rem;">expires in ' + gmins + 'm</span>'
+        + '<span style="opacity:0.7;font-size:var(--fs-sm);">expires in ' + gmins + 'm</span>'
         + '<button onclick="event.preventDefault();_grantApprove(\'' + esc(g.id) + '\',this)" '
-        + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
-        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Allow once</button>'
+        + 'style="background:color-mix(in srgb, var(--green) 84%, var(--shade));color:var(--on-solid);border:none;border-radius:var(--radius-md);'
+        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">Allow once</button>'
         + '<button onclick="event.preventDefault();_grantReject(\'' + esc(g.id) + '\',this)" '
-        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
-        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'style="background:transparent;color:var(--on-solid);border:1px solid color-mix(in srgb, var(--on-solid) 45%, transparent);'
+        + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Deny</button>'
         + '</summary>'
-        + '<div style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
-        + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:220px;overflow:auto;">'
+        + '<div style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
+        + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:220px;overflow:auto;">'
         + esc(gp.preview || '(no message preview)') + '</div></details>';
     }
     for (const p of pending) {
@@ -23315,15 +24119,15 @@ async function _approvalsRefresh() {
       // The body was behind a second click, so the banner told you a draft
       // existed and made you hunt for what it said — on the one surface whose
       // entire job is letting a human judge the content before it sends.
-      html += '<details open style="margin:4px 0;text-align:left;">'
-        + '<summary style="cursor:pointer;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-height:34px;">'
+      html += '<details open style="margin:var(--space-1) 0;text-align:left;">'
+        + '<summary style="cursor:pointer;display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1-5) var(--space-2-5);min-height:34px;">'
         + '<span style="flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         + '<b>' + esc(p.session || '?') + '</b> &middot; '
         + (pv.endpoint === 'reply' ? (pv.reply_all ? 'reply all' : 'reply') : 'new email') + '</span>'
-        + '<span style="opacity:0.7;font-size:0.76rem;">' + esc(apprWhen) + '</span>'
+        + '<span style="opacity:0.7;font-size:var(--fs-sm);">' + esc(apprWhen) + '</span>'
         + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
-        + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
-        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Approve</button>'
+        + 'style="background:color-mix(in srgb, var(--green) 84%, var(--shade));color:var(--on-solid);border:none;border-radius:var(--radius-md);'
+        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">Approve</button>'
         // EDIT (Ethan, 2026-09-23: "just make it Approve, Discard and Edit. and
         // then make edit enter edit mode where i can edit it manually"). The
         // preview becomes a textarea in place; Approve then sends what is in it.
@@ -23332,8 +24136,8 @@ async function _approvalsRefresh() {
         // message rather than an edit of this one.
         + '<button ' + (_full ? '' : 'disabled title="The full draft is not available here, so it cannot be edited safely" ')
         + 'onclick="event.preventDefault();_apprEdit(\'' + esc(p.id) + '\',this)" '
-        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
-        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'style="background:transparent;color:var(--on-solid);border:1px solid color-mix(in srgb, var(--on-solid) 45%, transparent);'
+        + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Edit</button>'
         // DISCARD (AMUX-3698). Until this existed the only button here was
         // "Approve & send", so a human looking at a draft they did not want had
@@ -23341,8 +24145,8 @@ async function _approvalsRefresh() {
         // example.invalid gate probes sitting in his banner, approve-or-wait.
         // 44x34 keeps it over the mobile touch floor (css-mobile.md).
         + '<button onclick="event.preventDefault();_apprReject(\'' + esc(p.id) + '\',this)" '
-        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
-        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'style="background:transparent;color:var(--on-solid);border:1px solid color-mix(in srgb, var(--on-solid) 45%, transparent);'
+        + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Discard</button>'
         + '</summary>'
         // FULL ADDRESSES AND THE SUBJECT, REPLIES INCLUDED (Ethan, 2026-09-25:
@@ -23352,14 +24156,14 @@ async function _approvalsRefresh() {
         // recipients and subject.
         + _apprHeaders(pv)
         + '<div id="appr-body-' + esc(p.id) + '" '
-        + 'style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
-        + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:320px;overflow:auto;">'
+        + 'style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
+        + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
-        + (_full ? '' : '<div style="font-size:0.74rem;color:#fde68a;margin:0 0 6px;">Showing only the first '
+        + (_full ? '' : '<div style="font-size:var(--fs-sm);color:color-mix(in srgb, var(--yellow) 47%, var(--on-solid));margin:0 0 var(--space-1-5);">Showing only the first '
           + _bodyText.length + ' characters of this draft. Approve sends the complete stored message.</div>')
         + '</details>';
     }
-    html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">'
+    html += '<div style="opacity:0.65;font-size:var(--fs-sm);margin-top:var(--space-1);">'
       + (grants.length ? 'Allow once releases exactly ONE message to that worker, then the wall is back. ' : '')
       + 'Nothing sends without Approve. Discard drops a draft now and records who dropped it; unapproved drafts also expire on their own.</div></div>';
     el.innerHTML = html;
@@ -23367,10 +24171,10 @@ async function _approvalsRefresh() {
   } catch (e) {}
 }
 function _apprHeaders(pv) {
-  const row = (k, v) => v ? '<div style="display:flex;gap:8px;"><span style="opacity:0.7;min-width:56px;">' + k
+  const row = (k, v) => v ? '<div style="display:flex;gap:var(--space-2);"><span style="opacity:0.7;min-width:56px;">' + k
     + '</span><span style="flex:1;min-width:0;word-break:break-all;">' + esc(v) + '</span></div>' : '';
   const subject = pv.subject || (pv.endpoint === 'reply' ? '(thread subject unavailable)' : '(no subject)');
-  return '<div class="appr-headers" style="font-size:0.8rem;line-height:1.5;margin:6px 0 2px;">'
+  return '<div class="appr-headers" style="font-size:var(--fs-md);line-height:1.5;margin:var(--space-1-5) 0 var(--space-0-5);">'
     + row('From', pv.from) + row('To', pv.to || '?') + row('Cc', pv.cc)
     + row('Subject', subject)
     + (pv.endpoint === 'reply' ? row('Replying', pv.reply_all ? 'to everyone on the thread' : 'to the sender') : '')
@@ -23453,12 +24257,12 @@ function _apprEdit(id, btn) {
   const ta = document.createElement('textarea');
   ta.id = 'appr-edit-' + id;
   ta.value = text;
-  ta.setAttribute('style', 'width:100%;min-height:220px;background:rgba(0,0,0,0.35);'
-    + 'color:#fff;border:1px solid rgba(255,255,255,0.35);border-radius:6px;'
-    + 'padding:8px 10px;font:inherit;font-size:0.8rem;line-height:1.45;');
+  ta.setAttribute('style', 'width:100%;min-height:220px;background:color-mix(in srgb, var(--shade) 35%, transparent);'
+    + 'color:var(--on-solid);border:1px solid color-mix(in srgb, var(--on-solid) 35%, transparent);border-radius:var(--radius-md);'
+    + 'padding:var(--space-2) var(--space-2-5);font:inherit;font-size:var(--fs-md);line-height:1.45;');
   host.appendChild(ta);
   const note = document.createElement('div');
-  note.setAttribute('style', 'opacity:0.7;font-size:0.72rem;margin-top:4px;');
+  note.setAttribute('style', 'opacity:0.7;font-size:var(--fs-xs);margin-top:var(--space-1);');
   note.textContent = 'Editing. Approve sends what is in this box; the edit is recorded in the send ledger.';
   host.appendChild(note);
   ta.focus();
@@ -23520,6 +24324,22 @@ function _getChips() {
       _saveChips(nd);
       return nd;
     }
+    // A chip added to the defaults later joins a customized set once, after
+    // Enter (or at the front). Removing it afterwards sticks: it is offered once.
+    let offered = [];
+    try { offered = JSON.parse(localStorage.getItem('amux_chips_offered') || '[]'); } catch (e) {}
+    const fresh = _NEW_DEFAULT_CHIPS.filter(id => !offered.includes(id) && !saved.some(c => c.id === id));
+    if (fresh.length) {
+      const next = saved.slice();
+      for (const id of fresh) {
+        const chip = DEFAULT_CHIPS.find(c => c.id === id);
+        const at = next.findIndex(c => c.id === 'enter');
+        next.splice(at >= 0 ? at + 1 : 0, 0, { ...chip });
+      }
+      try { localStorage.setItem('amux_chips_offered', JSON.stringify(offered.concat(_NEW_DEFAULT_CHIPS))); } catch (e) {}
+      _saveChips(next);
+      return next;
+    }
     return saved;
   }
   return DEFAULT_CHIPS.map(c => ({...c}));
@@ -23542,6 +24362,14 @@ function _chipChatAction(chip, target) {
   if (k === 'up' && inp) return cmdHistoryUp(inp, target);
   if (k === 'down' && inp) return cmdHistoryDown(inp, target);
 }
+async function _chipKeySequence(name, keys, isPeek) {
+  for (let i = 0; i < keys.length; i++) {
+    const r = await doKeys(name, keys[i]);
+    if (!r || !r.accepted) { showToast('Not sent: ' + keys[i] + ' (' + ((r && r.message) || 'refused') + ')'); break; }
+    if (i < keys.length - 1) await new Promise(res => setTimeout(res, 80));
+  }
+  if (isPeek && typeof _refreshPeekSoon === 'function') _refreshPeekSoon();
+}
 function _chipAction(chip, sessionName, isPeek) {
   const chatTarget = isPeek && (chip.action === 'send' || chip.action === 'keys')
     && typeof _peekChatTarget === 'function' && _peekChatTarget();
@@ -23557,6 +24385,10 @@ function _chipAction(chip, sessionName, isPeek) {
       return;
     }
     if (typeof _stopKeyBeacon === 'function') _stopKeyBeacon(isPeek ? peekSession : sessionName, chip.value, isPeek ? 'peek-chip' : 'card-chip');
+    // "C-x C-s": press and release each key in order, a moment apart, and stop
+    // at the first one the terminal does not take.
+    const seq = String(chip.value).split(/\s+/).filter(Boolean);
+    if (seq.length > 1) { _chipKeySequence(isPeek ? peekSession : sessionName, seq, isPeek); return; }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {
@@ -23721,7 +24553,7 @@ function openChipPicker() {
   existing.filter(c => c.id.startsWith('custom-')).forEach(c => {
     html += '<div class="chip-picker-item added" data-search="' + esc((c.label + ' ' + c.value).toLowerCase()) + '">'
       + '<span>' + esc(c.label) + '</span><span class="cpd">' + esc(c.value.length > 40 ? c.value.slice(0,40) + '...' : c.value) + '</span>'
-      + '<span style="color:var(--dim);font-size:0.75rem;">\u2713</span></div>';
+      + '<span style="color:var(--dim);font-size:var(--fs-sm);">\u2713</span></div>';
   });
   _getAllChips().forEach(sec => {
     html += '<div class="chip-picker-section">' + esc(sec.section) + '</div>';
@@ -23732,7 +24564,7 @@ function openChipPicker() {
         + ' data-chip=\'' + esc(JSON.stringify({id:item.id,label:item.label,action:item.action,value:item.value,danger:item.danger||false})) + '\'>'
         + '<span>' + esc(item.label) + '</span>'
         + '<span class="cpd">' + esc(item.desc || '') + '</span>'
-        + (added ? '<span style="color:var(--dim);font-size:0.75rem;">\u2713</span>' : '')
+        + (added ? '<span style="color:var(--dim);font-size:var(--fs-sm);">\u2713</span>' : '')
         + '</div>';
     });
   });
@@ -23747,15 +24579,15 @@ function openChipPicker() {
 function openCustomChipForm() {
   const body = document.getElementById('chip-picker-body');
   if (!body) return;
-  body.innerHTML = '<div style="padding:16px;display:flex;flex-direction:column;gap:12px;">'
-    + '<div style="font-size:0.85rem;font-weight:600;color:var(--text);">Create Custom Button</div>'
+  body.innerHTML = '<div style="padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">'
+    + '<div style="font-size:var(--fs-lg);font-weight:600;color:var(--text);">Create Custom Button</div>'
     + '<input id="custom-chip-label" placeholder="Button label (e.g. Summarize)" '
-    + 'style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:0.85rem;outline:none;">'
+    + 'style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);color:var(--text);font-size:var(--fs-lg);outline:none;">'
     + '<textarea id="custom-chip-prompt" placeholder="Prompt to send (e.g. Summarize the current task and output in bullet points)" '
-    + 'rows="4" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:0.85rem;outline:none;resize:vertical;font-family:inherit;"></textarea>'
-    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
-    + '<button onclick="closeChipPicker()" style="padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:0.85rem;">Cancel</button>'
-    + '<button onclick="saveCustomChip()" style="padding:6px 14px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:0.85rem;font-weight:600;">Add</button>'
+    + 'rows="4" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);color:var(--text);font-size:var(--fs-lg);outline:none;resize:vertical;font-family:inherit;"></textarea>'
+    + '<div style="display:flex;gap:var(--space-2);justify-content:flex-end;">'
+    + '<button onclick="closeChipPicker()" style="padding:var(--space-1-5) var(--space-3-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:var(--fs-lg);">Cancel</button>'
+    + '<button onclick="saveCustomChip()" style="padding:var(--space-1-5) var(--space-3-5);border-radius:var(--radius-md);border:none;background:var(--accent);color:var(--on-solid);cursor:pointer;font-size:var(--fs-lg);font-weight:600;">Add</button>'
     + '</div></div>';
   setTimeout(() => document.getElementById('custom-chip-label')?.focus(), 50);
   // Hide search bar while in form view
@@ -24491,7 +25323,7 @@ async function _raRender() {
   if (!el) return;
   await _raLoadIndex();
   if (!_raIndex.length) {
-    el.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">No read-alouds yet.<br><span style="font-size:0.78rem;">Tap 🔊 on a message, a selection, or a worker to read it aloud — clips land here to replay. They auto-clear after 30 days.</span></div>';
+    el.innerHTML = '<div style="padding:var(--space-6) var(--space-4);text-align:center;color:var(--dim);font-size:var(--fs-lg);">No read-alouds yet.<br><span style="font-size:var(--fs-base);">Tap 🔊 on a message, a selection, or a worker to read it aloud — clips land here to replay. They auto-clear after 30 days.</span></div>';
     return;
   }
   el.innerHTML = _raIndex.map(e => {
@@ -24537,14 +25369,14 @@ function openTTS(prefillText) {
   div.innerHTML = '<div class="tts-overlay" onclick="if(event.target===this)closeTTS()">'
     + '<div class="tts-dialog">'
     + '<div class="tts-header"><h3>Text to Speech</h3>'
-    + '<button onclick="closeTTS()" style="background:none;border:none;color:var(--dim);font-size:1.2rem;cursor:pointer;">&times;</button></div>'
+    + '<button onclick="closeTTS()" style="background:none;border:none;color:var(--dim);font-size:var(--fs-4xl);cursor:pointer;">&times;</button></div>'
     + '<div class="tts-body">'
     + '<textarea id="tts-text" placeholder="Enter text to speak...">' + (prefillText ? esc(prefillText) : '') + '</textarea>'
     + '<select id="tts-voice"><option value="">Loading voices...</option></select>'
     + '<div id="tts-audio-container"></div>'
     + '</div>'
     + '<div class="tts-footer">'
-    + '<div id="tts-status" style="flex:1;font-size:0.8rem;color:var(--dim);"></div>'
+    + '<div id="tts-status" style="flex:1;font-size:var(--fs-md);color:var(--dim);"></div>'
     + '<button class="tts-btn tts-btn-secondary" onclick="closeTTS()">Cancel</button>'
     + '<button class="tts-btn tts-btn-primary" id="tts-generate-btn" onclick="generateTTS()">&#x1F50A; Generate</button>'
     + '</div></div></div>';
@@ -24617,7 +25449,7 @@ async function generateTTS() {
       container.innerHTML = '<div class="tts-audio-wrap">'
         + '<audio controls autoplay src="' + d.url + '" style="width:100%;"></audio>'
         + '</div>'
-        + '<div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">' + kb + ' KB &middot; <a href="' + d.url + '" download style="color:var(--accent);">Download MP3</a></div>';
+        + '<div style="font-size:var(--fs-sm);color:var(--dim);margin-top:var(--space-1);">' + kb + ' KB &middot; <a href="' + d.url + '" download style="color:var(--accent);">Download MP3</a></div>';
     }
     if (status) status.textContent = 'Done!';
   } catch(e) {
@@ -25296,7 +26128,7 @@ function _cmdHistRenderCtxChips() {
       chips.push('<button class="msg-kind-chip" title="Only messages sent from ' + esc(value) + '"'
         + ' onclick="_cmdHistSetCtx(\u0027' + escJs(field) + '\u0027,\u0027' + escJs(value) + '\u0027)" style="'
         + 'border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';'
-        + 'background:' + (on ? 'rgba(88,166,255,0.14)' : 'transparent') + ';'
+        + 'background:' + (on ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent') + ';'
         + 'color:' + (on ? 'var(--accent)' : 'var(--dim)') + ';">' + esc(value) + ' ' + n + '</button>');
     }
   }
@@ -25329,7 +26161,7 @@ function _cmdHistRenderChips(items) {
     // 30px min-height keeps these tappable in the PWA without ballooning the row.
     return '<button class="msg-kind-chip" onclick="_cmdHistSetKind(\u0027' + k + '\u0027)" style="'
       + 'border:1px solid ' + (on ? col : 'var(--border)') + ';'
-      + 'background:' + (on ? (km ? km.bg : 'rgba(88,166,255,0.14)') : 'transparent') + ';'
+      + 'background:' + (on ? (km ? km.bg : 'color-mix(in srgb, var(--accent) 14%, transparent)') : 'transparent') + ';'
       + 'color:' + (on ? col : 'var(--dim)') + ';">' + lbl + ' ' + counts[k] + '</button>';
   }).join('');
 }
@@ -25349,7 +26181,7 @@ function _renderCmdHistoryList() {
   if (q) filtered = filtered.filter(e => { const t = typeof e === 'string' ? e : e.text; return t.toLowerCase().includes(q); });
   if (!filtered.length) {
     const kLbl = (_MSG_KIND[_cmdHistKind] || {}).label;
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">'
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5);text-align:center;">'
       + (q ? 'No matches.'
            : kLbl ? 'No ' + kLbl.toLowerCase() + ' messages'+ (sessFilter ? ' for ' + sessFilter : '') + '.'
                   : (sessFilter ? 'No messages for ' + sessFilter + '.' : 'No history yet.')) + '</div>';
@@ -25362,11 +26194,11 @@ function _renderCmdHistoryList() {
   // the shared global cache has no offset to continue from, and offering the
   // button there would page a list this function is not driving.
   const _more = (_cmdHistRows && !_cmdHistDone)
-    ? '<div style="padding:12px;text-align:center;">'
+    ? '<div style="padding:var(--space-3);text-align:center;">'
       + '<button class="btn" onclick="_cmdHistMore()" '
-      + 'style="min-height:44px;min-width:44px;padding:10px 18px;">'
+      + 'style="min-height:44px;min-width:44px;padding:var(--space-2-5) var(--space-4);">'
       + (_cmdHistLoading ? 'Loading…' : 'Load older messages') + '</button>'
-      + '<div style="color:var(--dim);font-size:0.75rem;margin-top:6px;">showing '
+      + '<div style="color:var(--dim);font-size:var(--fs-sm);margin-top:var(--space-1-5);">showing '
       + _cmdHistRaw.length + '</div></div>'
     : '';
   list.innerHTML = filtered.map(e => _cmdHistItemHTML(e, _msgCtxHistory())).join('') + _more;
@@ -25431,30 +26263,30 @@ function _msgDeliveryChip(e) {
     // The degraded path: no origin stamp, no audit row, arrival unverified.
     // Deliberately the loudest chip on the row — a message that arrived this
     // way must never read as an audited one.
-    label = 'fallback'; color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
+    label = 'fallback'; color = 'var(--red)'; bg = 'color-mix(in srgb, var(--red) 16%, transparent)';
     title = 'Delivered by raw keystroke injection — NOT origin-stamped, not acknowledged, arrival unverified';
   } else if (rec === 'queued' || (!rec && _msgQueued(e))) {
     const delivered = Number(e.delivered_at) > 0;
     label = delivered ? 'delivered from queue' + waitTxt : 'queued';
-    color = '#d29922'; bg = 'rgba(210,153,34,0.16)';
+    color = 'var(--yellow)'; bg = 'color-mix(in srgb, var(--yellow) 16%, transparent)';
     title = delivered
       ? (wait > 1500 ? 'Delivered at a later turn boundary after ' + _fmtDur(wait) : 'Delivered at the next turn boundary')
       : 'Waiting in the steering queue; delivery has not been confirmed';
   } else if (rec === 'lost') {
-    label = 'not delivered'; color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
+    label = 'not delivered'; color = 'var(--red)'; bg = 'color-mix(in srgb, var(--red) 16%, transparent)';
     title = 'A server restart interrupted delivery, and the message is not in the worker\'s transcript, so it never arrived. Send it again if it still matters.';
   } else if (rec === 'voided' || rec === 'uncertain') {
     label = rec === 'voided' ? 'not delivered' : 'delivery unknown';
-    color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
+    color = 'var(--red)'; bg = 'color-mix(in srgb, var(--red) 16%, transparent)';
     title = rec === 'voided' ? 'The queued message was cancelled before delivery' : 'Delivery was interrupted; the message may or may not have reached the worker';
   } else if (rec === 'pane') {
     // F8(c): typed straight into the worker's terminal, observed from the
     // provider's submit hook. amux did not deliver it; without this arm it
     // would fall through to the "direct?" inference below.
-    label = 'typed in pane'; color = '#58a6ff'; bg = 'rgba(88,166,255,0.14)';
+    label = 'typed in pane'; color = 'var(--accent)'; bg = 'color-mix(in srgb, var(--accent) 14%, transparent)';
     title = 'Typed directly into the worker\'s terminal, not sent through amux. Recorded from the provider\'s prompt-submit hook.';
   } else if (rec === 'direct') {
-    label = 'direct'; color = '#3fb950'; bg = 'rgba(63,185,80,0.14)';
+    label = 'direct'; color = 'var(--green)'; bg = 'color-mix(in srgb, var(--green) 14%, transparent)';
     title = 'Handed to a live session at the moment it was sent';
   } else if (rec === 'board') {
     // AMUX-5011. `board` means amux read the message as a work request and
@@ -25471,24 +26303,24 @@ function _msgDeliveryChip(e) {
     // read the purple "board" chip as sent (MSG-68617/68625, 2026-09-24).
     // A later conversational hand-off stamps delivered_at, so say that too.
     if (Number(e.delivered_at) > 0) {
-      label = 'delivered via board'; color = '#a371f7'; bg = 'rgba(163,113,247,0.16)';
+      label = 'delivered via board'; color = 'var(--purple)'; bg = 'color-mix(in srgb, var(--purple) 16%, transparent)';
       title = 'amux routed this through the board first, then handed the text to the worker.';
-      return '<span title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
-           + 'padding:1px 6px;border-radius:3px;background:' + bg + ';color:' + color + ';margin-right:6px;">'
+      return '<span title="' + title + '" style="display:inline-block;font-size:var(--fs-3xs);font-weight:600;'
+           + 'padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:' + bg + ';color:' + color + ';margin-right:var(--space-1-5);">'
            + label + '</span>';
     }
     label = 'not sent' + (e.card_id ? ' \u2192 ' + e.card_id : ' \u2192 board');
-    color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
+    color = 'var(--red)'; bg = 'color-mix(in srgb, var(--red) 16%, transparent)';
     title = 'NOT delivered as text. amux read this as a work request and routed it to the board'
           + (e.card_id ? ' — it became ' + e.card_id + '.' : '.')
           + ' The lane sees the resulting card, not this message.';
   } else {
     // Pre-0014 row: inferred, and SAID to be inferred.
-    label = 'direct?'; color = 'var(--dim)'; bg = 'rgba(139,148,158,0.12)';
+    label = 'direct?'; color = 'var(--dim)'; bg = 'color-mix(in srgb, var(--dim) 12%, transparent)';
     title = 'Delivery path not recorded for this message (predates delivery metadata) — inferred from its type';
   }
-  return '<span' + (label === 'direct' ? ' class="msg-deliv-direct"' : '') + ' title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
-       + 'padding:1px 6px;border-radius:3px;background:' + bg + ';color:' + color + ';margin-right:6px;">'
+  return '<span' + (label === 'direct' ? ' class="msg-deliv-direct"' : '') + ' title="' + title + '" style="display:inline-block;font-size:var(--fs-3xs);font-weight:600;'
+       + 'padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:' + bg + ';color:' + color + ';margin-right:var(--space-1-5);">'
        + label + '</span>';
 }
 
@@ -25510,16 +26342,16 @@ function _msgSubmitChip(e) {
   if (!v) return '';
   const spec = {
     confirmed:  null,   // the happy path is silent; a chip on every row is noise
-    retried:    { label: 'retried',    color: '#d29922', bg: 'rgba(210,153,34,0.16)',
+    retried:    { label: 'retried',    color: 'var(--yellow)', bg: 'color-mix(in srgb, var(--yellow) 16%, transparent)',
                   title: 'Submitted, but only after a dropped Enter was re-sent — the keystroke path is failing on this lane' },
-    stuck:      { label: 'NOT SENT',   color: '#f85149', bg: 'rgba(248,81,73,0.18)',
+    stuck:      { label: 'NOT SENT',   color: 'var(--red)', bg: 'color-mix(in srgb, var(--red) 18%, transparent)',
                   title: 'Text was still sitting in the composer — this message was never submitted' },
-    unverified: { label: 'unverified', color: 'var(--dim)', bg: 'rgba(139,148,158,0.12)',
+    unverified: { label: 'unverified', color: 'var(--dim)', bg: 'color-mix(in srgb, var(--dim) 12%, transparent)',
                   title: 'Keys were delivered but submission could not be confirmed (no input box drawn, or the capture failed)' },
   }[v];
   if (!spec) return '';
-  return '<span title="' + spec.title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
-       + 'padding:1px 6px;border-radius:3px;background:' + spec.bg + ';color:' + spec.color + ';margin-right:6px;">'
+  return '<span title="' + spec.title + '" style="display:inline-block;font-size:var(--fs-3xs);font-weight:600;'
+       + 'padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:' + spec.bg + ';color:' + spec.color + ';margin-right:var(--space-1-5);">'
        + spec.label + '</span>';
 }
 
@@ -25533,26 +26365,26 @@ function _fmtDur(ms) {
   return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
 }
 const _MSG_KIND = {
-  human:    { label: 'Human',     color: '#58a6ff', bg: 'rgba(88,166,255,0.14)' },
+  human:    { label: 'Human',     color: 'var(--accent)', bg: 'color-mix(in srgb, var(--accent) 14%, transparent)' },
   // Typed into a worker's Chat tab (stored type "chat"), kept apart from the
   // terminal so the Messages tab can show and filter it (Ethan, 2026-10-14).
-  chat:     { label: 'Chat',      color: '#db61a2', bg: 'rgba(219,97,162,0.14)' },
-  session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
-  schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
-  amux:     { label: 'amux',      color: '#8b949e', bg: 'rgba(139,148,158,0.14)' },
+  chat:     { label: 'Chat',      color: 'var(--pink)', bg: 'color-mix(in srgb, var(--pink) 14%, transparent)' },
+  session:  { label: 'Session',   color: 'color-mix(in srgb, var(--purple) 88%, var(--shade))', bg: 'color-mix(in srgb, color-mix(in srgb, var(--purple) 88%, var(--shade)) 16%, transparent)' },
+  schedule: { label: 'Scheduled', color: 'var(--green)', bg: 'color-mix(in srgb, var(--green) 15%, transparent)' },
+  amux:     { label: 'amux',      color: 'var(--dim)', bg: 'color-mix(in srgb, var(--dim) 14%, transparent)' },
   // A send that reached the pane as raw keystrokes while the server was
   // unreachable (AMUX-2670). `_msgKind` has returned 'unstamped' for it since
   // that card, and this entry never existed — so it fell through to Human, the
   // exact rendering that card exists to prevent. The branch also never ran,
   // because the server's `kind` wins and the server said human. Both halves
   // fixed together; either alone changes nothing on screen.
-  unstamped:{ label: 'Unstamped',    color: '#db6d28', bg: 'rgba(219,109,40,0.14)' },
+  unstamped:{ label: 'Unstamped',    color: 'color-mix(in srgb, var(--orange) 87%, var(--shade))', bg: 'color-mix(in srgb, color-mix(in srgb, var(--orange) 87%, var(--shade)) 14%, transparent)' },
   // AMUX-3737: a kind THIS BUILD does not know. Amber because it is a prompt to
   // go and classify the type, not a normal resting state. Without this entry
   // the fallback below painted it blue and called it Human, which is the server
   // bug reproduced client-side — so fixing only the server would have changed
   // nothing on screen.
-  unknown:  { label: 'Unclassified', color: '#d29922', bg: 'rgba(210,153,34,0.14)' },
+  unknown:  { label: 'Unclassified', color: 'var(--yellow)', bg: 'color-mix(in srgb, var(--yellow) 14%, transparent)' },
 };
 const _MSG_KIND_ORDER = ['human', 'chat', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
 // Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
@@ -25661,8 +26493,8 @@ function _msgCardChip(cardId, message, linkedCard) {
     log: ''
   } : null);
   const c = live || recorded;
-  const stC = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
-    : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
+  const stC = st => st === 'verified' ? 'var(--green)' : st === 'done' ? 'var(--green)'
+    : st === 'doing' ? 'var(--yellow)' : st === 'review' ? 'color-mix(in srgb, var(--purple) 78%, var(--on-solid))'
     : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
   // AN EPIC'S OWN STATUS IS NOT ITS PROGRESS (Ethan, 2026-09-25: a root read
   // "backlog" beside children that were done and doing). The root closes only
@@ -25919,14 +26751,14 @@ function _cmdHistItemHTML(e, ctx) {
   const _ownTarget = !!(ctx.ownTab && session && typeof peekSession !== 'undefined' && session === peekSession);
   const _kindIsFilter = !!(ctx.ownTab && typeof _peekMsgFilter !== 'undefined' && _peekMsgFilter === kind && !originTxt);
   const senderTag = _msgSenderTag(sender, origin, !!session && !_ownTarget);
-  const tag = _kindIsFilter ? '' : `<span style="display:inline-block;font-size:0.7rem;font-weight:600;padding:1px 7px;border-radius:3px;background:${km.bg};color:${km.color};margin-right:6px;">${km.label}${originTxt}</span>`;
+  const tag = _kindIsFilter ? '' : `<span style="display:inline-block;font-size:var(--fs-xs);font-weight:600;padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:${km.bg};color:${km.color};margin-right:var(--space-1-5);">${km.label}${originTxt}</span>`;
   // On the global Messages page the worker name OPENS THAT WORKER and does
   // nothing else; the row's own click inserts the text into its composer, and
   // a click on the name used to fall through to that (Ethan, 2026-10-11).
   const sessTag = (!session || _ownTarget) ? '' : ctx.onOpen
     ? `<button type="button" class="msg-sess-link" onclick="event.stopPropagation();openPeek('${escJs(session)}')" title="Open ${esc(session)}">${esc(session)}</button>`
-    : `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
-  const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
+    : `<span style="color:var(--dim);font-size:var(--fs-xs);margin-right:var(--space-1-5);">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
+  const tsTag = ts ? `<span style="color:var(--dim);font-size:var(--fs-xs);">${ts}</span>` : '';
   // Copyable message id, matching the scheduler's SCHED-N badge (Ethan
   // 2026-08-12). Only when the row has a real id — legacy string entries and
   // not-yet-delivered offline sends have none, and a copy chip that yields
@@ -25948,7 +26780,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:8px 12px;background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:var(--space-2) var(--space-3);background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);transition:border-color 0.15s;display:flex;gap:var(--space-1-5);align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:var(--space-1);">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -25984,7 +26816,7 @@ function _pendingSendsFor(session) {
     let text = '', msg_id = '';
     try { const body = JSON.parse(op.options?.body || '{}'); text = body.text || ''; msg_id = body.msg_id || ''; } catch(e) {}
     if (text) out.push({ text, msg_id, ts: op.timestamp, kind: m[2], idx, attempted: !!(op.attempted_at || op.attempts || !op.not_attempted), id:op.id,
-      decision: op.needs_decision || '', checking: !op.needs_decision && _outboxUncertainMessage(op) });
+      decision: op.needs_decision || '', checking: !op.needs_decision && _outboxUncertainMessage(op), error: op.error || '' });
   });
   return out;
 }
@@ -26022,8 +26854,12 @@ function _pendingMessageProjection(history, pending) {
 // need a notice above the composer; do not flash a queued pill on every Send.
 function _updatePendingPill() {
   // A mounted chat shows pending sends as bubbles; repaint when the queue moves.
-  if (_chat.name && _chatShowing() && _workerRenderer(_chat.name) === 'chat') {
-    const n = _pendingSendsFor(_chat.name).length;
+  // A worker's Chat tab (`<worker>@chat`) is not in `sessions`, so it reads as a terminal
+  // there; it must repaint too, or its bubbles never left "waiting to send".
+  if (_chat.name && _chatShowing() && (_workerRenderer(_chat.name) === 'chat' || String(_chat.name).endsWith('@chat'))) {
+    // The STATE of each pending send, not only their count: a send the server refused
+    // must turn from "waiting to send" into "Not sent" with a retry (sandbox, 2026-10-25).
+    const n = _pendingSendsFor(_chat.name).map(p => p.id + ':' + p.decision + ':' + p.checking + ':' + p.attempted).join('|');
     if (n !== _chat.pendingShown) { _chat.pendingShown = n; _chatRender(); }
   }
   const pill = document.getElementById('peek-pending-pill');
@@ -26097,7 +26933,7 @@ function _peekMsgRenderChips(items) {
     const on = _peekMsgFilter === k;
     const km = _MSG_KIND[k];
     const col = km ? km.color : 'var(--accent)';
-    return `<button class="msg-kind-chip" onclick="_peekMsgSetFilter('${k}')" style="border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'rgba(88,166,255,0.14)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl} ${_n(k)}</button>`;
+    return `<button class="msg-kind-chip" onclick="_peekMsgSetFilter('${k}')" style="border:1px solid ${on?col:'var(--border)'};background:${on?(km?km.bg:'color-mix(in srgb, var(--accent) 14%, transparent)'):'transparent'};color:${on?col:'var(--dim)'};">${lbl} ${_n(k)}</button>`;
   }).join('');
 }
 function _peekMessagesRender() {
@@ -26122,11 +26958,11 @@ function _peekMessagesRender() {
     // Every pending row can be sent again or removed (Ethan, 2026-10-03).
     const {label, note, retry: retryLabel} = _pendingMsgState(p);
     const id = escJs(p.id);
-    return `<div class="pending-msg" data-pending-id="${esc(p.id)}" data-decision="${esc(p.decision || '')}" style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);">
+    return `<div class="pending-msg" data-pending-id="${esc(p.id)}" data-decision="${esc(p.decision || '')}" style="padding:var(--space-2) var(--space-3);background:color-mix(in srgb, var(--yellow) 7%, transparent);border:1px solid color-mix(in srgb, var(--yellow) 45%, transparent);border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);">
       <div style="min-width:0;word-break:break-word;line-height:1.45;">
-        <div style="margin-bottom:4px;"><span class="pending-msg-state" style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">${label}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &middot; ${note}</span></div>
-        <div style="white-space:pre-wrap">${safe}</div>${p.local_notes.some(e => !e.msg_id) ? '<details style="margin-top:4px;color:var(--dim)"><summary>Matching local history note</summary>' + p.local_notes.map(e => esc(e.text)).join('<br>') + '</details>' : ''}</div>
-      <div style="display:flex;gap:8px;margin-top:8px;">
+        <div style="margin-bottom:var(--space-1);"><span class="pending-msg-state" style="display:inline-block;font-size:var(--fs-xs);padding:1px var(--space-1-5);border-radius:var(--radius-sm);background:color-mix(in srgb, var(--yellow) 16%, transparent);color:var(--yellow);margin-right:var(--space-1-5);">${label}</span><span style="color:var(--dim);font-size:var(--fs-xs);">${ts} &middot; ${note}</span></div>
+        <div style="white-space:pre-wrap">${safe}</div>${p.local_notes.some(e => !e.msg_id) ? '<details style="margin-top:var(--space-1);color:var(--dim)"><summary>Matching local history note</summary>' + p.local_notes.map(e => esc(e.text)).join('<br>') + '</details>' : ''}</div>
+      <div style="display:flex;gap:var(--space-2);margin-top:var(--space-2);">
         <button type="button" class="btn pending-msg-retry" onclick="event.stopPropagation();_outboxRetryNow('${id}')">${retryLabel}</button>
         <button type="button" class="btn pending-msg-remove" onclick="event.stopPropagation();_outboxRemoveMessage('${id}')">Remove</button>
       </div>
@@ -26211,11 +27047,11 @@ function _peekMessagesRender() {
   // Three states, not two: measuring, measured-and-empty, and could-not-measure.
   const _loaded = _peekMsgRowsFor === peekSession && Array.isArray(_peekMsgRows);
   const _stillLoading = _peekMsgLoading || (!_loaded && !_peekMsgError);
-  const _note = t => `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${t}</div>`;
+  const _note = t => `<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5);text-align:center;">${t}</div>`;
   const _placeholder = _stillLoading ? _note('Loading messages…')
     : (!_loaded && _peekMsgError)
       ? _note('Could not load messages — ' + esc(_peekMsgError) +
-              '<br><button class="btn" style="margin-top:10px;min-height:36px;" ' +
+              '<br><button class="btn" style="margin-top:var(--space-2-5);min-height:36px;" ' +
               'onclick="_peekMessagesLoad(false)">Retry</button>')
       : _note(_empty);
   list.innerHTML = (_body || _placeholder)
@@ -26240,15 +27076,15 @@ function _peekMsgPagerHTML() {
   const atFirst = _peekMsgPage <= 1;
   const atLast = pages === null ? _peekMsgDone : _peekMsgPage >= pages;
   const btn = (label, page, disabled, title) =>
-    '<button class="btn" style="font-size:0.75rem;padding:3px 9px;min-height:44px;"'
+    '<button class="btn" style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-2);min-height:44px;"'
     + (disabled ? ' disabled' : ' onclick="_peekMsgGoToPage(' + page + ')"')
     + ' title="' + title + '">' + label + '</button>';
   const sizes = _MSGS_PAGE_SIZES.map(n =>
     '<option value="' + n + '"' + (n === (_msgsPageSize || _PEEK_MSG_PAGE) ? ' selected' : '') + '>' + n + '/page</option>').join('');
-  return '<div style="display:flex;gap:5px;justify-content:center;align-items:center;flex-wrap:wrap;margin:10px auto 4px;">'
+  return '<div style="display:flex;gap:var(--space-1);justify-content:center;align-items:center;flex-wrap:wrap;margin:var(--space-2-5) auto var(--space-1);">'
     + btn('&laquo;', 1, atFirst, 'First page')
     + btn('&lsaquo;', _peekMsgPage - 1, atFirst, 'Previous page')
-    + '<span style="font-size:0.72rem;color:var(--dim);display:inline-flex;align-items:center;gap:5px;">page'
+    + '<span style="font-size:var(--fs-xs);color:var(--dim);display:inline-flex;align-items:center;gap:var(--space-1);">page'
     + '<input class="input" type="number" min="1"' + (pages ? ' max="' + pages + '"' : '')
     + ' value="' + _peekMsgPage + '" onchange="_peekMsgGoToPage(+this.value)"'
     + ' onkeydown="if(event.key===\'Enter\')_peekMsgGoToPage(+this.value)"'
@@ -26256,7 +27092,7 @@ function _peekMsgPagerHTML() {
     + (pages ? 'of ' + pages.toLocaleString() : '') + '</span>'
     + btn('&rsaquo;', _peekMsgPage + 1, atLast, 'Next page')
     + (pages ? btn('&raquo;', pages, atLast, 'Last page') : '')
-    + '<select class="input" style="max-width:110px;font-size:0.72rem;" aria-label="Messages per page"'
+    + '<select class="input" style="max-width:110px;font-size:var(--fs-xs);" aria-label="Messages per page"'
     + ' onchange="_peekMsgSetPageSize(+this.value)">' + sizes + '</select>'
     + '</div>';
 }
@@ -26865,7 +27701,7 @@ function _dictRenderHistory() {
   const items = q ? _dictItems.filter(i => (i.text||'').toLowerCase().includes(q)) : _dictItems;
   if (!items.length) {
     body.innerHTML = '<div class="dict-empty">' + (q ? 'No matches.' :
-      'No dictations yet.<br><span style="font-size:0.78rem">Tap the mic above and start talking.</span>') + '</div>';
+      'No dictations yet.<br><span style="font-size:var(--fs-base)">Tap the mic above and start talking.</span>') + '</div>';
     return;
   }
   // Group by day, newest first (matches the reference UI).
@@ -26922,7 +27758,7 @@ function _dictRenderDict() {
   let html = '<div class="dict-dictbar"><span class="dict-dicthint">Terms and names amux should always spell correctly '
     + 'in your dictation.</span><button class="btn primary" onclick="_dictAddWord()">Add new</button></div>';
   if (!_dictWords.length) {
-    html += '<div class="dict-empty">No words yet.<br><span style="font-size:0.78rem">Add jargon, worker names, '
+    html += '<div class="dict-empty">No words yet.<br><span style="font-size:var(--fs-base)">Add jargon, worker names, '
       + 'people — or fix a misspelling the model keeps making.</span></div>';
   } else {
     html += _dictWords.map(w => '<div class="dict-wordrow">'
@@ -26942,7 +27778,7 @@ async function _dictAddWord(existing) {
     + '<input type="checkbox" id="dictm-fix" ' + (isFix ? 'checked' : '') + ' onchange="_dictModalToggle()"></div>'
     + '<div id="dictm-single" style="' + (isFix ? 'display:none' : '') + '">'
     + '<input id="dictm-word" class="dict-modal-input" placeholder="Add a new word" value="' + (w && !isFix ? esc(w.word) : '') + '"></div>'
-    + '<div id="dictm-pair" style="' + (isFix ? '' : 'display:none') + ';display:' + (isFix ? 'flex' : 'none') + ';gap:8px;align-items:center;">'
+    + '<div id="dictm-pair" style="' + (isFix ? '' : 'display:none') + ';display:' + (isFix ? 'flex' : 'none') + ';gap:var(--space-2);align-items:center;">'
     + '<input id="dictm-mis" class="dict-modal-input" placeholder="Misspelling" value="' + (w && isFix ? esc(w.word) : '') + '">'
     + '<span style="color:var(--dim)">&rarr;</span>'
     + '<input id="dictm-cor" class="dict-modal-input" placeholder="Correct spelling" value="' + (w && isFix ? esc(w.correct) : '') + '"></div>';
@@ -26985,16 +27821,18 @@ function _dictRenderSettings() {
     '<div class="dict-settings">'
     + '<div class="dict-set-row"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
     + '<div class="dict-set-row"><b>Currently using</b><span>' + using + '</span></div>'
+    + '<div class="dict-sethint">Which engine Dictate and Recordings use is one setting: '
+    + '<button type="button" class="btn" onclick="_transcriptionOpenSettings()">Transcription settings</button></div>'
     + '<div class="dict-sethint">Bring your own Gemini API key (optional). If set, amux uses it instead of the '
     + 'server\'s key. It is stored on the amux server and is <b>never sent back to any browser</b>. '
     + 'Get one at <span style="color:var(--accent)">aistudio.google.com/apikey</span>.</div>'
-    + '<div style="display:flex;gap:8px;margin-top:8px;">'
+    + '<div style="display:flex;gap:var(--space-2);margin-top:var(--space-2);">'
     + '<input id="dict-key-input" class="dict-modal-input" type="password" placeholder="'
     + (c.source === 'byo' ? 'Key set — enter a new one to replace' : 'Paste your Gemini API key') + '" style="flex:1">'
     + '<button class="btn primary" onclick="_dictSaveKey()">Save</button>'
     + (c.source === 'byo' ? '<button class="btn" onclick="_dictClearKey()">Remove</button>' : '')
     + '</div>'
-    + '<div class="dict-sethint" style="margin-top:14px;">Audio never touches this page’s JavaScript beyond the '
+    + '<div class="dict-sethint" style="margin-top:var(--space-3-5);">Audio never touches this page’s JavaScript beyond the '
     + 'recording itself — it is uploaded to your amux server, which calls Gemini and returns only text.</div>'
     + '</div>';
 }
@@ -27018,17 +27856,17 @@ function _peekCostLoad() {
   if (!peekSession) return;
   const body = document.getElementById('peek-cost-body');
   const days = document.getElementById('peek-cost-days')?.value || '7';
-  body.innerHTML = '<div style="color:var(--dim);padding:16px;">Loading…</div>';
+  body.innerHTML = '<div style="color:var(--dim);padding:var(--space-4);">Loading…</div>';
   const sess = peekSession;
   fetch(API + '/api/observability?days=' + encodeURIComponent(days) + '&session=' + encodeURIComponent(sess))
     .then(r => r.json())
     .then(d => {
       if (peekSession !== sess) return;   // switched away
-      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:16px;">' + esc(d.error) + '</div>'; return; }
-      if (!d.total_turns) { body.innerHTML = '<div style="color:var(--dim);padding:16px;">No token usage recorded for this worker in this window.</div>'; return; }
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:var(--space-4);">' + esc(d.error) + '</div>'; return; }
+      if (!d.total_turns) { body.innerHTML = '<div style="color:var(--dim);padding:var(--space-4);">No token usage recorded for this worker in this window.</div>'; return; }
       body.innerHTML = _costRender(d, { perSession: true });
     })
-    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:16px;">Failed to load.</div>'; });
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:var(--space-4);">Failed to load.</div>'; });
 }
 
 // Sent messages are stored with the "[H:MM PM email] " payload prefix doSend
@@ -27497,7 +28335,7 @@ function renderCsvTable(csv) {
 
   return `<div class="csv-toolbar">
     <span class="csv-meta">${metaText}${truncNote}</span>
-    <label style="font-size:0.72rem;display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--dim);">
+    <label style="font-size:var(--fs-xs);display:flex;align-items:center;gap:var(--space-1);cursor:pointer;color:var(--dim);">
       <input type="checkbox" style="width:auto;accent-color:var(--accent);" onchange="_csvToggleFreeze(this.checked)"> Freeze col
     </label>
     <input class="csv-search" placeholder="Filter rows…" oninput="_csvFilter(this.value)" type="search">
@@ -27876,7 +28714,7 @@ function _fileHighlightHTML(data) {
   } else {
     inner = esc(content);
   }
-  const note = big ? '<div style="padding:4px 12px;font-size:0.7rem;color:var(--dim);">Large file — syntax highlighting skipped for performance.</div>' : '';
+  const note = big ? '<div style="padding:var(--space-1) var(--space-3);font-size:var(--fs-xs);color:var(--dim);">Large file — syntax highlighting skipped for performance.</div>' : '';
   // Line numbers live in their OWN sticky column, built from the source's line
   // count — never by splitting `inner`. hljs emits spans that STRADDLE newlines
   // (a block comment is one <span class="hljs-comment"> containing \n), so
@@ -27951,7 +28789,7 @@ async function _renderPdf(data, body) {
     frame.className = 'pdf-native';
     frame.title = 'PDF';
     frame.src = rawSrc;
-    frame.style.cssText = 'width:100%;height:100%;min-height:70vh;border:0;border-radius:4px;background:#fff;';
+    frame.style.cssText = 'width:100%;height:100%;min-height:70vh;border:0;border-radius:var(--radius-sm);background:var(--on-solid);';
     body.appendChild(frame);
     report('native');
     return;
@@ -27974,7 +28812,7 @@ async function _renderPdf(data, body) {
     // Lib unavailable (offline / CDN blocked): fall back to the native embed,
     // which at least renders on desktop, plus the always-present Download button.
     body.innerHTML = '<embed src="' + (data.data_url || '') + '" type="application/pdf" '
-      + 'style="width:100%;height:100%;min-height:520px;border-radius:4px;">'
+      + 'style="width:100%;height:100%;min-height:520px;border-radius:var(--radius-sm);">'
       + '<div class="pdf-note">Inline rendering needs a connection — use Download to open offline.</div>';
     report('native_fallback');
     return;
@@ -28024,7 +28862,233 @@ async function _renderPdf(data, body) {
   }
 }
 
+// PRESENT MODE (Ethan, 2026-10-25: "amux file view of ppt (or pdf) can be used
+// to present full screen to an audience"). One page per screen, letterboxed on
+// black, drawn by pdf.js at the screen's device pixels so the slide is the PDF's
+// own pixels and nothing of the dashboard shows. The native frame viewer can't
+// do this: it scrolls, shows its toolbar, and can't be driven by a clicker.
+//
+// A .pptx/.ppt/.key/.odp presents the PDF export saved beside it under the same
+// name (deck.pptx -> deck.pdf). The browser has no PowerPoint renderer, and a
+// re-render from the slide XML would not match the deck: an exported deck's XML
+// often names fallback fonts (Arial, Georgia) while its PDF embeds the real ones.
+// With no export beside it the deck card says so instead of offering a button.
+const _PRESENT_DECK_RE = /\.(pptx|ppt|key|odp)$/i;
+let _presentSrc = '';
+let _present = null;
+
+function _presentDeckPdfPath(path) {
+  return path.replace(_PRESENT_DECK_RE, '.pdf');
+}
+
+function _presentSetup(data) {
+  const btn = document.getElementById('file-present-btn');
+  _presentSrc = '';
+  if (btn) btn.style.display = 'none';
+  if (!data || !data.path) return;
+  if (data.is_pdf) {
+    _presentSrc = data.path;
+    if (btn) { btn.style.display = ''; btn.title = 'Present full screen (arrow keys to move, Esc to exit)'; }
+    return;
+  }
+  if (!data.is_binary || !_PRESENT_DECK_RE.test(data.path)) return;
+  const pdfPath = _presentDeckPdfPath(data.path);
+  const forPath = data.path;
+  fetch(API + '/api/file?path=' + encodeURIComponent(pdfPath)).then(r => r.ok ? r.json() : null).catch(() => null).then(d => {
+    if (!_fileData || _fileData.path !== forPath) return;
+    const card = document.querySelector('#file-body > div');
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:var(--fs-base);color:var(--dim);text-align:center;max-width:26em;';
+    if (d && d.is_pdf) {
+      _presentSrc = pdfPath;
+      if (btn) { btn.style.display = ''; btn.title = 'Present ' + pdfPath.split('/').pop() + ', the PDF export of this deck'; }
+      note.textContent = 'Presents ' + pdfPath.split('/').pop() + ', the PDF export saved beside this deck.';
+      const go = document.createElement('button');
+      go.className = 'btn';
+      go.textContent = '▶ Present';
+      go.onclick = () => _filePresent();
+      if (card) { card.appendChild(note); card.appendChild(go); }
+    } else {
+      note.textContent = 'To present this deck, export it to PDF and save it beside the deck as ' + pdfPath.split('/').pop() + '.';
+      if (card) card.appendChild(note);
+    }
+  });
+}
+
+async function _filePresent(path) {
+  path = path || _presentSrc;
+  if (!path || _present) return;
+  const ov = document.createElement('div');
+  ov.id = 'present-overlay';
+  ov.tabIndex = -1;
+  // A phone has no Esc key, and iPhone Safari has no element full screen, so
+  // the exit is a button on the slide (always visible on touch screens) and
+  // the Back gesture (a history entry popped by Back closes the show).
+  ov.innerHTML = '<div class="present-msg">Loading…</div><div class="present-hud"></div>'
+    + '<button type="button" class="present-close" aria-label="Exit presentation" title="Exit (Esc)">✕</button>';
+  document.body.appendChild(ov);
+  const st = _present = {path, ov, pdf: null, page: 1, total: 0, cache: new Map(), gen: 0, idleT: 0, touchX: null};
+  window._presentState = {path, page: 1, total: 0, rendered: 0, fullscreen: false};
+  // Fullscreen must be asked for inside the click, before any await. Where the
+  // API is missing (iPhone Safari) the fixed overlay still fills the window.
+  try { if (ov.requestFullscreen) await ov.requestFullscreen({navigationUI: 'hide'}); else if (ov.webkitRequestFullscreen) ov.webkitRequestFullscreen(); } catch (e) {}
+  ov.focus();
+  st.onKey = e => _presentKey(e);
+  st.onFs = () => {
+    const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (!fs && st.wasFs && _present === st) { _presentClose(); return; }
+    st.wasFs = fs;
+    if (_present === st) { window._presentState.fullscreen = fs; _presentRender(); }
+  };
+  st.onResize = () => { st.cache.clear(); _presentRender(); };
+  document.addEventListener('keydown', st.onKey, true);
+  document.addEventListener('fullscreenchange', st.onFs);
+  document.addEventListener('webkitfullscreenchange', st.onFs);
+  window.addEventListener('resize', st.onResize);
+  st.wasFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  window._presentState.fullscreen = st.wasFs;
+  ov.querySelector('.present-close').addEventListener('click', e => { e.stopPropagation(); _presentClose(); });
+  st.onPop = () => { if (_present === st) { st.pushed = false; _presentClose(); } };
+  window.addEventListener('popstate', st.onPop);
+  try { history.pushState({amuxPresent: 1}, ''); st.pushed = true; } catch (e) {}
+  ov.addEventListener('mousemove', () => _presentWake());
+  ov.addEventListener('click', e => { _presentGo(e.clientX < window.innerWidth / 3 ? -1 : 1); });
+  ov.addEventListener('touchstart', e => { st.touchX = e.target.closest('.present-close') ? null : e.touches[0].clientX; }, {passive: true});
+  ov.addEventListener('touchend', e => {
+    if (st.touchX == null) return;
+    const dx = e.changedTouches[0].clientX - st.touchX; st.touchX = null;
+    if (Math.abs(dx) > 40) { e.preventDefault(); _presentGo(dx < 0 ? 1 : -1); }
+  });
+  try {
+    const pdfjs = await _ensurePdfjs();
+    st.pdf = await pdfjs.getDocument({url: _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))}).promise;
+  } catch (e) {
+    if (_present !== st) return;
+    ov.querySelector('.present-msg').textContent = 'Could not open this PDF to present (' + ((e && e.message) || e) + '). Esc to close.';
+    return;
+  }
+  if (_present !== st) return;
+  st.total = st.pdf.numPages;
+  window._presentState.total = st.total;
+  _presentWake();
+  _presentRender();
+}
+
+// Render one page to its own canvas at device pixels, fitted to the screen.
+async function _presentCanvas(st, n) {
+  const W = window.innerWidth, H = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const key = n + '@' + W + 'x' + H + '@' + dpr;
+  if (st.cache.has(key)) return st.cache.get(key);
+  const job = (async () => {
+    const page = await st.pdf.getPage(n);
+    const base = page.getViewport({scale: 1});
+    const fit = Math.min(W / base.width, H / base.height);
+    const vp = page.getViewport({scale: fit * dpr});
+    const c = document.createElement('canvas');
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    c.style.width = (c.width / dpr) + 'px';
+    c.style.height = (c.height / dpr) + 'px';
+    c.dataset.page = String(n);
+    await page.render({canvasContext: c.getContext('2d'), viewport: vp}).promise;
+    // The PDF's link annotations (a deck's "open the video" or results-doc
+    // links) stay clickable over the slide. Rectangles in CSS pixels.
+    c._links = [];
+    try {
+      const cssVp = page.getViewport({scale: fit});
+      for (const a of await page.getAnnotations()) {
+        if (a.subtype !== 'Link' || !a.url) continue;
+        const [x1, y1, x2, y2] = cssVp.convertToViewportRectangle(a.rect);
+        c._links.push({url: a.url, x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1)});
+      }
+    } catch (e) {}
+    return c;
+  })();
+  st.cache.set(key, job);
+  if (st.cache.size > 8) st.cache.delete(st.cache.keys().next().value);
+  return job;
+}
+
+async function _presentRender() {
+  const st = _present;
+  if (!st || !st.pdf) return;
+  const gen = ++st.gen;
+  const n = st.page;
+  const c = await _presentCanvas(st, n);
+  if (_present !== st || gen !== st.gen) return;
+  const old = st.ov.querySelector('canvas, .present-msg');
+  if (old) old.replaceWith(c); else st.ov.insertBefore(c, st.ov.firstChild);
+  let layer = st.ov.querySelector('.present-links');
+  if (!layer) { layer = document.createElement('div'); layer.className = 'present-links'; st.ov.appendChild(layer); }
+  const r = c.getBoundingClientRect();
+  layer.style.cssText = 'position:absolute;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;pointer-events:none;';
+  layer.innerHTML = '';
+  for (const l of c._links || []) {
+    const a = document.createElement('a');
+    a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = l.url;
+    a.style.cssText = 'position:absolute;pointer-events:auto;cursor:pointer;left:' + l.x + 'px;top:' + l.y + 'px;width:' + l.w + 'px;height:' + l.h + 'px;';
+    a.addEventListener('click', e => e.stopPropagation());
+    layer.appendChild(a);
+  }
+  st.ov.querySelector('.present-hud').textContent = n + ' / ' + st.total;
+  window._presentState.page = n;
+  window._presentState.rendered++;
+  // Warm the neighbours so the next keypress swaps instantly.
+  if (n < st.total) _presentCanvas(st, n + 1).catch(() => {});
+  if (n > 1) _presentCanvas(st, n - 1).catch(() => {});
+}
+
+function _presentGo(delta, abs) {
+  const st = _present;
+  if (!st || !st.total) return;
+  const next = abs ? Math.max(1, Math.min(st.total, abs)) : Math.max(1, Math.min(st.total, st.page + delta));
+  _presentWake();
+  if (next === st.page) return;
+  st.page = next;
+  _presentRender();
+}
+
+function _presentKey(e) {
+  if (!_present) return;
+  const k = e.key;
+  let used = true;
+  if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'Enter' || k === 'n') _presentGo(e.shiftKey && k === ' ' ? -1 : 1);
+  else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p') _presentGo(-1);
+  else if (k === 'Home') _presentGo(0, 1);
+  else if (k === 'End') _presentGo(0, _present.total);
+  else if (k === 'Escape') _presentClose();
+  else used = false;
+  if (used) { e.preventDefault(); e.stopPropagation(); }
+}
+
+function _presentWake() {
+  const st = _present;
+  if (!st) return;
+  st.ov.classList.remove('idle');
+  clearTimeout(st.idleT);
+  st.idleT = setTimeout(() => { if (_present === st) st.ov.classList.add('idle'); }, 2000);
+}
+
+function _presentClose() {
+  const st = _present;
+  if (!st) return;
+  _present = null;
+  clearTimeout(st.idleT);
+  document.removeEventListener('keydown', st.onKey, true);
+  document.removeEventListener('fullscreenchange', st.onFs);
+  document.removeEventListener('webkitfullscreenchange', st.onFs);
+  window.removeEventListener('resize', st.onResize);
+  window.removeEventListener('popstate', st.onPop);
+  if (st.pushed && history.state && history.state.amuxPresent) history.back();
+  if (document.fullscreenElement === st.ov && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  st.ov.remove();
+  if (st.pdf) st.pdf.destroy();
+  window._presentState = null;
+}
+
 function _renderFileBody(data, mode) {
+  _presentSetup(data);
   _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
   if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
@@ -28059,7 +29123,7 @@ function _renderFileBody(data, mode) {
     const iframe = document.createElement('iframe');
     iframe.sandbox = 'allow-same-origin';
     iframe.setAttribute('scrolling', 'yes');
-    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#f7f6f3;';
+    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:color-mix(in srgb, var(--shade) 4%, var(--on-solid));';
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
@@ -28129,11 +29193,11 @@ function _renderFileBody(data, mode) {
     // which reads as an empty or corrupt file. Small text/report artifacts are
     // exactly what agents produce most, so the misleading case was the common one.
     const sizeMB = data.size ? _fmtBytes(data.size) : '';
-    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:24px;padding:40px;">
-      <div style="font-size:3rem;">🎵</div>
-      <div style="font-size:1.05rem;color:var(--text);font-weight:600;">${esc(fname)}</div>
-      <div style="font-size:0.85rem;color:var(--muted);">${sizeMB || ''}</div>
-      <div style="font-size:0.8rem;color:var(--dim);text-align:center;">Playing in persistent player below.<br>Close this overlay — audio keeps playing.</div>
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:var(--space-6);padding:var(--space-10);">
+      <div style="font-size:var(--fs-8xl);">🎵</div>
+      <div style="font-size:var(--fs-3xl);color:var(--text);font-weight:600;">${esc(fname)}</div>
+      <div style="font-size:var(--fs-lg);color:var(--dim);">${sizeMB || ''}</div>
+      <div style="font-size:var(--fs-md);color:var(--dim);text-align:center;">Playing in persistent player below.<br>Close this overlay — audio keeps playing.</div>
     </div>`;
     return;
   }
@@ -28148,14 +29212,14 @@ function _renderFileBody(data, mode) {
     // Ebook formats we can't render in-browser (MOBI/AZW/CBR/DJVU…) get a
     // reader-styled card rather than the generic binary blob.
     const icon = data.is_ebook ? '📚' : '📦';
-    const note = data.is_ebook ? `<div style="font-size:0.78rem;color:var(--dim);text-align:center;max-width:22em;">This ebook format (${data.ebook_kind || data.ext}) can’t be previewed in the browser — download to open in your reader.</div>` : '';
-    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">${icon}</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div>${note}<a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
+    const note = data.is_ebook ? `<div style="font-size:var(--fs-base);color:var(--dim);text-align:center;max-width:22em;">This ebook format (${data.ebook_kind || data.ext}) can’t be previewed in the browser — download to open in your reader.</div>` : '';
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:var(--space-3);padding:var(--space-8);"><div style="font-size:var(--fs-7xl);">${icon}</div><div style="font-size:var(--fs-2xl);color:var(--dim);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div>${note}<a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:var(--space-2) var(--space-4);background:var(--green);color:var(--on-solid);border-radius:var(--radius-md);font-size:var(--fs-lg);font-weight:600;text-decoration:none;">Download</a></div>`;
     return;
   }
   // Text files — Raw / Edit / Preview
   const editWrap = document.getElementById('file-edit-wrap');
   const editTa = document.getElementById('file-edit-ta');
-  if (mode === 'edit' && (data.is_markdown || data._isNew)) {
+  if (mode === 'edit' && _fileEditable(data)) {
     body.style.display = 'none';
     editWrap.style.display = 'flex';
     editTa.value = data.content;
@@ -28197,7 +29261,7 @@ function _renderFileBody(data, mode) {
     iframe.sandbox = 'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
     // Fill the preview box and let the iframe scroll its own content (see CSS note).
     iframe.setAttribute('scrolling', 'yes');
-    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
+    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:var(--on-solid);';
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
@@ -28266,7 +29330,7 @@ function setFileViewMode(mode) {
   document.getElementById('file-tab-raw').classList.toggle('active', mode === 'raw');
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) editTab.classList.toggle('active', mode === 'edit');
-  document.getElementById('file-save-btn').style.display = (mode === 'edit' && _fileData && (_fileData.is_markdown || _fileData._isNew)) ? '' : 'none';
+  document.getElementById('file-save-btn').style.display = (mode === 'edit' && _fileEditable(_fileData)) ? '' : 'none';
   // Search and Read Aloud buttons only valid in markdown preview mode
   const searchTab = document.getElementById('file-tab-search');
   if (searchTab) {
@@ -28400,12 +29464,40 @@ function _mdSearchHighlightCurrent() {
 // cannot load, the read-only SheetJS / server-parsed viewer is used instead.
 // ---------------------------------------------------------------------------
 const _UNIVER_V = '1.0.3';
+// Excel's everyday tools beyond the grid (2026-10-26, "full parity with
+// excel"): find and replace, sort, filter, conditional formatting, data
+// validation, hyperlinks. Each is an open-source Univer plugin; which extra
+// files each publishes (facade, locale, css) was checked on the CDN at 1.0.3.
 const _UNIVER_PKGS = ['themes', 'protocol', 'core', 'network', 'rpc', 'design', 'engine-render', 'engine-formula',
   'drawing', 'telemetry', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-formula-ui',
-  'sheets-numfmt', 'sheets-numfmt-ui'];
-const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt'];
-const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
-const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
+  'sheets-numfmt', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-find-replace', 'sheets-sort', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui',
+  'sheets-conditional-formatting', 'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation',
+  'sheets-data-validation-ui', 'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt',
+  'sheets-find-replace', 'sheets-sort', 'sheets-filter', 'sheets-conditional-formatting', 'sheets-data-validation',
+  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui', 'sheets-conditional-formatting',
+  'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation', 'sheets-data-validation-ui',
+  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
+  'find-replace', 'sheets-sort-ui', 'sheets-filter-ui', 'sheets-conditional-formatting-ui', 'sheets-data-validation-ui',
+  'sheets-hyper-link-ui'];
+// The tool plugins, in dependency order: [UMD global, plugin export].
+const _UNIVER_TOOL_PLUGINS = [
+  ['UniverFindReplace', 'UniverFindReplacePlugin'], ['UniverSheetsFindReplace', 'UniverSheetsFindReplacePlugin'],
+  ['UniverSheetsSort', 'UniverSheetsSortPlugin'], ['UniverSheetsSortUi', 'UniverSheetsSortUIPlugin'],
+  ['UniverSheetsFilter', 'UniverSheetsFilterPlugin'], ['UniverSheetsFilterUi', 'UniverSheetsFilterUIPlugin'],
+  ['UniverSheetsConditionalFormatting', 'UniverSheetsConditionalFormattingPlugin'],
+  ['UniverSheetsConditionalFormattingUi', 'UniverSheetsConditionalFormattingUIPlugin'],
+  ['UniverDataValidation', 'UniverDataValidationPlugin'], ['UniverSheetsDataValidation', 'UniverSheetsDataValidationPlugin'],
+  ['UniverSheetsDataValidationUi', 'UniverSheetsDataValidationUIPlugin'],
+  ['UniverSheetsHyperLink', 'UniverSheetsHyperLinkPlugin'], ['UniverSheetsHyperLinkUi', 'UniverSheetsHyperLinkUIPlugin'],
+];
+const _UNIVER_TOOL_LOCALES = ['UniverFindReplaceEnUS', 'UniverSheetsSortUiEnUS', 'UniverSheetsFilterEnUS', 'UniverSheetsFilterUiEnUS',
+  'UniverSheetsConditionalFormattingEnUS', 'UniverSheetsConditionalFormattingUiEnUS', 'UniverDataValidationEnUS',
+  'UniverSheetsDataValidationEnUS', 'UniverSheetsDataValidationUiEnUS', 'UniverSheetsHyperLinkEnUS', 'UniverSheetsHyperLinkUiEnUS'];
 let _univerLoading = null;
 const _UNIVER_LOAD_BUDGET_MS = 30000;
 let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
@@ -28552,7 +29644,7 @@ function _xlStyleToUniver(cell) {
   if (a.wrapText) s.tb = 3;
   const b = cell.border || {}, bd = {};
   for (const [k, u] of [['top', 't'], ['bottom', 'b'], ['left', 'l'], ['right', 'r']]) {
-    if (b[k] && b[k].style) bd[u] = { s: _XL_BORDER[b[k].style] || 1, cl: { rgb: _xlHex(b[k].color) || '#000000' } };
+    if (b[k] && b[k].style) bd[u] = { s: _XL_BORDER[b[k].style] || 1, cl: { rgb: _xlHex(b[k].color) || '#000000' } };   // design-tokens: allow (Excel cell data needs hex)
   }
   if (Object.keys(bd).length) s.bd = bd;
   if (cell.numFmt && cell.numFmt !== 'General') s.n = { pattern: cell.numFmt };
@@ -28702,7 +29794,7 @@ function _uvApplyStyle(cell, st) {
   const border = {};
   for (const [u, k] of [['t', 'top'], ['b', 'bottom'], ['l', 'left'], ['r', 'right']]) {
     const e = st.bd && st.bd[u];
-    if (e) border[k] = { style: _XL_BORDER_INV[e.s] || 'thin', color: { argb: 'FF' + ((e.cl && e.cl.rgb) || '#000000').replace('#', '').toUpperCase() } };
+    if (e) border[k] = { style: _XL_BORDER_INV[e.s] || 'thin', color: { argb: 'FF' + ((e.cl && e.cl.rgb) || '#000000').replace('#', '').toUpperCase() } };   // design-tokens: allow (Excel cell data needs hex)
   }
   cell.border = border;
   cell.numFmt = (st.n && st.n.pattern) || 'General';
@@ -28790,6 +29882,7 @@ function _uvPatchWorkbook(wb, before, after) {
 
 // -- Open / save / close ------------------------------------------------------
 function _xlsxEditorTeardown() {
+  if (_xlsxCanvasOpen) { _xlsxCanvasOpen = false; _zoomFontModeSync(); }
   if (!_xlsxEd) return;
   try { _xlsxEd.sub && _xlsxEd.sub.dispose && _xlsxEd.sub.dispose(); } catch (e) {}
   try { _xlsxEd.univer.dispose(); } catch (e) {}
@@ -28807,6 +29900,9 @@ function _xlsxSetDirty(d) {
 
 async function _openXlsxEditor(path, body) {
   await _loadUniver();
+  // The canvas draws with whatever font is ready and never redraws for a late
+  // one, so Office's metric-compatible stand-ins (app.css) load first.
+  try { await Promise.all(['400 11pt Calibri', '700 11pt Calibri', 'italic 400 11pt Calibri', '400 11pt Cambria', '700 11pt Cambria'].map(f => document.fonts.load(f))); } catch (e) {}
   const res = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const etag = res.headers.get('etag') || '';
@@ -28823,7 +29919,8 @@ async function _openXlsxEditor(path, body) {
     theme: (window.UniverThemes && UniverThemes.defaultTheme) || undefined,
     locale: LocaleType.EN_US,
     locales: { [LocaleType.EN_US]: mergeLocales(UniverDesignEnUS, UniverUiEnUS, UniverSheetsEnUS, UniverSheetsUiEnUS,
-      UniverDocsUiEnUS, UniverSheetsFormulaUiEnUS, UniverSheetsNumfmtUiEnUS) },
+      UniverDocsUiEnUS, UniverSheetsFormulaUiEnUS, UniverSheetsNumfmtUiEnUS,
+      ..._UNIVER_TOOL_LOCALES.map(n => window[n]).filter(Boolean)) },
   });
   univer.registerPlugin(UniverEngineRender.UniverRenderEnginePlugin);
   univer.registerPlugin(UniverEngineFormula.UniverFormulaEnginePlugin);
@@ -28836,6 +29933,16 @@ async function _openXlsxEditor(path, body) {
   univer.registerPlugin(UniverSheetsFormulaUi.UniverSheetsFormulaUIPlugin);
   univer.registerPlugin(UniverSheetsNumfmt.UniverSheetsNumfmtPlugin);
   univer.registerPlugin(UniverSheetsNumfmtUi.UniverSheetsNumfmtUIPlugin);
+  // A tool that did not load (a CDN hiccup) leaves the editor without it, not broken.
+  const tools = { loaded: [], missing: [] };
+  for (const [g, name] of _UNIVER_TOOL_PLUGINS) {
+    const plugin = window[g] && window[g][name];
+    if (!plugin) { tools.missing.push(g); continue; }
+    try { univer.registerPlugin(plugin); tools.loaded.push(g); } catch (e) { tools.missing.push(g + ':' + (e && e.message || e)); }
+  }
+  if (tools.missing.length) fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'tools_missing', missing: tools.missing, loaded: tools.loaded.length,
+      measured: true, n_considered: _UNIVER_TOOL_PLUGINS.length, ver: APP_VER }) }).catch(() => {});
   univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
   const api = UniverCoreFacade.FUniver.newAPI(univer);
   const fwb = api.getActiveWorkbook();
@@ -28853,9 +29960,16 @@ async function _openXlsxEditor(path, body) {
 // doc.mutation.rich-text-editing (the cell editor initialising) and
 // formula.mutation.* (the engine starting), which made a just-opened file read
 // as unsaved. Switching tabs is a mutation too but is not worth a save prompt.
+// An edit is a sheet COMMAND (what a person's typing, formatting, resizing or
+// undo runs), not a bare mutation: opening a workbook with formulas makes the
+// formula engine write its results through sheet.mutation.set-range-values,
+// so counting mutations showed "Save •" on a file nobody touched (2026-10-26).
+// Switching sheets, zooming, scrolling and selecting change only the view.
+const _XLSX_VIEW_ONLY = /worksheet-activate|zoom-ratio|scroll|selection|set-active|freeze-pane-view/;
 function _xlsxIsEdit(e) {
-  return !!e && e.type === 2 && typeof e.id === 'string' && e.id.startsWith('sheet.mutation.')
-    && e.id !== 'sheet.mutation.set-worksheet-activate';
+  if (!e || typeof e.id !== 'string') return false;
+  if (e.id === 'univer.command.undo' || e.id === 'univer.command.redo') return true;
+  return e.type === 0 && e.id.startsWith('sheet.command.') && !_XLSX_VIEW_ONLY.test(e.id);
 }
 
 async function _xlsxSave() {
@@ -28914,12 +30028,15 @@ function _xlsxBeacon(verdict, changed, error) {
 }
 
 async function _openXlsxPreview(path) {
+  _xlsxCanvasOpen = true; _zoomFontModeSync();   // before the editor measures its canvas
   _fileData = null;
   _fileViewMode = 'preview';
   const titleEl = document.getElementById('file-title');
   if (titleEl) titleEl.textContent = path.split('/').pop();
   const subEl = document.getElementById('file-subpath');
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
+  document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -29030,9 +30147,12 @@ async function _cacheStreamedImage(path, data) {
 }
 // The "Opened" column: tell the server this file was opened, then refresh the
 // cell in any listing showing it, so the time is right without a reload.
+// The last record still in flight: a list reloaded right after closing a file
+// waits for it, or it sorts by the time before this open (closeMdaiNode).
+let _feOpenRecording = null;
 function _feRecordOpen(path) {
   if (!path) return;
-  fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  return _feOpenRecording = fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }), keepalive: true })
     .then(r => r.ok ? r.json() : null)
     .then(d => {
@@ -29050,6 +30170,25 @@ function _feRecordOpen(path) {
       }
     })
     .catch(() => {});
+}
+// The address names the open file (#path=<file>), so any reload of the page
+// (a new dashboard version, a boot retry, the Mac app restoring a tab) reopens
+// it. Before, only folders were written (loadFiles), and a deep-linked file was
+// overwritten by its folder as the listing behind it loaded, so the next reload
+// showed the folder (Ethan, 2026-10-26: "when i close and re-open it doesnt open
+// the file"). A link to anything else (#peek=, #issue=) is left alone; closing
+// the file puts back the folder, or nothing when the Files view is not showing.
+function _fileHashSync(path) {
+  try {
+    const h = location.hash;
+    if (h && !h.startsWith('#path=') && h !== '#view=files') return;
+    // A split pane's page (?peekEmbed=) is addressed by its worker and tab; a
+    // file opened from its Chat must not rewrite that address.
+    if (/[?&]peekEmbed=/.test(location.search)) return;
+    const want = path ? '#path=' + _encodeHashPath(path)
+      : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
+    if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
+  } catch (e) {}
 }
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
@@ -29094,12 +30233,16 @@ async function openFilePreview(path, options = {}) {
     _subEl.onclick = () => _openPathInFiles(_dir);
   }
   if (options.readOnly && _subEl) { _subEl.onclick=null;_subEl.classList.remove('clickable');_subEl.title='Retained verified asset'; }
+  // The path the open file is saved under (Mac app restore, tab URLs): the
+  // title can read as the markdown heading or carry a "cached" suffix.
+  document.getElementById('file-overlay').dataset.path = path;
+  _fileHashSync(path);
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
   document.getElementById('file-tab-preview').classList.add('active');
   document.getElementById('file-tab-raw').classList.remove('active');
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-overlay').classList.add('active');
   // CACHE FIRST, like the Files listing (Ethan, 2026-10-04: a file marked
   // saved-offline sat on "Loading..." while the server was unreachable,
@@ -29132,15 +30275,15 @@ async function openFilePreview(path, options = {}) {
         // Inherit the body's colour: in light mode the file body stays dark
         // (#1c2128 on #cdd9e5), so var(--text) drew a near-black heading on
         // it (Ethan, 2026-10-06 screenshot).
-        ? '<div style="padding:16px;line-height:1.55;">'
-          + '<div style="font-weight:600;margin-bottom:8px;">This file is not on disk</div>'
-          + '<div style="font-family:ui-monospace,monospace;font-size:0.8rem;word-break:break-all;'
-          + 'background:rgba(127,127,127,0.12);padding:8px 10px;border-radius:6px;margin-bottom:10px;">' + esc(path) + '</div>'
+        ? '<div style="padding:var(--space-4);line-height:1.55;">'
+          + '<div style="font-weight:600;margin-bottom:var(--space-2);">This file is not on disk</div>'
+          + '<div style="font-family:var(--font-mono);font-size:var(--fs-md);word-break:break-all;'
+          + 'background:color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 12%, transparent);padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);margin-bottom:var(--space-2-5);">' + esc(path) + '</div>'
           + 'It was referenced in the terminal but does not exist here — most often a file a worker '
           + 'planned or named but has not created yet. Tap the folder path above to see what is around it.'
           + '</div>'
-        : '<div style="padding:16px;color:var(--dim);word-break:break-all;">Error: ' + esc(data.error)
-          + '<div style="font-family:ui-monospace,monospace;font-size:0.8rem;margin-top:8px;">' + esc(path) + '</div></div>';
+        : '<div style="padding:var(--space-4);color:var(--dim);word-break:break-all;">Error: ' + esc(data.error)
+          + '<div style="font-family:var(--font-mono);font-size:var(--fs-md);margin-top:var(--space-2);">' + esc(path) + '</div></div>';
       return;
     }
     _fileData = data;
@@ -29161,8 +30304,13 @@ async function openFilePreview(path, options = {}) {
     const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary && !data.is_ebook;
     if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = options.readOnly ? 'none' : '';
-      // Show Edit tab only for markdown
-      document.getElementById('file-tab-edit').style.display = (data.is_markdown && !options.readOnly) ? '' : 'none';
+      // Every text file can be edited (Ethan, 2026-10-26: "make sure we have a
+      // file editor for every file, i cannot edit html files"). A file shown
+      // truncated cannot be saved without losing its end, so it says why.
+      const editTab = document.getElementById('file-tab-edit');
+      editTab.style.display = options.readOnly ? 'none' : '';
+      editTab.disabled = !_fileEditable(data);
+      editTab.title = data.truncated ? 'Too large to edit here: only the first part was loaded' : '';
       document.getElementById('file-tab-teleprompter').style.display = (data.is_markdown && !options.readOnly) ? '' : 'none';
       // Show Find and Read Aloud tabs only for markdown
       const searchTab = document.getElementById('file-tab-search');
@@ -29179,7 +30327,7 @@ async function openFilePreview(path, options = {}) {
     _spSetupEditableTitle(path, data);
     if (data.source === 'git') {
       const banner = document.createElement('div');
-      banner.style.cssText = 'padding:6px 12px;font-size:0.78rem;color:var(--dim);background:rgba(127,127,127,0.08);border-radius:6px;margin:8px 12px 0';
+      banner.style.cssText = 'padding:var(--space-1-5) var(--space-3);font-size:var(--fs-base);color:var(--dim);background:color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 8%, transparent);border-radius:var(--radius-md);margin:var(--space-2) var(--space-3) 0';
       banner.textContent = 'Showing version from origin/main (file is not on the local working tree)';
       const body = document.getElementById('file-body');
       body.insertBefore(banner, body.firstChild);
@@ -29250,10 +30398,19 @@ function _fileVideoFullscreen() {
 // data"). Closing the editor (X, Escape, overlay) discarded typed text with no
 // word, and a new Scratchpad note opens here with only a manual Save button, so
 // a note closed before Save was gone. Only spreadsheets were guarded.
+// Any text file opened whole can be edited: a new note, markdown, HTML, code,
+// config. Not a spreadsheet (its own editor), a binary, media, or a file shown
+// truncated (saving it would cut off everything past the loaded part).
+function _fileEditable(data) {
+  if (!data || data.readOnly) return false;
+  if (data._isNew) return true;
+  if (typeof data.content !== 'string' || data.truncated) return false;
+  return !(data.is_image || data.is_pdf || data.is_video || data.is_audio || data.is_binary || data.is_ebook || data.is_xlsx);
+}
 function _fileEditDirty() {
   const wrap = document.getElementById('file-edit-wrap'), ta = document.getElementById('file-edit-ta');
   if (!_fileData || _fileData.readOnly || !wrap || wrap.style.display === 'none' || !ta) return false;
-  if (!_fileData.is_markdown && !_fileData._isNew) return false;   // _fileSave cannot write it anyway
+  if (!_fileEditable(_fileData)) return false;   // _fileSave cannot write it anyway
   if (_fileData._isNew && !ta.value.trim()) return false;          // an empty new note is nothing to keep
   return ta.value !== (_fileData.content || '');
 }
@@ -29305,7 +30462,8 @@ function closeFilePreview() {
   _cTitleEl.onkeydown = null;
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
-  document.getElementById('file-download-btn').style.display = 'none';
+  _fileHashSync(null);
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
   if (tpTab) tpTab.style.display = 'none';
@@ -29365,7 +30523,7 @@ function _fileSave() {
 }
 async function _fileSaveOnce() {
   if (_xlsxEd) { await _xlsxSave(); return; }
-  if (!_fileData || _fileData.readOnly || (!_fileData.is_markdown && !_fileData._isNew)) return;
+  if (!_fileEditable(_fileData)) return;
   const ta = document.getElementById('file-edit-ta');
   const btn = document.getElementById('file-save-btn');
   const content = ta.value;
@@ -29531,7 +30689,7 @@ function _filesUpdateSortHeaders() {
 // at a glance the way it is in a desktop file manager.
 function _fileTypeIcon(name, type) {
   if (type === 'dir') {
-    return `<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1 4.5A1.5 1.5 0 0 1 2.5 3h3.172a1 1 0 0 1 .707.293L7.5 4.5H13.5A1.5 1.5 0 0 1 15 6v6a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12V4.5Z" fill="#E8A020"/></svg>`;
+    return `<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1 4.5A1.5 1.5 0 0 1 2.5 3h3.172a1 1 0 0 1 .707.293L7.5 4.5H13.5A1.5 1.5 0 0 1 15 6v6a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12V4.5Z" fill="var(--yellow)"/></svg>`;
   }
   const ext = (name.split('.').pop() || '').toLowerCase();
   const CODE = new Set(['js','ts','jsx','tsx','py','go','rs','java','c','cpp','h','cs','rb','php','swift','sh','bash','zsh','fish']);
@@ -29541,33 +30699,33 @@ function _fileTypeIcon(name, type) {
   const TEXT = new Set(['txt','log','env','ini','cfg','conf']);
   const ARCH = new Set(['zip','tar','gz','bz2','xz','7z','rar']);
   const DOC  = new Set(['pdf','doc','docx','xls','xlsx','ppt','pptx']);
-  let color = '#8b949e', opacity = '0.55', glyph = '';
+  let color = 'var(--dim)', opacity = '0.55', glyph = '';
   if (ext === 'mdai') {
     // Computed markdown DAG node (.mdai). A distinct four-point "spark" glyph in
     // computed-node purple, set apart from a plain .md so a node reads as a node
     // at a glance in the directory listing and everywhere _fileTypeIcon is reused.
-    color = '#c297ff'; opacity = '0.92';
+    color = 'color-mix(in srgb, var(--purple) 71%, var(--on-solid))'; opacity = '0.92';
     glyph = `<path d="M6.5 6.1 7.28 7.92 9.1 8.7 7.28 9.48 6.5 11.3 5.72 9.48 3.9 8.7 5.72 7.92Z" fill="${color}"/>`;
   } else if (CODE.has(ext)) {
-    color = '#58a6ff'; opacity = '0.85';
+    color = 'var(--accent)'; opacity = '0.85';
     glyph = `<path d="M4.7 8 3.4 9.4l1.3 1.4M8.3 8l1.3 1.4-1.3 1.4M7 7.7 6.1 11.1" stroke="${color}" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
   } else if (DATA.has(ext)) {
-    color = '#3fb950'; opacity = '0.85';
+    color = 'var(--green)'; opacity = '0.85';
     glyph = `<path d="M3.7 8.3h2.1M3.7 9.8h2.1M3.7 11.3h1.3" stroke="${color}" stroke-width="0.9" stroke-linecap="round" fill="none"/><circle cx="8.4" cy="8.3" r="0.6" fill="${color}"/><circle cx="8.4" cy="9.8" r="0.6" fill="${color}"/>`;
   } else if (IMG.has(ext)) {
-    color = '#a78bfa'; opacity = '0.85';
+    color = 'color-mix(in srgb, var(--purple) 82%, var(--text))'; opacity = '0.85';
     glyph = `<circle cx="4.8" cy="8" r="0.9" fill="${color}"/><path d="M3.3 11.6 5.5 9.2l1.3 1.2 1.5-1.8 1.4 2.2" stroke="${color}" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
   } else if (MD.has(ext)) {
-    color = '#ffa657'; opacity = '0.85';
+    color = 'color-mix(in srgb, var(--orange) 83%, var(--on-solid))'; opacity = '0.85';
     glyph = `<path d="M3.7 11.2V8.2L5 9.8 6.3 8.2V11.2" stroke="${color}" stroke-width="0.95" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M8.2 8.2v2.2M7.5 9.6l.7.8.7-.8" stroke="${color}" stroke-width="0.95" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
   } else if (TEXT.has(ext)) {
-    color = '#c9d1d9'; opacity = '0.7';
+    color = 'color-mix(in srgb, var(--text) 69%, var(--dim))'; opacity = '0.7';
     glyph = `<path d="M3.6 8h5.2M3.6 9.6h5.2M3.6 11.2h3.4" stroke="${color}" stroke-width="0.9" stroke-linecap="round" fill="none"/>`;
   } else if (ARCH.has(ext)) {
-    color = '#ff7b72'; opacity = '0.85';
+    color = 'color-mix(in srgb, var(--red) 77%, var(--on-solid))'; opacity = '0.85';
     glyph = `<path d="M6.5 5.5v6" stroke="${color}" stroke-width="0.9" stroke-dasharray="1.1 1"/><rect x="5.6" y="9.2" width="1.8" height="2.3" rx="0.3" stroke="${color}" stroke-width="0.9" fill="none"/>`;
   } else if (DOC.has(ext)) {
-    color = '#f85149'; opacity = '0.85';
+    color = 'var(--red)'; opacity = '0.85';
     glyph = `<path d="M3.6 8.4h5M3.6 10h5M3.6 11.6h3" stroke="${color}" stroke-width="0.9" stroke-linecap="round" fill="none"/>`;
   }
   return `<svg width="13" height="15" viewBox="0 0 13 15" fill="none"><path d="M1 1h7.5L12 4.5V14H1V1Z" fill="${color}" opacity="0.16"/><path d="M1 1h7.5L12 4.5V14H1V1Z" stroke="${color}" stroke-width="1" opacity="${opacity}"/><path d="M8 1v4h4" stroke="${color}" stroke-width="1" fill="none" opacity="${opacity}"/>${glyph}</svg>`;
@@ -29757,11 +30915,11 @@ function _filesRenderBookmarks() {
     const t = b.type === 'file' ? 'file' : 'dir';
     const ic = t === 'file' ? '\u{1F4C4} ' : '';
     return '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-      + 'style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+      + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
       + 'title="' + esc(b.path) + '">'
       + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
       + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
-      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
       + '</span>';
   }).join('') + (_exploreSession ? _filesInheritedChips(bm) : '');
 }
@@ -29777,12 +30935,12 @@ function _filesInheritedChips(own) {
       const t = b.type === 'file' ? 'file' : 'dir';
       const ic = t === 'file' ? '\u{1F4C4} ' : '';
       html += '<span class="files-bm-chip files-bm-inherited" '
-        + 'style="display:inline-flex;align-items:center;gap:2px;background:transparent;border:1px dashed var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+        + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:transparent;border:1px dashed var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
         + 'title="' + esc(b.path) + ' (shortcut for ' + esc(layer.scopeLabel) + ')">'
         + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label)
-        + ' <span style="color:var(--dim);font-size:0.66rem;">' + esc(layer.scopeLabel) + '</span></span>'
+        + ' <span style="color:var(--dim);font-size:var(--fs-3xs);">' + esc(layer.scopeLabel) + '</span></span>'
         + '<button onclick="event.stopPropagation();_filesRemoveBookmarkFrom(\'' + escJs(layer.key) + '\',\'' + escJs(b.path) + '\')" title="Remove this shortcut for ' + esc(layer.scopeLabel) + '" aria-label="Remove ' + esc(b.label) + ' for ' + esc(layer.scopeLabel) + '" '
-        + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+        + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
         + '</span>';
     }
   }
@@ -29898,22 +31056,22 @@ function _libRender() {
   const grid = document.getElementById('lib-grid');
   grid.innerHTML = books.length
     ? books.map(b => _libCard(b, _libData.books.indexOf(b))).join('')
-    : '<div style="color:var(--dim);padding:20px;grid-column:1/-1;">No matches.</div>';
+    : '<div style="color:var(--dim);padding:var(--space-5);grid-column:1/-1;">No matches.</div>';
 }
 function _libCard(b, idx) {
   const coverUrl = b.cover ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(b.cover)) : '';
-  const ph = '<div class="lib-ph" style="width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:1.8rem;">📚</div>';
+  const ph = '<div class="lib-ph" style="width:100%;aspect-ratio:2/3;border-radius:var(--radius-sm);background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:var(--fs-6xl);">📚</div>';
   const cover = coverUrl
-    ? '<img loading="lazy" src="' + coverUrl + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" style="width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;background:var(--bg);display:block;">' +
-      '<div class="lib-ph" style="display:none;width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);align-items:center;justify-content:center;font-size:1.8rem;">📚</div>'
+    ? '<img loading="lazy" src="' + coverUrl + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" style="width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:var(--radius-sm);background:var(--bg);display:block;">' +
+      '<div class="lib-ph" style="display:none;width:100%;aspect-ratio:2/3;border-radius:var(--radius-sm);background:var(--bg);align-items:center;justify-content:center;font-size:var(--fs-6xl);">📚</div>'
     : ph;
-  const badges = b.formats.map(f => '<span style="font-size:0.58rem;background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:0 3px;color:var(--dim);">' + esc(f.fmt) + '</span>').join(' ');
-  const stars = b.rating ? '<span style="color:#f5a623;font-size:0.62rem;" title="' + b.rating + '">' + '★'.repeat(Math.round(b.rating)) + '</span>' : '';
-  return '<div class="lib-card" onclick="_libOpenBook(' + idx + ')" style="cursor:pointer;display:flex;flex-direction:column;gap:4px;" title="' + esc(b.title) + '\\n' + esc(b.authors.join(', ')) + '">' +
-    '<div style="position:relative;box-shadow:0 1px 5px rgba(0,0,0,0.18);border-radius:4px;">' + cover + '</div>' +
-    '<div style="font-size:0.73rem;font-weight:600;color:var(--text);line-height:1.2;max-height:2.4em;overflow:hidden;">' + esc(b.title) + '</div>' +
-    '<div style="font-size:0.65rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(b.authors.join(', ')) + '</div>' +
-    '<div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;">' + badges + (stars ? ' ' + stars : '') + '</div>' +
+  const badges = b.formats.map(f => '<span style="font-size:var(--fs-4xs);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 var(--space-0-5);color:var(--dim);">' + esc(f.fmt) + '</span>').join(' ');
+  const stars = b.rating ? '<span style="color:color-mix(in srgb, var(--yellow) 95%, var(--on-solid));font-size:var(--fs-4xs);" title="' + b.rating + '">' + '★'.repeat(Math.round(b.rating)) + '</span>' : '';
+  return '<div class="lib-card" onclick="_libOpenBook(' + idx + ')" style="cursor:pointer;display:flex;flex-direction:column;gap:var(--space-1);" title="' + esc(b.title) + '\\n' + esc(b.authors.join(', ')) + '">' +
+    '<div style="position:relative;box-shadow:var(--shadow-sm);border-radius:var(--radius-sm);">' + cover + '</div>' +
+    '<div style="font-size:var(--fs-xs);font-weight:600;color:var(--text);line-height:1.2;max-height:2.4em;overflow:hidden;">' + esc(b.title) + '</div>' +
+    '<div style="font-size:var(--fs-3xs);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(b.authors.join(', ')) + '</div>' +
+    '<div style="display:flex;gap:var(--space-0-5);flex-wrap:wrap;align-items:center;">' + badges + (stars ? ' ' + stars : '') + '</div>' +
   '</div>';
 }
 function _libOpenBook(idx) {
@@ -29972,7 +31130,7 @@ function _updateFilesCwdBtn() {
   const isHome = _filesPath === _filesCwd;
   if (btn) {
     btn.style.background = isHome ? 'var(--accent)' : '';
-    btn.style.color = isHome ? '#000' : '';
+    btn.style.color = isHome ? 'var(--shade)' : '';
     btn.style.borderColor = isHome ? 'var(--accent)' : '';
     btn.title = isHome ? 'Home: ' + _filesCwd : 'Set ' + _filesPath + ' as home directory';
   }
@@ -29982,7 +31140,7 @@ function toggleFilesHidden() {
   _filesShowHidden = !_filesShowHidden;
   const btn = document.getElementById('files-hidden-btn');
   const lbl = document.getElementById('files-hidden-oitem-label');
-  if (btn) { btn.style.background = _filesShowHidden ? 'var(--accent)' : ''; btn.style.color = _filesShowHidden ? '#000' : ''; btn.style.borderColor = _filesShowHidden ? 'var(--accent)' : ''; }
+  if (btn) { btn.style.background = _filesShowHidden ? 'var(--accent)' : ''; btn.style.color = _filesShowHidden ? 'var(--shade)' : ''; btn.style.borderColor = _filesShowHidden ? 'var(--accent)' : ''; }
   if (lbl) lbl.textContent = _filesShowHidden ? 'Hide hidden files' : 'Show hidden files';
   const oitem = document.getElementById('files-hidden-oitem');
   if (oitem) oitem.classList.toggle('active', _filesShowHidden);
@@ -30059,11 +31217,21 @@ async function loadFiles(path) {
   const generation = ++_filesLoadGeneration;
   const current = () => generation === _filesLoadGeneration;
   const body = document.getElementById('files-body');
-  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Loading...</div>';
   _filesPath = path;
-  // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode)
+  // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode).
+  // A file open over the listing keeps the address: the listing behind a
+  // deep-linked or just-opened file loads after it, and writing the folder
+  // here made the next reload show the folder (4f6fe1ad5's CI red, run 40328729066).
   try {
-    history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
+    const ov = document.getElementById('file-overlay');
+    const openFile = ov && ov.classList.contains('active') ? ov.dataset.path : '';
+    if (openFile) {
+      try { amuxTrack('file_hash_kept_open_file', {measured: true, n_considered: 1}); } catch (_) {}
+      history.replaceState({}, '', location.pathname + location.search + '#path=' + _encodeHashPath(openFile));
+    } else {
+      history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
+    }
   } catch(e) {}
   const srch = document.getElementById('files-search'); if (srch) srch.value = '';
   _updateFilesCwdBtn();
@@ -30087,7 +31255,7 @@ async function loadFiles(path) {
     const data = await r.json();
     if (!current()) return;
     fresh = true;
-    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    if (data.error) { body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _renderFilesEntries(body, path, data, false);
     _idb.setFile(path, { type: 'dir', data });
     _autoCacheDirFiles(path, data.entries);   // background: cache small text files (.md, …) for offline
@@ -30098,14 +31266,14 @@ async function loadFiles(path) {
     if (cached && cached.type === 'dir') {
       _renderFilesEntries(body, path, cached.data, cached.ts);
     } else {
-      body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not reach the server, and this folder has no saved copy on this device yet.</div>';
+      body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Could not reach the server, and this folder has no saved copy on this device yet.</div>';
     }
   }
 }
 function _feHighlight(name, q) {
   if (!q) return esc(name);
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-  return esc(name).replace(re, m => `<mark style="background:rgba(99,102,241,0.25);color:inherit;border-radius:2px;">${m}</mark>`);
+  return esc(name).replace(re, m => `<mark style="background:color-mix(in srgb, color-mix(in srgb, var(--purple) 85%, var(--bg)) 25%, transparent);color:inherit;border-radius:var(--radius-xs);">${m}</mark>`);
 }
 // The parts of a directory listing every file view shares: the Files tab, the
 // Split view's file panel and the MDAI tab all render a folder through these
@@ -30128,7 +31296,7 @@ function _feCrumbsHtml(path, fnName) {
 function _feParentRow(onOpen) {
   const back = document.createElement('div');
   back.className = 'fe-back-row';
-  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div><div></div>`;
+  back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:var(--fs-md);">.. (parent)</span></div><div></div><div></div><div></div><div></div>`;
   back.onclick = onOpen;
   return back;
 }
@@ -30136,7 +31304,7 @@ function _feParentRow(onOpen) {
 function _feEmptyRow(text) {
   const msg = document.createElement('div');
   msg.className = 'fe-empty';
-  msg.style.cssText = 'padding:20px;color:var(--dim);font-size:0.83rem;text-align:center;';
+  msg.style.cssText = 'padding:var(--space-5);color:var(--dim);font-size:var(--fs-md);text-align:center;';
   msg.textContent = text;
   return msg;
 }
@@ -30523,7 +31691,7 @@ function _renderFilesEntries(body, path, data, cacheTs) {
     const age = Math.round((Date.now() - cacheTs) / 60000);
     const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
     const banner = document.createElement('div');
-    banner.style.cssText = 'padding:3px 12px;font-size:0.7rem;color:var(--dim);background:var(--card);border-bottom:1px solid var(--border);';
+    banner.style.cssText = 'padding:var(--space-0-5) var(--space-3);font-size:var(--fs-xs);color:var(--dim);background:var(--card);border-bottom:1px solid var(--border);';
     banner.innerHTML = '&#x1F4F5; Offline cache &middot; ' + ageStr;
     body.appendChild(banner);
   }
@@ -30642,34 +31810,34 @@ async function _filesFtsRun() {
   const body = document.getElementById('files-body');
   if (!inp || !body) return;
   const q = inp.value.trim();
-  if (!q) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">Type something to search for.</div>'; return; }
+  if (!q) { body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Type something to search for.</div>'; return; }
   const all = !!document.getElementById('files-fts-all')?.checked;
   const root = all ? (_filesCwd || '/') : (_filesPath || '/');
   const seq = ++_filesFtsSeq;
-  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Searching ' + esc(root) + '…</div>';
+  body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Searching ' + esc(root) + '…</div>';
   let d;
   try {
     const r = await fetch(API + '/api/fs/search?path=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q));
     d = await r.json();
   } catch (e) {
-    if (seq === _filesFtsSeq) body.innerHTML = '<div style="padding:16px;color:#f85149">Search failed: ' + esc(e.message) + '</div>';
+    if (seq === _filesFtsSeq) body.innerHTML = '<div style="padding:var(--space-4);color:var(--red)">Search failed: ' + esc(e.message) + '</div>';
     return;
   }
   if (seq !== _filesFtsSeq) return;   // a newer query superseded this one
-  if (d.error) { body.innerHTML = '<div style="padding:16px;color:#f85149">' + esc(d.error) + '</div>'; return; }
-  const head = '<div style="padding:10px 16px 4px;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;">'
-    + '<b style="font-size:0.8rem;color:var(--text)">' + d.matches + ' match' + (d.matches === 1 ? '' : 'es')
+  if (d.error) { body.innerHTML = '<div style="padding:var(--space-4);color:var(--red)">' + esc(d.error) + '</div>'; return; }
+  const head = '<div style="padding:var(--space-2-5) var(--space-4) var(--space-1);display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:baseline;">'
+    + '<b style="font-size:var(--fs-md);color:var(--text)">' + d.matches + ' match' + (d.matches === 1 ? '' : 'es')
     + ' in ' + d.files + ' file' + (d.files === 1 ? '' : 's') + '</b>'
-    + '<span style="font-size:0.64rem;color:var(--dim)">' + esc(d.engine || '?') + ' · ' + (d.elapsed_ms || 0) + 'ms · '
-    + esc(d.root || root) + (d.truncated ? ' · <span style="color:#d29922">truncated at ' + d.limit + '</span>' : '') + '</span>'
-    + '<button class="fe-tb-btn" style="margin-left:auto;font-size:0.68rem;min-height:32px;" '
+    + '<span style="font-size:var(--fs-3xs);color:var(--dim)">' + esc(d.engine || '?') + ' · ' + (d.elapsed_ms || 0) + 'ms · '
+    + esc(d.root || root) + (d.truncated ? ' · <span style="color:var(--yellow)">truncated at ' + d.limit + '</span>' : '') + '</span>'
+    + '<button class="fe-tb-btn" style="margin-left:auto;font-size:var(--fs-2xs);min-height:32px;" '
     // Clear the input BEFORE re-rendering: the listing renderer name-filters on
     // whatever is in the box, so leaving the FTS query there made "Back to
     // folder" render an empty folder — the content query silently re-applied as
     // a name query. Caught by clicking it, not by reading it.
     + 'onclick="document.getElementById(\'files-search\').value=\'\';_filesSearchFilter(\'\')">Back to folder</button></div>';
   if (!d.results.length) {
-    body.innerHTML = head + '<div style="padding:8px 16px;color:#d29922;font-size:0.74rem;">' + esc(d.note || 'No matches.') + '</div>';
+    body.innerHTML = head + '<div style="padding:var(--space-2) var(--space-4);color:var(--yellow);font-size:var(--fs-sm);">' + esc(d.note || 'No matches.') + '</div>';
     return;
   }
   const byFile = {};
@@ -30677,12 +31845,12 @@ async function _filesFtsRun() {
   body.innerHTML = head + Object.keys(byFile).map(fp => {
     const rel = byFile[fp][0].path;
     const rows = byFile[fp].map(r =>
-      '<div onclick="openFilePreview(\'' + escJs(fp) + '\')" style="display:flex;gap:8px;align-items:baseline;padding:2px 0;cursor:pointer;">'
-      + '<span style="flex:0 0 44px;text-align:right;font-size:0.62rem;color:var(--dim)">' + r.line + '</span>'
-      + '<code style="flex:1;font-size:0.7rem;white-space:pre-wrap;word-break:break-word;color:var(--text)">'
+      '<div onclick="openFilePreview(\'' + escJs(fp) + '\')" style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-0-5) 0;cursor:pointer;">'
+      + '<span style="flex:0 0 44px;text-align:right;font-size:var(--fs-4xs);color:var(--dim)">' + r.line + '</span>'
+      + '<code style="flex:1;font-size:var(--fs-xs);white-space:pre-wrap;word-break:break-word;color:var(--text)">'
       + _fileSearchHi(r.text, r.spans) + '</code></div>').join('');
-    return '<div style="padding:6px 16px;">'
-      + '<div onclick="openFilePreview(\'' + escJs(fp) + '\')" style="font-size:0.72rem;color:var(--accent);cursor:pointer;word-break:break-all;">'
+    return '<div style="padding:var(--space-1-5) var(--space-4);">'
+      + '<div onclick="openFilePreview(\'' + escJs(fp) + '\')" style="font-size:var(--fs-xs);color:var(--accent);cursor:pointer;word-break:break-all;">'
       + esc(rel) + ' <span style="color:var(--dim)">(' + byFile[fp].length + ')</span></div>' + rows + '</div>';
   }).join('');
 }
@@ -30712,6 +31880,7 @@ async function _filesNewFile() {
   const fpath = (_filesPath || '/').replace(/\/$/, '') + '/' + fname;
   // Open the file overlay in edit mode with empty content
   _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  document.getElementById('file-overlay').dataset.path = '';   // unsaved: nothing to reopen yet
   _fileViewMode = 'edit';
   document.getElementById('file-title').textContent = fname + ' (new)';
   document.getElementById('file-body').className = 'file-overlay-body';
@@ -30722,7 +31891,7 @@ async function _filesNewFile() {
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
   document.getElementById('file-save-btn').style.display = '';
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   const ta = document.getElementById('file-edit-ta');
   const wrap = document.getElementById('file-edit-wrap');
   ta.value = '';
@@ -30790,7 +31959,7 @@ async function _scratchpadLoad() {
   await _spLoadRoot();
   if (gen !== _spLoadGen) return;
   const body = document.getElementById('scratchpad-body');
-  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Loading...</div>';
   const bc = document.getElementById('sp-breadcrumb');
   if (_spPath !== _SP_ROOT) {
     const rel = _spPath.slice(_SP_ROOT.length + 1);
@@ -30813,7 +31982,7 @@ async function _scratchpadLoad() {
     }
     const data = await r.json();
     if (gen !== _spLoadGen) return;
-    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    if (data.error) { body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _spLastData = { path: _spPath, data };
     // The folder's REAL path, not the word "Scratchpad" (Ethan, 2026-10-10:
     // "this should be the dir path"). /api/ls answers with the absolute path.
@@ -30823,7 +31992,7 @@ async function _scratchpadLoad() {
     if (_spPath === _SP_ROOT) _spCleanArchive();
   } catch(e) {
     if (gen !== _spLoadGen) return;
-    body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load scratchpad.</div>';
+    body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Could not load scratchpad.</div>';
   }
 }
 
@@ -30840,13 +32009,13 @@ function _spRender(path, data) {
   if (path !== _SP_ROOT && data.parent) {
     const back = document.createElement('div');
     back.className = 'fe-back-row';
-    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div><div></div>';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:var(--fs-md);">.. (up)</span></div><div></div><div></div><div></div><div></div>';
     back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
     body.appendChild(back);
   }
   if (!entries.length && !archiveEntry) {
     const msg = document.createElement('div');
-    msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
+    msg.style.cssText = 'padding:var(--space-8);color:var(--dim);font-size:var(--fs-lg);text-align:center;';
     msg.textContent = 'Nothing here yet. Paste or drop text and files anywhere on this tab and they are saved.';
     body.appendChild(msg);
     return;
@@ -30856,7 +32025,7 @@ function _spRender(path, data) {
   }
   if (archiveEntry) {
     const sep = document.createElement('div');
-    sep.style.cssText = 'border-top:1px solid var(--border,rgba(127,127,127,0.15));margin:12px 12px 4px;';
+    sep.style.cssText = 'border-top:1px solid var(--border);margin:var(--space-3) var(--space-3) var(--space-1);';
     body.appendChild(sep);
     const ep = path.replace(/\/$/, '') + '/_archive';
     const row = document.createElement('div');
@@ -30865,7 +32034,7 @@ function _spRender(path, data) {
     row.style.opacity = '0.6';
     row.innerHTML =
       '<div class="fe-cell-name">' +
-      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;margin-right:6px;">' +
+      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;margin-right:var(--space-1-5);">' +
       '<rect x="1" y="3" width="12" height="9" rx="1.5" stroke="var(--dim)" stroke-width="1.2" fill="none"/>' +
       '<path d="M4 1h6v2H4z" stroke="var(--dim)" stroke-width="1.2" fill="none" rx="0.5"/>' +
       '<path d="M5.5 6h3" stroke="var(--dim)" stroke-width="1.2" stroke-linecap="round"/></svg>' +
@@ -30897,7 +32066,7 @@ function _spMakeRow(path, entry) {
     '<div class="fe-cell-name">' + _feCheckHtml(ep) + icon +
     '<div style="min-width:0;overflow:hidden;">' +
     '<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayName) + slash + '</span>' +
-    (showSubName ? '<span style="display:block;font-size:0.72rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(entry.name) + '</span>' : '') +
+    (showSubName ? '<span style="display:block;font-size:var(--fs-xs);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(entry.name) + '</span>' : '') +
     '</div></div>' +
     '<div class="fe-cell-size">' + sizeStr + '</div>' +
     '<div class="fe-cell-date">' + dateStr + '</div>' +
@@ -31107,6 +32276,7 @@ async function _scratchpadNewNote() {
   }
   const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
   _fileData = { path: fpath, content: '', is_markdown: true, _isNew: true, _spAutoName: true };
+  document.getElementById('file-overlay').dataset.path = '';   // unsaved: nothing to reopen yet
   _fileViewMode = 'edit';
   const titleEl = document.getElementById('file-title');
   titleEl.textContent = 'New note';
@@ -31121,7 +32291,7 @@ async function _scratchpadNewNote() {
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
   document.getElementById('file-save-btn').style.display = '';
-  document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   const ta = document.getElementById('file-edit-ta');
   const wrap = document.getElementById('file-edit-wrap');
   ta.value = '';
@@ -31157,7 +32327,7 @@ function _spShowMenu(path, btn, type) {
   }
   const archItem = document.createElement('button');
   archItem.className = 'explore-menu-item';
-  archItem.style.color = 'var(--yellow, #d29922)';
+  archItem.style.color = 'var(--yellow)';
   archItem.textContent = 'Archive';
   archItem.onclick = async () => {
     popup.remove();
@@ -31406,7 +32576,7 @@ async function _connCreate() {
   const level = val('conn-new-scope-level') || 'global';
   const scopeName = val('conn-new-scope-name');
   if (level !== 'global' && !scopeName) {
-    if (msg) { msg.textContent = 'Name the group or worker to scope to.'; msg.style.color = '#f85149'; }
+    if (msg) { msg.textContent = 'Name the group or worker to scope to.'; msg.style.color = 'var(--red)'; }
     return;
   }
   const body = {
@@ -31438,7 +32608,7 @@ async function _connCreate() {
     if (!r.ok || d.error) {
       // Show the server's REASON verbatim: it explains WHY an id or env name was
       // refused, and it refuses rather than rewriting.
-      if (msg) { msg.textContent = (d.error || ('create failed (' + r.status + ')')) + (d.how ? ' — ' + d.how : ''); msg.style.color = '#f85149'; }
+      if (msg) { msg.textContent = (d.error || ('create failed (' + r.status + ')')) + (d.how ? ' — ' + d.how : ''); msg.style.color = 'var(--red)'; }
       return;
     }
     // The definition exists; now make the scope explicit. Reported separately,
@@ -31448,12 +32618,12 @@ async function _connCreate() {
       await _connScopeEnable(body.id, level, scopeName);
       if (msg) { msg.textContent = 'Created and enabled at ' + level + ' scope. Paste the key in its row below.'; msg.style.color = ''; }
     } catch (e) {
-      if (msg) { msg.textContent = 'Created, but the configuration write failed: ' + String(e.message || e) + ' — set it in Configurations.'; msg.style.color = '#b8860b'; }
+      if (msg) { msg.textContent = 'Created, but the configuration write failed: ' + String(e.message || e) + ' — set it in Configurations.'; msg.style.color = 'color-mix(in srgb, var(--yellow) 87%, var(--shade))'; }
     }
     _connAddToggle();
     _connectorsTabLoad();
   } catch (e) {
-    if (msg) { msg.textContent = 'Create failed: ' + String(e); msg.style.color = '#f85149'; }
+    if (msg) { msg.textContent = 'Create failed: ' + String(e); msg.style.color = 'var(--red)'; }
   }
 }
 
@@ -31528,7 +32698,7 @@ function _emailRenderSubtabs(accounts, health) {
     const on = a === _emailAccount;
     const bad = health[a] && health[a] !== 'ok';
     return '<button class="conn-scope-btn" onclick="_emailPick(\'' + esc(a) + '\')" '
-      + 'style="min-height:34px;' + (on ? 'background:var(--accent,#2563eb);color:#fff;' : '') + '">'
+      + 'style="min-height:34px;' + (on ? 'background:var(--accent);color:var(--on-solid);' : '') + '">'
       + esc(a) + (bad ? ' ⚠️' : '') + '</button>';
   }).join('');
 }
@@ -31544,7 +32714,7 @@ function _emailRenderFolders() {
   el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected']].map(([k,label]) => {
     const on = k === _emailFolder;
     return '<button class="conn-scope-btn" onclick="_emailFolderPick(\'' + k + '\')" '
-      + 'style="min-height:34px;' + (on ? 'background:var(--accent,#2563eb);color:#fff;' : '') + '">'
+      + 'style="min-height:34px;' + (on ? 'background:var(--accent);color:var(--on-solid);' : '') + '">'
       + label + '</button>';
   }).join('');
 }
@@ -31733,11 +32903,11 @@ async function _connectorsTabLoad() {
 
 function _connBadge(status) {
   const map = {
-    connected: ['Connected', '#1f8f4e'],
-    needs_auth: ['Needs sign-in', '#b8860b'],
-    needs_credentials: ['Needs credentials', '#8a4b4b'],
+    connected: ['Connected', 'color-mix(in srgb, var(--green) 74%, var(--bg))'],
+    needs_auth: ['Needs sign-in', 'color-mix(in srgb, var(--yellow) 87%, var(--shade))'],
+    needs_credentials: ['Needs credentials', 'color-mix(in srgb, var(--orange) 53%, var(--card))'],
   };
-  const pair = map[status] || [status, '#666'];
+  const pair = map[status] || [status, 'color-mix(in srgb, var(--shade) 60%, var(--on-solid))'];
   return '<span class="conn-badge" style="background:' + pair[1] + '">' + esc(pair[0]) + '</span>';
 }
 
@@ -31773,6 +32943,7 @@ const _CONN_CAPS = {
   'google-calendar': [['Read and create events', 'Every calendar the account can see'], ['Schedule for workers', 'Workers mint a short-lived token per call']],
   'google-drive': [['Find and read files', 'Drive and shared drives'], ['Create and edit', 'Docs and files on the account\'s behalf']],
   'google-admin': [['Directory lookups', 'Users and groups in the Workspace']],
+  'google-youtube': [['Upload videos', 'Through /api/social, as the connected channel'], ['Read results', 'Views and engagement at 24h, 72h and 7d']],
   'slack': [['Read channels', 'Channel list and history'], ['Post messages', 'As the installed app']],
   'telegram': [['Bot messages', 'Send and receive through your bot']],
   'mattermost': [['Read and post', 'Channels the login can see']],
@@ -31896,7 +33067,7 @@ function _connAcctRow(c, r, wide) {
   // A stable hue per account, so the same address reads as the same person on every card.
   let hue = 0;
   for (const ch of String(a.account)) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
-  return '<div class="cx-acct"><span class="cx-avatar" style="color:hsl(' + hue + ',70%,62%);background:hsla(' + hue + ',70%,55%,0.16)">' + esc(String(a.account).charAt(0).toUpperCase()) + '</span>'
+  return '<div class="cx-acct"><span class="cx-avatar" style="color:' + themeCategorical(hue) + ';background:color-mix(in srgb, ' + themeCategorical(hue) + ' 16%, transparent)">' + esc(String(a.account).charAt(0).toUpperCase()) + '</span>'
     + '<span class="cx-acct-main"><span class="cx-acct-name">' + esc(a.account).replace('@', '<wbr>@') + '</span>' + sub + '</span>'
     + _connPill(r.st[0], r.st[1]) + action
     + (wide && c.custom && c.auth === 'oauth2' ? '<button class="btn cx-mini danger" onclick="event.stopPropagation();_connDisconnect(\'' + escJs(c.id) + '\',\'' + escJs(a.account) + '\')">Disconnect</button>' : '') + '</div>';
@@ -32100,7 +33271,7 @@ function _connDrawerRender() {
     if (_connAcctsState !== 'ok') h += _connAcctsNote();
     else if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
     for (const r of s.rows) h += _connAcctRow(c, r, true);
-    if (_connIsGoogle(c) && s.rows.length) h += '<div class="cx-dim cx-small" style="margin-top:8px">One Google approval per account covers Gmail, Calendar, Drive and Docs, and every worker mints its token from it.</div>';
+    if (_connIsGoogle(c) && s.rows.length) h += '<div class="cx-dim cx-small" style="margin-top:var(--space-2)">One Google approval per account covers Gmail, Calendar, Drive and Docs, and every worker mints its token from it.</div>';
   } else if (_connOpenTab === 'config') {
     h += '<div class="conn-card cx-cfg" data-id="' + esc(c.id) + '"><div class="conn-creds">';
     for (const k of (c.env_keys || [])) {
@@ -32187,10 +33358,10 @@ async function _gmailAccountsLoad() {
     } else {
       for (const a of accts) {
         const st = health[a] || 'unknown';
-        const meta = st === 'ok' ? ['valid', '#1f8f4e']
-          : st === 'needs_reauth' ? ['token dead — reconnect', '#c0392b']
-          : st === 'not_connected' ? ['not connected', '#8a6d3b']
-          : [st, '#666'];
+        const meta = st === 'ok' ? ['valid', 'color-mix(in srgb, var(--green) 74%, var(--bg))']
+          : st === 'needs_reauth' ? ['token dead — reconnect', 'color-mix(in srgb, var(--red) 75%, var(--shade))']
+          : st === 'not_connected' ? ['not connected', 'color-mix(in srgb, var(--orange) 58%, var(--card))']
+          : [st, 'color-mix(in srgb, var(--shade) 60%, var(--on-solid))'];
         h += '<div class="conn-gmail-row">'
           + '<span class="conn-gmail-addr">' + esc(a) + '</span>'
           + '<span class="conn-gmail-badge" style="background:' + meta[1] + '">' + esc(meta[0]) + '</span>'
@@ -32829,7 +34000,16 @@ function closeMdaiNode() {
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
   _mdaiChat = []; _mdaiChatBusy = false; _mdaiChatPending = null; _mdaiChatErr = null;
-  if (activeView === 'mdai') { _mdaiListData = null; _mdaiTabLoad(); }
+  // Escape right after opening reloaded the list before the open was recorded,
+  // so the node just opened did not lead it (mdai-pages "last opened" red CI).
+  // Bounded: a record that never answers delays the list by 3s at most.
+  if (activeView === 'mdai') {
+    _mdaiListData = null;
+    const rec = _feOpenRecording;
+    if (!rec) { _mdaiTabLoad(); return; }
+    let t; Promise.race([rec.catch(() => {}), new Promise(r => { t = setTimeout(r, 3000); })])
+      .finally(() => { clearTimeout(t); if (activeView === 'mdai' && !_mdaiCur) _mdaiTabLoad(); });
+  }
 }
 async function _mdaiLoadHistory() {
   if (!_mdaiCur) return;
@@ -33697,13 +34877,13 @@ function _mdaiStandaloneHtml() {
   return '<!doctype html><html><head><meta charset="utf-8">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<title>' + esc(name) + '</title><style>'
-    + 'body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1f2328;max-width:820px;margin:32px auto;padding:0 20px;}'
+    + 'body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:color-mix(in srgb, var(--border) 65%, var(--shade));max-width:820px;margin:var(--space-8) auto;padding:0 var(--space-5);}'
     + 'h1,h2,h3,h4{line-height:1.25;margin:1.4em 0 .5em}h1{font-size:1.7em}h2{font-size:1.35em}h3{font-size:1.12em}'
-    + 'table{border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left;vertical-align:top}th{background:#f6f8fa}'
-    + 'code{font-family:"SF Mono",Menlo,monospace;font-size:.88em;background:#f6f8fa;padding:1px 4px;border-radius:4px}'
-    + 'pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto}pre code{background:none;padding:0}'
-    + 'blockquote{border-left:3px solid #d0d7de;margin:0;padding:0 12px;color:#57606a}a{color:#0969da}img{max-width:100%}'
-    + '.mdai-export-meta{color:#57606a;font-size:12px;border-bottom:1px solid #d0d7de;padding-bottom:8px;margin-bottom:16px}'
+    + 'table{border-collapse:collapse;margin:var(--space-3) 0}th,td{border:1px solid color-mix(in srgb, var(--text) 75%, var(--dim));padding:var(--space-1-5) var(--space-2-5);text-align:left;vertical-align:top}th{background:color-mix(in srgb, var(--term-text) 18%, var(--on-solid))}'
+    + 'code{font-family:var(--font-mono);font-size:.88em;background:color-mix(in srgb, var(--term-text) 18%, var(--on-solid));padding:1px var(--space-1);border-radius:var(--radius-sm)}'
+    + 'pre{background:color-mix(in srgb, var(--term-text) 18%, var(--on-solid));padding:var(--space-3);border-radius:var(--radius-md);overflow:auto}pre code{background:none;padding:0}'
+    + 'blockquote{border-left:3px solid color-mix(in srgb, var(--text) 75%, var(--dim));margin:0;padding:0 var(--space-3);color:color-mix(in srgb, var(--card) 64%, var(--term-text))}a{color:color-mix(in srgb, var(--accent) 74%, var(--shade))}img{max-width:100%}'
+    + '.mdai-export-meta{color:color-mix(in srgb, var(--card) 64%, var(--term-text));font-size:var(--fs-sm);border-bottom:1px solid color-mix(in srgb, var(--text) 75%, var(--dim));padding-bottom:var(--space-2);margin-bottom:var(--space-4)}'
     + '@media print{body{margin:0;max-width:none}}'
     + '</style></head><body>'
     + '<div class="mdai-export-meta">' + esc(name) + '.mdai' + (when ? ' &middot; ' + esc(when) : '') + (cur && cur.model ? ' &middot; ' + esc(cur.model) : '') + '</div>'
@@ -33838,7 +35018,7 @@ async function _mdaiConnectPicker(sourceAbs) {
   ov.innerHTML = '<div class="mdai-picker">'
     + '<div class="mdai-picker-h"><span>Connect <b>' + esc(srcName) + '</b> into a .mdai node</span>'
     + '<button class="mdai-picker-x" onclick="this.closest(\'.mdai-picker-overlay\').remove()">&#10005;</button></div>'
-    + '<div class="mdai-picker-list" id="mdai-picker-list"><div style="padding:16px;color:var(--dim);font-size:0.85rem;">Loading nodes…</div></div>'
+    + '<div class="mdai-picker-list" id="mdai-picker-list"><div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-lg);">Loading nodes…</div></div>'
     + '<div class="mdai-picker-foot"><button class="fe-tb-btn" id="mdai-picker-new">New .mdai to connect into</button></div>'
     + '</div>';
   document.body.appendChild(ov);
@@ -33853,7 +35033,7 @@ async function _mdaiConnectPicker(sourceAbs) {
     const files = (d && d.files) || [];
     const listEl = document.getElementById('mdai-picker-list');
     if (!files.length) {
-      listEl.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">No .mdai nodes yet. Create one below to connect into.</div>';
+      listEl.innerHTML = '<div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-lg);">No .mdai nodes yet. Create one below to connect into.</div>';
       return;
     }
     listEl.innerHTML = files.map(f => {
@@ -33866,7 +35046,7 @@ async function _mdaiConnectPicker(sourceAbs) {
     }).join('');
   } catch (e) {
     const listEl = document.getElementById('mdai-picker-list');
-    if (listEl) listEl.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Could not load .mdai nodes.</div>';
+    if (listEl) listEl.innerHTML = '<div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-lg);">Could not load .mdai nodes.</div>';
   }
 }
 async function _mdaiDoConnect(sourceAbs, targetRel) {
@@ -34074,7 +35254,7 @@ function toggleExploreHidden() {
   _exploreShowHidden = !_exploreShowHidden;
   const btn = document.getElementById('explore-hidden-btn');
   btn.style.background = _exploreShowHidden ? 'var(--accent)' : '';
-  btn.style.color = _exploreShowHidden ? '#000' : '';
+  btn.style.color = _exploreShowHidden ? 'var(--shade)' : '';
   loadExplore(_explorePath);
 }
 function _fmtSize(bytes) {
@@ -34118,7 +35298,7 @@ function _showExploreMenu(path, btn, type) {
   // Delete
   const delItem = document.createElement('button');
   delItem.className = 'explore-menu-item';
-  delItem.style.color = 'var(--red, #f85149)';
+  delItem.style.color = 'var(--red)';
   delItem.textContent = (type === 'dir' || type === 'directory') ? 'Delete folder' : 'Delete file';
   delItem.onclick = async () => {
     popup.remove();
@@ -34242,7 +35422,7 @@ function _showFilesMenu(path, btn, type) {
   // Delete
   const delItem = document.createElement('button');
   delItem.className = 'explore-menu-item';
-  delItem.style.color = 'var(--red, #f85149)';
+  delItem.style.color = 'var(--red)';
   delItem.textContent = (type === 'dir' || type === 'directory') ? 'Delete folder' : 'Delete file';
   delItem.onclick = async () => {
     popup.remove();
@@ -34321,7 +35501,7 @@ function _copyTextWithToastFallback(text, message) {
 }
 async function loadExplore(path) {
   const body = document.getElementById('explore-body');
-  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Loading...</div>';
   _explorePath = path;
   const srch = document.getElementById('explore-search'); if (srch) srch.value = '';
   // Build breadcrumb
@@ -34337,7 +35517,7 @@ async function loadExplore(path) {
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(path) + (_exploreShowHidden ? '&hidden=1' : ''));
     const data = await r.json();
-    if (data.error) { body.innerHTML = `<div style="padding:16px;color:var(--dim)">${esc(data.error)}</div>`; return; }
+    if (data.error) { body.innerHTML = `<div style="padding:var(--space-4);color:var(--dim)">${esc(data.error)}</div>`; return; }
     _idb.setFile(path, { type: 'dir', data });
     _renderExploreEntries(body, path, data, false);
   } catch(e) {
@@ -34345,7 +35525,7 @@ async function loadExplore(path) {
     if (cached && cached.type === 'dir') {
       _renderExploreEntries(body, path, cached.data, cached.ts);
     } else {
-      body.innerHTML = '<div style="padding:16px;color:var(--dim)">Offline — no cached data for this directory.</div>';
+      body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Offline — no cached data for this directory.</div>';
     }
   }
 }
@@ -34358,7 +35538,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
   if (cacheTs) {
     const age = Math.round((Date.now() - cacheTs) / 60000);
     const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
-    body.innerHTML = '<div style="padding:4px 12px;font-size:0.7rem;color:var(--dim);background:var(--card);border-bottom:1px solid var(--border);">&#x1F4F5; Offline cache &middot; ' + ageStr + '</div>';
+    body.innerHTML = '<div style="padding:var(--space-1) var(--space-3);font-size:var(--fs-xs);color:var(--dim);background:var(--card);border-bottom:1px solid var(--border);">&#x1F4F5; Offline cache &middot; ' + ageStr + '</div>';
   }
   const q = (document.getElementById('explore-search')?.value || '').toLowerCase();
   const entries = q ? data.entries.filter(e => e.name.toLowerCase().includes(q)) : data.entries;
@@ -34371,7 +35551,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
   }
   if (!entries.length) {
     const msg = q ? `No results for "${q}"` : 'Empty directory';
-    body.innerHTML += `<div style="padding:16px;color:var(--dim)">${esc(msg)}</div>`;
+    body.innerHTML += `<div style="padding:var(--space-4);color:var(--dim)">${esc(msg)}</div>`;
     return;
   }
   for (const entry of entries) {
@@ -34385,7 +35565,7 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
     const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this,'${entry.type}')">⋯</button>`;
     const mtime = entry.modified ? `<span class="explore-mtime">${timeAgo(entry.modified)}</span>` : '';
-    const nameHtml = q ? esc(displayName).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi'), m => `<mark style="background:var(--accent-muted,rgba(99,102,241,0.25));color:inherit;border-radius:2px;">${m}</mark>`) : esc(displayName);
+    const nameHtml = q ? esc(displayName).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi'), m => `<mark style="background:color-mix(in srgb, var(--accent) 15%, transparent);color:inherit;border-radius:var(--radius-xs);">${m}</mark>`) : esc(displayName);
     row.innerHTML = `<span class="explore-icon">${icon}</span><span class="explore-name">${nameHtml}</span><span class="explore-size">${esc(_fmtSize(entry.size))}</span>${mtime}${menuBtn}`;
     if (entry.type === 'dir') {
       row.onclick = () => loadExplore(entryPath);
@@ -34546,7 +35726,7 @@ async function openConnectIterm2() {
   document.getElementById('iterm2-connect-btn').disabled = true;
   document.getElementById('iterm2-connect-overlay').classList.add('active');
   const list = document.getElementById('iterm2-pane-list');
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">Loading iTerm2 panes…</div>';
+  list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);text-align:center;padding:var(--space-5);">Loading iTerm2 panes…</div>';
   try {
     const r = await fetch(API + '/api/iterm2/sessions');
     const d = await r.json();
@@ -34559,20 +35739,20 @@ async function openConnectIterm2() {
       // process. The server now says which it was — show it rather than
       // re-guessing at the user's machine.
       list.innerHTML = d.error
-        ? `<div style="color:var(--red);font-size:0.85rem;text-align:center;padding:20px;">Could not list iTerm2 panes.<br><span style="color:var(--dim);font-size:0.78rem;">${esc(d.error)}</span><br><span style="color:var(--dim);font-size:0.78rem;">If iTerm2 is running, grant Automation access to amux in System Settings → Privacy &amp; Security.</span></div>`
-        : '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">No open iTerm2 panes found.<br>Make sure iTerm2 is running.</div>';
+        ? `<div style="color:var(--red);font-size:var(--fs-lg);text-align:center;padding:var(--space-5);">Could not list iTerm2 panes.<br><span style="color:var(--dim);font-size:var(--fs-base);">${esc(d.error)}</span><br><span style="color:var(--dim);font-size:var(--fs-base);">If iTerm2 is running, grant Automation access to amux in System Settings → Privacy &amp; Security.</span></div>`
+        : '<div style="color:var(--dim);font-size:var(--fs-lg);text-align:center;padding:var(--space-5);">No open iTerm2 panes found.<br>Make sure iTerm2 is running.</div>';
       return;
     }
     list.innerHTML = panes.map(p => `
       <div class="connect-item iterm2-pane-item" data-id="${esc(p.id)}" data-name="${esc(p.name)}"
            onclick="_selectIterm2Pane(this, '${esc(p.id)}', '${esc(p.name)}')"
-           style="cursor:pointer;padding:10px 12px;border:1px solid var(--border);border-radius:6px;transition:border-color 0.15s;"
+           style="cursor:pointer;padding:var(--space-2-5) var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);transition:border-color 0.15s;"
            onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="if(!this.classList.contains('selected'))this.style.borderColor='var(--border)'">
-        <div style="font-weight:500;font-size:0.88rem;">${esc(p.name)}</div>
-        <div style="font-size:0.75rem;color:var(--dim);margin-top:2px;">${esc(p.tty)} &nbsp;·&nbsp; window ${p.window}, tab ${p.tab}</div>
+        <div style="font-weight:500;font-size:var(--fs-xl);">${esc(p.name)}</div>
+        <div style="font-size:var(--fs-sm);color:var(--dim);margin-top:var(--space-0-5);">${esc(p.tty)} &nbsp;·&nbsp; window ${p.window}, tab ${p.tab}</div>
       </div>`).join('');
   } catch(e) {
-    list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;text-align:center;padding:20px;">Failed to reach iTerm2.<br>Make sure iTerm2 is running.</div>';
+    list.innerHTML = '<div style="color:var(--red);font-size:var(--fs-lg);text-align:center;padding:var(--space-5);">Failed to reach iTerm2.<br>Make sure iTerm2 is running.</div>';
   }
 }
 
@@ -34584,7 +35764,7 @@ function _selectIterm2Pane(el, id, name) {
   });
   el.classList.add('selected');
   el.style.borderColor = 'var(--accent)';
-  el.style.background = 'rgba(88,166,255,0.06)';
+  el.style.background = 'color-mix(in srgb, var(--accent) 6%, transparent)';
   _iterm2SelectedPaneId = id;
   const inp = document.getElementById('iterm2-session-name');
   if (!inp.value) {
@@ -34812,7 +35992,7 @@ function _renderTemplateAccordion() {
       <div class="tmpl-item-body">
         <div class="tmpl-item-desc">${esc(t.description || '')}</div>
         ${t.dirs && t.dirs.length ? `<div class="tmpl-item-dirs">Creates: ${t.dirs.map(d => `<code>${esc(d)}/</code>`).join(' ')}</div>` : ''}
-        <button class="btn" style="font-size:0.75rem;padding:3px 10px;" onclick="event.stopPropagation();_selectTemplate(${i})">Use this template</button>
+        <button class="btn" style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-2-5);" onclick="event.stopPropagation();_selectTemplate(${i})">Use this template</button>
       </div>
     </div>`
   ).join('');
@@ -34894,10 +36074,10 @@ function _filterBranches() {
   const q = document.getElementById('create-branch').value.trim().toLowerCase();
   const filtered = q ? _allBranches.filter(b => b.toLowerCase().includes(q)) : _allBranches;
   if (!filtered.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
-  el.innerHTML = '<span style="font-size:0.72rem;color:var(--dim);width:100%;">' + (q ? `Matching branches (${filtered.length}):` : `Existing branches (${_allBranches.length}):`) + '</span>' +
+  el.innerHTML = '<span style="font-size:var(--fs-xs);color:var(--dim);width:100%;">' + (q ? `Matching branches (${filtered.length}):` : `Existing branches (${_allBranches.length}):`) + '</span>' +
     filtered.slice(0, 20).map(b =>
-      `<span class="chip" style="cursor:pointer;font-size:0.75rem;" onclick="document.getElementById('create-branch').value='${esc(b)}';_createBranchEdited=true;_filterBranches();">${esc(b)}</span>`
-    ).join('') + (filtered.length > 20 ? `<span style="font-size:0.72rem;color:var(--dim);">+${filtered.length - 20} more</span>` : '');
+      `<span class="chip" style="cursor:pointer;font-size:var(--fs-sm);" onclick="document.getElementById('create-branch').value='${esc(b)}';_createBranchEdited=true;_filterBranches();">${esc(b)}</span>`
+    ).join('') + (filtered.length > 20 ? `<span style="font-size:var(--fs-xs);color:var(--dim);">+${filtered.length - 20} more</span>` : '');
   el.style.display = 'flex';
 }
 function _toggleCreateBranch(on) {
@@ -35570,8 +36750,8 @@ function _peekShowSelPopover() {
   if (!pop) {
     pop = document.createElement('div');
     pop.id = 'peek-sel-popover';
-    pop.style.cssText = 'position:fixed;z-index:10000;background:#1a1a2e;border:1px solid #444;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.5);padding:4px;display:flex;gap:2px;font-size:0.78rem;';
-    pop.innerHTML = '<button id="peek-sel-lookup" style="background:none;border:none;color:#c7d2fe;padding:6px 10px;cursor:pointer;border-radius:5px;">&#x1F50D; Look up</button><button id="peek-sel-copy" style="background:none;border:none;color:#c7d2fe;padding:6px 10px;cursor:pointer;border-radius:5px;">Copy</button><button id="peek-sel-read" style="background:none;border:none;color:#c7d2fe;padding:6px 10px;cursor:pointer;border-radius:5px;">&#x1F50A; Read aloud</button>';
+    pop.style.cssText = 'position:fixed;z-index:10000;background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));border-radius:var(--radius-lg);box-shadow:var(--shadow-md);padding:var(--space-1);display:flex;gap:var(--space-0-5);font-size:var(--fs-base);';
+    pop.innerHTML = '<button id="peek-sel-lookup" style="background:none;border:none;color:color-mix(in srgb, var(--accent) 25%, var(--text));padding:var(--space-1-5) var(--space-2-5);cursor:pointer;border-radius:var(--radius-md);">&#x1F50D; Look up</button><button id="peek-sel-copy" style="background:none;border:none;color:color-mix(in srgb, var(--accent) 25%, var(--text));padding:var(--space-1-5) var(--space-2-5);cursor:pointer;border-radius:var(--radius-md);">Copy</button><button id="peek-sel-read" style="background:none;border:none;color:color-mix(in srgb, var(--accent) 25%, var(--text));padding:var(--space-1-5) var(--space-2-5);cursor:pointer;border-radius:var(--radius-md);">&#x1F50A; Read aloud</button>';
     document.body.appendChild(pop);
     pop.querySelector('#peek-sel-lookup').onclick = (e) => { e.stopPropagation(); _peekLookupSelection(); };
     pop.querySelector('#peek-sel-copy').onclick = (e) => {
@@ -35652,8 +36832,8 @@ function _peekShowLookupModal(query, result, loading) {
   if (!modal) {
     modal = document.createElement('div');
     modal.id = 'peek-lookup-modal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px;';
-    modal.innerHTML = '<div style="background:#1a1a2e;border:1px solid #444;border-radius:12px;max-width:560px;width:100%;max-height:80dvh;overflow:auto;padding:20px;box-shadow:0 24px 64px rgba(0,0,0,0.6);color:#e8e8e8;position:relative;"><button id="peek-lookup-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:#aaa;font-size:1.1rem;cursor:pointer;">&#x2715;</button><div style="font-size:0.7rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Looking up</div><div id="peek-lookup-query" style="font-family:monospace;font-size:0.85rem;background:#111;padding:8px 12px;border-radius:6px;margin-bottom:14px;word-break:break-word;max-height:120px;overflow:auto;"></div><div style="font-size:0.7rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Explanation</div><div id="peek-lookup-result" style="font-size:0.92rem;line-height:1.55;white-space:pre-wrap;"></div></div>';
+    modal.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 70%, transparent);z-index:10001;display:flex;align-items:center;justify-content:center;padding:var(--space-5);';
+    modal.innerHTML = '<div style="background:color-mix(in srgb, var(--purple) 10%, var(--bg));border:1px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));border-radius:var(--radius-2xl);max-width:560px;width:100%;max-height:80dvh;overflow:auto;padding:var(--space-5);box-shadow:var(--shadow-xl);color:var(--dim);position:relative;"><button id="peek-lookup-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:var(--dim);font-size:var(--fs-3xl);cursor:pointer;">&#x2715;</button><div style="font-size:var(--fs-xs);color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Looking up</div><div id="peek-lookup-query" style="font-family:var(--font-mono);font-size:var(--fs-lg);background:color-mix(in srgb, var(--text) 7%, var(--shade));padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);margin-bottom:var(--space-3-5);word-break:break-word;max-height:120px;overflow:auto;"></div><div style="font-size:var(--fs-xs);color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:var(--space-1-5);">Explanation</div><div id="peek-lookup-result" style="font-size:var(--fs-xl);line-height:1.55;white-space:pre-wrap;"></div></div>';
     document.body.appendChild(modal);
     modal.querySelector('#peek-lookup-close').onclick = () => { modal.style.display = 'none'; };
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
@@ -35874,6 +37054,10 @@ document.addEventListener('keydown', (e) => {
       if (sr && sr.classList.contains('active')) { _mdSearchClose(); return; }
       const fa = document.getElementById('file-actions');
       if (fa && fa.classList.contains('open')) { fa.classList.remove('open'); return; }
+      // In the spreadsheet editor Escape belongs to the sheet, as in Excel: it
+      // cancels a cell edit or closes a panel, and never closes the workbook
+      // (closing on Escape threw away a half-typed cell, 2026-10-26). The ✕ closes.
+      if (_xlsxEd) return;
       closeFilePreview();
     }
     return;
@@ -36232,11 +37416,11 @@ function toggleSortMenu() {
   m.innerHTML = _SORT_OPTS.map(o => {
     const on = o.id === sortMode;
     return `<div class="sort-opt${on ? ' active' : ''}" onclick="event.stopPropagation();setSortMode('${o.id}')">
-      <div style="display:flex;align-items:center;gap:7px;">
+      <div style="display:flex;align-items:center;gap:var(--space-1-5);">
         <span style="width:14px;opacity:${on ? 1 : 0.35};">${on ? '✓' : ''}</span>
         <span style="font-weight:${on ? 600 : 400};">${esc(o.label)}</span>
       </div>
-      <div style="font-size:0.66rem;color:var(--dim);margin-left:21px;">${esc(o.hint)}</div>
+      <div style="font-size:var(--fs-3xs);color:var(--dim);margin-left:var(--space-5);">${esc(o.hint)}</div>
     </div>`;
   }).join('');
   m.style.display = open ? 'block' : 'none';
@@ -36339,7 +37523,7 @@ let _reportTypes = {};  // loaded from /api/reports/types
 let _reportCharts = {};  // chartId → Chart instance
 
 function _vendorColor(typeId, vid) {
-  return (_reportTypes[typeId]?.vendors?.[vid]?.color) || '#888';
+  return (_reportTypes[typeId]?.vendors?.[vid]?.color) || 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))';
 }
 function _vendorLabel(typeId, vid) {
   return (_reportTypes[typeId]?.vendors?.[vid]?.label) || vid;
@@ -36357,7 +37541,7 @@ async function fetchReports() {
 function renderReports(reports) {
   const list = document.getElementById('reports-list');
   if (!reports.length) {
-    list.innerHTML = '<div style="text-align:center;padding:40px 0;color:var(--dim);font-size:0.85rem;">No reports yet. Click <b>+ Add Report</b> to get started.</div>';
+    list.innerHTML = '<div style="text-align:center;padding:var(--space-10) 0;color:var(--dim);font-size:var(--fs-lg);">No reports yet. Click <b>+ Add Report</b> to get started.</div>';
     return;
   }
   // Destroy old chart instances
@@ -36372,7 +37556,7 @@ function renderReports(reports) {
         <button class="report-del-btn" onclick="deleteReport('${r.id}')" title="Delete report">&times;</button>
       </div>
       <div class="report-body" id="rpt-body-${r.id}">
-        <div style="color:var(--dim);font-size:0.82rem;padding:20px 0;text-align:center;">
+        <div style="color:var(--dim);font-size:var(--fs-md);padding:var(--space-5) 0;text-align:center;">
           Click \u21bb to load data
         </div>
       </div>
@@ -36406,7 +37590,7 @@ async function loadReportData(id, data) {
   const _col0 = _isCount ? 'Metric' : 'Vendor';
   const _col4 = _isCount ? 'Total (90d)' : 'Total (12mo)';
   body.innerHTML = `
-    <div class="report-period-tabs" style="margin-bottom:10px;">
+    <div class="report-period-tabs" style="margin-bottom:var(--space-2-5);">
       <button class="report-period-tab active" onclick="setReportPeriod('${id}','monthly',this)">Monthly</button>
       <button class="report-period-tab" onclick="setReportPeriod('${id}','weekly',this)">Weekly</button>
       <button class="report-period-tab" onclick="setReportPeriod('${id}','daily',this)">Daily</button>
@@ -36482,7 +37666,7 @@ function _renderReportChart(id, data, period) {
       }
     });
   } else if (!labels.length) {
-    canvas.parentElement.innerHTML = '<div style="text-align:center;padding:30px 0;color:var(--dim);font-size:0.82rem;">No data available \u2014 click \u21bb to fetch</div>';
+    canvas.parentElement.innerHTML = '<div style="text-align:center;padding:var(--space-8) 0;color:var(--dim);font-size:var(--fs-md);">No data available \u2014 click \u21bb to fetch</div>';
   }
 
   // Table: show per-vendor current month, last month, 12mo total
@@ -36561,7 +37745,7 @@ function _updateAddReportVendors() {
   if (!entries.length) { grp.style.display = 'none'; return; }
   grp.style.display = '';
   grp.querySelector('div').innerHTML = entries.map(([vid, vm]) =>
-    `<label style="display:flex;align-items:center;gap:5px;font-size:0.82rem;">` +
+    `<label style="display:flex;align-items:center;gap:var(--space-1);font-size:var(--fs-md);">` +
     `<input type="checkbox" value="${vid}" checked> ${esc(vm.label)}</label>`
   ).join('');
 }
@@ -36995,60 +38179,41 @@ function _boardShowMore(colId, pageSize) {
 }
 
 const _BUILT_IN_STATUS_STYLE = {
-  'backlog':   {bg:'rgba(88,166,255,0.12)',color:'var(--accent)',border:'rgba(88,166,255,0.3)',dot:'var(--accent)'},
-  'todo':      {bg:'rgba(139,148,158,0.12)',color:'var(--dim)',border:'rgba(139,148,158,0.3)',dot:'var(--dim)'},
-  'doing':     {bg:'rgba(210,153,34,0.15)',color:'var(--yellow)',border:'rgba(210,153,34,0.4)',dot:'var(--yellow)'},
-  'done':      {bg:'rgba(63,185,80,0.15)',color:'var(--green)',border:'rgba(63,185,80,0.4)',dot:'var(--green)'},
-  'verified':  {bg:'rgba(45,212,191,0.15)',color:'#2dd4bf',border:'rgba(45,212,191,0.4)',dot:'#2dd4bf'},
-  'discarded': {bg:'rgba(139,148,158,0.08)',color:'rgba(139,148,158,0.5)',border:'rgba(139,148,158,0.2)',dot:'rgba(139,148,158,0.4)'},
+  'backlog':   {bg:'color-mix(in srgb, var(--accent) 12%, transparent)',color:'var(--accent)',border:'color-mix(in srgb, var(--accent) 30%, transparent)',dot:'var(--accent)'},
+  'todo':      {bg:'color-mix(in srgb, var(--dim) 12%, transparent)',color:'var(--dim)',border:'color-mix(in srgb, var(--dim) 30%, transparent)',dot:'var(--dim)'},
+  'doing':     {bg:'color-mix(in srgb, var(--yellow) 15%, transparent)',color:'var(--yellow)',border:'color-mix(in srgb, var(--yellow) 40%, transparent)',dot:'var(--yellow)'},
+  'done':      {bg:'color-mix(in srgb, var(--green) 15%, transparent)',color:'var(--green)',border:'color-mix(in srgb, var(--green) 40%, transparent)',dot:'var(--green)'},
+  'verified':  {bg:'color-mix(in srgb, var(--cyan) 15%, transparent)',color:'var(--cyan)',border:'color-mix(in srgb, var(--cyan) 40%, transparent)',dot:'var(--cyan)'},
+  'discarded': {bg:'color-mix(in srgb, var(--dim) 8%, transparent)',color:'var(--dim)',border:'color-mix(in srgb, var(--dim) 20%, transparent)',dot:'color-mix(in srgb, var(--dim) 40%, transparent)'},
 };
 // Light-mode versions of the same statuses — opaque/dark enough on white
-const _BUILT_IN_STATUS_STYLE_LIGHT = {
-  'backlog':   {bg:'rgba(9,105,218,0.1)',color:'#0550ae',border:'rgba(9,105,218,0.3)',dot:'#0550ae'},
-  'todo':      {bg:'rgba(101,109,118,0.1)',color:'#57606a',border:'rgba(101,109,118,0.3)',dot:'#57606a'},
-  'doing':     {bg:'rgba(154,103,0,0.1)',color:'#7d4e00',border:'rgba(154,103,0,0.35)',dot:'#7d4e00'},
-  'done':      {bg:'rgba(26,127,55,0.1)',color:'#1a7f37',border:'rgba(26,127,55,0.35)',dot:'#1a7f37'},
-  'verified':  {bg:'rgba(13,148,136,0.1)',color:'#0d9488',border:'rgba(13,148,136,0.35)',dot:'#0d9488'},
-  'discarded': {bg:'rgba(101,109,118,0.07)',color:'#57606a',border:'rgba(101,109,118,0.2)',dot:'#57606a'},
-};
+// Tokens adapt to the theme, so light mode shares the same map.
+const _BUILT_IN_STATUS_STYLE_LIGHT = _BUILT_IN_STATUS_STYLE;
 const _CUSTOM_STATUS_PALETTE = [
-  {bg:'rgba(88,166,255,0.15)',color:'var(--accent)',border:'rgba(88,166,255,0.4)',dot:'var(--accent)'},
-  {bg:'rgba(188,140,255,0.15)',color:'#bc8cff',border:'rgba(188,140,255,0.4)',dot:'#bc8cff'},
-  {bg:'rgba(255,140,80,0.15)',color:'#ff8c50',border:'rgba(255,140,80,0.4)',dot:'#ff8c50'},
-  {bg:'rgba(248,81,73,0.15)',color:'var(--red)',border:'rgba(248,81,73,0.4)',dot:'var(--red)'},
-  {bg:'rgba(57,210,192,0.15)',color:'var(--cyan)',border:'rgba(57,210,192,0.4)',dot:'var(--cyan)'},
-  {bg:'rgba(255,100,180,0.15)',color:'#ff64b4',border:'rgba(255,100,180,0.4)',dot:'#ff64b4'},
+  {bg:'color-mix(in srgb, var(--accent) 15%, transparent)',color:'var(--accent)',border:'color-mix(in srgb, var(--accent) 40%, transparent)',dot:'var(--accent)'},
+  {bg:'color-mix(in srgb, color-mix(in srgb, var(--purple) 78%, var(--on-solid)) 15%, transparent)',color:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))',border:'color-mix(in srgb, color-mix(in srgb, var(--purple) 78%, var(--on-solid)) 40%, transparent)',dot:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))'},
+  {bg:'color-mix(in srgb, color-mix(in srgb, var(--orange) 92%, var(--on-solid)) 15%, transparent)',color:'color-mix(in srgb, var(--orange) 92%, var(--on-solid))',border:'color-mix(in srgb, color-mix(in srgb, var(--orange) 92%, var(--on-solid)) 40%, transparent)',dot:'color-mix(in srgb, var(--orange) 92%, var(--on-solid))'},
+  {bg:'color-mix(in srgb, var(--red) 15%, transparent)',color:'var(--red)',border:'color-mix(in srgb, var(--red) 40%, transparent)',dot:'var(--red)'},
+  {bg:'color-mix(in srgb, var(--cyan) 15%, transparent)',color:'var(--cyan)',border:'color-mix(in srgb, var(--cyan) 40%, transparent)',dot:'var(--cyan)'},
+  {bg:'color-mix(in srgb, color-mix(in srgb, var(--pink) 90%, var(--on-solid)) 15%, transparent)',color:'color-mix(in srgb, var(--pink) 90%, var(--on-solid))',border:'color-mix(in srgb, color-mix(in srgb, var(--pink) 90%, var(--on-solid)) 40%, transparent)',dot:'color-mix(in srgb, var(--pink) 90%, var(--on-solid))'},
 ];
-const _CUSTOM_STATUS_PALETTE_LIGHT = [
-  {bg:'rgba(9,105,218,0.1)',color:'#0550ae',border:'rgba(9,105,218,0.3)',dot:'#0550ae'},
-  {bg:'rgba(130,80,255,0.1)',color:'#6639ba',border:'rgba(130,80,255,0.3)',dot:'#6639ba'},
-  {bg:'rgba(200,80,20,0.1)',color:'#bc4c00',border:'rgba(200,80,20,0.3)',dot:'#bc4c00'},
-  {bg:'rgba(207,34,46,0.1)',color:'#cf222e',border:'rgba(207,34,46,0.3)',dot:'#cf222e'},
-  {bg:'rgba(5,80,174,0.1)',color:'#0550ae',border:'rgba(5,80,174,0.3)',dot:'#0550ae'},
-  {bg:'rgba(180,30,120,0.1)',color:'#99286e',border:'rgba(180,30,120,0.3)',dot:'#99286e'},
-];
+// Tokens adapt to the theme, so light mode shares the same map.
+const _CUSTOM_STATUS_PALETTE_LIGHT = _CUSTOM_STATUS_PALETTE;
 // Derived display-status styles (Smart Board view). These augment the
 // built-in statuses for the computed categories the /api/board/derived
 // endpoint produces.
 const _DERIVED_STATUS_STYLE = {
-  'aged-needsyou':      {bg:'rgba(248,81,73,0.18)',color:'var(--red)',border:'rgba(248,81,73,0.5)',dot:'var(--red)'},
-  'stalled':            {bg:'rgba(210,153,34,0.22)',color:'var(--yellow)',border:'rgba(210,153,34,0.55)',dot:'var(--yellow)'},
-  'stale':              {bg:'rgba(139,148,158,0.15)',color:'rgba(139,148,158,0.7)',border:'rgba(139,148,158,0.35)',dot:'rgba(139,148,158,0.5)'},
-  'verified-candidate': {bg:'rgba(45,212,191,0.12)',color:'#2dd4bf',border:'rgba(45,212,191,0.35)',dot:'#2dd4bf'},
-  'unblocked':          {bg:'rgba(88,166,255,0.18)',color:'var(--accent)',border:'rgba(88,166,255,0.45)',dot:'var(--accent)'},
+  'aged-needsyou':      {bg:'color-mix(in srgb, var(--red) 18%, transparent)',color:'var(--red)',border:'color-mix(in srgb, var(--red) 50%, transparent)',dot:'var(--red)'},
+  'stalled':            {bg:'color-mix(in srgb, var(--yellow) 22%, transparent)',color:'var(--yellow)',border:'color-mix(in srgb, var(--yellow) 55%, transparent)',dot:'var(--yellow)'},
+  'stale':              {bg:'color-mix(in srgb, var(--dim) 15%, transparent)',color:'color-mix(in srgb, var(--dim) 70%, transparent)',border:'color-mix(in srgb, var(--dim) 35%, transparent)',dot:'color-mix(in srgb, var(--dim) 50%, transparent)'},
+  'verified-candidate': {bg:'color-mix(in srgb, var(--cyan) 12%, transparent)',color:'var(--cyan)',border:'color-mix(in srgb, var(--cyan) 35%, transparent)',dot:'var(--cyan)'},
+  'unblocked':          {bg:'color-mix(in srgb, var(--accent) 18%, transparent)',color:'var(--accent)',border:'color-mix(in srgb, var(--accent) 45%, transparent)',dot:'var(--accent)'},
   // AMUX-5238: capture cards open >24h, and open epics whose children are all resolved.
-  'unreconciled':       {bg:'rgba(255,140,80,0.16)',color:'#ff8c50',border:'rgba(255,140,80,0.45)',dot:'#ff8c50'},
-  'awaiting-verify':    {bg:'rgba(188,140,255,0.15)',color:'#bc8cff',border:'rgba(188,140,255,0.4)',dot:'#bc8cff'},
+  'unreconciled':       {bg:'color-mix(in srgb, color-mix(in srgb, var(--orange) 92%, var(--on-solid)) 16%, transparent)',color:'color-mix(in srgb, var(--orange) 92%, var(--on-solid))',border:'color-mix(in srgb, color-mix(in srgb, var(--orange) 92%, var(--on-solid)) 45%, transparent)',dot:'color-mix(in srgb, var(--orange) 92%, var(--on-solid))'},
+  'awaiting-verify':    {bg:'color-mix(in srgb, color-mix(in srgb, var(--purple) 78%, var(--on-solid)) 15%, transparent)',color:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))',border:'color-mix(in srgb, color-mix(in srgb, var(--purple) 78%, var(--on-solid)) 40%, transparent)',dot:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))'},
 };
-const _DERIVED_STATUS_STYLE_LIGHT = {
-  'aged-needsyou':      {bg:'rgba(207,34,46,0.12)',color:'#cf222e',border:'rgba(207,34,46,0.4)',dot:'#cf222e'},
-  'stalled':            {bg:'rgba(154,103,0,0.15)',color:'#7d4e00',border:'rgba(154,103,0,0.4)',dot:'#7d4e00'},
-  'stale':              {bg:'rgba(101,109,118,0.12)',color:'#57606a',border:'rgba(101,109,118,0.3)',dot:'#57606a'},
-  'verified-candidate': {bg:'rgba(13,148,136,0.12)',color:'#0d9488',border:'rgba(13,148,136,0.35)',dot:'#0d9488'},
-  'unblocked':          {bg:'rgba(9,105,218,0.12)',color:'#0550ae',border:'rgba(9,105,218,0.35)',dot:'#0550ae'},
-  'unreconciled':       {bg:'rgba(200,80,20,0.1)',color:'#bc4c00',border:'rgba(200,80,20,0.3)',dot:'#bc4c00'},
-  'awaiting-verify':    {bg:'rgba(130,80,255,0.1)',color:'#6639ba',border:'rgba(130,80,255,0.3)',dot:'#6639ba'},
-};
+// Tokens adapt to the theme, so light mode shares the same map.
+const _DERIVED_STATUS_STYLE_LIGHT = _DERIVED_STATUS_STYLE;
 const _DERIVED_STATUS_LABELS = {
   'aged-needsyou': 'Aged Needs-You (>14d)',
   'stalled': 'Stalled (session idle)',
@@ -37103,7 +38268,7 @@ function _chromeRender() {
     const close = _chromeTabs.length > 1 ? '<span class="chrome-tab-close" onclick="event.stopPropagation();_chromeCloseTab('+t.id+')">&#x2715;</span>' : '';
     h += '<div class="chrome-tab'+cls+'" onclick="_chromeSwitchTab('+t.id+')" onmousedown="if(event.button===1){event.preventDefault();_chromeCloseTab('+t.id+')}" ondblclick="event.stopPropagation();_chromeRenameTab('+t.id+')" data-tab-id="'+t.id+'"><span class="chrome-tab-label">'+label+'</span>'+close+'</div>';
   }
-  h += '<button class="chrome-tab-add" onclick="_chromeAddTab()" title="New tab" style="margin:0 4px 4px 4px;">+</button>';
+  h += '<button class="chrome-tab-add" onclick="_chromeAddTab()" title="New tab" style="margin:0 var(--space-1) var(--space-1) var(--space-1);">+</button>';
   h += '<button class="chrome-tab-collapse" onclick="_chromeToggleCollapse()" title="'+(_chromeCollapsed?'Show tabs':'Hide tabs')+'">'+(_chromeCollapsed?'&#x25BC;':'&#x25B2;')+'</button>';
   bar.innerHTML = h;
   _chromeShowActive();
@@ -37269,11 +38434,14 @@ function _chromeSave() {
 }
 
 function switchView(view) {
+  // The Proxies tab is retired (MSG-95893); a saved #view=proxies lands on
+  // Pages, where a local app is now shared.
+  if (view === 'proxies') view = 'pages';
   // Explicit navigation supersedes a pending restore of an older worker.
   if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  { const fm = view === 'draw'; if (fm !== !!window._zoomFontMode) { window._zoomFontMode = fm; _applyZoom(); } }
+  _zoomFontModeSync(view);
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
@@ -37291,7 +38459,7 @@ function switchView(view) {
   const _svViews = [
     ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
-    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
@@ -37343,7 +38511,6 @@ function switchView(view) {
   if (view === 'connectors') _connectorsTabLoad();
   if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
   else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
-  if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
     if (view === 'sessions') _exploreSession = null;
@@ -37450,9 +38617,9 @@ function _habitsRender() {
           const filled = (h.log || []).includes(d.key);
           return '<div class="habit-dot' + (filled ? ' filled' : '') + (d.isToday ? ' today' : '') + '">' + d.label + '</div>';
         }).join('') + '</div>'
-      + '<div style="display:flex;gap:2px;">'
+      + '<div style="display:flex;gap:var(--space-0-5);">'
       + '<button class="habit-edit-btn" onclick="_habitsEdit(' + idx + ')">edit</button>'
-      + '<button class="habit-edit-btn" onclick="_habitsDelete(' + idx + ')" style="color:var(--red,#f85149);">delete</button>'
+      + '<button class="habit-edit-btn" onclick="_habitsDelete(' + idx + ')" style="color:var(--red);">delete</button>'
       + '</div>'
       + '</div></div>';
   }).join('');
@@ -37886,20 +39053,20 @@ function _mapTagColor(tagId) {
 }
 
 function _mapPinColor(pin) {
-  if (!pin.tags || pin.tags.length === 0) return '#8b949e';
-  return _mapTagColor(pin.tags[0]) || '#8b949e';
+  if (!pin.tags || pin.tags.length === 0) return 'var(--dim)';
+  return _mapTagColor(pin.tags[0]) || 'var(--dim)';
 }
 
 function _mapMakeIcon(pin) {
   // A closed place is grey; a favorite gets a gold outline.
-  const color = pin.status === 'closed' ? '#6e7681' : _mapPinColor(pin);
-  const stroke = pin.status === 'favorite' ? '#f2b705' : '#fff';
+  const color = pin.status === 'closed' ? 'color-mix(in srgb, var(--card) 52%, var(--term-text))' : _mapPinColor(pin);
+  const stroke = pin.status === 'favorite' ? 'var(--yellow)' : 'var(--on-solid)';
   // Second tag (if any) colors the inner dot, so a Coffee+Girls pin reads as
   // two-tone instead of hiding its secondary tag (AMUX-1865 #3).
   const second = (pin.tags && pin.tags.length > 1) ? (_mapTagColor(pin.tags[1]) || '') : '';
   const inner = second
-    ? '<circle cx="12" cy="12" r="5" fill="' + second + '" stroke="#fff" stroke-width="1.5"/>'
-    : '<circle cx="12" cy="12" r="4.5" fill="rgba(255,255,255,0.55)"/>';
+    ? '<circle cx="12" cy="12" r="5" fill="' + second + '" stroke="var(--on-solid)" stroke-width="1.5"/>'
+    : '<circle cx="12" cy="12" r="4.5" fill="color-mix(in srgb, var(--on-solid) 55%, transparent)"/>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="32" viewBox="0 0 24 32">' +
     '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 20 12 20s12-11 12-20C24 5.373 18.627 0 12 0z" fill="' + color + '" stroke="' + stroke + '" stroke-width="' + (pin.status === 'favorite' ? 2.5 : 1.5) + '"' + (pin.status === 'closed' ? ' opacity="0.6"' : '') + '/>' +
     inner +
@@ -37957,7 +39124,7 @@ function _mapRenderTags() {
   const chip = function(tag) {
     const active = _mapFilterTags.has(tag.id);
     const chipStyle = active
-      ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:#fff;'
+      ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:var(--on-solid);'
       : 'color:' + tag.color + ';border-color:' + tag.color + '88;';
     return '<button class="map-tag-chip' + (active ? ' tag-active' : '') + '" style="' + chipStyle + '" onclick="_mapFilterByTag(\x27' + tag.id + '\x27)" oncontextmenu="event.preventDefault();_mapEditTag(\x27' + tag.id + '\x27)" title="Right-click to edit">' + escHtml(tag.name) + '</button>';
   };
@@ -38041,7 +39208,7 @@ function _mapRenderPins() {
     const color = _mapPinColor(pin);
     const tagChips = (pin.tags||[]).map(function(tid) {
       const tag = _mapTags.find(function(t) { return t.id === tid; });
-      return tag ? '<span class="map-pin-tag" style="background:' + tag.color + ';color:#fff;border-color:' + tag.color + '">' + escHtml(tag.name) + '</span>' : '';
+      return tag ? '<span class="map-pin-tag" style="background:' + tag.color + ';color:var(--on-solid);border-color:' + tag.color + '">' + escHtml(tag.name) + '</span>' : '';
     }).join('');
     const preview = pin.desc || pin.notes || '';
     const hasNotes = !!(pin.notes);
@@ -38051,7 +39218,7 @@ function _mapRenderPins() {
       '<div class="map-pin-dot" style="background:' + color + '"></div>' +
       (thumb ? '<img class="map-pin-thumb" src="' + escHtml(thumb) + '" alt="" loading="lazy" onerror="this.remove()">' : '') +
       '<div class="map-pin-info">' +
-        '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:0.68rem;color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
+        '<div class="map-pin-name">' + escHtml(pin.name||'Unnamed') + distLabel + (hasNotes ? ' <span style="font-size:var(--fs-2xs);color:var(--dim);font-weight:400;">\uD83D\uDCDD</span>' : '') + '</div>' +
         _mapStatusLine(pin) +
         (tagChips ? '<div class="map-pin-tagrow">' + tagChips + '</div>' : '') +
         (preview ? '<div class="map-pin-desc">' + escHtml(preview.substring(0,80)) + (preview.length>80?'\u2026':'') + '</div>' : '') +
@@ -38142,21 +39309,21 @@ function _mapRenderMarkers() {
     if (useCluster) { _mapCluster.addLayer(marker); } else { marker.addTo(_map); }
     const tagChips = (pin.tags||[]).map(function(tid) {
       const tag = _mapTags.find(function(t) { return t.id === tid; });
-      return tag ? '<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;font-weight:500;background:' + tag.color + ';color:#fff;">' + escHtml(tag.name) + '</span>' : '';
+      return tag ? '<span style="display:inline-block;padding:1px var(--space-1-5);border-radius:var(--radius-lg);font-size:var(--fs-2xs);font-weight:500;background:' + tag.color + ';color:var(--on-solid);">' + escHtml(tag.name) + '</span>' : '';
     }).join(' ');
     const notesPreview = pin.notes ? (pin.notes.length > 150 ? pin.notes.substring(0, 150) + '\u2026' : pin.notes) : '';
     var _photo = _mapPinThumbUrl(pin, 400);
     marker.bindPopup(
-      '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:13px">' +
-        (_photo ? '<img src="' + escHtml(_photo) + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:6px;margin-bottom:6px" onerror="this.style.display=\x27none\x27">' : '') +
-        '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
+      '<div style="min-width:160px;max-width:280px;font-family:inherit;font-size:var(--fs-md)">' +
+        (_photo ? '<img src="' + escHtml(_photo) + '" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:var(--radius-md);margin-bottom:var(--space-1-5)" onerror="this.style.display=\x27none\x27">' : '') +
+        '<div style="font-weight:600;margin-bottom:var(--space-1)">' + escHtml(pin.name||'Unnamed') + '</div>' +
         _mapStatusLine(pin) +
         _mapMetaRow(pin) +
-        (pin.desc ? '<div style="font-size:12px;color:#888;margin-bottom:4px">' + escHtml(pin.desc) + '</div>' : '') +
-        (notesPreview ? '<div style="font-size:11.5px;color:#aaa;margin-bottom:4px;white-space:pre-wrap;line-height:1.4;border-left:2px solid #444;padding-left:6px;">' + escHtml(notesPreview) + '</div>' : '') +
-        (tagChips ? '<div style="margin-bottom:4px">' + tagChips + '</div>' : '') +
-        '<div style="font-size:11px;color:#999;margin-bottom:6px">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="' + _mapGeoMapsUrl(pin.lat, pin.lng, pin.name) + '" target="_blank" rel="noopener" style="color:var(--accent,#58a6ff);text-decoration:none">Google Maps \u2197</a></div>' +
-        '<button onclick="_mapOpenPinModal(\x27' + pin.id + '\x27)" style="padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:transparent;color:inherit">Edit</button>' +
+        (pin.desc ? '<div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1)">' + escHtml(pin.desc) + '</div>' : '') +
+        (notesPreview ? '<div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-1);white-space:pre-wrap;line-height:1.4;border-left:2px solid color-mix(in srgb, var(--shade) 73%, var(--on-solid));padding-left:var(--space-1-5);">' + escHtml(notesPreview) + '</div>' : '') +
+        (tagChips ? '<div style="margin-bottom:var(--space-1)">' + tagChips + '</div>' : '') +
+        '<div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-1-5)">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="' + _mapGeoMapsUrl(pin.lat, pin.lng, pin.name) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Google Maps \u2197</a></div>' +
+        '<button onclick="_mapOpenPinModal(\x27' + pin.id + '\x27)" style="padding:var(--space-0-5) var(--space-2);font-size:var(--fs-sm);cursor:pointer;border:1px solid color-mix(in srgb, var(--shade) 33%, var(--on-solid));border-radius:var(--radius-sm);background:transparent;color:inherit">Edit</button>' +
       '</div>'
     );
     _mapMarkers[pin.id] = marker;
@@ -38207,7 +39374,7 @@ function _mapMeShow(pos) {
   if (!_mapMeMarker) {
     _mapMeMarker = L.marker([lat, lng], { icon: icon, zIndexOffset: 10000, keyboard: false, title: 'You are here' })
       .bindTooltip('You are here', { direction: 'top', offset: [0, -10] }).addTo(_map);
-    _mapMeCircle = L.circle([lat, lng], { radius: acc, color: '#1a73e8', weight: 1, opacity: 0.5, fillColor: '#1a73e8', fillOpacity: 0.12, interactive: false }).addTo(_map);
+    _mapMeCircle = L.circle([lat, lng], { radius: acc, color: 'color-mix(in srgb, var(--accent) 80%, var(--shade))', weight: 1, opacity: 0.5, fillColor: 'color-mix(in srgb, var(--accent) 80%, var(--shade))', fillOpacity: 0.12, interactive: false }).addTo(_map);
   } else {
     _mapMeMarker.setLatLng([lat, lng]);
     _mapMeCircle.setLatLng([lat, lng]).setRadius(acc);
@@ -38301,10 +39468,10 @@ function _mapExportMenu(ev) {
   var old = document.getElementById('map-export-menu'); if (old) { old.remove(); return; }
   var menu = document.createElement('div');
   menu.id = 'map-export-menu';
-  menu.style.cssText = 'position:fixed;z-index:3000;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.4);padding:4px;font-size:0.78rem;min-width:160px';
+  menu.style.cssText = 'position:fixed;z-index:3000;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);padding:var(--space-1);font-size:var(--fs-base);min-width:160px';
   var mk = function(label, fn){ var b=document.createElement('button'); b.textContent=label;
-    b.style.cssText='display:block;width:100%;text-align:left;padding:7px 10px;background:transparent;border:none;color:var(--text);cursor:pointer;border-radius:5px;font-size:0.78rem';
-    b.onmouseover=function(){b.style.background='var(--hover,rgba(127,127,127,0.15))';}; b.onmouseout=function(){b.style.background='transparent';};
+    b.style.cssText='display:block;width:100%;text-align:left;padding:var(--space-1-5) var(--space-2-5);background:transparent;border:none;color:var(--text);cursor:pointer;border-radius:var(--radius-md);font-size:var(--fs-base)';
+    b.onmouseover=function(){b.style.background='color-mix(in srgb, var(--text) 8%, transparent)';}; b.onmouseout=function(){b.style.background='transparent';};
     b.onclick=function(){ menu.remove(); fn(); }; return b; };
   menu.appendChild(mk('↓ Export GeoJSON (' + _mapPins.length + ')', _mapExportGeoJSON));
   menu.appendChild(mk('↓ Export CSV (' + _mapPins.length + ')', _mapExportCSV));
@@ -38430,16 +39597,16 @@ function _mapOpenPinModal(id, latlng) {
   const pinTags = pin ? (pin.tags||[]) : [];
   const tagsRow = document.getElementById('map-pin-tags-row');
   if (_mapTags.length === 0) {
-    tagsRow.innerHTML = '<span style="font-size:0.78rem;color:var(--dim)">No groups yet \u2014 add from sidebar</span>';
+    tagsRow.innerHTML = '<span style="font-size:var(--fs-base);color:var(--dim)">No groups yet \u2014 add from sidebar</span>';
   } else {
     tagsRow.innerHTML = _mapTags.map(function(tag) {
       const checked = pinTags.includes(tag.id);
       const labelStyle = checked
-        ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:#fff;'
+        ? 'background:' + tag.color + ';border-color:' + tag.color + ';color:var(--on-solid);'
         : 'border-color:' + tag.color + '88;color:var(--text);';
       return '<label class="map-tag-check' + (checked ? ' checked' : '') + '" style="' + labelStyle + '" onclick="_mapToggleTagCheck(this)">' +
         '<input type="checkbox" value="' + tag.id + '"' + (checked ? ' checked' : '') + '>' +
-        '<span class="map-tag-swatch" data-color="' + tag.color + '" style="background:' + (checked ? 'rgba(255,255,255,0.5)' : tag.color) + '"></span>' +
+        '<span class="map-tag-swatch" data-color="' + tag.color + '" style="background:' + (checked ? 'color-mix(in srgb, var(--on-solid) 50%, transparent)' : tag.color) + '"></span>' +
         '<span>' + escHtml(tag.name) + '</span></label>';
     }).join('');
   }
@@ -38464,8 +39631,8 @@ function _mapToggleTagCheck(label) {
   if (cb.checked) {
     label.style.background = tagColor;
     label.style.borderColor = tagColor;
-    label.style.color = '#fff';
-    if (swatch) swatch.style.background = 'rgba(255,255,255,0.5)';
+    label.style.color = 'var(--on-solid)';
+    if (swatch) swatch.style.background = 'color-mix(in srgb, var(--on-solid) 50%, transparent)';
   } else {
     label.style.background = '';
     label.style.borderColor = tagColor + '88';
@@ -38726,7 +39893,7 @@ function _mapTableHtml(pins) {
     '<th><input type="checkbox" aria-label="Select all shown" ' + (all ? 'checked ' : '') + 'onclick="_mapSelectAll(this.checked)"></th>' +
     '<th>Name</th><th>Status</th><th>Rating</th><th>Groups</th><th>Last visit</th></tr></thead><tbody>' +
     pins.map(function(p) {
-      const tags = (p.tags || []).map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? '<span class="map-pin-tag" style="background:' + x.color + ';border-color:' + x.color + ';color:#fff">' + escHtml(x.name) + '</span>' : ''; }).join('');
+      const tags = (p.tags || []).map(function(t) { const x = _mapTags.find(function(y) { return y.id === t; }); return x ? '<span class="map-pin-tag" style="background:' + x.color + ';border-color:' + x.color + ';color:var(--on-solid)">' + escHtml(x.name) + '</span>' : ''; }).join('');
       return '<tr data-pin="' + escHtml(p.id) + '"' + (_mapSelected.has(p.id) ? ' class="selected"' : '') + '>' +
         '<td><input type="checkbox" aria-label="Select ' + escHtml(p.name || '') + '" ' + (_mapSelected.has(p.id) ? 'checked ' : '') + 'onclick="_mapSelect(\x27' + p.id + '\x27,this.checked)"></td>' +
         '<td><a href="#" onclick="event.preventDefault();_mapFlyToPin(\x27' + p.id + '\x27)">' + escHtml(p.name || 'Unnamed') + '</a></td>' +
@@ -38909,17 +40076,17 @@ let _locHighlight = null;
 let _locLoading = 0;
 // Colours follow Ethan's mockup (2026-10-03): drive blue, walk green, bike orange.
 const _LOC_MODE = {
-  driving: {label: 'Driving', short: 'Drive', color: '#2f7bf5', icon: '\u{1F697}'},
-  walking: {label: 'Walking', short: 'Walk', color: '#2da44e', icon: '\u{1F6B6}'},
-  cycling: {label: 'Cycling', short: 'Bike', color: '#f5841f', icon: '\u{1F6B2}'},
-  running: {label: 'Running', short: 'Run', color: '#e5534b', icon: '\u{1F3C3}'},
-  train:   {label: 'Train', short: 'Train', color: '#a371f7', icon: '\u{1F686}'},
-  still:   {label: 'Stays', short: 'Stays', color: '#c69026', icon: '\u{1F4CD}'},
-  unknown: {label: 'Moving', short: 'Moving', color: '#8b949e', icon: '•'},
-  stop:    {label: 'Stop', short: 'Stop', color: '#e3b341', icon: '\u{1F4CD}'},
+  driving: {label: 'Driving', short: 'Drive', color: 'color-mix(in srgb, var(--accent) 87%, var(--shade))', icon: '\u{1F697}'},
+  walking: {label: 'Walking', short: 'Walk', color: 'color-mix(in srgb, var(--green) 87%, var(--bg))', icon: '\u{1F6B6}'},
+  cycling: {label: 'Cycling', short: 'Bike', color: 'var(--orange)', icon: '\u{1F6B2}'},
+  running: {label: 'Running', short: 'Run', color: 'color-mix(in srgb, var(--red) 93%, var(--card))', icon: '\u{1F3C3}'},
+  train:   {label: 'Train', short: 'Train', color: 'var(--purple)', icon: '\u{1F686}'},
+  still:   {label: 'Stays', short: 'Stays', color: 'color-mix(in srgb, var(--yellow) 93%, var(--card))', icon: '\u{1F4CD}'},
+  unknown: {label: 'Moving', short: 'Moving', color: 'var(--dim)', icon: '•'},
+  stop:    {label: 'Stop', short: 'Stop', color: 'color-mix(in srgb, var(--yellow) 83%, var(--on-solid))', icon: '\u{1F4CD}'},
   // The server's "gap": two places with no fixes between them (the phone
   // stopped recording). Straight-line distance, drawn dashed, never a trip.
-  gap:     {label: 'Moved, not recorded', short: 'Gap', color: '#8b949e', icon: '\u{2754}'},
+  gap:     {label: 'Moved, not recorded', short: 'Gap', color: 'var(--dim)', icon: '\u{2754}'},
 };
 function _mapSidebarTab(tab) {
   _mapTab = tab === 'history' ? 'history' : 'pins';
@@ -39086,8 +40253,8 @@ function _locDraw(fit) {
   });
   const first = _locSegments[0], last = _locSegments[_locSegments.length - 1];
   const at = (s, end) => s.kind === 'stop' ? [s.lat, s.lon] : (end ? s.to : s.from);
-  if (at(first, false)) L.circleMarker(at(first, false), {radius: 6, color: '#ffffff', fillColor: '#3fb950', fillOpacity: 1, weight: 2}).bindTooltip('Start').addTo(_locLayer);
-  if (at(last, true)) L.circleMarker(at(last, true), {radius: 6, color: '#ffffff', fillColor: '#f85149', fillOpacity: 1, weight: 2}).bindTooltip('End').addTo(_locLayer);
+  if (at(first, false)) L.circleMarker(at(first, false), {radius: 6, color: 'var(--on-solid)', fillColor: 'var(--green)', fillOpacity: 1, weight: 2}).bindTooltip('Start').addTo(_locLayer);
+  if (at(last, true)) L.circleMarker(at(last, true), {radius: 6, color: 'var(--on-solid)', fillColor: 'var(--red)', fillOpacity: 1, weight: 2}).bindTooltip('End').addTo(_locLayer);
   if (fit) { try { _map.fitBounds(_locLayer.getBounds(), {padding: [24, 24], maxZoom: 16}); } catch (e) {} }
 }
 function _locFocus(i) {
@@ -39097,7 +40264,7 @@ function _locFocus(i) {
   if (_locHighlight) { _map.removeLayer(_locHighlight); _locHighlight = null; }
   if (s.kind === 'trip' && Array.isArray(s.bbox)) {
     _map.fitBounds([[s.bbox[0], s.bbox[1]], [s.bbox[2], s.bbox[3]]], {padding: [30, 30], maxZoom: 17});
-    if (Array.isArray(s.path)) _locHighlight = L.polyline(s.path, {color: '#ffffff', weight: 9, opacity: 0.35}).addTo(_map);
+    if (Array.isArray(s.path)) _locHighlight = L.polyline(s.path, {color: 'var(--on-solid)', weight: 9, opacity: 0.35}).addTo(_map);
   } else if (s.kind === 'gap' && Array.isArray(s.from) && Array.isArray(s.to)) {
     _map.fitBounds([s.from, s.to], {padding: [30, 30], maxZoom: 17});
   } else if (s.kind === 'stop') {
@@ -39491,18 +40658,18 @@ function _mapPinThumbUrl(pin, maxW) {
 function _mapMetaRow(pin) {
   var parts = [];
   if (typeof pin.rating === 'number') {
-    parts.push('<span style="color:#f5b301;font-weight:600">★ ' + pin.rating.toFixed(1) + '</span>' +
-      (pin.ratingCount ? '<span style="color:#999"> (' + pin.ratingCount + ')</span>' : ''));
+    parts.push('<span style="color:var(--yellow);font-weight:600">★ ' + pin.rating.toFixed(1) + '</span>' +
+      (pin.ratingCount ? '<span style="color:var(--dim)"> (' + pin.ratingCount + ')</span>' : ''));
   }
   if (typeof pin.priceLevel === 'number') {
-    parts.push('<span style="color:#3fb950;font-weight:600">' + (pin.priceLevel === 0 ? 'Free' : '$'.repeat(pin.priceLevel)) + '</span>');
+    parts.push('<span style="color:var(--green);font-weight:600">' + (pin.priceLevel === 0 ? 'Free' : '$'.repeat(pin.priceLevel)) + '</span>');
   }
   if (typeof pin.openNow === 'boolean') {
     parts.push(pin.openNow
-      ? '<span style="color:#3fb950;font-weight:600">Open now</span>'
-      : '<span style="color:#f85149;font-weight:600">Closed</span>');
+      ? '<span style="color:var(--green);font-weight:600">Open now</span>'
+      : '<span style="color:var(--red);font-weight:600">Closed</span>');
   }
-  return parts.length ? '<div style="font-size:12px;margin-bottom:5px;display:flex;gap:8px;flex-wrap:wrap">' + parts.join('') + '</div>' : '';
+  return parts.length ? '<div style="font-size:var(--fs-sm);margin-bottom:var(--space-1);display:flex;gap:var(--space-2);flex-wrap:wrap">' + parts.join('') + '</div>' : '';
 }
 
 function _mapGeoRenderResults(data) {
@@ -39540,13 +40707,13 @@ function _mapGeoSelect(idx) {
   var mapsUrl = _mapGeoMapsUrl(lat, lng, name);
   var staticUrl = _mapGeoStaticUrl(lat, lng, '240x120');
   window._mapGeoTempMarker = L.marker([lat, lng]).addTo(_map).bindPopup(
-    '<div style="min-width:200px;font-family:inherit;font-size:13px">' +
-    (staticUrl ? '<img src="' + staticUrl + '" style="width:100%;border-radius:6px;margin-bottom:6px;display:block" onerror="this.style.display=\'none\'">' : '') +
+    '<div style="min-width:200px;font-family:inherit;font-size:var(--fs-md)">' +
+    (staticUrl ? '<img src="' + staticUrl + '" style="width:100%;border-radius:var(--radius-md);margin-bottom:var(--space-1-5);display:block" onerror="this.style.display=\'none\'">' : '') +
     '<strong>' + escHtml(name) + '</strong><br>' +
-    '<span style="font-size:11px;color:#888">' + escHtml(r.display_name) + '</span><br>' +
-    '<div style="margin-top:6px;display:flex;gap:6px;align-items:center">' +
-    '<button onclick="_mapGeoSavePin(' + idx + ')" style="padding:3px 10px;font-size:12px;cursor:pointer;background:var(--accent,#58a6ff);color:#fff;border:none;border-radius:6px;font-family:inherit">+ Save as Pin</button>' +
-    '<a href="' + mapsUrl + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent,#58a6ff);text-decoration:none">View on Google Maps ↗</a>' +
+    '<span style="font-size:var(--fs-2xs);color:var(--dim)">' + escHtml(r.display_name) + '</span><br>' +
+    '<div style="margin-top:var(--space-1-5);display:flex;gap:var(--space-1-5);align-items:center">' +
+    '<button onclick="_mapGeoSavePin(' + idx + ')" style="padding:var(--space-0-5) var(--space-2-5);font-size:var(--fs-sm);cursor:pointer;background:var(--accent);color:var(--on-solid);border:none;border-radius:var(--radius-md);font-family:inherit">+ Save as Pin</button>' +
+    '<a href="' + mapsUrl + '" target="_blank" rel="noopener" style="font-size:var(--fs-2xs);color:var(--accent);text-decoration:none">View on Google Maps ↗</a>' +
     '</div></div>'
   ).openPopup();
   var results = document.getElementById('map-geocoder-results');
@@ -39640,19 +40807,19 @@ let logsSearchQuery = '';
 let _logsTimer = null;
 
 const _LOG_TYPE_CFG = {
-  board:   {icon:'&#x1F4CB;', color:'#1a7f37',        label:'Board'},
+  board:   {icon:'&#x1F4CB;', color:'color-mix(in srgb, var(--green) 66%, var(--shade))',        label:'Board'},
   session: {icon:'&#x26A1;',  color:'var(--accent)',   label:'Session'},
-  memory:  {icon:'&#x1F9E0;', color:'#bc8cff',         label:'Memory'},
-  file:    {icon:'&#x1F4CE;', color:'#ff8c50',         label:'File'},
+  memory:  {icon:'&#x1F9E0;', color:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))',         label:'Memory'},
+  file:    {icon:'&#x1F4CE;', color:'color-mix(in srgb, var(--orange) 92%, var(--on-solid))',         label:'File'},
   system:  {icon:'&#x2699;',  color:'var(--dim)',       label:'System'},
   http:    {icon:'&#x1F517;', color:'var(--dim)',       label:'HTTP'},
 };
 const _LOG_ACTION_COLOR = {
-  created:'#1a7f37', started:'#1a7f37', 'status-added':'#1a7f37',
+  created:'color-mix(in srgb, var(--green) 66%, var(--shade))', started:'color-mix(in srgb, var(--green) 66%, var(--shade))', 'status-added':'color-mix(in srgb, var(--green) 66%, var(--shade))',
   updated:'var(--accent)', configured:'var(--accent)', 'message-sent':'var(--accent)', claimed:'var(--accent)',
   deleted:'var(--red)', 'status-removed':'var(--red)',
-  stopped:'#e07000', cleared:'#7d4e00',
-  uploaded:'#bc8cff', pull:'var(--cyan)',
+  stopped:'color-mix(in srgb, var(--yellow) 93%, var(--shade))', cleared:'color-mix(in srgb, var(--yellow) 56%, var(--shade))',
+  uploaded:'color-mix(in srgb, var(--purple) 78%, var(--on-solid))', pull:'var(--cyan)',
 };
 
 function _relTime(ts) {
@@ -39757,7 +40924,7 @@ function renderRawLogs() {
     const isWarn = /warn/i.test(clean);
     const esc = clean.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     if (isErr)  return '<span style="color:var(--red)">'  + esc + '</span>';
-    if (isWarn) return '<span style="color:#e07000">' + esc + '</span>';
+    if (isWarn) return '<span style="color:color-mix(in srgb, var(--yellow) 93%, var(--shade))">' + esc + '</span>';
     if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
       const tEnd = clean.indexOf(' ', 20);
       if (tEnd > 0) {
@@ -39804,7 +40971,7 @@ function renderActivity() {
   if (!el) return;
   const evts = _logsActivityVisible();
   if (!evts.length) {
-    el.innerHTML = '<div style="padding:48px 16px;text-align:center;color:var(--dim);font-size:0.85rem;">' +
+    el.innerHTML = '<div style="padding:var(--space-12) var(--space-4);text-align:center;color:var(--dim);font-size:var(--fs-lg);">' +
       (_logsFilter || logsSearchQuery ? 'No matching events' : 'No events yet \u2014 activity will appear as you use amux') + '</div>';
     return;
   }
@@ -39824,7 +40991,7 @@ function renderActivity() {
       const ac = isErr ? 'var(--red)' : (_LOG_ACTION_COLOR[evt.action] || tc.color);
       const title = _evtTitle(evt);
       const meta = [];
-      if (evt.actor) meta.push('<span style="color:var(--purple,#a78bfa)" title="who did this">by ' + escHtml(evt.actor) + '</span>');
+      if (evt.actor) meta.push('<span style="color:var(--purple)" title="who did this">by ' + escHtml(evt.actor) + '</span>');
       if (evt.session) meta.push('<span style="color:var(--accent)">' + escHtml(evt.session) + '</span>');
       if (evt.ip && evt.ip !== '127.0.0.1' && evt.ip !== '::1') meta.push(escHtml(evt.ip));
       if (isErr) meta.push('<span style="color:var(--red)">HTTP ' + evt.status + '</span>');
@@ -39865,7 +41032,7 @@ function renderStats() {
   const el = document.getElementById('logs-stats-body');
   if (!el) return;
   if (!_logsEvents.length) {
-    el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;">No event data yet.</div>';
+    el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-5) 0;">No event data yet.</div>';
     return;
   }
   const now = Date.now()/1000;
@@ -39898,16 +41065,16 @@ function renderStats() {
   const topSessions = Object.entries(sessionActivity).sort((a,b)=>b[1]-a[1]).slice(0,6);
   if (topSessions.length) {
     html += '<div class="stat-card" style="margin-top:0;">';
-    html += '<div style="font-size:0.73rem;font-weight:700;color:var(--text);margin-bottom:10px;">Most Active Workers (24h)</div>';
+    html += '<div style="font-size:var(--fs-xs);font-weight:700;color:var(--text);margin-bottom:var(--space-2-5);">Most Active Workers (24h)</div>';
     const maxVal = topSessions[0][1];
     for (const [s, cnt] of topSessions) {
       const pct = Math.round((cnt/maxVal)*100);
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">' +
-        '<span style="font-size:0.78rem;color:var(--accent);min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(s) + '</span>' +
-        '<div style="flex:1;background:var(--bg);border-radius:3px;height:5px;overflow:hidden;">' +
-          '<div style="height:100%;width:' + pct + '%;background:var(--accent);border-radius:3px;transition:width 0.3s;"></div>' +
+      html += '<div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1-5);">' +
+        '<span style="font-size:var(--fs-base);color:var(--accent);min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(s) + '</span>' +
+        '<div style="flex:1;background:var(--bg);border-radius:var(--radius-sm);height:5px;overflow:hidden;">' +
+          '<div style="height:100%;width:' + pct + '%;background:var(--accent);border-radius:var(--radius-sm);transition:width 0.3s;"></div>' +
         '</div>' +
-        '<span style="font-size:0.71rem;color:var(--dim);min-width:28px;text-align:right;">' + cnt + '</span>' +
+        '<span style="font-size:var(--fs-xs);color:var(--dim);min-width:28px;text-align:right;">' + cnt + '</span>' +
       '</div>';
     }
     html += '</div>';
@@ -39923,16 +41090,16 @@ function renderStats() {
   const topActions = Object.entries(actionCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
   if (topActions.length) {
     html += '<div class="stat-card">';
-    html += '<div style="font-size:0.73rem;font-weight:700;color:var(--text);margin-bottom:10px;">Top Actions (24h)</div>';
+    html += '<div style="font-size:var(--fs-xs);font-weight:700;color:var(--text);margin-bottom:var(--space-2-5);">Top Actions (24h)</div>';
     for (const [k, cnt] of topActions) {
       const [type, action] = k.split('.');
       const tc = _LOG_TYPE_CFG[type] || {icon:'&#x2022;', color:'var(--dim)'};
       const ac = _LOG_ACTION_COLOR[action] || tc.color;
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">' +
+      html += '<div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1);">' +
         '<span>' + tc.icon + '</span>' +
         '<span class="log-evt-badge" style="background:' + ac + '1a;color:' + ac + ';border:1px solid ' + ac + '55">' + escHtml(action) + '</span>' +
-        '<span style="font-size:0.71rem;color:var(--dim);">' + escHtml(type) + '</span>' +
-        '<span style="font-size:0.78rem;color:var(--text);margin-left:auto;">' + cnt + '</span>' +
+        '<span style="font-size:var(--fs-xs);color:var(--dim);">' + escHtml(type) + '</span>' +
+        '<span style="font-size:var(--fs-base);color:var(--text);margin-left:auto;">' + cnt + '</span>' +
       '</div>';
     }
     html += '</div>';
@@ -39974,7 +41141,7 @@ function _stopLogsTimer() {
 async function _logsHealthLoad() {
   const el = document.getElementById('logs-health-body');
   if (!el) return;
-  el.innerHTML = '<div style="padding:20px;color:var(--dim);font-size:0.85rem;">Loading health data...</div>';
+  el.innerHTML = '<div style="padding:var(--space-5);color:var(--dim);font-size:var(--fs-lg);">Loading health data...</div>';
   try {
     const [statsR, analyzeR] = await Promise.all([
       fetch(API + '/api/logs/stats?since_h=24'),
@@ -39984,7 +41151,7 @@ async function _logsHealthLoad() {
     const analyze = analyzeR.ok ? await analyzeR.json() : null;
     _renderHealth(el, stats, analyze);
   } catch(e) {
-    el.innerHTML = '<div style="padding:20px;color:var(--red);">Failed to load health data</div>';
+    el.innerHTML = '<div style="padding:var(--space-5);color:var(--red);">Failed to load health data</div>';
   }
 }
 
@@ -39995,85 +41162,85 @@ function _renderHealth(el, stats, analyze) {
     const totalReqs = fams.reduce((s, f) => s + f.count, 0);
     const totalErrs = fams.reduce((s, f) => s + (f.error_count || 0), 0);
     const maxP95 = Math.max(...fams.map(f => f.p95_ms || f.p95 || 0), 0);
-    html += '<div class="stats-grid" style="margin-bottom:12px;">';
+    html += '<div class="stats-grid" style="margin-bottom:var(--space-3);">';
     html += '<div class="stat-card"><div class="stat-card-label">Total Requests (24h)</div><div class="stat-card-value">' + totalReqs.toLocaleString() + '</div></div>';
-    html += '<div class="stat-card"><div class="stat-card-label">Errors (24h)</div><div class="stat-card-value" style="color:' + (totalErrs > 0 ? 'var(--red)' : 'var(--green,#3fb950)') + '">' + totalErrs + '</div></div>';
+    html += '<div class="stat-card"><div class="stat-card-label">Errors (24h)</div><div class="stat-card-value" style="color:' + (totalErrs > 0 ? 'var(--red)' : 'var(--green)') + '">' + totalErrs + '</div></div>';
     const maxP50 = Math.max(...fams.map(f => f.p50_ms || f.p50 || 0), 0);
     html += '<div class="stat-card"><div class="stat-card-label">Median Latency</div><div class="stat-card-value">' + (maxP50 >= 1000 ? (maxP50/1000).toFixed(1) + 's' : Math.round(maxP50) + 'ms') + '</div></div>';
-    html += '<div class="stat-card"><div class="stat-card-label">Max p95 Latency</div><div class="stat-card-value" style="color:' + (maxP95 > 1000 ? 'var(--red)' : maxP95 > 500 ? '#e07000' : 'var(--fg)') + '">' + (maxP95 >= 1000 ? (maxP95/1000).toFixed(1) + 's' : Math.round(maxP95) + 'ms') + '</div></div>';
+    html += '<div class="stat-card"><div class="stat-card-label">Max p95 Latency</div><div class="stat-card-value" style="color:' + (maxP95 > 1000 ? 'var(--red)' : maxP95 > 500 ? 'color-mix(in srgb, var(--yellow) 93%, var(--shade))' : 'var(--text)') + '">' + (maxP95 >= 1000 ? (maxP95/1000).toFixed(1) + 's' : Math.round(maxP95) + 'ms') + '</div></div>';
     html += '<div class="stat-card"><div class="stat-card-label">API Families</div><div class="stat-card-value">' + fams.length + '</div></div>';
     html += '</div>';
-    html += '<div class="stat-card" style="margin-bottom:12px;overflow-x:auto;">';
-    html += '<div style="font-size:0.73rem;font-weight:700;margin-bottom:8px;">Latency by API Family</div>';
-    html += '<table style="width:100%;font-size:0.72rem;border-collapse:collapse;">';
-    html += '<tr style="color:var(--dim);text-align:left;"><th style="padding:3px 6px;">Family</th><th style="padding:3px 6px;text-align:right;">Count</th><th style="padding:3px 6px;text-align:right;">Errors</th><th style="padding:3px 6px;text-align:right;">p50</th><th style="padding:3px 6px;text-align:right;">p95</th><th style="padding:3px 6px;text-align:right;">p99</th><th style="padding:3px 6px;">Origin</th></tr>';
+    html += '<div class="stat-card" style="margin-bottom:var(--space-3);overflow-x:auto;">';
+    html += '<div style="font-size:var(--fs-xs);font-weight:700;margin-bottom:var(--space-2);">Latency by API Family</div>';
+    html += '<table style="width:100%;font-size:var(--fs-xs);border-collapse:collapse;">';
+    html += '<tr style="color:var(--dim);text-align:left;"><th style="padding:var(--space-0-5) var(--space-1-5);">Family</th><th style="padding:var(--space-0-5) var(--space-1-5);text-align:right;">Count</th><th style="padding:var(--space-0-5) var(--space-1-5);text-align:right;">Errors</th><th style="padding:var(--space-0-5) var(--space-1-5);text-align:right;">p50</th><th style="padding:var(--space-0-5) var(--space-1-5);text-align:right;">p95</th><th style="padding:var(--space-0-5) var(--space-1-5);text-align:right;">p99</th><th style="padding:var(--space-0-5) var(--space-1-5);">Origin</th></tr>';
     for (const f of fams.slice(0, 30)) {
       const p50 = f.p50_ms || f.p50 || 0;
       const p95 = f.p95_ms || f.p95 || 0;
       const p99 = f.p99_ms || f.p99 || 0;
       const errPct = f.count > 0 ? (100 * (f.error_count || 0) / f.count).toFixed(1) : '0';
       const errColor = (f.error_count || 0) > 0 ? 'var(--red)' : 'var(--dim)';
-      const p95Color = p95 > 1000 ? 'var(--red)' : p95 > 500 ? '#e07000' : 'var(--fg)';
+      const p95Color = p95 > 1000 ? 'var(--red)' : p95 > 500 ? 'color-mix(in srgb, var(--yellow) 93%, var(--shade))' : 'var(--text)';
       const origins = f.origins ? Object.entries(f.origins).map(([k,v]) => escHtml(k) + ':' + v).join(', ') : '';
-      html += '<tr style="border-top:1px solid rgba(127,127,127,.1);">';
-      html += '<td style="padding:4px 6px;font-family:monospace;font-size:0.68rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(f.family) + '">' + escHtml(f.family) + '</td>';
-      html += '<td style="padding:4px 6px;text-align:right;">' + f.count.toLocaleString() + '</td>';
-      html += '<td style="padding:4px 6px;text-align:right;color:' + errColor + '">' + (f.error_count || 0) + (errPct > 0 ? ' (' + errPct + '%)' : '') + '</td>';
-      html += '<td style="padding:4px 6px;text-align:right;">' + Math.round(p50) + 'ms</td>';
-      html += '<td style="padding:4px 6px;text-align:right;color:' + p95Color + '">' + Math.round(p95) + 'ms</td>';
-      html += '<td style="padding:4px 6px;text-align:right;">' + Math.round(p99) + 'ms</td>';
-      html += '<td style="padding:4px 6px;font-size:0.64rem;color:var(--dim);">' + origins + '</td>';
+      html += '<tr style="border-top:1px solid color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 10%, transparent);">';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);font-family:var(--font-mono);font-size:var(--fs-2xs);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(f.family) + '">' + escHtml(f.family) + '</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);text-align:right;">' + f.count.toLocaleString() + '</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);text-align:right;color:' + errColor + '">' + (f.error_count || 0) + (errPct > 0 ? ' (' + errPct + '%)' : '') + '</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);text-align:right;">' + Math.round(p50) + 'ms</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);text-align:right;color:' + p95Color + '">' + Math.round(p95) + 'ms</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);text-align:right;">' + Math.round(p99) + 'ms</td>';
+      html += '<td style="padding:var(--space-1) var(--space-1-5);font-size:var(--fs-3xs);color:var(--dim);">' + origins + '</td>';
       html += '</tr>';
     }
     html += '</table></div>';
     if (stats.slow_outliers && stats.slow_outliers.length) {
-      html += '<div class="stat-card" style="margin-bottom:12px;">';
-      html += '<div style="font-size:0.73rem;font-weight:700;margin-bottom:8px;color:#e07000;">Slow Outliers (>5x family p50)</div>';
+      html += '<div class="stat-card" style="margin-bottom:var(--space-3);">';
+      html += '<div style="font-size:var(--fs-xs);font-weight:700;margin-bottom:var(--space-2);color:color-mix(in srgb, var(--yellow) 93%, var(--shade));">Slow Outliers (>5x family p50)</div>';
       for (const o of stats.slow_outliers.slice(0, 15)) {
         const when = new Date((o.ts || 0) * 1000).toLocaleString();
-        html += '<div style="display:flex;gap:6px;align-items:center;padding:3px 0;font-size:0.72rem;border-bottom:1px solid rgba(127,127,127,.06);">';
-        html += '<span style="color:var(--dim);font-size:0.64rem;min-width:90px;">' + escHtml(when) + '</span>';
-        html += '<span style="font-weight:600;color:#e07000;">' + Math.round(o.latency_ms || 0) + 'ms</span>';
-        html += '<span style="font-family:monospace;font-size:0.68rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(o.path || '') + '">' + escHtml(o.method || '') + ' ' + escHtml(o.path || '') + '</span>';
-        if (o.ratio) html += '<span style="color:var(--dim);font-size:0.64rem;">' + o.ratio.toFixed(1) + 'x p50</span>';
+        html += '<div style="display:flex;gap:var(--space-1-5);align-items:center;padding:var(--space-0-5) 0;font-size:var(--fs-xs);border-bottom:1px solid color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 6%, transparent);">';
+        html += '<span style="color:var(--dim);font-size:var(--fs-3xs);min-width:90px;">' + escHtml(when) + '</span>';
+        html += '<span style="font-weight:600;color:color-mix(in srgb, var(--yellow) 93%, var(--shade));">' + Math.round(o.latency_ms || 0) + 'ms</span>';
+        html += '<span style="font-family:var(--font-mono);font-size:var(--fs-2xs);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(o.path || '') + '">' + escHtml(o.method || '') + ' ' + escHtml(o.path || '') + '</span>';
+        if (o.ratio) html += '<span style="color:var(--dim);font-size:var(--fs-3xs);">' + o.ratio.toFixed(1) + 'x p50</span>';
         html += '</div>';
       }
       html += '</div>';
     }
   }
   if (analyze && analyze.groups && analyze.groups.length) {
-    html += '<div class="stat-card" style="margin-bottom:12px;">';
-    html += '<div style="font-size:0.73rem;font-weight:700;margin-bottom:8px;color:var(--red);">Error Groups (24h) — ' + (analyze.total_errors || 0) + ' total errors</div>';
+    html += '<div class="stat-card" style="margin-bottom:var(--space-3);">';
+    html += '<div style="font-size:var(--fs-xs);font-weight:700;margin-bottom:var(--space-2);color:var(--red);">Error Groups (24h) — ' + (analyze.total_errors || 0) + ' total errors</div>';
     for (const g of analyze.groups.slice(0, 20)) {
       const clients = (g.clients || []).join(', ');
-      html += '<div style="padding:6px 0;border-bottom:1px solid rgba(127,127,127,.08);">';
-      html += '<div style="display:flex;gap:6px;align-items:center;font-size:0.76rem;">';
+      html += '<div style="padding:var(--space-1-5) 0;border-bottom:1px solid color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 8%, transparent);">';
+      html += '<div style="display:flex;gap:var(--space-1-5);align-items:center;font-size:var(--fs-sm);">';
       html += '<span style="font-weight:700;color:var(--red);">' + g.status + '</span>';
       html += '<span style="font-weight:600;">' + escHtml(g.method) + '</span>';
-      html += '<span style="font-family:monospace;font-size:0.68rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(g.target) + '</span>';
+      html += '<span style="font-family:var(--font-mono);font-size:var(--fs-2xs);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(g.target) + '</span>';
       html += '<span style="font-weight:600;min-width:40px;text-align:right;">' + g.count + 'x</span>';
       html += '</div>';
-      html += '<div style="font-size:0.64rem;color:var(--dim);padding-top:2px;">';
+      html += '<div style="font-size:var(--fs-3xs);color:var(--dim);padding-top:var(--space-0-5);">';
       html += escHtml(g.first || '') + ' - ' + escHtml(g.last || '') + ' · ' + g.distinct_clients + ' client(s)';
       if (clients) html += ' · ' + escHtml(clients);
       html += '</div>';
       if (g.sample && g.sample.error_body) {
-        html += '<pre style="margin:4px 0 0;padding:4px 8px;background:var(--code-bg,rgba(127,127,127,.08));border-radius:4px;font-size:0.66rem;max-height:80px;overflow:auto;white-space:pre-wrap;word-break:break-all;">' + escHtml(g.sample.error_body) + '</pre>';
+        html += '<pre style="margin:var(--space-1) 0 0;padding:var(--space-1) var(--space-2);background:var(--bg-inset);border-radius:var(--radius-sm);font-size:var(--fs-3xs);max-height:80px;overflow:auto;white-space:pre-wrap;word-break:break-all;">' + escHtml(g.sample.error_body) + '</pre>';
       }
       html += '</div>';
     }
     html += '</div>';
   }
   if (analyze && analyze.verdicts && analyze.verdicts.length) {
-    html += '<div class="stat-card" style="margin-bottom:12px;">';
-    html += '<div style="font-size:0.73rem;font-weight:700;margin-bottom:6px;">Route Verdicts</div>';
+    html += '<div class="stat-card" style="margin-bottom:var(--space-3);">';
+    html += '<div style="font-size:var(--fs-xs);font-weight:700;margin-bottom:var(--space-1-5);">Route Verdicts</div>';
     for (const v of analyze.verdicts) {
-      html += '<div style="font-size:0.72rem;padding:4px 0;border-bottom:1px solid rgba(127,127,127,.06);line-height:1.4;">' + escHtml(v) + '</div>';
+      html += '<div style="font-size:var(--fs-xs);padding:var(--space-1) 0;border-bottom:1px solid color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 6%, transparent);line-height:1.4;">' + escHtml(v) + '</div>';
     }
     html += '</div>';
   }
   if (!html) {
-    html = '<div style="padding:20px;color:var(--dim);font-size:0.85rem;">No health data available. The server must have the /api/logs/stats and /api/logs/analyze endpoints.</div>';
+    html = '<div style="padding:var(--space-5);color:var(--dim);font-size:var(--fs-lg);">No health data available. The server must have the /api/logs/stats and /api/logs/analyze endpoints.</div>';
   }
   el.innerHTML = html;
 }
@@ -40140,7 +41307,7 @@ function renderSchedulerAudit(rowsIn, liveIdsIn) {
   const rows = (rowsIn || _schedulerAudit || []).slice(0, 60);
   if (nEl) nEl.textContent = rows.length ? '(' + rows.length + ')' : '';
   if (!rows.length) {
-    el.innerHTML = '<div class="empty" style="font-size:0.75rem;">No recorded schedule changes.</div>';
+    el.innerHTML = '<div class="empty" style="font-size:var(--fs-sm);">No recorded schedule changes.</div>';
     return;
   }
   const live = liveIdsIn || new Set((schedules || []).map(s => s.id));
@@ -40159,15 +41326,15 @@ function _schedAuditRow(r, live) {
       ? '<span style="color:var(--accent);">' + esc(who) + '</span>'
       : '<span style="color:var(--red);" title="No X-Amux-Session on the write — this is the gap AMUX-1812 was about">unattributed</span>';
     const gonePill = gone
-      ? ' <span style="font-size:0.62rem;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:0 4px;" title="This schedule no longer exists — visible only here">gone</span>'
+      ? ' <span style="font-size:var(--fs-4xs);color:var(--red);border:1px solid var(--red);border-radius:var(--radius-sm);padding:0 var(--space-1);" title="This schedule no longer exists — visible only here">gone</span>'
       : '';
     const diff = (r.old_value || r.new_value)
-      ? '<div style="color:var(--dim);font-size:0.66rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+      ? '<div style="color:var(--dim);font-size:var(--fs-3xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
         + (r.old_value ? esc(String(r.old_value).slice(0, 60)) + ' \u2192 ' : '')
         + esc(String(r.new_value || '').slice(0, 60)) + '</div>'
       : '';
-    return '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:0.72rem;">'
-      + '<div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">'
+    return '<div style="padding:var(--space-1) 0;border-bottom:1px solid var(--border);font-size:var(--fs-xs);">'
+      + '<div style="display:flex;gap:var(--space-1-5);align-items:baseline;flex-wrap:wrap;">'
       + '<span style="font-weight:600;">' + esc(r.title || r.schedule_id || '?') + '</span>' + gonePill
       + '<span style="color:var(--dim);">' + label + ' by </span>' + whoHtml
       + '<span style="color:var(--dim);margin-left:auto;">' + timeAgo(Number(r.ts) || 0) + '</span>'
@@ -40242,8 +41409,8 @@ function _schedRunTone(status) { return _SCHED_RUN_TONE[String(status || '')] ||
 function _schedRunDotClass(r) { return _schedRunTone(r.status); }
 function _schedRunColor(status) {
   return {
-    ok: 'var(--green,#4ade80)', done: 'var(--accent)', queued: 'var(--accent)', running: 'var(--yellow,#fbbf24)',
-    warn: 'var(--yellow,#fbbf24)', err: 'var(--red)', unknown: 'var(--dim)',
+    ok: 'var(--green)', done: 'var(--accent)', queued: 'var(--accent)', running: 'var(--yellow)',
+    warn: 'var(--yellow)', err: 'var(--red)', unknown: 'var(--dim)',
   }[_schedRunTone(status)];
 }
 
@@ -40256,7 +41423,7 @@ function _schedRunSrcChip(src) {
   const kind = s.split(':')[0];
   const label = kind === 'manual' ? 'run now' : kind === 'trigger' ? 'trigger' : kind === 'watch' ? 'watch' : kind;
   const color = kind === 'manual' ? 'var(--accent)' : 'var(--dim)';
-  return `<span style="flex-shrink:0;font-size:0.62rem;padding:1px 5px;border-radius:4px;`
+  return `<span style="flex-shrink:0;font-size:var(--fs-4xs);padding:1px var(--space-1);border-radius:var(--radius-sm);`
        + `border:1px solid ${color};color:${color};white-space:nowrap;" title="${esc(s)}">${esc(label)}</span>`;
 }
 
@@ -40583,7 +41750,7 @@ function _sxWorkerChip(s, sessMap) {
   // NOT where the command goes (AMUX-2899: a shell row that read like a
   // delivery target got Run Now pressed three times for nothing).
   const title = s.session + ': ' + st + (owner ? '. Owner and failure alerts only; the command runs on this machine, NOT in this worker' : '. Each run is delivered to this worker as a prompt');
-  return `<span class="sx-chip" title="${esc(title)}"><span class="sx-avatar" style="--h:${_sxHue(s.session)}" aria-hidden="true">${esc(init)}</span>`
+  return `<span class="sx-chip" title="${esc(title)}"><span class="sx-avatar" style="--h:${themeCategorical(_sxHue(s.session))}" aria-hidden="true">${esc(init)}</span>`
     + `<span class="sx-chip-name">${owner ? '<span class="sx-dim">owner </span>' : ''}${esc(s.session)}</span>`
     + `<span class="sched-sess-dot ${esc(String(st).replace(/\s+/g, '-'))}" aria-hidden="true"></span></span>`;
 }
@@ -40872,7 +42039,7 @@ function renderScheduler(opts) {
   if (!runsEl) {
     // peek view may omit the runs list; nothing to render
   } else if (!runsScoped.length) {
-    runsEl.innerHTML = `<div style="color:var(--dim);font-size:0.78rem;padding:4px 0;">No runs recorded yet.</div>`;
+    runsEl.innerHTML = `<div style="color:var(--dim);font-size:var(--fs-base);padding:var(--space-1) 0;">No runs recorded yet.</div>`;
   } else {
     runsEl.innerHTML = runsScoped.slice(0, 30).map(r => {
       const timeStr = r.ran_at ? relTime(r.ran_at) : '?';
@@ -40882,7 +42049,7 @@ function renderScheduler(opts) {
       // the expected case for a delivered run and chipping it everywhere would
       // bury `unverified` (AMUX-2629).
       const subChip = (r.submission && r.submission !== 'confirmed' && r.submission !== 'deferred')
-        ? `<span style="color:var(--yellow,#fbbf24);flex-shrink:0;font-size:0.65rem;" title="submission verdict">${esc(r.submission)}</span>` : '';
+        ? `<span style="color:var(--yellow);flex-shrink:0;font-size:var(--fs-3xs);" title="submission verdict">${esc(r.submission)}</span>` : '';
       const live = scopeIds.has(r.schedule_id);
       return `<div class="sx-fleet-run${live ? ' clickable' : ''}" ${live ? `onclick="openSchedDetail('${escJs(r.schedule_id)}')"` : ''}>
         <span style="color:${okColor};font-weight:600;min-width:52px;flex-shrink:0;">${esc(r.status)}</span>
@@ -41954,11 +43121,11 @@ function _parseFrontmatter(raw) {
 function _renderFrontmatterBlock(entries) {
   if (!entries || !entries.length) return '';
   const rows = entries.map(([k, v]) =>
-    '<tr><td style="padding:3px 10px 3px 0;color:var(--dim);font-size:0.72rem;white-space:nowrap;vertical-align:top;">' + esc(k) + '</td>'
-    + '<td style="padding:3px 0;font-size:0.78rem;word-break:break-word;">' + esc(v) + '</td></tr>'
+    '<tr><td style="padding:var(--space-0-5) var(--space-2-5) var(--space-0-5) 0;color:var(--dim);font-size:var(--fs-xs);white-space:nowrap;vertical-align:top;">' + esc(k) + '</td>'
+    + '<td style="padding:var(--space-0-5) 0;font-size:var(--fs-base);word-break:break-word;">' + esc(v) + '</td></tr>'
   ).join('');
-  return '<details class="file-frontmatter" open><summary style="font-size:0.72rem;color:var(--dim);cursor:pointer;padding:4px 0;user-select:none;">Metadata</summary>'
-    + '<table style="border-collapse:collapse;margin:4px 0 12px;">' + rows + '</table></details>';
+  return '<details class="file-frontmatter" open><summary style="font-size:var(--fs-xs);color:var(--dim);cursor:pointer;padding:var(--space-1) 0;user-select:none;">Metadata</summary>'
+    + '<table style="border-collapse:collapse;margin:var(--space-1) 0 var(--space-3);">' + rows + '</table></details>';
 }
 
 // A heading's id, and the anchor a link to it uses: one function for both, so
@@ -42894,10 +44061,10 @@ function _bfOpenMenu(ev, target) {
   const dateGrp = key => grp(key.charAt(0).toUpperCase() + key.slice(1), [
     opt('today', key + ':<1d'), opt('last 7 days', key + ':<7d'), opt('last 30 days', key + ':<30d'),
     opt('older than 7 days', key + ':>7d'),
-    '<div class="bf-opt" style="display:flex;gap:4px;align-items:center;" onclick="event.stopPropagation()">'
-      + '<input type="date" id="bf-' + key + '-a" class="amux-dp" style="font-size:0.72rem;max-width:120px;">\u2013'
-      + '<input type="date" id="bf-' + key + '-b" class="amux-dp" style="font-size:0.72rem;max-width:120px;">'
-      + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="(function(){'
+    '<div class="bf-opt" style="display:flex;gap:var(--space-1);align-items:center;" onclick="event.stopPropagation()">'
+      + '<input type="date" id="bf-' + key + '-a" class="amux-dp" style="font-size:var(--fs-xs);max-width:120px;">\u2013'
+      + '<input type="date" id="bf-' + key + '-b" class="amux-dp" style="font-size:var(--fs-xs);max-width:120px;">'
+      + '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="(function(){'
       + 'var a=document.getElementById(\'bf-' + key + '-a\').value,b=document.getElementById(\'bf-' + key + '-b\').value;'
       + 'if(a&&b)_bfAppend(\'' + key + ':\'+a+\'..\'+b);})()">apply</button></div>',
   ]);
@@ -43127,7 +44294,7 @@ async function _boardSaveCurrentView() {
   // Not window.prompt(): a blocking dialog in a PWA is a dead end on iOS.
   const ok = await showFormModal('Save view',
     '<input id="bv-name" class="search-input" type="text" placeholder="View name" maxlength="32" style="width:100%;box-sizing:border-box">'
-    + '<div style="margin-top:8px;font-size:0.74rem;color:var(--dim);word-break:break-all"><code>' + esc(q) + '</code></div>');
+    + '<div style="margin-top:var(--space-2);font-size:var(--fs-sm);color:var(--dim);word-break:break-all"><code>' + esc(q) + '</code></div>');
   const name = ((document.getElementById('bv-name') || {}).value || '').trim();
   if (!ok || !name) return;
   _boardViews.push({ id: 'v' + Date.now().toString(36), name: name.slice(0, 32), q });
@@ -43238,10 +44405,10 @@ function _focusPrev() { if (_focusIdx > 0) { _focusIdx--; _focusRender(); } }
 function _focusDone() {
   const ov = document.getElementById('focus-overlay');
   if (ov) ov.querySelector('.focus-body').innerHTML =
-    '<div style="text-align:center;padding:60px 20px;"><div style="font-size:2.4rem;">\u2705</div>'
-    + '<div style="font-size:1.1rem;font-weight:600;margin-top:12px;">Inbox zero.</div>'
-    + '<div style="color:var(--dim);margin-top:6px;">Nothing else is blocked on you.</div>'
-    + '<button class="btn primary" style="margin-top:20px;" onclick="_focusClose()">Done</button></div>';
+    '<div style="text-align:center;padding:var(--space-16) var(--space-5);"><div style="font-size:var(--fs-7xl);">\u2705</div>'
+    + '<div style="font-size:var(--fs-3xl);font-weight:600;margin-top:var(--space-3);">Inbox zero.</div>'
+    + '<div style="color:var(--dim);margin-top:var(--space-1-5);">Nothing else is blocked on you.</div>'
+    + '<button class="btn primary" style="margin-top:var(--space-5);" onclick="_focusClose()">Done</button></div>';
 }
 function _focusKey(e) {
   if (e.key === 'Escape') { e.preventDefault(); _focusClose(); }
@@ -43345,13 +44512,13 @@ function _focusRender() {
 
 function _boardQueryHelp() {
   showFormModal('Board query syntax',
-    '<div style="font-size:0.8rem;line-height:1.6">'
-    + '<p style="margin:0 0 8px;color:var(--dim)">Terms are AND-ed. Comma-separate to OR within a key. Prefix <code>-</code> to negate. Quote phrases.</p>'
-    + '<p style="margin:0 0 4px"><b>Fields</b><br><code>status: worker: owner: type: group: id: shepherd: creator:</code></p>'
-    + '<p style="margin:0 0 4px"><b>Derived</b> (joined against live worker state)<br>'
+    '<div style="font-size:var(--fs-md);line-height:1.6">'
+    + '<p style="margin:0 0 var(--space-2);color:var(--dim)">Terms are AND-ed. Comma-separate to OR within a key. Prefix <code>-</code> to negate. Quote phrases.</p>'
+    + '<p style="margin:0 0 var(--space-1)"><b>Fields</b><br><code>status: worker: owner: type: group: id: shepherd: creator:</code></p>'
+    + '<p style="margin:0 0 var(--space-1)"><b>Derived</b> (joined against live worker state)<br>'
     + '<code>is:open is:closed is:stale is:rotting is:working is:waiting is:gated is:offline is:orphan is:pinned is:overdue is:folded</code></p>'
-    + '<p style="margin:0 0 4px"><b>Age</b><br><code>updated:&gt;7d created:&lt;3d updated:&gt;36h</code></p>'
-    + '<p style="margin:8px 0 0;color:var(--dim)">Example: <code>status:doing -worker:none updated:&gt;14d</code></p>'
+    + '<p style="margin:0 0 var(--space-1)"><b>Age</b><br><code>updated:&gt;7d created:&lt;3d updated:&gt;36h</code></p>'
+    + '<p style="margin:var(--space-2) 0 0;color:var(--dim)">Example: <code>status:doing -worker:none updated:&gt;14d</code></p>'
     + '</div>', 'Close');
 }
 
@@ -43670,7 +44837,7 @@ async function _fetchSmartBoard() {
 
 function _renderSmartBoard(container, visibleStored) {
   if (!_smartBoardData || !_smartBoardData.items) {
-    container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">No derived data available.</div>';
+    container.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">No derived data available.</div>';
     return;
   }
   const visibleIds = new Set(visibleStored.map(i => i.id));
@@ -43697,22 +44864,22 @@ function _renderSmartBoard(container, visibleStored) {
     const sty = derivedStatusStyle(ds);
     const label = _DERIVED_STATUS_LABELS[ds] || ds;
     const headStyle = isSpecial
-      ? 'display:flex;align-items:center;gap:8px;padding:10px 6px 4px;font-size:0.76rem;font-weight:700;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;border-left:3px solid ' + sty.dot + ';padding-left:10px;margin-top:6px;'
-      : 'display:flex;align-items:center;gap:8px;padding:10px 6px 4px;font-size:0.74rem;font-weight:600;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;';
+      ? 'display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2-5) var(--space-1-5) var(--space-1);font-size:var(--fs-sm);font-weight:700;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;border-left:3px solid ' + sty.dot + ';padding-left:var(--space-2-5);margin-top:var(--space-1-5);'
+      : 'display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2-5) var(--space-1-5) var(--space-1);font-size:var(--fs-sm);font-weight:600;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;';
     html += '<div class="board-list-group-head" style="' + headStyle + '">'
       + '<span class="board-status-dot" style="background:' + sty.dot + '"></span>' + esc(label)
       + '<span style="color:var(--dim);font-weight:400;">' + g.length + '</span></div>';
     html += g.map(i => {
       let row = _issueRowHTML(i, { showOwner: true });
       if (isSpecial && i.display_status !== i.status) {
-        const badge = '<span style="font-size:0.65rem;padding:1px 5px;border-radius:3px;background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';margin-left:6px;vertical-align:middle;font-weight:600;">' + esc(i.display_status) + '</span>';
+        const badge = '<span style="font-size:var(--fs-3xs);padding:1px var(--space-1);border-radius:var(--radius-sm);background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';margin-left:var(--space-1-5);vertical-align:middle;font-weight:600;">' + esc(i.display_status) + '</span>';
         row = row.replace('</div>', badge + '</div>');
       }
       return row;
     }).join('');
   });
   container.dataset.component = 'board-smart';
-  container.innerHTML = html || '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">Nothing to show.</div>';
+  container.innerHTML = html || '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">Nothing to show.</div>';
 }
 
 function _smartBoardStatsHTML() {
@@ -43725,12 +44892,12 @@ function _smartBoardStatsHTML() {
     if (n === 0) continue;
     const sty = derivedStatusStyle(key);
     const label = _DERIVED_STATUS_LABELS[key] || key;
-    pills += '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.72rem;font-weight:600;">'
+    pills += '<span style="display:inline-flex;align-items:center;gap:var(--space-1);padding:var(--space-0-5) var(--space-2);border-radius:var(--radius-sm);background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:var(--fs-xs);font-weight:600;">'
       + '<span class="board-status-dot" style="background:' + sty.dot + ';width:6px;height:6px;"></span>'
       + esc(label) + ' <b>' + n + '</b></span>';
   }
-  if (!pills) return '<div style="padding:6px 8px;font-size:0.75rem;color:var(--dim);">All cards are in their expected status.</div>';
-  return '<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 8px 4px;">' + pills + '</div>';
+  if (!pills) return '<div style="padding:var(--space-1-5) var(--space-2);font-size:var(--fs-sm);color:var(--dim);">All cards are in their expected status.</div>';
+  return '<div style="display:flex;flex-wrap:wrap;gap:var(--space-1-5);padding:var(--space-2) var(--space-2) var(--space-1);">' + pills + '</div>';
 }
 
 function setBoardOwner(type) {
@@ -43771,9 +44938,9 @@ function _issueRowHTML(item, opts) {
   const sty = statusStyle(item.status || 'todo');
   const due = item.due ? '<span class="peek-issue-due">' + esc(item.due) + '</span>' : '';
   const owner = (opts.showOwner && item.session)
-    ? '<span class="peek-issue-owner" style="font-size:0.68rem;color:var(--accent);background:rgba(88,166,255,0.12);border-radius:8px;padding:1px 6px;margin-right:4px;">' + esc(item.session) + '</span>'
+    ? '<span class="peek-issue-owner" style="font-size:var(--fs-2xs);color:var(--accent);background:color-mix(in srgb, var(--accent) 12%, transparent);border-radius:var(--radius-lg);padding:1px var(--space-1-5);margin-right:var(--space-1);">' + esc(item.session) + '</span>'
     : '';
-  const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
+  const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:var(--fs-xs);padding:1px var(--space-1-5);border-radius:var(--radius-xl);">' + esc(item.status || 'todo') + '</span>';
   const dot = '<span class="board-status-dot" style="background:' + sty.dot + ';flex:0 0 auto;"></span>';
   const _rq = (typeof _peekIssuesQuery !== 'undefined' && _peekIssuesQuery)
     ? _peekIssuesQuery
@@ -44124,7 +45291,7 @@ function _renderBoardColumnsInto(host, items, scope) {
     const collapsed = isGlobal && _collapsedCols.has(st);
     html += '<div class="board-col' + (collapsed ? ' col-collapsed' : '') + '" data-col="' + st + '">';
     html += '<div class="board-col-header"' + (isGlobal ? '' : ' style="cursor:default;"') + '>';
-    html += '<span class="board-col-identity" style="display:flex;align-items:center;gap:5px;">';
+    html += '<span class="board-col-identity" style="display:flex;align-items:center;gap:var(--space-1);">';
     if (isGlobal) {
       html += '<button class="board-col-collapse" onclick="toggleColCollapse(\'' + st + '\')" title="' + (collapsed ? 'Expand' : 'Collapse') + '">' + (collapsed ? '&#x25B8;' : '&#x25BE;') + '</button>';
     }
@@ -44139,7 +45306,7 @@ function _renderBoardColumnsInto(host, items, scope) {
         + 'when the last card leaves.">unconfigured</span>';
     }
     html += '</span>';
-    html += '<span style="display:flex;align-items:center;gap:6px;">';
+    html += '<span style="display:flex;align-items:center;gap:var(--space-1-5);">';
     html += '<span class="col-count" data-col="' + st + '">' + stCol.length + '</span>';
     // A stray column has no stored gate and no delete: editStatusGate would
     // write a gate for a status that is not in the list, and deleteBoardStatus
@@ -44225,7 +45392,7 @@ function _renderBoardColumnsInto(host, items, scope) {
         html += '<button class="board-add-btn" style="color:var(--accent);border-color:var(--accent);opacity:0.8;" onclick="event.stopPropagation();_boardShowMore(\'' + st + '\',' + PAGE_SIZE + ')">Show ' + Math.min(remaining, PAGE_SIZE) + ' more (' + remaining + ' remaining)</button>';
       }
       if (st === 'done' && stCol.length > 0) {
-        html += '<button class="board-add-btn" style="color:var(--red);border-color:rgba(248,81,73,0.2);" onclick="clearDone()">Clear done</button>';
+        html += '<button class="board-add-btn" style="color:var(--red);border-color:color-mix(in srgb, var(--red) 20%, transparent);" onclick="clearDone()">Clear done</button>';
       }
     } else {
       stCol.forEach(item => { html += _renderBoardCard(item); });
@@ -44586,7 +45753,7 @@ function renderBoard() {
       const g = groups[st];
       if (!g || !g.length) return;
       const sty = statusStyle(st);
-      html += '<div class="board-list-group-head" style="display:flex;align-items:center;gap:8px;padding:10px 6px 4px;font-size:0.74rem;font-weight:600;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;">'
+      html += '<div class="board-list-group-head" style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2-5) var(--space-1-5) var(--space-1);font-size:var(--fs-sm);font-weight:600;color:' + sty.color + ';text-transform:uppercase;letter-spacing:0.05em;">'
         + '<span class="board-status-dot" style="background:' + sty.dot + '"></span>' + esc(st)
         + '<span style="color:var(--dim);font-weight:400;">' + g.length + '</span></div>';
       html += g.map(i => _issueRowHTML(i, { showOwner: true })).join('');
@@ -44596,7 +45763,7 @@ function renderBoard() {
     // Same stamp the peek Board tab's list mode carries: both are the shared
     // _issueRowHTML row component (AMUX-2152/2590).
     container.dataset.component = 'board-list';
-    container.innerHTML = html || '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">Nothing matches.</div>';
+    container.innerHTML = html || '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">Nothing matches.</div>';
     return;
   }
 
@@ -44605,12 +45772,12 @@ function renderBoard() {
     container.classList.add('board-list-mode');
     if (!_smartBoardData && !_smartBoardFetching) {
       _smartBoardFetching = true;
-      container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">Loading derived statuses...</div>';
+      container.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">Loading derived statuses...</div>';
       _fetchSmartBoard().then(() => { _smartBoardFetching = false; renderBoard(); }).catch(() => { _smartBoardFetching = false; });
       return;
     }
     if (!_smartBoardData) {
-      container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">Loading derived statuses...</div>';
+      container.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">Loading derived statuses...</div>';
       return;
     }
     _renderSmartBoard(container, visible);
@@ -44961,7 +46128,7 @@ function schedCmdSwitchMode(mode) {
   const editTab = document.getElementById('sched-cmd-tab-edit');
   const prevTab = document.getElementById('sched-cmd-tab-preview');
   if (mode === 'preview') {
-    preview.innerHTML = renderMarkdown(ta.value) || '<span style="color:var(--dim);font-size:0.85rem;">Nothing to preview</span>';
+    preview.innerHTML = renderMarkdown(ta.value) || '<span style="color:var(--dim);font-size:var(--fs-lg);">Nothing to preview</span>';
     wrap.style.display = 'none';
     preview.style.display = 'block';
     editTab.classList.remove('active');
@@ -45566,13 +46733,12 @@ function _bdOpenMessage(id) {
   closeBoardDetail();
   _msgsKind = 'all';
   _msgsDeepQ = displayId;
-  _msgsGroup = '';
+  _msgsScope = { workers: new Set(), groups: new Set() };
   _msgsSender = '';
   _msgsCounts = null;
   const search = document.getElementById('msgs-search');
   if (search) search.value = displayId;
-  const worker = document.getElementById('msgs-session-filter');
-  if (worker) worker.value = '';
+  _msgsScopeLabel();
   if (typeof _msgSetMode === 'function') _msgSetMode('messages');
   switchView('messages');
 }
@@ -46080,8 +47246,8 @@ function _bdWorkerActivity(item) {
 }
 const _BD_KIND_ICON = { status:'\uD83D\uDCCD', transition:'\u2192', commit:'\u2318', claim:'\u270B',
   request:'\uD83D\uDCAC', decision:'\u2713', warn:'\u26A0', note:'\u00B7' };
-const _BD_KIND_COL = { status:'var(--accent)', transition:'var(--fg)', commit:'var(--green)',
-  claim:'#d29922', request:'var(--accent)', decision:'var(--green)', warn:'var(--red)', note:'var(--dim)' };
+const _BD_KIND_COL = { status:'var(--accent)', transition:'var(--text)', commit:'var(--green)',
+  claim:'var(--yellow)', request:'var(--accent)', decision:'var(--green)', warn:'var(--red)', note:'var(--dim)' };
 function _bdRenderHistory(item) {
   const el = document.getElementById('bd-log');
   const nb = document.getElementById('bd-hist-n');
@@ -46095,7 +47261,7 @@ function _bdRenderHistory(item) {
         + '<div class="bd-hist-b"><span class="bd-hist-txt">' + _linkifyUrls(_linkifyCardIds(esc(e.body))) + '</span>'
         + (e.ts ? '<span class="bd-hist-ts">' + esc(e.ts) + '</span>' : '') + '</div></div>').join('')
       + '</div>'
-    : '<div style="color:var(--dim);font-size:0.85rem;padding:18px;text-align:center;">No worker actions recorded yet.</div>';
+    : '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-4);text-align:center;">No worker actions recorded yet.</div>';
 }
 function _bdRenderStatusBanner(item) {
   const el = document.getElementById('bd-status-banner');
@@ -46112,7 +47278,7 @@ function _bdRenderStatusBanner(item) {
     el.style.display = '';
     el.innerHTML = '<div class="bd-sb-label">\uD83D\uDCCD Final outcome</div>'
       + '<div class="bd-sb-text">' + _linkifyUrls(_linkifyCardIds(esc(summary))) + '</div>'
-      + (sess ? '<button class="btn" style="margin-top:8px;font-size:0.74rem;min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
+      + (sess ? '<button class="btn" style="margin-top:var(--space-2);font-size:var(--fs-sm);min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
     return;
   }
   if (evs.length) {
@@ -46121,11 +47287,11 @@ function _bdRenderStatusBanner(item) {
     el.innerHTML = '<div class="bd-sb-label">\uD83D\uDCCD Latest status'
       + (last.ts ? ' \u00B7 ' + esc(last.ts) : '') + '</div>'
       + '<div class="bd-sb-text">' + _linkifyUrls(_linkifyCardIds(esc(last.body.replace(/^STATUS\s*\([^)]*\):\s*/i, '')))) + '</div>'
-      + (sess ? '<button class="btn" style="margin-top:8px;font-size:0.74rem;min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
+      + (sess ? '<button class="btn" style="margin-top:var(--space-2);font-size:var(--fs-sm);min-height:36px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDD04 Refresh from ' + esc(sess) + '</button>' : '');
   } else if (sess && !/^(done|verified|discarded)$/i.test(String(item.status || ''))) {
     el.style.display = '';
     el.innerHTML = '<div class="bd-sb-empty">No status posted yet.'
-      + ' <button class="btn" style="font-size:0.74rem;min-height:36px;margin-left:6px;" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDCAC Ask ' + esc(sess) + '</button></div>';
+      + ' <button class="btn" style="font-size:var(--fs-sm);min-height:36px;margin-left:var(--space-1-5);" onclick="_askCardStatus(\'' + escJs(item.id) + '\',\'' + escJs(sess) + '\')">\uD83D\uDCAC Ask ' + esc(sess) + '</button></div>';
   } else { el.style.display = 'none'; }
 }
 function _bdCopyLink() {
@@ -46478,7 +47644,7 @@ function _bdRenderFanoutChildren(item) {
       html += '<span class="bd-fanout-worker" onclick="openPeek(\'' + escJs(childSession) + '\')">' + esc(childSession) + '</span>';
       html += _fanoutStartBtn(childSession, !!(sess && sess.running), sess?.lifecycle);
     } else if (childSession) {
-      html += '<span style="font-size:.72rem;color:var(--dim);">' + esc(childSession) + '</span>';
+      html += '<span style="font-size:var(--fs-xs);color:var(--dim);">' + esc(childSession) + '</span>';
       html += _fanoutStartBtn(childSession, false, _expiredWorkerInventory.has(childSession) ? 'expired' : '');
     }
     html += '</div>';
@@ -46577,20 +47743,20 @@ async function _gateConfirm(item, targetStatusId) {
     const label = ((typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === targetStatusId) || {}).label || targetStatusId;
     const bg = document.createElement('div');
     bg.className = 'amux-dialog-backdrop';
-    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    bg.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 50%, transparent);z-index:2000;display:flex;align-items:center;justify-content:center;padding:var(--space-4);';
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const rows = gate.map((g,i) => '<label style="display:flex;gap:9px;align-items:flex-start;padding:7px 4px;cursor:pointer;font-size:0.9rem;color:var(--text);"><input type="checkbox" class="_gate-chk" data-i="'+i+'" style="width:auto;margin-top:2px;accent-color:var(--accent);"><span>'+esc(g)+'</span></label>').join('');
+    const rows = gate.map((g,i) => '<label style="display:flex;gap:var(--space-2);align-items:flex-start;padding:var(--space-1-5) var(--space-1);cursor:pointer;font-size:var(--fs-xl);color:var(--text);"><input type="checkbox" class="_gate-chk" data-i="'+i+'" style="width:auto;margin-top:var(--space-0-5);accent-color:var(--accent);"><span>'+esc(g)+'</span></label>').join('');
     const box = document.createElement('div');
-    box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:440px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);';
+    box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-4);max-width:440px;width:100%;box-shadow:var(--shadow-lg);';
     box.className = 'amux-modal';   // dvh cap + sticky action row
-    box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Move to '+esc(label)+'</div>'
-      + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:10px;">Confirm this card meets the gate for '+esc(label)+':</div>'
+    box.innerHTML = '<div style="font-weight:600;margin-bottom:var(--space-1);">Move to '+esc(label)+'</div>'
+      + '<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-2-5);">Confirm this card meets the gate for '+esc(label)+':</div>'
       // Say which layer set these criteria, and say it LOUDLY when we could not
       // reach the server and are showing the local fallback — that fallback is
       // missing the type layer, so it can differ from what will be enforced.
       // A dialog that silently shows the wrong checklist is exactly AMUX-2330.
       + (_res.stale
-          ? '<div style="font-size:0.75rem;color:var(--warn,#e0a33e);border:1px solid var(--warn,#e0a33e);border-radius:7px;padding:7px 9px;margin-bottom:10px;">Offline — these are the column defaults, not the criteria the server will enforce for this card&rsquo;s type. The move may still be refused.</div>'
+          ? '<div style="font-size:var(--fs-sm);color:var(--yellow);border:1px solid var(--yellow);border-radius:var(--radius-lg);padding:var(--space-1-5) var(--space-2);margin-bottom:var(--space-2-5);">Offline — these are the column defaults, not the criteria the server will enforce for this card&rsquo;s type. The move may still be refused.</div>'
           // AMUX-3573: a gate the card INHERITED from its worker or group is the
           // case a human needs told, and it was the one case nothing told them.
           // The type default is the unremarkable majority and stays a quiet
@@ -46598,15 +47764,15 @@ async function _gateConfirm(item, targetStatusId) {
           // those are the tiers retyping cannot move and "change the type" is
           // the first thing anyone reaches for when a gate looks wrong.
           : (_res.source === 'worker' || _res.source === 'group' || _res.source === 'column' || _res.source === 'card'
-              ? '<div style="font-size:0.75rem;color:var(--accent);border:1px solid var(--accent);border-radius:7px;padding:7px 9px;margin-bottom:10px;">'
+              ? '<div style="font-size:var(--fs-sm);color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-lg);padding:var(--space-1-5) var(--space-2);margin-bottom:var(--space-2-5);">'
                 + 'These criteria come from the <b>' + esc(_res.source) + '</b> scope'
                 + (_res.scope ? ' (<b>' + esc(_res.scope) + '</b>)' : '')
                 + ', not from this card&rsquo;s type. Retyping the card will not change them.</div>'
-              : (_res.source ? '<div style="font-size:0.72rem;color:var(--dim);margin:-6px 0 10px;">criteria from: '+esc(_res.source === 'type' ? 'the item type' : _res.source)+'</div>' : '')))
-      + '<div id="_gate-list" style="margin-bottom:14px;">'+rows+'</div>'
-      + '<div class="amux-modal-foot" style="display:flex;gap:8px;justify-content:space-between;align-items:center;">'
-      + '<span id="_gate-count" style="font-size:0.75rem;color:var(--dim);"></span>'
-      + '<div style="display:flex;gap:8px;"><button class="btn" id="_gate-cancel">Cancel</button><button class="btn primary" id="_gate-ok">Move</button></div></div>';
+              : (_res.source ? '<div style="font-size:var(--fs-xs);color:var(--dim);margin:calc(var(--space-1-5) * -1) 0 var(--space-2-5);">criteria from: '+esc(_res.source === 'type' ? 'the item type' : _res.source)+'</div>' : '')))
+      + '<div id="_gate-list" style="margin-bottom:var(--space-3-5);">'+rows+'</div>'
+      + '<div class="amux-modal-foot" style="display:flex;gap:var(--space-2);justify-content:space-between;align-items:center;">'
+      + '<span id="_gate-count" style="font-size:var(--fs-sm);color:var(--dim);"></span>'
+      + '<div style="display:flex;gap:var(--space-2);"><button class="btn" id="_gate-cancel">Cancel</button><button class="btn primary" id="_gate-ok">Move</button></div></div>';
     bg.appendChild(box); document.body.appendChild(bg);
     const chks = box.querySelectorAll('._gate-chk');
     const upd = () => { const n = [...chks].filter(c=>c.checked).length; box.querySelector('#_gate-count').textContent = n+' / '+gate.length+' checked'; };
@@ -46630,14 +47796,14 @@ function editStatusGate(statusId) {
   const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const bg = document.createElement('div');
   bg.className = 'amux-dialog-backdrop';
-  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  bg.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 50%, transparent);z-index:2000;display:flex;align-items:center;justify-content:center;padding:var(--space-4);';
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);';
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-4);max-width:460px;width:100%;box-shadow:var(--shadow-lg);';
   box.className = 'amux-modal';   // dvh cap + sticky action row
-  box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Gate checklist — '+esc(label)+'</div>'
-    + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:10px;">One criterion per line. Shown as a confirm checklist when a card is moved into '+esc(label)+'. Individual cards can override this default.</div>'
-    + '<textarea id="_gate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:0.9rem;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
-    + '<div class="amux-modal-foot" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;"><button class="btn" id="_gate-edit-cancel">Cancel</button><button class="btn primary" id="_gate-edit-save">Save</button></div>';
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:var(--space-1);">Gate checklist — '+esc(label)+'</div>'
+    + '<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-2-5);">One criterion per line. Shown as a confirm checklist when a card is moved into '+esc(label)+'. Individual cards can override this default.</div>'
+    + '<textarea id="_gate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:var(--fs-xl);padding:var(--space-2);border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
+    + '<div class="amux-modal-foot" style="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-3-5);"><button class="btn" id="_gate-edit-cancel">Cancel</button><button class="btn primary" id="_gate-edit-save">Save</button></div>';
   bg.appendChild(box); document.body.appendChild(bg);
   const ta = box.querySelector('#_gate-edit-ta');
   ta.value = cur.join('\n');
@@ -46672,17 +47838,17 @@ function editSessionGate(worker, statusId) {
   const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const bg = document.createElement('div');
   bg.className = 'amux-dialog-backdrop';
-  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  bg.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 50%, transparent);z-index:2000;display:flex;align-items:center;justify-content:center;padding:var(--space-4);';
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);';
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-4);max-width:460px;width:100%;box-shadow:var(--shadow-lg);';
   box.className = 'amux-modal';   // dvh cap + sticky action row
-  box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Worker gate — '+esc(label)+'</div>'
-    + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:4px;">For worker <b>'+esc(worker)+'</b> only. Overrides the global default gate for '+esc(label)+' on this worker\'s cards.</div>'
-    + '<div style="font-size:0.75rem;color:var(--dim);margin-bottom:10px;">One criterion per line. '+(hasOverride ? 'This worker has a custom gate.' : 'Currently inheriting the global default (shown below to tweak).')+'</div>'
-    + '<textarea id="_sgate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:0.9rem;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
-    + '<div class="amux-modal-foot" style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px;">'
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:var(--space-1);">Worker gate — '+esc(label)+'</div>'
+    + '<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-1);">For worker <b>'+esc(worker)+'</b> only. Overrides the global default gate for '+esc(label)+' on this worker\'s cards.</div>'
+    + '<div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-2-5);">One criterion per line. '+(hasOverride ? 'This worker has a custom gate.' : 'Currently inheriting the global default (shown below to tweak).')+'</div>'
+    + '<textarea id="_sgate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:var(--fs-xl);padding:var(--space-2);border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
+    + '<div class="amux-modal-foot" style="display:flex;gap:var(--space-2);justify-content:space-between;align-items:center;margin-top:var(--space-3-5);">'
     + '<button class="btn" id="_sgate-edit-reset" title="Delete this worker override and inherit the global default"'+(hasOverride ? '' : ' style="visibility:hidden;"')+'>Reset to default</button>'
-    + '<div style="display:flex;gap:8px;"><button class="btn" id="_sgate-edit-cancel">Cancel</button><button class="btn primary" id="_sgate-edit-save">Save</button></div></div>';
+    + '<div style="display:flex;gap:var(--space-2);"><button class="btn" id="_sgate-edit-cancel">Cancel</button><button class="btn primary" id="_sgate-edit-save">Save</button></div></div>';
   bg.appendChild(box); document.body.appendChild(bg);
   const ta = box.querySelector('#_sgate-edit-ta');
   ta.value = (cur || []).join('\n');
@@ -46802,12 +47968,12 @@ function addBoardStatus() {
   if (existing) { existing.querySelector('.new-status-input').focus(); return; }
   const div = document.createElement('div');
   div.className = 'board-col board-col-new';
-  div.innerHTML = '<div style="padding:4px;">' +
+  div.innerHTML = '<div style="padding:var(--space-1);">' +
     '<input id="new-status-input" class="new-status-input" type="text" placeholder="Column name..." maxlength="30"' +
     ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();saveNewBoardStatus();}if(event.key===\'Escape\')cancelNewBoardStatus();" />' +
-    '<div style="display:flex;gap:4px;margin-top:6px;">' +
-    '<button class="btn" style="flex:1;font-size:0.78rem;" onclick="saveNewBoardStatus()">Add</button>' +
-    '<button class="btn" style="font-size:0.78rem;" onclick="cancelNewBoardStatus()">&#x2715;</button>' +
+    '<div style="display:flex;gap:var(--space-1);margin-top:var(--space-1-5);">' +
+    '<button class="btn" style="flex:1;font-size:var(--fs-base);" onclick="saveNewBoardStatus()">Add</button>' +
+    '<button class="btn" style="font-size:var(--fs-base);" onclick="cancelNewBoardStatus()">&#x2715;</button>' +
     '</div></div>';
   // Insert before the "+ Add column" button (last child is the button)
   const addColBtn = container.querySelector('.board-add-col-btn');
@@ -46958,7 +48124,7 @@ function _gcalCalOn(c) {
   return v === null ? !!c.selected : v === '1';
 }
 function _gcalEventToFc(e) {
-  const bg = e.color || '#039be5';
+  const bg = e.color || 'color-mix(in srgb, var(--accent) 84%, var(--shade))';
   const resp = e.self_response || '';
   const cls = ['gc-ev'];
   if (resp === 'declined') cls.push('gc-declined');
@@ -46971,7 +48137,7 @@ function _gcalEventToFc(e) {
     allDay: !!e.all_day,
     backgroundColor: bg,
     borderColor: bg,
-    textColor: e.fg_color || '#ffffff',
+    textColor: e.fg_color || 'var(--on-solid)',
     classNames: cls,
     extendedProps: {
       _type: 'gcal', gcalId: e.id, accountId: e.account_id, calendarId: e.calendar_id,
@@ -47040,15 +48206,15 @@ function _calPanelHtml() {
     + '<span class="cal-name">' + esc(label) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</span></label>';
   let h = '<div class="cal-panel-head"><b>Calendars</b><button class="cal-x" aria-label="Close" onclick="_calPanelClose()">&#x2715;</button></div>';
   h += '<div class="cal-group">amux</div>';
-  h += row(_calShowEvents, '#7c4dff', 'Local events', "_fcToggleLayer('events');_calPanelRefresh()", 'synced out via the iCal feed');
-  h += row(_calShowIssues, '#5f6368', 'Board due dates', "_fcToggleLayer('issues');_calPanelRefresh()");
-  h += row(_calShowGcal, '#4285f4', 'Google calendars', "_fcToggleLayer('gcal');_calPanelRefresh()");
+  h += row(_calShowEvents, 'color-mix(in srgb, var(--purple) 92%, var(--shade))', 'Local events', "_fcToggleLayer('events');_calPanelRefresh()", 'synced out via the iCal feed');
+  h += row(_calShowIssues, 'color-mix(in srgb, var(--bg-inset) 59%, var(--text))', 'Board due dates', "_fcToggleLayer('issues');_calPanelRefresh()");
+  h += row(_calShowGcal, 'color-mix(in srgb, var(--accent) 90%, var(--shade))', 'Google calendars', "_fcToggleLayer('gcal');_calPanelRefresh()");
   const byAcct = new Map();
   for (const c of _gcalCalendars) { if (!byAcct.has(c.account_id)) byAcct.set(c.account_id, []); byAcct.get(c.account_id).push(c); }
   for (const [acct, cals] of byAcct) {
     h += '<div class="cal-group">' + esc(acct) + '</div>';
     cals.sort((a, b) => (b.primary - a.primary) || a.name.localeCompare(b.name));
-    for (const c of cals) h += row(_gcalCalOn(c), c.color || '#039be5', c.primary ? c.name + ' (primary)' : c.name,
+    for (const c of cals) h += row(_gcalCalOn(c), c.color || 'color-mix(in srgb, var(--accent) 84%, var(--shade))', c.primary ? c.name + ' (primary)' : c.name,
       "_gcalSetCal('" + escJs(_gcalKey(c)) + "', this.checked)");
   }
   const bad = (_gcalAccounts || []).filter(a => !a.ok);
@@ -47095,9 +48261,9 @@ function _fcGetEvents() {
         start: e.start,
         end: e.end || undefined,
         allDay: !!e.all_day || !String(e.start).includes('T'),
-        backgroundColor: 'rgba(56,139,253,0.18)',
-        borderColor: '#388bfd',
-        textColor: '#79c0ff',
+        backgroundColor: 'color-mix(in srgb, color-mix(in srgb, var(--accent) 92%, var(--shade)) 18%, transparent)',
+        borderColor: 'color-mix(in srgb, var(--accent) 92%, var(--shade))',
+        textColor: 'color-mix(in srgb, var(--accent) 78%, var(--on-solid))',
         extendedProps: { _type: 'event', evId: e.id, desc: e.description || '' },
       });
     });
@@ -47110,9 +48276,9 @@ function _fcGetEvents() {
         title: '◪ ' + (i.title || i.id),
         start: i.due,
         allDay: !String(i.due).includes('T'),
-        backgroundColor: 'rgba(63,185,80,0.14)',
-        borderColor: '#3fb950',
-        textColor: '#56d364',
+        backgroundColor: 'color-mix(in srgb, var(--green) 14%, transparent)',
+        borderColor: 'var(--green)',
+        textColor: 'color-mix(in srgb, var(--green) 87%, var(--on-solid))',
         extendedProps: { _type: 'issue', issueId: i.id, desc: i.desc || '' },
       });
     });
@@ -47125,18 +48291,27 @@ function _fcInit() {
   if (!el) return;
   if (!window.FullCalendar) { _lazyLib('fullcalendar').then(_fcInit, () => {}); return; }
   if (_fcInstance) { _fcInstance.destroy(); _fcInstance = null; }
-  // Map old view names to FullCalendar view names
-  let savedView = localStorage.getItem('amux_cal_view') || 'dayGridMonth';
-  const _viewMap = { month: 'dayGridMonth', week: 'timeGridWeek', day: 'timeGridDay' };
-  if (_viewMap[savedView]) savedView = _viewMap[savedView];
-  if (!['dayGridMonth','timeGridWeek','timeGridDay'].includes(savedView)) savedView = 'dayGridMonth';
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.body.classList.contains('light'));
   const isMobile = window.innerWidth <= 600;
-  if (!['dayGridMonth','timeGridWeek','timeGridDay','timeGrid3Day','listWeek'].includes(localStorage.getItem('amux_cal_view') || '')) savedView = 'timeGridWeek';
-  const mobileViews = ['timeGridDay','timeGrid3Day','listWeek','dayGridMonth'];
-  const mobileDefault = mobileViews.includes(localStorage.getItem('amux_cal_view')) ? localStorage.getItem('amux_cal_view') : 'timeGridDay';
+  // Reopen on the view last used, on any device (Ethan, 2026-10-26: "make sure
+  // whatever view i last used is saved local. for cal"). Desktop used to keep
+  // only month/week/day and dropped 3-day and Agenda; phones dropped Week.
+  // The date being looked at comes back too while it is fresh (8h), so a
+  // calendar opened the next day starts on today.
+  const _viewMap = { month: 'dayGridMonth', week: 'timeGridWeek', day: 'timeGridDay' };
+  const _known = ['dayGridMonth', 'timeGridWeek', 'timeGridDay', 'timeGrid3Day', 'listWeek'];
+  let savedView = localStorage.getItem('amux_cal_view') || '';
+  if (_viewMap[savedView]) savedView = _viewMap[savedView];
+  if (!_known.includes(savedView)) savedView = isMobile ? 'timeGridDay' : 'timeGridWeek';
+  let savedDate;
+  try {
+    const d = JSON.parse(localStorage.getItem('amux_cal_date') || 'null');
+    if (d && d.date && Date.now() - d.at < 8 * 3600 * 1000) savedDate = d.date;
+  } catch (_) {}
+  try { amuxTrack('cal_view_restored', {view: savedView, date_restored: !!savedDate, measured: true, n_considered: 1}); } catch (_) {}
   _fcInstance = new FullCalendar.Calendar(el, {
-    initialView: isMobile ? mobileDefault : savedView,
+    initialView: savedView,
+    ...(savedDate ? { initialDate: savedDate } : {}),
     headerToolbar: isMobile ? {
       left: 'today',
       center: 'title',
@@ -47210,14 +48385,22 @@ function _fcInit() {
     viewDidMount: function(info) {
       localStorage.setItem('amux_cal_view', info.view.type);
     },
+    datesSet: function(info) {
+      try {
+        localStorage.setItem('amux_cal_view', info.view.type);
+        const d = info.view.calendar.getDate();
+        const local = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        localStorage.setItem('amux_cal_date', JSON.stringify({ date: local, at: Date.now() }));
+      } catch (_) {}
+    },
     eventDidMount: function(info) {
       const p = info.event.extendedProps;
       // Google's look for an unanswered invite: the calendar color as outline
       // and text on a plain background.
       if (info.el.classList.contains('gc-pending')) {
         info.el.style.background = 'var(--bg)';
-        info.el.style.color = p.calColor || '#039be5';
-        info.el.style.borderColor = p.calColor || '#039be5';
+        info.el.style.color = p.calColor || 'color-mix(in srgb, var(--accent) 84%, var(--shade))';
+        info.el.style.borderColor = p.calColor || 'color-mix(in srgb, var(--accent) 84%, var(--shade))';
       }
       const tip = [info.event.title, p.calendarName, p.location].filter(Boolean).join(' · ');
       if (tip) info.el.title = tip;
@@ -47292,27 +48475,27 @@ function openEventModal(editId, startStr, endStr, allDay) {
         <h3 style="margin:0">${ev ? 'Edit event' : 'New event'}</h3>
         <button class="modal-close" onclick="closeEventModal()">×</button>
       </div>
-      <div class="modal-body" style="display:flex;flex-direction:column;gap:10px">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:var(--space-2-5)">
         <input id="ev-title" class="input" placeholder="Title" value="${ev ? esc(ev.title) : ''}" autofocus>
-        <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--dim)">
+        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--fs-lg);color:var(--dim)">
           <input type="checkbox" id="ev-allday" ${isAllDay ? 'checked' : ''} onchange="_evToggleAllDay()"> All day
         </label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span style="font-size:0.8rem;color:var(--dim);min-width:34px">Start</span>
+        <div style="display:flex;gap:var(--space-2);align-items:center">
+          <span style="font-size:var(--fs-md);color:var(--dim);min-width:34px">Start</span>
           <input type="date" id="ev-sdate" class="input amux-dp" value="${s.date}">
           <input type="time" id="ev-stime" class="input" value="${s.time || '09:00'}" ${isAllDay ? 'style="display:none"' : ''}>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span style="font-size:0.8rem;color:var(--dim);min-width:34px">End</span>
+        <div style="display:flex;gap:var(--space-2);align-items:center">
+          <span style="font-size:var(--fs-md);color:var(--dim);min-width:34px">End</span>
           <input type="date" id="ev-edate" class="input amux-dp" value="${e.date}">
           <input type="time" id="ev-etime" class="input" value="${e.time}" ${isAllDay ? 'style="display:none"' : ''}>
         </div>
         <input id="ev-loc" class="input" placeholder="Location (optional)" value="${ev && ev.location ? esc(ev.location) : ''}">
         <textarea id="ev-desc" class="input" placeholder="Description (optional)" rows="2">${ev && ev.description ? esc(ev.description) : ''}</textarea>
       </div>
-      <div class="modal-footer" style="display:flex;justify-content:space-between;gap:8px">
+      <div class="modal-footer" style="display:flex;justify-content:space-between;gap:var(--space-2)">
         <div>${ev ? `<button class="btn danger" onclick="deleteEvent('${ev.id}')">Delete</button>` : ''}</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:var(--space-2)">
           <button class="btn" onclick="closeEventModal()">Cancel</button>
           <button class="btn primary" onclick="saveEvent('${ev ? ev.id : ''}')">Save</button>
         </div>
@@ -47344,14 +48527,14 @@ function openGcalEventModal(fcEvent) {
     : [fcEvent.start, fcEvent.end].filter(Boolean).map(d => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })).join(' – ');
 
   const RSVP_META = {
-    accepted:    ['accepted', '#1f8f4e'],
-    declined:    ['declined', '#c0392b'],
-    tentative:   ['maybe', '#8a6d3b'],
-    needsAction: ['no reply', '#666'],
+    accepted:    ['accepted', 'color-mix(in srgb, var(--green) 74%, var(--bg))'],
+    declined:    ['declined', 'color-mix(in srgb, var(--red) 75%, var(--shade))'],
+    tentative:   ['maybe', 'color-mix(in srgb, var(--orange) 58%, var(--card))'],
+    needsAction: ['no reply', 'color-mix(in srgb, var(--shade) 60%, var(--on-solid))'],
   };
   const attendeesHtml = (p.attendees || []).length
-    ? '<div class="conn-gmail-h" style="margin-top:4px">Attendees</div>' + p.attendees.map(a => {
-        const meta = RSVP_META[a.responseStatus] || [a.responseStatus || 'unknown', '#666'];
+    ? '<div class="conn-gmail-h" style="margin-top:var(--space-1)">Attendees</div>' + p.attendees.map(a => {
+        const meta = RSVP_META[a.responseStatus] || [a.responseStatus || 'unknown', 'color-mix(in srgb, var(--shade) 60%, var(--on-solid))'];
         const who = a.displayName || a.email || '?';
         return '<div class="conn-gmail-row">'
           + '<span class="conn-gmail-addr">' + esc(who) + (a.organizer ? ' <em style="opacity:0.6">(organizer)</em>' : '') + '</span>'
@@ -47369,11 +48552,11 @@ function openGcalEventModal(fcEvent) {
   overlay.innerHTML = `
     <div class="modal gc-card" style="max-width:460px" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span class="gc-card-sq" style="background:${esc(p.calColor || '#039be5')}"></span>
+        <span class="gc-card-sq" style="background:${esc(p.calColor || 'color-mix(in srgb, var(--accent) 84%, var(--shade))')}"></span>
         <h3 style="margin:0;flex:1">${esc(title)}</h3>
         <button class="modal-close" onclick="closeGcalEventModal()">×</button>
       </div>
-      <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;font-size:0.85rem">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:var(--space-2);font-size:var(--fs-lg)">
         <div style="color:var(--dim)">${esc(when)}</div>
         ${p.location ? '<div>📍 <a href="https://maps.google.com/?q=' + encodeURIComponent(p.location) + '" target="_blank" rel="noopener">' + esc(p.location) + '</a></div>' : ''}
         ${p.calendarName ? '<div style="color:var(--dim)">📅 ' + esc(p.calendarName) + (p.accountId && p.accountId !== p.calendarName ? ' · ' + esc(p.accountId) : '') + '</div>' : ''}
@@ -47383,7 +48566,7 @@ function openGcalEventModal(fcEvent) {
         ${p.desc ? '<div id="gcal-desc" style="white-space:pre-wrap">' + _sanitizeHtml(p.desc) + '</div>' : ''}
         ${attendeesHtml}
       </div>
-      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:var(--space-2);flex-wrap:wrap">
         ${p.meetingUrl ? '<a class="btn primary" href="' + esc(p.meetingUrl) + '" target="_blank" rel="noopener">📹 Join call</a>' : ''}
         ${p.htmlLink ? '<a class="btn" href="' + esc(p.htmlLink) + '" target="_blank" rel="noopener">Open in Google Calendar ↗</a>' : ''}
         <button class="btn" onclick="closeGcalEventModal()">Close</button>
@@ -47458,260 +48641,46 @@ async function deleteEvent(id) {
   await fetchCalEvents();
 }
 
-async function _tunnelStatus() {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const r = await fetch(API + '/api/tunnel/status', {signal:controller.signal});
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return await r.json();
-  } catch(e) {
-    const reason = controller.signal.aborted ? 'timeout' : 'request_failed';
-    console.warn('[amux] tunnel status unavailable', reason);
-    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({kind:'tunnel-status-unavailable',measured:true,n_considered:1,reason,ver:APP_VER})}).catch(() => {});
-    return {error:'Tunnel status unavailable — try again.', why_unmeasured:reason};
-  } finally { clearTimeout(timer); }
-}
-
-// Tunnel panel in the Settings dropdown (the discoverable home for the proxy).
-// ── Proxies tab ──────────────────────────────────────────────────────────
-let _proxiesTimer = null;
-function _startProxiesTimer() { if (!_proxiesTimer) _proxiesTimer = setInterval(loadProxies, 3000); }
-function _stopProxiesTimer() { if (_proxiesTimer) { clearInterval(_proxiesTimer); _proxiesTimer = null; } }
-// The list reloads every 3s; an older, slower answer must not repaint a
-// started tunnel as stopped, and a start in flight keeps its button disabled.
-let _proxiesGen = 0;
-async function loadProxies() {
-  const wrap = document.getElementById('proxies-list');
-  if (!wrap) return;
-  const gen = ++_proxiesGen;
-  try {
-    const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
-    const d = await r.json();
-    if (gen !== _proxiesGen) { _olderAnswerDropped('proxies'); return; }
-    document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
-    const rl = document.getElementById('proxies-rate');
-    if (rl && d.rate_per_min) rl.textContent = ' Limit: ' + d.rate_per_min + ' req/min, ' + d.max_concurrent + ' concurrent.';
-    const list = d.proxies || [];
-    if (!list.length) {
-      wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 0;text-align:center;">No proxies yet. Create one to expose a local server publicly.</div>';
-      return;
-    }
-    wrap.innerHTML = list.map(p => {
-      const live = p.live;
-      const dot = live ? '<span style="color:var(--green);">●</span>' : '<span style="color:var(--dim);">○</span>';
-      const status = live ? '<span style="color:var(--green);font-weight:600;">Live</span>' : '<span style="color:var(--dim);">Stopped</span>';
-      const urlRow = (live && p.url)
-        ? '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">'
-          + '<a href="' + esc(p.url) + '" target="_blank" style="color:var(--accent);font-size:0.8rem;word-break:break-all;">' + esc(p.url) + '</a>'
-          + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_proxyCopy(this,\'' + esc(p.url) + '\')">Copy</button>'
-          + '<span style="color:var(--dim);font-size:0.72rem;">' + (p.requests || 0) + ' req'
-          + (p.dropped ? ' &middot; <span style="color:#f0a020;">' + p.dropped + ' rate-limited</span>' : '') + '</span></div>'
-        : '';
-      const errRow = (live && p.error) ? '<div style="color:var(--red);font-size:0.74rem;margin-top:6px;">' + esc(p.error) + '</div>' : '';
-      return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
-        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
-        +   '<div style="min-width:0;">'
-        +     '<div style="font-weight:600;font-size:0.9rem;">' + dot + ' ' + esc(p.name) + '</div>'
-        +     '<div style="color:var(--dim);font-size:0.76rem;margin-top:2px;">' + esc(p.scheme) + '://localhost:' + p.port + ' &middot; ' + status + '</div>'
-        +   '</div>'
-        +   '<div style="display:flex;gap:6px;flex-shrink:0;">'
-        +     (live
-              ? '<button class="btn" onclick="_proxyStop(\'' + p.id + '\')">Stop</button>'
-              : _onlyOnceRuns.has('proxy-start:' + p.id)   // a start in flight stays disabled across the 3s redraw
-                ? '<button class="btn primary" disabled>Starting…</button>'
-                : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
-        +     '<button class="btn" onclick="_proxyEdit(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\',' + p.port + ',\'' + esc(p.scheme) + '\')">Edit</button>'
-        +     '<button class="btn" style="color:var(--red);" onclick="_proxyDelete(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\')">Delete</button>'
-        +   '</div>'
-        + '</div>' + urlRow + errRow + '</div>';
-    }).join('');
-  } catch (e) {
-    wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;">Could not load proxies</div>';
-  }
-}
-function _proxyCopy(btn, url) {
-  navigator.clipboard?.writeText(url); const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200);
-}
-function _proxyOpenForm() {
-  document.getElementById('proxy-form-id').value = '';
-  document.getElementById('proxy-form-name').value = '';
-  document.getElementById('proxy-form-port').value = '';
-  document.getElementById('proxy-form-scheme').value = 'http';
-  document.getElementById('proxy-form-title').textContent = 'New proxy';
-  document.getElementById('proxy-form-overlay').style.display = 'flex';
-  document.getElementById('proxy-form-overlay').classList.add('active');
-  setTimeout(() => document.getElementById('proxy-form-name').focus(), 50);
-}
-function _proxyEdit(id, name, port, scheme) {
-  document.getElementById('proxy-form-id').value = id;
-  document.getElementById('proxy-form-name').value = name;
-  document.getElementById('proxy-form-port').value = port;
-  document.getElementById('proxy-form-scheme').value = scheme || 'http';
-  document.getElementById('proxy-form-title').textContent = 'Edit proxy';
-  document.getElementById('proxy-form-overlay').style.display = 'flex';
-  document.getElementById('proxy-form-overlay').classList.add('active');
-}
-function _proxyCloseForm() { const overlay = document.getElementById('proxy-form-overlay'); overlay.classList.remove('active'); overlay.style.display = 'none'; }
-async function _proxySaveForm(btn) {
-  const id = document.getElementById('proxy-form-id').value;
-  const name = document.getElementById('proxy-form-name').value.trim();
-  const port = parseInt(document.getElementById('proxy-form-port').value, 10);
-  const scheme = document.getElementById('proxy-form-scheme').value;
-  if (!name || !(port >= 1 && port <= 65535)) { showToast('Name and a valid port (1-65535) required'); return; }
-  btn.disabled = true;
-  try {
-    const url = id ? (API + '/api/proxies/' + id) : (API + '/api/proxies');
-    const r = await fetch(url, { method: id ? 'PATCH' : 'POST',
-      headers: _authHeaders({'Content-Type':'application/json'}), body: JSON.stringify({ name, port, scheme }) });
-    const d = await r.json();
-    if (d.ok || d.id) { _proxyCloseForm(); loadProxies(); }
-    else showToast(d.error || 'Save failed');
-  } catch (e) { showToast('Save failed'); }
-  finally { btn.disabled = false; }
-}
-function _proxyStart(id, btn) { return _onlyOnce('proxy-start:' + id, () => _proxyStartOnce(id, btn)); }
-async function _proxyStartOnce(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  try {
-    const r = await fetch(API + '/api/proxies/' + id + '/start', { method: 'POST', headers: _authHeaders() });
-    const d = await r.json();
-    if (d.error) showToast(d.error);
-    else showToast('Proxy started');
-  } catch (e) { showToast('Start failed'); }
-  loadProxies();
-}
-async function _proxyStop(id) {
-  try { await fetch(API + '/api/proxies/' + id + '/stop', { method: 'POST', headers: _authHeaders() }); } catch (e) {}
-  showToast('Proxy stopped'); loadProxies();
-}
-async function _proxyDelete(id, name) {
-  if (!await showConfirm('Delete proxy "' + name + '"?', 'Delete', false)) return;
-  try { await fetch(API + '/api/proxies/' + id, { method: 'DELETE', headers: _authHeaders() }); } catch (e) {}
-  loadProxies();
-}
-async function loadTunnelSettings() {
-  const box = document.getElementById('settings-tunnel-body');
-  if (!box) return;
-  const s = await _tunnelStatus();
-  if (s.error) { box.innerHTML = '<span style="color:var(--dim);">status unavailable</span>'; return; }
-  if (!s.configured) {
-    box.innerHTML = '<div style="color:var(--dim);line-height:1.5;">'
-      + 'Off. Two ways to turn it on:'
-      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">amux cloud</b> (easiest): set <code>AMUX_TUNNEL_TOKEN</code> in <code>~/.amux/server.env</code> from your paid amux cloud account, then reload.</div>'
-      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">Self-host (OSS, free):</b> run the gateway in <code>cloud/gateway/</code> on your own box + domain, then point <code>AMUX_TUNNEL_GATEWAY</code> at it (plus a token it accepts).</div>'
-      + '</div>';
-    return;
-  }
-  if (s.running && s.url) {
-    const target = (s.target || '').replace(/^https?:\/\//, '');
-    box.innerHTML =
-      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><b style="color:var(--fg);">Live</b><span style="color:var(--dim);margin-left:auto;font-size:0.72rem;">' + (s.requests || 0) + ' reqs</span></div>' +
-      '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:4px;">serving <code>' + target + '</code></div>' +
-      '<a href="' + s.url + '" target="_blank" style="display:block;word-break:break-all;color:var(--accent);font-size:0.8rem;margin-bottom:8px;">' + s.url + '</a>' +
-      '<div style="display:flex;gap:6px;">' +
-      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelCopyURL(this,\'' + s.url.replace(/'/g, "\\'") + '\')">Copy URL</button>' +
-      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelSettingsStop(this)">Stop</button></div>';
-  } else {
-    box.innerHTML =
-      '<div style="color:var(--dim);margin-bottom:8px;">Off — the tunnel serves the amux dashboard when started, or any port via the CLI (<code>amux tunnel start 3000</code>).</div>' +
-      '<button class="btn primary" style="width:100%;font-size:0.78rem;" onclick="_tunnelSettingsStart(this)">Start tunnel</button>';
-  }
-}
 function _tunnelCopyURL(btn, url) {
   navigator.clipboard.writeText(url).then(() => { const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200); }).catch(() => showToast('Copy failed'));
 }
-async function _tunnelSettingsStart(btn) {
-  btn.disabled = true; btn.textContent = 'Starting…';
-  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
-  for (let i = 0; i < 16; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
-  loadTunnelSettings();
-}
-async function _tunnelSettingsStop(btn) {
-  btn.disabled = true; btn.textContent = 'Stopping…';
-  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
-  await new Promise(r => setTimeout(r, 600));
-  loadTunnelSettings();
-}
-function _tunnelCopy(btn, url) {
-  navigator.clipboard.writeText(url).then(() => {
-    const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200);
-  }).catch(() => showToast('Copy failed'));  // user action: surface clipboard denial
-}
-async function _tunnelStartUI(box) {
-  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
-  for (let i = 0; i < 14; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
-  _renderIcalBody(box);
-}
-async function _tunnelStopUI(box) {
-  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
-  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
-  _renderIcalBody(box);
-}
-async function _renderIcalBody(box) {
+function _renderIcalBody(box) {
   const esc_url = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const s3Url = window._AMUX_S3_ICAL_URL || '';
   const origin = window.location.origin;
   const localUrl = origin + '/api/calendar.ics';
   const isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-  const tun = await _tunnelStatus();
-  const tunUrl = (tun && tun.running && tun.url) ? (tun.url.replace(/\/$/, '') + '/api/calendar.ics') : '';
-  const subUrl = tunUrl || s3Url || localUrl;
+  const subUrl = s3Url || localUrl;
   const googleUrl = 'https://calendar.google.com/calendar/r/settings/addbyurl?url=' + encodeURIComponent(subUrl);
   const appleUrl = /^https?:/.test(subUrl) ? ('webcal://' + subUrl.replace(/^https?:\/\//, '')) : subUrl;
 
-  let html = '<div style="font-size:0.9rem;line-height:1.6;">';
-  html += '<p style="margin:0 0 0.9rem;font-weight:600;font-size:1rem;">Subscribe to amux calendar</p>';
-
-  // ── Public tunnel (amux cloud) ──
-  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:0.7rem 0.8rem;margin-bottom:0.9rem;background:var(--card,rgba(255,255,255,0.02));">';
-  if (tun?.error) {
-    html += '<p role="status" style="color:var(--dim);font-size:0.82rem;">Tunnel status is unavailable. Download the calendar below, or close and try again.</p>';
-  } else if (tun && tun.running && tun.url) {
-    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:0.45rem;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><strong style="font-size:0.85rem;">Public tunnel active</strong><span style="color:var(--dim);font-size:0.72rem;margin-left:auto;">' + (tun.requests || 0) + ' reqs</span></div>';
-    html += '<code style="display:block;background:var(--bg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.73rem;word-break:break-all;margin-bottom:0.5rem;">' + esc_url(tunUrl) + '</code>';
-    html += '<div style="display:flex;gap:0.4rem;">';
-    html += '<button class="btn" style="font-size:0.76rem;" onclick="_tunnelCopy(this,\'' + tunUrl.replace(/'/g, "\\'") + '\')">Copy URL</button>';
-    html += '<button id="tun-toggle" class="btn" style="font-size:0.76rem;" onclick="_tunnelStopUI(this.closest(\'[data-ical-box]\'))">Stop tunnel</button>';
-    html += '</div>';
-  } else if (tun && tun.configured) {
-    html += '<div style="margin-bottom:0.35rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.5rem;">Expose this calendar at a public cloud URL you can subscribe to from anywhere.</p>';
-    if (tun.error) html += '<p style="color:var(--red);font-size:0.72rem;margin:0 0 0.4rem;word-break:break-word;">' + esc_url(tun.error) + '</p>';
-    html += '<button id="tun-toggle" class="btn" style="font-size:0.78rem;" onclick="_tunnelStartUI(this.closest(\'[data-ical-box]\'))">Start public tunnel</button>';
-  } else {
-    html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.35rem;">Expose this calendar at a public URL, no port forwarding. Set <code>AMUX_TUNNEL_TOKEN</code> from <b>amux cloud</b> (paid), or self-host the gateway (OSS) and point <code>AMUX_TUNNEL_GATEWAY</code> at it.</p>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">No public URL? <b>Download .ics</b> below and import it — static, but works everywhere with zero infra.</p>';
-  }
-  html += '</div>';
+  let html = '<div style="font-size:var(--fs-xl);line-height:1.6;">';
+  html += '<p style="margin:0 0 0.9rem;font-weight:600;font-size:var(--fs-2xl);">Subscribe to amux calendar</p>';
 
   // ── Subscription URL + actions ──
-  const label = tunUrl ? 'public tunnel' : (s3Url ? 'public S3' : (isLocal ? '' : 'server'));
-  if (label) html += '<p style="margin:0 0 0.4rem;font-size:0.8rem;color:var(--muted);">Subscription URL (' + label + '):</p>';
-  if (tunUrl || s3Url || !isLocal) {
-    html += '<code style="display:block;background:var(--card,rgba(255,255,255,0.02));padding:0.5rem 0.7rem;border-radius:6px;font-size:0.75rem;word-break:break-all;margin-bottom:0.9rem;">' + esc_url(subUrl) + '</code>';
+  const label = s3Url ? 'public S3' : (isLocal ? '' : 'server');
+  if (label) html += '<p style="margin:0 0 0.4rem;font-size:var(--fs-md);color:var(--dim);">Subscription URL (' + label + '):</p>';
+  if (s3Url || !isLocal) {
+    html += '<code style="display:block;background:var(--card);padding:0.5rem 0.7rem;border-radius:var(--radius-md);font-size:var(--fs-sm);word-break:break-all;margin-bottom:0.9rem;">' + esc_url(subUrl) + '</code>';
   } else {
-    html += '<p style="margin:0 0 0.9rem;color:var(--muted);font-size:0.8rem;">Local only — start the tunnel above (or set <code>AMUX_S3_BUCKET</code>) for a publicly reachable URL.</p>';
+    html += '<p style="margin:0 0 0.9rem;color:var(--dim);font-size:var(--fs-md);">Local only. Set <code>AMUX_S3_BUCKET</code> for a publicly reachable URL, or download the .ics below and import it.</p>';
   }
   html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">';
-  html += '<a href="' + googleUrl + '" target="_blank" class="btn" style="font-size:0.8rem;">Add to Google Calendar</a>';
-  html += '<a href="' + appleUrl + '" class="btn" style="font-size:0.8rem;">Add to Apple Calendar</a>';
-  html += '<a href="/api/calendar.ics" download="amux.ics" class="btn" style="font-size:0.8rem;">Download .ics</a>';
+  html += '<a href="' + googleUrl + '" target="_blank" class="btn" style="font-size:var(--fs-md);">Add to Google Calendar</a>';
+  html += '<a href="' + appleUrl + '" class="btn" style="font-size:var(--fs-md);">Add to Apple Calendar</a>';
+  html += '<a href="/api/calendar.ics" download="amux.ics" class="btn" style="font-size:var(--fs-md);">Download .ics</a>';
   html += '</div></div>';
 
-  box.innerHTML = html + '<div class="amux-modal-foot" style="justify-content:flex-end;"><button onclick="this.closest(\'[data-ical-modal]\').remove()" class="btn" style="font-size:0.8rem;">Close</button></div>';
+  box.innerHTML = html + '<div class="amux-modal-foot" style="justify-content:flex-end;"><button onclick="this.closest(\'[data-ical-modal]\').remove()" class="btn" style="font-size:var(--fs-md);">Close</button></div>';
 }
 function showIcalInfo() {
   const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb, var(--shade) 55%, transparent);';
   const box = document.createElement('div');
   box.setAttribute('data-ical-box', '1');
   box.className = 'amux-modal';
-  box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.4rem;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);--modal-pad:1.4rem;';
-  box.innerHTML = '<p role="status" style="color:var(--dim);font-size:0.85rem;margin:0;">Loading…</p>'
+  box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:1.4rem;max-width:440px;width:90%;box-shadow:var(--shadow-lg);--modal-pad:1.4rem;';
+  box.innerHTML = '<p role="status" style="color:var(--dim);font-size:var(--fs-lg);margin:0;">Loading…</p>'
     + '<div class="amux-modal-foot"><button class="btn" onclick="this.closest(\'[data-ical-modal]\').remove()">Close</button></div>';
   modal.setAttribute('data-ical-modal', '1');
   modal.appendChild(box);
@@ -48060,7 +49029,7 @@ function _wsRenderProfileBar() {
   const profiles = _wsLoadProfiles();
   const names = Object.keys(profiles);
   if (!names.length) {
-    el.innerHTML = '<span style="font-size:0.7rem;color:var(--dim);opacity:0.5;">No saved profiles</span>';
+    el.innerHTML = '<span style="font-size:var(--fs-xs);color:var(--dim);opacity:0.5;">No saved profiles</span>';
     return;
   }
   el.innerHTML = names.map(n => {
@@ -48230,7 +49199,7 @@ function wsAddTermPane(x, y, w, h, pid) {
   const safeId = pid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const content =
     '<div class="gp-header">' +
-      '<span style="font-size:0.76rem;margin-right:2px;opacity:0.55;font-family:monospace;">&gt;_</span>' +
+      '<span style="font-size:var(--fs-sm);margin-right:var(--space-0-5);opacity:0.55;font-family:var(--font-mono);">&gt;_</span>' +
       '<span class="gp-title" id="' + sid + '-title">shell</span>' +
       _gpSizeButtons() +
       '<button class="gp-peek-btn" onclick="wsTermSendTmux(\'' + safeId + '\')" title="Attach / create a tmux session">tmux</button>' +
@@ -48279,20 +49248,13 @@ async function _initWsTermPane(pid) {
     cursorStyle: 'block',
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
-    theme: {
-      background: '#0d1117', foreground: '#c9d1d9',
-      cursor: '#58a6ff', cursorAccent: '#0d1117',
-      selectionBackground: 'rgba(56,139,253,0.3)',
-      black: '#484f58',   red: '#ff7b72',    green: '#3fb950',  yellow: '#d29922',
-      blue: '#58a6ff',    magenta: '#bc8cff', cyan: '#39d353',   white: '#b1bac4',
-      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
-      brightBlue: '#79c0ff',  brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
-    },
+    theme: _xtermTheme(),
     scrollback: 5000,
     allowProposedApi: true,
     macOptionIsMeta: true,
     macOptionClickForcesSelection: true,
   });
+  _themeXterms.add(term);
 
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -49432,7 +50394,7 @@ if (window._peekEmbed) {
 _notifUpdateBadge();
 loadBranding();
 // JS initialized — hide the no-JS fallback overlay
-(function(){var f=document.getElementById('js-fallback');if(f)f.style.display='none';})();
+(function(){var f=document.getElementById('js-fallback');if(f)f.style.display='none';try{sessionStorage.removeItem('amux_boot_reloaded');}catch(e){}})();
 
 // Initialize chrome tabs
 _chromeRender();
@@ -49651,12 +50613,12 @@ function renderDebugInfo() {
     ['Queue', offlineQueue.length + ' pending'],
   ];
   let html = rows.map(([k,v]) =>
-    '<div style="display:flex;justify-content:space-between;gap:8px;">' +
+    '<div style="display:flex;justify-content:space-between;gap:var(--space-2);">' +
     '<span style="color:var(--dim)">' + k + '</span>' +
     '<span style="color:var(--text);text-align:right">' + v + '</span></div>'
   ).join('');
   if (_debugLog.length) {
-    html += '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:4px;color:var(--dim)">' +
+    html += '<div style="margin-top:var(--space-1-5);border-top:1px solid var(--border);padding-top:var(--space-1);color:var(--dim)">' +
       _debugLog.slice(0, 5).join('<br>') + '</div>';
   }
   el.innerHTML = html;
@@ -50007,8 +50969,8 @@ async function _skillToggle(cardId, fetchKey) {
   body.style.display = 'block';
   if (btn) btn.textContent = '▴';
   if (_skillContentCache[fetchKey]) { body.innerHTML = _skillContentCache[fetchKey]; _skillLoadExamples(body, fetchKey); return; }
-  if (!fetchKey) { body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">No details available for built-in commands.</span>'; return; }
-  body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">Loading...</span>';
+  if (!fetchKey) { body.innerHTML = '<span style="color:var(--dim);font-size:var(--fs-md);">No details available for built-in commands.</span>'; return; }
+  body.innerHTML = '<span style="color:var(--dim);font-size:var(--fs-md);">Loading...</span>';
   try {
     const [type, name] = fetchKey.split(':', 2);
     const url = type === 'db' ? API + '/api/skills/' + encodeURIComponent(name) : API + '/api/slash-commands/' + encodeURIComponent(name);
@@ -50019,7 +50981,7 @@ async function _skillToggle(cardId, fetchKey) {
     body.innerHTML = html;
     _skillLoadExamples(body, fetchKey);
   } catch(e) {
-    body.innerHTML = '<span style="color:var(--red);font-size:0.8rem;">Failed to load</span>';
+    body.innerHTML = '<span style="color:var(--red);font-size:var(--fs-md);">Failed to load</span>';
   }
 }
 
@@ -50032,9 +50994,9 @@ async function _skillLoadExamples(body, fetchKey) {
   if (!name) return;
   const box = document.createElement('div');
   box.className = 'skill-examples';
-  box.style.cssText = 'margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;';
-  box.innerHTML = '<div style="font-size:0.75rem;color:var(--dim);margin-bottom:4px;">Examples</div>'
-    + '<div class="skill-ex-status" style="color:var(--dim);font-size:0.8rem;">Finding examples\u2026</div>';
+  box.style.cssText = 'margin:0 0 var(--space-2-5);padding:var(--space-2) var(--space-2-5);border:1px solid var(--border);border-radius:var(--radius-md);';
+  box.innerHTML = '<div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-1);">Examples</div>'
+    + '<div class="skill-ex-status" style="color:var(--dim);font-size:var(--fs-md);">Finding examples\u2026</div>';
   body.prepend(box);
   let d = null;
   try {
@@ -50052,10 +51014,10 @@ async function _skillLoadExamples(body, fetchKey) {
   }
   status.remove();
   box.insertAdjacentHTML('beforeend', rows.map(ex =>
-    '<div class="skill-example" style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;">'
-    + '<div style="flex:1;min-width:0;"><code class="skill-example-inv" style="font-size:0.8rem;word-break:break-word;">' + esc(ex.invocation) + '</code>'
-    + (ex.purpose ? '<div style="font-size:0.75rem;color:var(--dim);margin-top:2px;">' + esc(ex.purpose) + '</div>' : '') + '</div>'
-    + '<button class="btn" style="font-size:0.65rem;padding:2px 8px;flex-shrink:0;" data-inv="' + esc(ex.invocation) + '" onclick="event.stopPropagation();_skillCopyExample(this)">Copy</button>'
+    '<div class="skill-example" style="display:flex;align-items:flex-start;gap:var(--space-2);padding:var(--space-1) 0;">'
+    + '<div style="flex:1;min-width:0;"><code class="skill-example-inv" style="font-size:var(--fs-md);word-break:break-word;">' + esc(ex.invocation) + '</code>'
+    + (ex.purpose ? '<div style="font-size:var(--fs-sm);color:var(--dim);margin-top:var(--space-0-5);">' + esc(ex.purpose) + '</div>' : '') + '</div>'
+    + '<button class="btn" style="font-size:var(--fs-3xs);padding:var(--space-0-5) var(--space-2);flex-shrink:0;" data-inv="' + esc(ex.invocation) + '" onclick="event.stopPropagation();_skillCopyExample(this)">Copy</button>'
     + '</div>').join(''));
 }
 function _skillCopyExample(btn) {
@@ -50085,25 +51047,25 @@ function _skillRenderContent(raw) {
   }
   if (last < body.length) parts.push({type:'text', val: body.slice(last)});
 
-  let html = '<div style="font-size:0.8rem;color:var(--text);border-top:1px solid var(--border);padding-top:8px;">';
+  let html = '<div style="font-size:var(--fs-md);color:var(--text);border-top:1px solid var(--border);padding-top:var(--space-2);">';
   for (const p of parts) {
     if (p.type === 'text') {
       // Render basic markdown: headings, bold, bullets
       let t = p.val
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        .replace(/^#{1,3} (.+)$/gm, '<div style="font-weight:700;margin:8px 0 4px;color:var(--text);">$1</div>')
+        .replace(/^#{1,3} (.+)$/gm, '<div style="font-weight:700;margin:var(--space-2) 0 var(--space-1);color:var(--text);">$1</div>')
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/`([^`]+)`/g, '<code style="background:var(--border);padding:1px 4px;border-radius:3px;font-size:0.78rem;">$1</code>')
-        .replace(/^[-*] (.+)$/gm, '<div style="padding-left:12px;">• $1</div>')
-        .replace(/\n{2,}/g, '<div style="margin:4px 0;"></div>')
+        .replace(/`([^`]+)`/g, '<code style="background:var(--border);padding:1px var(--space-1);border-radius:var(--radius-sm);font-size:var(--fs-base);">$1</code>')
+        .replace(/^[-*] (.+)$/gm, '<div style="padding-left:var(--space-3);">• $1</div>')
+        .replace(/\n{2,}/g, '<div style="margin:var(--space-1) 0;"></div>')
         .replace(/\n/g, ' ');
       html += '<div>' + t + '</div>';
     } else {
       const safeVal = p.val.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       const rawVal = p.val.replace(/'/g, "\\'").replace(/\n/g,'\\n');
-      html += '<div style="position:relative;margin:6px 0;">' +
-        '<pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 36px 8px 10px;font-size:0.75rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;">' + safeVal + '</pre>' +
-        '<button onclick="navigator.clipboard.writeText(\'' + rawVal + '\');showToast(\'Copied!\')" style="position:absolute;top:4px;right:4px;background:var(--border);border:none;border-radius:4px;padding:2px 6px;font-size:0.65rem;cursor:pointer;color:var(--text);">Copy</button>' +
+      html += '<div style="position:relative;margin:var(--space-1-5) 0;">' +
+        '<pre style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-2) var(--space-8) var(--space-2) var(--space-2-5);font-size:var(--fs-sm);overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;">' + safeVal + '</pre>' +
+        '<button onclick="navigator.clipboard.writeText(\'' + rawVal + '\');showToast(\'Copied!\')" style="position:absolute;top:4px;right:4px;background:var(--border);border:none;border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-1-5);font-size:var(--fs-3xs);cursor:pointer;color:var(--text);">Copy</button>' +
       '</div>';
     }
   }
@@ -50189,32 +51151,32 @@ function openAbout() {
   renderServerList();
   renderDebugInfo();
   const el = document.getElementById('daily-stats');
-  el.innerHTML = '<div style="color:var(--dim);font-size:0.75rem;text-align:center;">Loading...</div>';
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-sm);text-align:center;">Loading...</div>';
   fetch(API + '/api/stats/daily').then(r => r.json()).then(data => {
-    let html = '<div style="font-size:0.8rem;font-weight:600;margin-bottom:8px;">Today\'s Tokens</div>';
-    html += '<div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:6px;">';
+    let html = '<div style="font-size:var(--fs-md);font-weight:600;margin-bottom:var(--space-2);">Today\'s Tokens</div>';
+    html += '<div style="display:flex;justify-content:space-between;font-size:var(--fs-lg);margin-bottom:var(--space-1-5);">';
     html += '<span>amux workers</span><span style="font-weight:600;">' + fmtTokens(data.amux_tokens) + '</span></div>';
-    html += '<div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">';
+    html += '<div style="display:flex;justify-content:space-between;font-size:var(--fs-lg);margin-bottom:var(--space-2-5);padding-bottom:var(--space-2);border-bottom:1px solid var(--border);">';
     html += '<span>All Claude Code</span><span style="font-weight:600;">' + fmtTokens(data.total_tokens) + '</span></div>';
     if (data.sessions && data.sessions.length) {
       html += '<details class="list-acc" id="daily-stats-breakdown"><summary>Breakdown · ' + data.sessions.length + ' worker' + (data.sessions.length === 1 ? '' : 's') + '</summary>';
       data.sessions.forEach(s => {
         const bar = s.total / data.total_tokens * 100;
-        html += '<div style="margin-bottom:4px;">';
-        html += '<div style="display:flex;justify-content:space-between;font-size:0.75rem;">';
+        html += '<div style="margin-bottom:var(--space-1);">';
+        html += '<div style="display:flex;justify-content:space-between;font-size:var(--fs-sm);">';
         html += '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;">' + (s.amux ? '' : '<span style=color:var(--dim)>') + esc(s.name) + (s.amux ? '' : '</span>') + '</span>';
-        html += '<span style="flex-shrink:0;margin-left:8px;">' + fmtTokens(s.total) + '</span></div>';
-        html += '<div style="height:3px;border-radius:2px;background:var(--border);margin-top:2px;">';
-        html += '<div style="height:100%;border-radius:2px;background:' + (s.amux ? 'var(--accent)' : 'var(--dim)') + ';width:' + bar.toFixed(1) + '%;"></div></div></div>';
+        html += '<span style="flex-shrink:0;margin-left:var(--space-2);">' + fmtTokens(s.total) + '</span></div>';
+        html += '<div style="height:3px;border-radius:var(--radius-xs);background:var(--border);margin-top:var(--space-0-5);">';
+        html += '<div style="height:100%;border-radius:var(--radius-xs);background:' + (s.amux ? 'var(--accent)' : 'var(--dim)') + ';width:' + bar.toFixed(1) + '%;"></div></div></div>';
       });
       html += '</details>';
     } else {
-      html += '<div style="color:var(--dim);font-size:0.75rem;text-align:center;">No usage today</div>';
+      html += '<div style="color:var(--dim);font-size:var(--fs-sm);text-align:center;">No usage today</div>';
     }
-    html += '<div style="text-align:center;margin-top:10px;"><button class="btn" style="font-size:0.7rem;padding:3px 10px;" onclick="resetTokenStats()">Reset counters</button></div>';
+    html += '<div style="text-align:center;margin-top:var(--space-2-5);"><button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);" onclick="resetTokenStats()">Reset counters</button></div>';
     el.innerHTML = html;
   }).catch(() => {
-    el.innerHTML = '<div style="color:var(--dim);font-size:0.75rem;text-align:center;">Offline — stats unavailable</div>';
+    el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-sm);text-align:center;">Offline — stats unavailable</div>';
   });
 }
 
@@ -50241,14 +51203,14 @@ async function loadBranding() {
 function applyBranding(d) {
   const name = d.name || 'amux';
   const tagline = d.tagline || 'Claude Code Multiplexer';
-  const color = d.color || '#3fb950';
+  const color = d.color || '#3fb950';   // design-tokens: allow (the brand color is stored data; this is its default)
   // Header
   const nameEl = document.getElementById('brand-name-header');
   if (nameEl) nameEl.textContent = name;
   const iconEl = document.getElementById('brand-icon-header');
   if (iconEl) {
     if (d.icon_url) {
-      iconEl.innerHTML = '<img src="' + esc(API + d.icon_url) + '?v=' + Date.now() + '" style="width:22px;height:22px;border-radius:4px;object-fit:cover;">';
+      iconEl.innerHTML = '<img src="' + esc(API + d.icon_url) + '?v=' + Date.now() + '" style="width:22px;height:22px;border-radius:var(--radius-sm);object-fit:cover;">';
     } else {
       iconEl.innerHTML = '';
     }
@@ -50263,16 +51225,15 @@ function applyBranding(d) {
   const aboutPreview = document.getElementById('about-brand-preview');
   if (aboutPreview) {
     if (d.logo_url) {
-      aboutPreview.innerHTML = '<img src="' + esc(API + d.logo_url) + '?v=' + Date.now() + '" style="max-width:180px;max-height:48px;border-radius:4px;margin-bottom:4px;">';
+      aboutPreview.innerHTML = '<img src="' + esc(API + d.logo_url) + '?v=' + Date.now() + '" style="max-width:180px;max-height:48px;border-radius:var(--radius-sm);margin-bottom:var(--space-1);">';
     } else if (d.icon_url) {
-      aboutPreview.innerHTML = '<img src="' + esc(API + d.icon_url) + '?v=' + Date.now() + '" style="width:48px;height:48px;border-radius:8px;margin-bottom:4px;">';
+      aboutPreview.innerHTML = '<img src="' + esc(API + d.icon_url) + '?v=' + Date.now() + '" style="width:48px;height:48px;border-radius:var(--radius-lg);margin-bottom:var(--space-1);">';
     } else {
       aboutPreview.innerHTML = '';
     }
   }
   // Accent color
-  document.documentElement.style.setProperty('--green', color);
-  document.documentElement.style.setProperty('--accent', color);
+  themeSetBrandAccent(color);
   // Favicon
   if (d.icon_url) {
     const _v = '?v=' + Date.now();
@@ -50305,7 +51266,7 @@ function brandFileSelected(type, input) {
     document.getElementById('brand-' + type + '-label').textContent = file.name;
     // Show preview
     const drop = document.getElementById('brand-' + type + '-drop');
-    drop.innerHTML = '<img src="' + reader.result + '" style="max-width:100%;max-height:40px;border-radius:4px;">';
+    drop.innerHTML = '<img src="' + reader.result + '" style="max-width:100%;max-height:40px;border-radius:var(--radius-sm);">';
   };
   reader.readAsDataURL(file);
 }
@@ -50317,7 +51278,7 @@ async function saveBranding() {
   const color = document.getElementById('brand-color-input').value;
   if (name) body.name = name;
   if (tagline) body.tagline = tagline;
-  if (color && color !== '#3fb950') body.color = color;
+  if (color && color !== '#3fb950') body.color = color;   // design-tokens: allow (brand data default)
   // Include empty strings to clear values
   if (!name && _brandData.name) body.name = '';
   if (!tagline && _brandData.tagline) body.tagline = '';
@@ -50363,7 +51324,7 @@ document.addEventListener('DOMContentLoaded', () => {
       reader.onload = () => {
         if (type === 'icon') _brandIconB64 = reader.result;
         else _brandLogoB64 = reader.result;
-        drop.innerHTML = '<img src="' + reader.result + '" style="max-width:100%;max-height:40px;border-radius:4px;">';
+        drop.innerHTML = '<img src="' + reader.result + '" style="max-width:100%;max-height:40px;border-radius:var(--radius-sm);">';
       };
       reader.readAsDataURL(file);
     });
@@ -50430,21 +51391,21 @@ function renderServerList() {
     allConns.push({ name: location.host, url: current });
   }
   const payload = btoa(JSON.stringify({ servers: allConns, deviceName: localStorage.getItem('amux_device_name') || '' }));
-  let html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:6px;background:rgba(88,166,255,0.08);margin-bottom:4px;">';
-  html += '<div style="min-width:0;flex:1;"><div style="font-size:0.75rem;font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(location.host) + '</div>';
-  html += '<div style="font-size:0.65rem;color:var(--dim);">current</div></div></div>';
+  let html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-1-5) var(--space-2);border-radius:var(--radius-md);background:color-mix(in srgb, var(--accent) 8%, transparent);margin-bottom:var(--space-1);">';
+  html += '<div style="min-width:0;flex:1;"><div style="font-size:var(--fs-sm);font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(location.host) + '</div>';
+  html += '<div style="font-size:var(--fs-3xs);color:var(--dim);">current</div></div></div>';
   conns.forEach((c, i) => {
     if (c.url.replace(/\/+$/, '') === current) return;
     const syncUrl = c.url + '/?_sync=' + encodeURIComponent(payload);
-    html += '<a style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-radius:6px;margin-bottom:4px;cursor:pointer;transition:background 0.12s;text-decoration:none;color:inherit;" href="' + esc(syncUrl) + '" onclick="_switchServerUrl(' + i + ',event);">';
-    html += '<div style="min-width:0;flex:1;"><div style="font-size:0.75rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name || c.url) + '</div>';
-    if (c.name) html += '<div style="font-size:0.65rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.url.replace(/^https?:\/\//, '')) + '</div>';
+    html += '<a style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-1-5) var(--space-2);border-radius:var(--radius-md);margin-bottom:var(--space-1);cursor:pointer;transition:background 0.12s;text-decoration:none;color:inherit;" href="' + esc(syncUrl) + '" onclick="_switchServerUrl(' + i + ',event);">';
+    html += '<div style="min-width:0;flex:1;"><div style="font-size:var(--fs-sm);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name || c.url) + '</div>';
+    if (c.name) html += '<div style="font-size:var(--fs-3xs);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.url.replace(/^https?:\/\//, '')) + '</div>';
     html += '</div>';
-    html += '<button class="btn" style="font-size:0.6rem;padding:1px 6px;flex-shrink:0;margin-left:8px;" onclick="event.preventDefault();event.stopPropagation();_removeConnection(' + i + ');renderServerList()">&#x2715;</button>';
+    html += '<button class="btn" style="font-size:var(--fs-4xs);padding:1px var(--space-1-5);flex-shrink:0;margin-left:var(--space-2);" onclick="event.preventDefault();event.stopPropagation();_removeConnection(' + i + ');renderServerList()">&#x2715;</button>';
     html += '</a>';
   });
   if (!conns.length || conns.every(c => c.url.replace(/\/+$/, '') === current)) {
-    html += '<div style="color:var(--dim);font-size:0.7rem;text-align:center;padding:4px 0;">No other servers saved</div>';
+    html += '<div style="color:var(--dim);font-size:var(--fs-xs);text-align:center;padding:var(--space-1) 0;">No other servers saved</div>';
   }
   list.innerHTML = html+'<button class="btn connection-security-summary" onclick="_openConnectionSecurity(event)">Connection &amp; security</button>';
 }
@@ -50594,10 +51555,10 @@ async function _offlineInfoRefresh() {
   await _storageEstimateRefresh();
   let durability;
   if (_storagePersisted) {
-    durability = `<span style="color:var(--green,#4ade80);">&#x1F512; Protected from eviction</span>`
+    durability = `<span style="color:var(--green);">&#x1F512; Protected from eviction</span>`
                + ` — survives restarts and idle time.`;
   } else {
-    durability = `<span style="color:var(--yellow,#d29922);">&#x26A0; Best-effort storage</span>`
+    durability = `<span style="color:var(--yellow);">&#x26A0; Best-effort storage</span>`
                + ` — the browser may clear this when idle or low on space`
                + (window.matchMedia('(display-mode: standalone)').matches
                    ? `.` : `. Add amux to your Home Screen to make it durable.`);
@@ -50608,8 +51569,8 @@ async function _offlineInfoRefresh() {
   el.innerHTML =
     `<b>${n}</b> of ${running} running workers saved (${_fmtBytes(kb * 1024)})<br>`
     + `Files: ${filesTxt}<br>`
-    + `<span style="display:inline-block;width:100%;height:4px;background:rgba(139,148,158,0.25);border-radius:2px;margin:4px 0;">`
-    + `<span style="display:block;width:${pct}%;height:100%;background:${pct>90?'#f85149':'var(--accent)'};border-radius:2px;"></span></span>`
+    + `<span style="display:inline-block;width:100%;height:4px;background:color-mix(in srgb, var(--dim) 25%, transparent);border-radius:var(--radius-xs);margin:var(--space-1) 0;">`
+    + `<span style="display:block;width:${pct}%;height:100%;background:${pct>90?'var(--red)':'var(--accent)'};border-radius:var(--radius-xs);"></span></span>`
     + `${_fmtBytes(totalBytes)} of ${_offlineMB} MB used (${pct}%). Oldest-opened evicted first.`
     + quota
     + `<br>${durability}`;
@@ -50687,12 +51648,12 @@ function _offlineSettingsHTML() {
     `<option value="${v}"${v === _offlineMB ? ' selected' : ''}>${v >= 1000 ? (v/1000)+' GB' : v+' MB'}</option>`).join('');
   const cap = _OFFLINE_CAP_CHOICES.map(v =>
     `<option value="${v}"${v === _offlineCap ? ' selected' : ''}>${v} sessions</option>`).join('');
-  const sel = 'min-height:44px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);'
-            + 'border-radius:6px;color:var(--text);font-size:0.82rem;';
-  return '<div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">'
-    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:0.78rem;color:var(--dim);">`
+  const sel = 'min-height:44px;padding:var(--space-1-5) var(--space-2-5);background:var(--bg);border:1px solid var(--border);'
+            + 'border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-md);';
+  return '<div style="display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-2);">'
+    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2-5);font-size:var(--fs-base);color:var(--dim);">`
     + `Storage limit<select style="${sel}" onchange="_offlineMBSet(this.value)">${mb}</select></label>`
-    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:0.78rem;color:var(--dim);">`
+    + `<label style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2-5);font-size:var(--fs-base);color:var(--dim);">`
     + `Scrollback limit<select style="${sel}" onchange="_offlineCapSet(this.value)">${cap}</select></label>`
     + '</div>';
 }
@@ -51543,7 +52504,50 @@ function _settingsTab(name) {
   }
   try { localStorage.setItem('amux_settings_tab', name); } catch (e) {}
   menu.scrollTop = 0;
-  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); }
+  if(name==='integrations') { _connectionSessionControls(); _connectionSecurityLoad(); _transcriptionLoad(); }
+}
+
+// Settings > Connect > Transcription: the one engine setting Dictate and Recordings share
+// (GET/POST /api/transcription). Ethan, 2026-10-25: "we should have a centralized
+// transcription setting/config".
+function _transcriptionUsesText(u) {
+  if (!u || !u.available) return 'nothing (' + ((u && u.why_unavailable) || 'no engine') + ')';
+  return u.engine === 'gemini' ? 'Gemini' : 'local ' + u.engine;
+}
+function _transcriptionRender(d) {
+  const sel = document.getElementById('transcription-engine');
+  const st = document.getElementById('transcription-status');
+  if (!st) return;
+  if (!d || d.error) { st.textContent = 'Transcription settings unavailable: ' + ((d && d.error) || 'no answer'); return; }
+  if (sel && document.activeElement !== sel) sel.value = d.engine || 'auto';
+  const key = d.gemini && d.gemini.configured
+    ? 'Gemini key: ' + (d.gemini.source === 'byo' ? 'your own (Dictation tab)' : "this server's GOOGLE_API_KEY") + '.'
+    : 'No Gemini key: add your own in the Dictation tab, or set GOOGLE_API_KEY in server.env.';
+  st.textContent = 'Dictate uses ' + _transcriptionUsesText(d.dictate && d.dictate.uses)
+    + '. Recordings use ' + _transcriptionUsesText(d.recordings && d.recordings.uses) + '. ' + key;
+}
+async function _transcriptionLoad() {
+  try {
+    const r = await fetch(API + '/api/transcription', { cache: 'no-store', headers: _authHeaders() });
+    _transcriptionRender(await r.json().catch(() => ({ error: 'HTTP ' + r.status })));
+  } catch (e) { _transcriptionRender({ error: 'amux is unreachable' }); }
+}
+async function _transcriptionSave(engine) {
+  try {
+    const r = await fetch(API + '/api/transcription', { method: 'POST',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ engine }) });
+    const d = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+    if (!r.ok || d.error) { showToast('Transcription not saved: ' + (d.error || ('HTTP ' + r.status))); _transcriptionLoad(); return; }
+    _transcriptionRender(d);
+    showToast('Transcription engine saved');
+  } catch (e) { showToast('Transcription not saved: amux is unreachable'); }
+}
+function _transcriptionOpenSettings() {
+  const menu = document.getElementById('settings-menu');
+  if (menu && !menu.classList.contains('open')) toggleSettings();
+  _settingsTab('integrations');
+  const sec = document.getElementById('settings-transcription-section');
+  if (sec) sec.scrollIntoView({ block: 'start' });
 }
 function toggleSettings() {
   const menu = document.getElementById('settings-menu');
@@ -51702,7 +52706,7 @@ function usageWindowRow(window, stale = false) {
   const used = Math.max(0, Math.min(100, Number(window.used_percent) || 0));
   const remaining = window.remaining_percent === null || window.remaining_percent === undefined
     ? 100 - used : Number(window.remaining_percent);
-  const colour = used >= 90 ? 'var(--red)' : (used >= 70 ? '#f0a020' : 'var(--green)');
+  const colour = used >= 90 ? 'var(--red)' : (used >= 70 ? 'var(--yellow)' : 'var(--green)');
   let amount = usagePercent(remaining) + '% left';
   if (window.remaining_amount !== null && window.remaining_amount !== undefined) {
     amount += ' · ' + window.remaining_amount + ' requests';
@@ -51844,21 +52848,21 @@ async function loadSpendAttribution() {
     const d = await r.json();
     if (!d || d.error || !Array.isArray(d.by_source)) { box.innerHTML = ''; return; }
     if (!d.by_source.length) {
-      box.innerHTML = '<div style="font-size:0.74rem;color:var(--dim);">No spend recorded in the last 24h.</div>';
+      box.innerHTML = '<div style="font-size:var(--fs-sm);color:var(--dim);">No spend recorded in the last 24h.</div>';
       return;
     }
     const usd = n => '$' + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
     const bgPct = Math.max(0, Math.min(100, Math.round(d.background_pct || 0)));
     // Red when background dominates: that is the state that empties a small
     // plan before its owner has typed anything.
-    const col = bgPct >= 70 ? 'var(--red)' : (bgPct >= 40 ? '#f0a020' : 'var(--green)');
+    const col = bgPct >= 70 ? 'var(--red)' : (bgPct >= 40 ? 'var(--yellow)' : 'var(--green)');
     const rows = d.by_source
       .filter(x => (x.cost_usd || 0) > 0)
       .map(x =>
-        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
-        + '<span style="font-size:0.76rem;color:' + (x.is_background ? 'var(--dim)' : 'var(--fg)') + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        '<div style="display:flex;justify-content:space-between;gap:var(--space-2);align-items:baseline;padding:var(--space-0-5) 0;">'
+        + '<span style="font-size:var(--fs-sm);color:' + (x.is_background ? 'var(--dim)' : 'var(--text)') + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         +   esc(x.label || x.source) + '</span>'
-        + '<span style="font-size:0.74rem;color:var(--dim);white-space:nowrap;">'
+        + '<span style="font-size:var(--fs-sm);color:var(--dim);white-space:nowrap;">'
         +   usd(x.cost_usd) + ' · ' + (x.turns || 0).toLocaleString() + ' turns</span>'
         + '</div>').join('');
     // `=== true`, NOT `!== false` (AMUX-3550). The loose form kept every row
@@ -51870,26 +52874,26 @@ async function loadSpendAttribution() {
     // field it shows nothing, which is safer than showing the wrong rows under
     // a heading that asserts what they are.
     const top = (d.top_origins || []).filter(x => x.is_background === true).slice(0, 4).map(x =>
-        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
-        + '<span style="font-size:0.74rem;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        '<div style="display:flex;justify-content:space-between;gap:var(--space-2);align-items:baseline;padding:var(--space-0-5) 0;">'
+        + '<span style="font-size:var(--fs-sm);color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         +   esc(x.origin || x.session || '?') + '</span>'
-        + '<span style="font-size:0.72rem;color:var(--dim);white-space:nowrap;">' + usd(x.cost_usd) + '</span>'
+        + '<span style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;">' + usd(x.cost_usd) + '</span>'
         + '</div>').join('');
     // Collapsed by default (Ethan, 2026-10-14); a refresh keeps it open if opened.
     const wasOpen = !!box.querySelector('details.settings-fold[open]');
     box.innerHTML =
-        '<details class="settings-fold"' + (wasOpen ? ' open' : '') + '><summary style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
-      +   '<span style="font-size:0.8rem;color:var(--fg);">What spent it (24h)</span>'
-      +   '<span style="font-size:0.74rem;color:var(--dim);">' + usd(d.total_cost_usd || 0) + '</span>'
+        '<details class="settings-fold"' + (wasOpen ? ' open' : '') + '><summary style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-1);">'
+      +   '<span style="font-size:var(--fs-md);color:var(--text);">What spent it (24h)</span>'
+      +   '<span style="font-size:var(--fs-sm);color:var(--dim);">' + usd(d.total_cost_usd || 0) + '</span>'
       + '</summary>'
-      + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-bottom:6px;">'
+      + '<div style="height:6px;border-radius:var(--radius-sm);background:var(--border);overflow:hidden;margin-bottom:var(--space-1-5);">'
       +   '<div style="height:100%;width:' + bgPct + '%;background:' + col + ';"></div>'
       + '</div>'
-      + '<div style="font-size:0.74rem;color:' + col + ';margin-bottom:6px;">'
+      + '<div style="font-size:var(--fs-sm);color:' + col + ';margin-bottom:var(--space-1-5);">'
       +   bgPct + '% of spend was background work, not you'
       + '</div>'
       + rows
-      + (top ? '<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;">Biggest background sources</div>' + top : '')
+      + (top ? '<div style="font-size:var(--fs-xs);color:var(--dim);margin:var(--space-2) 0 var(--space-0-5);">Biggest background sources</div>' + top : '')
       + '</details>';
   } catch (e) {
     // Silent by design: this is a supplementary panel and the meter above is
@@ -51915,15 +52919,15 @@ async function _standingApprovalsLoad() {
       list.innerHTML = '<div style="color:var(--dim);">None recorded. Every worker ask still goes to you.</div>';
     } else {
       list.innerHTML = d.approvals.map(a =>
-        '<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border);">'
+        '<div style="display:flex;gap:var(--space-2);align-items:flex-start;padding:var(--space-1-5) 0;border-bottom:1px solid var(--border);">'
         + '<div style="flex:1;min-width:0;">'
         + '<div style="font-weight:600;">' + esc(a.id) + ' · ' + esc(a.title) + '</div>'
-        + '<div style="color:var(--dim);font-size:0.72rem;">' + esc(a.category) + ' · ' + esc(a.scope) + '</div>'
-        + '<div style="margin-top:2px;">' + esc(a.allowed) + '</div>'
-        + '<div style="color:var(--dim);font-size:0.72rem;margin-top:2px;">Limits: ' + esc(a.limits_line) + '</div>'
-        + (a.source ? '<div style="color:var(--dim);font-size:0.72rem;">Source: ' + esc(a.source) + '</div>' : '')
+        + '<div style="color:var(--dim);font-size:var(--fs-xs);">' + esc(a.category) + ' · ' + esc(a.scope) + '</div>'
+        + '<div style="margin-top:var(--space-0-5);">' + esc(a.allowed) + '</div>'
+        + '<div style="color:var(--dim);font-size:var(--fs-xs);margin-top:var(--space-0-5);">Limits: ' + esc(a.limits_line) + '</div>'
+        + (a.source ? '<div style="color:var(--dim);font-size:var(--fs-xs);">Source: ' + esc(a.source) + '</div>' : '')
         + '</div>'
-        + '<button class="btn" style="min-height:44px;min-width:64px;font-size:0.75rem;" '
+        + '<button class="btn" style="min-height:44px;min-width:64px;font-size:var(--fs-sm);" '
         + 'onclick="event.stopPropagation();_standingApprovalRevoke(\'' + escJs(a.id) + '\',this)">Revoke</button>'
         + '</div>').join('');
     }
@@ -51934,11 +52938,11 @@ async function _standingApprovalsLoad() {
     const d = await r.json();
     const uses = Array.isArray(d.uses) ? d.uses : [];
     usesEl.innerHTML = !uses.length ? 'None yet.'
-      : uses.map(u => '<div style="padding:4px 0;border-bottom:1px solid var(--border);">'
+      : uses.map(u => '<div style="padding:var(--space-1) 0;border-bottom:1px solid var(--border);">'
           + '<b>' + esc(u.approval) + '</b> ' + (u.verdict === 'applied' ? 'answered' : 'cap spent, you were asked')
           + ' · ' + esc(u.door) + ' from ' + esc(u.session || '?') + ' · ' + _notifTimeAgo(u.ts * 1000)
-          + '<div style="color:var(--fg);">' + esc((u.ask || '').slice(0, 160)) + '</div></div>').join('')
-        + (d.total > uses.length ? '<div style="margin-top:4px;">' + uses.length + ' of ' + d.total + ' shown</div>' : '');
+          + '<div style="color:var(--text);">' + esc((u.ask || '').slice(0, 160)) + '</div></div>').join('')
+        + (d.total > uses.length ? '<div style="margin-top:var(--space-1);">' + uses.length + ' of ' + d.total + ' shown</div>' : '');
   } catch (e) { usesEl.textContent = 'Could not load the FYI feed'; }
 }
 async function _standingApprovalRevoke(id, btn) {
@@ -52038,11 +53042,11 @@ function renderSettingsServerList() {
     html += '<div class="settings-server-name">' + esc(s.name || s.url.replace(/^https?:\/\//, '')) + '</div>';
     if (s.name) html += '<div class="settings-server-url">' + esc(s.url.replace(/^https?:\/\//, '')) + '</div>';
     html += '</div>';
-    html += '<button class="btn" style="font-size:0.55rem;padding:1px 5px;flex-shrink:0;margin-left:6px;" onclick="event.preventDefault();event.stopPropagation();removeServer(' + i + ');renderSettingsServerList()">&#x2715;</button>';
+    html += '<button class="btn" style="font-size:var(--fs-4xs);padding:1px var(--space-1);flex-shrink:0;margin-left:var(--space-1-5);" onclick="event.preventDefault();event.stopPropagation();removeServer(' + i + ');renderSettingsServerList()">&#x2715;</button>';
     html += '</a>';
   });
   if (!servers.length || servers.every(s => s.url.replace(/\/+$/, '') === current)) {
-    html += '<div style="color:var(--dim);font-size:0.68rem;text-align:center;padding:4px 0;">No other servers</div>';
+    html += '<div style="color:var(--dim);font-size:var(--fs-2xs);text-align:center;padding:var(--space-1) 0;">No other servers</div>';
   }
   el.innerHTML = html;
 }
@@ -52264,7 +53268,7 @@ function _renderPeekCommitGuardBtn(enabled, override, globalEnabled) {
   const btn = document.getElementById('peek-commitguard-btn');
   if (!btn) return;
   btn.style.opacity = enabled ? '1' : '0.35';
-  btn.style.color = enabled ? 'var(--green, #3fb950)' : '';
+  btn.style.color = enabled ? 'var(--green)' : '';
   const overrideLabel = override === null ? 'following global (' + (globalEnabled ? 'on' : 'off') + ')' : (override ? 'on for this worker' : 'off for this worker');
   btn.title = 'Commit guard: ' + overrideLabel + ' — click to toggle';
 }
@@ -52360,8 +53364,8 @@ function _workspaceTeamScope(team) {
 // dialogs say what that means and only send it when the box is ticked.
 const _HOST_ACCESS_TEXT = 'Global is host-level access: this person can prompt every worker (they run with this machine\u2019s permissions) and read, write and delete files anywhere on this machine. Grant it only to someone you would give your own login.';
 function _hostAccessBoxHtml() {
-  return `<label id="host-access-wrap" style="display:none;gap:8px;align-items:flex-start;margin-top:12px;padding:10px;border:1px solid var(--red,#f66);border-radius:6px;font-size:0.75rem;line-height:1.4;">`
-    + `<input type="checkbox" id="host-access-ack" style="margin-top:2px;min-width:16px;min-height:16px;"><span>${esc(_HOST_ACCESS_TEXT)} I understand and grant it.</span></label>`;
+  return `<label id="host-access-wrap" style="display:none;gap:var(--space-2);align-items:flex-start;margin-top:var(--space-3);padding:var(--space-2-5);border:1px solid var(--red);border-radius:var(--radius-md);font-size:var(--fs-sm);line-height:1.4;">`
+    + `<input type="checkbox" id="host-access-ack" style="margin-top:var(--space-0-5);min-width:16px;min-height:16px;"><span>${esc(_HOST_ACCESS_TEXT)} I understand and grant it.</span></label>`;
 }
 function _wireHostAccess(modal, isGlobal, ...controls) {
   const wrap = modal.querySelector('#host-access-wrap');
@@ -52403,8 +53407,8 @@ async function loadTeamSection() {
       const scope = _localMemberScope || {level:'global', name:''};
       const access = scope.level === 'global' ? 'Global workspace access' :
         (scope.level === 'group' ? 'Group: ' : 'Worker: ') + (scope.name || '—');
-      teamsList.innerHTML = `<div style="padding:5px 7px;border:1px solid var(--border);border-radius:7px;"><div style="color:var(--text);font-weight:600;">${esc(_localMemberTeam?.name || 'Legacy access')}</div><div style="font-size:0.68rem;color:var(--dim);">${esc(access)}</div></div>`;
-      list.innerHTML = `<div style="padding:4px 0;"><div style="color:var(--text);">${esc(_localMemberEmail)}</div><div style="font-size:0.72rem;color:var(--dim);margin-top:3px;">Membership is managed by the server owner</div></div>`;
+      teamsList.innerHTML = `<div style="padding:var(--space-1) var(--space-1-5);border:1px solid var(--border);border-radius:var(--radius-lg);"><div style="color:var(--text);font-weight:600;">${esc(_localMemberTeam?.name || 'Legacy access')}</div><div style="font-size:var(--fs-2xs);color:var(--dim);">${esc(access)}</div></div>`;
+      list.innerHTML = `<div style="padding:var(--space-1) 0;"><div style="color:var(--text);">${esc(_localMemberEmail)}</div><div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-0-5);">Membership is managed by the server owner</div></div>`;
       return;
     }
     if (inviteButton) inviteButton.style.display = '';
@@ -52426,21 +53430,21 @@ async function loadTeamSection() {
       let html = '';
       if (members.length) {
         html += members.map(m => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--border);">
-            <span style="font-size:0.78rem;">${esc(m.email || 'Unknown')}</span>
-            <span style="color:var(--dim);font-size:0.68rem;">member</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-0-5) 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:var(--fs-base);">${esc(m.email || 'Unknown')}</span>
+            <span style="color:var(--dim);font-size:var(--fs-2xs);">member</span>
           </div>`).join('');
       }
       if (invites.length) {
-        html += '<div style="margin-top:4px;font-size:0.68rem;color:var(--dim);">Pending invites:</div>';
+        html += '<div style="margin-top:var(--space-1);font-size:var(--fs-2xs);color:var(--dim);">Pending invites:</div>';
         html += invites.map(inv => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">
-            <span style="font-size:0.72rem;color:var(--dim);">expires ${new Date(inv.expires_at*1000).toLocaleDateString()}</span>
-            <button onclick="deleteInvite('${esc(inv.token)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.65rem;">revoke</button>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-0-5) 0;">
+            <span style="font-size:var(--fs-xs);color:var(--dim);">expires ${new Date(inv.expires_at*1000).toLocaleDateString()}</span>
+            <button onclick="deleteInvite('${esc(inv.token)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:var(--fs-3xs);">revoke</button>
           </div>`).join('');
       }
       teamsList.innerHTML = '<span>Cloud workspace roles are managed by the gateway.</span>';
-      list.innerHTML = html || '<span style="color:var(--dim);font-size:0.75rem;">No members yet — invite someone!</span>';
+      list.innerHTML = html || '<span style="color:var(--dim);font-size:var(--fs-sm);">No members yet — invite someone!</span>';
     } else {
       // Local mode: use container-level org
       const [orgRes, teamsRes, membersRes, invitesRes] = await Promise.all([
@@ -52453,32 +53457,32 @@ async function loadTeamSection() {
       const nameEl = document.getElementById('settings-org-name');
       if (nameEl && nameEl !== document.activeElement) nameEl.value = org.name || '';
       teamsList.innerHTML = _workspaceTeams.length ? _workspaceTeams.map(team => `
-        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:5px 7px;border:1px solid var(--border);border-radius:7px;">
+        <div style="display:flex;justify-content:space-between;gap:var(--space-2);align-items:center;padding:var(--space-1) var(--space-1-5);border:1px solid var(--border);border-radius:var(--radius-lg);">
           <div style="min-width:0;"><div style="color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(team.name)}</div>
-            <div style="font-size:0.67rem;color:var(--dim);">${esc(_workspaceTeamScope(team))} · ${Number(team.member_count || 0)} member${Number(team.member_count || 0) === 1 ? '' : 's'}</div></div>
-          ${team.id === 'team_global' ? '' : `<button class="btn" data-team-edit="${esc(team.id)}" onclick="openTeamEditor(this.dataset.teamEdit)" style="font-size:0.65rem;padding:2px 7px;">Edit</button>`}
+            <div style="font-size:var(--fs-2xs);color:var(--dim);">${esc(_workspaceTeamScope(team))} · ${Number(team.member_count || 0)} member${Number(team.member_count || 0) === 1 ? '' : 's'}</div></div>
+          ${team.id === 'team_global' ? '' : `<button class="btn" data-team-edit="${esc(team.id)}" onclick="openTeamEditor(this.dataset.teamEdit)" style="font-size:var(--fs-3xs);padding:var(--space-0-5) var(--space-1-5);">Edit</button>`}
         </div>`).join('') : '<span>No teams configured.</span>';
       let html = '';
       if (members.length) {
         html += members.map(m => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-0-5) 0;border-bottom:1px solid var(--border);">
             <span>${esc(m.name || m.email)}</span>
-            <span style="display:flex;align-items:center;gap:7px;color:var(--dim);font-size:0.7rem;">
+            <span style="display:flex;align-items:center;gap:var(--space-1-5);color:var(--dim);font-size:var(--fs-xs);">
               ${esc(m.team_name || 'Legacy access')}
-              <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:0.64rem;padding:1px 6px;">change</button>
-              ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:0.64rem;padding:1px 6px;">remove</button>`}
+              <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">change</button>
+              ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">remove</button>`}
             </span>
           </div>`).join('');
       }
       if (invites.length) {
-        html += '<div style="margin-top:4px;font-size:0.68rem;color:var(--dim);">Pending invites:</div>';
+        html += '<div style="margin-top:var(--space-1);font-size:var(--fs-2xs);color:var(--dim);">Pending invites:</div>';
         html += invites.map(inv => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">
-            <span style="font-size:0.72rem;color:var(--dim);">${esc(inv.email || 'Anyone with link')} → ${esc(inv.team_name || 'Legacy access')} · expires ${new Date(inv.expires_at*1000).toLocaleDateString()}</span>
-            <button onclick="deleteInvite('${esc(inv.token)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.65rem;">revoke</button>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-0-5) 0;">
+            <span style="font-size:var(--fs-xs);color:var(--dim);">${esc(inv.email || 'Anyone with link')} → ${esc(inv.team_name || 'Legacy access')} · expires ${new Date(inv.expires_at*1000).toLocaleDateString()}</span>
+            <button onclick="deleteInvite('${esc(inv.token)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:var(--fs-3xs);">revoke</button>
           </div>`).join('');
       }
-      list.innerHTML = html || '<span style="color:var(--dim);font-size:0.75rem;">No members yet — invite someone!</span>';
+      list.innerHTML = html || '<span style="color:var(--dim);font-size:var(--fs-sm);">No members yet — invite someone!</span>';
     }
   } catch(e) {}
 }
@@ -52527,15 +53531,15 @@ async function openTeamInvite() {
     showToast('Teams are still unavailable — reopen Workspace access and try again');
     return;
   }
-  const modal = _workspaceAccessModal(`<h3 style="margin:0 0 8px;font-size:1rem;">Invite to workspace</h3>
-    <p style="color:var(--dim);font-size:0.78rem;margin:0 0 14px;">The invite joins one team. That team’s scope controls access.</p>
-    <label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Email (optional)</label>
-    <input id="team-invite-email" type="email" placeholder="person@example.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:13px;">
-    <label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Team</label>
-    <select id="invite-team-id" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;"><option value="" disabled selected>Choose a team</option>${_workspaceTeamOptions('')}</select>
+  const modal = _workspaceAccessModal(`<h3 style="margin:0 0 var(--space-2);font-size:var(--fs-2xl);">Invite to workspace</h3>
+    <p style="color:var(--dim);font-size:var(--fs-base);margin:0 0 var(--space-3-5);">The invite joins one team. That team’s scope controls access.</p>
+    <label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Email (optional)</label>
+    <input id="team-invite-email" type="email" placeholder="person@example.com" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:var(--space-3);">
+    <label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Team</label>
+    <select id="invite-team-id" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;"><option value="" disabled selected>Choose a team</option>${_workspaceTeamOptions('')}</select>
     ${_hostAccessBoxHtml()}
-    <div id="team-scope-error" style="color:var(--red,#f66);font-size:0.75rem;margin-top:10px;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;"><button class="btn" data-modal-cancel>Cancel</button><button id="team-scope-submit" class="btn primary">Create invite</button></div>`);
+    <div id="team-scope-error" style="color:var(--red);font-size:var(--fs-sm);margin-top:var(--space-2-5);"></div>
+    <div style="display:flex;justify-content:flex-end;gap:var(--space-2);margin-top:var(--space-4);"><button class="btn" data-modal-cancel>Cancel</button><button id="team-scope-submit" class="btn primary">Create invite</button></div>`);
   const submit = modal.querySelector('#team-scope-submit');
   const teamSel = modal.querySelector('#invite-team-id');
   const hostAck = _wireHostAccess(modal, () => _teamIsGlobal(teamSel.value), teamSel);
@@ -52569,8 +53573,8 @@ async function openTeamInvite() {
 function _workspaceAccessModal(html) {
   const modal = document.createElement('div');
   modal.className = 'amux-workspace-dialog';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:12px;';
-  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border,#333);border-radius:12px;padding:24px;max-width:500px;width:100%;box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;">${html}</div>`;
+  modal.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 70%, transparent);display:flex;align-items:center;justify-content:center;z-index:9999;padding:var(--space-3);';
+  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-6);max-width:500px;width:100%;box-sizing:border-box;max-height:calc(100dvh - 24px);overflow:auto;">${html}</div>`;
   document.body.appendChild(modal);
   modal.addEventListener('click', event => { if (event.target === modal) modal.remove(); });
   modal.querySelector('[data-modal-cancel]')?.addEventListener('click', () => modal.remove());
@@ -52582,10 +53586,10 @@ function openTeamEditor(teamId) {
   const team = _workspaceTeams.find(value => value.id === teamId) || null;
   const modal = _teamScopeDialog(team ? 'Edit team' : 'Create team', '', team ? team.scope_level : 'worker', team ? team.scope_name : '', 'Save team', true);
   const heading = modal.querySelector('h3');
-  if (heading) heading.insertAdjacentHTML('afterend', `<label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Team name</label><input id="team-name" value="${esc(team ? team.name : '')}" placeholder="e.g. TubeScience" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:13px;">`);
+  if (heading) heading.insertAdjacentHTML('afterend', `<label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Team name</label><input id="team-name" value="${esc(team ? team.name : '')}" placeholder="e.g. TubeScience" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:var(--space-3);">`);
   if (team) {
     const actions = modal.querySelector('#team-scope-submit').parentElement;
-    actions.insertAdjacentHTML('afterbegin', '<button id="team-delete" class="btn" style="margin-right:auto;color:var(--red,#f66);">Delete</button>');
+    actions.insertAdjacentHTML('afterbegin', '<button id="team-delete" class="btn" style="margin-right:auto;color:var(--red);">Delete</button>');
     modal.querySelector('#team-delete').onclick = async () => {
       const response = await fetch('/api/org/teams/' + encodeURIComponent(team.id), {method:'DELETE'}).catch(() => null);
       const data = response ? await response.json().catch(() => ({})) : {};
@@ -52623,18 +53627,18 @@ function _teamScopeTargets(level, current) {
 function _teamScopeDialog(title, email, level, name, submitLabel, hideEmail) {
   const modal = document.createElement('div');
   modal.id = 'team-scope-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;';
-  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border,#333);border-radius:12px;padding:28px;max-width:480px;width:90%;box-sizing:border-box;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">
-    <h3 style="margin:0 0 8px;font-size:1rem;">${esc(title)}</h3>
-    ${hideEmail ? '' : email ? `<p style="color:var(--dim);font-size:0.82rem;margin:0 0 14px;">${esc(email)}</p>` : `<label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Email (optional)</label><input id="team-invite-email" type="email" placeholder="person@example.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:13px;">`}
-    <label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Access level</label>
-    <select id="team-scope-level" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;">
+  modal.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 70%, transparent);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-6);max-width:480px;width:90%;box-sizing:border-box;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">
+    <h3 style="margin:0 0 var(--space-2);font-size:var(--fs-2xl);">${esc(title)}</h3>
+    ${hideEmail ? '' : email ? `<p style="color:var(--dim);font-size:var(--fs-md);margin:0 0 var(--space-3-5);">${esc(email)}</p>` : `<label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Email (optional)</label><input id="team-invite-email" type="email" placeholder="person@example.com" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;margin-bottom:var(--space-3);">`}
+    <label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Access level</label>
+    <select id="team-scope-level" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;">
       <option value="global">Global — host-level: every worker and the host filesystem</option><option value="group">Group — workers tagged in one group</option><option value="worker">Worker — one worker only</option>
     </select>
     ${_hostAccessBoxHtml()}
-    <div id="team-scope-target-wrap" style="margin-top:13px;display:none;"><label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Target</label><select id="team-scope-name" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;"></select></div>
-    <div id="team-scope-error" style="color:var(--red,#f66);font-size:0.75rem;margin-top:10px;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
+    <div id="team-scope-target-wrap" style="margin-top:var(--space-3);display:none;"><label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Target</label><select id="team-scope-name" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;"></select></div>
+    <div id="team-scope-error" style="color:var(--red);font-size:var(--fs-sm);margin-top:var(--space-2-5);"></div>
+    <div style="display:flex;justify-content:flex-end;gap:var(--space-2);margin-top:var(--space-4);">
       <button id="team-scope-cancel" class="btn">Cancel</button>
       <button id="team-scope-submit" class="btn primary">${esc(submitLabel)}</button>
     </div>
@@ -52667,10 +53671,10 @@ function _teamScopeError(modal, message) {
 }
 
 function _renderInviteLink(modal, data) {
-  modal.firstElementChild.innerHTML = `<h3 style="margin:0 0 8px;font-size:1rem;">Invite ready</h3>
-    <p style="color:var(--dim);font-size:0.82rem;margin:0 0 14px;">${esc(data.team_name || 'Team')} · ${esc(_workspaceTeamScope(data))} · expires in 7 days.</p>
-    <div style="display:flex;gap:8px;"><input id="invite-link-input" type="text" value="${esc(data.url)}" readonly style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg,#111);color:inherit;font-size:0.8rem;min-width:0;"><button id="invite-copy-button" class="btn primary">Copy</button></div>
-    <div style="margin-top:16px;text-align:right;"><button id="invite-done-button" class="btn">Done</button></div>`;
+  modal.firstElementChild.innerHTML = `<h3 style="margin:0 0 var(--space-2);font-size:var(--fs-2xl);">Invite ready</h3>
+    <p style="color:var(--dim);font-size:var(--fs-md);margin:0 0 var(--space-3-5);">${esc(data.team_name || 'Team')} · ${esc(_workspaceTeamScope(data))} · expires in 7 days.</p>
+    <div style="display:flex;gap:var(--space-2);"><input id="invite-link-input" type="text" value="${esc(data.url)}" readonly style="flex:1;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;font-size:var(--fs-md);min-width:0;"><button id="invite-copy-button" class="btn primary">Copy</button></div>
+    <div style="margin-top:var(--space-4);text-align:right;"><button id="invite-done-button" class="btn">Done</button></div>`;
   modal.querySelector('#invite-copy-button').addEventListener('click', async e => {
     const input = modal.querySelector('#invite-link-input');
     input.select();
@@ -52683,13 +53687,13 @@ function _renderInviteLink(modal, data) {
 }
 
 async function openMemberScope(id, email, teamId) {
-  const modal = _workspaceAccessModal(`<h3 style="margin:0 0 8px;font-size:1rem;">Change member team</h3>
-    <p style="color:var(--dim);font-size:0.82rem;margin:0 0 14px;">${esc(email)}</p>
-    <label style="display:block;color:var(--dim);font-size:0.72rem;margin-bottom:5px;">Team</label>
-    <select id="member-team-id" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:inherit;">${_workspaceTeamOptions(teamId)}</select>
+  const modal = _workspaceAccessModal(`<h3 style="margin:0 0 var(--space-2);font-size:var(--fs-2xl);">Change member team</h3>
+    <p style="color:var(--dim);font-size:var(--fs-md);margin:0 0 var(--space-3-5);">${esc(email)}</p>
+    <label style="display:block;color:var(--dim);font-size:var(--fs-xs);margin-bottom:var(--space-1);">Team</label>
+    <select id="member-team-id" style="width:100%;box-sizing:border-box;padding:var(--space-2) var(--space-2-5);border-radius:var(--radius-md);border:1px solid var(--border);background:var(--bg);color:inherit;">${_workspaceTeamOptions(teamId)}</select>
     ${_hostAccessBoxHtml()}
-    <div id="team-scope-error" style="color:var(--red,#f66);font-size:0.75rem;margin-top:10px;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;"><button class="btn" data-modal-cancel>Cancel</button><button id="team-scope-submit" class="btn primary">Save team</button></div>`);
+    <div id="team-scope-error" style="color:var(--red);font-size:var(--fs-sm);margin-top:var(--space-2-5);"></div>
+    <div style="display:flex;justify-content:flex-end;gap:var(--space-2);margin-top:var(--space-4);"><button class="btn" data-modal-cancel>Cancel</button><button id="team-scope-submit" class="btn primary">Save team</button></div>`);
   const submit = modal.querySelector('#team-scope-submit');
   const memberSel = modal.querySelector('#member-team-id');
   const memberAck = _wireHostAccess(modal, () => _teamIsGlobal(memberSel.value), memberSel);
@@ -52732,31 +53736,31 @@ async function loadBillingSection() {
         const days = Math.ceil((d.trial_ends_at * 1000 - Date.now()) / 86400000);
         statusText = 'Trial \u2014 ' + days + ' day' + (days !== 1 ? 's' : '') + ' remaining';
       }
-      info.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">' +
-        '<span style="background:var(--accent);color:#000;border-radius:4px;padding:1px 8px;font-size:0.72rem;font-weight:600;">PRO</span>' +
+      info.innerHTML = '<div style="display:flex;align-items:center;gap:var(--space-2);">' +
+        '<span style="background:var(--accent);color:var(--shade);border-radius:var(--radius-sm);padding:1px var(--space-2);font-size:var(--fs-xs);font-weight:600;">PRO</span>' +
         '<span>' + statusText + '</span></div>' +
-        (d.has_billing ? '<button class="btn" style="font-size:0.7rem;padding:3px 10px;margin-top:8px;" onclick="openBillingPortal()">Manage billing</button>' : '');
+        (d.has_billing ? '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);margin-top:var(--space-2);" onclick="openBillingPortal()">Manage billing</button>' : '');
     } else {
-      const trialNote = d.trial_days ? '<div style="font-size:0.72rem;color:var(--green,#3fb950);margin-bottom:10px;">' + d.trial_days + '-day free trial included</div>' : '';
+      const trialNote = d.trial_days ? '<div style="font-size:var(--fs-xs);color:var(--green);margin-bottom:var(--space-2-5);">' + d.trial_days + '-day free trial included</div>' : '';
       const annualBtn = d.has_annual
-        ? '<button class="btn primary" style="font-size:0.78rem;padding:5px 16px;" onclick="startCheckout(\'annual\')">Annual \u2014 $200/yr (save 17%)</button>'
+        ? '<button class="btn primary" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-4);" onclick="startCheckout(\'annual\')">Annual \u2014 $200/yr (save 17%)</button>'
         : '';
       info.innerHTML =
-        '<div style="margin-bottom:10px;">Free plan</div>' +
+        '<div style="margin-bottom:var(--space-2-5);">Free plan</div>' +
         trialNote +
-        '<div style="display:flex;flex-direction:column;gap:8px;">' +
-          '<div style="background:var(--card,#1e1e2e);border:1px solid var(--border,#333);border-radius:8px;padding:12px;">' +
-            '<div style="font-weight:600;color:var(--text);margin-bottom:4px;">Pro Monthly \u2014 $20/mo</div>' +
-            '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:8px;">Unlimited workers \u00b7 No idle timeout \u00b7 Team workspaces</div>' +
-            '<button class="btn primary" style="font-size:0.78rem;padding:5px 16px;" onclick="startCheckout(\'monthly\')">Start free trial</button>' +
+        '<div style="display:flex;flex-direction:column;gap:var(--space-2);">' +
+          '<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-3);">' +
+            '<div style="font-weight:600;color:var(--text);margin-bottom:var(--space-1);">Pro Monthly \u2014 $20/mo</div>' +
+            '<div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-2);">Unlimited workers \u00b7 No idle timeout \u00b7 Team workspaces</div>' +
+            '<button class="btn primary" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-4);" onclick="startCheckout(\'monthly\')">Start free trial</button>' +
           '</div>' +
-          (d.has_annual ? '<div style="background:var(--card,#1e1e2e);border:1px solid var(--accent,#7c6fcd);border-radius:8px;padding:12px;">' +
-            '<div style="font-weight:600;color:var(--text);margin-bottom:4px;">Pro Annual \u2014 $200/yr <span style="color:var(--green,#3fb950);font-size:0.72rem;">save 17%</span></div>' +
-            '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:8px;">Same features \u00b7 $16.67/mo effective</div>' +
-            '<button class="btn primary" style="font-size:0.78rem;padding:5px 16px;" onclick="startCheckout(\'annual\')">Start free trial</button>' +
+          (d.has_annual ? '<div style="background:var(--card);border:1px solid var(--accent);border-radius:var(--radius-lg);padding:var(--space-3);">' +
+            '<div style="font-weight:600;color:var(--text);margin-bottom:var(--space-1);">Pro Annual \u2014 $200/yr <span style="color:var(--green);font-size:var(--fs-xs);">save 17%</span></div>' +
+            '<div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-2);">Same features \u00b7 $16.67/mo effective</div>' +
+            '<button class="btn primary" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-4);" onclick="startCheckout(\'annual\')">Start free trial</button>' +
           '</div>' : '') +
         '</div>' +
-        (d.has_billing ? '<button class="btn" style="font-size:0.7rem;padding:3px 10px;margin-top:8px;" onclick="openBillingPortal()">Manage billing</button>' : '');
+        (d.has_billing ? '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);margin-top:var(--space-2);" onclick="openBillingPortal()">Manage billing</button>' : '');
     }
   } catch(e) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; }
 }
@@ -52821,7 +53825,14 @@ async function _handleDeeplink(hash) {
     if (m) hash = '#view=' + m[1];
   }
   if (hash && hash.startsWith('#view=')) {
-    const v = decodeURIComponent(hash.slice(6));
+    // The view is up to the first '&': the rest are that view's own parameters
+    // (#view=pages&open=<id>, &add-internal=<port>), read by the view itself.
+    let v = decodeURIComponent(hash.slice(6).split('&')[0]);
+    // The Proxies tab is retired (MSG-95893): its old links open Pages.
+    if (v === 'proxies') v = 'pages';
+    // switchView rewrites the hash to #view=<v> before the view reads it, so the
+    // view's parameters are handed over here.
+    window._viewParams = hash;
     // Deferred like #peek= below: this runs from the early inline script,
     // where switchView still null-derefs on #grid-view (parsed later). A bare
     // try/catch here SWALLOWED that throw and the deeplink silently no-oped —
@@ -52981,9 +53992,14 @@ async function _handleDeeplink(hash) {
     tryOpen(0);
     return;
   }
-  let dpath = null;
+  // #edit=<path> is #path= that lands a markdown file in Edit (Ethan,
+  // 2026-10-26: a texted check-in link opens the note ready to answer).
+  let dpath = null, edit = false;
   if (hash && hash.startsWith('#path=')) {
     dpath = decodeURIComponent(hash.slice(6));
+  } else if (hash && hash.startsWith('#edit=')) {
+    dpath = decodeURIComponent(hash.slice(6));
+    edit = true;
   } else {
     dpath = new URLSearchParams(location.search).get('path');
     // Migrate old ?path= links to hash format
@@ -52997,7 +54013,13 @@ async function _handleDeeplink(hash) {
       const parent = dpath.split('/').slice(0, -1).join('/') || '/';
       _filesPath = parent;
       switchView('files');
-      openFilePreview(dpath);
+      await openFilePreview(dpath);
+      if (edit) {
+        const ok = !!(_fileData && _fileData.path && _fileEditable(_fileData));
+        if (ok) setFileViewMode('edit');
+        amuxTrack('deeplink_edit', {verdict: ok ? 'deeplink_edit_opened' : 'deeplink_edit_not_editable',
+          measured: true, n_considered: 1});
+      }
     } else if (!d.error) {
       _filesPath = dpath;
       switchView('files');
@@ -53027,7 +54049,7 @@ function _restoreScreen(bootHash) {
   // peek over the view the link named. In the Mac app, where every window
   // shares localStorage, that peek was another window's worker (2026-10-21).
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(_bootHash)
+  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -53074,7 +54096,7 @@ function _restoreScreen(bootHash) {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|browser|bq|task)=/.test(location.hash)) {
+          || /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
@@ -53158,6 +54180,30 @@ async function _loadServerDeployStatus() {
   } catch (e) { /* the card keeps its last line; the button still works */ }
 }
 
+// Pull from remote on a server with AMUX_PULL_SENDS_LOCAL_AS_PR: local amux work goes
+// upstream as a pull request before the checkout is replaced (amux contribute). Say where
+// the PR is, or offer the GitHub sign-in the PR needs.
+function _pullContributeNote(el, d) {
+  const pr = d.contribute && d.contribute.pr_url;
+  if (pr) {
+    const p = document.createElement('div');
+    p.className = 'pull-contribute';
+    p.append('Your local changes were sent as a pull request: ');
+    const a = document.createElement('a');
+    a.href = pr; a.target = '_blank'; a.rel = 'noopener'; a.textContent = pr;
+    p.append(a);
+    el.prepend(p);
+  }
+  if (d.needs_github) {
+    const b = document.createElement('button');
+    b.className = 'btn pull-connect-github'; b.type = 'button'; b.textContent = 'Connect GitHub';
+    b.onclick = () => usageConnect('github');
+    const p = document.createElement('div');
+    p.append('Your local changes go upstream as a pull request before they are replaced, and that needs your GitHub account. ', b);
+    el.append(p);
+  }
+}
+
 async function pullFromRemote(btn) {
   const el = document.getElementById('pull-status');
   btn.disabled = true; btn.textContent = '⏳ Pulling...';
@@ -53180,6 +54226,7 @@ async function pullFromRemote(btn) {
       el.textContent = (d.output || (d.ok ? 'Fetched' : 'Failed'))
         + (d.builder ? (d.builder.kicked ? '\nBuilder started.' : '\nBuilder not started: ' + (d.builder.why || 'unknown')) : '');
       el.style.color = d.ok ? 'var(--dim)' : 'var(--red)';
+      _pullContributeNote(el, d);
       if (d.ok && !(d.output || '').includes('Already up to date')) {
         setTimeout(() => forceUpdate(), 1500);
       }
@@ -53820,7 +54867,7 @@ function _fmtTok(n) {
 }
 function _costBars(rows, labelKey, opts) {
   opts = opts || {};
-  if (!rows || !rows.length) return '<div style="color:var(--dim);font-size:0.82rem;padding:8px 0;">No data.</div>';
+  if (!rows || !rows.length) return '<div style="color:var(--dim);font-size:var(--fs-md);padding:var(--space-2) 0;">No data.</div>';
   const max = Math.max(...rows.map(r => r.cost || 0), 0.0001);
   return rows.slice(0, opts.limit || 30).map(r => {
     const label = esc(String(r[labelKey] != null && r[labelKey] !== '' ? r[labelKey] : (opts.emptyLabel || '\u2014')));
@@ -53849,7 +54896,7 @@ function _costRender(d, opts) {
   // confident zero (AMUX-2892). Say it where the numbers are read.
   const staleS = d.ledger_stale_s;
   const staleBanner = (typeof staleS === 'number' && staleS > 3600)
-    ? `<div style="margin:0 0 10px;padding:8px 10px;border:1px solid var(--red);border-radius:8px;font-size:0.78rem;color:var(--red);">
+    ? `<div style="margin:0 0 var(--space-2-5);padding:var(--space-2) var(--space-2-5);border:1px solid var(--red);border-radius:var(--radius-lg);font-size:var(--fs-base);color:var(--red);">
          These figures stop ${staleS >= 86400 ? Math.round(staleS/86400) + 'd' : Math.round(staleS/3600) + 'h'} ago \u2014 the token-ledger indexer has not run since.
          <span style="color:var(--dim);">Everything below is real but INCOMPLETE; check the token-ledger job.</span>
        </div>`
@@ -53864,9 +54911,9 @@ function _costRender(d, opts) {
   const dmax = Math.max(...days.map(x => x.cost || 0), 0.0001);
   const dayBars = days.length ? '<div class="cost-days-chart">' + days.map(x =>
     `<div class="cost-day" title="${x.day}: ${_fmtUsd(x.cost)}"><div class="cost-day-fill" style="height:${Math.max(3,Math.round(100*(x.cost||0)/dmax))}%;"></div></div>`
-  ).join('') + '</div>' + `<div class="cost-day-labels"><span>${days[0]?.day||''}</span><span>${days[days.length-1]?.day||''}</span></div>` : '<div style="color:var(--dim);font-size:0.82rem;">No data.</div>';
+  ).join('') + '</div>' + `<div class="cost-day-labels"><span>${days[0]?.day||''}</span><span>${days[days.length-1]?.day||''}</span></div>` : '<div style="color:var(--dim);font-size:var(--fs-md);">No data.</div>';
   html += sec('By day', dayBars);
-  html += `<div style="font-size:0.68rem;color:var(--dim);margin-top:14px;line-height:1.5;">Cost is the equivalent per-token API price (from ~/.amux/prices.json) applied to every turn amux read from the transcripts \u2014 mostly cache reads of large contexts. Attributed to a task while its board card was <b>In&nbsp;Progress</b> for that worker; the rest is \u201CAmbient\u201D. No model was asked anything to compute this.</div>`;
+  html += `<div style="font-size:var(--fs-2xs);color:var(--dim);margin-top:var(--space-3-5);line-height:1.5;">Cost is the equivalent per-token API price (from ~/.amux/prices.json) applied to every turn amux read from the transcripts \u2014 mostly cache reads of large contexts. Attributed to a task while its board card was <b>In&nbsp;Progress</b> for that worker; the rest is \u201CAmbient\u201D. No model was asked anything to compute this.</div>`;
   return html;
 }
 // ── Messages > Trends (AMUX-2179 relocated) ────────────────────────────────
@@ -53937,11 +54984,11 @@ function _askRenderThread(peek, latestHTML) {
   if (!ansEl) return;
   const thread = _askThreadFor(peek);
   const earlier = thread.slice(0, -1).map(t =>
-    '<details style="margin-bottom:8px;border-left:2px solid var(--border);padding-left:8px;">'
-    + '<summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;">' + esc(t.q) + '</summary>'
-    + '<div style="margin-top:6px;font-size:0.82rem;">' + _askFormat(t.a) + '</div></details>').join('');
+    '<details style="margin-bottom:var(--space-2);border-left:2px solid var(--border);padding-left:var(--space-2);">'
+    + '<summary style="cursor:pointer;color:var(--dim);font-size:var(--fs-md);">' + esc(t.q) + '</summary>'
+    + '<div style="margin-top:var(--space-1-5);font-size:var(--fs-md);">' + _askFormat(t.a) + '</div></details>').join('');
   const current = thread.length
-    ? '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:4px;">' + esc(thread[thread.length - 1].q) + '</div>'
+    ? '<div style="font-size:var(--fs-md);color:var(--dim);margin-bottom:var(--space-1);">' + esc(thread[thread.length - 1].q) + '</div>'
     : '';
   ansEl.innerHTML = earlier + current + latestHTML;
 }
@@ -53956,7 +55003,7 @@ function _askSuggestions(peek) {
   if (!el || el.dataset.filled) return;
   el.dataset.filled = '1';
   el.innerHTML = _ASK_SUGGESTIONS.map(q =>
-    '<button class="btn" style="font-size:0.72rem;padding:3px 9px;" onclick="_askPick(' + (peek ? 'true' : 'false')
+    '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askPick(' + (peek ? 'true' : 'false')
     + ',this.textContent)">' + esc(q) + '</button>').join('');
 }
 function _askPick(peek, q) {
@@ -53977,7 +55024,7 @@ function _peekAskToggle() {
 function _askFormat(answer) {
   let out = esc(String(answer).replace(/^\s+/, ''));
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  out = out.replace(/`([^`\n]+)`/g, '<code style="background:var(--bg);padding:1px 4px;border-radius:4px;">$1</code>');
+  out = out.replace(/`([^`\n]+)`/g, '<code style="background:var(--bg);padding:1px var(--space-1);border-radius:var(--radius-sm);">$1</code>');
   out = out.replace(/^[ \t]*[-*][ \t]+/gm, '\u2022 ');
   return out;
 }
@@ -54047,9 +55094,9 @@ async function _askRun(peek) {
   thread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
   const cites = Array.isArray(d.cited) && d.cited.length
-    ? '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
-      + '<span style="font-size:0.72rem;color:var(--dim);">cited:</span>'
-      + d.cited.map(id => '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_askOpenCitation('
+    ? '<div style="margin-top:var(--space-2-5);display:flex;gap:var(--space-1-5);flex-wrap:wrap;align-items:center;">'
+      + '<span style="font-size:var(--fs-xs);color:var(--dim);">cited:</span>'
+      + d.cited.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
         + JSON.stringify(id) + ')">MSG-' + esc(id) + '</button>').join('') + '</div>'
     : '';
   _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + cites);
@@ -54070,7 +55117,7 @@ async function _trendsLoad() {
     _trendsWeek = await fetch(API + '/api/review/week?days=' + days).then(r => r.json()).catch(() => null);
     _trendsRender();
   } catch (e) {
-    const b = document.getElementById('trends-body'); if (b) b.innerHTML = '<div style="color:var(--red);padding:20px;">Could not load trends.</div>';
+    const b = document.getElementById('trends-body'); if (b) b.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Could not load trends.</div>';
   }
 }
 function _trendsRender() {
@@ -54128,7 +55175,7 @@ function _trendsRender() {
     if (exp) {
       // board issues for this theme
       if (cards.length) html += '<div class="tr-cards"><div class="tr-sub">Board issues</div>' + cards.slice(0,30).map(c =>
-        '<div class="tr-card" onclick="openBoardDetail(\'' + escJs(c.id) + '\')"><span class="rv-bid">' + esc(c.id) + '</span> <span class="status-badge" style="background:' + statusStyle(c.status).bg + ';color:' + statusStyle(c.status).color + ';font-size:0.66rem;padding:0 5px;border-radius:8px;">' + esc(c.status||'todo') + '</span> ' + esc((c.title||'').slice(0,60)) + '</div>').join('') + '</div>';
+        '<div class="tr-card" onclick="openBoardDetail(\'' + escJs(c.id) + '\')"><span class="rv-bid">' + esc(c.id) + '</span> <span class="status-badge" style="background:' + statusStyle(c.status).bg + ';color:' + statusStyle(c.status).color + ';font-size:var(--fs-3xs);padding:0 var(--space-1);border-radius:var(--radius-lg);">' + esc(c.status||'todo') + '</span> ' + esc((c.title||'').slice(0,60)) + '</div>').join('') + '</div>';
       // evidence: your actual messages
       html += '<div class="tr-evidence"><div class="tr-sub">What you asked (evidence)</div>' + g.msgs.slice(0,12).map(m => {
         const txt = (m.text||'').replace(/^\[.*?\]\s*/,'');
@@ -54138,21 +55185,21 @@ function _trendsRender() {
     }
     html += '</div>';
   });
-  if (!groups.length) html = '<div style="color:var(--dim);padding:24px;text-align:center;">No directives in this window.</div>';
+  if (!groups.length) html = '<div style="color:var(--dim);padding:var(--space-6);text-align:center;">No directives in this window.</div>';
   // LEAD with the recurring weekly task-theme SUMMARY (Ethan: a summary running
   // every 7 days), with a selector to browse prior weeks; the live theme
   // clustering above is the current-window evidence beneath it.
-  const summaryTop = '<div id="trends-summary-wrap" style="margin-bottom:16px;">'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">'
-    + '<span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--accent);font-weight:600;">\uD83D\uDCC8 Weekly task-theme summary</span>'
-    + '<select id="trends-week" onchange="_trendsLoadSummary(this.value)" style="font-size:0.76rem;padding:3px 6px;margin-left:auto;"></select></div>'
+  const summaryTop = '<div id="trends-summary-wrap" style="margin-bottom:var(--space-4);">'
+    + '<div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1-5);flex-wrap:wrap;">'
+    + '<span style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:0.05em;color:var(--accent);font-weight:600;">\uD83D\uDCC8 Weekly task-theme summary</span>'
+    + '<select id="trends-week" onchange="_trendsLoadSummary(this.value)" style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-1-5);margin-left:auto;"></select></div>'
     + '<div id="trends-digest" class="rv-digest md-content"><span style="color:var(--dim);">Loading summary\u2026</span></div></div>';
   const totalNeed = groups.reduce((a,g)=>a + [...g.cards].map(id=>byId[id]).filter(c=>c && (c.tags||[]).some(x=>_NEEDS_HUMAN_TAGS.has(String(x).toLowerCase())) && !_isClosedStatus(c.status)).length, 0);
   const answerBar = '<div class="tr-answer">'
-    + (totalNeed ? '<span style="color:var(--red);font-weight:600;">\u26A1 ' + totalNeed + ' item(s) need you</span> <button class="btn" style="font-size:0.74rem;min-height:34px;margin-left:6px;" onclick="_focusStart(\'is:blocked\')">Clear them</button>'
+    + (totalNeed ? '<span style="color:var(--red);font-weight:600;">\u26A1 ' + totalNeed + ' item(s) need you</span> <button class="btn" style="font-size:var(--fs-sm);min-height:34px;margin-left:var(--space-1-5);" onclick="_focusStart(\'is:blocked\')">Clear them</button>'
                  : '<span style="color:var(--green);font-weight:600;">\u2713 Nothing needs you — it\'s all moving.</span>')
     + '</div>';
-  html = summaryTop + answerBar + '<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--dim);font-weight:600;margin:10px 0 6px;">By theme \u00B7 what \u00B7 who \u00B7 status \u00B7 needs-you</div>' + html;
+  html = summaryTop + answerBar + '<div style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:0.05em;color:var(--dim);font-weight:600;margin:var(--space-2-5) 0 var(--space-1-5);">By theme \u00B7 what \u00B7 who \u00B7 status \u00B7 needs-you</div>' + html;
   if (bodyEl) bodyEl.innerHTML = html;
   _trendsLoadSummary('');
 }
@@ -54196,12 +55243,12 @@ function _costLoad() {
         + (grp ? '&group=' + encodeURIComponent(grp) : ''))
     .then(r => r.json())
     .then(d => {
-      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:20px;">' + esc(d.error) + '</div>'; return; }
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">' + esc(d.error) + '</div>'; return; }
       body.innerHTML = _costRender(d, {});
       const up = document.getElementById('cost-updated');
       if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
     })
-    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:20px;">Failed to load cost data.</div>'; });
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">Failed to load cost data.</div>'; });
 }
 function _costOpenSession(name) {
   if (!name) return;
@@ -54217,7 +55264,7 @@ function _metricsLoad() {
     .then(data => { _metricsData = data; _metricsRender(); })
     .catch(e => {
       const el = document.getElementById('metrics-content');
-      if (el) el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load metrics: ' + e + '</div>';
+      if (el) el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);font-size:var(--fs-lg);">Failed to load metrics: ' + e + '</div>';
     })
     .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '\u21BB Refresh'; } });
 }
@@ -54227,7 +55274,7 @@ function _metricsGaugeCls(pct) {
 }
 
 function _metricsGaugeColor(cls) {
-  return cls === 'low' ? '#3fb950' : cls === 'mid' ? '#f0a742' : '#f85149';
+  return cls === 'low' ? 'var(--green)' : cls === 'mid' ? 'color-mix(in srgb, var(--yellow) 84%, var(--on-solid))' : 'var(--red)';
 }
 
 function _metricsFormatUptime(s) {
@@ -54364,7 +55411,7 @@ function _metricsRender() {
   const listEl = document.getElementById('metrics-session-list');
   if (listEl) {
     if (!sessions.length) {
-      listEl.innerHTML = '<div style="padding:16px 12px;font-size:0.8rem;color:var(--dim);">No workers found</div>';
+      listEl.innerHTML = '<div style="padding:var(--space-4) var(--space-3);font-size:var(--fs-md);color:var(--dim);">No workers found</div>';
     } else {
       listEl.innerHTML = sessions.map(s => {
         const cls = _metricsGaugeCls(s.cpu_percent);
@@ -54392,7 +55439,7 @@ function _metricsRender() {
   // Header
   const cacheAge = data.cache_age_seconds;
   const cacheLabel = cacheAge !== undefined
-    ? `<span style="font-size:0.7rem;color:var(--dim);margin-left:4px;">(${cacheAge}s ago)</span>`
+    ? `<span style="font-size:var(--fs-xs);color:var(--dim);margin-left:var(--space-1);">(${cacheAge}s ago)</span>`
     : '';
   html += `<div class="metrics-hdr">
     <div class="metrics-hdr-left">
@@ -54400,9 +55447,9 @@ function _metricsRender() {
       ${sys.hostname ? `<span class="metrics-hostname">${sys.hostname}</span>` : ''}
       ${sys.uptime_seconds ? `<span class="metrics-uptime">up ${_metricsFormatUptime(sys.uptime_seconds)}</span>` : ''}
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
+    <div style="display:flex;align-items:center;gap:var(--space-2);">
       ${cacheLabel}
-      <button class="btn" id="metrics-refresh-btn" onclick="_metricsLoad()" style="font-size:0.8rem;padding:5px 12px;">\u21BB Refresh</button>
+      <button class="btn" id="metrics-refresh-btn" onclick="_metricsLoad()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3);">\u21BB Refresh</button>
     </div>
   </div>`;
 
@@ -54441,7 +55488,7 @@ function _metricsRender() {
     const swapTot = sys.swap_total_mb < 1024 ? sys.swap_total_mb.toFixed(0) + ' MB' : (sys.swap_total_mb / 1024).toFixed(1) + ' GB';
     html += `<div class="metrics-card">
       <div class="metrics-card-title">Swap</div>
-      <div class="metrics-card-value" style="font-size:1.2rem;">${swapVal}</div>
+      <div class="metrics-card-value" style="font-size:var(--fs-4xl);">${swapVal}</div>
       <div class="metrics-card-sub">of ${swapTot} &mdash; ${swapPct.toFixed(0)}%</div>
       <div class="metrics-gauge"><div class="metrics-gauge-fill ${cls}" style="width:${Math.min(100, swapPct)}%"></div></div>
     </div>`;
@@ -54455,7 +55502,7 @@ function _metricsRender() {
       <div class="metrics-card-value">${sys.disk_free_gb != null ? sys.disk_free_gb : (sys.disk_total_gb - sys.disk_used_gb).toFixed(1)}<span> GB free</span></div>
       <div class="metrics-card-sub">${sys.disk_used_gb} of ${sys.disk_total_gb} GB used &mdash; ${(sys.disk_percent || 0).toFixed(0)}%</div>
       <div class="metrics-gauge"><div class="metrics-gauge-fill ${cls}" style="width:${Math.min(100, sys.disk_percent || 0)}%"></div></div>
-      <div style="font-size:0.66rem;color:var(--accent,#58a6ff);margin-top:6px;">Disk Cleanup &rsaquo;</div>
+      <div style="font-size:var(--fs-3xs);color:var(--accent);margin-top:var(--space-1-5);">Disk Cleanup &rsaquo;</div>
     </div>`;
   }
   html += '</div>';
@@ -54491,7 +55538,7 @@ function _metricsRender() {
     </div>`;
     html += `<div class="metrics-card">
       <div class="metrics-card-title">Server Uptime</div>
-      <div class="metrics-card-value" style="font-size:1.2rem;">${_metricsFormatUptime(srv.uptime_seconds || 0)}</div>
+      <div class="metrics-card-value" style="font-size:var(--fs-4xl);">${_metricsFormatUptime(srv.uptime_seconds || 0)}</div>
       <div class="metrics-card-sub">PID ${srv.pid} · Python ${srv.python_version || '?'}</div>
     </div>`;
     html += '</div>';
@@ -54520,9 +55567,9 @@ function _metricsRender() {
       <div class="metrics-speedtest-bar"><div class="metrics-speedtest-bar-fill" id="speedtest-bar"></div></div>
       <div class="metrics-speedtest-row">
         <div class="metrics-speedtest-status" id="speedtest-status">Tests transfer ${(_metricsSpeedtestSize/1048576).toFixed(0)} MB to/from this server.</div>
-        <div style="display:flex;gap:8px;">
-          <button class="btn" id="speedtest-run-btn" onclick="_metricsRunSpeedtest()" style="font-size:0.8rem;padding:5px 14px;">Run speed test</button>
-          <button class="btn" id="speedtest-reset-btn" onclick="_metricsResetSpeedtest()" style="font-size:0.8rem;padding:5px 12px;">Reset</button>
+        <div style="display:flex;gap:var(--space-2);">
+          <button class="btn" id="speedtest-run-btn" onclick="_metricsRunSpeedtest()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3-5);">Run speed test</button>
+          <button class="btn" id="speedtest-reset-btn" onclick="_metricsResetSpeedtest()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3);">Reset</button>
         </div>
       </div>
     </div>`;
@@ -54534,7 +55581,7 @@ function _metricsRender() {
   html += '</tr></thead><tbody>';
 
   if (!sessions.length) {
-    html += '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:20px;">No workers found</td></tr>';
+    html += '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:var(--space-5);">No workers found</td></tr>';
   } else {
     const sorted = [...sessions].sort((a, b) => (b.cpu_percent - a.cpu_percent) || (b.rss_mb - a.rss_mb));
     sorted.forEach(s => {
@@ -54542,7 +55589,7 @@ function _metricsRender() {
       const cpuCls = _metricsGaugeCls(s.cpu_percent);
       const cpuColor = s.active ? _metricsGaugeColor(cpuCls) : 'var(--dim)';
       const statusHtml = s.active
-        ? '<span style="color:#3fb950;">&#x25CF;</span> active'
+        ? '<span style="color:var(--green);">&#x25CF;</span> active'
         : '<span style="color:var(--dim);">&#x25CB;</span> stopped';
       const cpuHtml = s.active
         ? `<span style="color:${cpuColor};font-weight:600;">${s.cpu_percent.toFixed(1)}%</span>
@@ -54555,13 +55602,13 @@ function _metricsRender() {
       const procs = s.pids && s.pids.length ? s.pids.length : (s.active ? '1' : '\u2014');
       html += `<tr class="${sel}" onclick="_metricsSelectSession('${s.name}')">
         <td><strong>${s.name}</strong></td>
-        <td style="font-size:0.78rem;">${statusHtml}</td>
+        <td style="font-size:var(--fs-base);">${statusHtml}</td>
         <td>${cpuHtml}</td>
         <td>${ramHtml}</td>
-        <td style="font-size:0.78rem;color:var(--dim);">${memFile}</td>
-        <td style="font-size:0.78rem;">${tokens}</td>
-        <td style="font-size:0.78rem;color:var(--dim);">${lastAct}</td>
-        <td style="font-size:0.78rem;color:var(--dim);">${procs}</td>
+        <td style="font-size:var(--fs-base);color:var(--dim);">${memFile}</td>
+        <td style="font-size:var(--fs-base);">${tokens}</td>
+        <td style="font-size:var(--fs-base);color:var(--dim);">${lastAct}</td>
+        <td style="font-size:var(--fs-base);color:var(--dim);">${procs}</td>
       </tr>`;
     });
   }
@@ -54753,8 +55800,8 @@ function _reclaimCopyScript() {
 }
 
 const _KIND_COLORS = {
-  model: '#a371f7', media: '#f0883e', image: '#3fb950', archive: '#e3b341',
-  data: '#58a6ff', code: '#6e7681', build: '#f85149', doc: '#39c5cf', other: '#484f58',
+  model: 'var(--purple)', media: 'var(--orange)', image: 'var(--green)', archive: 'color-mix(in srgb, var(--yellow) 83%, var(--on-solid))',
+  data: 'var(--accent)', code: 'color-mix(in srgb, var(--card) 52%, var(--term-text))', build: 'var(--red)', doc: 'var(--cyan)', other: 'color-mix(in srgb, var(--card) 57%, var(--dim))',
 };
 
 // _fmtBytes is declared once, further down (the B/KB/MB/GB version by the
@@ -54793,7 +55840,7 @@ let _resourcesHours = 6;
 function _resourcesLoad() {
   const el = document.getElementById('resources-content');
   if (!el) return;
-  if (!_resourcesLive) el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Loading worker resources…</div>';
+  if (!_resourcesLive) el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading worker resources…</div>';
   Promise.all([
     fetch(API + '/api/metrics/workers/live').then(r => r.ok ? r.json() : null),
     fetch(API + '/api/metrics/workers?since_h=' + _resourcesHours).then(r => r.ok ? r.json() : null),
@@ -54802,7 +55849,7 @@ function _resourcesLoad() {
     _resourcesData = hist;
     _resourcesRender();
   }).catch(() => {
-    el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load worker resources.</div>';
+    el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);font-size:var(--fs-lg);">Failed to load worker resources.</div>';
   });
   clearInterval(_resourcesPoll);
   _resourcesPoll = setInterval(() => {
@@ -54831,34 +55878,34 @@ function _resourcesRender() {
   // Header with totals
   const totalRssMb = live.total_rss_mb || 0;
   const totalCpu = live.total_cpu_pct || 0;
-  h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;">';
-  h += '<div style="display:flex;align-items:baseline;gap:16px;">';
-  h += '<span style="font-weight:600;font-size:0.95rem;">Worker Resources</span>';
-  h += '<span style="font-size:0.8rem;color:var(--dim);">' + workers.length + ' workers</span>';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-3) var(--space-4) var(--space-2);">';
+  h += '<div style="display:flex;align-items:baseline;gap:var(--space-4);">';
+  h += '<span style="font-weight:600;font-size:var(--fs-2xl);">Worker Resources</span>';
+  h += '<span style="font-size:var(--fs-md);color:var(--dim);">' + workers.length + ' workers</span>';
   h += '</div>';
-  h += '<div style="display:flex;align-items:center;gap:12px;">';
-  h += '<span style="font-size:0.8rem;">Total: <b>' + totalRssMb.toFixed(0) + ' MB</b> RSS, <b>' + totalCpu.toFixed(1) + '%</b> CPU</span>';
-  if (config.max_concurrent_active) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">cap: ' + config.max_concurrent_active + ' concurrent</span>';
-  if (config.max_rss_mb) h += '<span style="font-size:0.75rem;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">RSS limit: ' + config.max_rss_mb + ' MB</span>';
-  h += '<select style="font-size:0.75rem;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;" onchange="_resourcesHours=+this.value;_resourcesLoad()">';
+  h += '<div style="display:flex;align-items:center;gap:var(--space-3);">';
+  h += '<span style="font-size:var(--fs-md);">Total: <b>' + totalRssMb.toFixed(0) + ' MB</b> RSS, <b>' + totalCpu.toFixed(1) + '%</b> CPU</span>';
+  if (config.max_concurrent_active) h += '<span style="font-size:var(--fs-sm);color:var(--dim);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-1-5);">cap: ' + config.max_concurrent_active + ' concurrent</span>';
+  if (config.max_rss_mb) h += '<span style="font-size:var(--fs-sm);color:var(--dim);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-1-5);">RSS limit: ' + config.max_rss_mb + ' MB</span>';
+  h += '<select style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-1);background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);" onchange="_resourcesHours=+this.value;_resourcesLoad()">';
   [1, 6, 24, 72, 168].forEach(v => {
     const lbl = v < 24 ? v + 'h' : (v / 24) + 'd';
     h += '<option value="' + v + '"' + (v === _resourcesHours ? ' selected' : '') + '>' + lbl + '</option>';
   });
   h += '</select>';
-  h += '<button class="btn" style="font-size:0.8rem;padding:4px 10px;" onclick="_resourcesLoad()">↻</button>';
+  h += '<button class="btn" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-2-5);" onclick="_resourcesLoad()">↻</button>';
   h += '</div></div>';
 
   // Live worker table
   if (workers.length) {
-    h += '<div style="overflow-x:auto;padding:0 16px;">';
-    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<div style="overflow-x:auto;padding:0 var(--space-4);">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:var(--fs-md);">';
     h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
-    h += '<th style="padding:6px 8px;">Worker</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">RSS (MB)</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">CPU %</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">Processes</th>';
-    h += '<th style="padding:6px 8px;width:200px;">RSS</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);">Worker</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">RSS (MB)</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">CPU %</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">Processes</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);width:200px;">RSS</th>';
     h += '</tr></thead><tbody>';
 
     const maxRss = Math.max(...workers.map(w => w.rss_kb), 1);
@@ -54867,42 +55914,42 @@ function _resourcesRender() {
       const pct = (w.rss_kb / maxRss) * 100;
       const over = rssLimit && w.rss_kb > rssLimit;
       const barColor = over ? 'var(--red)' : rssMb > 512 ? 'var(--yellow)' : 'var(--green)';
-      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
-      h += '<td style="padding:5px 8px;font-weight:500;white-space:nowrap;">' + esc(w.session) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);font-weight:600;' : '') + '">' + rssMb.toFixed(0) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;">' + w.cpu_pct.toFixed(1) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;">' + w.n_procs + '</td>';
-      h += '<td style="padding:5px 8px;"><div style="height:10px;background:var(--border);border-radius:3px;overflow:hidden;"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + barColor + ';border-radius:3px;"></div></div></td>';
+      h += '<tr style="border-bottom:1px solid var(--border);">';
+      h += '<td style="padding:var(--space-1) var(--space-2);font-weight:500;white-space:nowrap;">' + esc(w.session) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;' + (over ? 'color:var(--red);font-weight:600;' : '') + '">' + rssMb.toFixed(0) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;">' + w.cpu_pct.toFixed(1) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;">' + w.n_procs + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);"><div style="height:10px;background:var(--border);border-radius:var(--radius-sm);overflow:hidden;"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + barColor + ';border-radius:var(--radius-sm);"></div></div></td>';
       h += '</tr>';
     });
     h += '</tbody></table></div>';
   } else {
-    h += '<div style="color:var(--dim);padding:40px;text-align:center;font-size:0.85rem;">No workers detected. The sampling job runs every 30s.</div>';
+    h += '<div style="color:var(--dim);padding:var(--space-10);text-align:center;font-size:var(--fs-lg);">No workers detected. The sampling job runs every 30s.</div>';
   }
 
   // Historical summaries (peak usage over the selected window)
   if (summaries.length) {
-    h += '<div style="padding:16px 16px 4px;font-weight:600;font-size:0.85rem;">Historical (past ' + _resourcesHours + 'h)</div>';
-    h += '<div style="overflow-x:auto;padding:0 16px 16px;">';
-    h += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">';
+    h += '<div style="padding:var(--space-4) var(--space-4) var(--space-1);font-weight:600;font-size:var(--fs-lg);">Historical (past ' + _resourcesHours + 'h)</div>';
+    h += '<div style="overflow-x:auto;padding:0 var(--space-4) var(--space-4);">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:var(--fs-md);">';
     h += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
-    h += '<th style="padding:6px 8px;">Worker</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">Peak RSS (MB)</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">Avg RSS (MB)</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">Peak CPU %</th>';
-    h += '<th style="padding:6px 8px;text-align:right;">Samples</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);">Worker</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">Peak RSS (MB)</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">Avg RSS (MB)</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">Peak CPU %</th>';
+    h += '<th style="padding:var(--space-1-5) var(--space-2);text-align:right;">Samples</th>';
     h += '</tr></thead><tbody>';
 
     summaries.slice().sort((a, b) => (b.peak_rss_kb || 0) - (a.peak_rss_kb || 0)).forEach(s => {
       const peakMb = (s.peak_rss_kb || 0) / 1024;
       const avgMb = (s.avg_rss_kb || 0) / 1024;
       const over = rssLimit && s.peak_rss_kb > rssLimit;
-      h += '<tr style="border-bottom:1px solid var(--border-dim, var(--border));">';
-      h += '<td style="padding:5px 8px;font-weight:500;">' + esc(s.session) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;' + (over ? 'color:var(--red);' : '') + '">' + peakMb.toFixed(0) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;">' + avgMb.toFixed(0) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;">' + (s.peak_cpu_pct || 0).toFixed(1) + '</td>';
-      h += '<td style="padding:5px 8px;text-align:right;">' + (s.sample_count || 0) + '</td>';
+      h += '<tr style="border-bottom:1px solid var(--border);">';
+      h += '<td style="padding:var(--space-1) var(--space-2);font-weight:500;">' + esc(s.session) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;' + (over ? 'color:var(--red);' : '') + '">' + peakMb.toFixed(0) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;">' + avgMb.toFixed(0) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;">' + (s.peak_cpu_pct || 0).toFixed(1) + '</td>';
+      h += '<td style="padding:var(--space-1) var(--space-2);text-align:right;">' + (s.sample_count || 0) + '</td>';
       h += '</tr>';
     });
     h += '</tbody></table></div>';
@@ -54919,12 +55966,12 @@ let _hostData = null;
 
 function _hostLoad() {
   const el = document.getElementById('host-content');
-  if (el && !_hostData) el.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:40px;text-align:center;">Analyzing host&hellip;</div>';
+  if (el && !_hostData) el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Analyzing host&hellip;</div>';
   fetch(API + '/api/metrics/host')
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(d => { _hostData = d; _hostRender(); })
     .catch(e => {
-      if (el) el.innerHTML = '<div style="color:var(--red);padding:20px;font-size:0.85rem;">Failed to load host analysis: ' + esc(String(e)) + '</div>';
+      if (el) el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);font-size:var(--fs-lg);">Failed to load host analysis: ' + esc(String(e)) + '</div>';
     });
 }
 
@@ -54936,7 +55983,7 @@ function _hostStateColor(s) {
 // in local diagnostics instead of only in a screenshot (AMUX-4362).
 function _hostContrastCheck() {
   const luminance = color => {
-    const rgb = (color.match(/[\d.]+/g) || []).slice(0, 3).map(Number).map(v => {
+    const rgb = _cssColorChannels(color).slice(0, 3).map(v => {
       const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     });
     return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
@@ -54970,9 +56017,9 @@ function _hostRender() {
       ${(d.os || d.os_version || d.arch) ? `<span class="metrics-uptime">${esc([d.os, d.os_version, d.arch].filter(Boolean).join(' '))}</span>` : ''}
       ${d.uptime_seconds ? `<span class="metrics-uptime">up ${_metricsFormatUptime(d.uptime_seconds)}</span>` : ''}
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      ${d.analysis_ms != null ? `<span style="font-size:0.7rem;color:var(--dim);">${esc(String(d.generated_at || ''))} · ${d.analysis_ms}ms</span>` : ''}
-      <button class="btn" onclick="_hostLoad()" style="font-size:0.8rem;padding:5px 12px;">↻ Refresh</button>
+    <div style="display:flex;align-items:center;gap:var(--space-2);">
+      ${d.analysis_ms != null ? `<span style="font-size:var(--fs-xs);color:var(--dim);">${esc(String(d.generated_at || ''))} · ${d.analysis_ms}ms</span>` : ''}
+      <button class="btn" onclick="_hostLoad()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3);">↻ Refresh</button>
     </div>
   </div>`;
 
@@ -54983,9 +56030,9 @@ function _hostRender() {
     return;
   }
 
-  const chip = (label, state) => `<span class="host-state-chip" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;background:var(--card);color:var(--text);border:1px solid var(--border);font-size:0.75rem;">
-    <span style="width:8px;height:8px;border-radius:50%;background:${_hostStateColor(state)};"></span>${label}: <b style="color:${_hostStateColor(state)};">${esc(String(state || 'unknown'))}</b></span>`;
-  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px;">
+  const chip = (label, state) => `<span class="host-state-chip" style="display:inline-flex;align-items:center;gap:var(--space-1-5);padding:var(--space-1) var(--space-2-5);border-radius:var(--radius-2xl);background:var(--card);color:var(--text);border:1px solid var(--border);font-size:var(--fs-sm);">
+    <span style="width:8px;height:8px;border-radius:var(--radius-round);background:${_hostStateColor(state)};"></span>${label}: <b style="color:${_hostStateColor(state)};">${esc(String(state || 'unknown'))}</b></span>`;
+  html += `<div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin:var(--space-1) 0 var(--space-3-5);">
     ${chip('CPU', v.cpu)} ${chip('Memory', v.memory)} ${chip('Disk', v.disk)}</div>`;
 
   html += '<div class="metrics-cards">';
@@ -55008,7 +56055,7 @@ function _hostRender() {
     const sp = swap.total_mb > 0 ? swap.used_mb / swap.total_mb * 100 : 0;
     html += `<div class="metrics-card">
       <div class="metrics-card-title">Swap</div>
-      <div class="metrics-card-value" style="font-size:1.2rem;">${num(swap.used_mb, 0)}<span> MB</span></div>
+      <div class="metrics-card-value" style="font-size:var(--fs-4xl);">${num(swap.used_mb, 0)}<span> MB</span></div>
       <div class="metrics-card-sub">of ${num(swap.total_mb, 0)} MB — ${sp.toFixed(0)}%</div>
       <div class="metrics-gauge"><div class="metrics-gauge-fill ${_metricsGaugeCls(sp)}" style="width:${Math.min(100, sp)}%"></div></div>
     </div>`;
@@ -55019,7 +56066,7 @@ function _hostRender() {
       <div class="metrics-card-value">${num(disk.free_gb, 1)}<span> GB free</span></div>
       <div class="metrics-card-sub">${num(disk.used_gb, 1)} of ${num(disk.total_gb, 1)} GB — ${num(disk.percent, 0)}%</div>
       <div class="metrics-gauge"><div class="metrics-gauge-fill" style="width:${Math.min(100, disk.percent || 0)}%;background:${_hostStateColor(v.disk)};"></div></div>
-      <div style="font-size:0.66rem;color:var(--accent,#58a6ff);margin-top:6px;">Disk Cleanup ›</div>
+      <div style="font-size:var(--fs-3xs);color:var(--accent);margin-top:var(--space-1-5);">Disk Cleanup ›</div>
     </div>`;
   }
   html += '</div>';
@@ -55042,15 +56089,15 @@ function _hostRender() {
 
   const procTable = (title, rows, primary) => {
     if (!rows || !rows.length) return '';
-    let t = `<div class="metrics-section-title">${title}</div><div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;">`;
+    let t = `<div class="metrics-section-title">${title}</div><div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:var(--fs-md);">`;
     rows.forEach(p => {
-      const cpuCell = `<span style="color:${p.cpu_percent >= 100 ? '#f85149' : 'var(--fg)'};">${num(p.cpu_percent, 1)}%</span>`;
+      const cpuCell = `<span style="color:${p.cpu_percent >= 100 ? 'var(--red)' : 'var(--text)'};">${num(p.cpu_percent, 1)}%</span>`;
       const memCell = `${num(p.rss_mb, 1)} MB`;
-      t += `<tr style="border-bottom:1px solid var(--border,#21262d);">
-        <td style="padding:5px 10px 5px 0;font-family:var(--mono,monospace);color:var(--dim);width:64px;">${p.pid}</td>
-        <td style="padding:5px 12px 5px 0;text-align:right;width:90px;">${primary === 'cpu' ? cpuCell : memCell}</td>
-        <td style="padding:5px 12px 5px 0;text-align:right;width:90px;color:var(--dim);">${primary === 'cpu' ? memCell : cpuCell}</td>
-        <td style="padding:5px 0;">${esc(String(p.command || ''))}</td>
+      t += `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:var(--space-1) var(--space-2-5) var(--space-1) 0;font-family:var(--font-mono);color:var(--dim);width:64px;">${p.pid}</td>
+        <td style="padding:var(--space-1) var(--space-3) var(--space-1) 0;text-align:right;width:90px;">${primary === 'cpu' ? cpuCell : memCell}</td>
+        <td style="padding:var(--space-1) var(--space-3) var(--space-1) 0;text-align:right;width:90px;color:var(--dim);">${primary === 'cpu' ? memCell : cpuCell}</td>
+        <td style="padding:var(--space-1) 0;">${esc(String(p.command || ''))}</td>
       </tr>`;
     });
     return t + '</table></div>';
@@ -55085,7 +56132,7 @@ async function _reclaimLoad() {
     if (st && st !== 'running' && !_reclaimTree) _reclaimLoadTree(null);
   } catch (e) {
     const el = document.getElementById('reclaim-content');
-    if (el) el.innerHTML = '<div style="color:var(--red);padding:20px;">Could not load reclaim data: ' + esc(String(e)) + '</div>';
+    if (el) el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Could not load reclaim data: ' + esc(String(e)) + '</div>';
   }
 }
 
@@ -55262,7 +56309,7 @@ async function _reclaimPurgeOld() {
 // encodes bytes, so a big red block is a big pile of build output.
 function _reclaimTreemapSvg(nodes, w, h) {
   const total = nodes.reduce((a, n) => a + (n.bytes || 0), 0);
-  if (!total) return '<div style="color:var(--dim);padding:20px;font-size:0.82rem;">No size data for this folder.</div>';
+  if (!total) return '<div style="color:var(--dim);padding:var(--space-5);font-size:var(--fs-md);">No size data for this folder.</div>';
   const items = nodes.filter(n => n.bytes > 0).map(n => ({ ...n, area: n.bytes / total * w * h }));
   const rects = [];
   let x = 0, y = 0, cw = w, ch = h, i = 0;
@@ -55303,8 +56350,8 @@ function _reclaimTreemapSvg(nodes, w, h) {
       <title>${t}</title>
       <rect x="${r.x.toFixed(1)}" y="${r.y.toFixed(1)}" width="${Math.max(0,r.w-1.5).toFixed(1)}" height="${Math.max(0,r.h-1.5).toFixed(1)}"
             fill="${color}" fill-opacity="0.78" stroke="var(--bg)" stroke-width="1" rx="2"/>
-      ${showLabel ? `<text x="${(r.x+6).toFixed(1)}" y="${(r.y+15).toFixed(1)}" font-size="10.5" fill="#fff" font-weight="600" pointer-events="none">${esc(name.slice(0,22))}</text>
-      <text x="${(r.x+6).toFixed(1)}" y="${(r.y+27).toFixed(1)}" font-size="9.5" fill="#fff" fill-opacity="0.82" pointer-events="none">${_fmtBytes(r.bytes)}</text>` : ''}
+      ${showLabel ? `<text x="${(r.x+6).toFixed(1)}" y="${(r.y+15).toFixed(1)}" font-size="10.5" fill="var(--on-solid)" font-weight="600" pointer-events="none">${esc(name.slice(0,22))}</text>
+      <text x="${(r.x+6).toFixed(1)}" y="${(r.y+27).toFixed(1)}" font-size="9.5" fill="var(--on-solid)" fill-opacity="0.82" pointer-events="none">${_fmtBytes(r.bytes)}</text>` : ''}
     </g>`;
   }).join('');
 
@@ -55312,7 +56359,7 @@ function _reclaimTreemapSvg(nodes, w, h) {
   // container without letterboxing and without preserveAspectRatio="none".
   // That would fill the box but shear every text label, since non-uniform
   // scaling distorts glyphs even though it preserves relative cell areas.
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="display:block;border-radius:8px;overflow:hidden;">${body}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="display:block;border-radius:var(--radius-lg);overflow:hidden;">${body}</svg>`;
 }
 
 function _reclaimRecsPanel(findings) {
@@ -55381,12 +56428,12 @@ function _reclaimRender() {
     <div class="metrics-hdr-left">
       <span class="metrics-hdr-title">Disk Cleanup</span>
       ${hdrTotal ? `<span class="metrics-hostname" id="reclaim-free-now">${_fmtBytes(hdrFree)} free of ${_fmtBytes(hdrTotal)}${vol?.measured ? ' now' : ' at last scan'}</span>` : ''}
-      ${critical ? `<span style="color:var(--red);font-size:0.72rem;font-weight:600;">${freePct.toFixed(1)}% free</span>` : ''}
+      ${critical ? `<span style="color:var(--red);font-size:var(--fs-xs);font-weight:600;">${freePct.toFixed(1)}% free</span>` : ''}
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
+    <div style="display:flex;gap:var(--space-2);align-items:center;">
       ${scan?.status === 'running'
-        ? `<button class="btn" onclick="_reclaimCancelScan()" style="font-size:0.8rem;padding:5px 12px;">Stop scan</button>`
-        : `<button class="btn" id="reclaim-scan-btn" onclick="_reclaimStartScan()" style="font-size:0.8rem;padding:5px 12px;">${scan ? 'Rescan' : 'Run scan'}</button>`}
+        ? `<button class="btn" onclick="_reclaimCancelScan()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3);">Stop scan</button>`
+        : `<button class="btn" id="reclaim-scan-btn" onclick="_reclaimStartScan()" style="font-size:var(--fs-md);padding:var(--space-1) var(--space-3);">${scan ? 'Rescan' : 'Run scan'}</button>`}
     </div>
   </div>`;
 
@@ -55394,8 +56441,8 @@ function _reclaimRender() {
 
   if (!scan) {
     html += `<div class="reclaim-empty">
-      <div style="font-weight:600;margin-bottom:6px;">No scan yet</div>
-      <div style="font-size:0.82rem;color:var(--dim);line-height:1.6;max-width:620px;">
+      <div style="font-weight:600;margin-bottom:var(--space-1-5);">No scan yet</div>
+      <div style="font-size:var(--fs-md);color:var(--dim);line-height:1.6;max-width:620px;">
         Walks your home directory plus the dev-tool stores that live outside it, and ranks what can be
         reclaimed. The scan is read-only and runs at background I/O priority so it does not compete
         with the amux server for disk. Nothing is deleted without you selecting it.
@@ -55410,8 +56457,8 @@ function _reclaimRender() {
     html += `<div class="reclaim-progress">
       <div class="reclaim-spinner"></div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:0.85rem;font-weight:600;margin-bottom:3px;">Scanning…</div>
-        <div style="font-size:0.75rem;color:var(--dim);">
+        <div style="font-size:var(--fs-lg);font-weight:600;margin-bottom:var(--space-0-5);">Scanning…</div>
+        <div style="font-size:var(--fs-sm);color:var(--dim);">
           ${(scan.dirs_walked||0).toLocaleString()} folders · ${(scan.files_walked||0).toLocaleString()} files · ${_fmtBytes(scan.bytes_seen)} seen
         </div>
         <div class="reclaim-curpath">${scan.current_phase ? `<b>${esc(scan.current_phase)}</b> · ` : ''}${esc(scan.current_path || '')}</div>
@@ -55424,10 +56471,10 @@ function _reclaimRender() {
   // stopped answering, and the walk thread is still parked in the kernel on it.
   if (scan.status === 'stalled') {
     html += `<div class="reclaim-warn">
-      <div style="font-weight:600;margin-bottom:4px;">⚠ Scan stalled on one directory</div>
-      <div style="font-size:0.78rem;line-height:1.55;">
+      <div style="font-weight:600;margin-bottom:var(--space-1);">⚠ Scan stalled on one directory</div>
+      <div style="font-size:var(--fs-base);line-height:1.55;">
         ${esc(scan.error || '')}
-        <div style="margin-top:6px;">
+        <div style="margin-top:var(--space-1-5);">
           Recorded below. A directory is only stepped over after it hangs a second scan,
           because one quiet spell on a loaded machine is contention rather than a broken folder.
           Results cover ${(scan.dirs_walked||0).toLocaleString()} folders walked before the stall.
@@ -55441,8 +56488,8 @@ function _reclaimRender() {
   // kept spinning would read as "still working" forever.
   if (scan.status === 'interrupted' || (scan.status === 'cancelled' && scan.error)) {
     html += `<div class="reclaim-warn">
-      <div style="font-weight:600;margin-bottom:4px;">Scan did not finish</div>
-      <div style="font-size:0.78rem;line-height:1.55;">
+      <div style="font-weight:600;margin-bottom:var(--space-1);">Scan did not finish</div>
+      <div style="font-size:var(--fs-base);line-height:1.55;">
         ${esc(scan.error || 'The scan was cancelled.')}
         Results below are partial: ${(scan.dirs_walked||0).toLocaleString()} folders were walked before it stopped.
         Run it again to get a complete picture.
@@ -55454,16 +56501,16 @@ function _reclaimRender() {
   const snapFinding = findings.find(f => f.category === 'snapshot');
   if (scan.snapshot_count == null) {
     html += `<div class="reclaim-warn">
-      <div style="font-weight:600;margin-bottom:4px;">Local snapshot status unavailable</div>
-      <div style="font-size:0.78rem;line-height:1.55;">
+      <div style="font-weight:600;margin-bottom:var(--space-1);">Local snapshot status unavailable</div>
+      <div style="font-size:var(--fs-base);line-height:1.55;">
         The scan could not measure local snapshots. This does not mean there are none.
         Remeasure backup status and free space before deciding on further deletion.
       </div>
     </div>`;
   } else if (snapFinding) {
     html += `<div class="reclaim-warn">
-      <div style="font-weight:600;margin-bottom:4px;">${scan.snapshot_count} local snapshots observed</div>
-      <div style="font-size:0.78rem;line-height:1.55;">
+      <div style="font-weight:600;margin-bottom:var(--space-1);">${scan.snapshot_count} local snapshots observed</div>
+      <div style="font-size:var(--fs-base);line-height:1.55;">
         Snapshots may retain blocks shared with deleted files. Their count does not show
         how much space they hold or how long a backup disk has been absent.
         macOS can remove snapshots as they age or storage is needed.
@@ -55479,7 +56526,7 @@ function _reclaimRender() {
   const skipped = _reclaimScan?.skipped || [];
   if (skipped.length) {
     html += `<div class="reclaim-skips">
-      <div style="font-weight:600;margin-bottom:4px;">Coverage notes (${skipped.length})</div>
+      <div style="font-weight:600;margin-bottom:var(--space-1);">Coverage notes (${skipped.length})</div>
       ${skipped.map(s => `<div class="reclaim-skip-row">
         <span class="reclaim-skip-reason ${s.active ? 'bad' : ''}">${esc(s.active ? 'skipped' : 'watching')}</span>
         <code>${esc(s.path)}</code>
@@ -55531,7 +56578,7 @@ function _reclaimRender() {
       const on = _reclaimCat === t.category;
       html += `<div class="metrics-card reclaim-catcard${on ? ' active' : ''}" onclick="_reclaimSetCat('${escJs(t.category)}')" title="${esc(meta.hint)}">
         <div class="metrics-card-title">${esc(meta.label)}</div>
-        <div class="metrics-card-value" style="font-size:1.2rem;">${_fmtBytes(t.bytes)}</div>
+        <div class="metrics-card-value" style="font-size:var(--fs-4xl);">${_fmtBytes(t.bytes)}</div>
         <div class="metrics-card-sub">${t.count} item${t.count === 1 ? '' : 's'}${meta.safe ? ' · regenerable' : ''}</div>
       </div>`;
     });
@@ -55544,12 +56591,12 @@ function _reclaimRender() {
   if (_reclaimTree) {
     const rootPath = _reclaimTree.root?.path || _reclaimTreePath || '~';
     const parent = rootPath.includes('/') ? rootPath.slice(0, rootPath.lastIndexOf('/')) : null;
-    html += `<div class="metrics-section-title" style="margin-top:18px;">Disk map
+    html += `<div class="metrics-section-title" style="margin-top:var(--space-4);">Disk map
       <span style="text-transform:none;letter-spacing:0;font-weight:400;">(click a block to drill in)</span></div>`;
     html += `<div class="reclaim-mapbar">
       ${parent ? `<button class="btn reclaim-upbtn" onclick="_reclaimLoadTree('${escJs(parent)}')">↑ up</button>` : ''}
       <span class="reclaim-mappath">${esc(rootPath)}</span>
-      ${_reclaimTree.root ? `<span style="color:var(--dim);font-size:0.75rem;">${_fmtBytes(_reclaimTree.root.bytes)}</span>` : ''}
+      ${_reclaimTree.root ? `<span style="color:var(--dim);font-size:var(--fs-sm);">${_fmtBytes(_reclaimTree.root.bytes)}</span>` : ''}
     </div>`;
     // Lay the map out at the size it will actually occupy, so the viewBox and
     // the box agree and nothing is letterboxed. Measured from the scroll pane
@@ -55568,7 +56615,7 @@ function _reclaimRender() {
   const shown = _reclaimCat ? findings.filter(f => f.category === _reclaimCat) : findings.filter(f => f.category !== 'snapshot');
   const selBytes = findings.filter(f => _reclaimSel.has(f.path)).reduce((a, f) => a + (f.bytes || 0), 0);
 
-  html += `<div class="metrics-section-title" style="margin-top:18px;">
+  html += `<div class="metrics-section-title" style="margin-top:var(--space-4);">
     Findings${_reclaimCat ? ' — ' + esc(_RECLAIM_CATS[_reclaimCat]?.label || _reclaimCat) : ''}
     <span style="text-transform:none;letter-spacing:0;font-weight:400;">(${shown.length})</span>
     ${_reclaimCat ? `<button class="btn reclaim-minibtn" onclick="_reclaimSetCat(null)">clear filter</button>` : ''}
@@ -55578,7 +56625,7 @@ function _reclaimRender() {
   if (_reclaimSel.size) {
     html += `<div class="reclaim-actionbar">
       <span><b>${_reclaimSel.size}</b> selected · <b>${_fmtBytes(selBytes)}</b> <span style="color:var(--dim);">(estimated)</span></span>
-      <span style="display:flex;gap:8px;">
+      <span style="display:flex;gap:var(--space-2);">
         <button class="btn" onclick="_reclaimSel=new Set();_reclaimRender()">Clear</button>
         <button class="btn reclaim-danger" onclick="_reclaimQuarantineSelected()">Move to quarantine…</button>
       </span>
@@ -55589,7 +56636,7 @@ function _reclaimRender() {
   html += '<th style="width:28px;"></th><th>Path</th><th>Category</th><th>Size</th><th>Files</th><th>Detail</th>';
   html += '</tr></thead><tbody>';
   if (!shown.length) {
-    html += '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:20px;">'
+    html += '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:var(--space-5);">'
       + (scan.status === 'running' ? 'Scan in progress…' : 'Nothing found in this category.') + '</td></tr>';
   } else {
     shown.slice(0, 400).forEach(f => {
@@ -55600,25 +56647,25 @@ function _reclaimRender() {
         <td>${prot
           ? `<input type="checkbox" disabled title="${esc(f.protected.reason || 'protected')}" aria-label="Protected, cannot be selected">`
           : `<input type="checkbox"${checked} onchange="_reclaimToggle('${escJs(f.path)}')">`}</td>
-        <td style="font-family:var(--mono,monospace);font-size:0.74rem;word-break:break-all;">${esc(f.path)}${prot
+        <td style="font-family:var(--font-mono);font-size:var(--fs-sm);word-break:break-all;">${esc(f.path)}${prot
           ? `<div class="reclaim-protected-why"><span class="reclaim-chip protected">Protected</span> ${esc(f.protected.reason || f.protected.class || '')}</div>` : ''}</td>
-        <td style="font-size:0.74rem;">${esc(meta.label)}${f.regenerable ? '' : ' <span style="color:var(--yellow,#e3b341);" title="Not regenerable. Review before removing.">⚠</span>'}</td>
+        <td style="font-size:var(--fs-sm);">${esc(meta.label)}${f.regenerable ? '' : ' <span style="color:var(--yellow);" title="Not regenerable. Review before removing.">⚠</span>'}</td>
         <td style="font-weight:600;">${_fmtBytes(f.bytes)}</td>
-        <td style="font-size:0.74rem;color:var(--dim);">${(f.file_count||0).toLocaleString()}</td>
-        <td style="font-size:0.72rem;color:var(--dim);">${esc(f.detail || '')}</td>
+        <td style="font-size:var(--fs-sm);color:var(--dim);">${(f.file_count||0).toLocaleString()}</td>
+        <td style="font-size:var(--fs-xs);color:var(--dim);">${esc(f.detail || '')}</td>
       </tr>`;
     });
   }
   html += '</tbody></table></div>';
   if (shown.length > 400) {
-    html += `<div style="font-size:0.72rem;color:var(--dim);margin-top:6px;">Showing the 400 largest of ${shown.length}. Narrow with a category filter to see the rest.</div>`;
+    html += `<div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1-5);">Showing the 400 largest of ${shown.length}. Narrow with a category filter to see the rest.</div>`;
   }
 
   // Quarantine ledger
   const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status !== 'purged' || b.item_count);
   if (batches.length) {
     const old = _reclaimOldBatches();
-    html += `<div class="metrics-section-title" id="reclaim-quarantine-title" style="margin-top:20px;">Quarantine
+    html += `<div class="metrics-section-title" id="reclaim-quarantine-title" style="margin-top:var(--space-5);">Quarantine
       ${old.length ? `<button class="btn reclaim-minibtn reclaim-danger" id="reclaim-purge-old" onclick="_reclaimPurgeOld()" title="Permanently delete every staged batch older than ${_RECLAIM_PURGE_AGE_DAYS} days, one confirmed batch at a time">Purge ${old.length} batch${old.length === 1 ? '' : 'es'} older than ${_RECLAIM_PURGE_AGE_DAYS} days (${_fmtBytes(old.reduce((a, b) => a + (b.bytes || 0), 0))})</button>` : ''}
     </div>`;
     html += '<div class="metrics-table-wrap"><table class="metrics-table"><thead><tr>';
@@ -55629,11 +56676,11 @@ function _reclaimRender() {
         ? b.df_free_after - b.df_free_before : null;
       const staged = b.status === 'staged';
       html += `<tr>
-        <td style="font-size:0.75rem;">${_metricsRelTime(new Date(b.created_at * 1000).toISOString())}</td>
+        <td style="font-size:var(--fs-sm);">${_metricsRelTime(new Date(b.created_at * 1000).toISOString())}</td>
         <td>${b.item_count}</td>
         <td style="font-weight:600;">${_fmtBytes(b.bytes)}</td>
-        <td style="font-size:0.75rem;color:${freed > 0 ? '#3fb950' : 'var(--dim)'};">${freed == null ? '—' : (freed > 0 ? '+' : '') + _fmtBytes(freed)}</td>
-        <td style="font-size:0.75rem;">${esc(b.status)}</td>
+        <td style="font-size:var(--fs-sm);color:${freed > 0 ? 'var(--green)' : 'var(--dim)'};">${freed == null ? '—' : (freed > 0 ? '+' : '') + _fmtBytes(freed)}</td>
+        <td style="font-size:var(--fs-sm);">${esc(b.status)}</td>
         <td style="text-align:right;white-space:nowrap;">
           ${staged ? `<button class="btn reclaim-minibtn" onclick="_reclaimRestore('${escJs(b.id)}')">Restore</button>
           <button class="btn reclaim-minibtn reclaim-danger" onclick="_reclaimPurge('${escJs(b.id)}',${b.bytes})">Purge</button>` : ''}
@@ -55641,7 +56688,7 @@ function _reclaimRender() {
       </tr>`;
     });
     html += '</tbody></table></div>';
-    html += `<div style="font-size:0.72rem;color:var(--dim);margin-top:6px;line-height:1.5;">
+    html += `<div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1-5);line-height:1.5;">
       Staged files live in <code>${esc(_reclaimQuarantine?.root || '~/.amux/quarantine')}</code>.
       "Actually freed" is the real free-space change rather than the sum of file sizes. A move frees
       nothing until purge, and snapshots can hold the blocks after that.</div>`;
@@ -55668,13 +56715,13 @@ function _reclaimVolumeNow() {
 function _reclaimScheduledPanel() {
   const s = _reclaimQuarantine?.scheduled;
   if (!s) return '';
-  let h = '<div class="metrics-section-title" style="margin-top:12px;" id="reclaim-scheduled-title">Scheduled cleanup</div>';
+  let h = '<div class="metrics-section-title" style="margin-top:var(--space-3);" id="reclaim-scheduled-title">Scheduled cleanup</div>';
   if (!s.measured) {
     return h + `<div class="metrics-card reclaim-safe-text" id="reclaim-scheduled-unmeasured">Not measured: ${esc(s.why_unmeasured || 'no status')}</div>`;
   }
   const keys = { build: 'RECLAIM_IDLE_H, RECLAIM_RETAIN_H, RECLAIM_MIN_MB',
                  stale: 'RECLAIM_STALE_DAYS, RECLAIM_STALE_RETAIN_D, RECLAIM_STALE_MIN_MB, RECLAIM_STALE (0 = off)' };
-  h += `<div class="reclaim-safe-text" style="margin-bottom:8px;">Runs daily at 4am. Last run ${esc(timeAgo(s.last_run_at))}${s.dry ? ' (dry run)' : ''}, purged ${s.purged || 0} expired batch${s.purged === 1 ? '' : 'es'}.
+  h += `<div class="reclaim-safe-text" style="margin-bottom:var(--space-2);">Runs daily at 4am. Last run ${esc(timeAgo(s.last_run_at))}${s.dry ? ' (dry run)' : ''}, purged ${s.purged || 0} expired batch${s.purged === 1 ? '' : 'es'}.
     Files are moved to quarantine first and can be restored below until their purge date.</div><div class="reclaim-safe-grid">`;
   for (const c of (s.classes || [])) {
     const days = Math.round((c.retain_s || 0) / 86400 * 10) / 10;
@@ -55708,7 +56755,7 @@ function _reclaimActionsPanel(findings) {
       </div></div>`;
   }
   h += _reclaimScheduledPanel();
-  h += `<div class="metrics-section-title" style="margin-top:12px;">Safe cleanup</div>
+  h += `<div class="metrics-section-title" style="margin-top:var(--space-3);">Safe cleanup</div>
     <div class="reclaim-safe-grid">
       <div class="metrics-card reclaim-safe-card">
         <div class="reclaim-safe-head">Rebuildable files</div>
@@ -55889,32 +56936,32 @@ function _torrentRender() {
     const isPaused = t.status === 'paused' || t.status === 'waiting';
     const isDone = t.status === 'complete';
     const ctrlBtns = isDone
-      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Remove" aria-label="Remove">&#x2716;</button>`
-      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Pause" aria-label="Pause">&#x23F8;</button>` : ''}
-         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Resume" aria-label="Resume">&#x25B6;</button>` : ''}
-         <button onclick="_torrentAction('${t.gid}','remove')" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:1rem;min-width:44px;min-height:44px;padding:0;" title="Stop &amp; remove" aria-label="Stop &amp; remove">&#x23F9;</button>`;
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <strong style="flex:1;font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name || t.gid)}</strong>
-        <span style="font-size:0.75rem;${statusCls}">${esc(t.status)}</span>
-        ${speed ? `<span style="font-size:0.75rem;color:var(--accent);">${speed}</span>` : ''}
+      ? `<button onclick="_torrentRemove('${t.gid}')" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);cursor:pointer;font-size:var(--fs-2xl);min-width:44px;min-height:44px;padding:0;" title="Remove" aria-label="Remove">&#x2716;</button>`
+      : `${isActive ? `<button onclick="_torrentAction('${t.gid}','pause')" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);cursor:pointer;font-size:var(--fs-2xl);min-width:44px;min-height:44px;padding:0;" title="Pause" aria-label="Pause">&#x23F8;</button>` : ''}
+         ${isPaused ? `<button onclick="_torrentAction('${t.gid}','resume')" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);cursor:pointer;font-size:var(--fs-2xl);min-width:44px;min-height:44px;padding:0;" title="Resume" aria-label="Resume">&#x25B6;</button>` : ''}
+         <button onclick="_torrentAction('${t.gid}','remove')" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);cursor:pointer;font-size:var(--fs-2xl);min-width:44px;min-height:44px;padding:0;" title="Stop &amp; remove" aria-label="Stop &amp; remove">&#x23F9;</button>`;
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-2-5) var(--space-3-5);">
+      <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1-5);">
+        <strong style="flex:1;font-size:var(--fs-lg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name || t.gid)}</strong>
+        <span style="font-size:var(--fs-sm);${statusCls}">${esc(t.status)}</span>
+        ${speed ? `<span style="font-size:var(--fs-sm);color:var(--accent);">${speed}</span>` : ''}
         ${ctrlBtns}
       </div>
-      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
-        <div style="height:100%;width:${pct}%;background:${isPaused ? 'var(--yellow)' : 'var(--accent)'};border-radius:2px;transition:width 0.3s;"></div>
+      <div style="height:4px;background:var(--border);border-radius:var(--radius-xs);overflow:hidden;">
+        <div style="height:100%;width:${pct}%;background:${isPaused ? 'var(--yellow)' : 'var(--accent)'};border-radius:var(--radius-xs);transition:width 0.3s;"></div>
       </div>
-      <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:0.75rem;color:var(--dim);">
+      <div style="display:flex;justify-content:space-between;margin-top:var(--space-1);font-size:var(--fs-sm);color:var(--dim);">
         <span>${size}</span><span>${pct}%</span>
       </div>
-      ${t.files && t.files.length ? `<div style="margin-top:6px;font-size:0.78rem;">
+      ${t.files && t.files.length ? `<div style="margin-top:var(--space-1-5);font-size:var(--fs-base);">
         ${t.files.map(f => {
           const isVideo = /\.(mp4|mkv|avi|mov|webm|m4v)$/i.test(f.path);
           const fname = f.path.split('/').pop();
-          return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+          return `<div style="display:flex;align-items:center;gap:var(--space-1-5);padding:var(--space-0-5) 0;">
             <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);">${esc(fname)}</span>
-            <span style="color:var(--dim);font-size:0.72rem;">${_fmtBytes(f.size)}</span>
-            ${f.complete && isVideo ? `<button onclick="_playVideo('${t.gid}','${encodeURIComponent(f.path)}')" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;cursor:pointer;">&#9654; Play</button>` : ''}
-            ${f.complete ? `<a href="${API}/api/torrents/${t.gid}/file?path=${encodeURIComponent(f.path)}" download style="color:var(--accent);font-size:0.72rem;text-decoration:none;">Download</a>` : ''}
+            <span style="color:var(--dim);font-size:var(--fs-xs);">${_fmtBytes(f.size)}</span>
+            ${f.complete && isVideo ? `<button onclick="_playVideo('${t.gid}','${encodeURIComponent(f.path)}')" style="background:var(--accent);color:var(--on-solid);border:none;border-radius:var(--radius-sm);padding:var(--space-0-5) var(--space-2);font-size:var(--fs-xs);cursor:pointer;">&#9654; Play</button>` : ''}
+            ${f.complete ? `<a href="${API}/api/torrents/${t.gid}/file?path=${encodeURIComponent(f.path)}" download style="color:var(--accent);font-size:var(--fs-xs);text-decoration:none;">Download</a>` : ''}
           </div>`;
         }).join('')}
       </div>` : ''}
@@ -56353,17 +57400,7 @@ async function _termConnect() {
     cursorStyle: 'block',
     fontSize: fontSize,
     fontFamily: "'JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
-    theme: {
-      background: '#0d1117',
-      foreground: '#c9d1d9',
-      cursor: '#58a6ff',
-      cursorAccent: '#0d1117',
-      selectionBackground: 'rgba(56,139,253,0.3)',
-      black: '#484f58',   red: '#ff7b72',    green: '#3fb950',  yellow: '#d29922',
-      blue: '#58a6ff',    magenta: '#bc8cff', cyan: '#39d353',   white: '#b1bac4',
-      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
-      brightBlue: '#79c0ff',  brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
-    },
+    theme: _xtermTheme(),
     scrollback: 10000,
     allowProposedApi: true,
     macOptionIsMeta: true,
@@ -56371,6 +57408,7 @@ async function _termConnect() {
     rightClickSelectsWord: true,
     allowTransparency: false,
   });
+  _themeXterms.add(_term);
 
   _termFit = new FitAddon.FitAddon();
   _term.loadAddon(_termFit);
@@ -56499,23 +57537,120 @@ window.addEventListener('resize', () => {
 let _msgsData = [];
 let _msgsAllSessions = null;   // store-derived dropdown options (AMUX-2548); null = not fetched
 let _msgsDeepQ = '';   // non-empty = server-side full-history search is active
-let _msgsGroup = '';   // non-empty = scoped to a group (arrived from its scope panel)
-function _msgsRenderGroupChip() {
-  let el = document.getElementById('msgs-group-chip');
-  if (!el) {
-    const host = document.getElementById('msgs-session-filter');
-    if (!host || !host.parentElement) return;
-    el = document.createElement('span');
-    el.id = 'msgs-group-chip';
-    host.parentElement.insertBefore(el, host.nextSibling);
+// WHICH WORKERS (Ethan, 2026-10-25: "multiselect/search for workers + groups
+// here in global messages tab"). Several workers and several groups at once,
+// a union, applied by the SERVER (?session=a,b&group=x) so counts and pages
+// cover the whole store. Empty = every worker.
+let _msgsScope = { workers: new Set(), groups: new Set() };
+let _msgsGroupsList = null;   // [{name, workers}] from /api/groups; null = not fetched
+function _msgsScopeQuery() {
+  const w = [..._msgsScope.workers], g = [..._msgsScope.groups];
+  return (w.length ? '&session=' + encodeURIComponent(w.join(',')) : '')
+    + (g.length ? '&group=' + encodeURIComponent(g.join(',')) : '');
+}
+// The button says what is applied: never a silent pre-filter.
+function _msgsScopeLabel() {
+  const b = document.getElementById('msgs-session-filter');
+  if (!b) return;
+  const w = [..._msgsScope.workers], g = [..._msgsScope.groups];
+  const parts = [];
+  if (g.length) parts.push(g.length === 1 && !w.length ? 'group: ' + g[0] : g.length + (g.length === 1 ? ' group' : ' groups'));
+  if (w.length) parts.push(w.length === 1 && !g.length ? w[0] : w.length + (w.length === 1 ? ' worker' : ' workers'));
+  b.textContent = parts.length ? parts.join(' · ') : 'All workers';
+  b.title = parts.length ? [...g.map(x => 'group ' + x), ...w].join(', ') : 'Every worker';
+  b.classList.toggle('active', parts.length > 0);
+}
+function _msgsScopeClose() {
+  document.getElementById('msgs-scope-pop')?.remove();
+  document.getElementById('msgs-session-filter')?.setAttribute('aria-expanded', 'false');
+}
+async function _msgsScopeOpen(btn) {
+  if (document.getElementById('msgs-scope-pop')) { _msgsScopeClose(); return; }
+  const pop = document.createElement('div');
+  pop.id = 'msgs-scope-pop';
+  pop.className = 'msgs-scope-pop vault-ms';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Filter by workers and groups');
+  pop.innerHTML = '<div class="vault-ms-chips" id="msgs-scope-chips" aria-live="polite"></div>'
+    + '<input id="msgs-scope-q" class="input vault-ms-q" type="search" autocomplete="off" spellcheck="false" placeholder="Search workers and groups" aria-label="Search workers and groups" oninput="_msgsScopeFilter()" onkeydown="_msgsScopeKey(event)">'
+    + '<div id="msgs-scope-list" class="msgs-scope-list"><div class="ui-help">Loading…</div></div>'
+    + '<div class="msgs-scope-foot"><button type="button" class="btn" onclick="_msgsScopeSet(null)">All workers</button>'
+    + '<button type="button" class="btn primary" onclick="_msgsScopeClose()">Done</button></div>';
+  document.body.appendChild(pop);
+  btn.setAttribute('aria-expanded', 'true');
+  const r = _cssRect(btn), z = _uiZoomFactor(), vw = window.innerWidth / z;
+  const w = Math.min(340, vw - 16);
+  pop.style.width = w + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, vw - w - 8)) + 'px';
+  pop.style.top = (r.bottom + 4) + 'px';
+  setTimeout(() => {
+    document.getElementById('msgs-scope-q')?.focus();
+    const off = e => { if (!pop.contains(e.target) && e.target !== btn) { _msgsScopeClose(); document.removeEventListener('pointerdown', off, true); } };
+    document.addEventListener('pointerdown', off, true);
+  }, 0);
+  if (!_msgsGroupsList) {
+    try {
+      const d = await (await fetch(API + '/api/groups', { headers: _authHeaders() })).json();
+      _msgsGroupsList = (d.groups || []).map(g => ({ name: g.name, workers: g.workers || [] }));
+    } catch (e) { _msgsGroupsList = []; }
   }
-  // The filter must be VISIBLE and removable — a silent pre-filter is how a
-  // scoped page gets read as the whole corpus (the tag-scoped board incident).
-  el.innerHTML = _msgsGroup
-    ? '<span class="msg-tag" style="background:rgba(88,166,255,0.14);color:var(--accent);cursor:pointer;"'
-      + ' title="Clear group filter" onclick="_msgsGroup=\'\';_msgsRenderGroupChip();_messagesLoad(true);">group: '
-      + esc(_msgsGroup) + ' \u2715</span>'
-    : '';
+  if (!_msgsAllSessions) {
+    try { const sr = await fetch(API + '/api/history?sessions=1'); if (sr.ok) _msgsAllSessions = (await sr.json()).map(x => x.session); } catch (e) {}
+  }
+  _msgsScopeRender();
+}
+function _msgsScopeRender() {
+  const list = document.getElementById('msgs-scope-list');
+  if (!list) return;
+  const groups = (_msgsGroupsList || []).map(g => g.name).sort();
+  const workers = (_msgsAllSessions || [...new Set(_msgsData.map(m => m.session).filter(Boolean))]).slice().sort();
+  const row = (kind, n, sub) => '<label class="vault-check" data-kind="' + kind + '" data-name="' + esc(n) + '">'
+    + '<input type="checkbox" value="' + esc(n) + '"' + (_msgsScope[kind].has(n) ? ' checked' : '') + ' onchange="_msgsScopeToggle(\'' + kind + '\',this.value,this.checked)">'
+    + '<span>' + esc(n) + (sub ? ' <span class="ui-help">' + esc(sub) + '</span>' : '') + '</span></label>';
+  const gw = Object.fromEntries((_msgsGroupsList || []).map(g => [g.name, g.workers.length]));
+  list.innerHTML = (groups.length ? '<div class="msgs-scope-head">Groups</div><div class="vault-checks">'
+      + groups.map(n => row('groups', n, gw[n] ? gw[n] + (gw[n] === 1 ? ' worker' : ' workers') : '')).join('') + '</div>' : '')
+    + '<div class="msgs-scope-head">Workers</div><div class="vault-checks">' + workers.map(n => row('workers', n)).join('') + '</div>'
+    + '<span class="ui-help" id="msgs-scope-none" hidden>Nothing matches</span>';
+  const chips = document.getElementById('msgs-scope-chips');
+  if (chips) chips.innerHTML = [...[..._msgsScope.groups].map(n => ['groups', n]), ...[..._msgsScope.workers].map(n => ['workers', n])]
+    .map(([k, n]) => '<span class="vault-ms-chip">' + (k === 'groups' ? 'group ' : '') + esc(n)
+      + '<button type="button" class="vault-ms-x" aria-label="Remove ' + esc(n) + '" onclick="_msgsScopeToggle(\'' + k + '\',\'' + escJs(n) + '\',false)">✕</button></span>').join('');
+  _msgsScopeFilter();
+}
+function _msgsScopeFilter() {
+  const q = (document.getElementById('msgs-scope-q')?.value || '').trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#msgs-scope-list .vault-check').forEach(l => { const hit = !q || l.dataset.name.toLowerCase().includes(q); l.hidden = !hit; shown += hit; });
+  // A section the search emptied loses its heading too.
+  document.querySelectorAll('#msgs-scope-list .msgs-scope-head').forEach(h => {
+    h.hidden = ![...(h.nextElementSibling?.children || [])].some(c => !c.hidden);
+  });
+  const none = document.getElementById('msgs-scope-none'); if (none) none.hidden = shown > 0;
+}
+// Enter picks the first match, so the filter works from the keyboard.
+function _msgsScopeKey(e) {
+  if (e.key === 'Escape') { _msgsScopeClose(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = [...document.querySelectorAll('#msgs-scope-list .vault-check')].find(l => !l.hidden);
+  if (first) _msgsScopeToggle(first.dataset.kind, first.dataset.name, !_msgsScope[first.dataset.kind].has(first.dataset.name));
+  const q = document.getElementById('msgs-scope-q'); if (q) q.value = '';
+  _msgsScopeFilter();
+}
+function _msgsScopeToggle(kind, name, on) {
+  if (on) _msgsScope[kind].add(name); else _msgsScope[kind].delete(name);
+  _msgsScopeApply();
+}
+function _msgsScopeSet(scope) {
+  _msgsScope = scope || { workers: new Set(), groups: new Set() };
+  _msgsScopeApply();
+}
+function _msgsScopeApply() {
+  _msgsScopeLabel();
+  _msgsScopeRender();
+  _msgsCounts = null;
+  _messagesLoad(true);
 }
 let _msgsOffset = 0;
 const _MSGS_PAGE = 60;   // AMUX-4476: smaller first page for a fast click-to-display; page older on demand
@@ -56547,18 +57682,17 @@ async function _messagesLoad(reset, presetSession) {
     // showed 48 human messages out of 6547 — the human rows never made it into
     // the window. ?counts=1 supplies true per-kind totals for the chips, which
     // a tally of the fetched page cannot (every unselected chip would read 0).
-    const _sf = document.getElementById('msgs-session-filter')?.value || '';
+    const _scope = _msgsScopeQuery();
     // The page is the unit now: offset is derived from it, never accumulated.
     _msgsOffset = (_msgsPage - 1) * _msgsPageSize;
     let _u = API + '/api/history?limit=' + _msgsPageSize + '&offset=' + _msgsOffset;
     if (_msgsKind !== 'all') _u += '&kind=' + encodeURIComponent(_msgsKind);
-    if (_sf) _u += '&session=' + encodeURIComponent(_sf);
+    _u += _scope;
     if (_msgsSender) _u += '&sender=' + encodeURIComponent(_msgsSender);
     // Deep search (Enter in the box): the SERVER scans all history, so hits
     // older than the loaded page exist. Typing still filters the loaded page
     // instantly — two speeds, one box (AMUX-2426).
     if (_msgsDeepQ) _u += '&q=' + encodeURIComponent(_msgsDeepQ);
-    if (_msgsGroup) _u += '&group=' + encodeURIComponent(_msgsGroup);
     const r = await fetch(_u);
     const rows = await r.json();
     // The count for THIS filter, from the same request that served the page.
@@ -56569,7 +57703,7 @@ async function _messagesLoad(reset, presetSession) {
     _msgsTotal = _t === null || _t === undefined || _t === '' ? null : +_t;
     // `senders_for` scopes only the SENDERS facet (the per-kind chip totals
     // stay kind-free), so the From menu lists who sent THIS kind.
-    fetch(API + '/api/history?counts=1' + (_sf ? '&session=' + encodeURIComponent(_sf) : '')
+    fetch(API + '/api/history?counts=1' + _scope
           + (_msgsKind !== 'all' ? '&senders_for=' + encodeURIComponent(_msgsKind) : ''))
       .then(x => x.json()).then(c => { _msgsCounts = c; _msgsRenderChips(); _msgsRenderSenders(); }).catch(() => {});
     if (!Array.isArray(rows)) return;
@@ -56594,27 +57728,13 @@ async function _messagesLoad(reset, presetSession) {
     // showed it fine: the same store, two windows, and the view's own control
     // silently limited to the window. The dropdown is the SCOPE control; it
     // must enumerate the store's scopes, which only the server can see.
-    const sel = document.getElementById('msgs-session-filter');
-    if (sel) {
-      const cur = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
-      let names = _msgsAllSessions;
-      if (!names) {
-        try {
-          const sr = await fetch(API + '/api/history?sessions=1');
-          if (sr.ok) names = _msgsAllSessions = (await sr.json()).map(x => x.session);
-        } catch (e) {}
-      }
-      // Fallback keeps the old (window-derived) behaviour if the fetch failed,
-      // which can only ever show a subset — never nothing.
-      if (!names) names = [...new Set(_msgsData.map(m => m.session).filter(Boolean))].sort();
-      sel.innerHTML = '<option value="">All workers</option>' +
-        names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
-      if (cur && !names.includes(cur)) sel.value = '';
-    }
+    // The scope picker lists every worker with history FROM THE STORE when it
+    // opens (_msgsScopeOpen); a worker preset by a caller joins the picks.
+    if (presetSession) { _msgsScope.workers.add(presetSession); _msgsScopeLabel(); }
     _messagesRender();
   } catch (e) {
     const list = document.getElementById('msgs-list');
-    if (list && !_msgsData.length) list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;padding:20px;text-align:center;">Failed to load messages</div>';
+    if (list && !_msgsData.length) list.innerHTML = '<div style="color:var(--red);font-size:var(--fs-lg);padding:var(--space-5);text-align:center;">Failed to load messages</div>';
   }
 }
 
@@ -56671,7 +57791,7 @@ let _msgsKind = 'human';        // all | human | session | schedule
 let _msgsSender = '';
 function _msgsSetSender(v) {
   _msgsSender = v || '';
-  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+  _messagesLoad(true);
 }
 function _msgsRenderSenders() {
   const sel = document.getElementById('msgs-sender-filter');
@@ -56690,7 +57810,7 @@ function _msgsRenderSenders() {
 let _msgsCounts = null;         // true per-kind totals from the server
 function _msgsSetKind(k) {
   _msgsKind = k;
-  _messagesLoad(true, document.getElementById('msgs-session-filter')?.value || '');
+  _messagesLoad(true);
 }
 function _msgsRenderChips() {
   const bar = document.getElementById('msgs-kind-filter');
@@ -56699,14 +57819,14 @@ function _msgsRenderChips() {
   if (!_msgsCounts) _msgsData.forEach(m => { c[_msgKind(m)] = (c[_msgKind(m)] || 0) + 1; });
   const chips = [['all', 'All']].concat(_MSG_KIND_ORDER.map(k => [k, _MSG_KIND[k].label]));
   const refresh = '<button class="btn" onclick="_msgsAllSessions=null;_messagesLoad(true)" title="Refresh" '
-    + 'style="font-size:0.78rem;padding:5px 10px;min-height:44px;flex:0 0 auto;">\u21BB</button>';
+    + 'style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);min-height:44px;flex:0 0 auto;">\u21BB</button>';
   bar.innerHTML = refresh + chips.map(([k, lbl]) => {
     const on = _msgsKind === k;
     const km = _MSG_KIND[k];
     const col = km ? km.color : 'var(--accent)';
     return '<button class="msg-kind-chip" onclick="_msgsSetKind(\'' + k + '\')" style="'
       + 'border:1px solid ' + (on ? col : 'var(--border)') + ';'
-      + 'background:' + (on ? (km ? km.bg : 'rgba(88,166,255,0.14)') : 'transparent') + ';'
+      + 'background:' + (on ? (km ? km.bg : 'color-mix(in srgb, var(--accent) 14%, transparent)') : 'transparent') + ';'
       + 'color:' + (on ? col : 'var(--dim)') + ';">' + lbl + ' ' + (c[k] || 0) + '</button>';
   }).join('');
 }
@@ -56805,10 +57925,8 @@ function _messagesRender() {
   const list = document.getElementById('msgs-list');
   if (!list) return;
   const q = (document.getElementById('msgs-search')?.value || '').trim().toLowerCase();
-  const sessF = document.getElementById('msgs-session-filter')?.value || '';
   _msgsRenderChips();
   let rows = _msgsData;
-  if (sessF) rows = rows.filter(m => (m.session || '') === sessF);
   if (_msgsSender) rows = rows.filter(m => !m.sender || m.sender === _msgsSender);
   // No client-side kind filter: the fetch is already kind-scoped, so the page
   // is 500 rows OF THAT KIND rather than 500 mixed rows filtered down to a
@@ -56854,7 +57972,7 @@ function _messagesRender() {
   _msgsRenderPager();
   if (!rows.length) {
     const kl = (_MSG_KIND[_msgsKind] || {}).label;
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">'
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-6);text-align:center;">'
       + (q ? ((_msgsDeepQ || "").trim().toLowerCase() === q
                ? 'No matches anywhere in history.'
                // The instant filter searches ONLY the loaded page. A bare "No
@@ -56865,8 +57983,8 @@ function _messagesRender() {
                : 'No matches in the ' + _msgsData.length + ' loaded messages. '
                  + '<a href="#" onclick="event.preventDefault();_msgsDeepQ=document.getElementById(\'msgs-search\').value.trim();_messagesLoad(true);" '
                  + 'style="color:var(--accent);">Search all history</a> (or press Enter).')
-           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (_msgsSender ? ' from ' + esc(_msgsSender) : '') + (sessF ? ' for ' + esc(sessF) : '') + '.'
-                : (sessF ? 'No messages for ' + esc(sessF) + '.' : 'No messages yet.')) + '</div>';
+           : kl ? 'No ' + kl.toLowerCase() + ' messages' + (_msgsSender ? ' from ' + esc(_msgsSender) : '') + (_msgsScope.workers.size || _msgsScope.groups.size ? ' for ' + esc(document.getElementById('msgs-session-filter')?.textContent || '') : '') + '.'
+                : (_msgsScope.workers.size || _msgsScope.groups.size ? 'No messages for ' + esc(document.getElementById('msgs-session-filter')?.textContent || '') + '.' : 'No messages yet.')) + '</div>';
     return;
   }
   // Burst grouping + message→card join (AMUX-2143): you fire clusters
@@ -56875,8 +57993,8 @@ function _messagesRender() {
   // card id + status now + last attached commit, click-through to the card.
   const _cardById = {};
   (typeof boardItems !== 'undefined' ? boardItems : []).forEach(c => { _cardById[c.id] = c; });
-  const _stColor = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
-    : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
+  const _stColor = st => st === 'verified' ? 'var(--green)' : st === 'done' ? 'var(--green)'
+    : st === 'doing' ? 'var(--yellow)' : st === 'review' ? 'color-mix(in srgb, var(--purple) 78%, var(--on-solid))'
     : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
   let _prevTs = null;
   let _prevDay = null;
@@ -56896,7 +58014,7 @@ function _messagesRender() {
     }
     let burst = '';
     if (_msgsKind === 'human' && _prevTs !== null && (_prevTs - _ts) > 90000) {
-      burst = '<div style="font-size:0.68rem;color:var(--dim);padding:8px 4px 2px;border-top:1px dashed var(--border);margin-top:4px;">' + _msgsFmtTs(_ts) + '</div>';
+      burst = '<div style="font-size:var(--fs-2xs);color:var(--dim);padding:var(--space-2) var(--space-1) var(--space-0-5);border-top:1px dashed var(--border);margin-top:var(--space-1);">' + _msgsFmtTs(_ts) + '</div>';
     }
     _prevTs = _ts;
     return dateHdr + burst + _cmdHistItemHTML(m, _msgCtxMessages());
@@ -57484,7 +58602,7 @@ function _msgsRenderPager() {
   const atFirst = _msgsPage <= 1;
   const atLast = pages === null ? _msgsDone : _msgsPage >= pages;
   const btn = (label, page, disabled, title) =>
-    '<button class="btn" style="font-size:0.78rem;padding:4px 10px;min-height:44px;"'
+    '<button class="btn" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);min-height:44px;"'
     + (disabled ? ' disabled' : ' onclick="_msgsGoToPage(' + page + ')"')
     + ' title="' + title + '">' + label + '</button>';
   const sizes = _MSGS_PAGE_SIZES.map(n =>
@@ -57492,7 +58610,7 @@ function _msgsRenderPager() {
   el.innerHTML =
       btn('&laquo;', 1, atFirst, 'First page')
     + btn('&lsaquo;', _msgsPage - 1, atFirst, 'Previous page')
-    + '<span style="font-size:0.78rem;color:var(--dim);display:inline-flex;align-items:center;gap:6px;">page'
+    + '<span style="font-size:var(--fs-base);color:var(--dim);display:inline-flex;align-items:center;gap:var(--space-1-5);">page'
     + '<input class="input" id="msgs-page-input" type="number" min="1"' + (pages ? ' max="' + pages + '"' : '')
     + ' value="' + _msgsPage + '" onchange="_msgsGoToPage(+this.value)"'
     + ' onkeydown="if(event.key===\'Enter\')_msgsGoToPage(+this.value)"'
@@ -57500,7 +58618,7 @@ function _msgsRenderPager() {
     + (pages ? 'of ' + pages.toLocaleString() : '') + '</span>'
     + btn('&rsaquo;', _msgsPage + 1, atLast, 'Next page')
     + (pages ? btn('&raquo;', pages, atLast, 'Last page') : '')
-    + '<select class="input" style="max-width:130px;font-size:0.78rem;" aria-label="Messages per page"'
+    + '<select class="input" style="max-width:130px;font-size:var(--fs-base);" aria-label="Messages per page"'
     + ' onchange="_msgsSetPageSize(+this.value)">' + sizes + '</select>';
 }
 function _msgsGoToPage(page) {
@@ -57579,10 +58697,333 @@ function _pagesHostReady() {
     document.head.appendChild(s);
   });
 }
-function _pagesEnter() {
-  if (_pagesCur) return;
+async function _pagesEnter() {
+  const h = window._viewParams || location.hash;
+  window._viewParams = null;
+  const deep = /[#&](open|add-internal)=/.test(h);
+  if (_pagesCur && !deep) return;
+  if (_pagesCur) _pagesLeave();
   _pagesList();
+  // Deep links: #view=pages&open=<id> opens an app inside amux; a worker's link
+  // to localhost:<port> arrives as &add-internal=<port>, which opens that app
+  // when it is already in Pages and offers to add it otherwise.
+  const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
+  const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
+  await _pubList();
+  if (open) { _pubOpenInternal(open[1]); return; }
+  if (add) {
+    const port = parseInt(add[1], 10);
+    const have = _pubLinks.find(l => l.kind === 'internal' && l.port === port);
+    if (have && !have.pending) _pubOpenInternal(have.id);
+    else if (have) showToast('Port ' + port + ' is in Pages, waiting for your approval.');
+    else _pubNew('internal', port);
+  }
 }
+// The rest of the Pages tab (static_files/public_links.rs): apps on this
+// machine for the owner inside amux, the same apps shared publicly, and public
+// files and folders. One list from /api/page-links, three sections.
+async function _pubFetch(path, init) {
+  const r = await fetch(API + '/api/page-links' + path, Object.assign({ _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) }, init || {}));
+  let d = null;
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+let _pubLinks = [];
+// Empty states: a dashed box with what goes here and how it gets here.
+function _pagesEmptyBox(icon, title, text) {
+  return '<div class="pages-empty-box"><div class="pages-empty-icon" aria-hidden="true">' + icon + '</div><b>' + title + '</b>' + text + '</div>';
+}
+const _PUB_EMPTY = {
+  internal: '',
+  app: _pagesEmptyBox('&#x1F310;', 'Nothing shared.', 'A worker shares an app with <code>amux publish &lt;port&gt;</code> when you ask it to.'),
+  file: _pagesEmptyBox('&#x1F4C1;', 'No public files.', 'Only a file or folder you add here can be opened by others.'),
+};
+function _pubName(l) {
+  return l.title || (l.file ? l.file.split('/').pop() : 'Port ' + l.port);
+}
+// What a worker (not you) asked for carries its name as a chip.
+function _pubWorker(l) {
+  const c = l.created_by || '';
+  return c && c !== 'owner' && !c.startsWith('member:') ? c : '';
+}
+function _pubSearchText(l) {
+  return [_pubName(l), l.file, l.port, l.created_by, l.kind].filter(Boolean).join(' ').toLowerCase();
+}
+function _pubSize(n) {
+  if (!(n > 0)) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : String(n)) + ' ' + u[i];
+}
+// An app (inside amux or public) is a card with a live preview; a pending one
+// keeps Approve / Decline, since it opens nothing until you approve it.
+function _pubCard(l) {
+  const id = escJs(l.id), name = esc(_pubName(l)), worker = _pubWorker(l);
+  const chip = worker ? '<span class="pub-chip">' + esc(worker) + '</span>' : '';
+  const by = ' &middot; by ' + (worker ? esc(worker) : 'you');
+  const internal = l.kind === 'internal';
+  const link = internal ? (l.app_path || '') : (l.url || l.path);
+  const linkHtml = internal ? esc(link) : '<a class="pub-url" href="' + esc(link) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(link) + '</a>';
+  // An app names its port; a file inside amux names its path.
+  const where = l.file ? esc(l.file) : 'port ' + esc(String(l.port));
+  const meta = linkHtml + ' &middot; ' + where + by;
+  if (l.pending) {
+    return `<div class="pub-card pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+      <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b>
+        <span class="ui-help pub-pending-note">Waiting for your approval: ${internal ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
+        <span class="ui-help pub-card-meta">${where}${by}</span></div></div>
+      <div class="pages-head-actions"><button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
+        <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div></div>`;
+  }
+  const open = internal ? ` role="button" tabindex="0" onclick="_pubOpenInternal('${id}')" onkeydown="if(event.key==='Enter'&&event.target===this){event.preventDefault();_pubOpenInternal('${id}')}"` : '';
+  return `<div class="pub-card" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}"${open}>
+    <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b><span class="ui-help pub-card-meta">${meta}</span></div>
+      <button class="btn pub-more" aria-label="More actions for ${name}" onclick="event.stopPropagation();_pubMenu(event,'${id}')">&#x22EE;</button>
+      <button class="btn danger pub-remove" onclick="event.stopPropagation();_pubRevoke('${id}')">${internal ? 'Remove' : 'Turn off'}</button></div>
+    <div class="pub-preview" data-preview="${esc(l.id)}" aria-hidden="true">${l.running === false
+      ? '<div class="pub-preview-note">Not running. The preview appears when the app on port ' + esc(String(l.port)) + ' is up.</div>'
+      : '<div class="pub-preview-note">Loading preview&hellip;</div>'}</div></div>`;
+}
+function _pubFileRow(l) {
+  const id = escJs(l.id), href = l.url || l.path, folder = (l.files || 0) !== 1 || !/\.[^/]+$/.test(l.file || '');
+  if (l.pending) {
+    return `<div class="pub-file pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+      <span class="pub-file-icon" aria-hidden="true">${folder ? '&#x1F4C1;' : '&#x1F4C4;'}</span>
+      <div class="pages-row-main"><b>${esc(_pubName(l))}</b><span class="ui-help pub-pending-note">Waiting for your approval: nobody can open it yet.</span>
+        <span class="ui-help">${esc(l.file)}</span></div>
+      <button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
+      <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div>`;
+  }
+  const size = _pubSize(l.size_bytes) + (folder ? ' &middot; ' + (l.files || 0) + ' file' + (l.files === 1 ? '' : 's') : '');
+  return `<div class="pub-file" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
+    <span class="pub-file-icon" aria-hidden="true">${folder ? '&#x1F4C1;' : '&#x1F4C4;'}</span>
+    <div class="pages-row-main"><b>${esc(_pubName(l))}</b>
+      <a class="ui-help pub-url" href="${esc(href)}" target="_blank" rel="noopener">${esc(href)}</a>
+      <span class="ui-help">${esc(l.file)} &middot; ${size}</span></div>
+    <button class="btn" onclick="_copyTextWithToast('${escJs(href)}', 'Link copied')">Copy</button>
+    <button class="btn danger" onclick="_pubRevoke('${id}')">Turn off</button></div>`;
+}
+// The card's ⋮ menu (the shared .card-menu): open, copy, remove. On a phone
+// Remove / Turn off live only here, keeping one row of controls.
+function _pubMenuClose() { document.getElementById('pub-menu')?.remove(); document.removeEventListener('click', _pubMenuClose); }
+function _pubMenu(e, id) {
+  _pubMenuClose();
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  const internal = l.kind === 'internal';
+  const item = (act, icon, label) => '<div class="card-menu-item" role="menuitem" tabindex="0" data-act="' + act + '"><span class="mi">' + icon + '</span> ' + label + '</div>';
+  const m = document.createElement('div');
+  m.className = 'card-menu open'; m.id = 'pub-menu'; m.setAttribute('role', 'menu');
+  m.innerHTML = item('open', '&#x2197;', internal ? 'Open' : 'Open link')
+    + (internal ? '' : item('copy', '&#x2398;', 'Copy link'))
+    + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Pages' : 'Turn off');
+  m.addEventListener('click', ev => {
+    const it = ev.target.closest('[data-act]');
+    if (!it) return;
+    ev.stopPropagation(); _pubMenuClose();
+    if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
+    else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
+    else if (it.dataset.act === 'remove') _pubRevoke(id);
+  });
+  document.body.appendChild(m);
+  _placeMenuAtPointer(m, e);
+  setTimeout(() => document.addEventListener('click', _pubMenuClose), 0);
+}
+// Live previews: a scaled-down, non-interactive frame of each running app,
+// loaded when its card scrolls into view. An app inside amux previews on the
+// apps origin through its own one-time handoff; a public one at /pub/<id>/,
+// sandboxed like every public page.
+let _pubPreviewObs = null;
+function _pubPreviews(root) {
+  if (_pubPreviewObs) _pubPreviewObs.disconnect();
+  const load = async (box) => {
+    const l = _pubLinks.find(x => x.id === box.dataset.preview);
+    if (!l || l.pending || l.running === false || box.dataset.loaded) return;
+    box.dataset.loaded = '1';
+    let src;
+    try { src = l.kind === 'internal' ? await _pubHandoff(l.id) : (l.path || ''); }
+    catch (e) { box.innerHTML = '<div class="pub-preview-note">No preview: ' + esc(e.message) + '</div>'; return; }
+    const f = document.createElement('iframe');
+    f.title = 'Preview of ' + _pubName(l); f.tabIndex = -1; f.loading = 'lazy';
+    if (l.kind !== 'internal') f.setAttribute('sandbox', 'allow-scripts');
+    f.src = src;
+    const fit = () => { f.style.transform = 'scale(' + (box.clientWidth / 1280) + ')'; };
+    box.replaceChildren(f); fit();
+    if (window.ResizeObserver) new ResizeObserver(fit).observe(box);
+  };
+  const boxes = root.querySelectorAll('.pub-preview[data-preview]');
+  if (!('IntersectionObserver' in window)) { boxes.forEach(load); return; }
+  _pubPreviewObs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { _pubPreviewObs.unobserve(e.target); load(e.target); } }), { rootMargin: '200px' });
+  boxes.forEach(b => _pubPreviewObs.observe(b));
+}
+// Search across pages, apps and files: hides what does not match.
+function _pagesFilter(q) {
+  const t = String(q || '').trim().toLowerCase();
+  document.querySelectorAll('#pages-list-wrap [data-search]').forEach(el => {
+    el.classList.toggle('pages-hidden', !!t && !el.dataset.search.includes(t));
+  });
+}
+async function _pubApprove(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  const what = l && l.file ? 'the file or folder ' + l.file : 'the app on port ' + (l ? l.port : '');
+  const ask = l && l.kind === 'internal'
+    ? (l.file ? 'Show ' + what + ' inside amux? Only you, signed in, can open it.'
+      : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
+    : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
+  if (!(await showConfirm(ask, 'Approve', true))) return;
+  try { await _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' }); showToast('Public link approved'); }
+  catch (e) { showToast('Not approved: ' + e.message); }
+  _pubList();
+}
+async function _pubList() {
+  const ids = { internal: 'pub-internal', app: 'pub-apps', file: 'pub-files' };
+  let d;
+  try { d = await _pubFetch(''); } catch (e) {
+    for (const id of Object.values(ids)) { const el = document.getElementById(id); if (el) el.innerHTML = '<div class="ui-error">Could not be loaded: ' + esc(e.message) + '</div>'; }
+    return;
+  }
+  _pubLinks = d.links || [];
+  const unknown = d.public_url ? '' : '<div class="ui-help pub-note">This amux\'s address is not known yet, so links show as paths. Set AMUX_PUBLIC_URL in server.env, or open the dashboard at the address you use.</div>';
+  for (const [kind, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const rows = _pubLinks.filter(l => l.kind === kind);
+    const draw = kind === 'file' ? _pubFileRow : _pubCard;
+    el.innerHTML = (kind !== 'internal' && rows.length ? unknown : '')
+      + (rows.length ? rows.map(draw).join('') : _PUB_EMPTY[kind]);
+  }
+  _pubPreviews(document.getElementById('pages-list-wrap'));
+  const q = document.getElementById('pages-search');
+  if (q && q.value) _pagesFilter(q.value);
+}
+async function _pubNew(kind, prefill) {
+  const titles = { internal: 'Add an app inside amux', app: 'Share an app', file: 'Share a file or folder' };
+  // Share a file: upload (dropped or picked files or a folder) OR a path already
+  // on this machine. Uploads go to a visible ~/Shared/<name> folder, outside
+  // amux's own files, which is shared as it fills.
+  _pubPicked = [];
+  const target = kind === 'file'
+    ? '<div class="pub-share-drop" id="pub-share-drop" ondragover="event.preventDefault();this.classList.add(\'over\')" ondragleave="this.classList.remove(\'over\')" ondrop="_pubDrop(event)">'
+      + '<div id="pub-share-picked">Drop files or a folder here</div>'
+      + '<button type="button" class="btn" onclick="document.getElementById(\'pub-share-files\').click()">Choose files</button>'
+      + '<button type="button" class="btn" onclick="document.getElementById(\'pub-share-dir\').click()">Choose a folder</button>'
+      + '<input id="pub-share-files" type="file" multiple hidden onchange="_pubPick(this.files)">'
+      + '<input id="pub-share-dir" type="file" webkitdirectory multiple hidden onchange="_pubPick(this.files)"></div>'
+      + '<label class="ui-field">Or add by path<input id="pub-new-target" class="input" placeholder="/home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A file, or a folder whose files are all shared. Hidden files and anything that looks like a key or a secret never are.</span></label>'
+    : kind === 'internal'
+      ? '<label class="ui-field">Port or file path<input id="pub-new-target" class="input" placeholder="8891, or /home/you/project/report.html" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="ui-help">A port shows the app running there. A path shows that file or folder, with no server to start.</span></label>'
+      : '<label class="ui-field">Port<input id="pub-new-target" class="input" inputmode="numeric" placeholder="e.g. 8891" autocomplete="off"></label>';
+  const note = kind === 'internal' ? 'Only you can open it, signed in, and it opens inside amux. It runs with your amux access, so add only an app you trust.'
+    : 'Anyone with the link can open it, without signing in to amux, until you turn it off.';
+  if (prefill) setTimeout(() => { const t = document.getElementById('pub-new-target'); if (t && !t.value) t.value = String(prefill); }, 0);
+  const ok = await showFormModal(titles[kind], target
+    + '<label class="ui-field">Title (optional)<input id="pub-new-title" class="input" autocomplete="off"></label>'
+    + '<span class="ui-help">' + note + '</span>', kind === 'internal' ? 'Add' : 'Create link');
+  if (!ok) return;
+  const raw = (document.getElementById('pub-new-target')?.value || '').trim();
+  const title = document.getElementById('pub-new-title')?.value || '';
+  const body = { kind, title };
+  if (kind === 'file' && _pubPicked.length && !raw) return _pubUploadShare(_pubPicked, title);
+  if (kind === 'file') {
+    if (!raw.startsWith('/')) { showToast('Not shared: drop files, or give the full path starting with /.'); return; }
+    body.path = raw;
+  } else if (kind === 'internal' && raw.startsWith('/')) {
+    body.path = raw;
+  } else {
+    const port = parseInt(raw, 10);
+    if (!(port > 0 && port < 65536)) { showToast(kind === 'internal' ? 'Not added: enter a port from 1 to 65535, or a path starting with /.' : 'Not added: enter a port from 1 to 65535.'); return; }
+    body.port = port;
+  }
+  try {
+    const l = await _pubFetch('', { method: 'POST', body: JSON.stringify(body) });
+    showToast(kind === 'file' ? 'Public link created' : body.path ? 'Added to Pages' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
+    _pubList();
+  } catch (e) { showToast('Not saved: ' + e.message); }
+}
+let _pubPicked = [];
+function _pubPick(files) {
+  _pubPicked = Array.from(files || []);
+  const el = document.getElementById('pub-share-picked');
+  if (el) el.textContent = _pubPicked.length ? _pubPicked.length + ' file' + (_pubPicked.length === 1 ? '' : 's') + ' ready to share: ' + _pubPicked.slice(0, 3).map(f => f.name).join(', ') + (_pubPicked.length > 3 ? ', …' : '') : 'Drop files or a folder here';
+}
+function _pubDrop(e) {
+  e.preventDefault();
+  document.getElementById('pub-share-drop')?.classList.remove('over');
+  _pubPick(e.dataTransfer && e.dataTransfer.files);
+}
+// Upload into a new ~/Shared/<name> folder through the existing upload path
+// (/api/upload, durable and resumable), sharing the folder at once: you made
+// it, so it is live, and each file opens at the link as it arrives.
+async function _pubUploadShare(files, title) {
+  const first = files[0];
+  const base = ((first.webkitRelativePath || '').split('/')[0] || title || first.name.replace(/\.[^.]+$/, '') || 'shared')
+    .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '').slice(0, 60) || 'shared';
+  let dir = null;
+  for (let i = 0; i < 20 && !dir; i++) {
+    const r = await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ path: '~/Shared/' + base + (i ? '-' + (i + 1) : '') }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.path) dir = d.path;
+    else if (r.status !== 409) { showToast('Not shared: ' + (d.error || 'HTTP ' + r.status)); return; }
+  }
+  if (!dir) { showToast('Not shared: no free ~/Shared/' + base + ' folder name'); return; }
+  try {
+    await _pubFetch('', { method: 'POST', body: JSON.stringify({ kind: 'file', path: dir, title: title || base }) });
+  } catch (e) { showToast('Not shared: ' + e.message); return; }
+  const r = await _uploadOrQueue(files, dir, 'file');
+  showToast('Shared ~/Shared/' + dir.split('/').pop() + ': ' + r.queued + ' file' + (r.queued === 1 ? '' : 's') + ' uploading' + (r.failed ? ', ' + r.failed + ' not saved' : ''));
+  _pubList();
+  for (const ms of [2000, 6000, 15000]) setTimeout(() => { if (activeView === 'pages' && !_pagesCur) _pubList(); }, ms);
+}
+// An app inside amux: the Pages open view, framed on the apps origin.
+// A one-time link that opens app `id` on the apps origin (apps_origin.rs). The
+// app never runs on the dashboard's origin, so it cannot act as the owner.
+async function _pubHandoff(id) {
+  const d = await _pubFetch('/' + encodeURIComponent(id) + '/open', { method: 'POST' });
+  return d.url;
+}
+async function _pubOpenInternal(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  if (l.pending) { showToast('Approve it first: it does not open until you do.'); return; }
+  let url;
+  try { url = await _pubHandoff(id); } catch (e) { showToast('Could not open: ' + e.message); return; }
+  if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
+  _pagesCur = 'app:' + id; _pagesMeta = null;
+  document.getElementById('pages-list-wrap').style.display = 'none';
+  document.getElementById('pages-open').style.display = 'flex';
+  document.getElementById('pages-page-actions').style.display = 'none';
+  document.getElementById('pages-title').textContent = _pubName(l);
+  const standalone = document.getElementById('pages-standalone');
+  standalone.href = '#';
+  // Each handoff opens once, so a new tab asks for its own.
+  standalone.onclick = async (e) => {
+    e.preventDefault();
+    const w = window.open('', '_blank');
+    try { const u = await _pubHandoff(id); if (w) { w.opener = null; w.location = u; } }
+    catch (err) { if (w) w.close(); showToast('Could not open: ' + err.message); }
+  };
+  document.getElementById('pages-status').textContent = l.file ? l.file : 'port ' + l.port;
+  const host = document.getElementById('pages-frame');
+  const f = document.createElement('iframe');
+  f.className = 'pub-app-frame';
+  f.title = _pubName(l);
+  f.src = url;
+  host.replaceChildren(f);
+  _pagesMounted = { destroy() { f.remove(); } };
+  _pagesFit();
+}
+async function _pubRevoke(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  const internal = l && l.kind === 'internal';
+  const ask = internal ? 'Remove this app from Pages? The app keeps running.' : 'Turn off this public link? Anyone using it loses access.';
+  if (!(await showConfirm(ask, internal ? 'Remove' : 'Turn off', true))) return;
+  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast(internal ? 'Removed from Pages' : 'Public link turned off'); }
+  catch (e) { showToast('Not changed: ' + e.message); }
+  _pubList();
+}
+
 function _pagesLeave() {
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
   _pagesCur = null;
@@ -57608,11 +59049,11 @@ async function _pagesList() {
   }
   const pages = d.pages || [];
   if (!pages.length) {
-    el.innerHTML = '<div class="pages-empty">No pages yet. A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.</div>';
+    el.innerHTML = _pagesEmptyBox('&#x1F4C4;', 'Create your first page', 'A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.');
     return;
   }
   const ago = iso => iso ? timeAgo(Date.parse(iso) / 1000) : '';
-  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}"
+  el.innerHTML = pages.map(p => `<div class="pages-row" role="button" tabindex="0" data-page="${esc(p.name)}" data-search="${esc((p.title + ' ' + p.name + ' ' + p.worker).toLowerCase())}"
       onclick="_pagesOpen('${escJs(p.name)}')" onkeydown="if(event.key==='Enter'){event.preventDefault();_pagesOpen('${escJs(p.name)}')}">
       <div class="pages-row-main"><b>${esc(p.title)}</b><span class="ui-help">/pages/${esc(p.name)} · worker ${esc(p.worker)}</span></div>
       <span class="ui-help pages-row-when">${p.data_updated_at ? 'Data changed ' + esc(ago(p.data_updated_at)) : ''}</span></div>`).join('');
@@ -57641,6 +59082,7 @@ async function _pagesOpen(name) {
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-title').textContent = name;
   document.getElementById('pages-standalone').href = '/pages/' + encodeURIComponent(name);
+  document.getElementById('pages-page-actions').style.display = '';
   document.getElementById('pages-status').textContent = '';
   try { await _pagesHostReady(); } catch (e) { document.getElementById('pages-status').textContent = e.message; return; }
   if (_pagesMounted) _pagesMounted.destroy();
@@ -57668,6 +59110,7 @@ window.addEventListener('resize', () => { if (_pagesCur) _pagesFit(); });
 function _pagesClose() {
   _pagesLeave();
   _pagesList();
+  _pubList();
 }
 async function _pagesAskCount() {
   const name = _pagesCur;
@@ -57770,7 +59213,7 @@ async function _sqlFetchJson(url, options) {
 
 async function _dbLoadSchema() {
   const side = document.getElementById('db-tables');
-  if (side) side.innerHTML = '<div style="color:var(--dim);font-size:0.74rem;padding:6px;">Loading…</div>';
+  if (side) side.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-sm);padding:var(--space-1-5);">Loading…</div>';
   try {
     const d = await _sqlFetchJson(API + '/api/sql/schema');
     _dbTables = d.tables || [];
@@ -57779,7 +59222,7 @@ async function _dbLoadSchema() {
     if (_dbTable) _dbRenderStructure();
   } catch (e) {
     _sqlSchemaLoaded = false;
-    if (side) side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">Schema failed: ' + esc(e.message) + '<br><button class="btn" style="margin-top:6px;" onclick="_sqlInit()">Retry</button></div>';
+    if (side) side.innerHTML = '<div style="color:var(--red);font-size:var(--fs-sm);padding:var(--space-1-5);">Schema failed: ' + esc(e.message) + '<br><button class="btn" style="margin-top:var(--space-1-5);" onclick="_sqlInit()">Retry</button></div>';
   }
 }
 
@@ -57842,7 +59285,7 @@ async function _dbLoadData() {
     status.textContent = t && t.writable ? 'Read/write · wb_*' : 'Read-only';
   } catch (e) {
     status.classList.add('err'); status.textContent = 'Load failed: ' + e.message;
-    grid.innerHTML = '<div style="padding:16px;color:#f85149;">' + esc(e.message) + '</div>';
+    grid.innerHTML = '<div style="padding:var(--space-4);color:var(--red);">' + esc(e.message) + '</div>';
   }
 }
 
@@ -57865,8 +59308,8 @@ function _dbSortBy(col) {
 }
 
 function _dbRenderGrid(grid, columns, rows, sortable) {
-  if (!columns || !columns.length) { grid.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">(statement ran — no result set)</div>'; return; }
-  if (!rows.length) { grid.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">0 rows.</div>'; return; }
+  if (!columns || !columns.length) { grid.innerHTML = '<div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-md);">(statement ran — no result set)</div>'; return; }
+  if (!rows.length) { grid.innerHTML = '<div style="padding:var(--space-4);color:var(--dim);font-size:var(--fs-md);">0 rows.</div>'; return; }
   const th = columns.map(c => {
     const arrow = sortable && _dbSort === c ? (_dbDir === 'asc' ? ' ▲' : ' ▼') : '';
     return '<th' + (sortable ? ' class="sortable" onclick="_dbSortBy(\'' + esc(c) + '\')"' : '') + '>' + esc(c) + arrow + '</th>';
@@ -57973,7 +59416,7 @@ async function _sqlRun() {
     status.textContent = d.rowcount + (d.truncated ? '+ (capped)' : '') + ' row' + (d.rowcount === 1 ? '' : 's') + ' · ' + d.ms + 'ms';
   } catch (e) {
     status.classList.add('err'); status.textContent = 'Request failed: ' + e.message;
-    results.innerHTML = '<div style="padding:16px;color:#f85149;font-size:0.82rem;font-family:var(--mono);white-space:pre-wrap;">' + esc(e.message) + '</div>';
+    results.innerHTML = '<div style="padding:var(--space-4);color:var(--red);font-size:var(--fs-md);font-family:var(--font-mono);white-space:pre-wrap;">' + esc(e.message) + '</div>';
   }
 }
 
@@ -58066,7 +59509,7 @@ function _dbAskRenderTurn(turn, idx) {
     if (turn.model_ms != null) html += '<span>model ' + turn.model_ms + 'ms</span>';
     if (turn.query_ms != null) html += '<span>query ' + turn.query_ms + 'ms</span>';
     if (turn.via) html += '<span>via ' + esc(turn.via) + '</span>';
-    if (turn.error) html += '<span style="color:#f85149;">' + esc(turn.error) + '</span>';
+    if (turn.error) html += '<span style="color:var(--red);">' + esc(turn.error) + '</span>';
     html += '</div>';
   }
   html += '</div>';
@@ -58267,7 +59710,7 @@ function _tpRenderMarkdown(text) {
 function _tpInline(s) {
   return s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/\*(.+?)\*/g, '<em>$1</em>')
-          .replace(/`([^`]+)`/g, '<code style="font-family:monospace;font-size:0.9em;opacity:0.85;">$1</code>');
+          .replace(/`([^`]+)`/g, '<code style="font-family:var(--font-mono);font-size:0.9em;opacity:0.85;">$1</code>');
 }
 
 function _tpToggle() {
@@ -58317,7 +59760,7 @@ function _tpToggleMirror() {
   _tp.mirror = !_tp.mirror;
   const content = document.getElementById('tp-content');
   content.style.transform = `translate(-50%, ${-_tp.y}px)` + (_tp.mirror ? ' scaleX(-1)' : '');
-  document.getElementById('tp-mirror-btn').style.background = _tp.mirror ? '#7c6fcd' : 'none';
+  document.getElementById('tp-mirror-btn').style.background = _tp.mirror ? 'color-mix(in srgb, var(--purple) 80%, var(--card))' : 'none';
 }
 function _tpFullscreen() {
   const el = document.getElementById('teleprompter-overlay');
@@ -58368,11 +59811,11 @@ function _tpCamUi() {
   const scrim = document.getElementById('tp-camera-scrim');
   if (scrim) scrim.style.display = on ? 'block' : 'none';
   const cam = document.getElementById('tp-cam-btn');
-  if (cam) { cam.style.background = on ? '#7c6fcd' : 'none'; cam.disabled = rec; }
+  if (cam) { cam.style.background = on ? 'color-mix(in srgb, var(--purple) 80%, var(--card))' : 'none'; cam.disabled = rec; }
   const btn = document.getElementById('tp-rec-btn');
   if (btn) {
     btn.innerHTML = _tpCam.saving ? 'Saving&hellip;' : rec ? '&#x25A0; Stop' : '&#x25CF; Rec';
-    btn.style.background = rec ? '#ef4444' : 'none';
+    btn.style.background = rec ? 'color-mix(in srgb, var(--red) 95%, var(--shade))' : 'none';
     btn.disabled = _tpCam.saving;
   }
   const save = document.getElementById('tp-save-btn');
@@ -58689,16 +60132,16 @@ async function _gmailLegacyLoad_UNREACHABLE() {
 
 function _gmailRenderEmpty(msg) {
   document.getElementById('gmail-messages-list').innerHTML =
-    `<div style="color:var(--dim);font-size:0.82rem;text-align:center;padding:40px 12px;">\${esc(msg)}</div>`;
+    `<div style="color:var(--dim);font-size:var(--fs-md);text-align:center;padding:var(--space-10) var(--space-3);">\${esc(msg)}</div>`;
 }
 
 function _gmailRenderNoAccounts() {
   document.getElementById('gmail-accounts-list').innerHTML = '';
   document.getElementById('gmail-labels-list').innerHTML = '';
   document.getElementById('gmail-messages-list').innerHTML = `
-    <div style="color:var(--dim);font-size:0.82rem;text-align:center;padding:40px 12px;">
+    <div style="color:var(--dim);font-size:var(--fs-md);text-align:center;padding:var(--space-10) var(--space-3);">
       No Gmail accounts connected.<br>
-      <button class="btn" onclick="_gmailConnectAccount()" style="margin-top:12px;font-size:0.78rem;">+ Connect Account</button>
+      <button class="btn" onclick="_gmailConnectAccount()" style="margin-top:var(--space-3);font-size:var(--fs-base);">+ Connect Account</button>
     </div>`;
 }
 
@@ -58708,7 +60151,7 @@ function _gmailRenderAccountsList() {
     <div class="gmail-account-item \${a === _gmailActiveAccount ? 'active' : ''}"
          onclick="_gmailSwitchAccount('\${esc(a)}')">
       <div class="gmail-account-dot" style="background:\${a === _gmailActiveAccount ? 'var(--accent)' : 'var(--dim)'}"></div>
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.78rem;">\${esc(a)}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-base);">\${esc(a)}</span>
     </div>`).join('');
 }
 
@@ -58729,7 +60172,7 @@ async function _gmailLoadLabels() {
 async function _gmailLoadInbox(pageToken='') {
   const list = document.getElementById('gmail-messages-list');
   const q = document.getElementById('gmail-search').value.trim();
-  if (!pageToken) { list.innerHTML = '<div style="color:var(--dim);font-size:0.8rem;text-align:center;padding:30px;">Loading\u2026</div>'; }
+  if (!pageToken) { list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-md);text-align:center;padding:var(--space-8);">Loading\u2026</div>'; }
   const params = new URLSearchParams({ account: _gmailActiveAccount, label: _gmailActiveLabel });
   if (pageToken) params.set('page_token', pageToken);
   if (q) params.set('q', q);
@@ -58744,7 +60187,7 @@ async function _gmailLoadInbox(pageToken='') {
   lmBtn.style.display = _gmailNextPageToken ? '' : 'none';
   if (!pageToken) list.innerHTML = '';
   if (!msgs.length && !pageToken) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.8rem;text-align:center;padding:30px;">No messages</div>';
+    list.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-md);text-align:center;padding:var(--space-8);">No messages</div>';
     return;
   }
   const frag = document.createDocumentFragment();
@@ -58783,26 +60226,26 @@ async function _gmailOpenThread(threadId, itemEl) {
   const tv = document.getElementById('gmail-thread-view');
   tv.style.display = 'flex';
   document.getElementById('gmail-thread-messages').innerHTML =
-    '<div style="color:var(--dim);font-size:0.8rem;text-align:center;padding:30px;">Loading\u2026</div>';
+    '<div style="color:var(--dim);font-size:var(--fs-md);text-align:center;padding:var(--space-8);">Loading\u2026</div>';
   document.getElementById('gmail-reply-box').style.display = 'none';
   const r = await fetch(API + '/api/gmail/thread/' + encodeURIComponent(threadId) + '?account=' + encodeURIComponent(_gmailActiveAccount)).catch(()=>null);
   if (!r || !r.ok) {
-    document.getElementById('gmail-thread-messages').innerHTML = '<div style="color:var(--dim);padding:20px;">Failed to load thread</div>';
+    document.getElementById('gmail-thread-messages').innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">Failed to load thread</div>';
     return;
   }
   const data = await r.json();
   if (data.error) {
-    document.getElementById('gmail-thread-messages').innerHTML = '<div style="color:var(--dim);padding:20px;">' + esc(data.error) + '</div>';
+    document.getElementById('gmail-thread-messages').innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">' + esc(data.error) + '</div>';
     return;
   }
   const msgs = data.messages || [];
   // Subject from first message
   const subj = msgs[0]?.subject || '(no subject)';
   document.getElementById('gmail-thread-subject').innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;">
-      <button class="btn" onclick="_gmailCloseThread()" style="font-size:0.72rem;padding:2px 8px;display:none;" id="gmail-back-btn">← Back</button>
+    <div style="display:flex;align-items:center;gap:var(--space-2);">
+      <button class="btn" onclick="_gmailCloseThread()" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);display:none;" id="gmail-back-btn">← Back</button>
       <span style="flex:1;">\${esc(subj)}</span>
-      <button class="btn" onclick="_gmailShowReply()" style="font-size:0.75rem;padding:3px 10px;">Reply</button>
+      <button class="btn" onclick="_gmailShowReply()" style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-2-5);">Reply</button>
     </div>`;
   // Show back button on mobile
   if (window.innerWidth <= 768) document.getElementById('gmail-back-btn').style.display = '';
@@ -58816,7 +60259,7 @@ async function _gmailOpenThread(threadId, itemEl) {
     card.className = 'gmail-msg-card' + (collapsed ? ' collapsed' : '');
     const body = msg.html_body || msg.text_body.replace(/\\n/g, '<br>') || '(empty)';
     const bodyHtml = msg.html_body
-      ? `<iframe sandbox="" srcdoc="\${body.replace(/"/g,'&quot;')}" style="width:100%;height:440px;border:0;background:#fff;border-radius:6px;"></iframe>`
+      ? `<iframe sandbox="" srcdoc="\${body.replace(/"/g,'&quot;')}" style="width:100%;height:440px;border:0;background:var(--on-solid);border-radius:var(--radius-md);"></iframe>`
       : `<div style="white-space:pre-wrap;word-break:break-word;">\${esc(msg.text_body || '(empty)')}</div>`;
     card.innerHTML = `
       <div class="gmail-msg-card-header" onclick="this.closest('.gmail-msg-card').classList.toggle('collapsed')">
@@ -58885,12 +60328,12 @@ function _gmailCompose() {
   _modalResolve = null;
   document.getElementById('modal-msg').innerHTML = `
     <div style="text-align:left;width:100%;max-width:480px;">
-      <div style="font-size:0.95rem;font-weight:700;margin-bottom:12px;">New Email</div>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <input id="compose-to" type="email" placeholder="To" style="width:100%;box-sizing:border-box;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;">
-        <input id="compose-subject" type="text" placeholder="Subject" style="width:100%;box-sizing:border-box;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;">
-        <textarea id="compose-body" placeholder="Message body" rows="8" style="width:100%;box-sizing:border-box;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;resize:vertical;font-family:inherit;"></textarea>
-        <div style="font-size:0.72rem;color:var(--dim);">From: \${esc(_gmailActiveAccount)}</div>
+      <div style="font-size:var(--fs-2xl);font-weight:700;margin-bottom:var(--space-3);">New Email</div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-2);">
+        <input id="compose-to" type="email" placeholder="To" style="width:100%;box-sizing:border-box;padding:var(--space-1-5) var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-lg);outline:none;">
+        <input id="compose-subject" type="text" placeholder="Subject" style="width:100%;box-sizing:border-box;padding:var(--space-1-5) var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-lg);outline:none;">
+        <textarea id="compose-body" placeholder="Message body" rows="8" style="width:100%;box-sizing:border-box;padding:var(--space-1-5) var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-lg);outline:none;resize:vertical;font-family:inherit;"></textarea>
+        <div style="font-size:var(--fs-xs);color:var(--dim);">From: \${esc(_gmailActiveAccount)}</div>
       </div>
     </div>`;
   document.getElementById('modal-btns').innerHTML = `
@@ -58970,13 +60413,13 @@ async function _gmailConnectAccount() {
   _modalResolve = null;
   document.getElementById('modal-msg').innerHTML = `
     <div style="text-align:left;max-width:420px;">
-      <div style="font-weight:700;margin-bottom:8px;">Connect \${esc(account)}</div>
-      <p style="font-size:0.82rem;color:var(--dim);margin:0 0 12px;">
+      <div style="font-weight:700;margin-bottom:var(--space-2);">Connect \${esc(account)}</div>
+      <p style="font-size:var(--fs-md);color:var(--dim);margin:0 0 var(--space-3);">
         A Google authorization page has opened in a new tab. Sign in as <strong>\${esc(account)}</strong>,
         then paste the authorization code below.
       </p>
       <input id="gmail-auth-code" type="text" placeholder="Paste code here" autocomplete="off"
-        style="width:100%;box-sizing:border-box;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;font-family:monospace;">
+        style="width:100%;box-sizing:border-box;padding:var(--space-1-5) var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-lg);outline:none;font-family:var(--font-mono);">
     </div>`;
   document.getElementById('modal-btns').innerHTML = `
     <button class="btn" onclick="_modalClose(false)">Cancel</button>
@@ -59016,12 +60459,12 @@ let _graphHoveredNode = null;
 let _graphActiveFilters = new Set();
 let _graphSimRunning = false;
 const _GRAPH_FOLDER_COLORS = {
-  'Memories': '#C97B3A',
-  'Patterns': '#4A6FA5',
-  'Beliefs': '#A54A4A',
-  'Behaviors': '#4A9A6F',
-  'Relationship - Her': '#7A4AA5',
-  'root': '#888888',
+  'Memories': 'color-mix(in srgb, var(--orange) 83%, var(--card))',
+  'Patterns': 'color-mix(in srgb, var(--accent) 61%, var(--card))',
+  'Beliefs': 'color-mix(in srgb, var(--red) 66%, var(--card))',
+  'Behaviors': 'color-mix(in srgb, var(--cyan) 62%, var(--card))',
+  'Relationship - Her': 'color-mix(in srgb, var(--purple) 69%, var(--shade))',
+  'root': 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))',
 };
 
 let _graphVaultPath = localStorage.getItem('amux_graph_vault') || '';
@@ -59053,11 +60496,11 @@ function _graphRenderNodeList(filter) {
   const nodes = _graphData.nodes.filter(n => !q || n.label.toLowerCase().includes(q));
   nodes.sort((a, b) => a.label.localeCompare(b.label));
   if (!nodes.length) {
-    list.innerHTML = '<div style="padding:12px;color:var(--dim);font-size:0.78rem;text-align:center;">No nodes</div>';
+    list.innerHTML = '<div style="padding:var(--space-3);color:var(--dim);font-size:var(--fs-base);text-align:center;">No nodes</div>';
     return;
   }
   list.innerHTML = nodes.map(n => {
-    const color = n.color || '#888';
+    const color = n.color || 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))';
     return '<div class="graph-node-item" onclick="_graphSelectNodeFromList(\'' + n.id + '\')">' +
       '<span class="graph-node-dot" style="background:' + color + ';"></span>' +
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(n.label) + '</span></div>';
@@ -59092,7 +60535,7 @@ async function _graphInit() {
 // node.color is a per-note default worth overriding.
 function _graphNodeColor(n) {
   if (_graphColorAuthority && n && n.color) return n.color;
-  return (n && _GRAPH_FOLDER_COLORS[n.folder]) || '#888';
+  return (n && _GRAPH_FOLDER_COLORS[n.folder]) || 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))';
 }
 
 function _graphFolderColor(f) {
@@ -59100,7 +60543,7 @@ function _graphFolderColor(f) {
     const n = _graphData.nodes.find(x => x.folder === f);
     if (n && n.color) return n.color;
   }
-  return _GRAPH_FOLDER_COLORS[f] || '#888';
+  return _GRAPH_FOLDER_COLORS[f] || 'color-mix(in srgb, var(--shade) 47%, var(--on-solid))';
 }
 
 // Jump from an org-chart node straight into that agent's session peek. The
@@ -59190,7 +60633,7 @@ function _graphBuildFilters() {
   const folders = [...new Set(_graphData.nodes.map(n => n.folder))].sort();
   _graphActiveFilters = new Set(folders);
   // Auto-assign colors for unknown folders
-  const palette = ['#C97B3A','#4A6FA5','#A54A4A','#4A9A6F','#7A4AA5','#6B8E8A','#B5651D','#8B5CF6','#EC4899','#10B981','#F59E0B','#6366F1'];
+  const palette = ['color-mix(in srgb, var(--orange) 83%, var(--card))','color-mix(in srgb, var(--accent) 61%, var(--card))','color-mix(in srgb, var(--red) 66%, var(--card))','color-mix(in srgb, var(--cyan) 62%, var(--card))','color-mix(in srgb, var(--purple) 69%, var(--shade))','color-mix(in srgb, var(--border) 54%, var(--term-text))','color-mix(in srgb, var(--orange) 74%, var(--shade))','color-mix(in srgb, var(--purple) 93%, var(--shade))','var(--pink)','color-mix(in srgb, var(--cyan) 77%, var(--shade))','var(--yellow)','color-mix(in srgb, var(--purple) 85%, var(--bg))'];
   let pi = 0;
   // Only auto-assign when the client owns colour. Writing department names into
   // _GRAPH_FOLDER_COLORS would leak fleet folders into the notes graph's map,
@@ -59204,7 +60647,7 @@ function _graphBuildFilters() {
     // department for the fleet. Both reach an HTML attribute AND a
     // single-quoted JS string, so each layer needs its own escape — esc() for
     // the attribute, escJs() for the JS string (esc alone leaves "'" intact).
-    return `<button class="graph-filter-btn active" data-folder="${esc(f)}" onclick="_graphToggleFilter('${escJs(f)}',this)" style="background:${c};color:#fff;border-color:transparent;">${esc(f)}</button>`;
+    return `<button class="graph-filter-btn active" data-folder="${esc(f)}" onclick="_graphToggleFilter('${escJs(f)}',this)" style="background:${c};color:var(--on-solid);border-color:transparent;">${esc(f)}</button>`;
   }).join('');
 }
 
@@ -59213,14 +60656,14 @@ function _graphToggleFilter(folder, btn) {
   if (_graphActiveFilters.has(folder)) {
     _graphActiveFilters.delete(folder);
     btn.classList.remove('active');
-    btn.style.background = 'var(--surface)';
+    btn.style.background = 'var(--card)';
     btn.style.color = 'var(--dim)';
     btn.style.borderColor = 'var(--border)';
   } else {
     _graphActiveFilters.add(folder);
     btn.classList.add('active');
     btn.style.background = c;
-    btn.style.color = '#fff';
+    btn.style.color = 'var(--on-solid)';
     btn.style.borderColor = 'transparent';
   }
   _graphApplyVisibility();
@@ -59234,9 +60677,9 @@ function _graphApplyVisibility() {
   _graphRenderEdges();
 }
 
-function _lightenColor(hex, amt) {
-  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-  return `rgb(${Math.min(255,r+Math.round((255-r)*amt))},${Math.min(255,g+Math.round((255-g)*amt))},${Math.min(255,b+Math.round((255-b)*amt))})`;
+// Folder colors are theme tokens now, so lightening is a mix, not hex math.
+function _lightenColor(color, amt) {
+  return `color-mix(in srgb, ${color} ${Math.round((1 - amt) * 100)}%, var(--on-solid))`;
 }
 function _graphRender() {
   const container = document.getElementById('graph-nodes-container');
@@ -59561,7 +61004,7 @@ function _graphToggleAllEdges() {
   _graphShowAllEdges = !_graphShowAllEdges;
   document.getElementById('graph-edges-toggle').classList.toggle('active', _graphShowAllEdges);
   document.getElementById('graph-edges-toggle').style.background = _graphShowAllEdges ? 'var(--accent)' : '';
-  document.getElementById('graph-edges-toggle').style.color = _graphShowAllEdges ? '#fff' : '';
+  document.getElementById('graph-edges-toggle').style.color = _graphShowAllEdges ? 'var(--on-solid)' : '';
   _graphRenderEdges();
 }
 
@@ -59583,17 +61026,17 @@ function _graphOpenPanel(node) {
   // one action you actually want from an org chart — go look at that session.
   if (_graphId === 'fleet' && node.session) {
     const st = node.status || '';
-    const dot = st === 'active' ? 'var(--green)' : (st === 'waiting' ? '#d29922' : 'var(--dim)');
-    html += `<div style="display:flex;align-items:center;gap:7px;font-size:0.8rem;margin-bottom:8px;">
-      <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex:none;"></span>
+    const dot = st === 'active' ? 'var(--green)' : (st === 'waiting' ? 'var(--yellow)' : 'var(--dim)');
+    html += `<div style="display:flex;align-items:center;gap:var(--space-1-5);font-size:var(--fs-md);margin-bottom:var(--space-2);">
+      <span style="width:8px;height:8px;border-radius:var(--radius-round);background:${dot};flex:none;"></span>
       <span>${esc(st || 'unknown')}</span>
-      ${node.provider ? `<span style="color:var(--dim);font-size:0.72rem;">· ${esc(node.provider)}</span>` : ''}
+      ${node.provider ? `<span style="color:var(--dim);font-size:var(--fs-xs);">· ${esc(node.provider)}</span>` : ''}
     </div>`;
-    html += `<div style="font-size:0.75rem;color:var(--dim);margin-bottom:10px;">
+    html += `<div style="font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--space-2-5);">
       ${node.task ? esc(node.task) : 'no card in flight'}</div>`;
     html += `<button id="graph-side-open"
-      style="width:100%;min-height:34px;padding:7px 10px;background:var(--accent);color:#fff;border:none;
-      border-radius:6px;font-size:0.75rem;font-family:inherit;cursor:pointer;">Open worker</button>`;
+      style="width:100%;min-height:34px;padding:var(--space-1-5) var(--space-2-5);background:var(--accent);color:var(--on-solid);border:none;
+      border-radius:var(--radius-md);font-size:var(--fs-sm);font-family:inherit;cursor:pointer;">Open worker</button>`;
     body.innerHTML = html;
     // The session name is passed through a closure, never interpolated into an
     // onclick attribute. esc() deliberately does NOT escape "'" (see its own
@@ -59611,7 +61054,7 @@ function _graphOpenPanel(node) {
     return;
   }
   if (node.source_path) {
-    html += `<div style="font-size:0.68rem;color:var(--dim);margin-bottom:10px;word-break:break-all;font-family:monospace;padding:4px 8px;background:var(--bg);border-radius:4px;">${node.source_path}</div>`;
+    html += `<div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-2-5);word-break:break-all;font-family:var(--font-mono);padding:var(--space-1) var(--space-2);background:var(--bg);border-radius:var(--radius-sm);">${node.source_path}</div>`;
   }
   // Render markdown body
   if (typeof marked !== 'undefined' && node.body) {
@@ -59977,9 +61420,9 @@ function _bwShowProfile(profile, auto) {
   if (!profile) { el.style.display = 'none'; return; }
   el.style.display = '';
   el.textContent = (auto ? 'Auto profile: ' : 'Profile: ') + profile;
-  el.style.background = 'var(--surface)';
+  el.style.background = 'var(--card)';
   el.style.border = '1px solid var(--border)';
-  el.style.color = 'var(--fg)';
+  el.style.color = 'var(--text)';
   el.title = auto ? 'Profile auto-selected by URL' : 'Profile: ' + profile;
 }
 
@@ -60119,14 +61562,14 @@ function _bwViewportFail(reason) {
     // Diagnose from the server's own state rather than from the symptom.
     ph.innerHTML = running === false
       ? '<div style="max-width:420px;">'
-        + '<div style="font-weight:600;color:var(--fg);margin-bottom:6px;">No browser is running</div>'
-        + '<div style="margin-bottom:10px;">Nothing is open to show. The last error was: '
+        + '<div style="font-weight:600;color:var(--text);margin-bottom:var(--space-1-5);">No browser is running</div>'
+        + '<div style="margin-bottom:var(--space-2-5);">Nothing is open to show. The last error was: '
         + esc(String(reason || 'no frame returned')) + attempts + '.</div>'
         + '<button class="bw-btn primary" onclick="_bwGo()">Start browser</button> '
         + '<button class="bw-btn" onclick="_bwScreenshot(2)">Retry frame</button></div>'
       : '<div style="max-width:420px;">'
-        + '<div style="font-weight:600;color:var(--fg);margin-bottom:6px;">Live view unavailable</div>'
-        + '<div style="margin-bottom:10px;">' + esc(String(reason || 'the browser did not return a frame'))
+        + '<div style="font-weight:600;color:var(--text);margin-bottom:var(--space-1-5);">Live view unavailable</div>'
+        + '<div style="margin-bottom:var(--space-2-5);">' + esc(String(reason || 'the browser did not return a frame'))
         + '.<br>The browser IS running, so the page may still be loading or the tab may have wedged'
         + attempts + '.</div>'
         + '<button class="bw-btn primary" onclick="_bwScreenshot(2)">Retry</button> '
@@ -60231,14 +61674,14 @@ async function _bwToggleElements() {
 }
 async function _bwLoadElements() {
   const list = document.getElementById('bw-elements-list');
-  list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">Loading…</div>';
+  list.innerHTML = '<div style="padding:var(--space-2);color:var(--dim);font-size:var(--fs-sm);">Loading…</div>';
   try {
     const r = await _bwFetch('/api/browser/state?session=' + _bwSession);
     const d = await r.json();
     if (d.viewport) _bwViewport = d.viewport;
     const els = d.elements || [];
     document.getElementById('bw-el-count').textContent = els.length + ' elements';
-    if (!els.length) { list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">No elements</div>'; return; }
+    if (!els.length) { list.innerHTML = '<div style="padding:var(--space-2);color:var(--dim);font-size:var(--fs-sm);">No elements</div>'; return; }
     list.innerHTML = els.map(e =>
       '<div class="bw-el" onclick="_bwClickIndex(' + e.index + ')">' +
       '<span class="idx">' + e.index + '</span>' +
@@ -60246,7 +61689,7 @@ async function _bwLoadElements() {
       '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;">' + esc(e.label || '') + '</span></div>'
     ).join('');
   } catch(e) {
-    list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">Error: ' + esc(e.message) + '</div>';
+    list.innerHTML = '<div style="padding:var(--space-2);color:var(--dim);font-size:var(--fs-sm);">Error: ' + esc(e.message) + '</div>';
   }
 }
 async function _bwClickIndex(index) {
@@ -60424,8 +61867,8 @@ async function _bwNewProfile() {
   })();
   const ok = await showFormModal('New browser profile',
     '<input id="bwp-name" class="bw-in" style="width:100%;box-sizing:border-box" placeholder="Profile name (e.g. recreation-gov)" value="' + esc(suggested) + '">'
-    + '<input id="bwp-url" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:8px" placeholder="Sign-in URL" value="' + esc(url) + '">'
-    + '<div style="margin-top:10px;font-size:0.76rem;color:var(--dim);line-height:1.5">'
+    + '<input id="bwp-url" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-2)" placeholder="Sign-in URL" value="' + esc(url) + '">'
+    + '<div style="margin-top:var(--space-2-5);font-size:var(--fs-sm);color:var(--dim);line-height:1.5">'
     + 'A real browser window opens. Sign in there — including any CAPTCHA or 2FA — then <b>close the window</b>. '
     + 'Closing is what saves the worker. The profile is then usable from the browser API.</div>', 'Open sign-in');
   const name = (document.getElementById('bwp-name') || {}).value || '';
@@ -60461,31 +61904,31 @@ async function _bwImportProfile() {
   _bwStatus('');
 
   // Build the dialog HTML
-  var html = '<div style="max-height:340px;overflow-y:auto;margin-bottom:12px;">';
-  html += '<div style="font-size:0.78rem;color:var(--dim);margin-bottom:10px;">Select a browser profile to import cookies from.</div>';
+  var html = '<div style="max-height:340px;overflow-y:auto;margin-bottom:var(--space-3);">';
+  html += '<div style="font-size:var(--fs-base);color:var(--dim);margin-bottom:var(--space-2-5);">Select a browser profile to import cookies from.</div>';
 
   // Radio list: one selection
   var idx = 0;
   for (var i = 0; i < sources.length; i++) {
     var src = sources[i];
-    html += '<div style="margin-bottom:8px;"><div style="font-weight:600;font-size:0.85rem;margin-bottom:4px;">' + esc(src.name);
-    if (src.cookie_support === 'partial') html += ' <span style="color:var(--warn);font-size:0.72rem;">(partial support)</span>';
+    html += '<div style="margin-bottom:var(--space-2);"><div style="font-weight:600;font-size:var(--fs-lg);margin-bottom:var(--space-1);">' + esc(src.name);
+    if (src.cookie_support === 'partial') html += ' <span style="color:var(--yellow);font-size:var(--fs-xs);">(partial support)</span>';
     html += '</div>';
     for (var j = 0; j < src.profiles.length; j++) {
       var p = src.profiles[j];
       var rid = 'bwi-radio-' + idx;
-      html += '<label for="' + rid + '" style="display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:0.82rem;cursor:pointer;border-radius:4px;" onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'\'">';
+      html += '<label for="' + rid + '" style="display:flex;align-items:center;gap:var(--space-1-5);padding:var(--space-0-5) var(--space-2);font-size:var(--fs-md);cursor:pointer;border-radius:var(--radius-sm);" onmouseover="this.style.background=\'color-mix(in srgb, var(--on-solid) 6%, transparent)\'" onmouseout="this.style.background=\'\'">';
       html += '<input type="radio" name="bwi-source" id="' + rid + '" value="' + esc(src.id) + '|' + esc(p.name) + '"' + (p.default && idx < 2 ? ' checked' : '') + '>';
       html += '<span>' + esc(p.display_name);
-      if (p.display_name !== p.name) html += ' <span style="color:var(--dim);font-size:0.72rem;">(' + esc(p.name) + ')</span>';
+      if (p.display_name !== p.name) html += ' <span style="color:var(--dim);font-size:var(--fs-xs);">(' + esc(p.name) + ')</span>';
       html += '</span></label>';
       idx++;
     }
     html += '</div>';
   }
   html += '</div>';
-  html += '<div style="margin-top:4px;"><label style="font-size:0.82rem;font-weight:500;">Destination profile name</label>';
-  html += '<input id="bwi-dest" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:4px;" placeholder="e.g. chrome-default" value="imported-chrome"></div>';
+  html += '<div style="margin-top:var(--space-1);"><label style="font-size:var(--fs-md);font-weight:500;">Destination profile name</label>';
+  html += '<input id="bwi-dest" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-1);" placeholder="e.g. chrome-default" value="imported-chrome"></div>';
 
   var ok = await showFormModal('Import browser profile', html, 'Import');
   if (!ok) return;
@@ -60653,7 +62096,7 @@ async function _journalLoad() {
 function _jrnlRenderSidebar() {
   const list = document.getElementById('jrnl-entry-list');
   if (!_jrnlEntries.length) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--dim);font-size:0.82rem;">No entries yet</div>';
+    list.innerHTML = '<div style="padding:var(--space-5);text-align:center;color:var(--dim);font-size:var(--fs-md);">No entries yet</div>';
     return;
   }
   let html = '';
@@ -60663,7 +62106,7 @@ function _jrnlRenderSidebar() {
     const monthKey = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
     if (monthKey !== lastMonth) {
       lastMonth = monthKey;
-      html += '<div style="padding:6px 12px;font-size:0.68rem;color:var(--dim);font-weight:600;background:var(--bg);position:sticky;top:0;">' + esc(monthKey) + '</div>';
+      html += '<div style="padding:var(--space-1-5) var(--space-3);font-size:var(--fs-2xs);color:var(--dim);font-weight:600;background:var(--bg);position:sticky;top:0;">' + esc(monthKey) + '</div>';
     }
     const preview = (e.text || e.prompt1 || e.prompt2 || e.prompt3 || '').substring(0, 120);
     const dateStr = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -60744,9 +62187,9 @@ function _jrnlRenderEditor() {
   if (!entry) { pane.innerHTML = '<div class="jrnl-editor-empty">Entry not found</div>'; return; }
 
   let html = '<div class="jrnl-editor">';
-  html += '<div style="display:flex;gap:10px;align-items:center;">';
+  html += '<div style="display:flex;gap:var(--space-2-5);align-items:center;">';
   html += '<input type="date" id="jrnl-ed-date" class="amux-dp" value="' + esc(entry.date) + '" style="flex:0 0 auto;">';
-  html += '<label style="margin:0;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="jrnl-ed-star" ' + (entry.starred ? 'checked' : '') + '> Starred</label>';
+  html += '<label style="margin:0;display:flex;align-items:center;gap:var(--space-1);cursor:pointer;"><input type="checkbox" id="jrnl-ed-star" ' + (entry.starred ? 'checked' : '') + '> Starred</label>';
   html += '</div>';
 
   // Prompts
@@ -60763,7 +62206,7 @@ function _jrnlRenderEditor() {
 
   // Location
   html += '<label>Location</label>';
-  html += '<div style="display:flex;gap:8px;align-items:center;">';
+  html += '<div style="display:flex;gap:var(--space-2);align-items:center;">';
   html += '<input type="text" id="jrnl-ed-place" value="' + esc(entry.place_name || '') + '" placeholder="Place name">';
   html += '<button class="jrnl-loc-btn" onclick="_jrnlGetLocation()">&#128205; Detect</button>';
   html += '</div>';
@@ -60780,7 +62223,7 @@ function _jrnlRenderEditor() {
   if (entry.media) {
     for (const m of entry.media) {
       html += '<div style="position:relative;"><img class="jrnl-media-thumb" src="/api/journal/media/' + m.id + '" onclick="_jrnlViewMedia(\'/api/journal/media/' + m.id + '\')">';
-      html += '<button onclick="_jrnlDeleteMedia(\'' + m.id + '\')" style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:0.6rem;cursor:pointer;">&times;</button></div>';
+      html += '<button onclick="_jrnlDeleteMedia(\'' + m.id + '\')" style="position:absolute;top:2px;right:2px;background:color-mix(in srgb, var(--shade) 60%, transparent);color:var(--on-solid);border:none;border-radius:var(--radius-round);width:18px;height:18px;font-size:var(--fs-4xs);cursor:pointer;">&times;</button></div>';
     }
   }
   if (!isNew) {
@@ -60853,11 +62296,11 @@ async function _jrnlDeleteMedia(mid) {
 
 function _jrnlViewMedia(url) {
   const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:10000;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+  overlay.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 90%, transparent);z-index:10000;display:flex;align-items:center;justify-content:center;cursor:pointer;';
   const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   overlay.onclick = close;
-  overlay.innerHTML = '<img src="' + url + '" style="max-width:90vw;max-height:90vh;border-radius:8px;">';
+  overlay.innerHTML = '<img src="' + url + '" style="max-width:90vw;max-height:90vh;border-radius:var(--radius-lg);">';
   document.body.appendChild(overlay);
   document.addEventListener('keydown', onKey);
 }
@@ -60898,7 +62341,7 @@ function _jrnlRenderCalendar() {
   html += '<button onclick="_jrnlCalPrev()">&laquo;</button>';
   html += '<span>' + first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + '</span>';
   html += '<button onclick="_jrnlCalNext()">&raquo;</button>';
-  html += '<button onclick="_jrnlCalToday()" style="font-size:0.72rem;">Today</button>';
+  html += '<button onclick="_jrnlCalToday()" style="font-size:var(--fs-xs);">Today</button>';
   html += '</div>';
   html += '<div class="jrnl-cal-grid">';
   for (const d of ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']) {
@@ -60959,7 +62402,7 @@ function _jrnlRenderMedia() {
   const pane = document.getElementById('jrnl-media-pane');
   const withMedia = _jrnlAllEntries.filter(e => e.media && e.media.length);
   if (!withMedia.length) {
-    pane.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);font-size:0.85rem;">No photos yet. Add photos to journal entries to see them here.</div>';
+    pane.innerHTML = '<div style="padding:var(--space-10);text-align:center;color:var(--dim);font-size:var(--fs-lg);">No photos yet. Add photos to journal entries to see them here.</div>';
     return;
   }
   let html = '<div class="jrnl-gallery">';
@@ -60981,14 +62424,14 @@ function _jrnlRenderMedia() {
 function _jrnlRenderMap() {
   const container = document.getElementById('jrnl-map-container');
   if (!window.L) {
-    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Loading map...</div>';
-    _lazyLib('leaflet').then(_jrnlRenderMap, () => { container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Could not load the map.</div>'; });
+    container.innerHTML = '<div style="padding:var(--space-10);text-align:center;color:var(--dim);">Loading map...</div>';
+    _lazyLib('leaflet').then(_jrnlRenderMap, () => { container.innerHTML = '<div style="padding:var(--space-10);text-align:center;color:var(--dim);">Could not load the map.</div>'; });
     return;
   }
   if (_jrnlMap) { _jrnlMap.remove(); _jrnlMap = null; }
   const withLoc = _jrnlAllEntries.filter(e => e.lat && e.lng);
   if (!withLoc.length) {
-    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">No entries with location data yet.</div>';
+    container.innerHTML = '<div style="padding:var(--space-10);text-align:center;color:var(--dim);">No entries with location data yet.</div>';
     return;
   }
   container.innerHTML = '';
@@ -61001,10 +62444,10 @@ function _jrnlRenderMap() {
     const d = new Date(e.date + 'T12:00:00');
     const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const preview = (e.text || e.prompt1 || '').substring(0, 80);
-    const popup = '<div style="max-width:200px;font-size:0.78rem;"><strong>' + esc(dateStr) + '</strong>' +
+    const popup = '<div style="max-width:200px;font-size:var(--fs-base);"><strong>' + esc(dateStr) + '</strong>' +
       (e.place_name ? '<br><em>' + esc(e.place_name) + '</em>' : '') +
       '<br>' + esc(preview) +
-      (e.media && e.media.length ? '<br><img src="/api/journal/media/' + e.media[0].id + '" style="width:100%;max-height:100px;object-fit:cover;border-radius:4px;margin-top:4px;">' : '') +
+      (e.media && e.media.length ? '<br><img src="/api/journal/media/' + e.media[0].id + '" style="width:100%;max-height:100px;object-fit:cover;border-radius:var(--radius-sm);margin-top:var(--space-1);">' : '') +
       '</div>';
     L.marker([e.lat, e.lng]).addTo(_jrnlMap).bindPopup(popup);
     bounds.push([e.lat, e.lng]);
@@ -61017,19 +62460,19 @@ function _jrnlRenderMap() {
 function _jrnlShowConfig() {
   const overlay = document.createElement('div');
   overlay.id = 'jrnl-config-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
-  overlay.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90vw;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">' +
-    '<h3 style="margin:0 0 16px;font-size:0.95rem;">Journal Prompts</h3>' +
-    '<p style="font-size:0.75rem;color:var(--dim);margin:0 0 12px;">Configure up to 3 optional prompts shown when creating entries.</p>' +
-    '<label style="font-size:0.72rem;color:var(--dim);">Prompt 1</label>' +
-    '<input type="text" id="jrnl-cfg-p1" value="' + esc(_jrnlConfig.prompt1 || '') + '" placeholder="e.g. What are you grateful for?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
-    '<label style="font-size:0.72rem;color:var(--dim);">Prompt 2</label>' +
-    '<input type="text" id="jrnl-cfg-p2" value="' + esc(_jrnlConfig.prompt2 || '') + '" placeholder="e.g. How are you feeling?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
-    '<label style="font-size:0.72rem;color:var(--dim);">Prompt 3</label>' +
-    '<input type="text" id="jrnl-cfg-p3" value="' + esc(_jrnlConfig.prompt3 || '') + '" placeholder="e.g. What did you learn today?" style="width:100%;padding:6px 8px;margin:4px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;font-family:inherit;">' +
-    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">' +
-    '<button onclick="document.getElementById(\'jrnl-config-overlay\').remove()" style="padding:6px 14px;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-family:inherit;">Cancel</button>' +
-    '<button onclick="_jrnlSaveConfig()" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit;">Save</button>' +
+  overlay.style.cssText = 'position:fixed;inset:0;background:color-mix(in srgb, var(--shade) 70%, transparent);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);padding:var(--space-6);width:400px;max-width:90vw;max-height:min(90dvh,calc(100dvh - 24px));overflow-y:auto;overscroll-behavior:contain;">' +
+    '<h3 style="margin:0 0 var(--space-4);font-size:var(--fs-2xl);">Journal Prompts</h3>' +
+    '<p style="font-size:var(--fs-sm);color:var(--dim);margin:0 0 var(--space-3);">Configure up to 3 optional prompts shown when creating entries.</p>' +
+    '<label style="font-size:var(--fs-xs);color:var(--dim);">Prompt 1</label>' +
+    '<input type="text" id="jrnl-cfg-p1" value="' + esc(_jrnlConfig.prompt1 || '') + '" placeholder="e.g. What are you grateful for?" style="width:100%;padding:var(--space-1-5) var(--space-2);margin:var(--space-1) 0 var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-md);font-family:inherit;">' +
+    '<label style="font-size:var(--fs-xs);color:var(--dim);">Prompt 2</label>' +
+    '<input type="text" id="jrnl-cfg-p2" value="' + esc(_jrnlConfig.prompt2 || '') + '" placeholder="e.g. How are you feeling?" style="width:100%;padding:var(--space-1-5) var(--space-2);margin:var(--space-1) 0 var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-md);font-family:inherit;">' +
+    '<label style="font-size:var(--fs-xs);color:var(--dim);">Prompt 3</label>' +
+    '<input type="text" id="jrnl-cfg-p3" value="' + esc(_jrnlConfig.prompt3 || '') + '" placeholder="e.g. What did you learn today?" style="width:100%;padding:var(--space-1-5) var(--space-2);margin:var(--space-1) 0 var(--space-2-5);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);font-size:var(--fs-md);font-family:inherit;">' +
+    '<div style="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4);">' +
+    '<button onclick="document.getElementById(\'jrnl-config-overlay\').remove()" style="padding:var(--space-1-5) var(--space-3-5);background:none;border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text);cursor:pointer;font-family:inherit;">Cancel</button>' +
+    '<button onclick="_jrnlSaveConfig()" style="padding:var(--space-1-5) var(--space-3-5);background:var(--accent);color:var(--on-solid);border:none;border-radius:var(--radius-md);cursor:pointer;font-weight:600;font-family:inherit;">Save</button>' +
     '</div></div>';
   document.body.appendChild(overlay);
   overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
@@ -62071,9 +63514,11 @@ function _recorderRenderSettings() {
   }
   if (tr) {
     const t = c.transcriber || {};
-    tr.textContent = t.available
-      ? 'Transcripts: on, locally with ' + (t.engine || 'a local engine') + (t.model ? ' (' + t.model + ')' : '') + '.'
-      : 'Transcripts: off. ' + (t.why_unavailable || 'No local transcriber is configured on the server.');
+    // The engine is the shared transcription setting, the same one Dictate follows.
+    const how = t.engine === 'gemini' ? 'with Gemini, as Dictate does'
+      : 'locally with ' + (t.engine || 'a local engine') + (t.model ? ' (' + t.model + ')' : '');
+    tr.innerHTML = esc(t.available ? 'Transcripts: on, ' + how + '. ' : 'Transcripts: off. ' + (t.why_unavailable || 'No transcriber is configured on the server.') + ' ')
+      + '<button type="button" class="btn" id="recorder-transcription-settings" onclick="_transcriptionOpenSettings()">Transcription settings</button>';
   }
 }
 
@@ -62110,7 +63555,7 @@ function _recorderTranscriptWords(row) {
   if (!t) return row.local && row.local.state === 'empty' ? '' : 'Transcript after sync';
   return ({pending: 'Transcript queued', running: 'Transcribing', done: 'Transcript ready',
     failed: 'Transcription failed' + (t.error ? ': ' + t.error : ''),
-    unavailable: 'No local transcriber' + (t.error ? ': ' + t.error : '')})[t.status] || ('Transcript ' + (t.status || 'unknown'));
+    unavailable: 'Not transcribed' + (t.error ? ': ' + t.error : '')})[t.status] || ('Transcript ' + (t.status || 'unknown'));
 }
 
 async function _recorderRender() {
@@ -63388,18 +64833,18 @@ function _showPinGroupPicker(fp, groups, groupKeys) {
   document.querySelectorAll('.pin-group-picker').forEach(e => e.remove());
   const overlay = document.createElement('div');
   overlay.className = 'pin-group-picker';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:90000;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:90000;background:color-mix(in srgb, var(--shade) 50%, transparent);display:flex;align-items:center;justify-content:center;';
   overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
 
   const fname = fp.split('/').pop();
-  let html = '<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;'
-    + 'padding:20px;max-width:380px;width:90%;max-height:70vh;overflow-y:auto;color:var(--text);">'
-    + '<div style="font-weight:700;font-size:0.95rem;margin-bottom:12px;">Pin: ' + esc(fname) + '</div>';
+  let html = '<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-2xl);'
+    + 'padding:var(--space-5);max-width:380px;width:90%;max-height:70vh;overflow-y:auto;color:var(--text);">'
+    + '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-3);">Pin: ' + esc(fname) + '</div>';
 
   // "New pin" option
-  html += '<button class="pin-group-opt" data-action="new" style="display:flex;align-items:center;gap:8px;'
-    + 'width:100%;padding:10px 12px;margin-bottom:6px;border:1px solid var(--border);border-radius:8px;'
-    + 'background:var(--bg);color:var(--text);cursor:pointer;font-size:0.82rem;text-align:left;">'
+  html += '<button class="pin-group-opt" data-action="new" style="display:flex;align-items:center;gap:var(--space-2);'
+    + 'width:100%;padding:var(--space-2-5) var(--space-3);margin-bottom:var(--space-1-5);border:1px solid var(--border);border-radius:var(--radius-lg);'
+    + 'background:var(--bg);color:var(--text);cursor:pointer;font-size:var(--fs-md);text-align:left;">'
     + '<span style="font-size:1.1em;">+</span> New floating pin</button>';
 
   // Existing groups/solo pins to merge into
@@ -63410,9 +64855,9 @@ function _showPinGroupPicker(fp, groups, groupKeys) {
       ? pins.length + ' tabs: ' + names
       : names;
     html += '<button class="pin-group-opt" data-gid="' + esc(gid) + '" data-first-id="' + pins[0].id + '" '
-      + 'style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;margin-bottom:6px;'
-      + 'border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);'
-      + 'cursor:pointer;font-size:0.82rem;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+      + 'style="display:flex;align-items:center;gap:var(--space-2);width:100%;padding:var(--space-2-5) var(--space-3);margin-bottom:var(--space-1-5);'
+      + 'border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--bg);color:var(--text);'
+      + 'cursor:pointer;font-size:var(--fs-md);text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
       + '<span style="font-size:1.1em;">\u{1F4CC}</span> Add tab to: ' + esc(label) + '</button>';
   });
 
@@ -63421,7 +64866,7 @@ function _showPinGroupPicker(fp, groups, groupKeys) {
   document.body.appendChild(overlay);
 
   overlay.querySelectorAll('.pin-group-opt').forEach(btn => {
-    btn.onmouseenter = () => { btn.style.background = 'var(--hover)'; };
+    btn.onmouseenter = () => { btn.style.background = 'color-mix(in srgb, var(--text) 8%, transparent)'; };
     btn.onmouseleave = () => { btn.style.background = 'var(--bg)'; };
     btn.onclick = async () => {
       overlay.remove();
@@ -63494,7 +64939,7 @@ const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: nu
   listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
 function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
 function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
-function _cvColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'hsl(' + (h % 360) + ',55%,45%)'; }
+function _cvColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'color-mix(in srgb, ' + themeCategorical(h) + ' 75%, var(--shade))'; }
 function _cvAvatar(name, worker) {
   if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
   return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
@@ -63641,7 +65086,7 @@ function _cvSelect(sel, auto) {
   document.getElementById('cv-meta').textContent = '';
   document.getElementById('cv-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
   const inp = document.getElementById('cv-input');
-  inp.placeholder = 'Message ' + _cvFindName(sel) + (sel[0] === 'p' || _cvMobile() ? '' : ' (use @ to mention a person or worker)');
+  inp.placeholder = 'Message ' + _cvFindName(sel) + (_cvMobile() ? '' : sel[0] === 'p' ? ' (use @ to give a worker a task)' : ' (use @ to mention a person or worker)');
   _cvPoll(true);
   _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
   if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
@@ -63680,7 +65125,7 @@ async function _cvPoll(full) {
   _cvRenderHead(sel, d);
   if (full || grew || pending.length) _cvRenderPosts(full || grew);
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
-    ? '<span class="cv-dot on" style="display:inline-block;margin-right:6px"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
+    ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
   if (grew || full) _cvMarkRead();
 }
 function _cvRenderHead(sel, d) {
@@ -63696,7 +65141,7 @@ function _cvRenderHead(sel, d) {
   } else {
     meta.textContent = 'Direct message';
   }
-  document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:8px"><span class="cv-dot on" style="display:inline-block;margin-right:4px"></span>' + on + ' online</span>' : '') +
+  document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name)).join('');
 }
 // A POST RENDERS LIKE CHAT (Ethan, 2026-10-11: "make sure chat has the same
@@ -63741,8 +65186,11 @@ function _cvDelivHtml(p) {
   const chips = want.map(w => {
     const d = got.find(x => x.worker === w);
     if (!d) return '<span>sending to ' + esc(w) + '…</span>';
-    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + '</span>';
-    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + '</span>'
+    // Where its answer will be: here, its own thread (from a direct message), or its
+    // terminal (an isolated worker gets the owner's words with no reply route).
+    const where = d.reply === 'pane' ? '; it answers in its terminal' : d.reply === 'thread' ? '; it answers in its thread' : '';
+    if (d.state === 'queued') return '<span title="' + esc(d.detail || '') + '">&#x23F3; queued for ' + esc(w) + esc(where) + '</span>';
+    return d.ok ? '<span class="ok">&#x2713; delivered to ' + esc(w) + esc(where) + '</span>'
       : '<span class="bad" title="' + esc(d.detail || '') + '">&#x2715; not delivered to ' + esc(w) + (d.detail ? ': ' + esc(String(d.detail).slice(0, 60)) : '') + '</span>';
   });
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
@@ -64938,7 +66386,7 @@ function _vxDrawWave() {
   if (!g) return;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, 44);
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#5b8def';
+  const accent = themeColor('--accent');
   const bars = Math.floor(w / 4);
   if (_vx.active && _vx.analyser) {
     const data = new Uint8Array(_vx.analyser.fftSize);
@@ -65290,7 +66738,7 @@ const _DRAW_LIB_MIME = 'application/vnd.excalidrawlib+json';
 const _DRAW_POLL_MS = 2000;
 const _DRAW_SAVE_DEBOUNCE_MS = 1000;
 const _DRAW_RECENTS_MAX = 12;
-const _DRAW_PEN_COLORS = ['#1e1e1e', '#6741d9', '#1971c2', '#e03131', '#2f9e44'];
+const _DRAW_PEN_COLORS = ['#1e1e1e', '#6741d9', '#1971c2', '#e03131', '#2f9e44'];   // design-tokens: allow (ink saved inside drawings, Excalidraw needs hex)
 const _DRAW_PEN_WIDTHS = [1, 2, 4];
 const _DRAW_MERMAID_RE = /^(?:graph|flowchart)\s+(?:TD|TB|BT|RL|LR)\b|^(?:sequenceDiagram|classDiagram|erDiagram|stateDiagram(?:-v2)?|gantt|pie|journey|mindmap|gitGraph|timeline)\b/;
 
@@ -66693,7 +68141,7 @@ async function _drawRememberRecent(force) {
       else {
         d.thumbAt = now;
         const blob = await d.lib.X.exportToBlob({ elements: els, files: d.api.getFiles(), mimeType: 'image/png',
-          appState: { exportBackground: true, viewBackgroundColor: '#ffffff', exportWithDarkMode: false },
+          appState: { exportBackground: true, viewBackgroundColor: '#ffffff', exportWithDarkMode: false },   // design-tokens: allow (an exported drawing's paper)
           exportPadding: 8, maxWidthOrHeight: 240 });
         entry.thumb = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(blob); });
       }

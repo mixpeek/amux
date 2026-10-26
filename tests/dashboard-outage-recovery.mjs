@@ -49,7 +49,7 @@ function fixture(names = [], shared = {}) {
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
   for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_lockRequest', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -936,4 +936,117 @@ test('identity arriving after settings opened refreshes billing without another 
     _loadCloudPlan(){calls.push('plan')},loadBillingSection(){calls.push('billing')}});
   vm.runInContext(code('_initIdentity'),ctx);await ctx._initIdentity();
   assert.deepEqual(calls,['plan','billing']);assert.equal(ctx._cloudEmail,'owner@example.test');
+});
+
+// A lock stub with Web Locks' steal: a {steal:true} request is granted at once,
+// and the request it took the lock from rejects with an AbortError while that
+// holder's callback keeps running. That rejection is WebKit's "lock was stolen
+// by another request" (Ethan, 2026-10-25).
+function stealingLocks() {
+  const holders = new Map();
+  return {request(name, options, work) {
+    if (typeof options === 'function') { work = options; options = {}; }
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        const prev = holders.get(name);
+        holders.set(name, {reject});
+        Promise.resolve().then(() => work({name})).then(resolve, reject)
+          .finally(() => { if (holders.get(name)?.reject === reject) holders.delete(name); });
+        return prev;
+      };
+      if (options.steal) {
+        const prev = grant();
+        if (prev) { const e = new Error('Lock was stolen by another request'); e.name = 'AbortError'; prev.reject(e); }
+      } else if (!holders.has(name)) grant();
+      else reject(Object.assign(new Error('busy'), {name: 'TimeoutError'}));
+    });
+  }};
+}
+
+test('a lock stolen from a holder that already ran resolves with its own work, once, and says so', async () => {
+  const locks = stealingLocks();
+  const {ctx} = fixture([], {locks});
+  const beacons = [];
+  ctx.fetch = async (url, init) => { if (String(url).includes('client-debug')) beacons.push(JSON.parse(init.body)); return new Response('{}'); };
+  let release; let runs = 0;
+  const slow = () => { runs++; return new Promise(r => { release = r; }); };
+  const holder = ctx._lockRequest('amux-outbox-delivery:m1', {}, slow);
+  await new Promise(setImmediate);
+  const stealer = ctx._lockRequest('amux-outbox-delivery:m1', {steal: true}, async () => 'stealer-done');
+  assert.equal(await stealer, 'stealer-done');
+  release('holder-done');
+  assert.equal(await holder, 'holder-done', 'the stolen holder resolves with its own result, not "lock was stolen"');
+  assert.equal(runs, 1, 'the holder\'s work is not run a second time');
+  assert.ok(beacons.some(b => b.verdict === 'outbox_lock_stolen_while_held' && b.lock === 'amux-outbox-delivery'), JSON.stringify(beacons));
+  // A request that never got the lock still rejects: only a granted one is resolved.
+  const waiting = ctx._lockRequest('amux-outbox-delivery:m2', {}, () => new Promise(() => {}));
+  await new Promise(setImmediate);
+  await assert.rejects(ctx._lockRequest('amux-outbox-delivery:m2', {}, async () => 1), e => e.name === 'TimeoutError');
+  void waiting;
+});
+
+// Web Locks with a queue, and WebKit's gap between granting a lock and calling
+// its callback: a steal in that gap rejects a request whose work never ran
+// (Ethan, 2026-10-25, "still" after the stolen-while-held fix).
+function queuedStealingLocks() {
+  const held = new Map(), queues = new Map();
+  const next = name => { const q = queues.get(name) || []; if (!held.has(name) && q.length) q.shift()(); };
+  return {request(name, options, work) {
+    if (typeof options === 'function') { work = options; options = {}; }
+    return new Promise((resolve, reject) => {
+      const grant = () => {
+        const me = {reject, ran: false};
+        held.set(name, me);
+        // The callback runs a macrotask after the grant: the gap a steal can land in.
+        setImmediate(() => {
+          if (held.get(name) !== me) return;
+          me.ran = true;
+          Promise.resolve().then(() => work({name})).then(resolve, reject)
+            .finally(() => { if (held.get(name) === me) { held.delete(name); next(name); } });
+        });
+      };
+      if (options.steal) {
+        const prev = held.get(name);
+        if (prev) { held.delete(name); const e = new Error('Lock was stolen by another request'); e.name = 'AbortError'; prev.reject(e); }
+        grant();
+      } else {
+        options.signal?.addEventListener?.('abort', () => reject(Object.assign(new Error('timed out'), {name: 'TimeoutError'})));
+        if (!queues.has(name)) queues.set(name, []);
+        queues.get(name).push(grant); next(name);
+      }
+    });
+  }};
+}
+
+test('a lock stolen before its work started waits its turn and runs once, instead of "lock was stolen"', async () => {
+  const locks = queuedStealingLocks();
+  const {ctx} = fixture([], {locks});
+  const beacons = [];
+  ctx.fetch = async (url, init) => { if (String(url).includes('client-debug')) beacons.push(JSON.parse(init.body)); return new Response('{}'); };
+  const order = [];
+  // Granted, then stolen by another shown window before its callback ran.
+  const first = ctx._lockRequest('amux-outbox-replay', {steal: true}, async () => { order.push('first'); return 'first-done'; });
+  const thief = ctx._lockRequest('amux-outbox-replay', {steal: true}, async () => { order.push('thief'); return 'thief-done'; });
+  assert.equal(await thief, 'thief-done');
+  assert.equal(await first, 'first-done', 'the request whose work never ran waits its turn rather than rejecting');
+  assert.deepEqual(order, ['thief', 'first'], 'each work runs once, the robbed one after the thief');
+  assert.ok(beacons.some(b => b.verdict === 'outbox_lock_stolen_before_run' && b.lock === 'amux-outbox-replay' && b.steal === 1), JSON.stringify(beacons));
+});
+
+test('a message delivery lock stolen before its work started yields: the thief delivers, the message goes once', async () => {
+  // The replay retry above must not reach a message's delivery lock: the thief
+  // is another window delivering that same message, and retrying sent it twice
+  // (outbox-stalled-window red on f47ddbe29: 2 posts of one msg_id).
+  const locks = queuedStealingLocks();
+  const {ctx} = fixture([], {locks});
+  ctx.fetch = async () => new Response('{}');
+  const sends = [];
+  const first = ctx._lockRequest('amux-outbox-delivery:q1', {steal: true}, async () => { sends.push('first'); return 'first-done'; })
+    .then(v => v, e => e);
+  const thief = ctx._lockRequest('amux-outbox-delivery:q1', {steal: true}, async () => { sends.push('thief'); return 'thief-done'; });
+  assert.equal(await thief, 'thief-done');
+  const robbed = await first;
+  assert.equal(robbed && robbed.name, 'AbortError', 'the robbed delivery yields to the window that took it over');
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(sends, ['thief'], 'the message is delivered once');
 });

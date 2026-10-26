@@ -1,21 +1,20 @@
-//! The tunnel RELAY CLIENT — the half of AMUX-2888 that was never ported.
+//! The ChatGPT app's relay client (AMUX-2888, AMUX-5396).
 //!
 //! Dials out to the amux cloud gateway and long-polls for public requests
-//! hitting our tunnel URL (`cloud.amux.io/t/<tid>/…`), serving each one from a
-//! local target. Exposes localhost publicly with no inbound port.
+//! hitting our tunnel URL (`cloud.amux.io/t/<tid>/…`), serving each one from
+//! amux itself. It forwards only the ChatGPT app's OAuth and `/mcp` paths
+//! (`mcp_path_allowed`); everything else is answered 404 by the relay.
 //!
-//! Ported from python `_tunnel_start` (py:77931), `_tunnel_loop` (py:77848),
-//! `_tunnel_serve_one` (py:77817) and `_tunnel_stop` (py:77966). The HTTP
-//! surface lives in `api/tunnel.rs`; the proxy CRUD that picks a target lives
-//! in `api/proxies.rs`. Both call in here.
+//! The general mode that published any local port (the Proxies tab,
+//! `amux tunnel start <port>`, `AMUX_TUNNEL_PORT`) was retired with
+//! `/proxy` (MSG-95893): Pages is the one way to make a local app reachable.
+//! The HTTP surface lives in `api/tunnel.rs`.
 //!
-//! THREE THINGS CARRY THE WEIGHT, and each was load-bearing in python:
+//! THREE THINGS CARRY THE WEIGHT:
 //!
-//! 1. **The self-port refusal.** amux's own control plane has no request auth
-//!    (that is the cloud gateway's job for the hosted tier) and
-//!    `POST /api/sessions/<n>/send` is ungated, so publishing this port is
-//!    unauthenticated RCE on YOLO lanes. Refused unless
-//!    `AMUX_TUNNEL_ALLOW_SELF=1`.
+//! 1. **The path allow-list.** amux's own control plane is the target, and the
+//!    loopback bypass would admit anything the relay forwards, so the relay
+//!    itself refuses every path outside the app surface.
 //! 2. **Generation fencing.** A loop parked in a 40s long-poll must never
 //!    serve a request against a target the user has since changed. `stop` and
 //!    `start` both bump `gen`; a loop whose `gen` is stale is dead on its next
@@ -31,7 +30,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// The gateway this client dials. Overridable so the OSS gateway in
-/// `cloud/gateway/` can be self-hosted (the Proxies tab says so in its hint).
+/// `cloud/gateway/` can be self-hosted.
 pub fn gateway() -> String {
     std::env::var("AMUX_TUNNEL_GATEWAY")
         .ok()
@@ -67,28 +66,6 @@ pub fn max_concurrent() -> u32 {
     env_u32("AMUX_TUNNEL_MAX_CONCURRENT", 8)
 }
 
-/// The optional boot target (`AMUX_TUNNEL_PORT`). `None` means "do not
-/// auto-start", which is the default and deliberately so: auto-starting with no
-/// port would tunnel amux itself, and rule 1 above is exactly why that must
-/// never be the default.
-pub fn boot_target_port() -> Option<u16> {
-    std::env::var("AMUX_TUNNEL_PORT")
-        .ok()?
-        .trim()
-        .parse::<u16>()
-        .ok()
-        .filter(|p| *p > 0)
-}
-
-fn allow_self() -> bool {
-    matches!(
-        std::env::var("AMUX_TUNNEL_ALLOW_SELF")
-            .unwrap_or_default()
-            .trim(),
-        "1" | "true" | "yes"
-    )
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct TunnelState {
     pub running: bool,
@@ -98,10 +75,6 @@ pub struct TunnelState {
     pub target: Option<String>,
     pub requests: u64,
     pub gen: u64,
-    pub proxy_id: Option<String>,
-    /// MCP-only mode (AMUX-5396): the relay targets amux itself but forwards
-    /// only the ChatGPT app's OAuth and `/mcp` paths. See `mcp_path_allowed`.
-    pub mcp_only: bool,
 }
 
 fn state() -> &'static Mutex<TunnelState> {
@@ -173,18 +146,7 @@ const HOP_REQ_HEADERS: &[&str] = &["host", "content-length", "connection", "acce
 /// The mirror image on the way back.
 const HOP_RESP_HEADERS: &[&str] = &["transfer-encoding", "connection", "content-encoding"];
 
-/// Would `port` publish amux's own control plane?
-///
-/// A pure predicate so the security refusal has a test that does not need a
-/// gateway, a token, or a running tunnel — the one rule here whose failure is
-/// not "the feature does not work" but "the machine is owned".
-pub fn refuses_self_port(port: u16, self_port: u16, allow: bool) -> bool {
-    port == self_port && !allow
-}
-
-/// Start the relay. Returns the state after a brief wait for first
-/// registration, or an error string the caller renders.
-/// The paths an MCP-only relay forwards. Everything else is answered 404 by
+/// The paths the relay forwards. Everything else is answered 404 by
 /// the relay itself and never reaches amux, so `/api/*` (which the loopback
 /// bypass would admit) is not reachable from the internet in this mode. Each
 /// of these authenticates for itself: see `api::chatgpt_app`'s trust rule.
@@ -216,16 +178,10 @@ pub fn mcp_published_marker() -> std::path::PathBuf {
     crate::api::session_verbs::home().join("tunnel-mcp.published")
 }
 
-/// Start the relay in MCP-only mode: amux's own port, allow-listed paths.
+/// Start the relay: amux's own port, allow-listed paths. Returns the state
+/// after a brief wait for first registration, or an error string the caller
+/// renders.
 pub async fn start_mcp() -> Result<TunnelState, String> {
-    start_mode(None, true).await
-}
-
-pub async fn start(target_port: Option<u16>) -> Result<TunnelState, String> {
-    start_mode(target_port, false).await
-}
-
-async fn start_mode(target_port: Option<u16>, mcp_only: bool) -> Result<TunnelState, String> {
     {
         let s = state().lock().unwrap_or_else(|e| e.into_inner());
         if s.running {
@@ -238,18 +194,8 @@ async fn start_mode(target_port: Option<u16>, mcp_only: bool) -> Result<TunnelSt
             "no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)".into(),
         );
     }
-    let self_port = crate::legacy_port::canonical_port();
-    let port = if mcp_only { self_port } else { target_port.unwrap_or(self_port) };
-    if !mcp_only && refuses_self_port(port, self_port, allow_self()) {
-        return Err(format!(
-            "refusing to tunnel amux itself (port {port}) — its control plane is unauthenticated. \
-             Point the proxy at a specific app port instead, or set AMUX_TUNNEL_ALLOW_SELF=1 to \
-             override."
-        ));
-    }
-    // amux serves TLS on its own port; anything else is a plain local app.
-    let scheme = if port == self_port { "https" } else { "http" };
-    let target_base = format!("{scheme}://127.0.0.1:{port}");
+    // amux serves TLS on its own port.
+    let target_base = format!("https://127.0.0.1:{}", crate::legacy_port::canonical_port());
 
     let generation = {
         let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -260,7 +206,6 @@ async fn start_mode(target_port: Option<u16>, mcp_only: bool) -> Result<TunnelSt
         s.requests = 0;
         s.url = None;
         s.tid = None;
-        s.mcp_only = mcp_only;
         s.gen
     };
     DROPPED.store(0, Ordering::Relaxed);
@@ -275,7 +220,7 @@ async fn start_mode(target_port: Option<u16>, mcp_only: bool) -> Result<TunnelSt
     let _handle = super::registry::spawn_loop(
         super::registry::ids::TUNNEL,
         None,
-        move || run(token.clone(), gateway(), target_base.clone(), generation, mcp_only),
+        move || run(token.clone(), gateway(), target_base.clone(), generation),
     );
 
     // Wait briefly for the first registration so the caller's response can
@@ -301,16 +246,6 @@ pub fn stop() {
     s.gen += 1;
     s.url = None;
     s.tid = None;
-}
-
-/// Which saved proxy is live, or `None` when nothing is running.
-pub fn active_proxy_id() -> Option<String> {
-    let s = state().lock().unwrap_or_else(|e| e.into_inner());
-    s.running.then(|| s.proxy_id.clone()).flatten()
-}
-
-pub fn set_proxy_id(id: Option<String>) {
-    state().lock().unwrap_or_else(|e| e.into_inner()).proxy_id = id;
 }
 
 fn live(generation: u64) -> bool {
@@ -465,7 +400,7 @@ async fn reply(
 
 /// One tunnel session: register, then long-poll and serve until the generation
 /// is fenced or `running` clears.
-async fn run(token: String, gw: String, target_base: String, generation: u64, mcp_only: bool) {
+async fn run(token: String, gw: String, target_base: String, generation: u64) {
     let gwc = gateway_client();
     let localc = local_client();
     let inflight = Arc::new(tokio::sync::Semaphore::new(max_concurrent().max(1) as usize));
@@ -597,19 +532,15 @@ async fn run(token: String, gw: String, target_base: String, generation: u64, mc
                     .await;
                     return;
                 };
-                let payload = if mcp_only {
-                    let path = item2.get("path").and_then(|v| v.as_str()).unwrap_or("/");
-                    if mcp_path_allowed(path) {
-                        let base = snapshot().url.unwrap_or_default();
-                        serve_one(&localc2, &relay_stamped(&item2, base.trim_end_matches('/')), &target2).await
-                    } else {
-                        MCP_REFUSED.fetch_add(1, Ordering::Relaxed);
-                        tracing::warn!(target: "amux::tunnel", verdict = "tunnel_mcp_path_refused", path,
-                            "tunnel: MCP-only relay refused a path outside the ChatGPT app surface");
-                        reply_payload(404, "not found", 0)
-                    }
+                let path = item2.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+                let payload = if mcp_path_allowed(path) {
+                    let base = snapshot().url.unwrap_or_default();
+                    serve_one(&localc2, &relay_stamped(&item2, base.trim_end_matches('/')), &target2).await
                 } else {
-                    serve_one(&localc2, &relay_stamped(&item2, ""), &target2).await
+                    MCP_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(target: "amux::tunnel", verdict = "tunnel_mcp_path_refused", path,
+                        "tunnel: MCP-only relay refused a path outside the ChatGPT app surface");
+                    reply_payload(404, "not found", 0)
                 };
                 reply(&gwc2, &gw2, &token2, &rid, payload).await;
             });
@@ -626,41 +557,34 @@ async fn run(token: String, gw: String, target_base: String, generation: u64, mc
     tracing::info!("tunnel: stopped");
 }
 
-/// Start the relay at boot when, and only when, an explicit target port is
-/// configured. Never defaults to amux's own port: see rule 1 in the module
-/// header. Returns what it did so the caller can log a fact rather than an
-/// intention.
+/// Start the relay at boot when the owner published the ChatGPT connector
+/// (the dashboard's marker) or set `AMUX_TUNNEL_MCP=1`. Returns what it did so
+/// the caller can log a fact rather than an intention.
+///
+/// `AMUX_TUNNEL_PORT` used to publish an arbitrary local port here. That mode
+/// is retired (MSG-95893); a box still carrying the variable gets one WARN so
+/// nobody wonders why the port stopped being public.
 pub async fn maybe_boot_start() -> &'static str {
+    if std::env::var("AMUX_TUNNEL_PORT").is_ok_and(|v| !v.trim().is_empty()) {
+        tracing::warn!(verdict = "retired_tunnel_port_ignored",
+            "tunnel: AMUX_TUNNEL_PORT is set but publishing a local port is retired; use Pages");
+    }
     if !configured() {
         return "no token";
     }
-    let Some(port) = boot_target_port() else {
-        // AMUX_TUNNEL_MCP=1, or the dashboard's Publish connector marker,
-        // publishes only the ChatGPT app surface (AMUX-5396).
-        let from_env = std::env::var("AMUX_TUNNEL_MCP").is_ok_and(|v| v.trim() == "1");
-        let from_marker = mcp_published_marker().exists();
-        if from_env || from_marker {
-            let source = if from_env { "AMUX_TUNNEL_MCP" } else { "published_marker" };
-            return match start_mcp().await {
-                Ok(s) => {
-                    tracing::info!(url = ?s.url, source, "tunnel: auto-started in MCP-only mode");
-                    "started mcp-only"
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, verdict = "tunnel_mcp_boot_refused", "tunnel: MCP-only auto-start refused");
-                    "refused"
-                }
-            };
-        }
-        return "no AMUX_TUNNEL_PORT";
-    };
-    match start(Some(port)).await {
+    let from_env = std::env::var("AMUX_TUNNEL_MCP").is_ok_and(|v| v.trim() == "1");
+    let from_marker = mcp_published_marker().exists();
+    if !from_env && !from_marker {
+        return "not published";
+    }
+    let source = if from_env { "AMUX_TUNNEL_MCP" } else { "published_marker" };
+    match start_mcp().await {
         Ok(s) => {
-            tracing::info!(port, url = ?s.url, "tunnel: auto-started from AMUX_TUNNEL_PORT");
-            "started"
+            tracing::info!(url = ?s.url, source, "tunnel: auto-started in MCP-only mode");
+            "started mcp-only"
         }
         Err(e) => {
-            tracing::warn!(port, error = %e, "tunnel: auto-start refused");
+            tracing::warn!(error = %e, verdict = "tunnel_mcp_boot_refused", "tunnel: MCP-only auto-start refused");
             "refused"
         }
     }
@@ -695,38 +619,6 @@ mod tests {
         assert_eq!(h["X-Amux-Tunnel-Relay"], "1");
         assert_eq!(h["Authorization"], "Bearer t");
         assert!(!h.contains_key("x-amux-tunnel-relay"), "the inbound lowercase copy is gone");
-    }
-
-    /// The refusal whose failure mode is not "the feature is broken" but "the
-    /// box is owned": amux's control plane has no request auth, and
-    /// `POST /api/sessions/<n>/send` is ungated, so publishing this port is
-    /// unauthenticated RCE on a YOLO lane.
-    ///
-    /// The override must WORK too — a refusal with no honest way past it gets
-    /// removed by the next person who needs it (ethos rule 3).
-    #[test]
-    fn the_self_port_is_refused_unless_explicitly_allowed() {
-        assert!(
-            refuses_self_port(8824, 8824, false),
-            "amux's own port must be refused"
-        );
-        assert!(
-            !refuses_self_port(8824, 8824, true),
-            "AMUX_TUNNEL_ALLOW_SELF must work"
-        );
-        // The controls: any OTHER port is the normal case and must pass, or the
-        // check would refuse everything and pass its first assertion anyway.
-        assert!(!refuses_self_port(3000, 8824, false));
-        assert!(
-            !refuses_self_port(8825, 8824, false),
-            "adjacent, not the same"
-        );
-        // And it follows the canonical port rather than a hardcoded 8822: the
-        // retired port would be refused while the LIVE one sailed through.
-        assert!(
-            refuses_self_port(9999, 9999, false),
-            "whatever the self port is"
-        );
     }
 
     /// Sliding 60s window, exercised without a clock.
@@ -785,8 +677,8 @@ mod tests {
         }
     }
 
-    /// Defaults match python's, because the Proxies tab renders them as the
-    /// live policy and a silently different cap is a UI that lies.
+    /// Defaults match python's, because the status route reports them as the
+    /// live policy and a silently different cap is a report that lies.
     #[test]
     fn the_env_knobs_default_to_pythons_values() {
         assert_eq!(rate_per_min(), 180);
@@ -797,21 +689,14 @@ mod tests {
         assert_eq!(env_u32("AMUX_TUNNEL_NOPE_XYZ", 7), 7);
     }
 
-    /// `maybe_boot_start` must refuse to do anything without BOTH halves. The
-    /// dangerous shape is a token with no port: python's comment says it, and
-    /// this is the assertion behind the comment.
+    /// Boot never starts the relay without a token, and never because of
+    /// `AMUX_TUNNEL_PORT`: that variable no longer names anything to publish.
     #[tokio::test]
-    async fn boot_start_needs_a_token_and_an_explicit_port() {
-        // No token in the test environment, so this is the first gate.
+    async fn boot_start_needs_a_token_and_a_published_connector() {
         if !configured() {
             assert_eq!(maybe_boot_start().await, "no token");
+        } else {
+            eprintln!("AMUX_TUNNEL_TOKEN is set here; the no-token arm is not exercised");
         }
-        // And the port must be explicit: an unset AMUX_TUNNEL_PORT means the
-        // target would be amux itself, which rule 1 forbids.
-        assert_eq!(
-            boot_target_port(),
-            None,
-            "no port configured in the test env"
-        );
     }
 }

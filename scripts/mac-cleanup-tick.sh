@@ -392,6 +392,7 @@ VM_PS_CMD=${AMUX_CLEANUP_VM_PS_CMD:-docker --context colima-PROFILE ps --format 
 # Which container inside a VM writes its disk (the RCA bundle's writers list).
 # Prints "S<TAB>name<TAB>blockio" and "I<TAB>/name<TAB>startedAt" lines.
 VM_WRITERS_CMD=${AMUX_CLEANUP_VM_WRITERS_CMD:-vm_writers_raw PROFILE}
+OPEN_WRITERS_CMD=${AMUX_CLEANUP_OPEN_WRITERS_CMD:-open_writers_raw}
 VM_IDLE_IGNORE=${AMUX_CLEANUP_VM_IDLE_IGNORE:-gs12-pypi-cache}
 VM_STOP_CMD=${AMUX_CLEANUP_VM_STOP_CMD:-colima stop -p PROFILE}
 # Docker Desktop runs its own VM that `colima list` never shows. On 2026-10-05
@@ -1964,6 +1965,21 @@ prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budge
   cands=$(mktemp "${TMPDIR:-/tmp}/sup-cands.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/sup-lsof.XXXXXX")
   stats=$(mktemp "${TMPDIR:-/tmp}/sup-stats.XXXXXX"); picks=$(mktemp "${TMPDIR:-/tmp}/sup-picks.XXXXXX"); open_out=$(mktemp "${TMPDIR:-/tmp}/sup-open.XXXXXX")
   find_cargo_targets "$roots" "$TARGET_DEPTH" "$TARGET_SCAN_S" | sort -u > "$cands"
+  # THE SHARED TARGETS, WHETHER OR NOT THE SCAN FINDS THEM (disk RCA
+  # 20261025-190143). find_cargo_targets keys on CACHEDIR.TAG, and
+  # ~/.amux/rust-build-target has none, so this arm never saw it: 31.4G of
+  # orphaned amux-crate .rcgu.o sat in its debug/deps, the profile passed
+  # cargo-budget's 40G cap and every lane's cargo and pre-commit was refused.
+  # TARGET_KEEP protects a target from being REAPED whole; pruning what it
+  # holds that no build will read is this arm's job, kept targets included.
+  local kept_added=0 k
+  local IFS_OLD=$IFS; IFS=':'
+  for k in $TARGET_KEEP; do
+    IFS=$IFS_OLD
+    [ -n "$k" ] && [ -d "$k" ] || continue
+    grep -qxF -- "$k" "$cands" || { printf '%s\n' "$k" >> "$cands"; kept_added=$((kept_added+1)); }
+  done
+  IFS=$IFS_OLD
   if ! { $LSOF_CMD > "$lsofsnap" 2>/dev/null && [ -s "$lsofsnap" ]; }; then
     echo "mac-cleanup: superseded artifacts: open handles UNMEASURED (lsof produced nothing): pruned 0, nothing is deleted without it"
     rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"; return 0
@@ -2014,7 +2030,7 @@ prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budge
     while IFS=$'\t' read -r _ _ f; do [ -e "$f" ] && n_fail=$((n_fail+1)); done < "$stats"
   fi
   SUPERSEDED_PRUNED=$((n_exe+n_obj)); SUPERSEDED_PRUNED_KB=$kb
-  echo "mac-cleanup: superseded artifacts: targets ${n_targets}, complete=${complete}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}, elapsed $(( $(date +%s) - now ))s"
+  echo "mac-cleanup: superseded artifacts: targets ${n_targets} (${kept_added} shared without CACHEDIR.TAG), complete=${complete}, $( [ "$dry" = 1 ] && echo 'would prune' || echo pruned ) ${n_exe} superseded executable(s) + ${n_obj} orphaned .rcgu.o ($(fmt_kb "$kb")), kept: newest ${keep} per stem, younger than ${age}m ${k_recent}, open ${k_open}, failed ${n_fail}, elapsed $(( $(date +%s) - now ))s"
   rm -f -- "${cands:?}" "${lsofsnap:?}" "${stats:?}" "${picks:?}" "${open_out:?}"
 }
 
@@ -2385,13 +2401,15 @@ swap_burn_note() { # <burn_gbh> <swap_total_prev_mb> <swap_total_now_mb> <hours_
 
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb> [cpu_idle_pct]
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" -v idle="${10:--1}" -v imax="$CPU_IDLE_MAX_PCT" \
-      -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" 'BEGIN{
+      -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" -v famd="${FAMILY_DESC:-}" 'BEGIN{
     if (df >= 0 && df < floor) printf "disk free %.1fG is under the %dG floor\n", df, floor
     else if (h != "-" && h+0 < htf) printf "disk burning %.1fG/h, full in %.1fh (under %dh)\n", b, h, htf
     if (pr >= 2) printf "memory kernel pressure %d after the purge arm\n", pr
     else if (swt > 0 && sw >= 0 && sw < swf && (pr != 1 || (sw/swt < swcp && (df < 0 || df < sgd)))) printf "memory swap has %dMB free (under %dMB)\n", sw, swf
     if (l >= 0 && n > 0 && l/n > cs && (idle < 0 || idle < imax)) printf "cpu 15-min load %.1f is %.0f%% of %d cores (over %.0f%%)\n", l, l/n*100, n, cs*100
-    if (fam == 1) print "family a process family is over its share of RAM"
+    # Which family (RCA 20261026-010147): the line used to say only "a process
+    # family", so the RCA started by re-running the scan to learn what it was.
+    if (fam == 1) print "family a process family is over its share of RAM" (famd != "" ? ": " famd : "")
   }'
 }
 
@@ -2438,6 +2456,50 @@ for i, (rate, gb, up, n) in enumerate(rows[:3]):
     tag = " (verdict=vm_container_writer)" if i == 0 else ""
     print(f"- inside colima-{prof}: {n} wrote {gb:.0f}G in {up:.1f}h ({rate:.1f}G/h){tag}")
 ' "$p" "$now"
+}
+
+# A WRITER OUTSIDE THE SEARCHED ROOTS IS STILL HOLDING ITS FILE OPEN. RCA
+# 20261025-100211: the find above ran out of budget, never looked in
+# ~/.config, and the bundle blamed ts-dropin-mx (its VM disk was flat) while a
+# pg_dump wrote ss_s1.dir/5040.dat.gz at 34G/h. lsof found it in 1s. Two
+# samples of each open-for-write file's ALLOCATED bytes (a sparse VM disk's
+# apparent size never moves) give its growth rate wherever it lives.
+open_writers_raw() { # one sample: pid<TAB>command<TAB>allocated bytes<TAB>path, files over 500M open for write
+  perl -e 'alarm 20; exec @ARGV' lsof -nP -w 2>/dev/null \
+    | awk '$5=="REG" && $4 ~ /^[0-9]+[wu]/ && $7+0>536870912 {n=$9; for(i=10;i<=NF;i++) n=n" "$i; print $2"\t"$1"\t"n}' \
+    | sort -u | while IFS=$'\t' read -r pid cmd path; do
+        b=$(stat -f %b "$path" 2>/dev/null) && printf '%s\t%s\t%s\t%s\n' "$pid" "$cmd" "$((b * 512))" "$path"
+      done
+}
+open_file_writers() { # [interval_s] [pane map text]: the top 3 growing files, one bundle line each
+  local iv=${1:-10} pmap=${2:-} a b
+  a=$($OPEN_WRITERS_CMD 2>/dev/null) || a=""
+  [ -n "$a" ] || return 0
+  sleep "$iv"
+  b=$($OPEN_WRITERS_CMD 2>/dev/null) || b=""
+  python3 -c '
+import sys
+iv, a, b, floor = float(sys.argv[1]), sys.argv[2], sys.argv[3], float(sys.argv[4])
+def rows(t):
+    d = {}
+    for l in t.splitlines():
+        f = l.split("\t")
+        if len(f) == 4 and f[2].isdigit():
+            d[(f[0], f[3])] = (f[1], int(f[2]))
+    return d
+A, B = rows(a), rows(b)
+out = []
+for k, (cmd, nb) in B.items():
+    rate = (nb - A[k][1]) / 2**30 * 3600 / iv if k in A else 0
+    if rate >= floor:   # a trickle (a VM disk at 0.0G/h) is not the writer
+        out.append((rate, nb / 2**30, k[0], cmd, k[1]))
+out.sort(reverse=True)
+for r in out[:3]:
+    print("%.1f\t%.1f\t%s\t%s\t%s" % r)
+' "$iv" "$a" "$b" "${OPEN_WRITERS_MIN_GBH:-1}" | { i=0; while IFS=$'\t' read -r rate gb pid cmd path; do
+    tag=""; [ "$i" -eq 0 ] && tag=" (verdict=open_file_writer)"; i=$((i+1))
+    echo "- open for write: $path growing ${rate}G/h (${gb}G now) by pid=$pid $cmd, lane: $(lane_for_pid "$pid" "$pmap")$tag"
+  done; }
 }
 
 # Burn rate from the host-metrics history (5-minute samples), by least squares
@@ -3332,6 +3394,10 @@ if [ -n "$fam" ]; then
   fam_pct=$(awk -v f="$fam_kb" -v p="$phys_kb" 'BEGIN{ printf "%.1f", (p>0)? f/p*100 : -1 }')
   fam_hours=$(awk -v s="$fam_age" 'BEGIN{ printf "%.1f", s/3600 }')
   if family_exceeds "$fam_kb" "$phys_kb" "$FAMILY_SHARE_PCT"; then
+    # The full command is read, then shortened for the line: a cut on ps output
+    # is the truncation class test-mac-cleanup-tick.sh pins (AMUX-4686).
+    fam_cmd=$(ps -o command= -p "$fam_ppid" 2>/dev/null)
+    FAMILY_DESC="${fam_gb}G (${fam_pct}% of RAM, share ${FAMILY_SHARE_PCT}%) in ${fam_n} children of pid ${fam_ppid}, lane $(lane_for_pid "$fam_ppid" "$(pane_map)"): ${fam_cmd:0:120}"
     echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(owner_label_for_pid "$fam_ppid") — reported, never killed"
   elif family_too_old "$fam_age" "$FAMILY_AGE_H"; then
     echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(owner_label_for_pid "$fam_ppid")"
@@ -3363,7 +3429,8 @@ if [ -n "$fse_reading" ]; then
     # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
     churn_f=$(mktemp "${TMPDIR:-/tmp}/churn-out.XXXXXX")
     churn_unit="files modified in ${CHURN_MIN}m"; churn_top_unit="files in ${CHURN_MIN}m"; churn_floor=$CHURN_FILES
-    if ! tick_arm "fseventsd churn census" CHURN_BUDGET_S; then CHURN_COMPLETE=no; : > "$churn_f"
+    churn_measured=1
+    if ! tick_arm "fseventsd churn census" CHURN_BUDGET_S; then CHURN_COMPLETE=no; churn_measured=0; : > "$churn_f"
     elif [ -n "$CHURN_SAMPLE_CMD" ]; then
       churn_s=$CHURN_SAMPLE_S; [ "$churn_s" -le "$CHURN_BUDGET_S" ] 2>/dev/null || churn_s=$CHURN_BUDGET_S
       # The census floor is per CHURN_MIN minutes; scale it to the sample window.
@@ -3378,6 +3445,12 @@ if [ -n "$fse_reading" ]; then
     if [ -n "$churn" ]; then
       printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n $churn_unit under $d"; done
       fse_top=$(printf '%s\n' "$churn" | head -1 | { read -r n d; echo "$n $churn_top_unit under $d"; })
+    elif [ "$churn_measured" = 0 ]; then
+      # Nothing was sampled, so there is no "no directory over N" to report: that
+      # line used to print here and reached the escalation as the measured feed
+      # (Mac fseventsd RCA 20261026-130357, with the census skipped out of time).
+      fse_top="not measured: the churn census was skipped because the tick ran out of time"
+      echo "mac-cleanup:   fseventsd feed: $fse_top (verdict=fseventsd_feed_unmeasured)"
     elif [ -n "$CHURN_SAMPLE_CMD" ]; then
       fse_top="no directory over ${churn_floor} ${churn_unit} (FSEvents sample, deletions included)"
       echo "mac-cleanup:   fseventsd feed: $fse_top"
@@ -3508,6 +3581,8 @@ else
       echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
     if printf '%s\n' "$verdicts" | grep -q '^disk '; then
       echo; echo "## Files over 500M written in the last hour (the writers)"
+      # Open files first: wherever they live, and only seconds of the budget.
+      open_file_writers "${AMUX_CLEANUP_OPEN_WRITERS_IV_S:-10}" "$pmap"
       IFS=':' read -r -a wroots <<< "$TARGET_ROOTS"
       # ONE budget for the whole search, not one per root: 9 roots at 45s each
       # was 405s on its own and pushed the tick past the scheduler's 600s kill.
@@ -3536,7 +3611,7 @@ else
     fi
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
-  grep -a 'verdict=vm_container_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /' 
+  grep -a 'verdict=vm_container_writer\|verdict=open_file_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /'
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

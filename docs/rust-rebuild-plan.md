@@ -4130,7 +4130,6 @@ amux/
           files.rs               # /api/files/*
           journal.rs             # /api/journal/*
           graph.rs               # /api/graph/*
-          proxy.rs               # /proxy/*
           settings.rs            # /api/prefs, /api/settings
           alerts.rs              # /api/alert/owner, push
           metrics.rs             # /api/metrics, /api/debug/*

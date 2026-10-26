@@ -156,7 +156,6 @@ await ctx.route('**/api/**', (r) => {
   unknown.add(p);
   return reply(r, p.endsWith('s') || p.includes('history') ? [] : {});
 });
-await ctx.route('**/proxy/**', (r) => r.abort());
 const p = await ctx.newPage();
 await p.addInitScript(() => { try { localStorage.clear(); } catch (e) {} });
 await p.goto(base + '/', { waitUntil: 'load' });

@@ -1,0 +1,2 @@
+! First copy your one-time code: AB12-CD34
+Open this URL to continue in your web browser: https://github.com/login/device

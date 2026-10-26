@@ -1,0 +1,28 @@
+# Public links (`amux publish <port>`, Pages > Public links): anyone with the link opens one
+# app, without the sign-in door. amux answers /pub/<id>/ only for a link the owner created
+# and approved, relays only to that link's port, never to amux itself, and strips amux's
+# cookies before anything reaches the app. Imported inside the site block by bootstrap.sh
+# and update.sh.
+#
+# Only /pub/ followed by a link id (32 lowercase hex) skips the door. path_regexp is
+# case-sensitive, unlike the `path` matcher: with `handle /pub/*`, /PUB/ and /Pub/x also
+# skipped the door and fell through to amux's dashboard shell (red-team, 2026-10-25).
+@pub_link path_regexp pub_link ^/pub/[0-9a-f]{32}(/|$)
+handle @pub_link {
+  request_header -X-Amux-Member
+  request_header -X-Amux-Session
+  request_header -X-Amux-Worker
+  request_header -X-Amux-Worker-Token
+  request_header -X-Door-User
+  # Nothing of the visitor's or the owner's session travels either way.
+  request_header -Cookie
+  header -Set-Cookie
+  reverse_proxy https://127.0.0.1:8824 {
+    transport http {
+      tls_insecure_skip_verify
+    }
+    header_up Host {host}
+    header_up -Authorization
+    flush_interval -1
+  }
+}

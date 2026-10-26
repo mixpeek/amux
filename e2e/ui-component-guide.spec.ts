@@ -1,8 +1,9 @@
 import {test,expect} from './fixtures';
 
-test('production component guide previews both themes and restores focus and theme',async({page},info)=>{
+test('production component guide previews every theme and restores focus and theme',async({page},info)=>{
+ test.setTimeout(120_000);   // every control's tap size, under each of the built-in themes
  await page.addInitScript(()=>localStorage.setItem('amux_walkthrough_done','1'));
- await page.goto('/');await page.evaluate(()=>document.body.classList.remove('light'));
+ await page.goto('/');await page.evaluate(()=>(window as any).themeActivate('amux-dark',{local:true}));
  await page.locator('#settings-btn').click();await page.locator('.settings-tab-btn[data-stab="device"]').click();await page.locator('#style-guide-btn').click();
  const guide=page.locator('#ui-guide-overlay');await expect(guide).toBeVisible();
  await expect(guide.getByRole('dialog')).toHaveAttribute('aria-modal','true');
@@ -18,8 +19,12 @@ test('production component guide previews both themes and restores focus and the
  expect(covered.clipped).toContain('modal-backdrop:covered-actions');
  await page.locator('#modal-btns button').filter({hasText:'Cancel'}).click();
  await expect(guide.locator('#ui-guide-feedback')).toHaveText('Example cancelled.');
- for(const light of [false,true]){
-  await page.evaluate(light=>document.body.classList.toggle('light',light),light);
+ // Every built-in theme, through the theme engine the guide's own button uses.
+ const themes:string[]=await page.evaluate(()=>(window as any).themeAll().filter((t:any)=>t.builtin).map((t:any)=>t.id));
+ expect(themes.length).toBeGreaterThanOrEqual(9);
+ for(const theme of themes){
+  await page.evaluate(id=>(window as any).themePreview((window as any).themeById(id)),theme);
+  const light=await page.evaluate(()=>document.body.classList.contains('light'));
   await expect.poll(()=>page.evaluate(()=>(window as any)._uiComponentCheck(document.querySelector('#ui-guide-overlay')))).toMatchObject({measured:true,issues:[]});
   await expect.poll(()=>page.evaluate(()=>(window as any)._modalLayoutCheck().clipped)).toEqual([]);
   expect(await guide.locator('h3').evaluate(e=>{const r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.left+r.width/2,r.top+2));})).toBe(true);
@@ -28,11 +33,12 @@ test('production component guide previews both themes and restores focus and the
    for(const control of await guide.locator('.btn,.input,.modal-close').all())expect((await control.boundingBox())!.height,await control.evaluate(e=>e.tagName+'#'+e.id)).toBeGreaterThanOrEqual(44);
    expect(await guide.locator('.input').first().evaluate(e=>getComputedStyle(e).fontSize)).toBe('16px');
   }
-  await guide.locator('.modal-body').evaluate(e=>{e.scrollTop=0;});await page.screenshot({path:info.outputPath('guide-'+(light?'light':'dark')+'.png')});
+  await guide.locator('.modal-body').evaluate(e=>{e.scrollTop=0;});await page.screenshot({path:info.outputPath('guide-'+theme+(light?'-light':'')+'.png')});
  }
  await guide.locator('.modal-body').evaluate(e=>{e.scrollTop=e.scrollHeight;});
  await last.click();await expect(guide).toHaveCount(0);await expect(page.locator('#settings-btn')).toBeFocused();
  expect(await page.evaluate(()=>document.body.classList.contains('light'))).toBe(false);
+ expect(await page.evaluate(()=>document.body.dataset.theme)).toBe('amux-dark');
  await page.locator('#settings-btn').click();await page.locator('.settings-tab-btn[data-stab="device"]').click();await page.locator('#style-guide-btn').click();await page.keyboard.press('Escape');await expect(guide).toHaveCount(0);await expect(page.locator('#settings-btn')).toBeFocused();
 });
 

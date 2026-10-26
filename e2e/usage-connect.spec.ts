@@ -41,15 +41,23 @@ function usage(connected: boolean) {
 // The Claude CLI in a server terminal: the recorded link and prompt until a code is typed,
 // then its answer to the code (`outcome`), and the process exits `exitAfterMs` later.
 // Each new terminal is a new CLI waiting for a code.
-type Outcome = 'success' | 'refused' | 'silent';
+type Outcome = 'success' | 'refused' | 'failed' | 'silent';
 async function mockCli(page: Page, exitAfterMs = 0, outcome: Outcome = 'success') {
-  const st = { codeTyped: 0, created: 0, deleted: 0, inputs: [] as string[] };
-  const answer = { success: '\r\nLogin successful.\r\n', refused: '\r\nInvalid code. Please make sure the full code was copied.\r\n', silent: '' };
-  await page.route('**/api/terminal/create', r => { st.created++; st.codeTyped = 0; r.fulfill({ json: { id: 'e2e-login' } }); });
+  const st = { codeTyped: 0, codePending: false, created: 0, deleted: 0, inputs: [] as string[] };
+  const answer = { success: '\r\nLogin successful.\r\n', refused: '\r\nInvalid code. Please make sure the full code was copied.\r\n',
+    failed: '\r\nLogin failed: Request failed with status code 400\r\n', silent: '' };
+  await page.route('**/api/terminal/create', r => { st.created++; st.codeTyped = 0; st.codePending = false; r.fulfill({ json: { id: 'e2e-login' } }); });
   await page.route('**/api/terminal/e2e-login/input', async r => {
     const data = Buffer.from(JSON.parse(r.request().postData() || '{}').data || '', 'base64').toString();
     st.inputs.push(data);
-    if (data.startsWith('e2e-code')) st.codeTyped = Date.now();
+    // The CLI answers once Enter follows the code, as the real one does.
+    if (data.startsWith('e2e-code')) st.codePending = true;
+    else if (data === '\r' && st.codePending) {
+      st.codePending = false; st.codeTyped = Date.now();
+      // A CLI that refuses and exits at once answers while the Enter write is still in
+      // flight: hold that write open so the answer is read first.
+      if (outcome === 'failed') await new Promise(res => setTimeout(res, 1500));
+    }
     r.fulfill({ json: { ok: true } });
   });
   await page.route('**/api/terminal/e2e-login/output**', async r => {
@@ -165,8 +173,9 @@ async function startSwitch(page: Page) {
   await page.locator('#model-login-paste-wrap button').first().click();
 }
 
-test('Claude: a refused code starts a new sign-in and says why', async ({ page }) => {
-  const cli = await mockCli(page, 60000, 'refused');
+for (const [outcome, exitAfterMs, why] of [['refused', 60000, 'a malformed code'], ['failed', 0, 'a well-formed code the server refused']] as const)
+test(`Claude: ${why} starts a new sign-in and says why`, async ({ page }) => {
+  const cli = await mockCli(page, exitAfterMs, outcome);
   await startSwitch(page);
   await expect.poll(() => cli.created, { timeout: 15000 }).toBe(2);
   await expect(page.locator('#model-login-err')).toHaveText('Claude did not accept that code, so this is a new sign-in link. Copy the whole code from the page.');

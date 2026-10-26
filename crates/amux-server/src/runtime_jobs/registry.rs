@@ -133,6 +133,7 @@ pub mod ids {
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
+    pub const SOCIAL_METRICS: &str = "social-metrics";
     pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
@@ -196,6 +197,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
+    ids::SOCIAL_METRICS,
     ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
@@ -573,8 +575,8 @@ pub const CATALOG: &[Doc] = &[
     },
     Doc {
         id: ids::TUNNEL,
-        name: "Tunnel relay",
-        purpose: "Long-polls the amux cloud gateway and serves each public request from a local port, so a localhost app is reachable without an inbound port. Registered only while a tunnel is running — absent here means no tunnel is up, which is also the default.",
+        name: "ChatGPT app relay",
+        purpose: "Long-polls the amux cloud gateway and serves the ChatGPT app's OAuth and /mcp requests from amux, refusing every other path. Registered only while the connector is published; absent here means it is not, which is also the default.",
         env: &[
             EnvControl {
                 var: "AMUX_TUNNEL_TOKEN",
@@ -582,8 +584,8 @@ pub const CATALOG: &[Doc] = &[
                 off: Some(OFF_WHEN_UNSET),
             },
             EnvControl {
-                var: "AMUX_TUNNEL_PORT",
-                effect: "the local port to auto-target at boot. UNSET means no auto-start: defaulting to amux's own port would publish an unauthenticated control plane",
+                var: "AMUX_TUNNEL_MCP",
+                effect: "1 starts the relay at boot even without the dashboard's Publish marker",
                 off: Some(OFF_WHEN_UNSET),
             },
             EnvControl {
@@ -599,11 +601,6 @@ pub const CATALOG: &[Doc] = &[
             EnvControl {
                 var: "AMUX_TUNNEL_MAX_CONCURRENT",
                 effect: "simultaneous local fetches; excess waits 8s then gets a 503 (default 8)",
-                off: None,
-            },
-            EnvControl {
-                var: "AMUX_TUNNEL_ALLOW_SELF",
-                effect: "1 = permit tunnelling amux's OWN port. Refused by default: this port has no request auth and /api/sessions/<n>/send is ungated",
                 off: None,
             },
         ],
@@ -835,6 +832,14 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_CONNECTOR_MAINTENANCE_SECS", effect: "pass interval in seconds (default 300, 0 disables)", off: Some("0") }],
         pref: None,
         detail: Some("/api/connectors/maintenance"),
+    },
+    Doc {
+        id: ids::SOCIAL_METRICS,
+        name: "Social metrics",
+        purpose: "Reads each social post's views and engagement once its 24h, 72h and 7d windows pass, and stores one snapshot per window. A failed read is stored unmeasured with its error and retried.",
+        env: &[EnvControl { var: "AMUX_SOCIAL_METRICS_SECS", effect: "pass interval in seconds (default 600, 0 disables)", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/social/posts"),
     },
     Doc {
         id: ids::BROWSER_LOGIN_SYNC,

@@ -414,7 +414,28 @@ async fn tick(home: &std::path::Path, store: Option<&crate::db::SharedStore>) ->
     // independent knobs the moment there were two of them.
     reap_stale_profiles(home).await;
     reap_route_chromes(home, activity_reap_s(), now_f64()).await;
+    keep_logins(home).await;
     tick_with_limits(home, store, reap_after_s(), activity_reap_s(), ttl_s()).await
+}
+
+/// Every running profile's session cookies go to disk each tick, so a browser
+/// that dies without a clean stop (a crash, a server restart that took it, a
+/// machine sleep) still comes back signed in. A login made since the last tick
+/// can be lost to a hard kill; a clean stop keeps it too (stop_profile_as).
+async fn keep_logins(_home: &std::path::Path) {
+    let mut kept = 0usize;
+    let mut failed = 0usize;
+    let running = crate::integrations::browser::running_all();
+    for (_profile, _owner, _started, _pid, port, _last_verb) in &running {
+        match crate::integrations::browser::keep_session_cookies(*port).await {
+            Ok(n) => kept += n,
+            Err(_) => failed += 1,
+        }
+    }
+    if kept > 0 || failed > 0 {
+        tracing::info!(kept, failed, profiles = running.len(), verdict = "browser_session_cookies_kept",
+            measured = true, n_considered = running.len(), "browser: session cookies kept on disk so logins survive a stop (values not logged)");
+    }
 }
 
 /// When a browser-routing CDP Chrome was last used, or `None` when unknown.

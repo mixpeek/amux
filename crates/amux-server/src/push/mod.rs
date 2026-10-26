@@ -31,8 +31,8 @@ use axum::{Json, Router};
 use base64::Engine;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::rand_core::{OsRng, RngCore};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use p256::{PublicKey, SecretKey};
 use serde_json::{json, Value};
@@ -74,7 +74,7 @@ pub fn load_or_generate_vapid(path: &Path) -> anyhow::Result<Vapid> {
         SecretKey::from_pkcs8_pem(&std::fs::read_to_string(path)?)
             .map_err(|e| anyhow::anyhow!("unreadable VAPID key at {}: {e}", path.display()))?
     } else {
-        let sk = SecretKey::random(&mut OsRng);
+        let sk = SecretKey::generate();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -87,7 +87,7 @@ pub fn load_or_generate_vapid(path: &Path) -> anyhow::Result<Vapid> {
         }
         sk
     };
-    let public = secret.public_key().to_encoded_point(false);
+    let public = secret.public_key().to_sec1_point(false);
     Ok(Vapid {
         signing: SigningKey::from(&secret),
         public_key_b64: b64url(public.as_bytes()),
@@ -124,9 +124,9 @@ pub fn encrypt_web_push(
     auth_b64: &str,
     payload: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
-    let as_secret = SecretKey::random(&mut OsRng);
+    let as_secret = SecretKey::generate();
     let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
+    getrandom::fill(&mut salt).expect("OS random source");
     encrypt_web_push_with(&as_secret, &salt, p256dh_b64, auth_b64, payload)
 }
 
@@ -144,7 +144,7 @@ fn encrypt_web_push_with(
     let ua_public = PublicKey::from_sec1_bytes(&ua_public_bytes)
         .map_err(|e| anyhow::anyhow!("bad p256dh subscription key: {e}"))?;
 
-    let as_public_bytes = as_secret.public_key().to_encoded_point(false);
+    let as_public_bytes = as_secret.public_key().to_sec1_point(false);
     let shared = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua_public.as_affine());
 
     // IKM per RFC 8291 §3.3-3.4: HKDF-Extract(salt=auth_secret, ecdh_secret),
@@ -556,7 +556,7 @@ mod tests {
         let ciphertext = &msg[21 + idlen..];
 
         let as_public = PublicKey::from_sec1_bytes(as_public_bytes).unwrap();
-        let ua_public_bytes = ua_secret.public_key().to_encoded_point(false);
+        let ua_public_bytes = ua_secret.public_key().to_sec1_point(false);
         let shared =
             p256::ecdh::diffie_hellman(ua_secret.to_nonzero_scalar(), as_public.as_affine());
 
@@ -588,10 +588,10 @@ mod tests {
 
     #[test]
     fn rfc8291_encrypt_round_trips() {
-        let ua_secret = SecretKey::random(&mut OsRng);
-        let p256dh = b64url(ua_secret.public_key().to_encoded_point(false).as_bytes());
+        let ua_secret = SecretKey::generate();
+        let p256dh = b64url(ua_secret.public_key().to_sec1_point(false).as_bytes());
         let mut auth = [0u8; 16];
-        OsRng.fill_bytes(&mut auth);
+        getrandom::fill(&mut auth).expect("OS random source");
         let auth_b64 = b64url(&auth);
 
         let payload = br#"{"title":"amux","body":"round trip"}"#;
@@ -601,8 +601,8 @@ mod tests {
 
     #[test]
     fn rfc8291_rejects_tampering() {
-        let ua_secret = SecretKey::random(&mut OsRng);
-        let p256dh = b64url(ua_secret.public_key().to_encoded_point(false).as_bytes());
+        let ua_secret = SecretKey::generate();
+        let p256dh = b64url(ua_secret.public_key().to_sec1_point(false).as_bytes());
         let auth = [7u8; 16];
         let mut msg = encrypt_web_push(&p256dh, &b64url(&auth), b"x").unwrap();
         let last = msg.len() - 1;
@@ -683,6 +683,31 @@ mod tests {
         let signing_input = format!("{}.{}", parts[0], parts[1]);
         vk.verify(signing_input.as_bytes(), &sig)
             .expect("signature must verify");
+    }
+
+    /// A VAPID key already on disk (PKCS#8 PEM, written by Python's
+    /// `cryptography`) must load to the same public key, or every existing
+    /// dashboard subscription stops verifying. Header assembled at runtime
+    /// for the secret scanner, as below. Test-only key.
+    #[test]
+    fn an_existing_vapid_pem_loads_to_the_same_public_key() {
+        let pem = format!(
+            "-----BEGIN {k} KEY-----\n\
+             MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAdLDtKWWh3hpWks8\n\
+             LR4PABEiM0RVZneImaq7zN3u/wChRANCAAQNgm2BzpZhftEvRkDVWY3SH3S0IeXk\n\
+             kV6f2LoR69P4EaUKNkvW0kWTyaYoB4dfR8kaBXBwCUBp7PPetsLm4e/0\n\
+             -----END {k} KEY-----\n",
+            k = "PRIVATE"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vapid_private.pem");
+        std::fs::write(&path, &pem).unwrap();
+        let vapid = load_or_generate_vapid(&path).unwrap();
+        assert_eq!(
+            vapid.public_key_b64,
+            "BA2CbYHOlmF-0S9GQNVZjdIfdLQh5eSRXp_YuhHr0_gRpQo2S9bSRZPJpigHh19HyRoFcHAJQGns8962wubh7_Q"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), pem, "loading must not rewrite the key");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install a validated snapshot of the Bash client, never a symlink into edits.
 # Usage: scripts/install-cli.sh [BIN_DIR [SOURCE]]
-# SOURCE defaults to this checkout's amux. An amux source includes its grid helper.
+# SOURCE defaults to this checkout's amux. An amux source includes its grid helper
+# and, when present beside it, amux-remote and amux-cloud.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +16,14 @@ destinations=("$destination")
 if [[ "$(basename "$source_cli")" == amux ]]; then
   source_files+=("$(dirname "$source_cli")/scripts/amux-grid.sh")
   destinations+=("$bin_dir/scripts/amux-grid.sh")
+  # The remote clients ship beside it when the checkout has them
+  # (amux-cloud runs the amux-remote installed next to it).
+  for extra in amux-remote amux-cloud; do
+    if [[ -f "$(dirname "$source_cli")/$extra" ]]; then
+      source_files+=("$(dirname "$source_cli")/$extra")
+      destinations+=("$bin_dir/$extra")
+    fi
+  done
 fi
 stage=preflight
 

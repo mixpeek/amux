@@ -34,8 +34,11 @@ export const CLI_LOGINS = {
     // Its answer to a pasted code. A refused code ("Invalid code") stops the prompt, and the
     // CLI exits minutes later. On "Switch account" the old login still satisfies done(), so
     // only the success line tells a new login from a failed one (sandbox, 2026-10-24).
+    // A code of the wrong shape gets "Invalid code"; a well-formed code the server refuses
+    // gets "Login failed: Request failed with status code 400" and the CLI exits at once
+    // (sandbox, 2026-10-25, a deliberately wrong code).
     succeeded: /Login\s*successful/i,
-    rejected: /Invalid\s*code/i,
+    rejected: /Invalid\s*code|Login\s*failed/i,
     done: (a) => !!(a && a.claude && a.claude.oauth),
   },
   codex: {
@@ -44,6 +47,20 @@ export const CLI_LOGINS = {
     url: /https:\/\/auth\.openai\.com\/codex\/device(?![\w/])/,
     code: /(?<![A-Z0-9])[A-Z0-9]{4}-[A-Z0-9]{4,6}(?![A-Za-z0-9])/,
     done: (a) => !!(a && a.codex && a.codex.signed_in),
+  },
+  // Not a model: the GitHub account `amux contribute` opens pull requests as (Pull from
+  // remote on a cloud server sends local amux changes upstream first). `amux github login`
+  // installs a private gh when none is on PATH, then runs gh's device sign-in, which prints
+  // a one-time code and github.com/login/device and exits once the code is approved.
+  github: {
+    label: 'GitHub',
+    notModel: true,
+    command: 'exec amux github login',
+    url: /https:\/\/github\.com\/login\/device(?![\w/])/,
+    code: /(?<![A-Z0-9])[A-Z0-9]{4}-[A-Z0-9]{4}(?![A-Za-z0-9])/,
+    waitForExit: true,
+    succeeded: /Logged\s*in\s*as|Authentication\s*complete/i,
+    done: (_auth, identity) => !!(identity && identity.github && identity.github.signed_in),
   },
   gemini: {
     label: 'Google (Gemini)',

@@ -1000,7 +1000,7 @@ CREATE TABLE dictation_dict (
 
 ### `proxies` — 1 rows
 
-Registered reverse-proxy/tunnel entries (amux tunnel: name, port, scheme).
+Registered reverse-proxy/tunnel entries (amux tunnel: name, port, scheme). Retired with the Proxies tab (MSG-95893): kept on disk as the owner's data and no longer read; boot logs `retired_proxies_data_present` when rows exist.
 
 Columns: `id TEXT PK` · `name TEXT NOT NULL` · `port INTEGER NOT NULL` · `scheme TEXT NOT NULL DEFAULT 'http'` · `created_at INTEGER NOT NULL` · `last_started INTEGER`
 

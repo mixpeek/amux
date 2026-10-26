@@ -67,6 +67,7 @@ pub const PROXIED_FAMILIES: &[ProxiedFamily] = &[];
 pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/brex", "tokenized card issuance, webhook budget checks and credential health; disabled until configured (api/brex.rs)"),
     ("/api/_clear_sw", "service-worker cache reset landing page"),
+    ("/api/social", "publish to social platforms and read each post's results at 24h, 72h and 7d (api/social.rs)"),
     ("/health", "health + build discriminator"),
     // The /api-prefixed alias for the same handler. Lanes guess this path
     // because every sibling diagnostic is under /api/ (2026-08-30 sweep: 20
@@ -174,7 +175,6 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/tmux-sessions", "tmux sessions amux does not already own, for Connect (api/worker_create.rs)"),
     ("/api/iterm2", "open iTerm2 panes, for Connect-a-pane (api/worker_create.rs)"),
     ("/api/saved-messages", "peek composer's reusable snippets, per worker (api/saved_messages.rs, AMUX-2871)"),
-    ("/api/proxies", "Proxies tab CRUD; start/stop drive the tunnel relay (api/proxies.rs, AMUX-2887 + AMUX-2888)"),
     ("/api/pull", "self-update button; routes brew/pip installs, allows ahead-only no-op pulls, and refuses shared-checkout edits or non-fast-forward history (api/self_update.rs, AMUX-2891)"),
     ("/api/observability", "Cost tab rollup over token_ledger; does NOT index on request — the periodic job owns that (api/observability.rs, AMUX-2893)"),
     ("/api/habits", "Habits tab state — one JSON array in ~/.amux/habits.json (api/habits.rs, AMUX-2871)"),

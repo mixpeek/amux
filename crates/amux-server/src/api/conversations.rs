@@ -109,6 +109,21 @@ struct Lane {
 }
 
 fn lanes() -> Vec<Lane> {
+    scan_lanes(false)
+}
+
+/// The ISOLATED lanes. They get no thread, no channel membership and no reply
+/// route (no amux routing reaches them), but a PERSON may still @mention one:
+/// a person speaks for the owner, and an owner's send already reaches an
+/// isolated worker (session_verbs `isolated_peer_refusal` lets it through). On
+/// sandbox.amux.io (2026-10-25) "@amux-helper can you make an mdai ..." in a
+/// direct message resolved nothing and delivered nothing, and Ethan's answer
+/// was "this should work".
+fn isolated_lanes() -> Vec<Lane> {
+    scan_lanes(true)
+}
+
+fn scan_lanes(isolated: bool) -> Vec<Lane> {
     let home = super::groups::amux_home();
     let blocked = super::groups::blocked_names(&home);
     let mut out: Vec<Lane> = std::fs::read_dir(home.join("sessions"))
@@ -129,9 +144,9 @@ fn lanes() -> Vec<Lane> {
             if matches!(unq("CC_ARCHIVED").to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
                 return None;
             }
-            // ISOLATED lanes get no amux routing, and every delivery carries
-            // a reply route; they have no thread and cannot be @mentioned.
-            if matches!(unq("CC_ISOLATED").to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
+            // ISOLATED lanes get no amux routing: no thread, no channel, no
+            // reply route. They are listed apart (isolated_lanes).
+            if matches!(unq("CC_ISOLATED").to_ascii_lowercase().as_str(), "1" | "true" | "yes") != isolated {
                 return None;
             }
             let groups = unq("CC_TAGS")
@@ -296,8 +311,31 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
             .collect(),
         Conv::Group(g) => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
         Conv::Worker(w) => vec![w.clone()],
-        Conv::People(..) => Vec::new(),
+        // A direct message is two people: either may hand a worker a task
+        // from it, the same workers they could reach from #general.
+        Conv::People(..) => match who {
+            Who::Person { scope, .. } => {
+                lanes.iter().filter(|l| person_allows(scope, &l.name, lanes)).map(|l| l.name.clone()).collect()
+            }
+            Who::Worker { .. } => Vec::new(),
+        },
     }
+}
+
+/// Isolated workers a PERSON can @mention here. Never a worker poster: an
+/// isolated lane refuses peer sends. Never a worker's own thread (that is
+/// another worker's conversation).
+fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
+    let Who::Person { scope, .. } = who else { return Vec::new() };
+    iso.iter()
+        .filter(|l| match conv {
+            Conv::Group(g) if g == GENERAL => person_allows(scope, &l.name, iso),
+            Conv::Group(g) => l.groups.contains(g) && person_allows(scope, &l.name, iso),
+            Conv::People(..) => person_allows(scope, &l.name, iso),
+            Conv::Worker(_) => false,
+        })
+        .map(|l| l.name.clone())
+        .collect()
 }
 
 /// People who can read a conversation.
@@ -558,9 +596,11 @@ async fn posts(
         .iter()
         .map(|p| json!({"key": format!("person:{}", p.email), "name": p.name, "online": online(&format!("person:{}", p.email))}))
         .collect();
+    let mut mentionable = mentionable_workers(&me, &conv, &lanes);
+    mentionable.extend(mentionable_isolated(&me, &conv, &isolated_lanes()));
     Json(json!({"conv": key, "posts": rows, "last_read": last_read,
         "people": ppl, "workers": workers_in(&conv, &lanes),
-        "mentionable_workers": mentionable_workers(&me, &conv, &lanes),
+        "mentionable_workers": mentionable,
         "typing": typing_now(&key, &me.key()), "measured": true}))
     .into_response()
 }
@@ -677,6 +717,30 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
     )
 }
 
+/// What one mentioned worker receives, and where its answer will be: `here`
+/// (the conversation), `thread` (its own thread, for a direct message) or
+/// `pane` (an isolated worker: the owner's words only, no injected
+/// instructions, so its answer stays in its terminal).
+fn delivery_for(conv: &Conv, author: &str, body: &str, worker: &str, isolated: bool) -> (String, &'static str) {
+    if isolated {
+        let place = match conv {
+            Conv::Group(g) => format!("#{g}"),
+            _ => "a direct message".to_string(),
+        };
+        return (format!("{author} (amux Messages, {place}): {body}"), "pane");
+    }
+    if let Conv::People(..) = conv {
+        let thread = Conv::Worker(worker.to_string());
+        return (format!(
+            "{author} mentioned you in a direct message (amux Messages):\n\n{body}\n\nThis is addressed to you: act on it now. \
+             Your answer must be posted to your amux Messages thread, where {author} can read it (this pane is not). Post it with:\n\
+             amux post {} <<'EOF'\n<your answer>\nEOF",
+            thread.key()
+        ), "thread");
+    }
+    (delivery_text(conv, author, body), "here")
+}
+
 async fn create_post(
     State(state): State<AppState>,
     Path(conv): Path<String>,
@@ -715,7 +779,10 @@ async fn create_post(
             return err(StatusCode::BAD_REQUEST, "a direct message needs two known people");
         }
     }
-    let workers = mentionable_workers(&me, &conv, &lanes);
+    let iso_lanes = isolated_lanes();
+    let iso = mentionable_isolated(&me, &conv, &iso_lanes);
+    let mut workers = mentionable_workers(&me, &conv, &lanes);
+    workers.extend(iso.iter().cloned());
     let mut mentions = resolve_mentions(&body, &workers, &readers(&conv, &all, &lanes));
     let mut targets: Vec<String> = mentions
         .iter()
@@ -786,9 +853,10 @@ async fn create_post(
         let hdrs = send_headers(&me, &headers);
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
         tokio::spawn(async move {
-            let text = delivery_text(&conv2, &author, &text_body);
             let mut outcomes = Vec::new();
             for w in targets {
+                let isolated = iso.contains(&w);
+                let (text, reply) = delivery_for(&conv2, &author, &text_body, &w, isolated);
                 let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
                 let status = resp.status();
                 let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
@@ -803,9 +871,12 @@ async fn create_post(
                     .and_then(Value::as_str).unwrap_or("").to_string();
                 if !ok {
                     tracing::warn!(conv = %conv2.key(), post = id, worker = %w, status = status.as_u16(), detail = %detail,
-                        verdict = "conversation_delivery_failed", "a Messages post did not reach a worker");
+                        isolated, verdict = "conversation_delivery_failed", "a Messages post did not reach a worker");
+                } else {
+                    tracing::info!(conv = %conv2.key(), post = id, worker = %w, state, reply, isolated, measured = true,
+                        n_considered = 1, verdict = "conversation_delivered", "a Messages post reached a worker");
                 }
-                outcomes.push(json!({"worker": w, "ok": ok, "state": state, "status": status.as_u16(), "detail": detail}));
+                outcomes.push(json!({"worker": w, "ok": ok, "state": state, "status": status.as_u16(), "detail": detail, "reply": reply}));
             }
             let js = Value::Array(outcomes).to_string();
             let _ = st
@@ -950,6 +1021,52 @@ mod tests {
             &workers, &people);
         assert_eq!(got, vec!["worker:ed-summary-builder", "person:elliot@y.com", "person:doron@z.com"]);
         assert!(mention_tokens("ethan@x.com").is_empty(), "an email is not a mention");
+    }
+
+    #[test]
+    fn mention_tokens_take_hyphens_a_leading_at_and_drop_trailing_punctuation() {
+        assert_eq!(mention_tokens("@amux-helper can you make an mdai for @doron that has the weather"),
+            vec!["amux-helper", "doron"]);
+        assert_eq!(mention_tokens("ping @amux-helper, then @ed_x. and (@mtp-demo)"),
+            vec!["amux-helper", "ed_x", "mtp-demo"]);
+        let unknown = resolve_mentions("@nobody here", &["amux-helper".to_string()], &[]);
+        assert!(unknown.is_empty(), "an unknown name resolves to nothing");
+    }
+
+    #[test]
+    fn a_person_can_mention_an_isolated_worker_and_a_worker_cannot() {
+        // Sandbox, 2026-10-25: "@amux-helper ..." in a direct message between
+        // two people resolved nothing; amux-helper is isolated.
+        let lanes = vec![lane("ed", &["wexus"])];
+        let iso = vec![lane("amux-helper", &[])];
+        let owner = Who::Person { email: "ethan@x.com".into(), scope: MemberScope::Global };
+        let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
+        assert_eq!(mentionable_isolated(&owner, &dm, &iso), vec!["amux-helper".to_string()]);
+        assert_eq!(mentionable_isolated(&owner, &Conv::Group(GENERAL.into()), &iso), vec!["amux-helper".to_string()]);
+        assert!(mentionable_isolated(&owner, &Conv::Group("wexus".into()), &iso).is_empty(), "not in that group");
+        assert!(mentionable_isolated(&owner, &Conv::Worker("ed".into()), &iso).is_empty(), "another worker's thread");
+        let scoped = Who::Person { email: "doron@z.com".into(), scope: MemberScope::Worker("ed".into()) };
+        assert!(mentionable_isolated(&scoped, &dm, &iso).is_empty(), "outside a member's access");
+        let worker = Who::Worker { name: "ed".into(), groups: ["wexus".to_string()].into() };
+        assert!(mentionable_isolated(&worker, &Conv::Group(GENERAL.into()), &iso).is_empty(), "isolated lanes refuse peer sends");
+        // In a direct message, a person also reaches the workers they could from #general.
+        assert_eq!(mentionable_workers(&owner, &dm, &lanes), vec!["ed".to_string()]);
+        assert!(mentionable_workers(&scoped, &dm, &[lane("other", &[])]).is_empty());
+    }
+
+    #[test]
+    fn an_isolated_worker_gets_the_owners_words_and_a_dm_answer_goes_to_the_thread() {
+        let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
+        let (t, reply) = delivery_for(&dm, "ethan", "@amux-helper make an mdai", "amux-helper", true);
+        assert_eq!(reply, "pane");
+        assert_eq!(t, "ethan (amux Messages, a direct message): @amux-helper make an mdai");
+        assert!(!t.contains("amux post"), "no injected instructions into an isolated worker");
+        let (t, reply) = delivery_for(&dm, "ethan", "@ed run it", "ed", false);
+        assert_eq!(reply, "thread");
+        assert!(t.contains("amux post w:ed <<'EOF'"), "{t}");
+        assert!(!t.contains('$'), "{t}");
+        let (_, reply) = delivery_for(&Conv::Group("wexus".into()), "ethan", "@ed run", "ed", false);
+        assert_eq!(reply, "here");
     }
 
     #[test]

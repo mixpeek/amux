@@ -122,6 +122,26 @@ pub(crate) async fn ensure_named(home: &Path, name: &str, configured_repo: &str,
     if !crate::api::session_verbs::valid_session_name(name) {
         return Err("invalid worker name".into());
     }
+    // ONE ensure() PER WORKER AT A TIME. Two concurrent calls both ran
+    // `git worktree add` for the same path, and git's index.lock refused one
+    // or both ("Unable to create .../index.lock: File exists"; main CI red on
+    // ee126f43a, concurrent_ensure_never_records_an_empty_base). The second
+    // call now waits, then finds the first one's worktree and record and
+    // adopts them.
+    let slot = {
+        static SLOTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
+            std::sync::OnceLock::new();
+        let mut map = SLOTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(format!("{}\0{name}", home.display())).or_default().clone()
+    };
+    let _serial = match slot.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            tracing::info!(worker = name, measured = true, n_considered = 1, verdict = "fanout_ensure_serialized",
+                "a second workspace ensure() for this worker waited for the one in flight");
+            slot.lock().await
+        }
+    };
     let old = load(home, name);
     let repo = old
         .as_ref()
@@ -1259,11 +1279,12 @@ mod tests {
             ensure(&h1, "child-race", &repo),
             ensure(&h2, "child-race", &w.repo),
         );
-        // One arm may legitimately refuse (the worktree is being built by the
-        // other). What must never happen is a PERSISTED record with no base.
+        // ensure() is serialized per worker: the second call waits for the
+        // first and adopts its worktree, so both succeed. Neither may persist
+        // a record with no base.
         assert!(
-            a.is_ok() || b.is_ok(),
-            "both concurrent ensure() calls failed: {a:?} / {b:?}"
+            a.is_ok() && b.is_ok(),
+            "a concurrent ensure() failed: {a:?} / {b:?}"
         );
         for done in [a, b].into_iter().flatten() {
             assert!(

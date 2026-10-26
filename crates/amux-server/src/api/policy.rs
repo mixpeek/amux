@@ -162,7 +162,6 @@ fn classify(method: &Method, path: &str) -> (ActionClass, bool) {
         "/api/push",
         "/api/alert",
         "/api/tunnel",
-        "/api/proxies",
     ]
     .iter()
     .any(|prefix| lower.starts_with(prefix))

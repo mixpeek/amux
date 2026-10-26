@@ -1,51 +1,19 @@
-//! `/proxy/<port>/<path>`: open a dev server running on this machine from
-//! any device that can reach amux.
+//! Relaying an app that listens on this machine's loopback to a browser
+//! elsewhere: the apps origin's `/app/<id>/` (apps_origin.rs) and public links'
+//! `/pub/<id>/` (public_links.rs). Bodies stream, `Range` passes through so
+//! video seeks, HTML has its root-relative `src`/`href` routed back under the
+//! prefix, redirects stay inside it, and amux's cookies and the owner's bearer
+//! never reach the app, nor may the app set amux's cookies.
 //!
-//! Workers hand the owner links of this shape for a local dev server
-//! (`https://desktop.<tailnet>.ts.net:8824/proxy/3077/?hero=texture`). Until
-//! 2026-10-17 no such route existed: the SPA catch-all answered with the
-//! dashboard, so the owner on a phone landed on amux instead of the page.
-//!
-//! The route sends the browser to the SAME host on the dev server's own port
-//! rather than relaying bytes. Dev servers write root-relative URLs
-//! (`/@vite/client`, `/fonts/x.woff2`, `/_next/...`) and open HMR websockets
-//! on their own origin; under a `/proxy/3077/` prefix every one of those
-//! resolves against amux and breaks. On its own port the page is exactly what
-//! the worker saw locally.
-//!
-//! So the route first proves the port answers at the address the browser
-//! used. A server bound to 127.0.0.1 only cannot be reached that way, so amux
-//! relays it instead (`relay`): bodies stream, `Range` passes through so video
-//! seeks, and HTML has its root-relative `src`/`href` routed back under the
-//! prefix. That covers static pages and media; a page that builds URLs in
-//! script still needs the dev server on `--host 0.0.0.0`, which the WARN says.
-use super::{has_owner_session, peer_ip, tailnet_auth, AppState, Peer};
+//! This replaced `/proxy/<port>/` (removed 2026-10-25, Ethan: "remove the
+//! proxies"): an app is opened from the Pages tab, on its own origin.
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-use axum::response::{Html, IntoResponse, Redirect, Response};
-use std::net::IpAddr;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
-
-/// `/proxy/3077/a/b?x=1` -> (3077, "/a/b?x=1"). None when the port is not a
-/// usable TCP port number.
-pub(crate) fn parse_target(uri: &Uri) -> Option<(u16, String)> {
-    let rest = uri.path().strip_prefix("/proxy/")?;
-    let (port, tail) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let port: u16 = port.parse().ok().filter(|p| *p > 0)?;
-    let mut tail = tail.to_string();
-    if let Some(q) = uri.query() {
-        tail.push('?');
-        tail.push_str(q);
-    }
-    Some((port, tail))
-}
 
 /// The host part of a Host header, without its port. Keeps IPv6 brackets so
 /// the result can be put straight back into a URL.
@@ -58,7 +26,7 @@ pub(crate) fn host_only(authority: &str) -> &str {
     authority.split(':').next().unwrap_or(authority)
 }
 
-fn page(status: StatusCode, title: &str, body: &str) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
          <meta name=\"color-scheme\" content=\"dark light\"><title>{t}</title>\
@@ -90,73 +58,15 @@ async fn answers(host: &str, port: u16) -> bool {
     false
 }
 
-pub(crate) async fn proxy(
-    State(state): State<AppState>,
-    method: Method,
-    headers: HeaderMap,
-    uri: Uri,
-    peer: Peer,
-    body: Body,
-) -> Response {
-    let peer = peer_ip(peer);
-    // The same loopback switch as the rest of the server, so a test that turns
-    // the bypass off sees the refusal a remote device gets.
-    let loopback_bypass = !std::env::var("AMUX_RS_NO_LOOPBACK_BYPASS").is_ok_and(|v| v == "1");
-    let owner = state.auth_token.is_none()
-        || has_owner_session(&state, &headers)
-        || (loopback_bypass && peer.is_some_and(|ip| ip.is_loopback()))
-        || match peer {
-            Some(ip) => tailnet_auth::verified(ip).await,
-            None => false,
-        };
-    if !owner {
-        tracing::info!(path = %uri.path(), measured = true, n_considered = 1,
-            verdict = "port_proxy_not_signed_in", "proxy link opened without an owner session; sent to sign in");
-        return Redirect::to("/").into_response();
-    }
-    let Some((port, tail)) = parse_target(&uri) else {
-        return page(StatusCode::BAD_REQUEST, "Not a port",
-            "<p>A proxy link looks like <code>/proxy/3077/</code>: a port number from 1 to 65535, then the page.</p>");
-    };
-    let authority = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
-        .or_else(|| uri.authority().map(|a| a.to_string()))
-        .unwrap_or_else(|| "localhost".to_string());
-    let host = host_only(&authority).to_string();
-    let own_port = authority
-        .rsplit_once(':')
-        .filter(|(h, _)| !h.is_empty() && !authority.ends_with(']'))
-        .and_then(|(_, p)| p.parse::<u16>().ok());
-    if own_port == Some(port) {
-        return page(StatusCode::BAD_REQUEST, "That is amux's own port",
-            &format!("<p>Port {port} is the amux server itself. Use the port the dev server printed.</p>"));
-    }
-    let local = if answers("127.0.0.1", port).await {
+/// Where something on this machine listens on `port`: IPv4 loopback, then IPv6.
+pub(crate) async fn local_listener(port: u16) -> Option<&'static str> {
+    if answers("127.0.0.1", port).await {
         Some("127.0.0.1")
     } else if answers("::1", port).await {
         Some("[::1]")
     } else {
         None
-    };
-    let Some(local) = local else {
-        tracing::warn!(port, host = %host, measured = true, n_considered = 1,
-            verdict = "port_proxy_nothing_listening", "proxy link to a port nothing on this machine listens on");
-        return page(StatusCode::BAD_GATEWAY, "Nothing is running on that port",
-            &format!("<p>No server is listening on port {port} on this machine. It may have stopped; ask the worker that sent the link to start it again.</p>"));
-    };
-    if !answers(&host, port).await {
-        tracing::warn!(port, host = %host, measured = true, n_considered = 1,
-            verdict = "port_proxy_loopback_only",
-            "dev server listens on loopback only; relaying through amux (script-built URLs and HMR need --host 0.0.0.0)");
-        return relay(local, port, &tail, method, &headers, body).await;
     }
-    let target = format!("http://{host}:{port}{tail}");
-    let from_loopback = peer.is_some_and(|ip: IpAddr| ip.is_loopback());
-    tracing::info!(port, host = %host, from_loopback, measured = true, n_considered = 1,
-        verdict = "port_proxy_redirect", "proxy link sent to the dev server's own port");
-    Redirect::temporary(&target).into_response()
 }
 
 /// HTML larger than this is passed through unrewritten rather than buffered.
@@ -169,13 +79,14 @@ fn client() -> &'static reqwest::Client {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
-            .expect("proxy http client")
+            .expect("relay http client")
     })
 }
 
 /// Forward one request to `local:port` and answer with its response, for a
-/// dev server the browser cannot reach directly. `tail` is the page and query.
-async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
+/// dev server the browser cannot reach directly. `prefix` is the path the app
+/// is mounted under (`/app/<id>` or `/pub/<id>`), `tail` the page and query.
+pub(crate) async fn relay(local: &str, port: u16, prefix: &str, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
     let body = match axum::body::to_bytes(body, 64 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return page(StatusCode::PAYLOAD_TOO_LARGE, "Request too large", "<p>The request body is over 64 MB.</p>"),
@@ -199,12 +110,11 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(port, error = %e, measured = true, n_considered = 1,
-                verdict = "port_proxy_relay_failed", "relay to a loopback-only dev server failed");
+                verdict = "app_relay_failed", "relay to a loopback-only dev server failed");
             return page(StatusCode::BAD_GATEWAY, "The dev server did not answer",
                 &format!("<p>Port {port} accepted a connection but the request failed.</p>"));
         }
     };
-    let prefix = format!("/proxy/{port}");
     let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let is_html = upstream
         .headers()
@@ -220,9 +130,17 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
         {
             continue;
         }
+        // An app relayed on amux's origin must not set amux's own cookies: a
+        // `Set-Cookie: amux_member=...` from it would replace the owner's sign-in
+        // for the whole dashboard (session fixation through a dev server).
+        if name == "set-cookie" && v.to_str().ok().is_some_and(sets_amux_cookie) {
+            tracing::warn!(port, measured = true, n_considered = 1, verdict = "app_relay_amux_cookie_dropped",
+                "a relayed app tried to set one of amux's cookies; dropped");
+            continue;
+        }
         let Ok(hn) = HeaderName::from_bytes(name.as_bytes()) else { continue };
         let value = if name == "location" {
-            v.to_str().ok().map(|l| rewrite_location(l, port, &prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
+            v.to_str().ok().map(|l| rewrite_location(l, port, prefix)).and_then(|l| HeaderValue::from_str(&l).ok())
         } else {
             HeaderValue::from_bytes(v.as_bytes()).ok()
         };
@@ -232,10 +150,10 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
     }
     let body = if rewrite {
         match upstream.bytes().await {
-            Ok(b) => Body::from(rewrite_html(&String::from_utf8_lossy(&b), &prefix)),
+            Ok(b) => Body::from(rewrite_html(&String::from_utf8_lossy(&b), prefix)),
             Err(e) => {
                 tracing::warn!(port, error = %e, measured = true, n_considered = 1,
-                    verdict = "port_proxy_relay_failed", "the relayed page stopped mid-response");
+                    verdict = "app_relay_failed", "the relayed page stopped mid-response");
                 return page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
             }
         }
@@ -246,7 +164,7 @@ async fn relay(local: &str, port: u16, tail: &str, method: Method, headers: &Hea
             Ok(b) => Body::from(b),
             Err(e) => {
                 tracing::warn!(port, error = %e, measured = true, n_considered = 1,
-                    verdict = "port_proxy_relay_failed", "the relayed response stopped mid-body");
+                    verdict = "app_relay_failed", "the relayed response stopped mid-body");
                 return page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
             }
         }
@@ -286,6 +204,12 @@ fn forward_request_header(k: &HeaderName) -> bool {
     )
 }
 
+/// A `Set-Cookie` value naming one of amux's (or the cloud door's) cookies.
+pub(crate) fn sets_amux_cookie(set_cookie: &str) -> bool {
+    let name = set_cookie.split('=').next().unwrap_or("").trim();
+    name.starts_with("amux_") || name.starts_with("__Host-amux") || name.starts_with("__Secure-amux")
+}
+
 fn strip_amux_cookies(headers: &HeaderMap) -> Option<String> {
     // Every `cookie` field: HTTP/2 browsers send one field per cookie.
     let kept: Vec<&str> = headers
@@ -319,7 +243,7 @@ fn rewrite_location(loc: &str, port: u16, prefix: &str) -> String {
 fn rewrite_html(html: &str, prefix: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        regex::Regex::new(r#"(\s(?:src|href|action|poster)=)(["'])/([^/"'][^"']*|)(["'])"#).expect("proxy html regex")
+        regex::Regex::new(r#"(\s(?:src|href|action|poster)=)(["'])/([^/"'][^"']*|)(["'])"#).expect("relay html regex")
     });
     re.replace_all(html, |c: &regex::Captures| {
         if format!("/{}", &c[3]).starts_with(&format!("{prefix}/")) {
@@ -335,19 +259,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_proxy_path_names_its_port_and_keeps_the_page_and_query() {
-        let u: Uri = "/proxy/3077/?hero=texture".parse().unwrap();
-        assert_eq!(parse_target(&u), Some((3077, "/?hero=texture".to_string())));
-        let u: Uri = "/proxy/5173".parse().unwrap();
-        assert_eq!(parse_target(&u), Some((5173, "/".to_string())));
-        let u: Uri = "/proxy/8080/a/b.js".parse().unwrap();
-        assert_eq!(parse_target(&u), Some((8080, "/a/b.js".to_string())));
-        for bad in ["/proxy/0/", "/proxy/70000/", "/proxy/abc/", "/proxy/"] {
-            assert_eq!(parse_target(&bad.parse().unwrap()), None, "{bad}");
-        }
-    }
-
-    #[test]
     fn the_host_keeps_its_name_and_drops_its_port() {
         assert_eq!(host_only("desktop.tail5ce8f5.ts.net:8824"), "desktop.tail5ce8f5.ts.net");
         assert_eq!(host_only("localhost"), "localhost");
@@ -355,29 +266,37 @@ mod tests {
     }
 
     #[test]
-    fn relayed_html_routes_absolute_paths_back_through_the_proxy() {
-        let p = "/proxy/3077";
+    fn relayed_html_routes_absolute_paths_back_under_the_prefix() {
+        let p = "/app/0123456789abcdef0123456789abcdef";
         let out = rewrite_html(
-            r#"<link href="/a.css"><script src='/b.js'></script><a href="//cdn.x/y">c</a><video poster="/p.jpg" src="rel.webm"><a href="/proxy/3077/z">"#,
+            r#"<link href="/a.css"><script src='/b.js'></script><a href="//cdn.x/y">c</a><video poster="/p.jpg" src="rel.webm"><a href="/app/0123456789abcdef0123456789abcdef/z">"#,
             p,
         );
-        assert!(out.contains(r#"href="/proxy/3077/a.css""#), "{out}");
-        assert!(out.contains("src='/proxy/3077/b.js'"), "{out}");
+        assert!(out.contains(r#"href="/app/0123456789abcdef0123456789abcdef/a.css""#), "{out}");
+        assert!(out.contains("src='/app/0123456789abcdef0123456789abcdef/b.js'"), "{out}");
         assert!(out.contains(r#"href="//cdn.x/y""#), "protocol-relative stays: {out}");
-        assert!(out.contains(r#"poster="/proxy/3077/p.jpg""#), "{out}");
+        assert!(out.contains(r#"poster="/app/0123456789abcdef0123456789abcdef/p.jpg""#), "{out}");
         assert!(out.contains(r#"src="rel.webm""#), "relative stays: {out}");
-        assert!(out.contains(r#"href="/proxy/3077/z""#), "already proxied stays: {out}");
-        assert!(rewrite_html(r#"<a href="/">home</a>"#, p).contains(r#"href="/proxy/3077/""#));
+        assert!(out.contains(r#"href="/app/0123456789abcdef0123456789abcdef/z""#), "already prefixed stays: {out}");
+        assert!(rewrite_html(r#"<a href="/">home</a>"#, p).contains(r#"href="/app/0123456789abcdef0123456789abcdef/""#));
     }
 
     #[test]
-    fn relayed_redirects_stay_inside_the_proxy() {
-        let p = "/proxy/3077";
-        assert_eq!(rewrite_location("/login", 3077, p), "/proxy/3077/login");
-        assert_eq!(rewrite_location("http://localhost:3077/x?y=1", 3077, p), "/proxy/3077/x?y=1");
-        assert_eq!(rewrite_location("http://127.0.0.1:3077", 3077, p), "/proxy/3077/");
+    fn a_relayed_app_cannot_set_amux_cookies() {
+        for c in ["amux_member=x; Path=/", "amux_door=x", "__Host-amux_owner=x; Secure", "__Secure-amux=x"] {
+            assert!(sets_amux_cookie(c), "{c}");
+        }
+        assert!(!sets_amux_cookie("appsid=1; Path=/"));
+    }
+
+    #[test]
+    fn relayed_redirects_stay_under_the_prefix() {
+        let p = "/app/0123456789abcdef0123456789abcdef";
+        assert_eq!(rewrite_location("/login", 3077, p), "/app/0123456789abcdef0123456789abcdef/login");
+        assert_eq!(rewrite_location("http://localhost:3077/x?y=1", 3077, p), "/app/0123456789abcdef0123456789abcdef/x?y=1");
+        assert_eq!(rewrite_location("http://127.0.0.1:3077", 3077, p), "/app/0123456789abcdef0123456789abcdef/");
         assert_eq!(rewrite_location("https://example.com/a", 3077, p), "https://example.com/a");
-        assert_eq!(rewrite_location("/proxy/3077/a", 3077, p), "/proxy/3077/a");
+        assert_eq!(rewrite_location("/app/0123456789abcdef0123456789abcdef/a", 3077, p), "/app/0123456789abcdef0123456789abcdef/a");
     }
 
     #[test]
@@ -410,9 +329,9 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let r = relay("127.0.0.1", port, "/redir", Method::GET, &HeaderMap::new(), Body::empty()).await;
+        let r = relay("127.0.0.1", port, "/app/0123456789abcdef0123456789abcdef", "/redir", Method::GET, &HeaderMap::new(), Body::empty()).await;
         assert_eq!(r.status(), StatusCode::FOUND);
-        assert_eq!(r.headers().get("location").unwrap(), &format!("/proxy/{port}/landed"));
+        assert_eq!(r.headers().get("location").unwrap(), &"/app/0123456789abcdef0123456789abcdef/landed");
         assert!(r.headers().get("transfer-encoding").is_none());
         assert_eq!(r.body().size_hint().exact(), Some(0), "a streamed body has no exact length");
         assert!(buffer_whole(StatusCode::OK, Some(10)));

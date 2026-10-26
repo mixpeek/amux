@@ -56,6 +56,11 @@ jobs:
         run: python3 scripts/site-funnel.py --self-test
       - name: browser methods registry and agent adapters
         run: node --test tests/browser-methods.test.mjs
+      # The stall watchdog pages the owner only for a wake that is absent from
+      # the worker's history after a retry, and counts a worker's own sends as
+      # progress (2026-10-26 13:47Z false page).
+      - name: worker stall watchdog wake confirmation
+        run: node --test tests/worker-stall-watch.test.mjs
       # AMUX-5397: the ChatGPT front door's tenant rules (a grant reaches only
       # its own workspace; a tunnel answer only from its own org). The real
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.
@@ -295,6 +300,13 @@ jobs:
         run: |
           set -uo pipefail
           python3 scripts/git-hooks/test_pre_push_harness_wired.py
+      # Velocity audit 2026-10-26: pre-push runs the dashboard node:test suites
+      # on the pushed commit, so a spa-gates red is caught before main holds
+      # every deploy. Synthetic fixture suites; needs only node.
+      - name: the pre-push SPA gates refuse a dashboard red, and only this push's (velocity audit 2026-10-26)
+        run: |
+          set -euo pipefail
+          python3 scripts/git-hooks/test_pre_push_spa_gates.py
       # AF-926 via AMUX-4759, same reasoning as the step below: CI-safe by
       # construction (synthetic fixture in a temp dir, zero network refs, and
       # its own header says it deliberately avoids the real frustrations.md).
@@ -406,6 +418,8 @@ jobs:
           set -uo pipefail
           ./scripts/test-disk-reclaim-tick.sh
           ./scripts/test-pkill-guard-shim.sh
+      - name: a red main rust run is re-run once only for a flaky e2e spec or a truncated test archive
+        run: ./scripts/test-rust-flake-rerun-classify.sh
       - name: orch-pace projects the proof rate to its checkpoint
         run: |
           ./scripts/test-orch-pace-proof.sh
@@ -418,6 +432,9 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-sync-checkout-override.sh
+          ./scripts/test-contribute.sh
+      - name: amux-cloud opens a Cloud instance's workers over SSH as its amux user, messages byte for byte
+        run: ./scripts/test-amux-cloud.sh
       - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
         run: |
           set -uo pipefail

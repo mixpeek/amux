@@ -166,3 +166,22 @@ test('the needs-you bell refreshes soon after the board changes', async ({ page 
   await page.evaluate(() => { const g = window as any; g.eval("boardItems.push({id:'RACE-3', title:'answered', status:'done', updated: 99})"); g._nudgeWorkersOnBoardChange(); });
   await expect.poll(() => digests, { timeout: 6000 }).toBeGreaterThan(before);
 });
+
+test('a steady stream of board changes cannot hold the needs-you bell stale', async ({ page }) => {
+  let digests = 0;
+  await page.route('**/api/debug/needsyou-digest', r => { digests++; return r.fulfill({ json: { measured: true, items: [], total: 0 } }); });
+  await boot(page);
+  await page.waitForTimeout(500);
+  const before = digests;
+  // A change every second for six seconds. A timer restarted on each change
+  // would not fire until three seconds after the last one.
+  await page.evaluate(async () => {
+    const g = window as any;
+    for (let i = 0; i < 6; i++) {
+      g.eval(`boardItems.push({id:'STREAM-${i}', title:'moved', status:'done', updated: ${100 + i}})`);
+      g._nudgeWorkersOnBoardChange();
+      await new Promise(res => setTimeout(res, 1000));
+    }
+  });
+  expect(digests, 'the bell refreshed while the board kept changing').toBeGreaterThan(before);
+});

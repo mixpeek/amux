@@ -29,6 +29,9 @@ test('claude 2.1.291 auth login: its answer to a pasted code, success or refusal
   assert.deepEqual([ok.succeeded, ok.rejected], [true, false]);
   const refused = parseLogin('claude', base + 'Invalid code. Please make sure the full code was copied.\r\n');
   assert.deepEqual([refused.succeeded, refused.rejected], [false, true]);
+  // A well-formed code the server refused (sandbox, 2026-10-25).
+  const failed = parseLogin('claude', base + 'Login failed: Request failed with status code 400\r\n');
+  assert.deepEqual([failed.succeeded, failed.rejected], [false, true]);
 });
 
 test('claude: the sign-in is /login, not an inference-only setup-token', () => {
@@ -72,4 +75,19 @@ test('done() reads the server identity model_auth shape', () => {
   assert.equal(CLI_LOGINS.codex.done(a), true);
   assert.equal(CLI_LOGINS.gemini.done(a), false);
   assert.equal(stripAnsi('\x1b[1mbold\x1b[0m\r\n'), 'bold\n');
+});
+
+test('gh 2.81.0 auth login --web: device link and one-time code, then its success line', () => {
+  // Recorded with a throwaway GH_CONFIG_DIR and stdin closed (2026-10-25); code replaced.
+  const base = fx('gh-auth-login-2.81.0.txt');
+  const r = parseLogin('github', base);
+  assert.equal(r.url, 'https://github.com/login/device');
+  assert.equal(r.code, 'AB12-CD34');
+  assert.equal(r.needsCode, false);
+  assert.equal(r.succeeded, false);
+  assert.equal(parseLogin('github', base + '✓ Authentication complete.\n✓ Logged in as tester\n').succeeded, true);
+  // Not a model: done() reads identity.github, never model_auth.
+  assert.equal(CLI_LOGINS.github.done({ claude: { oauth: true } }, { github: { signed_in: false } }), false);
+  assert.equal(CLI_LOGINS.github.done({}, { github: { signed_in: true } }), true);
+  assert.equal(CLI_LOGINS.github.notModel, true);
 });

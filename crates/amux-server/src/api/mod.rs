@@ -76,6 +76,7 @@ pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
 pub mod layout_presets;
+pub mod social;
 pub mod log_search;
 pub mod lookup;
 pub mod location;
@@ -89,6 +90,7 @@ pub mod needs_input_auto;
 pub mod memories;
 pub mod messages;
 pub(crate) mod native_status;
+pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
 pub mod observability;
@@ -104,12 +106,12 @@ pub mod planning;
 pub mod policy;
 pub mod prefs;
 pub mod projects;
-pub mod proxies;
 pub mod py_proxy;
 pub mod reclaim;
 pub(crate) mod reclaim_owner;
 pub mod reconciliation;
 pub mod recordings;
+pub(crate) mod transcription;
 pub mod reports;
 pub mod request_log;
 pub mod review;
@@ -182,6 +184,12 @@ pub struct AppState {
     /// BEFORE reconciliation so the fleet gets 503s instead of connection-
     /// refused during the startup window (AMUX-3969b: 88s blackout).
     pub reconciled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The apps origin's router: `/app/<id>/` and nothing else
+/// (static_files/apps_origin.rs). Served on its own listener.
+pub fn apps_router() -> Router {
+    static_files::apps_origin::router()
 }
 
 pub fn router(state: AppState) -> Router {
@@ -366,6 +374,8 @@ pub fn router_with_connector_transport(
         .nest("/api/crm", crm::routes())
         .nest("/api/speedtest", speedtest::routes())
         .nest("/api/layout-presets", layout_presets::routes())
+        // Social posting and results (AA-42): YouTube first, the rest report their gate.
+        .nest("/api/social", social::routes())
         .nest("/api/pinned", pinned::routes())
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())
@@ -388,7 +398,6 @@ pub fn router_with_connector_transport(
         .merge(chatgpt_app::routes())
         .merge(chat_delegate::routes())
         .merge(self_update::routes())
-        .nest("/api/proxies", proxies::routes())
         // AMUX-2888: the client controls the SPA and CLI already call. Status
         // answers 200 with ported:false; start/stop answer an honest 501.
         .nest("/api/tunnel", tunnel::routes())
@@ -428,6 +437,7 @@ pub fn router_with_connector_transport(
         // worker, replay and expiry. The folder is the store (api/converse.rs).
         .merge(converse::routes())
         .nest("/api/dictation", dictation::routes())
+        .merge(transcription::routes())
         // Transcription lives at the TOP-LEVEL /api/dictate (python parity);
         // the dictation module owns it and answers NATIVELY (AMUX-2598:
         // whisper worker + gemini fallback in this process). Body limit off:
@@ -566,6 +576,25 @@ pub fn router_with_connector_transport(
         .route(
             "/api/offline-origin",
             axum::routing::get(offline_origin::offline_origin),
+        )
+        // Public links to an app's port (static_files/public_links.rs). The
+        // list and its changes are the owner's; only /pub/<id>/ is public.
+        .route(
+            "/api/page-links",
+            axum::routing::get(static_files::public_links::list).post(static_files::public_links::create),
+        )
+        .route(
+            "/api/page-links/{id}",
+            axum::routing::delete(static_files::public_links::revoke),
+        )
+        .route(
+            "/api/page-links/{id}/approve",
+            axum::routing::post(static_files::public_links::approve),
+        )
+        // A one-time link that opens an app inside amux on the apps origin.
+        .route(
+            "/api/page-links/{id}/open",
+            axum::routing::post(static_files::apps_origin::open),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -712,6 +741,10 @@ pub fn router_with_connector_transport(
     // Synthesizes ONLY into an empty body: a handler that returned its own 405
     // with prose knows more than this layer does and must not be overwritten.
     let app = app.layer(axum::middleware::from_fn(explain_method_not_allowed));
+    // A browser acting for another site may not change anything (cross_site.rs):
+    // on amux Cloud every server is under amux.io, so the door cookie alone
+    // would let one customer's page act on another's server.
+    let app = app.layer(axum::middleware::from_fn(cross_site::guard));
     // A chat delegate may only read (AMUX-5432): refused before any handler.
     let app = app.layer(axum::middleware::from_fn(chat_delegate::delegate_read_only));
     let app = app.layer(axum::middleware::from_fn_with_state(
@@ -1197,6 +1230,9 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         // with one must not be told "no key" (amux Cloud e2e, 2026-10-18).
         "has_any_model": has_key_in_env || has_oauth || has_proxy || any_model_auth(&model_auth),
         "model_auth": model_auth,
+        // Kept out of model_auth: a GitHub sign-in runs no worker. It is what
+        // `amux contribute` (Pull from remote on a cloud server) needs.
+        "github": {"signed_in": github_signed_in(&user_home)},
         "managed_upstream": has_proxy,
         "key_valid": serde_json::Value::Null,
         "key_error": "",
@@ -1261,6 +1297,34 @@ pub(crate) fn model_auth_status(env_text: &str, user_home: &std::path::Path) -> 
     })
 }
 
+/// True when `gh` holds a github.com sign-in: its hosts.yml names the host with
+/// a user or a token (the token sits in a keyring on a desktop, in the file on
+/// a server). Presence only; nothing is read out.
+pub(crate) fn github_signed_in(user_home: &std::path::Path) -> bool {
+    let dir = std::env::var_os("GH_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| user_home.join(".config"))
+            .join("gh")
+    });
+    github_hosts_signed_in(&std::fs::read_to_string(dir.join("hosts.yml")).unwrap_or_default())
+}
+
+fn github_hosts_signed_in(hosts: &str) -> bool {
+    let mut in_github = false;
+    for line in hosts.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            in_github = line.trim_end() == "github.com:";
+        } else if in_github {
+            let t = line.trim();
+            if (t.starts_with("user:") || t.starts_with("oauth_token:")) && t.split_once(':').is_some_and(|(_, v)| !v.trim().is_empty()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// True when any provider in a [`model_auth_status`] answer has a credential.
 pub(crate) fn any_model_auth(v: &serde_json::Value) -> bool {
     v.as_object().is_some_and(|providers| {
@@ -1279,6 +1343,16 @@ mod model_auth_tests {
         assert_eq!(account_url(env, true), None, "an invited member cannot delete the owner's account");
         assert_eq!(account_url("AMUX_AUTH_TOKEN=none\n", false), None, "self-hosted: no account page");
         assert_eq!(account_url("AMUX_ACCOUNT_URL=javascript:alert(1)\n", false), None, "only an https link");
+    }
+
+    #[test]
+    fn github_sign_in_is_read_from_gh_hosts_file() {
+        use super::github_hosts_signed_in as s;
+        assert!(s("github.com:\n    users:\n        tester:\n    git_protocol: https\n    user: tester\n"));
+        assert!(s("github.com:\n    oauth_token: gho_fake\n"));
+        assert!(!s(""), "no file");
+        assert!(!s("github.com:\n    git_protocol: https\n"), "host listed, nobody signed in");
+        assert!(!s("ghe.example.com:\n    user: tester\n"), "another host");
     }
 
     #[test]
