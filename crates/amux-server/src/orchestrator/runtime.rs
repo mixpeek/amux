@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// The L4 heartbeat: "is progress continuing?" answered as data, not
@@ -82,8 +83,27 @@ pub fn hydrate_workers(conn: &rusqlite::Connection) -> anyhow::Result<Vec<Worker
         .collect())
 }
 
+/// One WARN per key per PROCESS. The orchestrator is level-triggered (a tick
+/// every ~3s), so anything it reports about a steady state must be said once —
+/// 25k identical lines is the same as silence, and this file already has a
+/// breaker that prints its verdict every other tick (the shape to avoid).
+///
+/// The set is bounded by the number of distinct (kind, task, worker) tuples a
+/// process ever sees; keys are only inserted on the first warning.
+fn warn_once(key: String) -> bool {
+    static SAID: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    let said = SAID.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    match said.lock() {
+        Ok(mut set) => set.insert(key),
+        // A poisoned lock must not silence the warning it guards: report it.
+        Err(_) => true,
+    }
+}
+
 pub struct Runtime {
     pub store: SharedStore,
+
     pub backends: Vec<Arc<dyn SessionBackend>>,
     pub tick_secs: u64,
     /// Heartbeat cadence in ticks (heartbeat every Nth tick).
@@ -611,6 +631,18 @@ impl Runtime {
             crate::db::throughput_store::effective_wip_limit(&conn)?
         };
 
+        // A todo card whose owner cannot run it is the shape a human reports
+        // as "the worker did not pick it up", and until this existed NOTHING
+        // said so: the planner simply produced no assignment (2026-10-25, a
+        // card sat for 20 minutes next to a stopped worker and the only trace
+        // was its absence). Said once per card+reason, because the loop ticks
+        // every few seconds.
+        self.warn_owners_that_cannot_run(&tasks, &workers);
+        // Cards whose assignment is already queued are not candidates: the
+        // queue is idempotent on the key, so planning them again mints
+        // nothing and only spends the worker's WIP budget.
+        let already_dispatched = self.already_dispatched(&tasks, &workers, &attempts)?;
+
         let plan = plan_tick(&TickInputs {
             now,
             tasks: &tasks,
@@ -623,6 +655,7 @@ impl Runtime {
             lease_secs: 600,
             wip_limit,
             provider_states: &provider_states,
+            already_dispatched: &already_dispatched,
         });
 
         // Anti-livelock (RR-0048a): limits filter what actually executes.
@@ -833,6 +866,167 @@ impl Runtime {
     /// so the thread is held by computation with no wait in it to move. The
     /// projection above reduces that computation; this stops what remains
     /// blocking the other maintenance jobs sharing the pool.
+    /// Say, once per (card, reason), why a `todo` card's owner cannot run it.
+    ///
+    /// Two shapes, both silent before this:
+    /// - the owner is a DURABLE worker whose lifecycle is not drivable
+    ///   (paused, archived, deleted): the card is in `todo`, which claims it is
+    ///   next, and no mechanism can honour that;
+    /// - the owner is `Stopped`: the planner still counts it as available
+    ///   (`worker_available` accepts Stopped), so a command queues and waits
+    ///   for a process that is not running. The bounded recovery is the
+    ///   bootstrap `todo_owner_autostart` sweep; this line is the trace that
+    ///   says the wait was real, and names the admission gate that can refuse
+    ///   the restart.
+    ///
+    /// A card owned by a name with no durable row is a FLEET lane, not this
+    /// module's business (board_drive owns those), so it is deliberately not
+    /// reported here.
+    fn warn_owners_that_cannot_run(
+        &self,
+        tasks: &[amux_core::board::Task],
+        workers: &[Worker],
+    ) {
+        use amux_core::board::TaskStatus;
+        use amux_core::worker::WorkerState;
+
+        let by_id: std::collections::BTreeMap<&amux_core::ids::WorkerId, &Worker> =
+            workers.iter().map(|w| (w.id(), w)).collect();
+        // Owners absent from the drivable set: one store read for all of them.
+        let missing: Vec<String> = tasks
+            .iter()
+            .filter(|t| matches!(t.status, TaskStatus::Todo))
+            .filter_map(|t| t.worker.as_ref())
+            .filter(|w| !by_id.contains_key(w))
+            .map(|w| w.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let stopped_or_gone: std::collections::BTreeMap<String, String> = {
+            let Ok(conn) = self.store.read() else {
+                return; // a warning about a read failure is a different report
+            };
+            missing
+                .into_iter()
+                .filter_map(|id| {
+                    crate::db::queries::get_worker(&conn, &id)
+                        .ok()
+                        .flatten()
+                        .filter(|row| !row.lifecycle.is_drivable())
+                        .map(|row| (id, row.lifecycle.as_str().to_string()))
+                })
+                .collect()
+        };
+
+        for task in tasks {
+            if !matches!(task.status, TaskStatus::Todo) {
+                continue;
+            }
+            let Some(owner) = &task.worker else { continue };
+            let (reason, detail) = match by_id.get(owner) {
+                Some(w) if matches!(w.state, WorkerState::Stopped) => (
+                    "owner_stopped",
+                    "the owning worker is stopped: its command queues and waits for the \
+                     bootstrap todo_owner_autostart sweep, which the host-admission gate can \
+                     refuse",
+                ),
+                Some(_) => continue,
+                None => match stopped_or_gone.get(&owner.to_string()) {
+                    Some(lifecycle) => (
+                        "owner_not_drivable",
+                        lifecycle.as_str(), // the refusal names the lifecycle it found
+                    ),
+                    // Not a durable worker: a fleet lane, which board_drive drives.
+                    None => continue,
+                },
+            };
+            if warn_once(format!("todo_owner_unavailable:{}:{owner}", task.id)) {
+                tracing::warn!(
+                    card = %task.id,
+                    worker = %owner,
+                    verdict = "todo_owner_unavailable",
+                    reason,
+                    "card is in todo, which claims it is next, and nothing can dispatch it: {detail}"
+                );
+            }
+        }
+    }
+
+    /// The cards whose exact assignment is ALREADY in the command queue.
+    ///
+    /// WHY A CARD IN `todo`/`done` CAN BE UNDISPATCHABLE (measured 2026-10-25):
+    /// `enqueue` is idempotent on `{card}:{worker}:{attempt}:{act}`, so once a
+    /// card's execution command exists, re-deriving that assignment mints
+    /// nothing. Pre-fix the plan still produced it, so it consumed the
+    /// worker's whole WIP budget (`wip_cap=1`) for the tick — and because the
+    /// planner picks the OLDEST card first, the finished card outranked every
+    /// new one, every tick, forever. `AMUX-65` sat `done` from 21:36 with its
+    /// lease refreshed every 10 minutes while a card filed at 22:30 behind it
+    /// was never dispatched and nothing logged a reason.
+    ///
+    /// The act is part of the key (`dispatch_act`), which is what lets a
+    /// `done` card's verification turn be delivered at all: same attempt, same
+    /// worker, different act.
+    ///
+    /// One WARN per card per process: the exclusion is a steady state, and a
+    /// line every 3 seconds is invisible. The line is what a sweep catches —
+    /// a card that stays here is waiting on a DELIVERY, not on a plan.
+    fn already_dispatched(
+        &self,
+        tasks: &[amux_core::board::Task],
+        workers: &[Worker],
+        attempts: &BTreeMap<amux_core::ids::TaskId, Vec<amux_core::limits::AttemptRecord>>,
+    ) -> anyhow::Result<BTreeSet<amux_core::ids::TaskId>> {
+        let known: BTreeSet<&amux_core::ids::WorkerId> = workers.iter().map(|w| w.id()).collect();
+        // Only cards whose owner can actually receive a command: an unowned
+        // card's worker is not known until the planner picks one, and a
+        // foreign owner can never be assigned.
+        let candidates: Vec<(&amux_core::board::Task, &amux_core::ids::WorkerId, u32)> = tasks
+            .iter()
+            .filter_map(|t| {
+                let owner = t.worker.as_ref()?;
+                if !known.contains(owner) {
+                    return None;
+                }
+                let attempt = attempts.get(&t.id).map(|a| a.len()).unwrap_or(0) as u32 + 1;
+                Some((t, owner, attempt))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let keys: BTreeSet<String> = {
+            let conn = self.store.read()?;
+            let mut stmt = conn.prepare("SELECT idempotency_key FROM _amux_commands")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<BTreeSet<String>, _>>()?
+        };
+        let mut out = BTreeSet::new();
+        for (task, owner, attempt) in candidates {
+            let key = amux_core::orchestrator::assignment_key(task, owner, attempt);
+            if !keys.contains(&key) {
+                continue;
+            }
+            out.insert(task.id.clone());
+            if warn_once(format!("card_already_dispatched:{}", task.id)) {
+                tracing::warn!(
+                    card = %task.id,
+                    worker = %owner,
+                    attempt,
+                    act = amux_core::orchestrator::dispatch_act(task.status),
+                    status = ?task.status,
+                    key = %key,
+                    verdict = "card_already_dispatched",
+                    "this card's assignment is already in the command queue for this worker, so \
+                     re-planning it can only mint the same key: it is NOT a candidate this tick \
+                     (that is what stopped it pinning the worker's whole WIP budget). A card that \
+                     stays here is waiting on a DELIVERY or on the worker moving it, not on a plan"
+                );
+            }
+        }
+        Ok(out)
+    }
+
     async fn load_board_tasks(
         &self,
         workers: &[Worker],
@@ -1199,12 +1393,26 @@ impl Runtime {
         // Assignments: lease + an ExecuteTask command the pump delivers
         // through the agent protocol — the full loop: board task -> lease
         // -> command -> headless CLI run.
+        // A lease is a CLAIM THAT A COMMAND IS IN FLIGHT. Track whether the
+        // enqueue actually created one: `commands::enqueue` is idempotent on
+        // the assignment key, so a card the planner keeps re-deriving gets
+        // `created=false` and NOTHING will be delivered for it. Leasing on
+        // that flag is what wedged a lane on 2026-10-25: a `done` card is
+        // `Runnable` for its verification turn (board::disposition), its
+        // command had already been delivered, and every later plan re-claimed
+        // it — so the worker's only WIP slot (wip_cap=1) stayed pinned by work
+        // that could not run, and the NEXT todo card was starved of dispatch
+        // with no log line anywhere. Measured on the live fleet: a second card
+        // sat in todo for 11 minutes beside a worker whose slot was held by
+        // the completed first one.
+        let mut enqueued: Vec<bool> = Vec::with_capacity(authorized_assignments.len());
         for asg in &authorized_assignments {
             let cmd_id = amux_core::ids::CommandId::from_ulid(ulid::Ulid::new());
             let worker_id = asg.worker.clone();
             let task_id = asg.task.clone();
             let key = asg.idempotency_key.clone();
-            self.store
+            let outcome = self
+                .store
                 .write_async(move |conn| {
                     let (_, created) = crate::db::commands::enqueue(
                         conn,
@@ -1222,10 +1430,29 @@ impl Runtime {
                     })
                 })
                 .await?;
+            enqueued.push(outcome.applied);
         }
-        for asg in &authorized_assignments {
+        for (asg, created) in authorized_assignments.iter().zip(&enqueued) {
             let task = asg.task.to_string();
             let worker = asg.worker.to_string();
+            if !created {
+                // The command for this exact (task, worker, attempt) already
+                // exists, so there is nothing new to deliver and nothing to
+                // claim. Said once per key: a level-triggered loop that warns
+                // every 3 seconds is a log nobody reads.
+                if warn_once(format!("assignment_not_leased:{task}:{worker}")) {
+                    tracing::warn!(
+                        task = %task,
+                        worker = %worker,
+                        attempt = asg.attempt,
+                        verdict = "assignment_not_leased",
+                        "this assignment's ExecuteTask command already exists, so no lease was \
+                         taken — the card stays dispatchable instead of pinning the worker's WIP \
+                         slot on a command that was already delivered"
+                    );
+                }
+                continue;
+            }
             let acquired = asg.lease.acquired_at.to_rfc3339();
             let expires = asg.lease.expires_at.to_rfc3339();
             self.store
@@ -2935,6 +3162,134 @@ mod adherence_tests {
             "positive control: unowned card assigned, python card still never"
         );
         assert_eq!(issue_field(&store, &sem_py, "rev"), before_py.1);
+    }
+
+    /// A lease is a claim that a command is IN FLIGHT, and `done` is
+    /// `Runnable` for its verification turn (`board::disposition`). So the
+    /// planner re-derives an assignment for a finished card on every tick —
+    /// and `commands::enqueue` is idempotent on the assignment key, so once
+    /// that key is queued it mints NOTHING. Pre-fix the re-derivation still
+    /// leased, so the card held the worker's entire WIP budget (`wip_cap=1`).
+    ///
+    /// Two defects, both measured on the live fleet 2026-10-25:
+    /// 1. the verification turn composed the SAME key as the execution turn
+    ///    (`{card}:{worker}:{attempt}` — attempts only increment on failure,
+    ///    and a card that succeeded records none), so no verification could
+    ///    ever be delivered: `AMUX-65` sat `done` from 21:36 with its lease
+    ///    refreshed every 10 minutes;
+    /// 2. because the planner picks the OLDEST card first, that finished card
+    ///    outranked every newer one on every tick, so a card filed at 22:30
+    ///    asking for a Telegram message was never dispatched and nothing
+    ///    logged a reason.
+    ///
+    /// This test walks the whole specimen and fails on either defect: the
+    /// verification turn must be deliverable, and once it IS delivered the
+    /// card must stop being a candidate so the card behind it runs.
+    #[tokio::test]
+    async fn a_finished_cards_replan_does_not_hold_the_workers_only_wip_slot() {
+        let store = store();
+        seed_worker(&store, 3, "alpha");
+        let first = seed_issue(&store, "first card", "alpha", "todo");
+        let first_task = bs::internal_id(&first).to_string();
+        let rt = runtime(store.clone(), None, false);
+
+        let leases_for = |task: &str| -> i64 {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM _amux_leases WHERE task_id = ?1",
+                params![task],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let expire = |task: &str| {
+            let task = task.to_string();
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "UPDATE _amux_leases SET expires_at = ?1 WHERE task_id = ?2",
+                        params!["2026-01-01T00:00:00Z", task],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        };
+
+        // PHASE 1 — the first card is dispatched.
+        rt.tick_once(false).await.unwrap();
+        assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_commands"), 1);
+        assert_eq!(leases_for(&first_task), 1, "the live assignment is leased");
+        let execute_key: String = {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT idempotency_key FROM _amux_commands",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            execute_key.ends_with(":execute"),
+            "the execution turn names its ACT: {execute_key}"
+        );
+
+        // The worker finishes it: the card is `done`, awaiting verification.
+        // It is also OLDER than anything filed next — which is the
+        // deterministic ordering that starved the live fleet.
+        let first_sem = first.clone();
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE issues SET status='done', created = created - 7200 WHERE id = ?1",
+                    params![first_sem],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        assert_eq!(issue_field(&store, &first, "status"), "done");
+        expire(&first_task);
+
+        // PHASE 2 — the verification turn is a DIFFERENT ACT, so it is
+        // deliverable at all (defect 1).
+        rt.tick_once(false).await.unwrap();
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM _amux_commands"),
+            2,
+            "a done card's verification turn must be deliverable — pre-fix it deduped against \
+             the execution command and could never be sent"
+        );
+        assert_eq!(leases_for(&first_task), 1, "the verification turn is leased");
+
+        // The verification turn runs and leaves the card `done` (the worker
+        // made no claim about it); its lease reaches expiry.
+        expire(&first_task);
+
+        // A NEW card arrives for the same lane — the shape a human files and
+        // then waits on.
+        let second = seed_issue(&store, "send me a telegram message", "alpha", "todo");
+        let second_task = bs::internal_id(&second).to_string();
+
+        // PHASE 3 — the finished card is no longer a candidate (its act is
+        // queued), so it cannot hold the slot (defect 2).
+        rt.tick_once(false).await.unwrap();
+        assert_eq!(
+            leases_for(&first_task),
+            0,
+            "a card whose act is already queued cannot be delivered again, so it must not hold \
+             a lease — the lease is what pins the WIP slot"
+        );
+        assert_eq!(
+            leases_for(&second_task),
+            1,
+            "the card that CAN be delivered gets the slot instead of starving"
+        );
+        assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_commands"), 3);
     }
 
     /// M2: with the attempt ledger wired into the tick, a task that has

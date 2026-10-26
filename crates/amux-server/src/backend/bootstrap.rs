@@ -75,6 +75,8 @@ pub struct BootstrapReport {
     pub spawned: Vec<String>,
     /// worker ids registered with the structured protocol this pass.
     pub registered: Vec<String>,
+    /// stopped workers restarted because a todo card was waiting (sweep 0).
+    pub started_stopped_owners: Vec<String>,
     /// backend_refs terminated because their latest session row is ended.
     pub terminated: Vec<String>,
     /// worker ids flipped to Error, with the reason.
@@ -87,6 +89,7 @@ impl BootstrapReport {
             && self.registered.is_empty()
             && self.terminated.is_empty()
             && self.errored.is_empty()
+            && self.started_stopped_owners.is_empty()
     }
 }
 
@@ -209,9 +212,168 @@ impl Bootstrap {
         (CliProvider::from_provider_id(&provider) == Some(cli)).then_some(cref)
     }
 
+    /// Why a per-process warning set is needed here: this loop ticks every
+    /// `AMUX_RS_BOOTSTRAP_SECS` (default 2), so a refusal it reports holds
+    /// true for many passes and must be said once.
+    fn warn_once(key: String) -> bool {
+        static SAID: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+            std::sync::OnceLock::new();
+        let said = SAID.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        match said.lock() {
+            Ok(mut set) => set.insert(key),
+            Err(_) => true,
+        }
+    }
+
+    /// Stopped workers a `todo` card is waiting on.
+    ///
+    /// WHY THIS EXISTS (measured 2026-10-25): `orchestrator::circuit::
+    /// worker_available` counts a `Stopped` worker as available, so a todo card
+    /// owned by one is planned into an ExecuteTask command that waits for a
+    /// process nobody started. Every other spawn in this module begins at
+    /// `Starting`; the only code that produced `Starting` from `Stopped` was
+    /// the HTTP `start_worker`, i.e. a human click. A card assigned to a
+    /// stopped worker therefore waited forever — and, because the planner had
+    /// leased it, so did every other card behind it. Found when a card asking a
+    /// worker to send a Telegram message sat in todo for 20 minutes beside a
+    /// stopped worker with no log line anywhere.
+    ///
+    /// Bounded and level-triggered: only ACTIVE lifecycles, only `Stopped`, only
+    /// with a todo card owned by the lane and NO live session, and only while
+    /// the host passes the same admission gate `start_worker` uses (AMUX-3396 —
+    /// this must not be the reason a starved box starts another CLI).
+    fn stopped_owners_with_todo(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        let conn = self.store.read()?;
+        let mut stmt = conn.prepare(
+            "SELECT w.id, w.display_name, MIN(i.id)
+             FROM _amux_workers w
+             JOIN issues i ON lower(i.session) = lower(w.display_name)
+             WHERE json_extract(w.state, '$.state') = 'stopped'
+               AND w.lifecycle = 'active'
+               AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0
+               AND i.status = 'todo'
+               AND NOT EXISTS (SELECT 1 FROM _amux_sessions s
+                               WHERE s.worker_id = w.id AND s.ended_at IS NULL)
+             GROUP BY w.id, w.display_name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Flip a stopped owner to `Starting` with a live session row — exactly the
+    /// write `api::workers::start_worker` performs, so sweep 1 of THIS pass
+    /// spawns and registers it (that sweep runs below, on the same pass).
+    ///
+    /// Not delegated to `start_worker` because that is an axum handler whose
+    /// state lives in `AppState`; the durable shape it writes is small and is
+    /// asserted by `a_stopped_owner_with_a_todo_card_is_discovered_and_restarted`.
+    async fn start_owner(&self, worker_id: String, card: String) -> anyhow::Result<bool> {
+        let worker = WorkerId::parse(&worker_id)
+            .map_err(|e| anyhow::anyhow!("worker id unparseable: {e}"))?;
+        let backend_ref = crate::backend::backend_ref(&worker);
+        let key = worker_id.clone();
+        let write = self
+            .store
+            .write_async(move |conn| {
+                let Some(row) = queries::get_worker(conn, &key)? else {
+                    return Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
+                };
+                // Re-checked under the write lock: a human (or another job) may
+                // have started or paused it between the read and this write.
+                if !row.lifecycle.is_drivable()
+                    || !matches!(row.state, WorkerState::Stopped)
+                    || queries::live_session_for(conn, &row.id)?.is_some()
+                {
+                    return Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
+                }
+                let ses_id = amux_core::ids::SessionId::from_ulid(ulid::Ulid::new());
+                let now_s = chrono::Utc::now().to_rfc3339();
+                queries::insert_session(
+                    conn,
+                    &queries::SessionRow {
+                        id: ses_id.as_str().to_string(),
+                        worker_id: row.id.clone(),
+                        backend: row.backend.clone(),
+                        backend_ref: backend_ref.clone(),
+                        pid: None,
+                        started_at: now_s.clone(),
+                        ended_at: None,
+                        exit_reason: None,
+                    },
+                )?;
+                queries::update_worker_state(conn, &row.id, &WorkerState::Starting, &now_s)?;
+                let mut after = row.clone();
+                after.state = WorkerState::Starting;
+                after.updated_at = now_s;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![PendingEvent {
+                        entity_type: amux_core::revision::EntityType::Worker,
+                        entity_id: row.id.clone(),
+                        mutation: amux_core::revision::MutationKind::StatusChanged {
+                            from: "stopped".into(),
+                            to: "starting".into(),
+                        },
+                        payload: Some(after.snapshot()),
+                    }],
+                })
+            })
+            .await?;
+        if write.applied {
+            tracing::info!(
+                worker = %worker_id,
+                card = %card,
+                verdict = "todo_owner_autostarted",
+                "a todo card was waiting on this stopped worker; restarted it (spawn + protocol \
+                 registration follow in this same pass)"
+            );
+        }
+        Ok(write.applied)
+    }
+
     /// One pass over the store + backends. See module docs for the sweeps.
     pub async fn pass_once(&self) -> anyhow::Result<BootstrapReport> {
         let mut report = BootstrapReport::default();
+
+        // ---- sweep 0: restart a stopped owner that a todo card waits on -----
+        //
+        // Runs BEFORE the spawn sweep so the same pass spawns and registers what
+        // it starts. Refusals are named once: this loop ticks every 2s.
+        for (worker_id, display_name, card) in self.stopped_owners_with_todo()? {
+            if crate::api::health::admission() == crate::api::health::Admission::Deny {
+                let m = crate::api::health::mem_health();
+                if Self::warn_once(format!("todo_owner_autostart_refused:{worker_id}")) {
+                    tracing::warn!(
+                        worker = %worker_id,
+                        lane = %display_name,
+                        card = %card,
+                        pressure = m.pressure,
+                        swap_used_mb = m.swap_used_mb,
+                        verdict = "todo_owner_autostart_refused",
+                        reason = "host_admission",
+                        "a todo card is waiting on this stopped worker and the host is out of \
+                         memory headroom, so it was NOT started (nothing was stopped; AMUX-3396). \
+                         The card keeps waiting and this refusal is the reason"
+                    );
+                }
+                continue;
+            }
+            if self.start_owner(worker_id.clone(), card).await? {
+                report.started_stopped_owners.push(worker_id);
+            }
+        }
 
         // ---- sweep 1: spawn Starting workers --------------------------------
         let starting: Vec<(String, String, String, String)> = {
@@ -625,6 +787,95 @@ mod tests {
             registry: Arc::new(crate::provider::default_registry()),
             registrar,
         }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_owner_with_a_todo_card_is_discovered_and_restarted() {
+        let (store, _dir) = store();
+        // A stopped durable worker owning a todo card: the shape a human
+        // reports as "I created a card and the worker did not pick it up"
+        // (2026-10-25). Nothing started it, because `worker_available` counts
+        // Stopped as available and only the HTTP start produced Starting.
+        let (id, bref) = seed(&store, WorkerState::Stopped, "herdr", "claude", false);
+        let display = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        let insert_card = |card: &str, status: &str, lane: &str| {
+            let (card, status, lane) = (card.to_string(), status.to_string(), lane.to_string());
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO issues (id, title, desc, status, session, creator, created, updated) \
+                         VALUES (?1, 'probe', '', ?2, ?3, 'test', 0, 0)",
+                        params![card, status, lane],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        };
+
+        // Discovery: a todo card for this lane IS a reason to restart it.
+        assert!(bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
+            .stopped_owners_with_todo()
+            .unwrap()
+            .is_empty());
+        insert_card("TST-RESTART", "todo", &display);
+        assert_eq!(
+            bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
+                .stopped_owners_with_todo()
+                .unwrap(),
+            vec![(id.to_string(), display.clone(), "TST-RESTART".to_string())],
+            "a todo card owned by a stopped worker must be found"
+        );
+        // ... and ONLY for a live todo. A stopped worker whose only card is
+        // `done` (or `doing`) is not a restart reason: restarting every lane
+        // that ever finished something is a fleet-wide spawn storm.
+        let (id2, _bref2) = seed(&store, WorkerState::Stopped, "herdr", "claude", false);
+        let display2 = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id2.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        insert_card("TST-FINISHED", "done", &display2);
+        assert_eq!(
+            bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
+                .stopped_owners_with_todo()
+                .unwrap(),
+            vec![(id.to_string(), display.clone(), "TST-RESTART".to_string())],
+            "a finished card is not a reason to restart its (stopped) owner"
+        );
+
+        // The write: the SAME durable shape `start_worker` produces, which is
+        // what makes sweep 1 of the same pass spawn and register it.
+        let boot = bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()));
+        assert!(boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap());
+        assert!(matches!(worker_state(&store, &id), WorkerState::Starting));
+        let (sessions, brefs): (i64, String) = {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*), COALESCE(MAX(backend_ref),'') FROM _amux_sessions \
+                 WHERE worker_id = ?1 AND ended_at IS NULL",
+                params![id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(sessions, 1, "one live session row");
+        assert_eq!(brefs, bref, "the session ref is the worker's own ref");
+
+        // Idempotent: a second attempt in the same state finds nothing to do
+        // (it is Starting now), so the 2s loop cannot restart-storm.
+        assert!(!boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap());
+        assert!(boot.stopped_owners_with_todo().unwrap().is_empty());
     }
 
     #[tokio::test]
