@@ -254,8 +254,15 @@ impl Bootstrap {
                AND w.lifecycle = 'active'
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0
                AND i.status = 'todo'
-               AND NOT EXISTS (SELECT 1 FROM _amux_sessions s
-                               WHERE s.worker_id = w.id AND s.ended_at IS NULL)
+               -- An `error` worker is offered even WITH a live session row: a
+               -- failed start writes that row (with no pid) BEFORE the spawn
+               -- fails, so a live-row guard hides exactly the worker that needs
+               -- recovery (measured 2026-10-26: PATCH {model} -> session_restart
+               -- -> spawn conflict -> error + live pid-less row -> sweep 0
+               -- silent, forever).
+               AND (json_extract(w.state, '$.state') = 'error'
+                    OR NOT EXISTS (SELECT 1 FROM _amux_sessions s
+                                   WHERE s.worker_id = w.id AND s.ended_at IS NULL))
              GROUP BY w.id, w.display_name, w.state",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -359,9 +366,19 @@ impl Bootstrap {
                 };
                 // Re-checked under the write lock: a human (or another job) may
                 // have started or paused it between the read and this write.
+                //
+                // Restartable = stopped, or parked in `error` whose only live
+                // session row has NO pid: that row is a spawn that never
+                // happened (the failed start wrote it first), so it is ended
+                // here rather than being allowed to block recovery forever. A
+                // row WITH a pid describes a running process and is respected.
+                let restartable = matches!(row.state, WorkerState::Stopped)
+                    || matches!(row.state, WorkerState::Error { .. });
+                let live = queries::live_session_for(conn, &row.id)?;
+                let stale_live = live.as_ref().filter(|s| s.pid.is_none());
                 if !row.lifecycle.is_drivable()
-                    || !matches!(row.state, WorkerState::Stopped)
-                    || queries::live_session_for(conn, &row.id)?.is_some()
+                    || !restartable
+                    || (live.is_some() && stale_live.is_none())
                 {
                     return Ok(WriteOutcome {
                         applied: false,
@@ -370,6 +387,22 @@ impl Bootstrap {
                 }
                 let ses_id = amux_core::ids::SessionId::from_ulid(ulid::Ulid::new());
                 let now_s = chrono::Utc::now().to_rfc3339();
+                if let Some(stale) = stale_live {
+                    queries::end_session(
+                        conn,
+                        &stale.id,
+                        &amux_core::session::ExitReason::Replaced,
+                        &now_s,
+                    )?;
+                    tracing::info!(
+                        worker = %row.display_name,
+                        session = %stale.id,
+                        verdict = "stale_session_row_replaced",
+                        "ended a live session row with NO pid before restarting: it records a \
+                         spawn that never happened, and leaving it live is what made the \
+                         restart look impossible"
+                    );
+                }
                 queries::insert_session(
                     conn,
                     &queries::SessionRow {
@@ -1039,6 +1072,101 @@ mod tests {
         // difference (that is what makes the Error restartable only ONCE).
         backend.hosted.lock().unwrap().clear();
         assert!(!boot.free_own_backend_ref(id.as_str()).await);
+    }
+
+    /// MEASURED 2026-10-26: a failed start writes a LIVE session row with NO
+    /// pid before the spawn fails, so the worker that most needs recovery is
+    /// hidden by "no live row". Discovery must offer it, and `start_owner` must
+    /// end that row (a spawn that never happened) rather than let it block the
+    /// restart forever.
+    #[tokio::test]
+    async fn an_error_owner_with_a_pidless_session_row_is_restartable() {
+        let (store, _dir) = store();
+        let (id, bref) = seed(
+            &store,
+            WorkerState::Error {
+                detail: "spawn failed: tmux session amux-wrk already exists".into(),
+            },
+            "herdr",
+            "claude",
+            false,
+        );
+        let display = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        {
+            let (idw, brefw) = (id.to_string(), bref.clone());
+            store
+                .write(move |conn| {
+                    queries::insert_session(
+                        conn,
+                        &SessionRow {
+                            id: "ses_never_spawned".into(),
+                            worker_id: idw,
+                            backend: "herdr".into(),
+                            backend_ref: brefw,
+                            pid: None,
+                            started_at: chrono::Utc::now().to_rfc3339(),
+                            ended_at: None,
+                            exit_reason: None,
+                        },
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO issues (id, title, desc, status, session, creator, created, updated) \
+                     VALUES ('TST-PIDLESS', 'probe', '', 'todo', ?1, 'test', 0, 0)",
+                    params![display],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        let boot = bootstrap(
+            store.clone(),
+            Arc::new(FakeBackend::default()),
+            Arc::new(RecordingRegistrar::default()),
+        );
+
+        let found = boot.stopped_owners_with_todo().unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the error worker is offered DESPITE its live session row"
+        );
+        assert!(boot
+            .start_owner(id.to_string(), "TST-PIDLESS".into())
+            .await
+            .unwrap());
+        let (live, stale_ended): (i64, bool) = {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*), (SELECT ended_at IS NOT NULL FROM _amux_sessions WHERE id='ses_never_spawned')
+                 FROM _amux_sessions WHERE worker_id = ?1 AND ended_at IS NULL",
+                params![id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(live, 1, "exactly one live row after the restart");
+        assert!(
+            stale_ended,
+            "the pid-less row was ended, not left to block the spawn"
+        );
+        assert!(matches!(worker_state(&store, &id), WorkerState::Starting));
     }
 
     /// An `error` with no live process of its own is a REAL fault: restarting

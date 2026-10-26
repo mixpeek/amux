@@ -399,12 +399,46 @@ pub fn apply_event(
                 }
             }
 
+            // A TURN failure is a THIRD shape: the delivery succeeded (the
+            // command is `confirmed`), so nothing is in flight and nothing is
+            // `failed` — but the turn ledger records both the task and that the
+            // turn failed. Measured 2026-10-26: a provider quota wall arrived
+            // exactly here and retired the card just like a delivery failure
+            // did (AMUX-71/72/73). The outcome column holds a JSON object
+            // (`{"outcome":"failed"}` / `{"outcome":"failed: <reason>"}`), so
+            // the LIKE names the JSON spelling — matching on a bare `failed`
+            // prefix silently matches NOTHING. And it is what keeps a
+            // SUCCESSFUL turn (`{"outcome":"success"}`) from being counted as a
+            // failed attempt.
+            if task_for_attempt.is_none() {
+                let since = (now - chrono::Duration::minutes(10)).to_rfc3339();
+                let failed_turn: Option<String> = conn
+                    .query_row(
+                        "SELECT task_id FROM _amux_turns t
+                         WHERE t.worker_id = ?1 AND t.task_id IS NOT NULL
+                           AND t.started_at >= ?2
+                           AND t.outcome LIKE '%\"failed%' 
+                           AND NOT EXISTS (SELECT 1 FROM _amux_attempts a
+                                           WHERE a.worker_id = t.worker_id
+                                             AND a.task_id = t.task_id
+                                             AND a.at >= t.started_at)
+                         ORDER BY t.started_at DESC LIMIT 1",
+                        params![wid, since],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(turn_task) = failed_turn.and_then(|t| TaskId::parse(&t).ok()) {
+                    task_for_attempt = Some(turn_task);
+                }
+            }
+
             // Attempt ledger (Invariant 49): the record rides into the next
             // attempt's context. `_amux_attempts` is keyed by task, so a
             // failure with no identifiable task cannot honestly produce a row —
             // it is logged and lands on the worker state instead of being
-            // pinned to an invented task. With the fallback above, that now
-            // means "no command, recent or in flight, names a task".
+            // pinned to an invented task. With the three fallbacks above, that
+            // now means "no command, recent or in flight, and no recently
+            // failed turn names a task".
             if let Some(task) = task_for_attempt {
                 let open: Option<(String, String)> = conn
                     .query_row(
@@ -1155,6 +1189,131 @@ mod tests {
         drop(conn);
         // Worker landed in Error.
         assert!(matches!(worker_state(&store), WorkerState::Error { .. }));
+    }
+
+    /// MEASURED DEFECT (2026-10-26): a TURN failure is a third shape — the
+    /// delivery succeeded, so the command is `confirmed` and nothing is in
+    /// flight; the only record is the closed turn row. Without this the attempt
+    /// ledger stayed empty, the assignment key never advanced, and the card was
+    /// retired after ONE provider error (a quota wall retired AMUX-71/72/73
+    /// this way).
+    #[test]
+    fn a_turn_that_fails_after_a_good_delivery_still_records_an_attempt() {
+        let store = store();
+        seed(&store);
+        let task = TaskId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 11));
+        let cmd_id = enqueue_and_deliver(&store, WorkerCommand::ExecuteTask(task.clone()));
+        // The ACP transport confirms the delivery as soon as the agent accepts
+        // the prompt — which is why nothing is in flight when the turn fails.
+        {
+            let id = cmd_id.clone();
+            store
+                .write(move |conn| {
+                    commands::transition(
+                        conn,
+                        &id,
+                        CommandTransition::Confirm,
+                        MAX_ATTEMPTS,
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        // The turn itself ran and failed (the measured rows read
+        // `{"outcome":"failed"}`), and it names the task it was working on.
+        {
+            let (task_s, wid_s) = (task.to_string(), wid().to_string());
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO _amux_turns (id, worker_id, task_id, started_at, ended_at, outcome)
+                         VALUES ('trn_failed', ?1, ?2, ?3, ?3, '{\"outcome\":\"failed\"}')",
+                        params![wid_s, task_s, (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339()],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        assert!(
+            {
+                let conn = store.read().unwrap();
+                commands::in_flight(&conn, &wid()).unwrap().is_none()
+            },
+            "precondition: the delivery was confirmed, so nothing is in flight"
+        );
+
+        apply(
+            &store,
+            WorkerEvent::Failed(Failure {
+                reason: "acp turn failed: Free usage limit reached".into(),
+                retryable: true,
+            }),
+        );
+
+        let conn = store.read().unwrap();
+        let (attempt, record_json): (u32, String) = conn
+            .query_row(
+                "SELECT attempt, record FROM _amux_attempts WHERE task_id = ?1 AND worker_id = ?2",
+                params![task.as_str(), wid().as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("a turn that failed is an attempt: without a row the card is retired");
+        assert_eq!(attempt, 1);
+        let record: AttemptRecord = serde_json::from_str(&record_json).unwrap();
+        assert_eq!(
+            record.failure_reason,
+            "acp turn failed: Free usage limit reached"
+        );
+    }
+
+    /// The other half of the guard: a turn that SUCCEEDED must never be
+    /// counted as a failed attempt.
+    #[test]
+    fn a_successful_turn_is_not_mistaken_for_a_failed_attempt() {
+        let store = store();
+        seed(&store);
+        let task = TaskId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 12));
+        let cmd_id = enqueue_and_deliver(&store, WorkerCommand::ExecuteTask(task.clone()));
+        {
+            let id = cmd_id.clone();
+            let (task_s, wid_s) = (task.to_string(), wid().to_string());
+            store
+                .write(move |conn| {
+                    commands::transition(conn, &id, CommandTransition::Confirm, MAX_ATTEMPTS)?;
+                    conn.execute(
+                        "INSERT INTO _amux_turns (id, worker_id, task_id, started_at, ended_at, outcome)
+                         VALUES ('trn_ok', ?1, ?2, ?3, ?3, '{\"outcome\":\"success\"}')",
+                        params![wid_s, task_s, (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339()],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        apply(
+            &store,
+            WorkerEvent::Failed(Failure {
+                reason: "a different provider call failed".into(),
+                retryable: true,
+            }),
+        );
+        let conn = store.read().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _amux_attempts WHERE task_id = ?1",
+                params![task.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "a successful turn is not a failed attempt");
     }
 
     /// MEASURED DEFECT (2026-10-26): a DELIVERY failure has nothing in flight —
