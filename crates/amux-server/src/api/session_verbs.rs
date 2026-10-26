@@ -10758,7 +10758,8 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // task overrides the worker's general configured checkout.
     meta.insert("cc_cwd".into(), json!(work_dir));
     if matches!(provider.as_str(), "codex" | "ollama") {
-        if let Some(out) = tmux(&["list-panes", "-t", &st(name), "-F", "#{pane_pid}"]).await {
+        let stq = st(name);
+        if let Some(out) = tmux(&["list-panes", "-t", &stq, "-F", "#{pane_pid}"]).await {
             if out.status.success() {
                 if let Ok(pid) = String::from_utf8_lossy(&out.stdout).trim().parse::<i64>() {
                     meta.insert("codex_pane_pid".into(), json!(pid));
