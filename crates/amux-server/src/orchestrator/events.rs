@@ -351,11 +351,60 @@ pub fn apply_event(
                 }
             }
 
+            // A DELIVERY failure has nothing in flight: the transport marks
+            // the command `failed` BEFORE it reports the failure, so
+            // `commands::in_flight` is empty by construction. Without this
+            // fallback the ledger records nothing, the assignment key
+            // (`{card}:{worker}:{attempt}:{act}`) never advances past that
+            // attempt, and `already_dispatched` then retires the card for good
+            // — one bad handshake and the card is undispatchable forever.
+            // Measured 2026-10-26: `M2ACP-1` died exactly this way after a
+            // single `session/new returned no sessionId`.
+            //
+            // Bounded: only the most recent failed `execute_task` for THIS
+            // worker in the last 10 minutes, and only when its task has no
+            // attempt row at or after that command was created (so a retry that
+            // fails again is not counted twice).
+            if task_for_attempt.is_none() {
+                let since = (now - chrono::Duration::minutes(10)).to_rfc3339();
+                let recent: Vec<(String, String)> = {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, command FROM _amux_commands
+                         WHERE worker_id = ?1 AND state LIKE '%\"failed\"%'
+                           AND queued_at >= ?2
+                         ORDER BY queued_at DESC LIMIT 5",
+                    )?;
+                    let rows = stmt.query_map(params![wid, since], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                    rows.collect::<Result<Vec<_>, _>>()?
+                };
+                for (cmd_id, command) in recent {
+                    let Ok(WorkerCommand::ExecuteTask(task)) =
+                        serde_json::from_str::<WorkerCommand>(&command)
+                    else {
+                        continue;
+                    };
+                    let recorded: bool = conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM _amux_attempts
+                                       WHERE task_id = ?1 AND worker_id = ?2 AND at >= (
+                                         SELECT queued_at FROM _amux_commands WHERE id = ?3))",
+                        params![task.as_str(), wid, cmd_id],
+                        |r| r.get(0),
+                    )?;
+                    if !recorded {
+                        task_for_attempt = Some(task);
+                        break;
+                    }
+                }
+            }
+
             // Attempt ledger (Invariant 49): the record rides into the next
             // attempt's context. `_amux_attempts` is keyed by task, so a
-            // failure with no identifiable task (no in-flight ExecuteTask)
-            // cannot honestly produce a row — it is logged and lands on the
-            // worker state instead of being pinned to an invented task.
+            // failure with no identifiable task cannot honestly produce a row —
+            // it is logged and lands on the worker state instead of being
+            // pinned to an invented task. With the fallback above, that now
+            // means "no command, recent or in flight, names a task".
             if let Some(task) = task_for_attempt {
                 let open: Option<(String, String)> = conn
                     .query_row(
@@ -1106,6 +1155,69 @@ mod tests {
         drop(conn);
         // Worker landed in Error.
         assert!(matches!(worker_state(&store), WorkerState::Error { .. }));
+    }
+
+    /// MEASURED DEFECT (2026-10-26): a DELIVERY failure has nothing in flight —
+    /// `runtime::pump_commands` marks the command `failed` and only then reports
+    /// `WorkerEvent::Failed`. The ledger therefore recorded no attempt, the
+    /// assignment key never advanced, and `already_dispatched` retired the card
+    /// permanently after ONE bad handshake (`M2ACP-1`).
+    #[test]
+    fn a_delivery_failure_still_records_an_attempt_so_the_card_can_be_retried() {
+        let store = store();
+        seed(&store);
+        let task = TaskId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 9));
+        let cmd_id = enqueue_and_deliver(&store, WorkerCommand::ExecuteTask(task.clone()));
+
+        // The transport fails the command first (the order the pump uses on a
+        // delivery error), so by the time the event arrives nothing is in
+        // flight.
+        {
+            let id = cmd_id.clone();
+            store
+                .write(move |conn| {
+                    commands::transition(
+                        conn,
+                        &id,
+                        CommandTransition::Fail {
+                            reason: "transport: session/new returned no sessionId".into(),
+                        },
+                        MAX_ATTEMPTS,
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        assert!(
+            {
+                let conn = store.read().unwrap();
+                commands::in_flight(&conn, &wid()).unwrap().is_none()
+            },
+            "precondition: the command is already failed, so nothing is in flight"
+        );
+
+        apply(
+            &store,
+            WorkerEvent::Failed(Failure {
+                reason: "acp session unavailable".into(),
+                retryable: true,
+            }),
+        );
+
+        let conn = store.read().unwrap();
+        let (attempt, record_json): (u32, String) = conn
+            .query_row(
+                "SELECT attempt, record FROM _amux_attempts WHERE task_id = ?1 AND worker_id = ?2",
+                params![task.as_str(), wid().as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("a failed delivery is an attempt: without a row the next plan reuses the same key and the card is retired");
+        assert_eq!(attempt, 1);
+        let record: AttemptRecord = serde_json::from_str(&record_json).unwrap();
+        assert_eq!(record.failure_reason, "acp session unavailable");
     }
 
     #[test]
