@@ -6142,3 +6142,109 @@ FIX: (proposed) priority-aware preemption in the subagents boundary. (1) An
   (3) The refusal message names the running agents, their ages, and the one
   that would be preempted, so the worker can decide without reading files.
   The usage-headroom floor stays as it is, because preemption does not add load.
+
+## Harness notices are delivered late and labelled as human messages
+AREA: notices
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-26
+SESSION: workflows
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: the browser reaper told the lane at 16:54:41 that its browser was released.
+  Steering was held behind provider background work
+  (`provider_background_work_overrode_idle_report ... steering are held`), and the
+  notice arrived at 17:04:43 as a `queued_command` with `origin.kind: "human"`. By
+  then the browser had been restarted. The worker read it as a fresh kill, killed
+  its own keepalive, logged in again and dropped a report that was still loading.
+COST: about 10 minutes and a lost in-flight export.
+FIX: (proposed) mark harness notices as system origin, carry the subject's identity
+  (browser pid and port) and drop the notice at delivery if that subject is already
+  gone. Don't hold lifecycle notices behind background-work gating.
+
+## Subagents never learn that `amux browser` exists, so blocked public pages are dropped
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-25
+SESSION: mtp-demo
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: five research subagents made about 224 WebFetch calls with 25 failures
+  (`HTTP 403 Forbidden`, `Socket is closed`, `maxContentLength ... exceeded`). None
+  ran `amux browser route`. The browser guidance is only in the worker's appended
+  system prompt, which Claude Code subagents do not inherit, and it only talks about
+  signed-in profiles. The worker's memory concluded "job boards return 403 to web
+  fetch" and the source was dropped.
+COST: a data source abandoned and the research target missed (4 companies released
+  against a goal of 6 to 10 per market).
+FIX: (proposed) put a short browser rung where subagents see it (SubagentStart hook
+  context or the project AGENTS.md): "public page refused to fetch: amux browser route
+  start, then state". This PR adds the route verbs to `amux browser --help`, which a
+  subagent can find, but nothing tells it to look.
+
+## Dropping a folder on the dashboard uploads 0-byte files and reports success
+AREA: cli
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-26
+SESSION: rothco
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: the user dropped two folders. Both arrived as 0-byte files in
+  ~/.amux/uploads (`a192204f808d-rothco: empty`), and both `.completed-*.json`
+  receipts say success. Every drop handler in static/app.js loops over
+  `dataTransfer.files`, where Chrome represents a directory as a File of size 0 and
+  type "". Nothing uses `webkitGetAsEntry()` and upload.rs `finish()` accepts the
+  empty body.
+COST: the job would have been blocked. It only continued because the user happened
+  to also upload a zip of the same folders.
+FIX: (proposed) in the drop handlers, walk `items[i].webkitGetAsEntry()` and upload
+  each file with its relative path, or refuse directories with a message. On the
+  server, flag a 0-byte upload with no extension instead of writing a success receipt.
+
+## Credentials pasted into chat reach the worker verbatim and can become board cards
+AREA: gates
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-10-25
+SESSION: mtp-demo
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: an API key pasted as `GOOGLE_API_KEY=...` reached the pane unmasked (the
+  session_verbs.rs comment says only the stored copy is masked). After an interrupted
+  /login, the OAuth code arrived as an ordinary message and became card MD-11. The
+  same day, owners pasted an ElevenLabs key into three workers' chats, and it sits in
+  plain text in their transcripts.
+COST: keys that now need rotating, and a card that had to be discarded by hand.
+FIX: (proposed) recognise credential-shaped messages at intake, before pane
+  delivery. Offer "save to vault for this worker" and deliver a placeholder naming
+  the env var, never the value. Never file a card from one.
+
+## Server-generated notices carry no origin stamp, so a careful worker refuses them
+AREA: notices
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-25
+SESSION: mtp-demo
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: "doron mentioned you in a direct message ... Post it with: amux post
+  w:mtp-demo" reached the worker as `<pasted_content>` without the server-verified
+  `[amux-origin: ...]` stamp that pane_prompts.rs recognises (built in
+  conversations.rs). The worker declined to act on text the user's own message
+  didn't ask for.
+COST: a teammate's question went unanswered.
+FIX: (proposed) stamp every server-generated delivery (mentions, cloud tests,
+  auto-pickup) with the same verified origin as other harness sends.
+
+## Browser profiles have no read-only or URL-allowlist policy for a task
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-26
+SESSION: workflows
+CARD: none (found by amux-helper reviewing the session; amux-helper is isolated and has no board)
+SYMPTOM: the owner's rule for the job was "sandbox only, no writes". Profile scope
+  logged `allow ... rule=* scope=default`, and the site's role chooser offered the
+  production account with nothing in amux to stop it. The worker wrote its own URL
+  guard script that logs `BLOCKED (not a read-only view url)`.
+COST: safety rested on a script the worker wrote mid-task.
+FIX: (proposed) a per-worker browser policy alongside profile scope: a URL
+  allowlist and a read-only mode that refuses non-GET requests and form submits
+  (CDP `Fetch.enable` with request interception).

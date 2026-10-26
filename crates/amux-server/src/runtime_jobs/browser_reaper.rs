@@ -231,6 +231,23 @@ pub fn should_reap_ttl(started_at: i64, now: f64, ttl: u64) -> bool {
     now - started_at as f64 >= ttl as f64
 }
 
+/// A verb this recent means a session is driving the browser right now.
+pub const TTL_IN_USE_GRACE_S: f64 = 300.0;
+
+/// Should the TTL arm wait for a quiet moment instead of killing now?
+///
+/// The TTL is a ceiling for browsers left running with pages open and nobody
+/// driving them (2026-08-30, 20+ Chrome instances in the dock). It was also
+/// killing browsers in active use: on 2026-10-26 a session joined a browser
+/// adopted from an earlier server, `age_s=1717802` against `ttl=14400`, and the
+/// TTL arm released it 90 seconds after the join, mid-login. Age since LAUNCH
+/// says nothing about whether anyone is driving it. A browser with a verb in
+/// the last [`TTL_IN_USE_GRACE_S`] is released at its first quiet tick, so an
+/// abandoned one still goes and a driven one finishes its step.
+pub fn ttl_defers_for_activity(last_verb_at: i64, now: f64) -> bool {
+    now - (last_verb_at as f64) < TTL_IN_USE_GRACE_S
+}
+
 fn now_f64() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -389,6 +406,19 @@ async fn notify_owner_of_reap(
         return;
     }
     let text = reap_notice(profile, reason);
+    // Joined sessions are driving tabs in this browser and lose them too; they
+    // used to get no notice at all, only a dead websocket on their next call.
+    for joiner in crate::integrations::browser::joiners_of(profile) {
+        if joiner == owner {
+            continue;
+        }
+        match crate::api::session_verbs::steer_enqueue_store(store, &joiner, &text, "browser-reaper", "browser-reaper").await {
+            Ok(_) => tracing::info!(profile = %profile, joiner = %joiner, reason = ?reason, verdict = "browser_reap_joiner_told",
+                "browser: told a joined session its shared browser was released"),
+            Err(e) => tracing::warn!(profile = %profile, joiner = %joiner, reason = ?reason, error = %e,
+                verdict = "browser_reap_joiner_untold", "browser: could not tell a joined session its shared browser was released"),
+        }
+    }
     match crate::api::session_verbs::steer_enqueue_store(
         store,
         owner,
@@ -646,7 +676,16 @@ pub(crate) async fn tick_with_limits(
         if should_reap_ttl(started, now, ttl) && defer_for_loading(&profile, loading, now) {
             continue;
         }
-        if should_reap_ttl(started, now, ttl) {
+        if should_reap_ttl(started, now, ttl) && ttl_defers_for_activity(last_verb, now) {
+            tracing::info!(
+                profile = %profile, owner = %owner,
+                age_s = (now - started as f64) as i64, ttl,
+                since_verb_s = (now - last_verb as f64) as i64,
+                verdict = "browser_ttl_deferred_in_use",
+                "browser: past its TTL but driven in the last few minutes — releasing at the \
+                 first quiet tick instead of mid-step"
+            );
+        } else if should_reap_ttl(started, now, ttl) {
             let age_s = now - started as f64;
             tracing::warn!(
                 profile = %profile, owner = %owner, age_s = age_s as i64, ttl,
@@ -892,6 +931,17 @@ pub fn spawn(store: crate::db::SharedStore) {
 
 #[cfg(test)]
 mod tests {
+    /// The TTL arm waits while the browser is being driven and fires once it
+    /// goes quiet (2026-10-26: released 90s after a join, `age_s=1717802`).
+    #[test]
+    fn ttl_waits_for_a_quiet_moment_on_a_driven_browser() {
+        let now = 2_000_000.0;
+        let started = 0; // launched long before the TTL
+        assert!(super::should_reap_ttl(started, now, 14_400), "past its TTL");
+        assert!(super::ttl_defers_for_activity((now - 60.0) as i64, now), "driven a minute ago: wait");
+        assert!(!super::ttl_defers_for_activity((now - 301.0) as i64, now), "quiet for 5 min: release");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1009,6 +1059,68 @@ mod tests {
             "the queued text is not the reap notice: {}",
             mine[0].1
         );
+    }
+
+    /// The real tick: a browser past its TTL that was driven a moment ago is
+    /// kept, the same browser once quiet is released, and a session that JOINED
+    /// it is told as well as its owner (2026-10-26: released 90 seconds after a
+    /// join, and the joiner learned it from a dead websocket).
+    #[tokio::test]
+    async fn the_ttl_spares_a_driven_browser_and_the_reap_tells_its_joiners() {
+        let _reg = crate::integrations::browser::TEST_REGISTRY.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let store: crate::db::SharedStore =
+            std::sync::Arc::new(crate::db::Store::open(&db.path().join("t.db")).unwrap());
+        let tag = ulid::Ulid::new().to_string().to_lowercase();
+        let (owner, joiner) = (format!("ttl-owner-{tag}"), format!("ttl-joiner-{tag}"));
+        for (id, name) in [("wrk_ttl_owner", &owner), ("wrk_ttl_joiner", &joiner)] {
+            let (id, name) = (id.to_string(), name.clone());
+            store
+                .write_async(move |conn| {
+                    conn.execute(
+                        "INSERT INTO _amux_workers \
+                         (id, display_name, name_aliases, cwd, provider, model, state, created_at, updated_at) \
+                         VALUES (?1, ?2, '[]', '/tmp', 'claude', 'test', '{\"state\":\"stopped\"}', \
+                                 '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z')",
+                        [&id, &name],
+                    )?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                })
+                .await
+                .unwrap();
+        }
+        crate::integrations::browser::test_clear_running();
+        crate::integrations::browser::test_seed_running_port("shared-ttl", &owner, u32::MAX, 1);
+        crate::integrations::browser::JOINED.lock().unwrap().insert(
+            joiner.clone(),
+            crate::integrations::browser::Join { profile: "shared-ttl".into(), tab: "T".into() },
+        );
+        // Driven just now: started_at 0 is far past ttl=1, and the TTL waits.
+        crate::integrations::browser::touch_verb("shared-ttl");
+        let kept = crate::integrations::browser::test_with_kill_capture(async {
+            tick_with_limits(home.path(), Some(&store), 0, 0, 1).await
+        })
+        .await;
+        assert!(kept.is_empty(), "a browser driven a moment ago was released by the TTL: {kept:?}");
+        // Quiet: the last verb is older than the in-use grace, so the TTL fires.
+        crate::integrations::browser::test_clear_running();
+        crate::integrations::browser::test_seed_running_port("shared-ttl", &owner, u32::MAX, 1);
+        let released = crate::integrations::browser::test_with_kill_capture(async {
+            tick_with_limits(home.path(), Some(&store), 0, 0, 1).await
+        })
+        .await;
+        assert_eq!(released, vec!["shared-ttl".to_string()]);
+        crate::integrations::browser::JOINED.lock().unwrap().remove(&joiner);
+        crate::integrations::browser::test_clear_running();
+        let told: Vec<String> = {
+            let conn = store.read().unwrap();
+            let mut st = conn.prepare("SELECT session FROM steering_queue").unwrap();
+            let v = st.query_map([], |r| r.get(0)).unwrap().filter_map(Result::ok).collect();
+            v
+        };
+        assert!(told.contains(&owner), "the owner was not told: {told:?}");
+        assert!(told.contains(&joiner), "the joined session was not told: {told:?}");
     }
 
     /// A routing Chrome's activity is its newest receipt, current or retained,
