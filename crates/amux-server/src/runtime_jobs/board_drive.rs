@@ -6744,7 +6744,36 @@ fn blocker_recoveries(conn: &Connection, lane: &str) -> rusqlite::Result<Vec<Blo
 }
 
 fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &[String]) -> rusqlite::Result<Vec<BlockerRecovery>> {
+    blocker_recoveries_observed(conn, lane, allowed_asks, std::path::Path::new("/var/lib/root-move-cw1068/maintenance.active"))
+}
+
+// Observe only this known operational marker. Card text never authorizes an
+// arbitrary filesystem read, and absence is evidence to review, not approval.
+fn maintenance_observation(blocked: &str, trigger: &str, marker: &std::path::Path) -> Option<&'static str> {
+    let text = format!("{blocked} {trigger}").to_ascii_lowercase();
+    let names_marker = text.split_whitespace().any(|word| {
+        word.trim_matches(['\'', '"', '(', ')', '[', ']', ',', '.', ';', ':'])
+            == "/var/lib/root-move-cw1068/maintenance.active"
+    });
+    let named = names_marker || (text.contains("maintenance") && names_maintenance_card(&text));
+    named.then(|| match marker.try_exists() {
+        Ok(true) => "active",
+        Ok(false) => "absent",
+        Err(_) => "unknown",
+    })
+}
+
+fn names_maintenance_card(text: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"(?:^|[^a-z0-9/_-])cw-?1068(?:$|[^a-z0-9/_-])").unwrap()).is_match(text)
+}
+
+fn blocker_recoveries_observed(conn: &Connection, lane: &str, allowed_asks: &[String], maintenance_marker: &std::path::Path) -> rusqlite::Result<Vec<BlockerRecovery>> {
     use sha2::{Digest, Sha256};
+    let generation: Option<i64> = conn.query_row(
+        "SELECT id FROM session_events WHERE session=?1 AND type='session.started' ORDER BY ts DESC,id DESC LIMIT 1",
+        [lane], |row| row.get(0),
+    ).optional()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT i.id FROM issues i WHERE i.session=?1 AND i.owner_type='agent' \
          AND i.status IN ('todo','backlog','blocked','doing','needsyou','needs_you') AND i.deleted IS NULL \
@@ -6767,6 +6796,7 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
         let deps = deps_blocking(conn, &row);
         let blocked = row.blocked_on.as_deref().unwrap_or("").trim();
         let trigger = row.source_ref.as_deref().unwrap_or("").trim();
+        let maintenance = maintenance_observation(blocked, trigger, maintenance_marker);
         let missing_next = bs::continuation_verdict(row.next_action.as_deref().unwrap_or("")) != bs::ContinuationVerdict::Ok;
         if deps.is_empty() && blocked.is_empty() && trigger.is_empty() && !missing_next && !ask_outside_policy { continue; }
         // Include dependency OUTPUT state, not its owner's availability or log
@@ -6779,10 +6809,11 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
         // changed execution contract, input evidence or blocking condition.
         let signature = json!([lane,row.id,row.title,row.item_type,row.status,row.next_action,
             row.acceptance_criteria,row.gate,row.evidence,row.depends_on,row.blocked_on,row.source_ref,row.waiting_on,
-            row.ask_type,row.ask_question,row.ask_unblocks,allowed_asks,dep_state]);
+            row.ask_type,row.ask_question,row.ask_unblocks,allowed_asks,dep_state,generation,maintenance]);
         let identity = format!("board-blocker:{:x}", Sha256::digest(signature.to_string().as_bytes()));
         let context = json!({"card":row.id,"title":row.title,"status":row.status,
             "blocked_on":row.blocked_on,"trigger":row.source_ref,"waiting_on":row.waiting_on,
+            "worker_generation":generation,"maintenance_marker":maintenance,
             "missing_next_action":missing_next,"unresolved_dependencies":deps,
             "ask_outside_policy":ask_outside_policy,"ask_type":row.ask_type,"ask_question":row.ask_question,
             "ask_unblocks":row.ask_unblocks,"allowed_approval_types":allowed_asks});
@@ -9929,6 +9960,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blocker_delivery_rearms_for_each_fresh_generation_without_releasing_holds() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "HELD", "backlog", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='explicit owner hold: do not deploy' WHERE id='HELD'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "blocker-recovery-unchanged");
+        drive_started(&store);
+        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "blocker-recovery-unchanged");
+        assert_eq!(fleet.delivered.lock().unwrap().len(), 2);
+        assert_eq!(drive_status(&store, "HELD"), "backlog");
+        let held: String = store.read().unwrap().query_row("SELECT blocked_on FROM issues WHERE id='HELD'", [], |r| r.get(0)).unwrap();
+        assert_eq!(held, "explicit owner hold: do not deploy");
+    }
+
+    #[test]
+    fn maintenance_marker_transition_rearms_only_named_blockers_and_keeps_owner_hold() {
+        let (dir, _state, store) = drive_state();
+        drive_card(&store, "MAINT", "backlog", "agent", "code");
+        drive_card(&store, "OTHER", "backlog", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='CW1068 maintenance; explicit owner hold still applies' WHERE id='MAINT'", [])?;
+            conn.execute("UPDATE issues SET blocked_on='unrelated vendor maintenance CW-10680' WHERE id='OTHER'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let marker = dir.path().join("maintenance.active");
+        std::fs::write(&marker, "maintenance").unwrap();
+        let before = blocker_recoveries_observed(&store.read().unwrap(), "lane", &[], &marker).unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        let after = blocker_recoveries_observed(&store.read().unwrap(), "lane", &[], &marker).unwrap();
+        for first in before {
+            let second = after.iter().find(|r| r.card == first.card).unwrap();
+            if first.card == "MAINT" {
+                assert_ne!(first.identity, second.identity);
+                assert!(first.text.contains("\"maintenance_marker\":\"active\""));
+                assert!(second.text.contains("\"maintenance_marker\":\"absent\""));
+                assert!(second.text.contains("explicit owner hold still applies"));
+            } else {
+                assert_eq!(first.identity, second.identity);
+            }
+        }
+        assert_eq!(drive_status(&store, "MAINT"), "backlog");
+        assert_eq!(maintenance_observation("CW1068 deployment hold", "", &marker), None);
+        assert_eq!(maintenance_observation("maintenance for CW-10680", "", &marker), None);
+        assert_eq!(maintenance_observation("/var/lib/root-move-cw1068/maintenance.active-old", "", &marker), None);
+        assert_eq!(maintenance_observation("Marker: '/var/lib/root-move-cw1068/maintenance.active'.", "", &marker), Some("absent"));
+    }
+
+    #[tokio::test]
     async fn idle_parked_backlog_gets_one_specific_recovery_without_clearing_holds() {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "PARKED", "backlog", "agent", "code");
@@ -10965,6 +11049,52 @@ mod tests {
             assert_eq!(recovered.disposition, sv::StableEnqueueDisposition::AlreadyDelivered);
             assert_eq!(drive_events(&store, "task.resumed"), generation_number);
         }
+    }
+
+    #[tokio::test]
+    async fn two_lanes_receive_each_new_generation_after_old_delivery_survives_restart() {
+        use crate::api::session_verbs as sv;
+        let (dir, state, store) = drive_state();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for (lane, card) in [("first", "FIRST"), ("second", "SECOND")] {
+            std::fs::write(sessions.join(format!("{lane}.env")), format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n", dir.path().display())).unwrap();
+            drive_card(&store, card, "doing", "agent", "code");
+            let (lane, card) = (lane.to_string(), card.to_string());
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET session=?1 WHERE id=?2", rusqlite::params![lane, card])?;
+                conn.execute("INSERT INTO session_events(ts,session,type,data) VALUES (?1,?2,'task.claimed',?3)",
+                    rusqlite::params![now_f64() - 5.0, lane, json!({"issue":card}).to_string()])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        for _ in 0..2 {
+            for (lane, card) in [("first", "FIRST"), ("second", "SECOND")] {
+                let owned = lane.to_string();
+                store.write(move |conn| {
+                    conn.execute("INSERT INTO session_events(ts,session,type,data) VALUES (?1,?2,'session.started','{}')", rusqlite::params![now_f64(),owned])?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                }).unwrap();
+                let Resume::Claim { prompt, delivery_id, .. } = select_resume(&store.read().unwrap(), lane, now_f64(), false) else { panic!("fresh lane must resume {card}") };
+                assert!(prompt.contains(card));
+                let report = sv::steer_enqueue_idempotent_report(&state, lane, &prompt, sv::BOARD_DRIVE_GUARD, "", &delivery_id).await.unwrap();
+                assert_eq!(report.disposition, sv::StableEnqueueDisposition::New);
+                let id = delivery_id.clone();
+                store.write(move |conn| {
+                    conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at) SELECT id,session,text,queued_at,?1 FROM steering_queue WHERE id=?2", rusqlite::params![now_f64(),id])?;
+                    conn.execute("DELETE FROM steering_queue WHERE id=?1", [&id])?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                }).unwrap();
+                let mut reopened = state.clone();
+                reopened.store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("drive.db")).unwrap());
+                let old = sv::steer_enqueue_idempotent_report(&reopened, lane, &prompt, sv::BOARD_DRIVE_GUARD, "", &delivery_id).await.unwrap();
+                assert_eq!(old.disposition, sv::StableEnqueueDisposition::AlreadyDelivered);
+            }
+        }
+        let counts: Vec<(String, i64)> = store.read().unwrap().prepare("SELECT session,COUNT(*) FROM steering_history GROUP BY session ORDER BY session").unwrap()
+            .query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(counts, vec![("first".into(),2),("second".into(),2)]);
     }
 
     #[tokio::test]

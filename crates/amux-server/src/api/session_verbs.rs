@@ -645,17 +645,29 @@ fn load_meta(name: &str) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+fn meta_write_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
+
 fn save_meta(name: &str, meta: &Map<String, Value>) {
-    let _ = std::fs::create_dir_all(sessions_dir());
-    let _ = std::fs::write(meta_path(name), Value::Object(meta.clone()).to_string());
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+    save_meta_unlocked(name, meta);
+}
+
+fn save_meta_unlocked(name: &str, meta: &Map<String, Value>) {
+    if let Err(error) = write_meta_atomic(name, meta) {
+        tracing::warn!(session = name, %error, verdict = "session_meta_write_failed", "session metadata was not persisted");
+    }
 }
 
 fn update_meta(name: &str, updates: &[(&str, Value)]) {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut meta = load_meta(name);
     for (k, v) in updates {
         meta.insert((*k).to_string(), v.clone());
     }
-    save_meta(name, &meta);
+    save_meta_unlocked(name, &meta);
 }
 
 fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
@@ -2934,70 +2946,233 @@ fn rollout_for_worker_start<'a>(
     Ok(candidates.first().copied())
 }
 
-/// Map a codex/ollama worker to its live Codex rollout file: a recorded
-/// session-id claim first (deterministic: the id is the filename UUID), then a
-/// bounded `CC_DIR + worker start` association. `None` when nothing matches,
-/// which makes the caller fall back to the raw terminal (never a sibling's
-/// transcript).
+/// UUIDs are both transcript identities and shell command arguments.
+fn valid_codex_session_id(id: &str) -> bool {
+    id.len() == 36 && id.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() }
+    })
+}
+
+fn codex_peer_metas(name: &str) -> Vec<Map<String, Value>> {
+    let Ok(entries) = std::fs::read_dir(sessions_dir()) else { return Vec::new() };
+    entries.flatten().filter_map(|entry| {
+        let filename = entry.file_name();
+        let peer = filename.to_str()?.strip_suffix(".meta.json")?;
+        (peer != name && env_path(peer).is_file()).then(|| load_meta(peer))
+    }).collect()
+}
+
+fn codex_claim_is_unique(name: &str, id: &str) -> bool {
+    valid_codex_session_id(id)
+        && codex_peer_metas(name).iter().all(|peer| meta_str(peer, "codex_session_id") != id)
+}
+
+fn codex_resume_claim_owned(name: &str, meta: &Map<String, Value>) -> bool {
+    let id = meta_str(meta, "codex_session_id");
+    codex_claim_is_unique(name, &id) && meta_str(meta, "codex_owned_session_id") == id
+}
+
+/// A cwd/time association is unsafe even if only one rollout has appeared:
+/// another same-directory worker may still be creating its first header.
+fn codex_start_overlaps(name: &str, cwd: &str, started: f64) -> bool {
+    codex_peer_metas(name).iter().any(|peer| {
+        let delta = meta_i64(peer, "last_started") as f64 - started;
+        normalize_work_dir(&meta_str(peer, "cc_cwd")) == cwd
+            && meta_i64(peer, "last_started") > 0
+            && delta.abs() <= CODEX_ROLLOUT_START_WINDOW_S + CODEX_ROLLOUT_EARLY_GRACE_S
+    })
+}
+
+/// Linux gives direct process ownership, unlike a shared cwd. Walk only the
+/// pane subtree, bounded to 256 processes and 256 descriptors each; read only
+/// immutable rollout headers. A process retaining two main chats is ambiguous.
+#[cfg(target_os = "linux")]
+fn codex_pane_start(proc_root: &Path, pid: i64) -> Option<String> {
+    let stat = std::fs::read_to_string(proc_root.join(format!("{pid}/stat"))).ok()?;
+    let fields = stat.rsplit_once(')')?.1.split_whitespace().collect::<Vec<_>>();
+    // After comm: state is field 3 and starttime is field 22.
+    let boot = std::fs::read_to_string(proc_root.join("sys/kernel/random/boot_id")).ok()?;
+    Some(format!("{}:{}", boot.trim(), fields.get(19)?))
+}
+
+#[cfg(target_os = "linux")]
+fn codex_rollout_for_pane(proc_root: &Path, pane_pid: i64, cwd: &str) -> Option<PathBuf> {
+    if pane_pid <= 1 { return None; }
+    let mut pending = vec![pane_pid];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut rollouts = std::collections::BTreeSet::new();
+    while let Some(pid) = pending.pop() {
+        if !seen.insert(pid) { continue; }
+        if seen.len() > 256 { return None; }
+        let process = proc_root.join(pid.to_string());
+        let children = std::fs::read_to_string(process.join(format!("task/{pid}/children"))).ok()?;
+        pending.extend(children.split_whitespace().filter_map(|s| s.parse::<i64>().ok()).filter(|p| *p > 1));
+        if std::fs::read_to_string(process.join("comm")).ok().as_deref().map(str::trim) != Some("codex") {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(process.join("fd")) else { continue };
+        for (i, fd) in fds.flatten().enumerate() {
+            if i >= 256 { return None; }
+            let Ok(path) = std::fs::read_link(fd.path()) else { continue };
+            if !path.file_name().and_then(|p| p.to_str()).is_some_and(|p| p.starts_with("rollout-") && p.ends_with(".jsonl")) {
+                continue;
+            }
+            if rollout_identity(&path).is_some_and(|(directory, _)| directory == cwd)
+                && rollout_session_id(&path).is_some_and(|id| valid_codex_session_id(&id)) {
+                rollouts.insert(path);
+            }
+        }
+    }
+    (rollouts.len() == 1).then(|| rollouts.into_iter().next()).flatten()
+}
+
+/// Claim only the generation that was observed. The shared writer lock covers
+/// peer checks plus persistence, so two readers cannot claim one UUID together.
+fn claim_codex_rollout(name: &str, observed: &Map<String, Value>, id: &str, process_owned: bool) -> bool {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut current = load_meta(name);
+    if current.get("codex_generation") != observed.get("codex_generation")
+        || current.get("last_started") != observed.get("last_started")
+        || current.get("start_count") != observed.get("start_count")
+        || current.get("codex_starting").and_then(Value::as_bool) == Some(true)
+        || !valid_codex_session_id(id)
+        || (!process_owned && !codex_claim_is_unique(name, id))
+        || (process_owned && codex_peer_metas(name).iter()
+            .any(|peer| meta_str(peer, "codex_owned_session_id") == id)) {
+        return false;
+    }
+    // Direct process evidence can repair a stale duplicate claim on this lane;
+    // it never rewrites a peer's metadata.
+    if meta_str(&current, "codex_session_id") == id && meta_str(&current, "codex_owned_session_id") == id {
+        return true;
+    }
+    current.insert("codex_session_id".into(), json!(id));
+    current.insert("codex_owned_session_id".into(), json!(id));
+    match write_meta_atomic(name, &current) {
+        Ok(()) => {
+            tracing::info!(session = name, codex_session_id = id, process_owned,
+                verdict = "codex_rollout_ownership_recorded", "recorded this worker generation's proven Codex identity");
+            true
+        }
+        Err(error) => {
+            tracing::warn!(session = name, %error, verdict = "codex_rollout_claim_write_failed",
+                "Codex ownership was not persisted; refusing transcript association");
+            false
+        }
+    }
+}
+
+/// Merge only this launch's lifecycle fields into the latest metadata. Hook,
+/// model and instruction updates made while the launcher awaited the UI survive.
+fn patch_codex_generation_meta(
+    name: &str, generation: &str, updates: &[(&str, Option<Value>)],
+) -> std::io::Result<Map<String, Value>> {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut current = load_meta(name);
+    if generation.is_empty() || meta_str(&current, "codex_generation") != generation {
+        return Err(std::io::Error::other("Codex startup generation changed"));
+    }
+    for (key, value) in updates {
+        if let Some(value) = value { current.insert((*key).into(), value.clone()); }
+        else { current.remove(*key); }
+    }
+    write_meta_atomic(name, &current)?;
+    Ok(current)
+}
+
+fn checkpoint_codex_startup(
+    name: &str, observed: &Map<String, Value>, include_resume: bool,
+) -> std::io::Result<Map<String, Value>> {
+    let mut updates: Vec<_> = ["start_error", "last_started", "cc_cwd", "start_count",
+        "codex_starting", "codex_pane_pid", "codex_pane_start"].into_iter()
+        .map(|key| (key, observed.get(key).cloned())).collect();
+    if include_resume {
+        for key in ["pending_structured_resume", "pending_structured_resume_context", "pending_structured_resume_token"] {
+            if let Some(value) = observed.get(key) { updates.push((key, Some(value.clone()))); }
+        }
+    }
+    patch_codex_generation_meta(name, &meta_str(observed, "codex_generation"), &updates)
+}
+
+/// Every failed launch path clears the in-progress flag, including cancellation
+/// while awaiting tmux. A newer generation is never modified by an older guard.
+struct CodexStartupGuard {
+    name: String,
+    generation: String,
+    armed: bool,
+}
+
+impl Drop for CodexStartupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = patch_codex_generation_meta(&self.name, &self.generation,
+                &[("codex_starting", Some(json!(false)))]) {
+                tracing::warn!(session = %self.name, %error, verdict = "codex_startup_cleanup_failed",
+                    "failed launch cleanup could not clear this generation's starting flag");
+            }
+        }
+    }
+}
+
+/// Prefer a live process binding. Legacy metadata is usable only with a valid,
+/// unique UUID; the old cwd/time fallback must also exclude overlapping starts.
 pub(crate) fn codex_rollout_path(name: &str) -> Option<PathBuf> {
     let cfg = parse_env(name);
     let meta = load_meta(name);
-    let runtime_cwd = meta_str(&meta, "cc_cwd");
-    let wd = if runtime_cwd.trim().is_empty() { work_dir_of(&cfg) } else { runtime_cwd };
-    let sid = meta_str(&meta, "codex_session_id");
-    let files = codex_rollout_files();
-    if files.is_empty() {
+    if meta.get("codex_starting").and_then(Value::as_bool) == Some(true) {
+        warn_codex_rollout_unresolved(name, "codex_rollout_starting", &[], "");
         return None;
     }
-    // 1. session-id claim: the id is embedded in the filename, so this is a
-    //    string match, no file read.
-    if !sid.is_empty() {
-        if let Some((_, p)) = files.iter().find(|(_, p)| {
-            p.file_name().and_then(|s| s.to_str()).map(|s| s.contains(&sid)).unwrap_or(false)
-        }) {
-            return Some(p.clone());
+    let runtime_cwd = meta_str(&meta, "cc_cwd");
+    let wd = normalize_work_dir(&if runtime_cwd.trim().is_empty() { work_dir_of(&cfg) } else { runtime_cwd });
+    #[cfg(target_os = "linux")]
+    if meta_i64(&meta, "codex_pane_pid") > 1 {
+        let root = Path::new("/proc");
+        let pid = meta_i64(&meta, "codex_pane_pid");
+        let expected = meta_str(&meta, "codex_pane_start");
+        if expected.is_empty() || codex_pane_start(root, pid).as_deref() != Some(&expected) {
+            warn_codex_rollout_unresolved(name, "bound_pane_fingerprint_mismatch", &[], "");
+            return None;
         }
-        // A missing explicit identity is not permission to borrow a sibling.
+        let Some(path) = codex_rollout_for_pane(root, pid, &wd) else {
+            warn_codex_rollout_unresolved(name, "bound_pane_rollout_unresolved", &[], "");
+            return None;
+        };
+        let Some(id) = rollout_session_id(&path) else {
+            warn_codex_rollout_unresolved(name, "bound_rollout_header_unreadable", &[], "");
+            return None;
+        };
+        return claim_codex_rollout(name, &meta, &id, true).then_some(path);
+    }
+    let sid = meta_str(&meta, "codex_session_id");
+    let files = codex_rollout_files();
+    if !sid.is_empty() {
+        if !codex_resume_claim_owned(name, &meta) {
+            warn_codex_rollout_unresolved(name, "unproven_duplicate_or_invalid_rollout_claim", &[], &sid);
+            return None;
+        }
+        let found = files.iter().find(|(_, p)| {
+            p.file_name().and_then(|p| p.to_str()).is_some_and(|p| p.ends_with(&format!("{sid}.jsonl")))
+                && rollout_session_id(p).as_deref() == Some(&sid)
+        });
+        if let Some((_, path)) = found { return Some(path.clone()); }
         warn_codex_rollout_unresolved(name, "claimed_rollout_missing", &[], &sid);
         return None;
     }
-    // 2. Worker-life match. `cwd + newest` cross-linked every worker sharing
-    //    a checkout: an active sibling made an idle prompt read WORKING.  A
-    //    worker start is the second independent coordinate available before
-    //    Codex has given us a durable thread id, so use it and decline to guess
-    //    outside the bounded startup window.
     let started = meta_i64(&meta, "last_started") as f64;
+    if codex_start_overlaps(name, &wd, started) {
+        warn_codex_rollout_unresolved(name, "overlapping_worker_starts", &[], "");
+        return None;
+    }
     let matched = match rollout_for_worker_start(&files, &wd, started) {
         Ok(path) => path.cloned(),
         Err(candidates) => {
             warn_codex_rollout_unresolved(name, "ambiguous_worker_rollout", &candidates, "");
             None
         }
-    };
-    // Adopt the deterministic fallback once. Without this receipt every
-    // subsequent poll repeats a best-effort cwd/time join, and a restart or a
-    // new same-directory worker can change which transcript/status stream the
-    // old worker appears to own. The rollout itself carries the durable UUID;
-    // persist it as soon as the two-coordinate fallback resolves it.
-    if sid.is_empty() {
-        if let Some((path, rollout_id)) = matched
-            .as_ref()
-            .and_then(|path| rollout_session_id(path).map(|id| (path, id)))
-        {
-            update_meta(name, &[("codex_session_id", json!(rollout_id))]);
-            tracing::warn!(
-                target: "status_truth",
-                session = name,
-                codex_session_id = %rollout_id,
-                rollout = %path.display(),
-                measured = true,
-                n_considered = 1,
-                verdict = "codex_rollout_identity_adopted",
-                "Codex rollout fallback resolved one worker generation and persisted its exact identity"
-            );
-        }
-    }
-    matched
+    }?;
+    let id = rollout_session_id(&matched)?;
+    claim_codex_rollout(name, &meta, &id, false).then_some(matched)
 }
 
 fn warn_codex_rollout_unresolved(name: &str, verdict: &str, candidates: &[&PathBuf], claim: &str) {
@@ -9744,6 +9919,29 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     }
     let mut meta = load_meta(name);
     let provider = provider_of(&cfg);
+    if matches!(provider.as_str(), "codex" | "ollama") {
+        let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+        meta = load_meta(name);
+        let id = meta_str(&meta, "codex_session_id");
+        if skip_conv_id || (!id.is_empty() && !codex_resume_claim_owned(name, &meta)) {
+            tracing::warn!(session = name, verdict = "codex_resume_claim_rejected",
+                "starting fresh because stored Codex ownership is invalid or shared");
+            meta.remove("codex_session_id");
+            meta.remove("codex_owned_session_id");
+        }
+        meta.insert("codex_generation".into(), json!(ulid::Ulid::new().to_string()));
+        meta.insert("codex_starting".into(), json!(true));
+        meta.remove("codex_pane_pid");
+        meta.remove("codex_pane_start");
+        if let Err(error) = write_meta_atomic(name, &meta) {
+            tracing::warn!(session = name, %error, verdict = "codex_generation_write_failed",
+                "worker start refused before launch: Codex generation could not be persisted");
+            return (false, "Codex generation could not be persisted".into());
+        }
+    }
+    let mut codex_startup_guard = matches!(provider.as_str(), "codex" | "ollama").then(|| CodexStartupGuard {
+        name: name.to_string(), generation: meta_str(&meta, "codex_generation"), armed: true,
+    });
     let uuid_re = cached_re!(r"^[0-9a-fA-F-]{36}$");
     // Resume strategy (py:24250-24295). The Rust origin resolves via the
     // conversation UUID (deterministic, hook-reported); the name-indexed
@@ -10524,7 +10722,11 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
                 tracing::warn!(session = %name,
                     "codex relaunch after self-update did not reach the UI");
                 meta.insert("start_error".into(), json!("codex exited after self-update; relaunch did not reach the UI"));
-                save_meta(name, &meta);
+                if let Err(error) = patch_codex_generation_meta(name, &meta_str(&meta, "codex_generation"),
+                    &[("start_error", meta.get("start_error").cloned())]) {
+                    tracing::warn!(session = name, %error, verdict = "codex_start_error_write_failed",
+                        "Codex launch failure could not be persisted");
+                }
             }
         }
     }
@@ -10555,8 +10757,37 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
     // The launch directory is runtime identity, including when a saved active
     // task overrides the worker's general configured checkout.
     meta.insert("cc_cwd".into(), json!(work_dir));
+    if matches!(provider.as_str(), "codex" | "ollama") {
+        if let Some(out) = tmux(&["list-panes", "-t", &st(name), "-F", "#{pane_pid}"]).await {
+            if out.status.success() {
+                if let Ok(pid) = String::from_utf8_lossy(&out.stdout).trim().parse::<i64>() {
+                    meta.insert("codex_pane_pid".into(), json!(pid));
+                    #[cfg(target_os = "linux")]
+                    if let Some(start) = codex_pane_start(Path::new("/proc"), pid) {
+                        meta.insert("codex_pane_start".into(), json!(start));
+                    }
+                }
+            }
+        }
+        meta.remove("codex_starting");
+    }
     let count = meta.get("start_count").and_then(|v| v.as_i64()).unwrap_or(0);
     meta.insert("start_count".into(), json!(count + 1));
+    // Persist the running pane identity before resolving task context: failure
+    // to recover a card must not leave a launched worker marked as starting.
+    if codex_startup_guard.is_some() {
+        match checkpoint_codex_startup(name, &meta, false) {
+            Ok(current) => {
+                meta = current;
+                if let Some(guard) = &mut codex_startup_guard { guard.armed = false; }
+            }
+            Err(error) => {
+                tracing::warn!(session = name, %error, verdict = "codex_startup_checkpoint_failed",
+                    "worker launched but this generation's pane identity could not be committed");
+                return (false, "started, but Codex pane identity could not be persisted".into());
+            }
+        }
+    }
     // Keep pending identity until the durable steering queue accepts it. The
     // session.started row is the generation shared with board-drive; both
     // producers use exactly the same generation/card delivery id.
@@ -10580,7 +10811,10 @@ pub(crate) async fn start_session(state: &AppState, name: &str, extra_flags: &st
         meta.insert("pending_structured_resume_context".into(), json!(context));
         meta.insert("pending_structured_resume_token".into(), token.clone());
     }
-    if let Err(error) = save_resume_meta(name, &meta) {
+    let checkpoint = if codex_startup_guard.is_some() {
+        checkpoint_codex_startup(name, &meta, true).map(|current| { meta = current; })
+    } else { save_resume_meta(name, &meta) };
+    if let Err(error) = checkpoint {
         tracing::warn!(session = name, %error, verdict = "swap_context_persist_failed",
             "started worker retains recovery requirement; metadata commit failed");
         return (false, "started, but durable resume context is unresolved".into());
@@ -11794,6 +12028,11 @@ fn empty_resume_queue(conn: &rusqlite::Connection, name: &str) -> rusqlite::Resu
 // The resume protocol must observe a failed write; save_meta's historical
 // best-effort contract is unsuitable for authorizing a destructive restart.
 fn save_resume_meta(name: &str, meta: &Map<String, Value>) -> std::io::Result<()> {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+    write_meta_atomic(name, meta)
+}
+
+fn write_meta_atomic(name: &str, meta: &Map<String, Value>) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(sessions_dir())?;
     let path = meta_path(name);
@@ -11821,6 +12060,7 @@ fn write_swap_config(
 /// that a configured model became the running model. Keep that fact separate
 /// from provider self-reports, which may belong to the previous process life.
 fn set_confirmed_active_model(name: &str, provider: &str, model: Option<&str>) {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
     let mut meta = load_meta(name);
     if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
         meta.insert("active_model_confirmed".into(), json!(model));
@@ -11831,7 +12071,7 @@ fn set_confirmed_active_model(name: &str, provider: &str, model: Option<&str>) {
         meta.remove("active_model_provider");
         meta.remove("active_model_confirmed_at");
     }
-    save_meta(name, &meta);
+    save_meta_unlocked(name, &meta);
 }
 
 // ---------------------------------------------------------------------------
@@ -27538,6 +27778,161 @@ CLAUDE-POSTFIX-COMPLETE
         assert_eq!(interrupted.boundary, "turn_aborted");
     }
 
+    #[test]
+    fn codex_startup_checkpoint_survives_missing_resume_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let initial = json!({"codex_generation":"launch", "codex_starting":true,
+            "pending_structured_resume":1}).as_object().unwrap().clone();
+        save_meta("probe", &initial);
+        let mut launched = initial;
+        launched.remove("codex_starting");
+        launched.insert("codex_pane_pid".into(), json!(100));
+        launched.insert("codex_pane_start".into(), json!("boot:10"));
+        launched.insert("last_started".into(), json!(123));
+        launched.insert("cc_cwd".into(), json!(dir.path().join("vanished").to_str().unwrap()));
+        let persisted = checkpoint_codex_startup("probe", &launched, false).unwrap();
+        let (state, _db_dir) = state();
+        let conn = state.store.read().unwrap();
+        assert!(resume_context_from_state(&conn, "probe", &meta_str(&persisted, "cc_cwd"), "/missing").is_err());
+        let disk = load_meta("probe");
+        assert_ne!(disk.get("codex_starting").and_then(Value::as_bool), Some(true));
+        assert_eq!(disk.get("codex_pane_pid"), Some(&json!(100)));
+        assert_eq!(meta_str(&disk, "codex_pane_start"), "boot:10");
+        assert_eq!(disk.get("pending_structured_resume"), Some(&json!(1)), "unresolved recovery remains pending");
+    }
+
+    #[test]
+    fn codex_startup_checkpoint_merges_hook_updates_and_rejects_stale_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let mut observed = json!({"codex_generation":"old", "codex_starting":true,
+            "instructions":"old", "last_started":100}).as_object().unwrap().clone();
+        save_meta("probe", &observed);
+        update_meta("probe", &[("instructions", json!("new")), ("hook_receipt", json!("accepted"))]);
+        set_confirmed_active_model("probe", "codex", Some("new-model"));
+        observed.remove("codex_starting");
+        observed.insert("codex_pane_pid".into(), json!(123));
+        observed.insert("pending_structured_resume_context".into(), json!({"session":"probe", "card":null, "cwd":"/shared"}));
+        let merged = checkpoint_codex_startup("probe", &observed, true).unwrap();
+        assert_eq!(meta_str(&merged, "instructions"), "new");
+        assert_eq!(meta_str(&merged, "hook_receipt"), "accepted");
+        assert_eq!(meta_str(&merged, "active_model_confirmed"), "new-model");
+        assert!(merged.contains_key("pending_structured_resume_context"));
+        update_meta("probe", &[("codex_generation", json!("fresh")), ("codex_pane_pid", json!(999))]);
+        assert!(checkpoint_codex_startup("probe", &observed, true).is_err());
+        let disk = load_meta("probe");
+        assert_eq!(meta_str(&disk, "codex_generation"), "fresh");
+        assert_eq!(disk.get("codex_pane_pid"), Some(&json!(999)));
+        assert_eq!(meta_str(&disk, "instructions"), "new");
+    }
+
+    #[test]
+    fn codex_failed_start_guard_clears_only_its_own_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        save_meta("probe", json!({"codex_generation":"old", "codex_starting":true}).as_object().unwrap());
+        {
+            let _failed_start = CodexStartupGuard {name:"probe".into(), generation:"old".into(), armed:true};
+            update_meta("probe", &[("instructions", json!("concurrent"))]);
+        }
+        assert_eq!(load_meta("probe").get("codex_starting"), Some(&json!(false)));
+        assert_eq!(meta_str(&load_meta("probe"), "instructions"), "concurrent");
+        {
+            let _cancelled_old_start = CodexStartupGuard {name:"probe".into(), generation:"old".into(), armed:true};
+            update_meta("probe", &[("codex_generation", json!("fresh")), ("codex_starting", json!(true))]);
+        }
+        assert_eq!(meta_str(&load_meta("probe"), "codex_generation"), "fresh");
+        assert_eq!(load_meta("probe").get("codex_starting"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn codex_claim_rejects_duplicates_and_stale_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        for name in ["one", "two"] { std::fs::write(env_path(name), "CC_PROVIDER=codex\n").unwrap(); }
+        let id = "01a17963-db4a-7a41-a306-cd638e1b9484";
+        let a = json!({"codex_generation":"a", "last_started":100, "start_count":1}).as_object().unwrap().clone();
+        save_meta("one", &a);
+        save_meta("two", &a);
+        assert!(!codex_resume_claim_owned("one", &a), "legacy unproven identity must launch fresh");
+        assert!(claim_codex_rollout("one", &a, id, false));
+        assert!(codex_resume_claim_owned("one", &load_meta("one")));
+        assert!(!claim_codex_rollout("two", &a, id, false), "sole visible rollout cannot be claimed twice");
+        let mut fresh = a.clone(); fresh.insert("codex_generation".into(), json!("fresh"));
+        save_meta("one", &fresh);
+        assert!(!claim_codex_rollout("one", &a, id, true), "old process discovery must not overwrite fresh generation");
+        assert!(meta_str(&load_meta("one"), "codex_session_id").is_empty());
+        assert!(!valid_codex_session_id("$(touch /tmp/injected)"));
+        assert!(!valid_codex_session_id("------------------------------------"));
+        let mut duplicate = a.clone();
+        duplicate.insert("codex_session_id".into(), json!(id));
+        duplicate.insert("codex_owned_session_id".into(), json!(id));
+        save_meta("two", &duplicate);
+        save_meta("one", &duplicate);
+        assert!(!codex_resume_claim_owned("one", &duplicate), "duplicate proof is still rejected");
+    }
+
+    #[test]
+    fn codex_cwd_fallback_rejects_sibling_before_its_rollout_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        std::fs::write(env_path("sibling"), "CC_PROVIDER=codex\n").unwrap();
+        save_meta("sibling", json!({"last_started":101, "cc_cwd":"/shared"}).as_object().unwrap());
+        assert!(codex_start_overlaps("self", "/shared", 100.0));
+        assert!(!codex_start_overlaps("self", "/other", 100.0));
+        assert!(!codex_start_overlaps("self", "/shared", 2000.0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn codex_pane_fingerprint_changes_with_process_or_boot_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("100")).unwrap();
+        std::fs::create_dir_all(dir.path().join("sys/kernel/random")).unwrap();
+        let stat = |start: &str| format!("100 (shell with spaces) S {} {start} 0", vec!["0"; 18].join(" "));
+        std::fs::write(dir.path().join("sys/kernel/random/boot_id"), "boot-one").unwrap();
+        std::fs::write(dir.path().join("100/stat"), stat("50")).unwrap();
+        assert_eq!(codex_pane_start(dir.path(), 100).as_deref(), Some("boot-one:50"));
+        std::fs::write(dir.path().join("100/stat"), stat("60")).unwrap();
+        assert_eq!(codex_pane_start(dir.path(), 100).as_deref(), Some("boot-one:60"));
+        std::fs::write(dir.path().join("sys/kernel/random/boot_id"), "boot-two").unwrap();
+        assert_eq!(codex_pane_start(dir.path(), 100).as_deref(), Some("boot-two:60"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn codex_process_binding_distinguishes_same_cwd_workers_and_ignores_subagents() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let proc_root = dir.path().join("proc");
+        let cwd = "/shared";
+        let write = |file: &str, id: &str, source: Value| {
+            let path = dir.path().join(file);
+            std::fs::write(&path, json!({"timestamp":"2026-10-26T12:05:50Z", "type":"session_meta",
+                "payload":{"cwd":cwd,"id":id,"source":source}}).to_string()).unwrap(); path
+        };
+        let a = write("rollout-one.jsonl", "01a17963-db4a-7a41-a306-cd638e1b9484", json!("cli"));
+        let b = write("rollout-two.jsonl", "01a17963-dc48-7431-8d7f-ca1d374987f5", json!("cli"));
+        let child = write("rollout-child.jsonl", "01a17969-74b4-7690-9b74-b7f1f116dc8e", json!({"subagent":{}}));
+        for (pid, path) in [(100, &a), (200, &b)] {
+            let root = proc_root.join(pid.to_string());
+            std::fs::create_dir_all(root.join("fd")).unwrap();
+            std::fs::write(root.join("comm"), "codex\n").unwrap();
+            std::fs::create_dir_all(root.join(format!("task/{pid}"))).unwrap();
+            std::fs::write(root.join(format!("task/{pid}/children")), "").unwrap();
+            symlink(path, root.join("fd/1")).unwrap();
+        }
+        symlink(&child, proc_root.join("100/fd/2")).unwrap();
+        assert_eq!(codex_rollout_for_pane(&proc_root, 100, cwd), Some(a.clone()));
+        assert_eq!(codex_rollout_for_pane(&proc_root, 200, cwd), Some(b.clone()));
+        symlink(&b, proc_root.join("100/fd/3")).unwrap();
+        assert_eq!(codex_rollout_for_pane(&proc_root, 100, cwd), None, "two main chats are unresolved");
+        assert_eq!(codex_rollout_for_pane(&proc_root, 1, cwd), None);
+    }
+
     /// ATE-42 live regression: `amux` and `amux-testing-e2e` shared one cwd.
     /// The old newest-cwd resolver assigned e2e's active rollout to both, so
     /// the idle `amux` prompt showed WORKING.  Each worker life must resolve
@@ -33723,6 +34118,9 @@ mod refusal_status_tests {
             "tmux not found or timed out",
             "Claude failed to start",
             "could not write session env",
+            // Persistence failures are operational errors, not owner-policy refusals.
+            "Codex generation could not be persisted",
+            "started, but Codex pane identity could not be persisted",
             // A stop that cannot establish process exit is an operational
             // failure, not a successful or safely refused stop receipt.
             "worker is still running; herdr hard-kill is unavailable",
