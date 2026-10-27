@@ -10661,7 +10661,7 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
    previews, voice notes, pictures. ─────────────────────────────────────── */
 .cv-post { position:relative; border-radius:var(--radius-md); }
 .cv-post:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
-.cv-acts { position:absolute; top:-12px; right:var(--space-2); display:none; gap:2px; padding:2px; background:var(--card-bg, var(--bg));
+.cv-acts { position:absolute; top:-12px; right:var(--space-2); display:none; gap:var(--space-0-5); padding:var(--space-0-5); background:var(--card-bg, var(--bg));
   border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-md); z-index:2; }
 .cv-post:hover .cv-acts, .cv-post:focus-within .cv-acts { display:flex; }
 .cv-acts button { min-width:30px; height:28px; border:none; background:none; border-radius:var(--radius-sm); cursor:pointer; font-size:var(--fs-lg); color:var(--text); }
@@ -10670,7 +10670,7 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-react { height:24px; padding:0 var(--space-1-5); border:1px solid var(--border); border-radius:var(--radius-xl); background:none;
   color:var(--text); font-size:var(--fs-sm); cursor:pointer; }
 .cv-react.mine { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); }
-.cv-thread-line { display:inline-flex; align-items:center; gap:var(--space-1-5); margin-top:var(--space-1); padding:2px var(--space-1-5);
+.cv-thread-line { display:inline-flex; align-items:center; gap:var(--space-1-5); margin-top:var(--space-1); padding:var(--space-0-5) var(--space-1-5);
   border:1px solid transparent; border-radius:var(--radius-md); background:none; color:var(--accent); font-size:var(--fs-sm); font-weight:600; cursor:pointer; }
 .cv-thread-line:hover { border-color:var(--border); background:color-mix(in srgb, var(--text) 5%, transparent); }
 .cv-thread-line .cv-av { width:18px; height:18px; flex-basis:18px; font-size:var(--fs-3xs); }
@@ -10679,8 +10679,8 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-deleted { color:var(--dim); font-style:italic; font-size:var(--fs-lg); }
 .cv-edit { width:100%; min-height:60px; font:inherit; box-sizing:border-box; }
 .cv-edit-acts { display:flex; gap:var(--space-1-5); justify-content:flex-end; margin-top:var(--space-1); }
-.cv-snippet { font-size:var(--fs-sm); color:var(--dim); margin-top:2px; }
-.cv-snippet mark { background:color-mix(in srgb, var(--accent) 30%, transparent); color:var(--text); border-radius:2px; }
+.cv-snippet { font-size:var(--fs-sm); color:var(--dim); margin-top:var(--space-0-5); }
+.cv-snippet mark { background:color-mix(in srgb, var(--accent) 30%, transparent); color:var(--text); border-radius:var(--radius-xs); }
 .cv-flash { animation:cvflash 1.6s ease-out; }
 @keyframes cvflash { 0% { background:color-mix(in srgb, var(--accent) 25%, transparent); } 100% { background:transparent; } }
 .cv-preview { display:flex; gap:var(--space-2-5); max-width:520px; margin-top:var(--space-1-5); padding:var(--space-2); border-left:3px solid var(--border);
@@ -10693,9 +10693,9 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-audio audio { height:34px; max-width:100%; }
 .cv-audio-len { font-size:var(--fs-xs); color:var(--dim); }
 .cv-mic { min-width:44px; min-height:44px; }
-.cv-mic.recording { color:var(--red, #f85149); border-color:currentColor; }
+.cv-mic.recording { color:var(--red); border-color:currentColor; }
 .cv-voice-bar { display:flex; align-items:center; gap:var(--space-2); padding:0 var(--space-4) var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
-.cv-rec-dot { width:9px; height:9px; border-radius:50%; background:var(--red, #f85149); animation:cvpulse 1s infinite; }
+.cv-rec-dot { width:9px; height:9px; border-radius:var(--radius-round); background:var(--red); animation:cvpulse 1s infinite; }
 @keyframes cvpulse { 50% { opacity:0.3; } }
 .cv-av-img { object-fit:cover; padding:0; }
 .cv-me { border:none; background:none; padding:0; cursor:pointer; display:inline-flex; margin-right:var(--space-1-5); }
@@ -10712,7 +10712,7 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
   .cv-acts, .cv-post:hover .cv-acts, .cv-post:focus-within .cv-acts { display:none; }
   .cv-more { display:inline-flex; align-items:center; justify-content:center; position:absolute; top:0; right:0; min-width:44px; min-height:44px;
     border:none; background:none; color:var(--dim); font-size:var(--fs-2xl); cursor:pointer; }
-  .cv-post-main { padding-right:40px; }
+  .cv-post-main { padding-right:var(--space-10); }
   /* A thread takes the screen on a phone, with its own close button. */
   #messages-view.cv-thread-open #cv-pane { display:none !important; }
   .cv-thread { width:100%; border-left:none; }
