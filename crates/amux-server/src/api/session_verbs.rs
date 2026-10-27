@@ -26681,9 +26681,35 @@ fn subagent_state(tail: &[Value], silent_s: i64, silent_after_s: i64) -> (Option
     if last["type"] == "assistant" && tool.is_none() {
         return (Some("finished"), None);
     }
+    if handed_back(tail, last) {
+        return (Some("finished"), None);
+    }
     let waiting_on = Some(tool.map(|t| format!("tool:{t}")).unwrap_or_else(|| "model".to_string()));
     let state = if silent_s >= silent_after_s { "silent" } else { "running" };
     (Some(state), waiting_on)
+}
+
+/// Claude Code subagents can end by calling `SubagentHandback` instead of
+/// replying in text, so their last record is that call's tool_result. Reading
+/// it as "waiting on the model" listed every finished child of mtp-demo as
+/// running, then silent (12 of 12, 2026-10-27). A handback the harness
+/// refused (`is_error`) leaves the subagent working, so it does not count.
+fn handed_back(tail: &[Value], last: &Value) -> bool {
+    if last["type"] != "user" {
+        return false;
+    }
+    let Some(results) = last["message"]["content"].as_array() else { return false };
+    results.iter().any(|r| {
+        r["type"] == "tool_result"
+            && r["is_error"] != true
+            && r["tool_use_id"].as_str().is_some_and(|id| {
+                tail.iter().rev().filter(|x| x["type"] == "assistant").take(4).any(|a| {
+                    a["message"]["content"].as_array().is_some_and(|bs| {
+                        bs.iter().any(|b| b["type"] == "tool_use" && b["id"] == id && b["name"] == "SubagentHandback")
+                    })
+                })
+            })
+    })
 }
 
 /// One WARN per silent subagent per server process, so a sweep of
@@ -38256,6 +38282,19 @@ mod tests {
         // A long tool call is silent too, and says which tool owes the record.
         assert_eq!(subagent_state(&[result.clone(), tool.clone()], 4_000, 1800), (Some("silent"), Some("tool:Bash".into())));
         assert_eq!(subagent_state(&[att], 4_000, 1800), (None, None), "no conversation yet: unclassified");
+    }
+
+    #[test]
+    fn a_subagent_that_handed_back_is_finished() {
+        let handback = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"SubagentHandback","input":{"message":"done"}}]}});
+        let ok = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Report delivered to your caller."}]}});
+        let refused = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"no"}]}});
+        let att = json!({"type":"attachment","attachment":{"type":"credential_org"}});
+        assert_eq!(subagent_state(&[handback.clone(), ok, att], 4_000, 1800), (Some("finished"), None));
+        assert_eq!(subagent_state(&[handback.clone(), refused], 4_000, 1800), (Some("silent"), Some("model".into())), "a refused handback is still working");
+        let bash = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}});
+        let res = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}});
+        assert_eq!(subagent_state(&[bash, res], 4_000, 1800), (Some("silent"), Some("model".into())), "only the handback tool ends a subagent");
     }
 
     #[test]
