@@ -2055,6 +2055,120 @@ def _remove_correction(command):
         "permissionDecisionReason": reason}}
 
 
+# GITHUB APP TOKEN, NEVER INTO TOOL OUTPUT (mixpeek-security, 2026-10-27).
+# get-token.sh writes a live installation token to stdout. Inside eval "$(...)"
+# or GH_TOKEN=$(...) that stdout is consumed; called bare from a tool call it
+# lands in the transcript. The script cannot tell the two apart (both are a
+# pipe), so the check sits here. A mxp-gs12 subagent printed one on
+# 2026-10-27 ~15:2xZ, and get-token.sh's own comments record two earlier ones.
+_TOKEN_SCRIPT = re.compile(r'get-token\.sh\b')
+_TOKEN_SAFE_FLAGS = re.compile(r'^\s*(--expires-in|--help|-h)\b')
+# Commands that put what they read on the terminal. A pipe into anything else
+# (sed, jq, a credential helper) consumes the token.
+_DISPLAY_CMDS = {"cat", "tee", "head", "tail", "less", "more", "bat", "strings",
+                 "xxd", "od", "nl", "echo", "printf"}
+_TOKEN_CACHE_READ = re.compile(
+    r'(?:^|[\s;&|(`])(?:\S*/)?(cat|head|tail|less|more|bat|strings|xxd|od|nl|tac)\b[^;&|\n]*\.token-cache\b')
+
+
+def _enclosing_substitution(cmd, i):
+    """Index of the unmatched `$(` that contains position i, or -1."""
+    depth = 0
+    j = i - 1
+    while j >= 0:
+        c = cmd[j]
+        if c == ')':
+            depth += 1
+        elif c == '(':
+            if depth == 0:
+                return j - 1 if j > 0 and cmd[j - 1] == '$' else -1
+            depth -= 1
+        j -= 1
+    return -1
+
+
+_RUNNER_WORDS = {"bash", "sh", "zsh", "exec", "command", "env", "time", "nohup", "sudo", "-c"}
+
+
+def _token_invocations(cmd):
+    """get-token.sh matches that sit in command position (it is RUN, not named)."""
+    out = []
+    for m in _TOKEN_SCRIPT.finditer(cmd):
+        start = m.start()
+        while start > 0 and not cmd[start - 1].isspace() and cmd[start - 1] not in ';|&()`{':
+            start -= 1
+        before = cmd[:start].rstrip()
+        while before.endswith(('"', "'")):
+            before = before[:-1].rstrip()
+        if not before or before[-1] in ';|&(`{\n' or before.endswith("$("):
+            out.append(m)
+            continue
+        words = before.split()
+        prev = words[-1]
+        # Skip prefix assignments (GH_TOKEN= cmd) and timeout's duration.
+        k = len(words) - 1
+        while k >= 0 and (re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', words[k]) or re.match(r'^\d+[smh]?$', words[k])):
+            k -= 1
+        prev = words[k] if k >= 0 else ""
+        if k < 0 or prev in _RUNNER_WORDS or prev in ("timeout", "then", "do", "else", "!") or prev.endswith((";", "|", "&", "(")):
+            out.append(m)
+    return out
+
+
+def _token_call_is_consumed(cmd, m):
+    """True when this get-token.sh call cannot print the token to the terminal."""
+    rest = cmd[m.end():]
+    if _TOKEN_SAFE_FLAGS.match(rest):
+        return True
+    sub = _enclosing_substitution(cmd, m.start())
+    if sub >= 0:
+        before = cmd[:sub].rstrip().rstrip('"').rstrip()
+        # eval "$(...)", NAME=$(...), NAME="$(...)" (also behind export/local).
+        return bool(re.search(r'(?:\beval|\b[A-Za-z_][A-Za-z0-9_]*=)$', before))
+    seg = re.split(r'\|\||&&|;|\n', rest, maxsplit=1)[0]
+    pipe = re.search(r'(?<!\|)\|(?!\|)\s*(?:\S*/)?([A-Za-z0-9_.-]+)', seg)
+    if pipe:
+        return pipe.group(1) not in _DISPLAY_CMDS
+    redir = re.search(r'(?<![0-9&])>>?\s*(\S+)', seg)
+    if redir:
+        return redir.group(1) not in ("/dev/stdout", "/dev/stderr", "/dev/tty")
+    return False
+
+
+def _token_print_verdict(command):
+    """Deny a Bash call that would print the GitHub App token into tool output."""
+    try:
+        cmd = _strip_heredoc_bodies(command)
+    except Exception:
+        cmd = command
+    calls = _token_invocations(cmd)
+    leaks = [m for m in calls if not _token_call_is_consumed(cmd, m)]
+    cache = _TOKEN_CACHE_READ.search(cmd)
+    if not leaks and not cache:
+        return None
+    import hashlib
+    try:
+        log = pathlib.Path(os.environ.get("AMUX_HOME") or pathlib.Path.home() / ".amux") / "logs/tool-corrections.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as stream:
+            stream.write(json.dumps({"ts": time.time(),
+                                    "event": "token_cache_read" if cache and not leaks else "token_print",
+                                    "session": os.environ.get("AMUX_SESSION", ""), "verdict": "deny",
+                                    "measured": True, "n_considered": len(calls) + (1 if cache else 0),
+                                    "command_sha256": hashlib.sha256(command.encode()).hexdigest()}) + "\n")
+    except OSError:
+        pass  # unavailable telemetry must not defeat the refusal
+    what = ("reads ~/.amux/github-app/.token-cache with a display command" if cache and not leaks
+            else "runs get-token.sh where its stdout, a live GitHub App token, would reach the tool output")
+    reason = ("amux: this command %s. Consume the token instead: "
+              "eval \"$(~/.amux/github-app/get-token.sh)\" or GH_TOKEN=$(~/.amux/github-app/get-token.sh --raw), "
+              "or pipe it into the command that uses it. For the remaining lifetime use "
+              "get-token.sh --expires-in, which prints seconds and never the token. "
+              "Nothing ran." % what)
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason}}
+
+
 def _land_queue_push_verdict(scrubbed):
     """Contract rule 5 (AH-380): on a lane whose landing the server owns, a
     worker push to main is refused and pointed at `amux land`.
@@ -2099,7 +2213,7 @@ def main():
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
     global _LAST_CMD
     _LAST_CMD = cmd
-    correction = _remove_correction(cmd) or _live_scratch_verdict(cmd)
+    correction = _token_print_verdict(cmd) or _remove_correction(cmd) or _live_scratch_verdict(cmd)
     if correction:
         print(json.dumps(correction))
         return 0  # hook JSON deny cancels the call and feeds the reason to Claude
