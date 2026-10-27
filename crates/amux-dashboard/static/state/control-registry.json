@@ -1098,6 +1098,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvResume": {
+      "kind": "command._cvResume",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvSearch": {
       "kind": "command._cvSearch",
       "feedback_required": true,

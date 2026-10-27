@@ -39422,7 +39422,7 @@ function switchView(view) {
   // Per-session scoping lives on the peek's own Messages tab and on the
   // "Message history" modal reached from inside a peek.
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
-  if (view === 'messages') { _messagesLoad(true, ''); _cvEnter(); try { const m = localStorage.getItem('amux_msg_mode'); if (m && ['messages','trends','ask'].includes(m)) _msgSetMode(m); } catch(e) {} }
+  if (view === 'messages') { _msgsReenter(); _cvEnter(); try { const m = localStorage.getItem('amux_msg_mode'); if (m && ['messages','trends','ask'].includes(m)) _msgSetMode(m); } catch(e) {} }
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
@@ -66053,6 +66053,35 @@ function _cvShowPane(which) {
   document.getElementById('cv-pane').style.display = which === 'conv' ? 'flex' : 'none';
   document.getElementById('msgs-log-pane').style.display = which === 'log' ? 'flex' : 'none';
 }
+// COMING BACK TO MESSAGES KEEPS YOUR PLACE (Ethan, 2026-10-27: "if im
+// messaging someone and switch to worker view it retains the view of the
+// msg"). Leaving the view only hides it, so an open conversation is still in
+// the DOM with its posts, scroll and draft. Re-entering used to re-select it
+// (re-render, scroll reset) on a wide screen and close it back to the list on
+// a phone. Now it stays exactly as left and gets one fresh poll.
+function _cvResume() {
+  const view = document.getElementById('messages-view');
+  const sel = _cv.sel;
+  if (!view || !sel || !view.classList.contains('cv-open')) return false;
+  _cvFit();
+  _cvLoadList().then(() => _cvRenderSide()).catch(() => {});
+  if (sel[0] !== '@') {
+    _cvPoll(false);
+    if (!_cv.pollT) _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
+  }
+  if (typeof window._clientDebug === 'function') window._clientDebug('messages-view', { verdict: 'conversation_resumed', conv: sel.slice(0, 2), mobile: _cvMobile(), measured: true, n_considered: 1 });
+  return true;
+}
+// The All messages log keeps its page and scroll when you come back; its rows
+// refresh in place. The first visit (nothing loaded yet) still starts fresh.
+function _msgsReenter() {
+  if (!_msgsData.length) { _messagesLoad(true, ''); return; }
+  const list = document.getElementById('msgs-list');
+  const scrollers = [list, list && list.closest('#msgs-log-pane'), document.getElementById('messages-view')].filter(Boolean);
+  const saved = scrollers.map(el => el.scrollTop);
+  _messagesLoad(false, '').then(() => scrollers.forEach((el, i) => { el.scrollTop = saved[i]; }));
+}
+
 function _cvEnter() {
   if (!document.getElementById('cv-pane')) return;
   const lp = document.getElementById('msgs-log-pane');
@@ -66063,6 +66092,8 @@ function _cvEnter() {
     // Inside the top bar, so on a phone it is the first control of its one row.
     (document.getElementById('msgs-topbar') || lp).prepend(b);
   }
+  clearInterval(_cv.listT); _cv.listT = setInterval(() => { if (_cvViewOn()) _cvLoadList(); }, 5000);
+  if (_cvResume()) return;
   _cvFit();
   _cv.picked = false;
   _cvLoadList().then(() => {
@@ -66078,7 +66109,6 @@ function _cvEnter() {
     }
     _cvSelect(sel, true);
   });
-  clearInterval(_cv.listT); _cv.listT = setInterval(() => { if (_cvViewOn()) _cvLoadList(); }, 5000);
 }
 function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
