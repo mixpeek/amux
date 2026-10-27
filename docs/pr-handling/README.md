@@ -10,8 +10,10 @@ moves without him.
 - **Watcher** (`shell` schedule, every 15 minutes): `scripts/pr-watch.sh`.
   It reads the open PRs (head commit, plus comments and reviews by anyone
   but the handler's own login) and any fork CI runs waiting for approval.
+  It also reads whether each PR's CI is still to finish, green or red.
   When that set changes, it runs the handler. So a contributor's push or
-  reply wakes it, and its own review does not. A quiet tick costs no model turn. Each run
+  reply wakes it, and so does a CI run finishing. Its own review and a CI
+  run starting do not. A quiet tick costs no model turn. Each run
   prints a `verdict=` line (`woke`, `unchanged`, `no_prs`, `unmeasured`,
   `wake_refused`), which shows in the schedule's run history.
 - **Handler** (`tmux` schedule on amux-frustrations, run only by the

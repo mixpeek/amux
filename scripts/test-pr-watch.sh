@@ -13,11 +13,8 @@ check() { if [ "$2" = "$3" ]; then echo "  ok    $1"; pass=$((pass+1)); else ech
 cat > "$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 [ -f "$STUB/fail" ] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
-# Apply the caller's own --jq program to a JSON fixture, so the filter that
-# ships is the filter under test.
-prog=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && prog=$2; shift; done
-case "$prog" in
-  *headRefOid*) jq -r "$prog" "$STUB/prs.json" ;;
+case "$1" in
+  pr) cat "$STUB/prs.json" ;;
   *) cat "$STUB/runs" 2>/dev/null || true ;;
 esac
 EOF
@@ -39,10 +36,11 @@ EOF
 python3 "$tmp/srv.py" "$tmp" & srv=$!
 for _ in $(seq 50); do [ -s "$tmp/port" ] && break; sleep 0.1; done
 
-pr() {  # number head [author:id ...]
+ci='[]'
+pr() {  # number head [author:id ...]; CI checks from $ci
   local n=$1 h=$2; shift 2; local c=
   for a in "$@"; do c="$c${c:+,}{\"author\":{\"login\":\"${a%%:*}\"},\"id\":\"${a#*:}\"}"; done
-  echo "[{\"number\":$n,\"headRefOid\":\"$h\",\"comments\":[$c],\"reviews\":[]}]" > "$tmp/prs.json"
+  echo "[{\"number\":$n,\"headRefOid\":\"$h\",\"comments\":[$c],\"reviews\":[],\"statusCheckRollup\":$ci}]" > "$tmp/prs.json"
 }
 
 export STUB=$tmp PR_WATCH_GH=$tmp/gh PR_WATCH_HANDLER=SCHED-T PR_WATCH_SELF=handler \
@@ -66,6 +64,21 @@ check "the handler's own review does not wake it again" "$(run)" "verdict=unchan
 pr 391 abc handler:c1 pedro:c2
 check "the contributor's reply wakes it" "$(run)" "verdict=woke"
 
+# CI: wake when a run finishes, not on every job along the way.
+ci='[{"status":"IN_PROGRESS","conclusion":null},{"status":"COMPLETED","conclusion":"SUCCESS"}]'
+pr 391 abc handler:c1 pedro:c2
+check "CI starting does not wake it" "$(run)" "verdict=unchanged"
+ci='[{"status":"IN_PROGRESS","conclusion":null},{"status":"COMPLETED","conclusion":"SKIPPED"}]'
+pr 391 abc handler:c1 pedro:c2
+check "  another job finishing mid-run does not" "$(run)" "verdict=unchanged"
+ci='[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SKIPPED"}]'
+pr 391 abc handler:c1 pedro:c2
+check "CI finishing green wakes it" "$(run)" "verdict=woke"
+ci='[{"status":"COMPLETED","conclusion":"FAILURE"},{"state":"SUCCESS"}]'
+pr 391 abc handler:c1 pedro:c2
+check "CI finishing red wakes it" "$(run)" "verdict=woke"
+
+ci='[]'
 pr 391 def handler:c1 pedro:c2
 echo 503 > "$tmp/code"
 check "a refused wake says so" "$(run)" "verdict=wake_refused"
@@ -76,7 +89,7 @@ check "  and is retried next tick" "$(run)" "verdict=woke"
 
 touch "$tmp/fail"
 check "a failed read is unmeasured, never quiet" "$(run)" "verdict=unmeasured"
-check "  and wakes nothing" "$(hits)" "6"
+check "  and wakes nothing" "$(hits)" "8"
 
 echo
 echo "pr-watch: $pass passed, $fail failed"

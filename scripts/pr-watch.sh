@@ -2,8 +2,9 @@
 # Wake the PR handler only when mixpeek/amux's open pull requests change.
 #
 # Runs as a `shell` schedule, so a quiet tick costs no model turn. It reads
-# the open PRs (number, head sha, and the ids of comments and reviews by
-# anyone except the handler's own identity) plus fork CI runs waiting for a
+# the open PRs (number, head sha, the ids of comments and reviews by anyone
+# except the handler's own identity, and whether CI is still to finish,
+# green or red) plus fork CI runs waiting for a
 # maintainer's approval, fingerprints them, and when the fingerprint differs
 # from the last one it handed off, runs the handler schedule
 # (POST /api/schedules/$PR_WATCH_HANDLER/run). That schedule is a `tmux`
@@ -35,10 +36,20 @@ if [ -z "${PR_WATCH_GH:-}" ] && [ -x "$HOME/.amux/github-app/get-token.sh" ]; th
   eval "$("$HOME/.amux/github-app/get-token.sh")" || true
 fi
 
-if ! prs=$("$gh" pr list -R "$repo" --state open -L 100 \
-      --json number,headRefOid,comments,reviews \
-      --jq ".[] | \"\\(.number) \\(.headRefOid) \\([(.comments[], .reviews[]) | select(.author.login != \"$self\") | .id] | sort | join(\",\"))\"" 2>&1); then
-  echo "pr-watch: could not list PRs on $repo: $prs verdict=unmeasured"
+# One line per PR: number, head, the ids of comments and reviews by anyone
+# but $self, and CI as one word: wait (none yet, or running), green or red.
+# Never the per-job states, so a run wakes the handler once, when it
+# finishes, and not as it starts or on each job along the way.
+PR_LINE='.[] | "\(.number) \(.headRefOid) \([(.comments[], .reviews[]) | select(.author.login != $self) | .id] | sort | join(","))"
+  + " ci:" + ([.statusCheckRollup[]? | (.conclusion // .state // .status // "") | ascii_upcase] as $c
+    | if ($c | length) == 0 then "wait"
+      elif any($c[]; IN("", "IN_PROGRESS", "QUEUED", "PENDING", "EXPECTED", "WAITING", "REQUESTED")) then "wait"
+      elif any($c[]; IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) then "red"
+      else "green" end)'
+if ! raw=$("$gh" pr list -R "$repo" --state open -L 100 \
+      --json number,headRefOid,comments,reviews,statusCheckRollup 2>&1) \
+   || ! prs=$(printf '%s' "$raw" | jq -r --arg self "$self" "$PR_LINE" 2>&1); then
+  echo "pr-watch: could not list PRs on $repo: ${prs:-$raw} verdict=unmeasured"
   exit 1
 fi
 if ! waiting=$("$gh" api "repos/$repo/actions/runs?status=action_required&per_page=50" \
