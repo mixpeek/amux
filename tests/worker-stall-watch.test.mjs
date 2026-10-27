@@ -4,9 +4,9 @@
 // while the wake itself landed in the worker's history, and a worker that had
 // replied to a peer 23 s earlier read as idle for 21 min, because an isolated
 // worker's last_progress_at lags its turns.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -68,8 +68,14 @@ echo "$@" >> "$FAKE_DIR/alerts.log"
 
 // A fixture dir that survives several runs (ticks) of the script, as the
 // every-5m schedule does.
+// Every fixture dir is removed when the file's tests finish: each run used to
+// leave 6 behind in $TMPDIR (635 by 2026-10-27).
+const fixtureDirs = [];
+after(() => { for (const d of fixtureDirs) rmSync(d, { recursive: true, force: true }); });
+
 function setup(extraEnv = {}) {
   const d = mkdtempSync(join(tmpdir(), 'stallwatch-'));
+  fixtureDirs.push(d);
   writeFileSync(join(d, 'curl'), FAKE_CURL); chmodSync(join(d, 'curl'), 0o755);
   writeFileSync(join(d, 'amux'), FAKE_AMUX); chmodSync(join(d, 'amux'), 0o755);
   const read = (f) => (existsSync(join(d, f)) ? readFileSync(join(d, f), 'utf8') : '');
