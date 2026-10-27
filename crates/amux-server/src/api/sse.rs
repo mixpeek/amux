@@ -140,30 +140,29 @@ pub async fn events(
                             }
                         }
                         // Coalesce this event plus everything already queued:
-                        // a burst of N writes = one invalidate signal.
-                        let mut board_dirty =
-                            matches!(ev.entity_type, amux_core::revision::EntityType::Task);
-                        let mut sessions_dirty = matches!(
-                            ev.entity_type,
-                            amux_core::revision::EntityType::Worker
-                                | amux_core::revision::EntityType::Session
-                        );
-                        let mut messages_dirty =
-                            matches!(ev.entity_type, amux_core::revision::EntityType::Message);
+                        // a burst of N writes = one invalidate signal. Each
+                        // queued event's own state line is still sent: a client
+                        // that acts on one (a conversation post arriving live)
+                        // used to lose it whenever any other write landed in the
+                        // same 250 ms (verdict=sse_burst_forwarded counts them).
                         tokio::time::sleep(Duration::from_millis(250)).await;
-                        while let Ok(more) = rx.try_recv() {
-                            board_dirty |=
-                                matches!(more.entity_type, amux_core::revision::EntityType::Task);
-                            sessions_dirty |= matches!(
-                                more.entity_type,
-                                amux_core::revision::EntityType::Worker
-                                    | amux_core::revision::EntityType::Session
-                            );
-                            messages_dirty |= matches!(
-                                more.entity_type,
-                                amux_core::revision::EntityType::Message
-                            );
+                        let (queued, flags) = drain_burst(&ev, &mut rx);
+                        let mut gone = false;
+                        if !scoped_member {
+                            for more in &queued {
+                                let payload = serde_json::json!({"type": "state", "payload": more});
+                                if yielder.send(Event::default().data(payload.to_string())).await.is_err() {
+                                    gone = true;
+                                    break;
+                                }
+                            }
                         }
+                        if gone { break; }
+                        if queued.len() >= SSE_BURST_LOG_AT {
+                            tracing::debug!(forwarded = queued.len(), measured = true, n_considered = queued.len() + 1,
+                                verdict = "sse_burst_forwarded", "forwarded every state event queued behind a burst");
+                        }
+                        let (board_dirty, sessions_dirty, messages_dirty) = flags;
                         if board_dirty || sessions_dirty || messages_dirty {
                             let ev =
                                 invalidate_payload(board_dirty, sessions_dirty, messages_dirty);
@@ -239,6 +238,32 @@ fn ping_payload() -> &'static str {
     PAYLOAD.get_or_init(|| format!("{{\"type\":\"ping\",\"v\":\"{}\"}}", amux_dashboard::asset_version()))
 }
 
+/// A burst at or above this size is logged once at debug.
+const SSE_BURST_LOG_AT: usize = 8;
+
+/// Everything queued behind `first`, in order, plus the invalidate flags for
+/// the whole burst (first included): (board, sessions, messages). The caller
+/// sends each queued event's state line and one invalidate for the burst.
+fn drain_burst(
+    first: &amux_core::revision::StateEvent,
+    rx: &mut tokio::sync::broadcast::Receiver<amux_core::revision::StateEvent>,
+) -> (Vec<amux_core::revision::StateEvent>, (bool, bool, bool)) {
+    use amux_core::revision::EntityType;
+    let flags_of = |e: &amux_core::revision::StateEvent| {
+        (matches!(e.entity_type, EntityType::Task),
+         matches!(e.entity_type, EntityType::Worker | EntityType::Session),
+         matches!(e.entity_type, EntityType::Message))
+    };
+    let (mut b, mut s, mut m) = flags_of(first);
+    let mut queued = Vec::new();
+    while let Ok(more) = rx.try_recv() {
+        let (b2, s2, m2) = flags_of(&more);
+        b |= b2; s |= s2; m |= m2;
+        queued.push(more);
+    }
+    (queued, (b, s, m))
+}
+
 /// The invalidate signal (AMUX-3503) — the entire replacement for the legacy
 /// full-list pushes. `keys` uses the SPA's existing invalidate vocabulary
 /// (`msg.keys`, an array), so the event shape predates this change on the
@@ -283,6 +308,35 @@ where
         (rx, guard),
         |(mut rx, guard)| async move { rx.recv().await.map(|ev| (Ok(ev), (rx, guard))) },
     ))
+}
+
+#[cfg(test)]
+mod burst_tests {
+    use super::*;
+    use amux_core::revision::{EntityType, MutationKind, StateEvent, StateRevision};
+
+    fn ev(rev: u64, entity_type: EntityType, id: &str) -> StateEvent {
+        StateEvent { rev: StateRevision(rev), entity_type, entity_id: id.into(), mutation: MutationKind::Created, at: chrono::Utc::now() }
+    }
+
+    /// CI run 40598507875: a conversation post that landed within 250 ms of
+    /// another write was drained for the invalidate flags and its own state
+    /// line dropped, so the open conversation never saw it arrive live. Every
+    /// queued event must come back, in order, beside the burst's flags.
+    #[test]
+    fn every_event_queued_behind_a_burst_is_returned_in_order_with_the_bursts_flags() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let first = ev(1, EntityType::Task, "AMUX-1");
+        tx.send(ev(2, EntityType::Other("conversation".into()), r#"{"conv":"g:general","id":7,"op":"created"}"#)).unwrap();
+        tx.send(ev(3, EntityType::Session, "w1")).unwrap();
+        let (queued, flags) = drain_burst(&first, &mut rx);
+        assert_eq!(queued.iter().map(|e| e.rev.0).collect::<Vec<_>>(), vec![2, 3], "every queued event, in order");
+        assert!(matches!(&queued[0].entity_type, EntityType::Other(k) if k == "conversation"), "the conversation post is forwarded");
+        assert_eq!(flags, (true, true, false), "one invalidate covers the board and sessions of the whole burst");
+        let (none, only_first) = drain_burst(&ev(4, EntityType::Message, "m"), &mut rx);
+        assert!(none.is_empty());
+        assert_eq!(only_first, (false, false, true));
+    }
 }
 
 #[cfg(test)]
