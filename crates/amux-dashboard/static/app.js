@@ -10088,17 +10088,38 @@ function _tabMenuSortableCreate(menu, which, draggable, onReorder) {
     if (!menu._tabDragNoSortable) { menu._tabDragNoSortable = true; beacon('sortable_missing'); }
     return null;
   }
+  // THE WHOLE ROW IS THE GRIP (Ethan, 2026-10-27: "make it easier to drag the
+  // tab order"). Only the small ⠇ handle used to start a drag. Now a row drags
+  // from anywhere on it: at once with a mouse, after a short press on touch so
+  // the list still scrolls under a finger. The checkbox stays a checkbox
+  // (filtered), the list scrolls itself near its edges while a row is held,
+  // and the click a drop would send to the row's label (toggling that tab) is
+  // swallowed.
   let press = null, started = false;
-  menu.onpointerdown = e => { press = e.target.closest && e.target.closest('.tab-drag-handle') ? {x: e.clientX, y: e.clientY} : null; started = false; };
+  menu.onpointerdown = e => {
+    const row = e.target.closest && e.target.closest(draggable);
+    press = row && !e.target.closest('input') ? {x: e.clientX, y: e.clientY} : null; started = false;
+  };
   menu.onpointerup = e => {
     if (press && !started && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 12) beacon('drag_not_started', {moved: Math.round(Math.hypot(e.clientX - press.x, e.clientY - press.y))});
     press = null;
   };
+  if (!menu._tabDragClickGuard) {
+    menu._tabDragClickGuard = true;
+    menu.addEventListener('click', e => {
+      if (Date.now() - (menu._tabDragEndedAt || 0) < 400) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+  }
   return Sortable.create(menu, {
-    handle: '.tab-drag-handle', draggable, animation: 100,
-    forceFallback: true, fallbackTolerance: 3,
+    draggable, animation: 120,
+    filter: 'input, .tab-cust-search-wrap', preventOnFilter: false,
+    forceFallback: true, fallbackTolerance: 4,
+    delay: 160, delayOnTouchOnly: true, touchStartThreshold: 6,
+    scroll: true, scrollSensitivity: 56, scrollSpeed: 14, bubbleScroll: true,
+    ghostClass: 'tab-drag-ghost', chosenClass: 'tab-drag-chosen', fallbackClass: 'tab-drag-floating',
     onStart() { started = true; },
     onEnd(evt) {
+      menu._tabDragEndedAt = Date.now();
       beacon(evt.oldIndex === evt.newIndex ? 'unchanged' : 'reordered', {from: evt.oldIndex, to: evt.newIndex});
       if (evt.oldIndex !== evt.newIndex) onReorder();
     }

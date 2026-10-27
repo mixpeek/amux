@@ -4150,6 +4150,12 @@
   }
   .tab-customizer-item:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
   .tab-customizer-item.required { opacity: 0.45; cursor: not-allowed; }
+  .tab-customizer-item[data-tab-id]:not(.required), .tab-customizer-item[data-ptab-id]:not(.required) { cursor: grab; touch-action: pan-y; }
+  .tab-customizer-item .tab-drag-handle { font-size: var(--fs-lg) !important; padding: 0 var(--space-1-5) 0 0 !important; }
+  .tab-drag-chosen { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .tab-drag-ghost { opacity: 0.35; background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px dashed var(--accent); }
+  .tab-drag-floating { background: var(--card); box-shadow: var(--shadow-lg); border-radius: var(--radius-md); cursor: grabbing; opacity: 0.95 !important; }
+
   .tab-customizer-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
 
   /* MOBILE: the tab customizer as a bottom sheet. The desktop dropdown — the
