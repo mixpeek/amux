@@ -1197,6 +1197,14 @@ reap_test_orphans() { # <dry:0|1>
     case "$args" in
       *"/pytest-of-"*) ;;
       *"cargo test"*|*"cargo nextest"*|*/target/debug/deps/*|*/target/release/deps/*) ;;
+      # A browser an amux server launched for a THROWAWAY home (a test or probe
+      # server under a temp amux-*/home). Browsers outlive their server on
+      # purpose (9ef5d12fe) so a restart can adopt them, but a temp home's
+      # server never comes back. CPU RCA 20261027-122513: four Chromes from a
+      # failed reaper probe sat 14.5h, one spawning renderers at ~140% CPU.
+      # The owner's real profiles live under ~/.amux/playwright-auth and have
+      # no /home/ component, so they cannot match.
+      *"--user-data-dir="*"/amux-"*"/home/playwright-auth/profiles/"*) ;;
       *) continue ;;
     esac
     s=$(etime_secs "$et"); case "$s" in ''|*[!0-9]*) continue ;; esac
@@ -1211,7 +1219,7 @@ reap_test_orphans() { # <dry:0|1>
     printf '%s\tstopped\t%s\t%s\t%s\n' "$(date '+%F %T')" "$pid" "$et" "${args:0:300}" >> "$STATE_DIR/test-orphans.log"
   done < <($ORPHAN_PS_CMD 2>/dev/null)
   TEST_ORPHANS_STOPPED=$stopped
-  echo "mac-cleanup: leftover test processes (ppid 1, pytest temp dir or cargo test / test binary, over ${TEST_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)")"
+  echo "mac-cleanup: leftover test processes (ppid 1, pytest temp dir, cargo test / test binary or a temp-home browser, over ${TEST_ORPHAN_MIN}m): found ${found}, stopped ${stopped}$( [ "$DRY" = 1 ] && [ "$found" -gt 0 ] && echo " (dry run)")"
   [ -z "$ex" ] || echo "mac-cleanup:   e.g. $ex (full list in $STATE_DIR/test-orphans.log)"
 }
 

@@ -107,6 +107,21 @@ check "an orphaned cargo build is kept"               alive "$(alive "$CB")"
 check "a cargo test whose parent is alive is kept"    alive "$(alive "$CTP")"
 check "the summary counts two stopped"                yes   "$(has "$out" 'found 2, stopped 2')"
 
+echo "2b2. a browser launched for a throwaway amux home is stopped once orphaned; the owner's profile is not"
+spawn TCH "$FIX/temp-chrome"
+spawn RCH "$FIX/real-chrome"
+spawn YCH "$FIX/young-chrome"
+{
+  printf '%s 1 %s 14:32:36 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=58172 --user-data-dir=/var/folders/0x/abc/T/amux-reaper-3yinwdn4/home/playwright-auth/profiles/driven --no-first-run\n' "$TCH" "$ME"
+  printf '%s 1 %s 14:32:36 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9333 --user-data-dir=/Users/u/.amux/playwright-auth/profiles/ethan --no-first-run\n' "$RCH" "$ME"
+  printf '%s 1 %s 30:00 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/amux-e2e-x/home/playwright-auth/profiles/p\n' "$YCH" "$ME"
+} > "$FIX/ps.orph"
+reap_test_orphans 0 > "$FIX/orph.out"; out=$(cat "$FIX/orph.out")
+check "an orphaned temp-home browser is stopped"      gone  "$(alive "$TCH")"
+check "the owner's real profile browser is kept"      alive "$(alive "$RCH")"
+check "a young temp-home browser is kept"             alive "$(alive "$YCH")"
+check "the summary counts one stopped"                yes   "$(has "$out" 'found 1, stopped 1')"
+
 echo "2c. background daemons: a listed one of ours at normal priority goes to background policy"
 {
   printf '87198 %s 58 270.0 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd\n' "$ME"
