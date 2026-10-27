@@ -338,10 +338,12 @@ else
   : > "$h/.amux/rust-build-target/debug/marker"
   out9=$(HOME="$h" AMUX_RS_BUILD_LOG="$h/build.log" AMUX_BUILD_MIN_FREE_GB=0 \
     AMUX_BUILD_SACRIFICE_CACHE_BELOW_GB=0 AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB=-1 \
-    AMUX_CARGO_GUARD_TEST_FIXTURE= AMUX_RS_DISK_CLEAR_ONLY=1 bash "$SCRIPT" >/dev/null 2>&1; cat "$h/build.log" 2>/dev/null)
+    AMUX_CARGO_GUARD_TEST_FIXTURE= AMUX_BUILD_RECLAIM_WINDOW_S=0 AMUX_RS_DISK_CLEAR_ONLY=1 bash "$SCRIPT" >/dev/null 2>&1; cat "$h/build.log" 2>/dev/null)
   # A successfully killed decoy makes `wait` report its signal status. That is
-  # expected cleanup, not a harness failure under `set -e`.
-  kill "$DECOY" 2>/dev/null; wait "$DECOY" 2>/dev/null || true
+  # expected cleanup, not a harness failure under `set -e`. The decoy may also
+  # have exited on its own by now (a slow runner, 2026-10-27 run 40560603411:
+  # `kill` of a gone pid aborted the whole harness), which is equally fine.
+  kill "$DECOY" 2>/dev/null || true; wait "$DECOY" 2>/dev/null || true
   # PROVE THE PROBE RAN before believing its negative (ethos rule 4). This cell
   # asserted only the ABSENCE of "DEFERRED", and a script that died before
   # reaching the decision produces exactly that log. It did: the first cut of
