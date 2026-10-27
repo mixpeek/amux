@@ -782,6 +782,10 @@ jobs:
       # here said the step above reports only its last script. It does not: run
       # blocks execute under bash -e, so that step fails on its first failing
       # script. Corrected under AMUX-4651.)
+      # Branch hygiene (Ethan 2026-10-27): merged branches pruned, unmerged
+      # past 48h reported. Runs against a throwaway bare remote; no network.
+      - name: Branch hygiene report and merged-only prune
+        run: ./scripts/test-branch-hygiene.sh
       - name: CLI refusal remedies (board doing)
         run: ./scripts/test-board-continuation-hint.sh
       # AMUX-4652: board needs reports a refused blocker link instead of claiming it.
