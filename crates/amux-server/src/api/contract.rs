@@ -631,6 +631,31 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// One worktree change at a time per repository. `git worktree add` reads every
+/// other registration under .git/worktrees, so an add racing a peer's add or
+/// remove read a half-written entry and failed: "failed to read
+/// .git/worktrees/LU-1-review-.../commondir: Success" (CI run 40546029611, two
+/// reviews checking out at once). Keyed by the common git dir, so every
+/// worktree of one repository shares the lock; different repositories do not
+/// wait on each other.
+type WorktreeLocks = std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>;
+async fn worktree_guard(tree: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    static LOCKS: std::sync::OnceLock<WorktreeLocks> = std::sync::OnceLock::new();
+    let common = git(tree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await
+        .map(PathBuf::from).unwrap_or_else(|_| tree.to_path_buf());
+    let lock = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+        .entry(common.clone()).or_default().clone();
+    if let Ok(g) = lock.clone().try_lock_owned() {
+        return g;
+    }
+    let started = std::time::Instant::now();
+    let g = lock.lock_owned().await;
+    tracing::info!(repo = %common.display(), wait_ms = started.elapsed().as_millis() as u64, measured = true,
+        n_considered = 1, verdict = "contract_worktree_serialized",
+        "waited for another verifier's worktree change on the same repository");
+    g
+}
+
 /// A clean detached checkout of `sha` at `tmp`, for a server check or a
 /// review. 2026-10-06: a review killed by a server restart left its directory
 /// behind unregistered, so every later `worktree remove` failed quietly and
@@ -660,6 +685,7 @@ async fn fresh_checkout(tree: &Path, tmp: &Path, sha: &str) -> Result<(), String
     if !matches!(review_job(tmp), ReviewJob::None) {
         return Err(format!("{t} holds a reviewer run that is still live or unread"));
     }
+    let _worktree = worktree_guard(tree).await;
     let registrations = git(tree, &["worktree", "list", "--porcelain", "-z"]).await.map_err(infrastructure)?;
     let registered = registrations.split('\0').filter_map(|s| s.strip_prefix("worktree "))
         .any(|p| Path::new(p) == canonical_tmp);
@@ -933,7 +959,8 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
     };
     let prefix = verify_path_prefix(&tree, lane);
     let r = crate::fanout_workspace::verify_commands_prefixed(&ws, &tmp.to_string_lossy(), &[contract.command.as_str()], timeout, &|| Ok(()), &prefix).await;
-    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
+    { let _worktree = worktree_guard(&tree).await;
+      let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await; }
     match r {
         Ok(()) => Ok((sha, contract.command, contract.acceptance)),
         Err(e) => Err((Some(sha), format!("{e}\n{at}"))),
@@ -1679,7 +1706,8 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     }
     tracing::info!(card, sha, round, measured = true, n_considered = 1,
         verdict = "contract_review_evidence_retained", "review input and output retained outside the temporary checkout");
-    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
+    { let _worktree = worktree_guard(&tree).await;
+      let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await; }
     if tmp.exists() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -2058,7 +2086,8 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
         }
         let output = wait_review(&dir).await;
         retain_review_evidence(&home, &card, &format!("pre-{hash}"), &dir)?;
-        let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await;
+        { let _worktree = worktree_guard(&tree).await;
+          let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await; }
         let (text, code) = output?;
         measured_prereview(&text, &code, &model)
     };
@@ -2891,6 +2920,53 @@ mod tests {
         std::fs::write(outside.join("keep"), "x").unwrap();
         assert!(fresh_checkout(&repo, &outside, &sha).await.is_err(), "a directory outside tmp/contract is never cleared");
         assert!(outside.join("keep").exists());
+    }
+
+    #[tokio::test]
+    async fn worktree_changes_on_one_repository_wait_their_turn_and_other_repositories_do_not() {
+        let home = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let repo = home.path().join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).status().unwrap().success());
+            repo
+        };
+        let (a, b) = (mk("a"), mk("b"));
+        let held = worktree_guard(&a).await;
+        // A linked worktree of the same repository shares the lock (common dir).
+        let same = tokio::time::timeout(std::time::Duration::from_millis(300), worktree_guard(&a.join(".git").join(".."))).await;
+        assert!(same.is_err(), "a second change on the same repository must wait for the first");
+        let other = tokio::time::timeout(std::time::Duration::from_millis(2000), worktree_guard(&b)).await;
+        assert!(other.is_ok(), "a different repository must not wait");
+        drop(other);
+        drop(held);
+        let after = tokio::time::timeout(std::time::Duration::from_millis(2000), worktree_guard(&a)).await;
+        assert!(after.is_ok(), "once released, the next change proceeds");
+    }
+
+    #[tokio::test]
+    async fn concurrent_checkouts_of_one_repository_do_not_read_each_others_half_registrations() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            git(&repo, args).await.unwrap();
+        }
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        std::fs::create_dir_all(home.path().join("tmp/contract")).unwrap();
+        // Several rounds of 12 at once, each removing and re-adding its own
+        // checkout: the CI failure was one add reading a peer's entry mid-write.
+        for round in 0..4 {
+            let runs = (0..12).map(|i| {
+                let (repo, sha) = (repo.clone(), sha.clone());
+                let tmp = home.path().join(format!("tmp/contract/LU-{i}-review-{round}"));
+                tokio::spawn(async move { fresh_checkout(&repo, &tmp, &sha).await })
+            }).collect::<Vec<_>>();
+            for (i, r) in futures::future::join_all(runs).await.into_iter().enumerate() {
+                r.unwrap().unwrap_or_else(|e| panic!("round {round} checkout {i}: {e}"));
+            }
+        }
     }
 
     #[tokio::test]
