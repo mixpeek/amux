@@ -452,6 +452,13 @@ pub struct OtherUse {
     pub cpu_percent: f64,
     pub rss_mb: f64,
     pub n_processes: usize,
+    /// The busiest single process in the tree: what a fix should name. The
+    /// root is often a shell or a service's main process using no CPU itself.
+    pub top_pid: u32,
+    pub top_command: String,
+    pub top_cpu_percent: f64,
+    /// That process's nice value; 10 or more is already low priority.
+    pub top_nice: i32,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -499,6 +506,15 @@ pub fn root_kind(comm: &str, pid: u32, self_pid: u32) -> &'static str {
     }
 }
 
+/// A per-user service manager (`systemd --user`, launchd) starts unrelated
+/// services, so it is a boundary like pid 1, never a tree's root. On Linux
+/// every process outside a pane hung from `systemd --user`, so the Host
+/// strained panel charged an amux deploy build's rustc (181%) to "systemd"
+/// and suggested renicing the service manager (2026-10-27).
+pub fn is_service_manager(comm: &str) -> bool {
+    matches!(comm.rsplit('/').next().unwrap_or(comm), "systemd" | "launchd")
+}
+
 /// Charge every process to a worker pane or a root tree. Pure, so the
 /// attribution is testable without a machine.
 pub fn utilization(procs: &[Proc], panes: &HashMap<u32, String>, ncpu: usize, self_pid: u32) -> Utilization {
@@ -511,7 +527,10 @@ pub fn utilization(procs: &[Proc], panes: &HashMap<u32, String>, ncpu: usize, se
                 return Ok(w.clone());
             }
             match by_pid.get(&cur) {
-                Some(p) if p.ppid > 1 && p.ppid != cur => {
+                Some(p) if p.ppid > 1
+                    && p.ppid != cur
+                    && !by_pid.get(&p.ppid).is_some_and(|pp| is_service_manager(&pp.comm)) =>
+                {
                     top = cur;
                     cur = p.ppid;
                 }
@@ -543,7 +562,17 @@ pub fn utilization(procs: &[Proc], panes: &HashMap<u32, String>, ncpu: usize, se
                     cpu_percent: 0.0,
                     rss_mb: 0.0,
                     n_processes: 0,
+                    top_pid: p.pid,
+                    top_command: p.comm.chars().take(160).collect(),
+                    top_cpu_percent: p.pcpu,
+                    top_nice: p.nice,
                 });
+                if p.pcpu > e.top_cpu_percent {
+                    e.top_pid = p.pid;
+                    e.top_command = p.comm.chars().take(160).collect();
+                    e.top_cpu_percent = p.pcpu;
+                    e.top_nice = p.nice;
+                }
                 e.cpu_percent += p.pcpu;
                 e.rss_mb += rss;
                 e.n_processes += 1;
@@ -560,7 +589,12 @@ pub fn utilization(procs: &[Proc], panes: &HashMap<u32, String>, ncpu: usize, se
     for v in by_kind.values_mut() {
         *v = round(*v);
     }
-    let mut others: Vec<OtherUse> = roots.into_values().map(|mut r| { r.cpu_percent = round(r.cpu_percent); r.rss_mb = round(r.rss_mb); r }).collect();
+    let mut others: Vec<OtherUse> = roots.into_values().map(|mut r| {
+        r.cpu_percent = round(r.cpu_percent);
+        r.rss_mb = round(r.rss_mb);
+        r.top_cpu_percent = round(r.top_cpu_percent);
+        r
+    }).collect();
     others.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal).then(a.root_pid.cmp(&b.root_pid)));
     others.truncate(10);
     let workers_cpu: f64 = workers.iter().map(|w| w.cpu_percent).sum();
@@ -691,8 +725,14 @@ async fn tick() {
     if measured && prev != Some(level) {
         let from = prev.map(Level::as_str).unwrap_or("unknown");
         if level > Level::Ok {
+            // Name the busiest process outside the workers, so a log sweep sees
+            // what was using the machine, not only that it was busy.
+            let top = utilization.as_ref().and_then(|u| u.top_unattributed.first());
             tracing::warn!(target: "amux::host_guard", verdict = "host_pressure_changed", from, to = level.as_str(),
-                reasons = %reasons.join("; "), measured = true, n_considered = 3, "host pressure {from} -> {}", level.as_str());
+                reasons = %reasons.join("; "), measured = true, n_considered = 3,
+                top_unattributed_pid = top.map(|o| o.top_pid), top_unattributed_command = top.map(|o| o.top_command.as_str()),
+                top_unattributed_cpu = top.map(|o| o.top_cpu_percent), top_unattributed_root = top.map(|o| o.command.as_str()),
+                "host pressure {from} -> {}", level.as_str());
         } else {
             tracing::info!(target: "amux::host_guard", verdict = "host_pressure_changed", from, to = level.as_str(),
                 measured = true, n_considered = 3, "host pressure {from} -> ok");
@@ -842,6 +882,37 @@ mod tests {
         assert_eq!((land.kind.as_str(), land.n_processes, land.cpu_percent), ("detached", 3, 151.0));
         assert_eq!(u.top_unattributed[0].kind, "vm", "heaviest first");
         assert!(u.kinds.contains_key("detached") && u.kinds.len() == u.by_kind.len(), "every kind is explained");
+    }
+
+    /// Linux: `systemd --user` is the parent of the tmux server and of every
+    /// service, so it must not become one tree that swallows them all, and the
+    /// fix must name the process doing the work (2026-10-27: a deploy build's
+    /// rustc at 181% was reported as "systemd", with a renice of pid 24876).
+    #[test]
+    fn a_service_manager_is_a_boundary_and_the_busiest_process_is_named() {
+        let ps = "\
+   50     1   0:10.00 21-00:00:00  0   12000   0.0 systemd
+   60    50   0:01.00 21-00:00:00  0    4000   0.5 dbus-daemon
+  100    50   0:05.00 21-00:00:00  0    3000   0.5 tmux: server
+  200   100   0:01.00   02:00:00  0    1024   0.0 bash
+  201   200  30:00.00   02:00:00  0  409600  12.0 claude
+  800    50   0:00.10   00:06:00  0    3000   0.0 bash
+  801   800   0:01.00   00:06:00 10   90000   1.0 cargo
+  802   801  10:00.00   00:06:00 10 2400000 181.0 rustc
+";
+        let procs = parse_ps(ps);
+        let u = utilization(&procs, &parse_panes("amux-w 200\n"), 4, 1);
+        assert!(u.top_unattributed.iter().all(|o| o.root_pid != 50 || o.cpu_percent < 1.0),
+            "the service manager carries only its own CPU: {:?}", u.top_unattributed);
+        let build = u.top_unattributed.iter().find(|o| o.root_pid == 800).expect("the build is its own tree");
+        assert_eq!((build.cpu_percent, build.n_processes), (182.0, 3));
+        assert_eq!((build.top_pid, build.top_command.as_str(), build.top_cpu_percent, build.top_nice), (802, "rustc", 181.0, 10),
+            "the fix names rustc and sees it is already low priority, not the bash root");
+        assert_eq!(u.top_unattributed[0].root_pid, 800, "heaviest first");
+        assert!(u.top_unattributed.iter().any(|o| o.root_pid == 100), "the tmux server is its own tree");
+        assert!(u.top_unattributed.iter().any(|o| o.root_pid == 60), "dbus is its own tree");
+        assert_eq!(u.workers.len(), 1, "a worker pane is still claimed before any boundary");
+        assert!(is_service_manager("/usr/lib/systemd/systemd") && is_service_manager("launchd") && !is_service_manager("systemd-journal"));
     }
 
     #[test]
