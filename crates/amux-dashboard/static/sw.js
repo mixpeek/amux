@@ -30,6 +30,10 @@ const CDN_URLS = [
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
   'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
   'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js',
+  // Office viewers (app.js _LAZY_LIBS docx, pptx, jszip).
+  'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+  'https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js',
+  'https://cdn.jsdelivr.net/npm/pptx-preview@1.0.7/dist/pptx-preview.umd.js',
 ];
 
 // Install: pre-cache the app shell (atomic), then the CDN libraries (best
