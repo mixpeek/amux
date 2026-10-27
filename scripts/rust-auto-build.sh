@@ -644,10 +644,12 @@ fi
     fi
     local guard_cmd=(python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$root" --path "$candidate")
     [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" != 1 ] || guard_cmd+=(--dry-run)
+    RECLAIM_LAST=""
     if result=$("${guard_cmd[@]}"); then
       RECLAIM_DEFERRED=0
       echo "== cargo_reclaim_result path=$candidate $result"
     else
+      RECLAIM_LAST="$result"
       [ "${RECLAIM_QUIET:-0}" = 1 ] || echo "== WARN cargo_reclaim_deferred DEFERRED path=$candidate $result; retry after builds finish."
     fi
   }
@@ -668,7 +670,7 @@ fi
       [ $((SECONDS-started)) -lt "$window" ] || break
       sleep "$poll"
     done
-    echo "== WARN cargo_reclaim_deferred DEFERRED path=$2 attempts=$tries waited_s=$((SECONDS-started)) verdict=cargo_reclaim_retry_exhausted; a build held the target for the whole window, the next run retries."
+    echo "== WARN cargo_reclaim_deferred DEFERRED path=$2 attempts=$tries waited_s=$((SECONDS-started)) verdict=cargo_reclaim_retry_exhausted last=${RECLAIM_LAST:-peer override}; the guard refused for the whole window, the next run retries."
   }
   DEBUG_DIR="$HOME/.amux/rust-build-target/debug"
   if [ -d "$DEBUG_DIR" ]; then
