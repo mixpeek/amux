@@ -26664,7 +26664,22 @@ fn subagent_silent_after_s() -> i64 {
 /// such a subagent as running for hours (MSG-90283); silence is what amux can
 /// measure, and `waiting_on` says whether a tool or the model owes the next
 /// record, since a long tool call is silent without being stuck.
+///
+/// Newer Claude Code ends a subagent with a `SubagentHandback` tool call
+/// ("Report delivered to your caller"), so its transcript ends on a tool
+/// result. That is a finish too; reading it as waiting on the model listed
+/// every finished subagent of an idle worker as silent (Ethan, 2026-10-27:
+/// "there's no sub agents", mtp-demo showing 7 silent).
 fn subagent_state(tail: &[Value], silent_s: i64, silent_after_s: i64) -> (Option<&'static str>, Option<String>) {
+    let handed_back = tail
+        .iter()
+        .rev()
+        .find(|r| r["type"] == "assistant")
+        .and_then(|r| r["message"]["content"].as_array())
+        .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "tool_use" && b["name"] == "SubagentHandback"));
+    if handed_back {
+        return (Some("finished"), None);
+    }
     let Some(last) = tail
         .iter()
         .rev()
@@ -38255,7 +38270,13 @@ mod tests {
         assert_eq!(subagent_state(&[tool.clone(), result.clone()], 60, 1800), (Some("running"), Some("model".into())));
         // A long tool call is silent too, and says which tool owes the record.
         assert_eq!(subagent_state(&[result.clone(), tool.clone()], 4_000, 1800), (Some("silent"), Some("tool:Bash".into())));
-        assert_eq!(subagent_state(&[att], 4_000, 1800), (None, None), "no conversation yet: unclassified");
+        assert_eq!(subagent_state(&[att.clone()], 4_000, 1800), (None, None), "no conversation yet: unclassified");
+        // Handing the report back ends the subagent, before and after the tool result lands.
+        let handback = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"SubagentHandback","input":{}}]}});
+        assert_eq!(subagent_state(&[tool.clone(), result.clone(), handback.clone(), result.clone(), att], 187_000, 1800), (Some("finished"), None));
+        assert_eq!(subagent_state(&[result.clone(), handback.clone()], 90_000, 1800), (Some("finished"), None));
+        // A handback earlier in the transcript does not finish a subagent that kept working.
+        assert_eq!(subagent_state(&[handback, result.clone(), tool.clone(), result], 4_000, 1800), (Some("silent"), Some("model".into())));
     }
 
     #[test]
