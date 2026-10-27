@@ -43,8 +43,10 @@ let recorderSegmentSeconds: Double = Double(ProcessInfo.processInfo.environment[
 /// A buffer starting this long after the last one ended is a gap.
 let recorderGapSlackMs: Int64 = 250
 /// Buffers waiting for a writer past this many seconds of audio are dropped,
-/// and the drop is recorded as a gap.
-let recorderMaxBacklogSeconds: Double = 5
+/// and the drop is recorded as a gap. 30 s (about 11 MB at 48 kHz stereo
+/// float) rides out a stalled disk: 5 s dropped 10 s of a two-hour test run
+/// while the disk was 99% full (2026-10-27).
+let recorderMaxBacklogSeconds: Double = 30
 
 func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
@@ -108,6 +110,14 @@ final class TrackWriter {
     var segFrames: AVAudioFramePosition = 0
     var segStartMs: Int64 = 0
     var lastEndMs: Int64 = 0
+    /// lastEndMs before rounding. Summing whole-ms buffer durations lost
+    /// ~0.3 ms a buffer, so start_ms ran 50 ms a segment behind the audio.
+    var lastEndExactMs: Double = 0
+    /// The end of the last buffer on the SOURCE's own clock (sample time, or
+    /// presentation time), when the source has one. Loss is a jump on this
+    /// clock; a buffer merely delivered late under load is not (a two-hour
+    /// test flagged 0.3 to 0.7 s "gaps" that were late deliveries).
+    var lastSourceEndMs: Double?
     var pendingReason: String?
     var backlogFrames = 0
     let lock = NSLock()
@@ -127,7 +137,7 @@ final class TrackWriter {
 
     /// Called from the capture thread: never blocks it. A backlog past the
     /// limit drops the buffer and records the drop.
-    func append(_ buffer: AVAudioPCMBuffer, arrivedMs: Int64) {
+    func append(_ buffer: AVAudioPCMBuffer, arrivedMs: Int64, sourceMs: Double? = nil) {
         let frames = Int(buffer.frameLength)
         lock.lock()
         let backlog = backlogFrames
@@ -145,7 +155,7 @@ final class TrackWriter {
             level = (sum / Float(max(1, frames / 8))).squareRoot()
         }
         queue.async {
-            self.write(buffer, arrivedMs: arrivedMs)
+            self.write(buffer, arrivedMs: arrivedMs, sourceMs: sourceMs)
             self.lock.lock(); self.backlogFrames -= frames; self.lock.unlock()
         }
     }
@@ -174,15 +184,31 @@ final class TrackWriter {
         return err == nil ? out : nil
     }
 
-    private func write(_ buffer: AVAudioPCMBuffer, arrivedMs: Int64) {
+    private func write(_ buffer: AVAudioPCMBuffer, arrivedMs: Int64, sourceMs: Double?) {
         guard let pcm = convert(buffer), pcm.frameLength > 0 else { return }
-        let durMs = Int64(Double(pcm.frameLength) / recorderSampleRate * 1000)
-        let startMs = arrivedMs - durMs
-        if lastEndMs > 0, startMs - lastEndMs > recorderGapSlackMs {
-            let g = RecGap(track: track, at_ms: lastEndMs - startedAt, dur_ms: startMs - lastEndMs, why: pendingReason ?? "late_buffer")
+        let durExactMs = Double(pcm.frameLength) / recorderSampleRate * 1000
+        let durMs = Int64(durExactMs.rounded())
+        // On the source's clock when it has one and nothing restarted it;
+        // across a restart (sleep, device change, pause) the wall clock.
+        var startMs = arrivedMs - durMs
+        var startExactMs: Double?
+        var gapMs: Int64 = 0
+        if let src = sourceMs, let prev = lastSourceEndMs, pendingReason == nil {
+            gapMs = Int64(src - prev)
+            startMs = lastEndMs + max(0, gapMs)
+        } else if lastEndMs > 0 {
+            gapMs = startMs - lastEndMs
+        }
+        lastSourceEndMs = sourceMs.map { $0 + Double(buffer.frameLength) / buffer.format.sampleRate * 1000 }
+        if lastEndMs > 0, gapMs > recorderGapSlackMs {
+            let g = RecGap(track: track, at_ms: lastEndMs - startedAt, dur_ms: gapMs, why: pendingReason ?? "dropped")
             onGap?(g)
             // A gap ends the segment, so segments stay contiguous inside.
             closeSegment()
+        } else if lastEndMs > 0 && gapMs <= recorderGapSlackMs {
+            // Contiguous: the segment timeline follows the audio, not delivery jitter.
+            startMs = lastEndMs
+            startExactMs = lastEndExactMs
         }
         pendingReason = nil
         if file == nil { openSegment(startMs: startMs) }
@@ -198,7 +224,8 @@ final class TrackWriter {
             return
         }
         segFrames += AVAudioFramePosition(pcm.frameLength)
-        lastEndMs = startMs + durMs
+        lastEndExactMs = (startExactMs ?? Double(startMs)) + durExactMs
+        lastEndMs = Int64(lastEndExactMs.rounded())
         if Double(segFrames) >= recorderSegmentSeconds * recorderSampleRate { closeSegment() }
     }
 
@@ -266,8 +293,9 @@ final class MicSource: RecSource {
             throw NSError(domain: "amux.recorder", code: 1, userInfo: [NSLocalizedDescriptionKey: "no microphone input is available"])
         }
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, _ in
-            self?.writer.append(buf, arrivedMs: nowMs())
+        input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, when in
+            let src = when.isSampleTimeValid ? Double(when.sampleTime) / fmt.sampleRate * 1000 : nil
+            self?.writer.append(buf, arrivedMs: nowMs(), sourceMs: src)
         }
         engine.prepare()
         try engine.start()
@@ -314,18 +342,28 @@ final class ToneSource: RecSource {
         let sr = 44_100.0
         let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
         t.schedule(deadline: .now(), repeating: .milliseconds(100))
+        let t0 = Date()
+        var produced: Double = 0   // frames, on the source's own clock
         t.setEventHandler { [weak self] in
-            guard let self = self, Date() >= self.stalledUntil else { return }
-            let n = AVAudioFrameCount(sr / 10)
-            guard let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n) else { return }
-            b.frameLength = n
-            for i in 0..<Int(n) {
-                let v = Float(sin(self.phase) * 0.2)
-                self.phase += 2 * .pi * 440 / sr
-                b.floatChannelData![0][i] = v
-                b.floatChannelData![1][i] = v
+            guard let self = self else { return }
+            let due = Date().timeIntervalSince(t0) * sr
+            if Date() < self.stalledUntil { return }
+            // Like a device's own buffer: a late timer tick catches up; a
+            // stall (a simulated sleep) jumps the clock, which is a gap.
+            if due - produced > sr * 2 { produced = due - sr / 10 }
+            while due - produced >= sr / 10 {
+                let n = AVAudioFrameCount(sr / 10)
+                guard let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n) else { return }
+                b.frameLength = n
+                for i in 0..<Int(n) {
+                    let v = Float(sin(self.phase) * 0.2)
+                    self.phase += 2 * .pi * 440 / sr
+                    b.floatChannelData![0][i] = v
+                    b.floatChannelData![1][i] = v
+                }
+                self.writer.append(b, arrivedMs: nowMs(), sourceMs: produced / sr * 1000)
+                produced += Double(n)
             }
-            self.writer.append(b, arrivedMs: nowMs())
         }
         t.resume()
         timer = t
@@ -392,7 +430,9 @@ final class SystemAudioSource: NSObject, RecSource, SCStreamOutput, SCStreamDele
         guard n > 0, let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n) else { return }
         buf.frameLength = n
         let st = CMSampleBufferCopyPCMDataIntoAudioBufferList(sb, at: 0, frameCount: Int32(n), into: buf.mutableAudioBufferList)
-        if st == noErr { writer.append(buf, arrivedMs: nowMs()) }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        let src = pts.isValid ? CMTimeGetSeconds(pts) * 1000 : nil
+        if st == noErr { writer.append(buf, arrivedMs: nowMs(), sourceMs: src) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

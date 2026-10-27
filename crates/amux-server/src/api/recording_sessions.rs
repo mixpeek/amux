@@ -81,7 +81,7 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 fn now_ms() -> i64 {
-    crate::config::now_f64() as i64 * 1000
+    (crate::config::now_f64() * 1000.0) as i64
 }
 
 fn valid_track(t: &str) -> bool {
@@ -532,16 +532,27 @@ fn assemble_track(sdir: &Path, m: &Value, track: &str, ext: &str, ff: Option<&Pa
             gaps.push(gap(track, cursor - started, s - cursor, why));
             let sp = sdir.join(format!("{track}.sil{n_sil}.aac"));
             silence(ff, &sp, s - cursor)?;
-            lines.push_str(&format!("file '{}'\n", sp.display().to_string().replace('\'', "'\\''")));
+            lines.push_str(&format!("file '{}'\nduration {:.3}\n", sp.display().to_string().replace('\'', "'\\''"), (s - cursor) as f64 / 1000.0));
             n_sil += 1;
         }
         let cp = sdir.join(track).join(format!("{seq:08}.chunk"));
+        // The manifest's duration, never ffmpeg's: a raw ADTS piece has no
+        // duration, so the concat demuxer estimates one from the bitrate
+        // (18.5 s for a 10 s piece) and a 2 h recording came out 3 h long.
+        let d = c["dur_ms"].as_i64().unwrap_or(0);
         lines.push_str(&format!("file '{}'\n", cp.display().to_string().replace('\'', "'\\''")));
-        cursor = s + c["dur_ms"].as_i64().unwrap_or(0);
+        if d > 0 {
+            lines.push_str(&format!("duration {:.3}\n", d as f64 / 1000.0));
+        }
+        cursor = s + d;
     }
     std::fs::write(&list, lines).map_err(|e| e.to_string())?;
     let out = sdir.join(format!("{track}.m4a"));
     ffmpeg_run(ff, &["-f".into(), "concat".into(), "-safe".into(), "0".into(), "-i".into(), list.display().to_string(),
+        // Each piece decodes a little long (the encoder's priming and padding),
+        // so pieces overlap their neighbour by a few ms; resampling to the
+        // timestamps absorbs that instead of drifting or dropping speech.
+        "-af".into(), "aresample=async=1000:first_pts=0".into(),
         "-c:a".into(), "aac".into(), "-b:a".into(), "96k".into(), out.display().to_string()], 3600)?;
     Ok((out, gaps))
 }
@@ -740,6 +751,42 @@ mod tests {
         // Finishing again returns the filed recording, not an error.
         let v = mark_finishing(d.path(), "sess-003", &json!({}), false).unwrap();
         assert_eq!(v["state"], "finished");
+    }
+
+    /// Real ADTS pieces, because the bug lives in how ffmpeg times them: with
+    /// no duration in the stream, the concat demuxer guessed one from the
+    /// bitrate and a 2 h recording was filed 3 h long (2026-10-27).
+    #[test]
+    fn a_segment_session_is_as_long_as_its_audio_plus_its_gaps() {
+        let Some(ff) = crate::api::file_viewer::find_bin("ffmpeg") else {
+            eprintln!("SKIPPED a_segment_session_is_as_long_as_its_audio_plus_its_gaps: no ffmpeg on this host");
+            return;
+        };
+        let d = tempfile::tempdir().unwrap();
+        let t0 = 1_793_000_000_000;
+        open(d.path(), "sess-006", "segment", &["mic"], t0);
+        // Six 10 s pieces, each opening with 2 s of silence as speech does:
+        // that start is what threw ffmpeg's bitrate guess off. A 5 s hole
+        // before seq 3.
+        for seq in 0..6u64 {
+            let p = d.path().join(format!("p{seq}.aac"));
+            ffmpeg_run(&ff, &["-f".into(), "lavfi".into(), "-i".into(), "anoisesrc=r=48000:a=0.3:c=white".into(), "-t".into(), "10".into(),
+                "-af".into(), "volume=enable='lt(t,2)':volume=0".into(),
+                "-ac".into(), "1".into(), "-c:a".into(), "aac".into(), "-b:a".into(), "64k".into(), "-f".into(), "adts".into(),
+                p.display().to_string()], 60).unwrap();
+            let start = t0 + seq as i64 * 10_000 + if seq >= 3 { 5_000 } else { 0 };
+            put(d.path(), "sess-006", "mic", seq, &std::fs::read(&p).unwrap(), start, 10_000).unwrap();
+        }
+        mark_finishing(d.path(), "sess-006", &json!({"last_seq": {"mic": 5}, "ended_at": t0 + 65_000}), false).unwrap();
+        let sc = assemble(d.path(), "sess-006", Some(&ff)).unwrap();
+        let out = std::process::Command::new(ff.with_file_name("ffprobe"))
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+            .arg(d.path().join(sc["file"].as_str().unwrap())).output();
+        let secs: f64 = out.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(-1.0);
+        assert!((secs - 65.0).abs() < 0.5, "60 s of audio and a 5 s gap filed as {secs} s");
+        let gaps = sc["session"]["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0]["dur_ms"], 5000);
     }
 
     #[test]
