@@ -9,7 +9,8 @@ registry, refuses the tool calls a `deny` rule describes, refuses heavy
 commands while the machine is critical (the `resources` boundary), and refuses
 a new Agent/Task call past the running-subagent cap or under the account's
 usage headroom floor (the `subagents` boundary), and refuses modal prompt tools
-(AskUserQuestion, plan mode) for orchestrator lanes (the `modal` boundary).
+(AskUserQuestion, plan mode) for orchestrator lanes (the `modal` boundary),
+and refuses hook-less pushes to a protected branch (the `push-gates` boundary).
 
 Who it applies to: amux workers (AMUX_SESSION set), and isolated ones
 (AMUX_ISOLATED_WORKER set) while the registry's top-level `apply_to_isolated`
@@ -25,7 +26,11 @@ registry lets the call through, and a registry that does not load is logged
 as verdict=boundary_registry_unloadable so the sweep sees every boundary
 went dark. The one exception is a deny rule with `requires_receipt`
 (tenant-workload-gate): once its patterns match a command segment, a missing,
-stale or foreign receipt refuses the call, and so does a failed check.
+stale or foreign receipt refuses the call, and so does a failed check. The
+other is the push-gates boundary (kind push_gates): a `git push` segment that
+writes main or master is refused when it skips the hooks or runs in a repo
+that ships a pre-push hook it has not installed, and when the hook state
+cannot be read.
 """
 from __future__ import annotations
 
@@ -190,10 +195,10 @@ def receipt_key(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value) or "_"
 
 
-def command_segments(command: str, depth: int = 0) -> list[str]:
-    """Simple commands, split on shell operators and newlines, with the string
-    given to bash -c / sh -c / eval / ssh split again. A quoted argument with
-    spaces in it (a commit message, a grep pattern) is not read as a command."""
+def command_token_segments(command: str, depth: int = 0, via: str = "") -> list[tuple[list[str], str]]:
+    """Simple commands as token lists, split on shell operators and newlines,
+    with the string given to bash -c / sh -c / eval / ssh split again (those
+    follow their parent, tagged with the wrapper's name in `via`)."""
     import shlex
 
     try:
@@ -211,20 +216,28 @@ def command_segments(command: str, depth: int = 0) -> list[str]:
             segs.append([])
         else:
             segs[-1].append(t)
-    out: list[str] = []
+    out: list[tuple[list[str], str]] = []
     for seg in segs:
         if not seg:
             continue
-        # A quoted argument with spaces in it (a commit message, a JSON patch)
-        # is data to this command, so it reads as one placeholder word.
-        out.append(" ".join("_" if re.search(r"\s", t) else t for t in seg))
+        out.append((seg, via))
         if depth < 2:
             words = [w for w in seg if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
             if words and os.path.basename(words[0]) in SHELL_WRAPPERS:
+                wrapper = os.path.basename(words[0])
                 for w in words[1:]:
                     if re.search(r"\s", w):
-                        out.extend(command_segments(w, depth + 1))
+                        out.extend(command_token_segments(w, depth + 1, via if via == "ssh" else wrapper))
     return out
+
+
+def command_segments(command: str, depth: int = 0) -> list[str]:
+    """Simple commands, split on shell operators and newlines, with the string
+    given to bash -c / sh -c / eval / ssh split again. A quoted argument with
+    spaces in it (a commit message, a grep pattern) is not read as a command."""
+    # A quoted argument with spaces in it (a commit message, a JSON patch)
+    # is data to this command, so it reads as one placeholder word.
+    return [" ".join("_" if re.search(r"\s", t) else t for t in seg) for seg, _ in command_token_segments(command, depth)]
 
 
 def first_group(patterns: list[str], text: str) -> str | None:
@@ -334,6 +347,292 @@ def check_receipts(b: dict, i: int, rule: dict, command: str) -> tuple[int, str]
         "Read what the gate prints (what scales what, and which ScaledObjects watch this workload's pods), "
         "then retry.\n\n" + b.get("rule", "").strip() + "\n"
         "(boundary-guard; the registry is boundaries.toml, GET $AMUX_URL/api/boundaries)\n"
+    )
+
+
+# ---- push gates (push-gates, 2026-10-27) ----------------------------------------
+#
+# A worker's subagent pushed to the mixpeek repo's main from a fresh clone that
+# had no pre-push hook installed (1212229610, since reverted). Its precheck had
+# refused, but the push was chained after it, and the clone ran no hook, so
+# mixpeek's .githooks/pre-push gates never ran. This check refuses a `git push`
+# segment that targets a protected branch when it skips the hooks
+# (--no-verify, or core.hooksPath emptied inline) or when the repository it
+# runs in SHIPS a pre-push hook that is not installed. Each command segment is
+# judged on its own, in the directory it will run in (the payload's cwd,
+# moved by `cd <dir>` segments and `git -C <dir>`). It runs git only for a
+# segment that is a push, and fails CLOSED when it cannot tell the hook state.
+
+PUSH_LAUNCHERS = {"env", "command", "exec", "nohup", "time", "nice", "builtin"}
+# git global options that take the next word as their value.
+GIT_GLOBAL_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env",
+                  "--super-prefix", "--list-cmds", "--attr-source"}
+# push options that take the next word as their value.
+PUSH_OPT_ARG = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+
+
+class PushParse:
+    def __init__(self) -> None:
+        self.dirs: list[str] = []         # -C values, in order
+        self.globals: list[str] = []      # global options to replay on the probe
+        self.env: dict[str, str] = {}     # GIT_* assignments before the command
+        self.inline_hooks: list[str] = []  # core.hooksPath values set inline
+        self.no_verify = False
+        self.dry_run = False
+        self.all_refs = ""                # --all / --mirror / --branches
+        self.positional: list[str] = []
+
+
+def parse_git_push(tokens: list[str]) -> PushParse | None:
+    """A PushParse when this simple command is `git ... push ...`, else None."""
+    toks = list(tokens)
+    if toks:
+        toks[0] = toks[0].lstrip("({")
+    while toks and toks[-1] in (")", "}"):
+        toks.pop()
+    toks = [t for t in toks if t]
+    pp = PushParse()
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", t, re.S)
+        if m:
+            pp.env[m.group(1)] = m.group(2)
+            i += 1
+            continue
+        if os.path.basename(t) in PUSH_LAUNCHERS or (t.startswith("-") and i and os.path.basename(toks[i - 1]) == "env"):
+            i += 1
+            continue
+        break
+    if i >= len(toks) or os.path.basename(toks[i]) != "git":
+        return None
+    i += 1
+    while i < len(toks) and toks[i].startswith("-"):
+        t = toks[i]
+        key = t.split("=", 1)[0]
+        if key in GIT_GLOBAL_ARG and "=" not in t and not (key == "-c" and len(t) > 2):
+            val = toks[i + 1] if i + 1 < len(toks) else ""
+            i += 2
+        elif t.startswith("-c") and len(t) > 2 and not t.startswith("--"):
+            key, val = "-c", t[2:]
+            i += 1
+        else:
+            val = t.split("=", 1)[1] if "=" in t else ""
+            i += 1
+        if key == "-C":
+            pp.dirs.append(val)
+            continue
+        if key == "-c" and re.match(r"^core\.hookspath(=|$)", val, re.I):
+            pp.inline_hooks.append(val.split("=", 1)[1] if "=" in val else "")
+        if key in GIT_GLOBAL_ARG:
+            pp.globals += [key, val] if key not in ("--git-dir", "--work-tree", "--namespace") else [f"{key}={val}"]
+        else:
+            pp.globals.append(t)
+    if i >= len(toks) or toks[i] != "push":
+        return None
+    i += 1
+    for k, v in pp.env.items():  # GIT_CONFIG_KEY_<n>=core.hooksPath GIT_CONFIG_VALUE_<n>=...
+        m = re.match(r"^GIT_CONFIG_KEY_(\d+)$", k)
+        if m and v.lower() == "core.hookspath":
+            pp.inline_hooks.append(pp.env.get(f"GIT_CONFIG_VALUE_{m.group(1)}", ""))
+    while i < len(toks):
+        t = toks[i]
+        i += 1
+        if t == "--":
+            pp.positional += toks[i:]
+            break
+        if t.startswith("--"):
+            key = t.split("=", 1)[0]
+            if key == "--no-verify":
+                pp.no_verify = True
+            elif key == "--verify":
+                pp.no_verify = False
+            elif key == "--dry-run":
+                pp.dry_run = True
+            elif key in ("--all", "--mirror", "--branches"):
+                pp.all_refs = key
+            elif key in PUSH_OPT_ARG and "=" not in t:
+                i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            if t in PUSH_OPT_ARG:
+                i += 1
+            elif "n" in t[1:] and t[1] != "o":
+                pp.dry_run = True  # push's -n is --dry-run (it has no short --no-verify)
+            continue
+        pp.positional.append(t)
+    return pp
+
+
+def _resolve_dir(base: str | None, d: str) -> str | None:
+    if base is None:
+        return None
+    d = os.path.expanduser(d)
+    d = re.sub(r"^\$(HOME\b|\{HOME\})", os.path.expanduser("~"), d)
+    if "$" in d or "`" in d:
+        return None
+    return os.path.normpath(os.path.join(base, d))
+
+
+def refspec_dst(spec: str, current: str | None) -> str | None:
+    """The remote branch a refspec writes, as a short name, or None."""
+    spec = spec.lstrip("+")
+    if spec.startswith("tag "):
+        return None
+    src, colon, dst = spec.partition(":")
+    name = dst if colon else src
+    if not colon and name in ("HEAD", "@"):
+        name = current or ""
+    name = re.sub(r"^refs/heads/", "", name)
+    return name or None
+
+
+def _git(args: list[str], cwd: str, env: dict, timeout: float) -> tuple[int, str]:
+    import subprocess
+
+    full_env = {**os.environ, **env, "GIT_TERMINAL_PROMPT": "0"}
+    p = subprocess.run(["git", *args], cwd=cwd, env=full_env, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, p.stdout
+
+
+def check_push_gates(b: dict, command: str, cwd: str) -> tuple[int, str]:
+    cfg = b.get("push_gates") or {}
+    if not re.search(r"\bgit\b", command) or not re.search(r"\bpush\b", command):
+        return 0, ""  # the cheap prefilter: no git, no subprocess
+    protected = {x.lower() for x in (cfg.get("protected_branches") or ["main", "master"])}
+    timeout = float(cfg.get("timeout_s") or 3)
+    cur_dir: str | None = cwd or os.getcwd()
+    results: list[dict] = []
+    for toks, via in command_token_segments(command):
+        words = [t for t in toks if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t)]
+        if words and words[0].lstrip("({") in ("cd", "pushd"):
+            target = words[1] if len(words) > 1 else "~"
+            cur_dir = None if target == "-" else _resolve_dir(cur_dir, target)
+            continue
+        pp = parse_git_push(toks)
+        if pp is None or pp.dry_run:
+            continue  # a dry run writes nothing to the remote
+        seg = " ".join(toks)
+        rec: dict = {"segment": redact(seg)}
+        results.append(rec)
+        repo_dir = cur_dir if via != "ssh" else None
+        for d in pp.dirs:
+            repo_dir = _resolve_dir(repo_dir, d)
+        explicit = pp.positional[1:]
+        # Decided from the text alone: explicit refspecs that write no protected branch.
+        if not pp.all_refs and explicit:
+            dsts = [refspec_dst(s, None) for s in explicit]
+            if all(x is not None and "*" not in x and x.lower() not in protected and x not in ("HEAD", "@") for x in dsts):
+                rec["skip"] = "not_protected"
+                continue
+        if repo_dir is None:
+            rec.update(cause="repo_unknown", why="cannot tell which repository this push runs in"
+                       + (" (it runs on another host over ssh)" if via == "ssh" else ""))
+            continue
+        env = {k: v for k, v in pp.env.items() if k.startswith("GIT_")}
+        try:
+            code, out = _git([*pp.globals, "rev-parse", "--git-path", "hooks", "--git-common-dir"], repo_dir, env, timeout)
+            if code != 0:
+                raise RuntimeError(f"git rev-parse exited {code} in {repo_dir}")
+            hooks_rel, _common = (out.splitlines() + ["", ""])[:2]
+            hooks_dir = os.path.normpath(os.path.join(repo_dir, hooks_rel))
+            code, top = _git([*pp.globals, "rev-parse", "--show-toplevel"], repo_dir, env, timeout)
+            toplevel = top.strip() if code == 0 else ""
+            _code, conf = _git([*pp.globals, "config", "--get-regexp",
+                                r"^(remote\..*\.(url|push)|branch\..*\.merge|push\.default)$"], repo_dir, env, timeout)
+            config: dict[str, list[str]] = {}
+            for line in conf.splitlines():
+                k, _, v = line.partition(" ")
+                config.setdefault(k.lower(), []).append(v)
+            current = None
+            if not explicit or any(s.lstrip("+") in ("HEAD", "@") for s in explicit):
+                code, out = _git([*pp.globals, "symbolic-ref", "-q", "--short", "HEAD"], repo_dir, env, timeout)
+                current = out.strip() if code == 0 else None
+        except Exception as e:  # noqa: BLE001 - fails closed
+            rec.update(cause="probe_failed", why=f"could not read the repository's hook state ({str(e)[:160]})", repo=repo_dir)
+            continue
+        rec["repo"] = toplevel or repo_dir
+        # Which branches the push writes.
+        remote = pp.positional[0] if pp.positional else ""
+        if pp.all_refs:
+            targets = [pp.all_refs]
+        elif explicit:
+            targets = [refspec_dst(s, current) or "" for s in explicit]
+        else:
+            specs = config.get(f"remote.{(remote or 'origin').lower()}.push") or []
+            if specs:
+                targets = [refspec_dst(s, current) or "" for s in specs]
+            else:
+                mode = ((config.get("push.default") or ["simple"])[-1]).lower()
+                targets = [current or ""]
+                if current and mode in ("upstream", "tracking", "simple"):
+                    up = (config.get(f"branch.{current.lower()}.merge") or [""])[-1]
+                    targets.append(re.sub(r"^refs/heads/", "", up))
+                if mode == "matching":
+                    targets.append("*")
+        hit = [t for t in targets if t and (t.startswith("--") or "*" in t or t.lower() in protected)]
+        if not hit:
+            rec["skip"] = "not_protected"
+            continue
+        rec["targets"] = hit
+        # Does the repository ship a pre-push hook, and how is it installed?
+        install = ""
+        ships = ""
+        for sh in cfg.get("shipped_hooks") or []:
+            if toplevel and os.path.isfile(os.path.join(toplevel, sh.get("path", ""))):
+                ships, install = sh.get("path", ""), sh.get("install", "")
+                break
+        urls = [u for k, vs in config.items() if k.startswith("remote.") and k.endswith(".url") for u in vs]
+        if remote and ("/" in remote or ":" in remote):
+            urls.append(remote)
+        for r in cfg.get("repos") or []:
+            if any(re.search(r.get("remote", "$^"), u, re.I) for u in urls):
+                ships = ships or f"registry: {r.get('remote')}"
+                install = install or r.get("install", "")
+                break
+        install = install or cfg.get("default_install") or "git config core.hooksPath .githooks"
+        rec.update(ships_hook=ships or False, install=install, hooks_dir=hooks_dir)
+        if pp.no_verify:
+            rec.update(cause="no_verify", why="it passes --no-verify, which skips the pre-push gates")
+            continue
+        bad = [v for v in pp.inline_hooks if v.strip() in ("", "/dev/null")]
+        if bad:
+            rec.update(cause="hooks_disabled_inline", why=f"it sets core.hooksPath to {bad[0]!r} inline, which turns the hooks off")
+            continue
+        hook = os.path.join(hooks_dir, "pre-push")
+        installed = os.path.isfile(hook) and os.access(hook, os.X_OK)
+        rec["hook_installed"] = installed
+        if ships and not installed:
+            rec.update(cause="hook_not_installed",
+                       why=f"this repository ships a pre-push hook ({ships}) and none is installed at {hook}")
+            continue
+        rec["allowed"] = True
+    checked = [r for r in results if "skip" not in r]
+    if not checked:
+        return 0, ""
+    refused = [r for r in checked if r.get("cause")]
+    base = {"boundary": b.get("id"), "tool": "Bash", "subject": redact(command), "cwd": cwd,
+            "measured": True, "n_considered": len(checked)}
+    if not refused:
+        log({**base, "level": "INFO", "verdict": cfg.get("verdict_allowed") or "push_gate_allowed", "targets": checked})
+        return 0, ""
+    log({**base, "level": "WARN", "verdict": cfg.get("verdict_refused") or "push_gate_refused", "targets": refused,
+         "measured": not any(r["cause"] in ("probe_failed", "repo_unknown") for r in refused)})
+    lines = []
+    for r in refused:
+        lines.append(f"- `{r['segment'][:140]}`" + (f" in {r['repo']}" if r.get("repo") else "") + f": {r['why']}.")
+        if r["cause"] == "hook_not_installed":
+            lines.append(f"  Fix: in {r['repo']}, run `{r['install']}`, then push again.")
+        elif r["cause"] == "no_verify":
+            lines.append("  Fix: push again without --no-verify. If a gate refuses, fix what it reports.")
+        elif r["cause"] == "hooks_disabled_inline":
+            lines.append("  Fix: drop the core.hooksPath override and push again.")
+        else:
+            lines.append("  This check fails closed. Run the push as its own command from inside the repository "
+                         "(cd <repo> && git push ...), with the repo's pre-push hook installed.")
+    return 2, (
+        f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}).\n" + "\n".join(lines) + "\n\n"
+        + b.get("rule", "").strip() + "\n(boundary-guard; the registry is boundaries.toml, GET $AMUX_URL/api/boundaries)\n"
     )
 
 
@@ -1173,6 +1472,17 @@ def main() -> None:
                 sys.exit(2)
         if b.get("kind") == "resources" and tool == "Bash" and command:
             code, msg = check_resources(b, command, session)
+            if code:
+                sys.stderr.write(msg)
+                sys.exit(code)
+        if b.get("kind") == "push_gates" and tool == "Bash" and command:
+            try:
+                code, msg = check_push_gates(b, command, str(payload.get("cwd") or ""))
+            except Exception as e:  # noqa: BLE001 - this check fails closed
+                log({"level": "WARN", "verdict": "push_gate_check_failed", "boundary": b.get("id"),
+                     "subject": redact(command), "error": str(e)[:300], "measured": False, "n_considered": 1})
+                code, msg = 2, (f"BLOCKED by amux boundary '{b.get('id')}': the push gate check failed ({e}), and "
+                                "this check fails closed.\n" + b.get("rule", "").strip() + "\n(boundary-guard)\n")
             if code:
                 sys.stderr.write(msg)
                 sys.exit(code)

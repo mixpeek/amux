@@ -51,6 +51,7 @@ Where it is visible:
 | subagents | none | a new Agent/Task call while the worker already runs its subagent limit (a `[P1]` call may take one slot over it), or while the account's usage headroom is under the floor |
 | orchestrator-modal | none | AskUserQuestion, EnterPlanMode and ExitPlanMode for a worker marked as an orchestrator |
 | tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
+| push-gates | GitHub branch protection, where it is on (not set by amux) | `git push` to main or master with `--no-verify`, with `core.hooksPath` emptied inline, or from a repo that ships a pre-push hook it has not installed |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
 **What this cannot do yet.** Workers run as the owner's macOS user. The guard
@@ -198,6 +199,53 @@ names its namespace with `--namespace` or a `<svc>.<ns>.svc` host is caught,
 and one that reads it from config is not); load sent through a
 `port-forward` to localhost; and `kubectl exec` into a pod. The receipt proves
 the read happened, not that the worker understood it.
+
+## Push gates
+
+Owner ask, 2026-10-27 (MSG-98201, MSG-98259): a worker's subagent pushed to
+the mixpeek repo's main from a fresh clone with no pre-push hook installed
+(1212229610, since reverted). Its precheck had refused, but the push was
+chained after it, and the clone ran no hook, so `.githooks/pre-push` never ran.
+
+The `push-gates` boundary (`kind = "push_gates"`) judges every `git push`
+segment of a Bash command on its own (the tenant gate's segment splitter, so
+`precheck; git push` and `precheck || git push` are each judged on the push),
+in the directory it runs in: the hook payload's `cwd`, moved by `cd <dir>`
+segments and `git -C <dir>`. A push that writes a protected branch (`main`,
+`master`: `origin main`, `HEAD:main`, `HEAD:refs/heads/main`, `--delete main`,
+`--all`, `--mirror`, a glob refspec, or a bare `git push` whose current branch
+or upstream is protected) is refused when:
+
+- it passes `--no-verify`, or sets `core.hooksPath` to empty or `/dev/null`
+  inline (`git -c`, or `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`);
+- the repository ships a pre-push hook and none is installed. Ships: a file in
+  `shipped_hooks` exists at the top level (`.githooks/pre-push`,
+  `scripts/git-hooks/pre-push`), or a remote URL matches `repos` (mixpeek and
+  amux by default). Installed: `git rev-parse --git-path hooks` (which honours
+  `core.hooksPath`, including an inline one) names a directory holding an
+  executable `pre-push`.
+
+The refusal names the repo's install step (`git config core.hooksPath
+.githooks` for mixpeek, `./scripts/install-hooks.sh` for amux), then says to
+push again. Git runs only for a segment that is a push (three or four
+`git rev-parse`/`config`/`symbolic-ref` calls, each bounded by `timeout_s`).
+The check fails closed: a probe that fails, a `cd` it cannot resolve, or a push
+run over `ssh` on another host is refused, and the log says
+`measured: false`. Push's `-n` is `--dry-run` (push has no short form of
+`--no-verify`), and a dry run writes nothing to the remote, so it is not
+checked. Verdicts: `push_gate_refused` (WARN, each target's `cause`:
+`no_verify`, `hooks_disabled_inline`, `hook_not_installed`, `probe_failed`,
+`repo_unknown`) and `push_gate_allowed` (INFO, only for a push that wrote a
+protected branch and was checked).
+
+What it cannot see: a script on disk that pushes (only the command line is
+read), a git alias for push, a push from a shell amux does not run (a
+terminal, cron, CI), a pre-push hook that exists but does nothing, and any
+write made on GitHub itself (the web UI, `gh pr merge`, the API, a token used
+from elsewhere). That last class needs server-side enforcement: a branch
+protection rule or ruleset on `main` with required status checks, and with
+"Do not allow bypassing the above settings" (classic protection) on, or no
+bypass actors (rulesets), so admins and apps cannot push past it.
 
 ## Resources
 

@@ -12,6 +12,8 @@
 - the subagents boundary refuses a new Agent/Task call at the running cap or
   under the usage headroom floor, and allows an unmeasured count
 - an owner override in ~/.amux/boundaries.toml can disable a boundary
+- push-gates refuses a git push to main or master that skips the hooks or
+  runs in a temp repo that ships a pre-push hook it has not installed
 
 Example strings: a Bash command as-is, or "<Tool> <path>" for a file tool,
 optionally followed by " :: <content written>".
@@ -414,6 +416,148 @@ def modal_cases(home: str, boundaries: list[dict]) -> None:
     expect("orchestrator-modal: with nothing configured AskUserQuestion is allowed", code == 0 and not modal(ev), f"exit {code} {ev}")
 
 
+def push_gate_cases(home: str, boundaries: list[dict]) -> None:
+    """push-gates (2026-10-27, MSG-98201): a subagent pushed to mixpeek main
+    from a fresh clone with no pre-push hook installed, chained after a
+    precheck that had refused. Temp repos: one SHIPS .githooks/pre-push, one
+    ships nothing but has a mixpeek remote URL (the registry's `repos`), one
+    ships nothing at all."""
+    b = next((x for x in boundaries if x.get("id") == "push-gates"), None)
+    expect("the registry carries the push-gates boundary", b is not None and b.get("kind") == "push_gates")
+    if b is None:
+        return
+    root = os.path.join(home, "push-repos")
+    os.makedirs(root)
+    git_env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(*args: str, cwd: str) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, env={**os.environ, **git_env})
+
+    def repo(name: str, url: str, ship: bool) -> str:
+        d = os.path.join(root, name)
+        os.makedirs(d)
+        git("init", "-q", "-b", "main", cwd=d)
+        git("remote", "add", "origin", url, cwd=d)
+        if ship:
+            os.makedirs(os.path.join(d, ".githooks"))
+            hook = os.path.join(d, ".githooks", "pre-push")
+            with open(hook, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(hook, 0o755)
+        return d
+
+    ships = repo("ships", os.path.join(root, "remote.git"), True)
+    by_url = repo("by-url", "git@github.com:mixpeek/mixpeek.git", False)
+    plain = repo("plain", os.path.join(root, "other.git"), False)
+    elsewhere = os.path.join(root, "not-a-repo")
+    os.makedirs(elsewhere)
+
+    def push(cmd: str, cwd: str, extra: dict | None = None) -> tuple[int, list[dict]]:
+        code, ev = run_payload({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": cmd}}, home,
+                               {**git_env, **(extra or {})})
+        return code, [e for e in ev if e.get("boundary") == "push-gates"]
+
+    def refused(ev: list[dict], cause: str) -> bool:
+        return any(e.get("verdict") == "push_gate_refused" and any(t.get("cause") == cause for t in e.get("targets", []))
+                   for e in ev)
+
+    # Refused: the repo ships a pre-push hook and this clone has not installed it.
+    for cmd, where in (("git push origin main", ships),
+                       ("false && git push origin main", ships),
+                       ("true; git push origin HEAD:main", ships),
+                       ("./precheck.sh || git push origin main", ships),
+                       ("git push origin HEAD:refs/heads/main", ships),
+                       ("git push", ships),
+                       ("git push --all origin", ships),
+                       ("git push --mirror origin", ships),
+                       ("git push origin +feature:master", ships),
+                       ("git push origin --delete main", ships),
+                       (f"git -C {ships} push origin main", elsewhere),
+                       (f"cd {ships} && git push origin main", elsewhere),
+                       (f"bash -c 'cd {ships} && git push origin main'", elsewhere),
+                       ("git push origin main", by_url)):
+        code, ev = push(cmd, where)
+        expect(f"push gate: refused without the shipped hook installed: {cmd[:70]}",
+               code == 2 and refused(ev, "hook_not_installed"), f"exit {code} {ev} {last_stderr[:300]}")
+    code, ev = push("git push origin main", ships)
+    expect("push gate: the refusal names the exact install step and says to push again",
+           "git config core.hooksPath .githooks`, then push again" in last_stderr, last_stderr[:500])
+    code, ev = push("git push origin main", by_url)
+    expect("push gate: a repo named by remote URL in the registry is refused, with its install step",
+           code == 2 and bool(ev) and "registry:" in str(ev[0]["targets"][0].get("ships_hook")), f"exit {code} {ev}")
+    # Tracking: a feature branch whose upstream is main, with push.default=upstream.
+    upstream = repo("upstream", os.path.join(root, "remote.git"), True)
+    git("checkout", "-q", "-b", "feature", cwd=upstream)
+    git("config", "branch.feature.remote", "origin", cwd=upstream)
+    git("config", "branch.feature.merge", "refs/heads/main", cwd=upstream)
+    git("config", "push.default", "upstream", cwd=upstream)
+    code, ev = push("git push", upstream)
+    expect("push gate: a bare push from a branch whose upstream is main is refused", code == 2 and refused(ev, "hook_not_installed"),
+           f"exit {code} {ev}")
+
+    # Allowed: not a protected branch, a repo that ships nothing, a dry run, text that only names a push.
+    for cmd, where, logged in (("git push origin feature", ships, False),
+                               ("git push -u origin HEAD:refs/heads/fix-1", ships, False),
+                               ("git push origin main", plain, True),
+                               ("git push --dry-run origin main", ships, False),
+                               ("git push -n origin main", ships, False),
+                               ("grep -rn 'git push origin main' docs/", ships, False),
+                               ("git commit -m 'never git push origin main without hooks'", ships, False),
+                               ("git log --oneline -3", ships, False)):
+        code, ev = push(cmd, where)
+        ok = code == 0 and (bool(ev) and ev[0]["verdict"] == "push_gate_allowed" if logged else not ev)
+        expect(f"push gate: allowed{' and logged' if logged else ', nothing logged'}: {cmd[:60]} in {os.path.basename(where)}",
+               ok, f"exit {code} {ev} {last_stderr[:300]}")
+
+    # Install the hook the way the refusal says; then the push is allowed and logged.
+    git("config", "core.hooksPath", ".githooks", cwd=ships)
+    for cmd, where in (("git push origin main", ships), ("true; git push origin HEAD:main", ships),
+                       (f"git -C {ships} push origin main", elsewhere)):
+        code, ev = push(cmd, where)
+        expect(f"push gate: allowed and logged once core.hooksPath is set: {cmd[:60]}",
+               code == 0 and bool(ev) and ev[0]["verdict"] == "push_gate_allowed" and ev[0]["targets"][0]["hook_installed"] is True,
+               f"exit {code} {ev} {last_stderr[:300]}")
+    # Skipping the hooks is refused even with the hook installed.
+    for cmd, cause in (("git push --no-verify origin main", "no_verify"),
+                       ("false && git push --no-verify origin HEAD:main", "no_verify"),
+                       ("git -c core.hooksPath=/dev/null push origin main", "hooks_disabled_inline"),
+                       ("git -c core.hooksPath= push origin main", "hooks_disabled_inline"),
+                       ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git push origin main",
+                        "hooks_disabled_inline")):
+        code, ev = push(cmd, ships)
+        expect(f"push gate: refused ({cause}): {cmd[:70]}", code == 2 and refused(ev, cause), f"exit {code} {ev}")
+    code, ev = push(f"git -c core.hooksPath={elsewhere} push origin main", ships)
+    expect("push gate: an inline core.hooksPath to a dir without pre-push is refused as not installed",
+           code == 2 and refused(ev, "hook_not_installed"), f"exit {code} {ev}")
+    code, ev = push("git push --no-verify origin feature", ships)
+    expect("push gate: --no-verify to a non-protected branch is not this boundary's concern", code == 0 and not ev, f"exit {code} {ev}")
+    # An installed hook that is not executable does not count.
+    os.chmod(os.path.join(ships, ".githooks", "pre-push"), 0o644)
+    code, ev = push("git push origin main", ships)
+    expect("push gate: a pre-push hook that is not executable counts as not installed", code == 2 and refused(ev, "hook_not_installed"),
+           f"exit {code} {ev}")
+    os.chmod(os.path.join(ships, ".githooks", "pre-push"), 0o755)
+
+    # Fails closed when the hook state cannot be read.
+    code, ev = push("git push origin main", elsewhere)
+    expect("push gate: a push to main outside any repository is refused and says the check fails closed",
+           code == 2 and refused(ev, "probe_failed") and "fails closed" in last_stderr and ev[0].get("measured") is False,
+           f"exit {code} {ev} {last_stderr[:300]}")
+    code, ev = push("cd $SOMEWHERE && git push origin main", ships)
+    expect("push gate: a cd to a directory it cannot resolve is refused (repo unknown)", code == 2 and refused(ev, "repo_unknown"),
+           f"exit {code} {ev}")
+    code, ev = push("ssh build-host 'cd /src/mixpeek && git push origin main'", ships)
+    expect("push gate: a push run over ssh on another host is refused (repo unknown)", code == 2 and refused(ev, "repo_unknown"),
+           f"exit {code} {ev}")
+    # Every push segment is judged on its own repo.
+    code, ev = push(f"cd {plain} && git push origin main && cd {by_url} && git push origin main", ships)
+    expect("push gate: each push segment is judged in its own directory",
+           code == 2 and bool(ev) and [os.path.basename(t["repo"]) for t in ev[0]["targets"]] == ["by-url"], f"exit {code} {ev}")
+    # Isolated workers as launched are covered.
+    code, ev = push("git push origin main", by_url, {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "iso-push"})
+    expect("push gate: an isolated worker (AMUX_ISOLATED_WORKER only) is refused too", code == 2, f"exit {code} {ev}")
+
+
 def main() -> int:
     reg = tomllib.load(open(REGISTRY, "rb"))
     boundaries = reg["boundary"]
@@ -659,6 +803,7 @@ def main() -> int:
 
         modal_cases(home, boundaries)
         tenant_gate_cases(home, boundaries)
+        push_gate_cases(home, boundaries)
 
         sample = boundaries[0]["deny"][0]["block_examples"][0]
         code, _ = run(sample, home, {"AMUX_SESSION": ""})

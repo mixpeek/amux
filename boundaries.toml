@@ -509,6 +509,50 @@ block_examples = ["echo '{}' > ~/.amux/tenant-gates/me/default__ephemeral-r1.jso
 allow_examples = ["ls ~/.amux/tenant-gates/me", "cat ~/.amux/tenant-gates/me/default__ephemeral-r1.json"]
 
 [[boundary]]
+id = "push-gates"
+title = "A push to main runs the repository's own pre-push gates"
+kind = "push_gates"
+rule = """
+A `git push` that writes main or master runs the repository's own pre-push
+hook. Never pass --no-verify, never empty core.hooksPath inline, and never push
+from a clone that has not installed the hook its repository ships (a fresh
+clone installs none until you run the repo's install step: for mixpeek
+`git config core.hooksPath .githooks`, for amux `./scripts/install-hooks.sh`).
+Run the push as its own command after its checks pass, not chained after a
+precheck. If a gate refuses, fix what it reports and push again.
+"""
+enforced_by = [
+  "hook: boundary-guard (git push to main or master with --no-verify, with core.hooksPath emptied inline, or from a repo that ships a pre-push hook it has not installed)",
+]
+
+[boundary.push_gates]
+# 2026-10-27 (MSG-98201, MSG-98259): a worker's subagent pushed to mixpeek main
+# from a fresh clone with no pre-push hook installed (1212229610, reverted).
+# Its precheck had refused, but the push was chained after it, and the clone
+# ran no hook. Each command segment is judged on its own, in the directory it
+# runs in (the payload's cwd, `cd <dir>` segments, `git -C <dir>`).
+# A dry run (--dry-run, -n) writes nothing to the remote and is not checked.
+protected_branches = ["main", "master"]
+# A repository SHIPS a pre-push hook when one of these files exists at its
+# top level; `install` is the fix the refusal names.
+shipped_hooks = [
+  { path = ".githooks/pre-push", install = "git config core.hooksPath .githooks" },
+  { path = "scripts/git-hooks/pre-push", install = "./scripts/install-hooks.sh" },
+]
+# Or when any remote URL (or the URL pushed to) matches one of these, even if
+# the checkout lacks the file (a shallow or sparse clone, say).
+repos = [
+  { remote = 'github\.com[:/]mixpeek/mixpeek(\.git)?/?$', install = "git config core.hooksPath .githooks" },
+  { remote = 'github\.com[:/]mixpeek/amux(\.git)?/?$', install = "./scripts/install-hooks.sh" },
+]
+default_install = "git config core.hooksPath .githooks"
+# Each git probe (rev-parse, config, symbolic-ref) is bounded by this. A probe
+# that fails or times out refuses the push (the check fails closed).
+timeout_s = 3
+verdict_refused = "push_gate_refused"
+verdict_allowed = "push_gate_allowed"
+
+[[boundary]]
 id = "boundaries-self"
 title = "Boundaries are the owner's to change"
 rule = """
