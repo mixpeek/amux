@@ -12,6 +12,9 @@
 - the subagents boundary refuses a new Agent/Task call at the running cap or
   under the usage headroom floor, and allows an unmeasured count
 - an owner override in ~/.amux/boundaries.toml can disable a boundary
+- delete-gate refuses a kubectl, gcloud or gsutil delete with no unused
+  preview of the same target from this worker in the TTL, and records the
+  preview when it runs
 - push-gates refuses a git push to main or master that skips the hooks or
   runs in a temp repo that ships a pre-push hook it has not installed, and a
   direct push to main in a repo that lands through `amux land` (mixpeek)
@@ -23,6 +26,7 @@ Prints one line per case and a computed summary; exits 1 on any failure.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -247,7 +251,12 @@ def tenant_gate_cases(home: str, boundaries: list[dict]) -> None:
     expect("tenant gate script: only ever calls kubectl get, with no --context for `default`",
            all(" get " in f" {a} " for a in argv if a) and not any("--context" in a for a in argv), str(argv))
 
+    def previewed(cmd: str) -> None:  # delete-gate: a kubectl delete needs its own preview too
+        if " delete " in f" {cmd} ":
+            run(cmd + " --dry-run=server", home)
+
     for label, cmd in incidents:
+        previewed(cmd)
         code, ev = run(cmd, home)
         v = verdicts(ev)
         expect(f"tenant gate: incident {label} is allowed with a fresh receipt and logged",
@@ -313,6 +322,7 @@ def tenant_gate_cases(home: str, boundaries: list[dict]) -> None:
                 f"kubectl -n ephemeral-r999 port-forward svc/api 8080:80",
                 "kubectl -n kube-system scale deploy/coredns --replicas=2", "kubectl -n default delete pod x",
                 "helm upgrade grafana charts/grafana -n monitoring"):
+        previewed(cmd)
         code, ev = run(cmd, home)
         expect(f"tenant gate: passes without a receipt: {cmd[:60]}", code == 0 and not verdicts(ev), f"exit {code} {ev}")
 
@@ -609,12 +619,205 @@ def push_gate_cases(home: str, boundaries: list[dict]) -> None:
            f"exit {code} {ev}")
 
 
+def delete_gate_cases(home: str, boundaries: list[dict]) -> None:
+    """delete-gate (V7-delete, 2026-10-27): a cluster or cloud delete needs an
+    unused preview of the same target from this worker, recorded before this
+    command and inside the TTL. Every rule has a refused case and its twin."""
+    b = next((x for x in boundaries if x.get("id") == "delete-gate"), None)
+    expect("the registry carries the delete-gate boundary", b is not None and b.get("kind") == "delete_gate")
+    if b is None:
+        return
+    cfg = b["delete_gate"]
+    v_ref, v_prev, v_ok = cfg["verdict_refused"], cfg["verdict_preview"], cfg["verdict_allowed"]
+    expect("delete gate: the TTL is set in the registry (15 min)", cfg.get("max_age_s") == 900, str(cfg.get("max_age_s")))
+    rdir = os.path.join(home, cfg["dir"], "boundary-test")
+
+    def dg(cmd: str, extra: dict | None = None, h: str = home) -> tuple[int, list[dict]]:
+        code, ev = run(cmd, h, extra)
+        return code, [e for e in ev if e.get("boundary") == "delete-gate"]
+
+    def refused(code: int, ev: list[dict], cause: str) -> bool:
+        return code == 2 and len(ev) == 1 and ev[0]["verdict"] == v_ref and ev[0]["level"] == "WARN" \
+            and ev[0]["targets"] and all(t["cause"] == cause for t in ev[0]["targets"])
+
+    # Each tool: refused without a preview (the refusal names the exact
+    # preview), the preview is recorded, then the delete is allowed with the
+    # same operand, then a second delete is refused (a receipt is used once).
+    tools = [
+        ("kubectl", "kubectl delete pod api-0 -n scratch-r1", "kubectl delete pod api-0 -n scratch-r1 --dry-run=server -o name",
+         "kubectl delete pod api-0 --namespace=scratch-r1"),
+        ("gcloud delete", "gcloud compute instances delete vm-1 --zone us-central1-a --quiet",
+         "gcloud compute instances describe vm-1 --zone=us-central1-a", "gcloud compute instances :: vm-1 --zone=us-central1-a"),
+        ("gcloud storage rm", "gcloud storage rm --recursive gs://mxp-bucket/ns_1/", "gcloud storage ls -r gs://mxp-bucket/ns_1",
+         "gcs -r gs://mxp-bucket/ns_1"),
+        ("gsutil rm", "gsutil -m rm -r gs://mxp-bucket/ns_2", "gsutil ls -r gs://mxp-bucket/ns_2", "gcs -r gs://mxp-bucket/ns_2"),
+    ]
+    for label, delete, preview, operand in tools:
+        code, ev = dg(delete)
+        expect(f"delete gate: {label} is refused without a preview",
+               refused(code, ev, "no_preview") and ev[0]["targets"][0]["operand"] == operand and ev[0]["measured"] is True,
+               f"exit {code} {ev}")
+        expect(f"delete gate: the {label} refusal names the exact preview to run", preview in last_stderr, last_stderr[:600])
+        code, ev = dg(preview)
+        expect(f"delete gate: the {label} preview runs and is recorded with its operand",
+               code == 0 and [e["verdict"] for e in ev] == [v_prev] and ev[0]["targets"][0]["operand"] == operand, f"exit {code} {ev}")
+        code, ev = dg(delete)
+        expect(f"delete gate: {label} is allowed after a matching preview",
+               code == 0 and [e["verdict"] for e in ev] == [v_ok] and ev[0]["targets"][0]["operand"] == operand
+               and isinstance(ev[0]["targets"][0]["preview_age_s"], int), f"exit {code} {ev}")
+        code, ev = dg(delete)
+        expect(f"delete gate: a {label} preview is used once (the second delete is refused)", refused(code, ev, "no_preview"),
+               f"exit {code} {ev}")
+
+    # Equivalent spellings share a key; a different target does not.
+    for label, preview, delete in (
+            ("-n before the verb covers --namespace= after it, --grace-period/--force ignored",
+             "kubectl -n scratch-r2 delete pod api-0 --dry-run=client -o name",
+             "kubectl delete pod api-0 --namespace=scratch-r2 --grace-period=0 --force"),
+            ("--project p covers --project=p", "gcloud --project p sql instances describe db-1",
+             "gcloud sql instances delete db-1 --project=p --async"),
+            ("gsutil ls covers gcloud storage rm of the same URL", "gsutil ls gs://mxp-bucket/obj",
+             "gcloud storage rm gs://mxp-bucket/obj")):
+        dg(preview)
+        code, ev = dg(delete)
+        expect(f"delete gate: {label}", code == 0 and [e["verdict"] for e in ev] == [v_ok], f"exit {code} {ev}")
+    for label, preview, delete in (
+            ("another pod", "kubectl delete pod api-0 -n scratch-r3 --dry-run=server", "kubectl delete pod api-1 -n scratch-r3"),
+            ("another namespace", "kubectl delete pod api-0 -n scratch-r4 --dry-run=server", "kubectl delete pod api-0 -n scratch-r5"),
+            ("another context", "kubectl --context a delete ns x1 --dry-run=server", "kubectl --context b delete ns x1"),
+            ("another project", "gcloud --project p compute instances describe vm-2 --zone=z", "gcloud --project q compute instances delete vm-2 --zone=z"),
+            ("another gcloud target", "gcloud compute instances describe vm-3 --zone=z", "gcloud compute instances delete vm-4 --zone=z"),
+            ("a non-recursive list for a recursive rm", "gsutil ls gs://mxp-bucket/ns_3", "gsutil rm -r gs://mxp-bucket/ns_3"),
+            ("another bucket path", "gsutil ls -r gs://mxp-bucket/ns_4", "gsutil rm -r gs://mxp-bucket/ns_5")):
+        dg(preview)
+        code, ev = dg(delete)
+        expect(f"delete gate: a preview of {label} does not count", refused(code, ev, "no_preview"), f"exit {code} {ev}")
+    # A gcloud delete of two targets needs both previewed.
+    dg("gcloud compute disks describe d-1 --zone=z")
+    code, ev = dg("gcloud compute disks delete d-1 d-2 --zone=z")
+    expect("delete gate: a two-target gcloud delete with one target previewed is refused, naming the other",
+           code == 2 and [t["operand"] for t in ev[0]["targets"]] == ["gcloud compute disks :: d-2 --zone=z"]
+           and "gcloud compute disks describe d-2 --zone=z" in last_stderr, f"exit {code} {ev}")
+
+    # Expired, foreign and unreadable receipts.
+    exp = "kubectl delete deploy api -n scratch-r6"
+    dg(exp + " --dry-run=server")
+    newest = os.path.join(rdir, hashlib.sha256(b"kubectl delete deploy api --namespace=scratch-r6").hexdigest()[:32] + ".json")
+    rec = json.load(open(newest))
+    with open(newest, "w") as fh:
+        json.dump(dict(rec, ts=time.time() - 901), fh)
+    code, ev = dg(exp)
+    expect("delete gate: a preview older than 15 minutes is refused", refused(code, ev, "preview_expired"), f"exit {code} {ev}")
+    with open(newest, "w") as fh:
+        json.dump(dict(rec, ts=time.time() - 600), fh)
+    code, ev = dg(exp)
+    expect("delete gate: a 10-minute-old preview is inside the window", code == 0 and ev[0]["verdict"] == v_ok, f"exit {code} {ev}")
+    dg(exp + " --dry-run=server")
+    with open(newest, "w") as fh:
+        json.dump(dict(rec, ts=time.time(), session="other-worker"), fh)
+    code, ev = dg(exp)
+    expect("delete gate: a receipt naming another worker, in this worker's directory, is refused",
+           refused(code, ev, "preview_other_session"), f"exit {code} {ev}")
+    with open(newest, "w") as fh:
+        json.dump(dict(rec, ts=time.time(), key="kubectl delete deploy other"), fh)
+    code, ev = dg(exp)
+    expect("delete gate: a receipt whose key names another target is refused", refused(code, ev, "preview_other_target"), f"exit {code} {ev}")
+    with open(newest, "w") as fh:
+        fh.write("{not json")
+    code, ev = dg(exp)
+    expect("delete gate: an unreadable receipt is refused", refused(code, ev, "preview_unreadable"), f"exit {code} {ev}")
+    dg(exp + " --dry-run=server")
+    code, ev = dg(exp, {"AMUX_SESSION": "other-worker"})
+    expect("delete gate: another worker's preview does not cover this worker", refused(code, ev, "no_preview")
+           and ev[0]["session"] == "other-worker", f"exit {code} {ev}")
+    iso = {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "iso-delete"}
+    code, ev = dg(exp, iso)
+    expect("delete gate: an isolated worker is refused without its own preview", refused(code, ev, "no_preview"), f"exit {code} {ev}")
+    dg(exp + " --dry-run=server", iso)
+    code, ev = dg(exp, iso)
+    expect("delete gate: an isolated worker's own preview lets it through", code == 0 and ev[0]["verdict"] == v_ok, f"exit {code} {ev}")
+
+    # A preview chained with its delete does not satisfy it, in any order or operator.
+    for cmd in ("kubectl delete ns scratch-r7 --dry-run=server && kubectl delete ns scratch-r7",
+                "kubectl delete ns scratch-r7 --dry-run=server; kubectl delete ns scratch-r7",
+                "gsutil ls gs://mxp-bucket/ns_7 | tee /dev/null; gsutil rm gs://mxp-bucket/ns_7",
+                "bash -c 'kubectl delete ns scratch-r7 --dry-run=server -o name && kubectl delete ns scratch-r7'"):
+        code, ev = dg(cmd)
+        expect(f"delete gate: a preview chained with its delete is refused: {cmd[:60]}",
+               refused(code, ev, "no_preview") and ev[0]["targets"][0]["chained"] is True
+               and "chained in the same command does not count" in last_stderr, f"exit {code} {ev}")
+    code, ev = dg("kubectl delete ns scratch-r7")
+    expect("delete gate: a refused chained command records no preview (the lone delete after it is still refused)",
+           refused(code, ev, "no_preview"), f"exit {code} {ev}")
+    dg("kubectl delete ns scratch-r8 --dry-run=server")
+    code, ev = dg("kubectl delete ns scratch-r8 && kubectl delete ns scratch-r8")
+    expect("delete gate: two deletes of one target in one command need two previews", refused(code, ev, "no_preview"), f"exit {code} {ev}")
+
+    # Wrapped, chained and option-shifted deletes are still caught.
+    for cmd in ("cd /tmp && kubectl delete ns scratch-r9",
+                "echo starting && gcloud --project mixpeek-inference-463103 container clusters delete c1 --region us-central1",
+                "gcloud container clusters delete c1 --project=mixpeek-inference-463103 --region=us-central1 -q",
+                "kubectl --context gke_x -n scratch-a delete pvc data-0",
+                "sh -c \"gsutil -m rm -r gs://mxp-bucket/ns_9\"",
+                "sudo -u ethan kubectl delete ns scratch-r9",
+                "timeout 60 gcloud sql instances delete db-9",
+                "KUBECONFIG=/tmp/k env kubectl delete ns scratch-r9",
+                "gcloud alpha storage rm -r gs://mxp-bucket/ns_9",
+                "gsutil -o GSUtil:parallel_thread_count=1 rb gs://mxp-bucket-9"):
+        code, ev = dg(cmd)
+        expect(f"delete gate: still caught: {cmd[:70]}", refused(code, ev, "no_preview"), f"exit {code} {ev}")
+    for cmd in ("kubectl delete -f -", "cat ids | xargs -n 50 gsutil rm", "gsutil -m rm -I"):
+        code, ev = dg(cmd)
+        expect(f"delete gate: a delete whose targets come from stdin is refused: {cmd}", refused(code, ev, "no_target"), f"exit {code} {ev}")
+
+    # Not a delete: passes untouched, nothing logged.
+    for cmd in ("kubectl get pods -n scratch-r1", "kubectl auth can-i delete pods -n scratch-r1",
+                "kubectl -n scratch-r1 describe pod api-0", "gcloud container clusters list",
+                "gcloud compute instances list --filter delete", "gsutil cp a gs://mxp-bucket/a",
+                "gcloud storage cp a gs://mxp-bucket/a", "echo gsutil rm gs://mxp-bucket/x",
+                "git commit -m 'kubectl delete ns x was the incident'", "grep -rn 'gcloud sql instances delete' docs/",
+                "rm -rf build/"):
+        code, ev = dg(cmd)
+        expect(f"delete gate: passes untouched: {cmd[:60]}", code == 0 and not ev, f"exit {code} {ev}")
+
+    # Fails closed when the receipt state cannot be written or consumed.
+    bad = os.path.join(home, "dg-unwritable")
+    os.makedirs(os.path.join(bad, os.path.dirname(cfg["dir"])), exist_ok=True)
+    with open(os.path.join(bad, cfg["dir"]), "w") as fh:
+        fh.write("a file where the receipt directory should be\n")
+    code, ev = dg("kubectl delete ns scratch-r10 --dry-run=server", h=bad)
+    expect("delete gate: a preview whose receipt cannot be written is refused (fails closed)",
+           refused(code, ev, "state_unwritable") and ev[0]["measured"] is False and "fails closed" in last_stderr, f"exit {code} {ev}")
+    dg("kubectl delete ns scratch-r11 --dry-run=server")
+    os.chmod(rdir, 0o500)
+    try:
+        code, ev = dg("kubectl delete ns scratch-r11")
+    finally:
+        os.chmod(rdir, 0o700)
+    expect("delete gate: a delete whose receipt cannot be consumed is refused (fails closed)",
+           refused(code, ev, "state_unwritable"), f"exit {code} {ev}")
+    code, ev = dg("kubectl delete ns scratch-r11")
+    expect("delete gate: the receipt that could not be consumed still covers one delete once writable",
+           code == 0 and ev[0]["verdict"] == v_ok, f"exit {code} {ev}")
+
+    # The owner's existing override turns it off; there is no other bypass.
+    off = os.path.join(home, "dg-off.toml")
+    with open(REGISTRY) as src, open(off, "w") as fh:
+        fh.write(src.read().replace('kind = "delete_gate"\n', 'kind = "delete_gate"\nenabled = false\n'))
+    code, ev = run("kubectl delete ns scratch-r12", home, registry=off)
+    expect("delete gate: enabled = false (the owner's override) turns it off", code == 0 and not ev, f"exit {code} {ev}")
+
+
 def main() -> int:
     reg = tomllib.load(open(REGISTRY, "rb"))
     boundaries = reg["boundary"]
     with tempfile.TemporaryDirectory() as home:
         os.makedirs(os.path.join(home, "sessions"))
         n_rules = 0
+        if os.environ.get("BOUNDARY_TEST_ONLY") == "delete-gate":  # a fast loop for mutation runs
+            delete_gate_cases(home, boundaries)
+            print(f"{cases - len(failures)} of {cases} delete-gate cases passed (BOUNDARY_TEST_ONLY)")
+            return 1 if failures else 0
         for b in boundaries:
             for i, rule in enumerate(b.get("deny") or []):
                 n_rules += 1
@@ -855,6 +1058,7 @@ def main() -> int:
         modal_cases(home, boundaries)
         tenant_gate_cases(home, boundaries)
         push_gate_cases(home, boundaries)
+        delete_gate_cases(home, boundaries)
 
         sample = boundaries[0]["deny"][0]["block_examples"][0]
         code, _ = run(sample, home, {"AMUX_SESSION": ""})

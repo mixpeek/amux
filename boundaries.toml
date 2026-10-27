@@ -442,7 +442,7 @@ enforced_by = [
 [[boundary.deny]]
 tools = ["Bash"]
 match_all = ['(?:^|\s)(?:(?:kubectl|oc)\s(?:[^;&|]*\s)?(?:scale|patch|delete|apply|replace|edit|annotate|label|drain|cordon|uncordon|taint|create|autoscale|rollout\s+(?:restart|undo|pause|resume)|set\s+(?:env|image|resources))|helm\s(?:[^;&|]*\s)?(?:upgrade|rollback|uninstall|delete|install)|(?:hey|k6\s+run|vegeta\s+attack|locust|wrk|ab|ghz|oha)|\S*(?:replay|load[-_]?test)\S*)(?=\s|$)']
-match_none = ['^\s*(?:grep|rg|man|which|echo|printf)\b', '(?:^|\s)auth\s+can-i\b', 'tenant-gate\.sh\b']
+match_none = ['^\s*(?:grep|rg|man|which|echo|printf)\b', '(?:^|\s)auth\s+can-i\b', 'tenant-gate\.sh\b', '(?:^|\s)--dry-run=(?:client|server)(?=\s|$)']
 reason = "This changes a live tenant workload, and this session has not read what scales it."
 block_examples = [
   "kubectl -n ephemeral-r40255478404 scale deploy/api --replicas=0",
@@ -469,6 +469,7 @@ allow_examples = [
   "git commit -m 'kubectl -n ephemeral-r1 scale deploy/api --replicas=0 was the incident'",
   "grep -rn 'kubectl scale -n mixpeek-a' docs/",
   "~/.amux/hooks/tenant-gate.sh default ephemeral-r40255478404 'scale api to zero'",
+  "kubectl -n ephemeral-r40255478404 scale deploy/api --replicas=0 --dry-run=server",
 ]
 
 [boundary.deny.requires_receipt]
@@ -563,6 +564,58 @@ timeout_s = 3
 verdict_refused = "push_gate_refused"
 verdict_allowed = "push_gate_allowed"
 verdict_land_required = "push_gate_land_required"
+
+[[boundary]]
+id = "delete-gate"
+title = "Preview a cluster or cloud delete before you run it"
+kind = "delete_gate"
+rule = """
+Preview every cluster or cloud delete before you run it, as its own command,
+and read what it lists. Deleting customer or production data needs the owner:
+ask first, preview, then delete. The preview for each delete:
+
+  kubectl delete ARGS              kubectl delete ARGS --dry-run=server -o name
+  gcloud GROUP... delete T         gcloud GROUP... describe T   (each target)
+  gsutil rm [-r] URL...            gsutil ls [-r] URL...
+  gcloud storage rm [-r] URL...    gcloud storage ls [-r] URL...
+
+A delete is refused unless this worker previewed the same target in the last
+15 minutes, and each preview covers one delete. A preview chained in the same
+command as its delete does not count. The refusal prints the preview to run.
+"""
+enforced_by = [
+  "hook: boundary-guard (kubectl delete, gcloud ... delete, gcloud storage rm, gsutil rm and rb need an unused preview of the same target from this worker, recorded in the last 15 minutes)",
+]
+
+[boundary.delete_gate]
+# V7-delete, 2026-10-27. On 2026-10-24 a production delete-all was replayed and
+# data was lost, and the fleet has deleted cloud resources by hand before.
+# Each delete segment (split as push-gates and the tenant gate split) needs a
+# receipt at $AMUX_HOME/<dir>/<worker>/<sha256 of its key>.json, written when
+# this worker ran the matching preview. Keys: a kubectl delete's positionals
+# and flags, less the ones that only change output or pacing (--dry-run, -o,
+# --wait, --timeout, --grace-period, --now, --force, --ignore-not-found);
+# a gcloud delete's command group, one target and its flags, less --quiet,
+# --async, --format, --verbosity, --delete-disks, --keep-disks, --force;
+# a storage delete's URLs and whether it is recursive. The delete removes the
+# receipt. A receipt that cannot be read, consumed or written refuses the
+# command (fails closed). No bypass: the owner turns the boundary off with
+# `enabled = false` in the machine override registry, as for every boundary.
+dir = "state/delete-previews"
+max_age_s = 900
+verdict_refused = "delete_gate_refused"
+verdict_preview = "delete_gate_preview_recorded"
+verdict_allowed = "delete_gate_allowed"
+
+# A receipt is written by the guard when the preview runs. Hand-writing one skips the preview.
+[[boundary.deny]]
+tools = ["Bash", "Edit", "Write", "MultiEdit"]
+match_all = ['\.amux/state/delete-previews\b', '(>|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\btouch\b|\bln\b|\bpython3?\b|\bnode\b|\bperl\b|\bruby\b)']
+match_none = ['^\s*(cat|ls|jq|head|tail|grep|rg)\b[^>|;&]*$']
+path = '\.amux/state/delete-previews/'
+reason = "Delete preview receipts are written by the guard when the preview runs. Run the preview instead of writing a receipt."
+block_examples = ["echo '{}' > ~/.amux/state/delete-previews/me/0123.json", "Write /Users/ethan/.amux/state/delete-previews/me/0123.json :: {}"]
+allow_examples = ["ls ~/.amux/state/delete-previews/me", "cat ~/.amux/state/delete-previews/me/0123.json"]
 
 [[boundary]]
 id = "boundaries-self"

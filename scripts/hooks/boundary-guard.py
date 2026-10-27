@@ -10,7 +10,9 @@ commands while the machine is critical (the `resources` boundary), and refuses
 a new Agent/Task call past the running-subagent cap or under the account's
 usage headroom floor (the `subagents` boundary), and refuses modal prompt tools
 (AskUserQuestion, plan mode) for orchestrator lanes (the `modal` boundary),
-and refuses hook-less pushes to a protected branch (the `push-gates` boundary).
+and refuses hook-less pushes to a protected branch (the `push-gates` boundary),
+and refuses a cluster or cloud delete that this worker has not previewed (the
+`delete-gate` boundary).
 
 Who it applies to: amux workers (AMUX_SESSION set), and isolated ones
 (AMUX_ISOLATED_WORKER set) while the registry's top-level `apply_to_isolated`
@@ -32,6 +34,9 @@ writes main or master is refused when it skips the hooks or runs in a repo
 that ships a pre-push hook it has not installed, when the hook state
 cannot be read, and in a repo whose `repos` entry sets `land = true` (it lands
 main through `amux land`, whose own push runs in its subprocess, unseen here).
+The delete gate (kind delete_gate) also fails closed: a delete with no fresh,
+unused preview receipt, or a receipt that cannot be read, consumed or written,
+is refused.
 """
 from __future__ import annotations
 
@@ -655,6 +660,306 @@ def check_push_gates(b: dict, command: str, cwd: str) -> tuple[int, str]:
                          "(cd <repo> && git push ...), with the repo's pre-push hook installed.")
     return 2, (
         f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}).\n" + "\n".join(lines) + "\n\n"
+        + b.get("rule", "").strip() + "\n(boundary-guard; the registry is boundaries.toml, GET $AMUX_URL/api/boundaries)\n"
+    )
+
+
+# ---- delete gate (delete-gate, 2026-10-27, V7-delete) ---------------------------
+#
+# On 2026-10-24 a production delete-all was replayed and data was lost, and the
+# fleet has deleted cloud resources by hand before. Owner rules: deleting
+# customer or production data needs the owner, and every delete is previewed
+# first so its blast radius is seen before it happens. Two phases:
+#
+#   1. A preview segment records a receipt for this worker, keyed by the
+#      normalised delete it previews, at $AMUX_HOME/<dir>/<worker>/<sha>.json.
+#   2. A delete segment is refused unless a receipt for its key from this
+#      worker exists and is younger than max_age_s. A receipt is used once.
+#
+# One preview form per tool, the smallest set that shows the blast radius:
+#   kubectl|oc delete ARGS           <- the same command with --dry-run=client|server
+#   gcloud GROUP... delete T...      <- gcloud GROUP... describe T (one per target)
+#   gsutil rm|rb URL..., gcloud storage rm URL...
+#                                    <- gsutil ls URL... or gcloud storage ls URL...
+#                                       (-r on both or on neither)
+# Every segment is judged on its own (command_token_segments). Deletes are
+# checked against receipts that existed BEFORE this command, and previews are
+# recorded only once the whole command is allowed, so a preview chained with
+# its delete never satisfies it. Fails CLOSED: a receipt that cannot be read,
+# consumed or written refuses the command.
+
+LAUNCHER_ARG_OPTS = {
+    "env": {"-u", "-C", "-S", "--unset", "--chdir"}, "command": set(), "exec": {"-a"}, "nohup": set(),
+    "time": set(), "nice": {"-n"}, "builtin": set(), "sudo": {"-u", "-g", "-h", "-p", "-C", "-U"},
+    "xargs": {"-n", "-I", "-L", "-P", "-d", "-s", "-E", "-a"}, "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "watch": {"-n", "--interval"},
+}
+KUBECTL_ALIASES = {"-n": "--namespace", "-l": "--selector", "-f": "--filename", "-o": "--output", "-k": "--kustomize",
+                   "-s": "--server", "-A": "--all-namespaces", "-R": "--recursive", "-v": "--v"}
+KUBECTL_VALUE_FLAGS = {
+    "--namespace", "--context", "--cluster", "--kubeconfig", "--user", "--server", "--token", "--as", "--as-group",
+    "--as-uid", "--request-timeout", "--cache-dir", "--certificate-authority", "--client-certificate", "--client-key",
+    "--tls-server-name", "--username", "--password", "--v", "--vmodule", "--log-file", "--log-dir", "--profile",
+    "--profile-output", "--selector", "--filename", "--field-selector", "--output", "--grace-period", "--timeout",
+    "--kustomize", "--raw", "--template", "--chunk-size"}
+# How a delete is shown or paced, not what it removes: left out of the key.
+KUBECTL_DROP = {"--dry-run", "--output", "--template", "--wait", "--timeout", "--grace-period", "--now", "--force",
+                "--ignore-not-found", "--v", "--vmodule", "--request-timeout", "--chunk-size", "--show-managed-fields"}
+GCLOUD_BOOL = {"--quiet", "-q", "--async", "--recursive", "-r", "-R", "--all", "--all-versions", "-a", "--force",
+               "--log-http", "--user-output-enabled", "--continue-on-error", "--dry-run", "--read-paths-from-stdin", "-I"}
+GCLOUD_DROP = {"--quiet", "--async", "--format", "--verbosity", "--log-http", "--user-output-enabled",
+               "--no-user-output-enabled", "--continue-on-error", "--delete-disks", "--keep-disks", "--force"}
+GSUTIL_GLOBAL_ARG = {"-o", "-h", "-u", "-i"}
+URL_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
+
+
+def strip_launchers(tokens: list[str]) -> list[str]:
+    """The simple command's own argv: env assignments, launchers (env, sudo,
+    xargs, timeout, ...) and their options removed."""
+    toks = list(tokens)
+    if toks:
+        toks[0] = toks[0].lstrip("({")
+    while toks and toks[-1] in (")", "}"):
+        toks.pop()
+    toks = [t for t in toks if t]
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
+            i += 1
+            continue
+        base = os.path.basename(t)
+        if base not in LAUNCHER_ARG_OPTS:
+            break
+        i += 1
+        while i < len(toks) and toks[i].startswith("-") and toks[i] != "--":
+            i += 2 if (toks[i] in LAUNCHER_ARG_OPTS[base] and "=" not in toks[i]) else 1
+        if i < len(toks) and toks[i] == "--":
+            i += 1
+        if base == "timeout" and i < len(toks):
+            i += 1  # the duration
+    return toks[i:]
+
+
+def parse_flags(args: list[str], aliases: dict, value_flags: set | None, bool_flags: set) -> tuple[list[str], list[tuple[str, str | None]]]:
+    """(positionals, [(flag, value or None)]). With value_flags (kubectl), only
+    those take a separate value; without (gcloud), every --flag does unless it
+    is a known boolean or a --no- flag."""
+    pos: list[str] = []
+    flags: list[tuple[str, str | None]] = []
+    i = 0
+    while i < len(args):
+        t = args[i]
+        i += 1
+        if t == "--":
+            pos += args[i:]
+            break
+        if not (t.startswith("-") and len(t) > 1) or re.match(r"^-\d", t):
+            pos.append(t)
+            continue
+        name, eq, val = t.partition("=")
+        if not eq and not t.startswith("--") and len(t) > 2 and value_flags is not None \
+                and aliases.get(t[:2], t[:2]) in value_flags:
+            name, val, eq = t[:2], t[2:], "="  # -nfoo
+        name = aliases.get(name, name)
+        if eq:
+            flags.append((name, val))
+            continue
+        if value_flags is not None:
+            takes = name in value_flags
+        else:
+            takes = name.startswith("--") and name not in bool_flags and not name.startswith("--no-")
+        if takes and i < len(args) and (args[i] == "-" or not args[i].startswith("-")):
+            flags.append((name, args[i]))
+            i += 1
+        else:
+            flags.append((name, None))
+    return pos, flags
+
+
+def _flag_text(flags: list[tuple[str, str | None]], drop: set) -> list[str]:
+    return sorted(n if v is None else f"{n}={v}" for n, v in flags if n not in drop)
+
+
+def _storage_op(argv: list[str], verb_at: int, tool: str) -> dict:
+    """gsutil rm|rb|ls, gcloud storage rm|ls: keyed on the URLs and -r."""
+    rest = argv[verb_at + 1:]
+    urls = sorted({u.rstrip("/") or u for u in rest if URL_RE.match(u)})
+    rec = any(t == "--recursive" or re.match(r"^-[A-Za-z]*[rR]", t) for t in rest if not URL_RE.match(t))
+    stdin = any(t in ("-I", "--read-paths-from-stdin") for t in rest)
+    preview = argv[verb_at] == "ls"
+    key = "gcs " + ("-r " if rec else "") + " ".join(urls)
+    lister = ["gsutil", "ls"] if tool == "gsutil" else ["gcloud", "storage", "ls"]
+    op = {"phase": "preview" if preview else "delete", "keys": [key],
+          "suggest": [" ".join(lister + (["-r"] if rec else []) + urls)]}
+    if not preview and (stdin or not urls):
+        op.update(cause="no_target", keys=[],
+                  why="its targets are not on the command line (stdin or none), so no preview can show them")
+    return op
+
+
+def parse_delete_segment(tokens: list[str]) -> dict | None:
+    """{"phase": "delete"|"preview", "keys": [...], "suggest": [...]} for a
+    segment the delete gate judges, else None."""
+    import shlex
+
+    argv = strip_launchers(tokens)
+    if not argv:
+        return None
+    tool = os.path.basename(argv[0])
+    args = argv[1:]
+    if tool in ("kubectl", "oc"):
+        pos, flags = parse_flags(args, KUBECTL_ALIASES, KUBECTL_VALUE_FLAGS, set())
+        if not pos or pos[0] != "delete":
+            return None
+        dry = [v for n, v in flags if n == "--dry-run"]
+        preview = any(v is None or v.lower() in ("client", "server", "true") for v in dry)
+        key = " ".join(["kubectl delete", *pos[1:], *_flag_text(flags, KUBECTL_DROP)])
+        op = {"phase": "preview" if preview else "delete", "keys": [key],
+              "suggest": [shlex.join(["kubectl", *args]) + " --dry-run=server -o name"]}
+        if not preview and any(n == "--filename" and v == "-" for n, v in flags):
+            op.update(cause="no_target", keys=[], why="it reads its manifest from stdin, so no preview can show the same objects")
+        return op
+    if tool == "gsutil":
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if args[i] in GSUTIL_GLOBAL_ARG else 1
+        if i < len(args) and args[i] in ("rm", "rb", "ls"):
+            return _storage_op(args, i, "gsutil")
+        return None
+    if tool == "gcloud":
+        pos, flags = parse_flags(args, {"-q": "--quiet"}, None, GCLOUD_BOOL)
+        verb = next((j for j, p in enumerate(pos) if p in ("delete", "describe")
+                     or (p in ("rm", "ls") and j and pos[j - 1] == "storage")), None)
+        if verb is None:
+            return None
+        if pos[verb] in ("rm", "ls"):
+            st = args.index("storage")
+            return _storage_op(args, args.index(pos[verb], st + 1), "gcloud")
+        path, targets = pos[:verb], pos[verb + 1:] or [""]
+        ftext = _flag_text(flags, GCLOUD_DROP)
+        keys = [" ".join(["gcloud", *path, "::", t, *ftext]) for t in targets]
+        suggest = [" ".join(["gcloud", *path, "describe", *([shlex.quote(t)] if t else []), *map(shlex.quote, ftext)])
+                   for t in targets]
+        return {"phase": "preview" if pos[verb] == "describe" else "delete", "keys": keys, "suggest": suggest}
+    return None
+
+
+def _preview_path(rdir: str, key: str) -> str:
+    import hashlib
+
+    return os.path.join(rdir, hashlib.sha256(key.encode()).hexdigest()[:32] + ".json")
+
+
+def read_preview(path: str, key: str, max_age_s: float) -> tuple[dict | None, str]:
+    try:
+        with open(path) as fh:
+            r = json.load(fh)
+    except FileNotFoundError:
+        return None, "no_preview"
+    except (OSError, ValueError):
+        return None, "preview_unreadable"
+    if not isinstance(r, dict):
+        return None, "preview_unreadable"
+    if r.get("session") != WORKER:
+        return None, "preview_other_session"
+    if r.get("key") != key:
+        return None, "preview_other_target"
+    try:
+        age = time.time() - float(r.get("ts"))
+    except (TypeError, ValueError):
+        return None, "preview_unreadable"
+    if age > max_age_s or age < -60:
+        return None, "preview_expired"
+    return dict(r, age_s=round(age)), ""
+
+
+def check_delete_gate(b: dict, command: str) -> tuple[int, str]:
+    cfg = b.get("delete_gate") or {}
+    if not re.search(r"\b(kubectl|oc|gcloud|gsutil)\b", command):
+        return 0, ""  # the cheap prefilter
+    ops: list[dict] = []
+    for toks, _via in command_token_segments(command):
+        op = parse_delete_segment(toks)
+        if op is not None:
+            op["segment"] = " ".join(toks)
+            ops.append(op)
+    if not ops:
+        return 0, ""
+    max_age = float(cfg.get("max_age_s", 900))
+    rdir = os.path.join(amux_home(), cfg.get("dir") or "state/delete-previews", receipt_key(WORKER))
+    deletes = [o for o in ops if o["phase"] == "delete"]
+    previews = [o for o in ops if o["phase"] == "preview"]
+    chained = {k for o in previews for k in o["keys"]}
+    base = {"boundary": b.get("id"), "tool": "Bash", "subject": redact(command), "max_age_s": max_age,
+            "measured": True, "n_considered": len(ops)}
+    v_refused = cfg.get("verdict_refused") or "delete_gate_refused"
+    refused: list[dict] = []
+    allowed: list[dict] = []
+    used: set[str] = set()
+    for d in deletes:
+        if d.get("cause"):
+            refused.append({"segment": redact(d["segment"]), "operand": "", "cause": d["cause"], "why": d["why"]})
+            continue
+        for key, suggest in zip(d["keys"], d["suggest"]):
+            path = _preview_path(rdir, key)
+            rec, cause = (None, "no_preview") if path in used else read_preview(path, key, max_age)
+            t = {"segment": redact(d["segment"]), "operand": redact(key), "receipt": path}
+            if rec is None:
+                refused.append({**t, "cause": cause, "suggest": suggest, "chained": key in chained})
+            else:
+                used.add(path)
+                allowed.append({**t, "preview_age_s": rec.get("age_s"), "preview": rec.get("preview")})
+    if not refused:
+        for path in sorted(used):  # a receipt is good for one delete
+            try:
+                os.remove(path)
+            except OSError as e:
+                refused.append({"segment": redact(command), "operand": "", "receipt": path, "cause": "state_unwritable",
+                                "why": f"its preview receipt could not be consumed ({e})"})
+    if not refused and previews:
+        try:
+            os.makedirs(rdir, exist_ok=True)
+            for o in previews:
+                for key in o["keys"]:
+                    path = _preview_path(rdir, key)
+                    tmp = f"{path}.{os.getpid()}.tmp"
+                    with open(tmp, "w") as fh:
+                        json.dump({"session": WORKER, "key": key, "ts": time.time(), "preview": redact(o["segment"])}, fh)
+                    os.replace(tmp, path)
+        except OSError as e:
+            refused.append({"segment": redact(command), "operand": " | ".join(k for o in previews for k in o["keys"]),
+                            "cause": "state_unwritable", "why": f"the preview receipt could not be written ({e})"})
+    if refused:
+        log({**base, "level": "WARN", "verdict": v_refused, "targets": refused,
+             "measured": not any(r["cause"] == "state_unwritable" for r in refused)})
+    else:
+        if allowed:
+            log({**base, "level": "INFO", "verdict": cfg.get("verdict_allowed") or "delete_gate_allowed", "targets": allowed})
+        if previews:
+            log({**base, "level": "INFO", "verdict": cfg.get("verdict_preview") or "delete_gate_preview_recorded",
+                 "targets": [{"segment": redact(o["segment"]), "operand": redact(k)} for o in previews for k in o["keys"]]})
+        return 0, ""
+    mins = f"{max_age / 60:g} min"
+    lines = []
+    for r in refused:
+        what = {"no_preview": f"this worker has no unused preview of this delete from the last {mins}",
+                "preview_expired": f"this worker's preview of it is older than {mins}",
+                "preview_other_session": "the preview receipt there was written for another worker",
+                "preview_other_target": "the preview receipt there names another target",
+                "preview_unreadable": "the preview receipt there does not parse"}.get(r["cause"], r.get("why", r["cause"]))
+        lines.append(f"- `{r['segment'][:160]}`: {what}.")
+        if r.get("chained"):
+            lines.append("  A preview chained in the same command does not count: run it on its own first and read it.")
+        if r.get("suggest"):
+            lines.append("  Preview it first, as its own command, and read what it lists:\n    " + r["suggest"])
+        elif r["cause"] == "no_target":
+            lines.append("  Name the targets on the command line, preview them, then delete.")
+        elif r["cause"] == "state_unwritable":
+            lines.append(f"  This check fails closed. Check that {rdir} is writable.")
+    return 2, (
+        f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}).\n" + "\n".join(lines) + "\n"
+        f"Then run the delete again: a preview is good for one delete within {mins}.\n\n"
         + b.get("rule", "").strip() + "\n(boundary-guard; the registry is boundaries.toml, GET $AMUX_URL/api/boundaries)\n"
     )
 
@@ -1505,6 +1810,18 @@ def main() -> None:
                 log({"level": "WARN", "verdict": "push_gate_check_failed", "boundary": b.get("id"),
                      "subject": redact(command), "error": str(e)[:300], "measured": False, "n_considered": 1})
                 code, msg = 2, (f"BLOCKED by amux boundary '{b.get('id')}': the push gate check failed ({e}), and "
+                                "this check fails closed.\n" + b.get("rule", "").strip() + "\n(boundary-guard)\n")
+            if code:
+                sys.stderr.write(msg)
+                sys.exit(code)
+        if b.get("kind") == "delete_gate" and tool == "Bash" and command:
+            try:
+                code, msg = check_delete_gate(b, command)
+            except Exception as e:  # noqa: BLE001 - this check fails closed
+                log({"level": "WARN", "verdict": (b.get("delete_gate") or {}).get("verdict_refused") or "delete_gate_refused",
+                     "boundary": b.get("id"), "subject": redact(command), "targets": [{"cause": "check_failed"}],
+                     "error": str(e)[:300], "measured": False, "n_considered": 1})
+                code, msg = 2, (f"BLOCKED by amux boundary '{b.get('id')}': the delete gate check failed ({e}), and "
                                 "this check fails closed.\n" + b.get("rule", "").strip() + "\n(boundary-guard)\n")
             if code:
                 sys.stderr.write(msg)

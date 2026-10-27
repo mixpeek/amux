@@ -52,6 +52,7 @@ Where it is visible:
 | orchestrator-modal | none | AskUserQuestion, EnterPlanMode and ExitPlanMode for a worker marked as an orchestrator |
 | tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
 | push-gates | GitHub branch protection, where it is on (not set by amux) | `git push` to main or master with `--no-verify`, with `core.hooksPath` emptied inline, from a repo that ships a pre-push hook it has not installed, or directly in a repo that lands through `amux land` (mixpeek) |
+| delete-gate | none | `kubectl delete`, `gcloud ... delete`, `gcloud storage rm`, `gsutil rm`/`rb` without an unused preview of the same target from this worker in the last 15 minutes; hand-written preview receipts |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
 **What this cannot do yet.** Workers run as the owner's macOS user. The guard
@@ -263,6 +264,71 @@ from elsewhere). That last class needs server-side enforcement: a branch
 protection rule or ruleset on `main` with required status checks, and with
 "Do not allow bypassing the above settings" (classic protection) on, or no
 bypass actors (rulesets), so admins and apps cannot push past it.
+
+## Delete gate
+
+Velocity item V7-delete, 2026-10-27. On 2026-10-24 a production delete-all was
+replayed and data was lost, and the fleet has deleted cloud resources by hand
+before. Owner rules: deleting customer or production data needs the owner, and
+every delete is previewed first so its blast radius is visible before it runs.
+The MVS side (mark, delay, sweep, a dry run and a second key on the shard's own
+deletes) is a separate design in mixpeek,
+`server/mvs/GS12-V7-TWO-PHASE-DELETE-DESIGN.md`. This boundary covers the
+deletes a worker types.
+
+The `delete-gate` boundary (`kind = "delete_gate"`) judges every segment of a
+Bash command on its own, with the splitter the tenant gate and push-gates use
+(`;`, `&&`, `||`, `|`, newlines, and `bash -c`/`sh -c`/`eval`/`ssh` strings),
+after stripping env assignments and launchers (`env`, `sudo`, `xargs`,
+`timeout`, `nohup`, `nice`, `watch`). One preview form per delete, the smallest
+set that shows what would go:
+
+| Delete | Preview | Why this form |
+|---|---|---|
+| `kubectl delete ARGS` (or `oc`) | the same command with `--dry-run=client` or `--dry-run=server` | it resolves names, `-f`, `-l`, `--field-selector` and `--all` exactly as the delete will, and prints each object |
+| `gcloud GROUP... delete T...` | `gcloud GROUP... describe T`, once per target | every gcloud resource that deletes also describes, while `--dry-run` exists on almost none |
+| `gsutil rm`/`rb URL...`, `gcloud storage rm URL...` | `gsutil ls URL...` or `gcloud storage ls URL...`, with `-r` exactly when the delete is recursive | the listing is the set of objects removed |
+
+A preview records a receipt at
+`$AMUX_HOME/state/delete-previews/<worker>/<sha256 of the key>.json`. The key
+is the normalised target: for kubectl the positionals and flags (`-n` read as
+`--namespace`, flag order ignored), less those that only change output or
+pacing (`--dry-run`, `-o`, `--wait`, `--timeout`, `--grace-period`, `--now`,
+`--force`, `--ignore-not-found`); for gcloud the command group, one target and
+the flags (so `--project p` and `--project=p` agree, and another project does
+not), less `--quiet`, `--async`, `--format`, `--verbosity`, `--delete-disks`,
+`--keep-disks`, `--force`; for storage the URLs and whether it is recursive.
+A delete is refused unless every key it touches has a receipt from this worker
+younger than `max_age_s` (900, in the registry), and the delete removes each
+receipt it used, so a preview covers one delete. Deletes are checked against
+the receipts that existed before the command, and a command's previews are
+recorded only when the whole command is allowed, so a preview chained with its
+delete never satisfies it. A delete whose targets come from stdin
+(`kubectl delete -f -`, `xargs gsutil rm`, `gsutil rm -I`) is refused
+outright, since no preview shows the same set. The refusal prints the exact
+preview to run. A second deny rule refuses hand-written receipts.
+
+It fails closed: a receipt that cannot be read, consumed or written refuses
+the command. Verdicts in `boundaries.jsonl`, each carrying the normalised
+target as `operand`, `measured` and `n_considered`: `delete_gate_refused`
+(WARN, each target's `cause`: `no_preview`, `preview_expired`,
+`preview_other_session`, `preview_other_target`, `preview_unreadable`,
+`no_target`, `state_unwritable`, `check_failed`),
+`delete_gate_preview_recorded` (INFO) and `delete_gate_allowed` (INFO, with
+the preview's age). There is no bypass; the owner turns the boundary off with
+`enabled = false` in the machine override registry, as for every boundary. The
+tenant gate exempts `--dry-run=client|server` segments, so a preview in a
+tenant namespace needs no tenant receipt (the delete itself needs both).
+
+What it cannot see: a delete from a script on disk, an SDK, `curl` to a cloud
+API, Terraform or Helm (`helm uninstall` stays with the tenant gate); a
+manifest file that changes between preview and delete; a preview that fails
+(the receipt is written before the command runs, since the hook sees only the
+command); `gsutil rm -a` versions (the key holds only URLs and `-r`); and
+other delete verbs (`gcloud storage rsync --delete-unmatched-destination-objects`,
+`delete-instances`, `kubectl drain`). The receipt proves the preview ran, not
+that anyone read it, and it does not ask the owner: that rule stays with the
+worker.
 
 ## Resources
 
