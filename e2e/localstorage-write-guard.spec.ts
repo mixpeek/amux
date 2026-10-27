@@ -48,6 +48,9 @@ test('cache keys and large values are throttled, reads see the latest, hiding fl
   expect(await stored('zz_probe_cache')).toBe('v1');
   expect(await stored('zz_probe_history')).toBe('aa');
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
-  expect(await stored('zz_probe_cache')).toBe('v3');
-  expect(await stored('zz_probe_history')).toBe('bb');
+  // The flush is synchronous in the first page, but a second page sees
+  // another page's localStorage writes asynchronously. One immediate read
+  // raced that and read the old 'v1' (CI run 40551723369, mobile and desktop).
+  await expect.poll(() => stored('zz_probe_cache'), { timeout: 5000 }).toBe('v3');
+  await expect.poll(() => stored('zz_probe_history'), { timeout: 5000 }).toBe('bb');
 });
