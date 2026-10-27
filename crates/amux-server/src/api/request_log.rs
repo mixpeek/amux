@@ -3808,6 +3808,23 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/recordings/{id}/transcribe",
         methods: &["POST"],
     },
+    // Recording sessions (docs/design/recorder.md).
+    RouteEntry {
+        path: "/api/recordings/sessions",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}/chunks/{track}/{seq}",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}/finish",
+        methods: &["POST"],
+    },
     RouteEntry {
         path: "/api/tts",
         methods: &["POST"],

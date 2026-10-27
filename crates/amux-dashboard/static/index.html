@@ -1046,6 +1046,7 @@
         <div id="recorder-elapsed" class="recorder-elapsed">0:00</div>
         <div class="recorder-level" aria-hidden="true"><div id="recorder-level-fill" class="recorder-level-fill"></div></div>
         <div id="recorder-status" class="recorder-status" role="status" aria-live="polite">Tap to record. Each second is saved on this device as it records.</div>
+        <button id="recorder-pause" class="btn" type="button" onclick="_recorderPauseToggle()" hidden>Pause</button>
       </div>
     </div>
     <div class="recorder-sync-row">
@@ -1064,6 +1065,15 @@
         <div id="recorder-dir-help" class="ui-help"></div>
       </div>
       <label class="recorder-check"><input id="recorder-location" type="checkbox" onchange="_recorderSetLocation(this.checked)"> Save my location with each recording</label>
+      <div class="ui-field" id="recorder-meeting-row" hidden>
+        <label for="recorder-meeting">When a call starts on this Mac</label>
+        <select id="recorder-meeting" class="input" onchange="_recorderSetMeeting(this.value)">
+          <option value="off">Do nothing</option>
+          <option value="ask">Ask me with a notification</option>
+          <option value="auto">Record it, and stop when the call ends</option>
+        </select>
+      </div>
+      <label class="recorder-check" id="recorder-system-row" hidden><input id="recorder-system" type="checkbox" onchange="_recorderSetSystem(this.checked)"> Also record the Mac's sound (calls and meetings). macOS asks for Screen Recording permission the first time.</label>
       <div id="recorder-transcriber" class="ui-help"></div>
     </details>
   </div>

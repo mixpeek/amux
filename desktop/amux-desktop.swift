@@ -459,6 +459,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // new pane on the right half.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxPane")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxPane")
+        // The Record tab drives the native recorder (amux-recorder.swift).
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxRecorder")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxRecorder")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -472,6 +475,13 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "amuxRecorder" {
+            // Only a page on this tab's own server drives the recorder.
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false {
+                app?.recorderMessage(message.body as? [String: Any] ?? [:], from: self)
+            }
+            return
+        }
         if message.name == "amuxPane" {
             let d = message.body as? [String: Any]
             guard (d?["op"] as? String) == "split" else { return }
@@ -816,9 +826,16 @@ func registerHotKey() {
     let id = EventHotKeyID(signature: OSType(0x616D7578), id: 1)   // 'amux'
     // Control-Option-Space toggles amux from any app.
     RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &ref)
+    // Control-Option-R starts or stops a recording from any app (amux-recorder.swift).
+    var recRef: EventHotKeyRef?
+    RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(controlKey | optionKey), EventHotKeyID(signature: OSType(0x616D7578), id: 2),
+                        GetApplicationEventTarget(), 0, &recRef)
     var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-        DispatchQueue.main.async { hotKeyHandler?() }
+    InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+        var hk = EventHotKeyID()
+        GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                          MemoryLayout<EventHotKeyID>.size, nil, &hk)
+        DispatchQueue.main.async { if hk.id == 2 { recordHotKeyHandler?() } else { hotKeyHandler?() } }
         return noErr
     }, 1, &spec, nil, nil)
 }
@@ -844,6 +861,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var placementTimer: Timer?
     var lastSignature = ""
     var sigtermSource: DispatchSourceSignal?
+    var sigtermQuitting = false
     var dragTimer: Timer?
     var tabDragTimer: Timer?
     var tabDragMonitor: Any?
@@ -913,6 +931,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         applyOpenAtLogin()
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()
+        setUpRecorder()
         startMenuBarItem()
         setUpNotifications()
         refreshPins()
@@ -1028,6 +1047,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !recorderAllowsQuit(fromSignal: sigtermQuitting) { return .terminateCancel }
         snapshotWindows { [weak self] windows in
             guard let self = self else { return }
             self.terminating = true
@@ -1531,6 +1551,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         NSApp.activate(ignoringOtherApps: true)
+        if response.notification.request.content.userInfo["recorder_meeting"] != nil {
+            meetingNotificationClicked()   // amux-recorder.swift
+            completionHandler()
+            return
+        }
         openCard((response.notification.request.content.userInfo["card"] as? String) ?? "")
         completionHandler()
     }

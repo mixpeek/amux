@@ -373,7 +373,7 @@ extension AppDelegate {
         // SIGTERM (a logout, a reboot, `kill`) quits the normal way, saving first.
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        src.setEventHandler { NSLog("amux-desktop: verdict=sigterm_quit"); NSApp.terminate(nil) }
+        src.setEventHandler { [weak self] in NSLog("amux-desktop: verdict=sigterm_quit"); self?.sigtermQuitting = true; NSApp.terminate(nil) }
         src.resume()
         sigtermSource = src
         // Another copy (tests, a second server) is driven by its pid, since an
@@ -878,6 +878,7 @@ extension AppDelegate {
         switch url.path {
         case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
         case "/pointer-clear": Pointer.testOverride = nil
+        case "/recorder": recorderTestHook(q)
         case "/press-tab": press(true)          // the mouse-down that starts a tab drag
         case "/press-content": press(false)     // a click in the page, which must not
         // What AppKit does with a tab dropped outside every tab bar.

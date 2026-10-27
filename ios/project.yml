@@ -45,6 +45,8 @@ targets:
       - path: AmuxShare/Sources/AmuxClient.swift
       # The app drains shares queued offline by the extension.
       - path: AmuxShare/Sources/ShareOutbox.swift
+      # The native recorder's core, shared with the Mac app (RecorderBridge.swift).
+      - path: ../desktop/amux-recorder-core.swift
     info:
       path: AmuxApp/Info.plist
       properties:
@@ -78,7 +80,7 @@ targets:
         # Teleprompter selfie recording (AA-39): the page records with
         # getUserMedia and the take is saved to Photos by MediaBridge.
         NSCameraUsageDescription: "amux uses the front camera to record you while the teleprompter scrolls your script."
-        NSMicrophoneUsageDescription: "amux uses the microphone for your voice in teleprompter recordings and for dictation."
+        NSMicrophoneUsageDescription: "amux uses the microphone for recordings you start, your voice in teleprompter recordings, and dictation."
         NSPhotoLibraryAddUsageDescription: "amux saves your teleprompter recordings to Photos."
         # Location history (AMUX-5458): off until turned on in Settings. Points go
         # only to the user's own amux server.
@@ -87,8 +89,11 @@ targets:
         NSMotionUsageDescription: "amux uses motion activity to label your location history as walking, cycling, driving or train. It stays with your history on your own amux server."
         NSLocationTemporaryUsageDescriptionDictionary:
           history: "Location history needs precise location to show the streets and paths you took."
+        # audio: a recording started in the Record tab keeps going while the
+        # app is hidden or the phone is locked (RecorderBridge.swift).
         UIBackgroundModes:
           - location
+          - audio
         ITSAppUsesNonExemptEncryption: false
         CFBundleIconName: AppIcon
     entitlements:

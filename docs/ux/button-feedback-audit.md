@@ -168,6 +168,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Delete | `_dictDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit | `_dictEditWord` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Dictate | `_dictOpenPopup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Delete | `_dictOutboxDel` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Save | `_dictSaveKey` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Hold to dictate (or click to start/stop) | `_dictToggleRec` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1195,7 +1196,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Cancel | `_dictClosePopup` | onclick |
 | app.js | Copy | `_dictCopy` | onclick |
 | app.js | Insert into composer | `_dictInsertId` | onclick |
-| app.js | Delete | `_dictOutboxDel` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |
 | index.html | Dictionary | `_dictSetSub` | onclick |
 | index.html | History | `_dictSetSub` | onclick |
@@ -1390,6 +1390,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
 | app.js | clear filter | `_reclaimSetCat` | onclick |
 | app.js | Delete from this device | `_recorderDeleteLocal` | onclick |
+| index.html | Pause | `_recorderPauseToggle` | onclick |
 | app.js | Play | `_recorderPlay` | onclick |
 | app.js | Remove | `_removeConnection` | onclick |
 | app.js | button | `_removeConnection` | onclick |

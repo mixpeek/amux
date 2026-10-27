@@ -146,3 +146,83 @@ test('the Record tab meets the shared control contract', async ({ page }) => {
   const overflow = await page.locator('#record-view').evaluate((e) => e.scrollWidth - e.clientWidth);
   expect(overflow, `record view overflows a ${width}px screen`).toBeLessThanOrEqual(0);
 });
+
+// ── Streaming to a recording session (docs/design/recorder.md) ───────────────
+
+function sidecarFor(dir: string, id: string): Record<string, any> {
+  const f = fs.readdirSync(dir).find((n) => n.endsWith(`_${id}.json`));
+  expect(f, `no sidecar for ${id} in ${dir}`).toBeTruthy();
+  return JSON.parse(fs.readFileSync(path.join(dir, f!), 'utf8'));
+}
+
+test('seconds reach amux while recording, so stopping leaves only the last few to send', async ({ page }) => {
+  const dir = await useTempFolder(page);
+  await openRecord(page);
+  const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
+  await page.locator('#recorder-btn').click();
+  await expect.poll(() => liveChunks(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  const id = await page.evaluate(() => _recorderLive!.id);
+  // Before any stop, the server already holds seconds of this recording.
+  await expect.poll(async () => {
+    const r = await page.request.get(`/api/recordings/sessions/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+    return r.ok() ? Number((await r.json()).tracks?.mic?.received || 0) : 0;
+  }, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
+  await page.locator('#recorder-btn').click();
+  const row = page.locator(`.recorder-item[data-rec-id="${id}"]`);
+  await expect(row).toHaveAttribute('data-sync-state', 'synced', { timeout: 30_000 });
+  const sc = sidecarFor(dir, id);
+  expect(sc.session?.chunk_kind).toBe('bytes');
+  expect(sc.partial).toBe(false);
+  expect(sc.session.chunks).toBeGreaterThanOrEqual(2);
+  // The device copy went only because the assembled file matches it.
+  expect(await page.evaluate(async (rid) => (await _recorderChunks(rid)).length, id)).toBe(0);
+  expect(fs.existsSync(path.join(dir, '.sessions', id)), 'the session is cleaned up once filed').toBe(false);
+});
+
+test('a second the device lost is filed as a declared gap, never closed up silently', async ({ page, context }) => {
+  const dir = await useTempFolder(page);
+  await openRecord(page);
+  await context.setOffline(true);
+  await record(page, 4);
+  const row = page.locator('.recorder-item').first();
+  const id = (await row.getAttribute('data-rec-id'))!;
+  // Lose second 1 on the device, the way a failed IndexedDB write would.
+  await page.evaluate((rid) => new Promise<void>((res, rej) => {
+    const open = indexedDB.open('amux-recorder');
+    open.onsuccess = () => {
+      const tx = open.result.transaction('chunks', 'readwrite');
+      tx.objectStore('chunks').delete([rid, 1]);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    };
+    open.onerror = () => rej(open.error);
+  }), id);
+  await context.setOffline(false);
+  await page.evaluate(() => (window as any)._recorderSync(true));
+  await expect(row).toHaveAttribute('data-sync-state', 'synced', { timeout: 30_000 });
+  const sc = sidecarFor(dir, id);
+  expect(sc.partial).toBe(true);
+  expect(sc.session.lost_chunks).toBe(1);
+  expect(sc.session.gaps.map((g: any) => g.why)).toContain('lost_chunk');
+});
+
+test('a second window never takes over a recording another window is still making', async ({ page, context }) => {
+  await useTempFolder(page);
+  await openRecord(page);
+  await page.locator('#recorder-btn').click();
+  await expect.poll(() => liveChunks(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  const id = await page.evaluate(() => _recorderLive!.id);
+  const other = await context.newPage();
+  await openRecord(other);
+  await other.evaluate(() => (window as any)._recorderSync(true));
+  // Still recording in the first window, untouched by the second's sync.
+  expect((await other.evaluate(async (rid) => _recorderGet(rid), id))!.state).toBe('recording');
+  await expect.poll(() => liveChunks(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(4);
+  // The first window closes mid-recording: once its lease lapses, the second adopts it.
+  await page.close();
+  await expect.poll(async () => {
+    await other.evaluate(() => (window as any)._recorderSync(true));
+    return (await other.evaluate(async (rid) => _recorderGet(rid), id))!.state;
+  }, { timeout: 45_000, intervals: [3000] }).toBe('synced');
+  expect((await other.evaluate(async (rid) => _recorderGet(rid), id))!.recovered).toBe(true);
+});

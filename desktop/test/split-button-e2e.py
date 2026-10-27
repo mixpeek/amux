@@ -220,7 +220,9 @@ finally:
         server.wait(15)
     except subprocess.TimeoutExpired:
         server.kill()
-    sh("env", "TMUX_TMPDIR=" + os.path.join(HOME, "tmux"), "tmux", "kill-server")
+    # The private server by its socket, never `tmux kill-server` bare: inside a
+    # pane $TMUX names the FLEET's server and wins over TMUX_TMPDIR.
+    sh("env", "-u", "TMUX", "tmux", "-S", os.path.join(HOME, "tmux", f"tmux-{os.getuid()}", "default"), "kill-server")
 
 print(("PASS" if not fails else f"FAIL ({fails})") + f"  log: {LOG}")
 sys.exit(1 if fails else 0)

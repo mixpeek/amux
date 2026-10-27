@@ -1176,6 +1176,42 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictOutboxAdd": {
+      "kind": "command._dictOutboxAdd",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOutboxDel": {
+      "kind": "command._dictOutboxDel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOutboxPatch": {
+      "kind": "command._dictOutboxPatch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOutboxSet": {
+      "kind": "command._dictOutboxSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictPruneDone": {
+      "kind": "command._dictPruneDone",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictRecoverLive": {
+      "kind": "command._dictRecoverLive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictRetry": {
       "kind": "command._dictRetry",
       "feedback_required": true,
@@ -4008,6 +4044,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderOpenSession": {
+      "kind": "command._recorderOpenSession",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderRetranscribe": {
       "kind": "command._recorderRetranscribe",
       "feedback_required": true,
@@ -4028,6 +4070,18 @@
     },
     "_recorderScheduleSync": {
       "kind": "command._recorderScheduleSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderShipChunks": {
+      "kind": "command._recorderShipChunks",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderShipSoon": {
+      "kind": "command._recorderShipSoon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4058,6 +4112,12 @@
     },
     "_recorderUpload": {
       "kind": "command._recorderUpload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderUploadSession": {
+      "kind": "command._recorderUploadSession",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

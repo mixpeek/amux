@@ -10,7 +10,7 @@ APP="Amux.app"
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
-SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
+SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift desktop/amux-recorder-core.swift desktop/amux-recorder.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
 BIN="$APP/Contents/MacOS/amux"
 ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
@@ -28,7 +28,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # the application with this version of macOS" (2026-10-26, a user report)
 # while Info.plist still claimed 12.0.
 MIN_MACOS=12.0
-FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement"
+# ScreenCaptureKit (system audio for the recorder) exists from macOS 13, so it
+# is weak-linked: on 12 the app runs and records the microphone only.
+FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
 compile() {  # $1 = output, $2 = optional -target
     # shellcheck disable=SC2086  # SRC and FRAMEWORKS are word lists
     xcrun swiftc -O -parse-as-library -D AMUX_APP ${2:+-target "$2"} -o "$1" $SRC $FRAMEWORKS

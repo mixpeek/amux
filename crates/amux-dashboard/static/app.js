@@ -27448,9 +27448,11 @@ async function _dictStartRec() {
   try { _dictRecorder = new MediaRecorder(_dictStream, opts); }
   catch(e) { try { _dictRecorder = new MediaRecorder(_dictStream); } catch(e2) { showToast('Recorder unavailable'); return; } }
   _dictChunks = [];
-  _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) _dictChunks.push(e.data); };
-  _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictStatus('Cancelled'); } else _dictUpload(); };
-  _dictRecorder.start();
+  await _dictLiveClear();
+  _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { _dictChunks.push(e.data); _dictLiveSave(e.data); } };
+  _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictLiveClear(); _dictStatus('Cancelled'); } else _dictUpload(); };
+  // 1 s slices: each second reaches IndexedDB as it is spoken (see _dictLiveSave).
+  _dictRecorder.start(1000);
   _dictRecording = true; _dictStartedAt = Date.now();
   document.getElementById('dict-rec-btn')?.classList.add('recording');
   _dictStartMeter();
@@ -27529,10 +27531,46 @@ const _DICT_KEEP_DONE  = 6;    // transcribed clips kept so a bad transcript can
 const _DICT_MAX_AUTO   = 6;    // give up auto-retrying after this many; manual Retry still works
 
 async function _dictOutbox() { try { return (await _idb.get('dict_pending')) || []; } catch(e) { return []; } }
+// The cap trims only clips that were already transcribed: a clip that never
+// sent is the one thing that cannot be recorded again, so it is never the one
+// dropped (it used to be: slice(-25) kept the newest 25 whatever their state).
 async function _dictOutboxSet(q) {
-  try { await _idb.set('dict_pending', q.slice(-_DICT_OUTBOX_MAX)); } catch(e) {}
+  const done = q.filter(x => x.state === 'done');
+  const drop = new Set(done.slice(0, Math.max(0, q.length - _DICT_OUTBOX_MAX)).map(x => x.id));
+  try { await _idb.set('dict_pending', q.filter(x => !drop.has(x.id))); }
+  catch(e) {
+    // Never silent: the clip is still in memory, and the person is told it is not saved.
+    _dictStatus('This device could not save the recording: ' + ((e && e.message) || 'storage error'));
+    try { fetch(API + '/api/client-debug', {method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), keepalive: true,
+      body: JSON.stringify({kind: 'dictation_outbox_write_failed', error: String((e && e.message) || e)})}).catch(() => {}); } catch(_) {}
+  }
   _dictPendingBadge();
 }
+
+// A take in progress is saved every second (`dict_live`), so a reload or a
+// crash mid-dictation keeps it: the next page load files it in the outbox as
+// a recovered clip, and it is transcribed like any other.
+async function _dictLiveSave(chunk) {
+  try {
+    const live = (await _idb.get('dict_live')) || {started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
+    live.chunks.push(chunk);
+    await _idb.set('dict_live', live);
+  } catch(e) {}
+}
+async function _dictLiveClear() { try { await _idb.set('dict_live', null); } catch(e) {} }
+async function _dictRecoverLive() {
+  let live = null;
+  try { live = await _idb.get('dict_live'); } catch(e) { return; }
+  if (!live || !live.chunks || !live.chunks.length || _dictRecording) return;
+  const blob = new Blob(live.chunks, {type: live.mime || 'audio/webm'});
+  await _dictLiveClear();
+  if (blob.size < 1200) return;
+  const id = await _dictOutboxAdd(blob, (live.mime || 'audio/webm').split(';')[0], Date.now() - (live.started || Date.now()));
+  await _dictOutboxPatch(id, {recovered: true, session: live.session || ''});
+  showToast('A dictation interrupted by a reload was saved; it will be transcribed');
+  setTimeout(_dictFlushOffline, 1500);
+}
+setTimeout(_dictRecoverLive, 3000);
 async function _dictOutboxAdd(blob, mime, ms) {
   const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const q = await _dictOutbox();
@@ -27562,6 +27600,7 @@ async function _dictUpload() {
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
   const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  await _dictLiveClear();                              // the take now lives in the outbox
   if (typeof online !== 'undefined' && !online) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
     _dictStatus('Saved — sends when you\'re back online');
@@ -64138,7 +64177,7 @@ function _recorderPatch(id, patch) {
 }
 function _recorderAddChunk(id, seq, blob, at) {
   return _recorderTx(['recs', 'chunks'], tx => {
-    tx.objectStore('chunks').put({rec: id, seq, blob, size: blob.size});
+    tx.objectStore('chunks').put({rec: id, seq, blob, size: blob.size, at});
     const s = tx.objectStore('recs');
     const r = s.get(id);
     r.onsuccess = () => {
@@ -64169,8 +64208,90 @@ function _recorderSize(b) {
 function _recorderHex(buf) { return Array.from(new Uint8Array(buf), x => x.toString(16).padStart(2, '0')).join(''); }
 
 function _recorderToggle() {
+  if (_nativeRecorderAvailable()) {
+    const active = _nativeRecorderActive();
+    let system = false;
+    try { system = localStorage.getItem('amux_recorder_system') === '1'; } catch (e) {}
+    _nativeRecorderPost(active ? {op: 'stop'} : {op: 'start', sources: system ? ['mic', 'system'] : ['mic']});
+    return;
+  }
   if (_recorderLive) _recorderStop('stopped');
   else _recorderStart();
+}
+
+// ── The Mac app's native recorder (desktop/amux-recorder.swift) ────────────
+// Inside the app the button drives a recorder the app owns: it keeps
+// recording when this window closes or reloads, can add the Mac's sound,
+// shows a menu bar dot, and writes 10 s segments to disk before uploading
+// them. The app pushes its state here through window._nativeRecorderStatus.
+let _nativeRec = null;
+function _nativeRecorderAvailable() {
+  try { return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxRecorder); } catch (e) { return false; }
+}
+function _nativeRecorderActive() { return !!_nativeRec && ['recording', 'paused'].includes(_nativeRec.state); }
+function _nativeRecorderPost(msg) {
+  try { window.webkit.messageHandlers.amuxRecorder.postMessage(msg); } catch (e) { _recorderStatus('The app did not answer: ' + e.message); }
+}
+function _recorderPauseToggle() {
+  if (_nativeRecorderActive()) _nativeRecorderPost({op: _nativeRec.state === 'paused' ? 'resume' : 'pause'});
+}
+function _recorderSetSystem(on) {
+  try { localStorage.setItem('amux_recorder_system', on ? '1' : '0'); } catch (e) {}
+  if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', system: !!on});
+}
+function _recorderSetMeeting(mode) {
+  if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', meeting: mode});
+}
+window._nativeRecorderStatus = function(st) {
+  const was = _nativeRec && _nativeRec.state;
+  _nativeRec = st || null;
+  _nativeRecorderPaint();
+  // Just stopped: the app uploads the last segments; show the filed recording when it lands.
+  if (was && was !== 'idle' && st && st.state === 'idle') setTimeout(() => _recorderLoadServer().then(_recorderRender), 5000);
+};
+function _nativeRecorderPaint() {
+  const st = _nativeRec;
+  if (!st || !_nativeRecorderAvailable()) return;
+  const on = _nativeRecorderActive();
+  const btn = document.getElementById('recorder-btn');
+  if (btn) {
+    btn.classList.toggle('recording', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', on ? 'Stop recording' : 'Start recording');
+  }
+  const tab = document.getElementById('tab-record');
+  if (tab) tab.classList.toggle('recording', on);
+  const pause = document.getElementById('recorder-pause');
+  if (pause) { pause.hidden = !on; pause.textContent = st.state === 'paused' ? 'Resume' : 'Pause'; }
+  const meetRow = document.getElementById('recorder-meeting-row');
+  if (meetRow) meetRow.hidden = !('meeting' in st);
+  const meet = document.getElementById('recorder-meeting');
+  if (meet && st.meeting && document.activeElement !== meet) meet.value = st.meeting;
+  const sysRow = document.getElementById('recorder-system-row');
+  if (sysRow) sysRow.hidden = !st.system_audio_available;
+  const sys = document.getElementById('recorder-system');
+  if (sys) { try { sys.checked = localStorage.getItem('amux_recorder_system') === '1'; } catch (e) {} }
+  const el = document.getElementById('recorder-elapsed');
+  if (el) el.textContent = _recorderClock(on ? Number(st.elapsed_ms || 0) : 0);
+  const fill = document.getElementById('recorder-level-fill');
+  if (fill) {
+    const lv = Math.max(0, ...Object.values(st.levels || {}).map(Number));
+    fill.style.width = (on ? Math.min(100, Math.round(lv * 400)) : 0) + '%';
+  }
+  const tracks = (st.tracks || []).map(t => t === 'mic' ? 'microphone' : t === 'system' ? "the Mac's sound" : t).join(' and ');
+  let text;
+  if (st.state === 'recording') {
+    text = 'Recording ' + (tracks || 'audio') + ' in the amux app. It keeps going if this window closes.'
+      + (st.pending_upload ? ' ' + st.pending_upload + ' segment' + (st.pending_upload === 1 ? '' : 's') + ' waiting to upload.' : '')
+      + (st.gaps ? ' ' + st.gaps + ' gap' + (st.gaps === 1 ? '' : 's') + ' noted.' : '');
+  } else if (st.state === 'paused') {
+    text = 'Paused. The microphone is off until you resume.';
+  } else {
+    text = st.spooled ? st.spooled + ' recording' + (st.spooled === 1 ? '' : 's') + ' saved in the app, uploading when amux is reachable.'
+      : 'Tap to record. The amux app keeps recording if this window closes.';
+  }
+  if (st.error) text += ' ' + st.error;
+  _recorderStatus(text);
 }
 
 async function _recorderStart() {
@@ -64200,7 +64321,7 @@ async function _recorderStart() {
     id: 'r' + now.toString(36) + Math.random().toString(36).slice(2, 6),
     started_at: now, ended_at: 0, dur_ms: 0, tz_offset_min: -new Date(now).getTimezoneOffset(),
     mime: rec.mimeType || mime || 'audio/webm', device: String(navigator.userAgent || '').slice(0, 160),
-    location: null, state: 'recording', seq: 0, bytes: 0, last_chunk_at: now,
+    location: null, state: 'recording', seq: 0, bytes: 0, last_chunk_at: now, owner: _RECORDER_TAB,
     attempts: 0, net_failures: 0, last_attempt: 0, error: '', path: '', file: '', upload_sha256: '', recovered: false,
   };
   try { await _recorderTx(['recs'], tx => { tx.objectStore('recs').put(meta); }); }
@@ -64243,7 +64364,14 @@ function _recorderAttach(rec, meta, fallbacks) {
     meta.bytes += blob.size; meta.last_chunk_at = at;
     _recorderWrites = _recorderWrites
       .then(() => _recorderAddChunk(meta.id, seq, blob, at))
-      .catch(e => { meta.write_error = (e && e.message) || 'write failed'; _recorderStatus('A second of audio could not be saved: ' + meta.write_error); });
+      .then(() => _recorderShipSoon(meta.id))
+      .catch(e => {
+        meta.write_error = (e && e.message) || 'write failed';
+        // Never silent: the second is declared lost, and the finished recording lists it as a gap.
+        meta.lost_seqs = (meta.lost_seqs || []).concat([seq]);
+        _recorderPatch(meta.id, {lost_seqs: meta.lost_seqs, write_error: meta.write_error}).catch(() => {});
+        _recorderStatus('A second of audio could not be saved: ' + meta.write_error);
+      });
   };
   rec.onstop = () => { if (!rec._recorderReplaced) _recorderFinalize(meta.id); };
   rec.onerror = ev => {
@@ -64377,12 +64505,27 @@ function _recorderTick() {
 
 // A recording left 'recording' by a reload or a crash is finished with what it
 // captured; one left 'syncing' by a killed upload goes back in the queue.
+// A recording another window is making writes a chunk every second, so its
+// last_chunk_at is the lease: only one silent for _RECORDER_LEASE_MS is
+// adopted. Runs on every sync, so a recording orphaned by a closed window is
+// adopted without a reload.
+// A recording this same tab started before a reload carries this tab's id
+// (sessionStorage survives a reload, not a new window) and is adopted at once.
+const _RECORDER_LEASE_MS = 15000;
+const _RECORDER_TAB = (() => {
+  try {
+    let t = sessionStorage.getItem('amux_recorder_tab');
+    if (!t) { t = Math.random().toString(36).slice(2, 10); sessionStorage.setItem('amux_recorder_tab', t); }
+    return t;
+  } catch (e) { return 'tab-' + Math.random().toString(36).slice(2, 10); }
+})();
 async function _recorderRecover() {
-  if (_recorderRecovered) return;
   _recorderRecovered = true;
   const liveId = _recorderLive && _recorderLive.id;
   for (const m of await _recorderList()) {
     if (m.id === liveId) continue;
+    if (m.state === 'recording' && m.owner && m.owner !== _RECORDER_TAB
+        && Date.now() - (m.last_chunk_at || m.started_at || 0) < _RECORDER_LEASE_MS) continue;
     if (m.state === 'recording') {
       const end = m.last_chunk_at || m.started_at;
       await _recorderPatch(m.id, {state: m.seq ? 'local' : 'empty', recovered: true, ended_at: end, dur_ms: Math.max(0, end - m.started_at)});
@@ -64429,9 +64572,89 @@ async function _recorderSync(force) {
 
 async function _recorderScheduleSync() {
   let pending = 0;
-  try { pending = (await _recorderList()).filter(m => ['local', 'failed', 'syncing'].includes(m.state)).length; } catch (e) {}
+  // `recording` counts: another window's recording is adopted here once its lease lapses.
+  const liveId = _recorderLive && _recorderLive.id;
+  try { pending = (await _recorderList()).filter(m => ['local', 'failed', 'syncing'].includes(m.state) || (m.state === 'recording' && m.id !== liveId)).length; } catch (e) {}
   if (pending && !_recorderSyncTimer) _recorderSyncTimer = setInterval(() => _recorderSync(), 60000);
   if (!pending && _recorderSyncTimer) { clearInterval(_recorderSyncTimer); _recorderSyncTimer = 0; }
+}
+
+// ── Streaming to a recording session (docs/design/recorder.md) ─────────────
+// Each saved chunk is also sent to amux while recording, so at stop only the
+// last seconds remain and no single request has to carry the whole file. The
+// device copy stays until the server's assembled file matches these bytes.
+let _recorderSessionsOk = null;   // false once a server answers that it has no sessions
+const _recorderShipTimers = {};
+function _recorderShipSoon(id) {
+  if (_recorderSessionsOk === false || navigator.onLine === false || _recorderShipTimers[id]) return;
+  _recorderShipTimers[id] = setTimeout(async () => {
+    delete _recorderShipTimers[id];
+    try { const m = await _recorderGet(id); if (m) await _recorderShipChunks(m); } catch (e) {}
+  }, 3000);
+}
+async function _recorderOpenSession(m) {
+  if (m.session_open) return true;
+  const body = {id: m.id, started_at: m.started_at, tz_offset_min: m.tz_offset_min || 0, mime: m.mime || 'audio/webm',
+                device: m.device || '', chunk_kind: 'bytes', tracks: ['mic']};
+  if (m.location) Object.assign(body, {lat: m.location.lat, lon: m.location.lon, accuracy_m: m.location.accuracy_m});
+  const r = await fetch(API + '/api/recordings/sessions', {method: 'POST',
+    headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)});
+  if (r.status === 404 || r.status === 405) { _recorderSessionsOk = false; return false; }
+  if (!r.ok) throw new Error('opening the session: HTTP ' + r.status);
+  _recorderSessionsOk = true;
+  m.session_open = true;
+  await _recorderPatch(m.id, {session_open: true});
+  return true;
+}
+// Sends every chunk the server has not acknowledged. Returns the count sent.
+async function _recorderShipChunks(m, only) {
+  if (!(await _recorderOpenSession(m))) return -1;
+  let sent = 0;
+  for (const c of await _recorderChunks(m.id)) {
+    if (c.sent && !(only && only.includes(c.seq))) continue;
+    const sha = _recorderHex(await crypto.subtle.digest('SHA-256', await c.blob.arrayBuffer()));
+    const q = new URLSearchParams({sha256: sha, start_ms: String((c.at || m.started_at) - 1000), dur_ms: '1000'});
+    const r = await fetch(API + '/api/recordings/sessions/' + encodeURIComponent(m.id) + '/chunks/mic/' + c.seq + '?' + q,
+      {method: 'PUT', headers: _authHeaders({'Content-Type': 'application/octet-stream'}), body: c.blob});
+    if (!r.ok && r.status !== 409) throw new Error('sending second ' + c.seq + ': HTTP ' + r.status);
+    if (r.status === 409) {
+      const d = await r.json().catch(() => ({}));
+      if (!/already holds different/.test(d.error || '')) continue;   // finishing: the finish call sorts it out
+      throw new Error('amux holds different audio for second ' + c.seq);
+    }
+    await _recorderTx(['chunks'], tx => { tx.objectStore('chunks').put(Object.assign(c, {sent: true, sha})); });
+    sent++;
+  }
+  return sent;
+}
+// Seconds where the page was suspended show up as one chunk arriving long
+// after the one before it: declared as gaps, never silently closed up.
+function _recorderGaps(m, chunks) {
+  const gaps = [];
+  let prev = m.started_at;
+  for (const c of chunks) {
+    if (c.at && c.at - prev > 3000) gaps.push({track: 'mic', at_ms: prev - m.started_at, dur_ms: c.at - prev - 1000, why: 'suspended'});
+    if (c.at) prev = c.at;
+  }
+  return gaps;
+}
+async function _recorderUploadSession(m, chunks, sha) {
+  if ((await _recorderShipChunks(m)) < 0) return null;   // no sessions here: the caller uploads in one piece
+  const have = new Set(chunks.map(c => c.seq));
+  const lost = [];
+  for (let s = 0; s < (m.seq || 0); s++) if (!have.has(s)) lost.push(s);
+  const body = {ended_at: m.ended_at || m.last_chunk_at || m.started_at, last_seq: {mic: (m.seq || 1) - 1},
+                lost: {mic: lost}, gaps: _recorderGaps(m, chunks), recovered: !!m.recovered};
+  const url = API + '/api/recordings/sessions/' + encodeURIComponent(m.id) + '/finish';
+  let r, d = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    r = await fetch(url, {method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)});
+    d = await r.json().catch(() => null);
+    if (r.status !== 409 || !d || !d.missing) break;
+    // The server is missing seconds this device holds: resend exactly those.
+    await _recorderShipChunks(m, (d.missing.mic || []).filter(s => have.has(s)));
+  }
+  return {r, d, sha, via: 'session', incomplete: lost.length > 0};
 }
 
 async function _recorderUpload(m) {
@@ -64455,22 +64678,33 @@ async function _recorderUpload(m) {
     if (m.location.accuracy_m != null) q.set('accuracy_m', String(m.location.accuracy_m));
   }
   if (m.recovered) q.set('recovered', '1');
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 300000);
-  let r;
+  let r, d = null, incomplete = false;
   try {
-    r = await fetch(API + '/api/recordings/upload?' + q.toString(), {
-      method: 'POST', headers: _authHeaders({'Content-Type': type.split(';')[0]}), body: blob, signal: ctl.signal,
-    });
+    const viaSession = _recorderSessionsOk === false ? null : await _recorderUploadSession(m, chunks, sha);
+    if (viaSession) {
+      ({r, d, incomplete} = viaSession);
+      if (d && d.state === 'finishing') {
+        // Filed on the next pass: amux is assembling it, or will retry the assembly.
+        await _recorderPatch(m.id, {state: 'local', error: 'amux is assembling it' + (d.error ? ' (' + d.error + ')' : ''), last_attempt: Date.now()});
+        return false;
+      }
+      if (d && d.state === 'finished' && d.recording) d = Object.assign({ok: true}, d.recording);
+    } else {
+      // A server without sessions: the one-shot upload, as before.
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 300000);
+      try {
+        r = await fetch(API + '/api/recordings/upload?' + q.toString(), {
+          method: 'POST', headers: _authHeaders({'Content-Type': type.split(';')[0]}), body: blob, signal: ctl.signal,
+        });
+      } finally { clearTimeout(timer); }
+      try { d = await r.json(); } catch (e) { d = null; }
+    }
   } catch (e) {
-    clearTimeout(timer);
     // Unreachable is not a refusal: it does not use up the retry budget.
     await _recorderPatch(m.id, {state: 'local', error: 'Waiting for a connection to amux', net_failures: (m.net_failures || 0) + 1, last_attempt: Date.now()});
     return false;
   }
-  clearTimeout(timer);
-  let d = null;
-  try { d = await r.json(); } catch (e) { d = null; }
   if (r.ok && d && d.ok) {
     const serverSha = String(d.upload_sha256 || '');
     const done = {path: d.path || '', file: d.file || '', upload_sha256: serverSha, synced_at: Date.now(), net_failures: 0, error: ''};
@@ -64479,8 +64713,9 @@ async function _recorderUpload(m) {
       await _recorderDropChunks(m.id);   // the folder holds identical bytes
       return true;
     }
-    if (!sha) {
-      // This browser could not hash, so nothing proves the copies match: keep ours.
+    if (!sha || incomplete) {
+      // This browser could not hash, or this device lost seconds amux may hold:
+      // nothing proves the copies match, so keep ours.
       await _recorderPatch(m.id, Object.assign(done, {state: 'synced', keep_local: true}));
       return true;
     }
@@ -64614,7 +64849,8 @@ function _recorderTranscriptWords(row) {
 
 async function _recorderRender() {
   try { _recorderLocal = await _recorderList(); } catch (e) { _recorderLocal = []; }
-  const on = !!_recorderLive;
+  if (_nativeRecorderAvailable() && !_nativeRec) _nativeRecorderPost({op: 'status'});
+  const on = !!_recorderLive || _nativeRecorderActive();
   const btn = document.getElementById('recorder-btn');
   if (btn) {
     btn.classList.toggle('recording', on);
@@ -64623,7 +64859,8 @@ async function _recorderRender() {
   }
   const tab = document.getElementById('tab-record');
   if (tab) tab.classList.toggle('recording', on);
-  if (!on) _recorderTick();
+  if (!on && !_nativeRecorderAvailable()) _recorderTick();
+  _nativeRecorderPaint();
   const summary = document.getElementById('recorder-sync-summary');
   const waiting = _recorderLocal.filter(m => ['local', 'failed', 'syncing', 'conflict'].includes(m.state)).length;
   if (summary) {

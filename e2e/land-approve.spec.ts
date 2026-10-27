@@ -5,8 +5,12 @@ import {test, expect} from './fixtures';
 // A worker files the ask; only the owner's dashboard can answer it.
 test('the owner approves an owner-gated change from its link, and the ask closes', async ({page, request}) => {
   const pid = Array.from({length: 40}, (_, i) => '0123456789abcdef'[(i * 7 + Date.now()) % 16]).join('');
+  // A direct API call carries the owner token itself (this server has no loopback bypass).
+  await page.goto('/');
+  const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
+  const auth = {Authorization: `Bearer ${token}`};
   const ask = await request.post('/api/land/approvals/request', {
-    headers: {'X-Amux-Session': 'e2e-lane'},
+    headers: {...auth, 'X-Amux-Session': 'e2e-lane'},
     data: {patch_id: pid, files: ['boundaries.toml'], diffstat: ' boundaries.toml | 2 +-\n 1 file changed',
            subjects: ['feat: cap payments at 40'], head: 'abc123'},
   });
@@ -14,8 +18,8 @@ test('the owner approves an owner-gated change from its link, and the ask closes
   const {card, link} = await ask.json();
   expect(link).toBe('/#land-approve=' + pid);
 
-  const byWorker = await request.post('/api/land/approvals', {headers: {'X-Amux-Session': 'e2e-lane'}, data: {patch_id: pid}});
-  expect(byWorker.status(), 'a worker cannot approve').toBe(403);
+  const byWorker = await request.post('/api/land/approvals', {headers: {...auth, 'X-Amux-Session': 'e2e-lane'}, data: {patch_id: pid}});
+  expect(byWorker.status(), 'a worker cannot approve, even holding the owner token').toBe(403);
 
   await page.goto(link);
   const modal = page.locator('#modal-backdrop.open');
@@ -32,10 +36,10 @@ test('the owner approves an owner-gated change from its link, and the ask closes
   await approve.click();
   await expect(page.locator('#toast')).toContainText('Approved');
 
-  const got = await (await request.get('/api/land/approvals?patch_id=' + pid)).json();
+  const got = await (await request.get('/api/land/approvals?patch_id=' + pid, {headers: auth})).json();
   expect(got.approved).toBe(true);
   if (card) {
-    const row = await (await request.get('/api/board/' + card)).json();
+    const row = await (await request.get('/api/board/' + card, {headers: auth})).json();
     expect(row.status, 'the needsyou ask closed').not.toBe('needsyou');
   }
 
