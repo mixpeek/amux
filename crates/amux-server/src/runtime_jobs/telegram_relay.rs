@@ -23,7 +23,22 @@ use std::time::Duration;
 const JOB: &str = super::registry::ids::TELEGRAM_RELAY;
 
 pub async fn run(state: AppState) {
+    let mut said = false;
     loop {
+        // Replies to Telegram now go through the chat bridge (bridge/mod.rs):
+        // the turn's final text from the worker's own transcript, or `amux
+        // reply`. Reading the screen sent duplicates beside it, so this relay
+        // runs only when AMUX_TELEGRAM_SCREEN_RELAY=1 asks for the old way.
+        if std::env::var("AMUX_TELEGRAM_SCREEN_RELAY").ok().as_deref() != Some("1") {
+            if !said {
+                tracing::info!(verdict = "telegram_relay_retired", "telegram_relay: replies go through the chat bridge; the screen relay is off");
+                said = true;
+            }
+            registry::tick_start(JOB);
+            registry::tick_end(JOB);
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            continue;
+        }
         // AMUX-4828: bracket the cycle; the one-shot records no duration.
         registry::tick_start(JOB);
         match relay_cycle(&state).await {

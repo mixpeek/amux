@@ -1149,6 +1149,20 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
     if sv::provider_of(&sv::parse_env(&name)) != "claude" {
         return;
     }
+    // A Messages post's automatic answer (conversations::relay_turn, which the
+    // chat bridge forwards on): every worker type, chat workers included, so
+    // it runs before the classifiers' skip below.
+    {
+        let (st, n, sid) = (state.clone(), name.clone(), session_id.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let Some(path) = transcript_for(&n, &sid) else { return };
+            let records = sv::iter_jsonl_tail(&path, 2_000_000);
+            if let Some(turn) = final_turn(&records) {
+                super::conversations::relay_turn(&st, &n, &turn.prompt, &turn.text).await;
+            }
+        });
+    }
     let wtype = crate::api::worker_exec::worker_type_of(&name);
     if skips_turn_end_classifier(wtype.as_str()) {
         tracing::debug!(session = %name, worker_type = wtype.as_str(), verdict = "turn_end_skipped_worker_type",

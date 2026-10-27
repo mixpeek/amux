@@ -11,6 +11,7 @@ pub mod auth;
 pub mod avatars;
 pub mod board;
 pub mod boundaries;
+pub mod bridge;
 pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
@@ -397,6 +398,7 @@ pub fn router_with_connector_transport(
         .merge(needs_input_auto::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
+        .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
         .merge(vault_secrets::routes())

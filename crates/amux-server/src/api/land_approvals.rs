@@ -81,6 +81,25 @@ fn worker_origin(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// The owner, and only the owner: the owner bearer and no worker or member
+/// identity (the vault's predicate). Shared with the chat bridge's approvals.
+pub(crate) fn owner_only(state: &AppState, headers: &HeaderMap, uri: &Uri, verdict: &'static str, what: &str) -> Result<(), Box<Response>> {
+    let refuse = |who: &str, why: &str| {
+        tracing::warn!(who, what, measured = true, n_considered = 1, verdict, "a request that is not the owner was refused");
+        Err(Box::new(bad(StatusCode::FORBIDDEN, &format!("only the owner can {what}"), why)))
+    };
+    if let Some(w) = worker_origin(headers) {
+        return refuse(&w, "a worker cannot do this, for itself or another lane");
+    }
+    if super::org::is_verified_local_member(headers) {
+        return refuse("member", "an invited member cannot do this");
+    }
+    if state.auth_token.is_some() && !super::auth::has_owner_token(state, headers, uri) {
+        return refuse("no-owner-credential", "send the owner bearer (the dashboard does)");
+    }
+    Ok(())
+}
+
 fn bad(code: StatusCode, error: &str, why: &str) -> Response {
     (code, Json(json!({"ok": false, "error": error, "why": why}))).into_response()
 }
@@ -225,19 +244,8 @@ async fn request_route(State(state): State<AppState>, headers: HeaderMap, Json(b
 
 async fn approve_route(State(state): State<AppState>, headers: HeaderMap, uri: Uri, Json(body): Json<Value>) -> Response {
     let patch_id = body.get("patch_id").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    let refuse = |who: &str, why: &str| {
-        tracing::warn!(patch_id = %patch_id, who, measured = true, n_considered = 1, verdict = "land_approval_refused",
-            "land gate: a request that is not the owner tried to approve an owner-gated change");
-        bad(StatusCode::FORBIDDEN, "only the owner can approve an owner-gated change", why)
-    };
-    if let Some(w) = worker_origin(&headers) {
-        return refuse(&w, "a worker cannot approve a change, its own or another lane's");
-    }
-    if super::org::is_verified_local_member(&headers) {
-        return refuse("member", "an invited member cannot approve owner-gated changes");
-    }
-    if state.auth_token.is_some() && !super::auth::has_owner_token(&state, &headers, &uri) {
-        return refuse("no-owner-credential", "send the owner bearer (the dashboard does)");
+    if let Err(r) = owner_only(&state, &headers, &uri, "land_approval_refused", "approve an owner-gated change") {
+        return *r;
     }
     if !valid_patch_id(&patch_id) {
         return bad(StatusCode::BAD_REQUEST, "patch_id must be a 40-character `git patch-id --stable`", "");

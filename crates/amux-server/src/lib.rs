@@ -7,6 +7,7 @@
 pub mod highlight;
 pub mod api;
 pub mod backend;
+pub mod bridge;
 mod cargo_target_guard;
 pub mod config;
 mod fanout_retirement;
@@ -682,6 +683,10 @@ async fn async_main() {
     // unset — see runtime_jobs::telegram_poll's module doc for why polling,
     // not a webhook).
     drop(runtime_jobs::telegram_poll::spawn(state.clone()));
+    // The chat bridge (bridge/mod.rs): replies back to the chat, and Discord's
+    // channel reads. WhatsApp and Slack arrive by webhook (api/bridge.rs).
+    drop(bridge::spawn(state.clone()));
+    drop(bridge::adapters::spawn_discord(state.clone()));
     // Auto-relay: send session replies back to Telegram when linked sessions respond
     // to Telegram-routed messages. Works for all workers without per-session configuration.
     drop(runtime_jobs::telegram_relay::spawn(state.clone()));

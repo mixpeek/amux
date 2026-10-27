@@ -10656,3 +10656,67 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
     z-index: 4; min-height: 44px; min-width: 44px; border-radius: var(--radius-pill); box-shadow: var(--shadow-lg); }
   .office-panel-open .office-panel-fab { display: none; }
 }
+
+/* ── Messages, Slack-grade (2026-10-27): threads, actions, reactions, edits,
+   previews, voice notes, pictures. ─────────────────────────────────────── */
+.cv-post { position:relative; border-radius:var(--radius-md); }
+.cv-post:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
+.cv-acts { position:absolute; top:-12px; right:var(--space-2); display:none; gap:2px; padding:2px; background:var(--card-bg, var(--bg));
+  border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-md); z-index:2; }
+.cv-post:hover .cv-acts, .cv-post:focus-within .cv-acts { display:flex; }
+.cv-acts button { min-width:30px; height:28px; border:none; background:none; border-radius:var(--radius-sm); cursor:pointer; font-size:var(--fs-lg); color:var(--text); }
+.cv-acts button:hover { background:color-mix(in srgb, var(--text) 10%, transparent); }
+.cv-reacts { display:flex; flex-wrap:wrap; gap:var(--space-1); margin-top:var(--space-1); }
+.cv-react { height:24px; padding:0 var(--space-1-5); border:1px solid var(--border); border-radius:var(--radius-xl); background:none;
+  color:var(--text); font-size:var(--fs-sm); cursor:pointer; }
+.cv-react.mine { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); }
+.cv-thread-line { display:inline-flex; align-items:center; gap:var(--space-1-5); margin-top:var(--space-1); padding:2px var(--space-1-5);
+  border:1px solid transparent; border-radius:var(--radius-md); background:none; color:var(--accent); font-size:var(--fs-sm); font-weight:600; cursor:pointer; }
+.cv-thread-line:hover { border-color:var(--border); background:color-mix(in srgb, var(--text) 5%, transparent); }
+.cv-thread-line .cv-av { width:18px; height:18px; flex-basis:18px; font-size:var(--fs-3xs); }
+.cv-thread-last { color:var(--dim); font-weight:400; }
+.cv-edited { font-size:var(--fs-3xs); color:var(--dim); }
+.cv-deleted { color:var(--dim); font-style:italic; font-size:var(--fs-lg); }
+.cv-edit { width:100%; min-height:60px; font:inherit; box-sizing:border-box; }
+.cv-edit-acts { display:flex; gap:var(--space-1-5); justify-content:flex-end; margin-top:var(--space-1); }
+.cv-snippet { font-size:var(--fs-sm); color:var(--dim); margin-top:2px; }
+.cv-snippet mark { background:color-mix(in srgb, var(--accent) 30%, transparent); color:var(--text); border-radius:2px; }
+.cv-flash { animation:cvflash 1.6s ease-out; }
+@keyframes cvflash { 0% { background:color-mix(in srgb, var(--accent) 25%, transparent); } 100% { background:transparent; } }
+.cv-preview { display:flex; gap:var(--space-2-5); max-width:520px; margin-top:var(--space-1-5); padding:var(--space-2); border-left:3px solid var(--border);
+  border-radius:var(--radius-sm); background:color-mix(in srgb, var(--text) 3%, transparent); color:var(--text); text-decoration:none; overflow:hidden; }
+.cv-preview img { width:72px; height:72px; object-fit:cover; border-radius:var(--radius-sm); flex:0 0 72px; }
+.cv-preview-site { font-size:var(--fs-3xs); color:var(--dim); }
+.cv-preview-title { font-weight:600; font-size:var(--fs-md); color:var(--accent); }
+.cv-preview-desc { font-size:var(--fs-sm); color:var(--dim); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.cv-audio { display:flex; align-items:center; gap:var(--space-2); margin-top:var(--space-1); }
+.cv-audio audio { height:34px; max-width:100%; }
+.cv-audio-len { font-size:var(--fs-xs); color:var(--dim); }
+.cv-mic { min-width:44px; min-height:44px; }
+.cv-mic.recording { color:var(--red, #f85149); border-color:currentColor; }
+.cv-voice-bar { display:flex; align-items:center; gap:var(--space-2); padding:0 var(--space-4) var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
+.cv-rec-dot { width:9px; height:9px; border-radius:50%; background:var(--red, #f85149); animation:cvpulse 1s infinite; }
+@keyframes cvpulse { 50% { opacity:0.3; } }
+.cv-av-img { object-fit:cover; padding:0; }
+.cv-me { border:none; background:none; padding:0; cursor:pointer; display:inline-flex; margin-right:var(--space-1-5); }
+.cv-me .cv-av { width:26px; height:26px; flex-basis:26px; }
+.cv-thread { width:min(420px, 40vw); flex:0 0 auto; display:flex; flex-direction:column; min-height:0; border-left:1px solid var(--border); }
+.cv-thread[hidden] { display:none; }
+.cv-thread .cv-posts { flex:1; overflow-y:auto; }
+.cv-thread-close { min-width:36px; }
+.cv-more { display:none; }
+.cv-sheet { display:flex; flex-direction:column; gap:var(--space-1); }
+.cv-sheet-item { justify-content:flex-start; gap:var(--space-2); min-height:44px; width:100%; font-size:var(--fs-lg); }
+@media (max-width: 600px) {
+  /* Phones: no hover toolbar (it appeared on tap and moved the post); a ⋯ button opens the same actions. */
+  .cv-acts, .cv-post:hover .cv-acts, .cv-post:focus-within .cv-acts { display:none; }
+  .cv-more { display:inline-flex; align-items:center; justify-content:center; position:absolute; top:0; right:0; min-width:44px; min-height:44px;
+    border:none; background:none; color:var(--dim); font-size:var(--fs-2xl); cursor:pointer; }
+  .cv-post-main { padding-right:40px; }
+  /* A thread takes the screen on a phone, with its own close button. */
+  #messages-view.cv-thread-open #cv-pane { display:none !important; }
+  .cv-thread { width:100%; border-left:none; }
+  .cv-thread-close { min-width:44px; min-height:44px; }
+  .cv-voice-bar { padding:0 var(--space-2-5) var(--space-1); }
+  .cv-preview img { width:56px; height:56px; flex-basis:56px; }
+}

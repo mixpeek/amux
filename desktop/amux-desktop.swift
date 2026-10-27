@@ -462,6 +462,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // The Record tab drives the native recorder (amux-recorder.swift).
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxRecorder")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxRecorder")
+        // Messages notifications (app.js _cvMaybeNotify): native, so they show
+        // when the window is hidden and click through to the conversation.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotify")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotify")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -475,6 +479,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "amuxNotify" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any] {
+                app?.notifyMessage(d)
+            }
+            return
+        }
         if message.name == "amuxRecorder" {
             // Only a page on this tab's own server drives the recorder.
             if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false {
@@ -1531,6 +1541,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
     }
 
+    /// A Messages post addressed to the owner (the page decided; it only asks
+    /// for one when the owner is not already looking at that conversation).
+    func notifyMessage(_ d: [String: Any]) {
+        guard canNotify else { return }
+        let content = UNMutableNotificationContent()
+        content.title = (d["title"] as? String) ?? "amux"
+        content.body = (d["body"] as? String) ?? ""
+        content.sound = .default
+        let hash = (d["url"] as? String) ?? "#view=messages"
+        content.userInfo = ["hash": hash.hasPrefix("#") ? hash : "#view=messages"]
+        content.threadIdentifier = (d["tag"] as? String) ?? "messages"
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+        NSLog("amux-desktop: verdict=message_notified tag=%@", content.threadIdentifier)
+    }
+
     func notify(_ item: [String: Any]) {
         guard canNotify else { return }
         let content = UNMutableNotificationContent()
@@ -1551,6 +1577,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         NSApp.activate(ignoringOtherApps: true)
+        if let hash = response.notification.request.content.userInfo["hash"] as? String, hash.hasPrefix("#messages=") || hash == "#view=messages" {
+            openHash(hash)
+            completionHandler()
+            return
+        }
         if response.notification.request.content.userInfo["recorder_meeting"] != nil {
             meetingNotificationClicked()   // amux-recorder.swift
             completionHandler()
@@ -1558,6 +1589,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
         openCard((response.notification.request.content.userInfo["card"] as? String) ?? "")
         completionHandler()
+    }
+
+    /// Open a dashboard hash in the key window, or a new one.
+    func openHash(_ hash: String) {
+        let safe = hash.allSatisfy { $0.isLetter || $0.isNumber || "#=&:-_.%|@".contains($0) }
+        guard safe else { return }
+        if let c = keyController, let w = c.window, w.isVisible || w.isMiniaturized {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
+            c.webView.evaluateJavaScript("location.hash = '\(hash)'") { [weak self] _, err in
+                if err != nil { self?.openWindow(url: self?.url(withHash: hash), frame: nil) }
+            }
+        } else {
+            openWindow(url: url(withHash: hash), frame: nil)
+        }
     }
 
     /// A "needs you" notification opens its card on the board. An open window

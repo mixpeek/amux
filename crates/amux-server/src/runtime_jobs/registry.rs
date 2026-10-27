@@ -124,6 +124,8 @@ pub mod ids {
     pub const TAILNET_WATCH: &str = "tailnet-watch";
     pub const TELEGRAM_POLL: &str = "telegram-poll";
     pub const TELEGRAM_RELAY: &str = "telegram-relay";
+    pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
+    pub const BRIDGE_DISCORD: &str = "bridge-discord";
     pub const MESSAGE_CAPTURE: &str = "message-capture";
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
@@ -183,6 +185,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::TAILNET_WATCH,
     ids::TELEGRAM_POLL,
     ids::TELEGRAM_RELAY,
+    ids::BRIDGE_OUTBOUND,
+    ids::BRIDGE_DISCORD,
     ids::MESSAGE_CAPTURE,
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
@@ -647,7 +651,7 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::TELEGRAM_RELAY,
         name: "Telegram relay",
-        purpose: "Auto-relays session replies back to Telegram when a session responds to a Telegram-routed message; works for all sessions without per-session configuration.",
+        purpose: "Retired by the chat bridge, which sends replies from the worker's transcript; with AMUX_TELEGRAM_SCREEN_RELAY=1 it reads linked workers' screens and relays new text, the old way.",
         env: &[EnvControl {
             var: "TELEGRAM_BOT_TOKEN",
             effect: "unset = relay idles; set = relays enabled",
@@ -655,6 +659,26 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/telegram/status"),
+    },
+    Doc {
+        id: ids::BRIDGE_OUTBOUND,
+        name: "Chat bridge replies",
+        purpose: "Sends workers' replies to bridged WhatsApp, Slack, Telegram and Discord conversations, holds replies into a conversation with someone other than the owner for approval, and retries failed sends.",
+        env: &[],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_DISCORD,
+        name: "Discord channel reads",
+        purpose: "Reads the Discord channels in DISCORD_CHANNELS every few seconds and files new messages through the chat bridge; idles while no bot token is set.",
+        env: &[EnvControl {
+            var: "DISCORD_BOT_TOKEN",
+            effect: "unset = idles, checking every 30 s; set = reads every 4 s",
+            off: None,
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
     },
     Doc {
         id: ids::MAC_HEALTH,

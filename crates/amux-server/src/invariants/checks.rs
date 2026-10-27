@@ -1085,6 +1085,16 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // Messages (0137): api/conversations.rs writes epoch milliseconds.
+    ("conversation_posts", "edited_at", true),
+    ("conversation_posts", "deleted_at", true),
+    ("profiles", "updated_at", true),
+    ("link_previews", "fetched_at", true),
+    // The chat bridge (0136): bridge/mod.rs writes epoch milliseconds.
+    ("bridge_links", "linked_at", true),
+    ("bridge_inbound", "received_at", true),
+    ("bridge_outbound", "created_at", true),
+    ("bridge_outbound", "sent_at", true),
     // Social posts (0134): api/social.rs now() is chrono timestamp(), epoch seconds.
     ("social_posts", "posted_at", false),
     ("social_post_metrics", "fetched_at", false),

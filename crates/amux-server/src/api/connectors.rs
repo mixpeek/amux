@@ -83,6 +83,11 @@ enum Auth {
     ApiKey {
         key_env: &'static str,
     },
+    /// Several keys pasted together, no browser grant (a chat bridge bot:
+    /// a token plus the ids and secrets its webhook needs).
+    ApiKeys {
+        keys: &'static [&'static str],
+    },
     OAuth2 {
         client_id_env: &'static str,
         client_secret_env: &'static str,
@@ -222,6 +227,41 @@ const REGISTRY: &[Provider] = &[
         setup_note: "Create a Slack app, add the redirect URI below, and paste its client id + secret.",
         docs: "https://api.slack.com/apps",
         test_url: "https://slack.com/api/auth.test",
+    },
+    // The chat bridge's bots (bridge/adapters.rs): conversations linked to
+    // workers and groups through messages.
+    Provider {
+        id: "whatsapp",
+        label: "WhatsApp",
+        category: "Chat",
+        auth: Auth::ApiKeys {
+            keys: &["WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"],
+        },
+        setup_note: "Create a Meta app with the WhatsApp product (developers.facebook.com). Paste the access token, the phone number id, the app secret, and a verify token you choose. Set the webhook to <public amux URL>/api/bridge/hook/whatsapp with that verify token and subscribe to messages. Then message the number and send /link <worker or group>.",
+        docs: "https://developers.facebook.com/docs/whatsapp/cloud-api/get-started",
+        test_url: "",
+    },
+    Provider {
+        id: "slack-bot",
+        label: "Slack bot",
+        category: "Chat",
+        auth: Auth::ApiKeys {
+            keys: &["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
+        },
+        setup_note: "In your Slack app, add the chat:write, im:history and channels:history bot scopes, install it, and paste the bot token and signing secret. Point Event Subscriptions at <public amux URL>/api/bridge/hook/slack (message.im, message.channels). Then /link <worker or group> in a channel or DM.",
+        docs: "https://api.slack.com/apps",
+        test_url: "https://slack.com/api/auth.test",
+    },
+    Provider {
+        id: "discord",
+        label: "Discord",
+        category: "Chat",
+        auth: Auth::ApiKeys {
+            keys: &["DISCORD_BOT_TOKEN", "DISCORD_CHANNELS"],
+        },
+        setup_note: "Create a bot at discord.com/developers, enable the Message Content intent, invite it to your server, and paste its token and the channel ids to watch (comma separated; prefix a DM channel with dm:). amux reads them every few seconds, so no public URL is needed. Then /link <worker or group> in the channel.",
+        docs: "https://discord.com/developers/docs/intro",
+        test_url: "",
     },
     Provider {
         id: "telegram",
@@ -370,7 +410,7 @@ struct Def {
 impl From<&'static Provider> for Def {
     fn from(p: &'static Provider) -> Def {
         let (kind, authorize_url, token_url, scopes) = match p.auth {
-            Auth::ApiKey { .. } => ("api_key", String::new(), String::new(), String::new()),
+            Auth::ApiKey { .. } | Auth::ApiKeys { .. } => ("api_key", String::new(), String::new(), String::new()),
             Auth::OAuth2 { scopes, .. } => {
                 ("oauth2", String::new(), String::new(), scopes.to_string())
             }
@@ -479,6 +519,7 @@ fn valid_env_name(k: &str) -> bool {
 fn env_keys(p: &Provider) -> Vec<&'static str> {
     match p.auth {
         Auth::ApiKey { key_env } => vec![key_env],
+        Auth::ApiKeys { keys } => keys.to_vec(),
         Auth::OAuth2 {
             client_id_env,
             client_secret_env,
@@ -996,7 +1037,7 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
                 json!("gmail-oauth-client.json (reused)")
             };
             let (kind, oauth) = match p.auth {
-                Auth::ApiKey { .. } => ("apikey", Value::Null),
+                Auth::ApiKey { .. } | Auth::ApiKeys { .. } => ("apikey", Value::Null),
                 Auth::OAuth2 {
                     callback_path,
                     scopes,
@@ -1572,7 +1613,7 @@ async fn begin_auth(
     }
     let file_env = parse_env_file(&ctx.home.join("server.env"));
     match p.auth {
-        Auth::ApiKey { .. } => Json(json!({
+        Auth::ApiKey { .. } | Auth::ApiKeys { .. } => Json(json!({
             "ok": true,
             "auth": "apikey",
             "note": "key-only connector: paste the API key, no browser grant needed",
@@ -2438,13 +2479,19 @@ async fn test_connection_inner(
         let ok = checks.iter().all(|c| c["ok"] == true);
         return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c|c["measured"]==true),"accounts":checks})).into_response();
     }
-    let Auth::ApiKey { key_env } = p.auth else {
-        unreachable!()
+    let key_env = match p.auth {
+        Auth::ApiKey { key_env } => key_env,
+        Auth::ApiKeys { keys } => keys[0],
+        _ => unreachable!(),
     };
     let Some(key) = env_val(&file_env, key_env) else {
         return Json(json!({"ok":false,"status":"needs_credentials","measured":false}))
             .into_response();
     };
+    if p.test_url.is_empty() && id != "telegram" {
+        return Json(json!({"ok": false, "status": "untested", "measured": false,
+            "why_unmeasured": "this connector has no test endpoint; message the bot and check GET /api/bridge"})).into_response();
+    }
     let url = if id == "telegram" {
         format!("https://api.telegram.org/bot{key}/getMe")
     } else {
@@ -2715,7 +2762,7 @@ async fn mint_connector_token(
     }
     let default_scopes = match p.auth {
         Auth::OAuth2 { scopes, .. } => scopes,
-        Auth::ApiKey { .. } => {
+        Auth::ApiKey { .. } | Auth::ApiKeys { .. } => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({

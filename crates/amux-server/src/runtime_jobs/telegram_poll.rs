@@ -92,7 +92,14 @@ pub(crate) fn bot_token() -> Option<String> {
 }
 
 fn api_base(token: &str) -> String {
-    format!("https://api.telegram.org/bot{token}")
+    // AMUX_BRIDGE_TELEGRAM_BASE points the bot at a stand-in (the bridge e2e),
+    // the same knob every chat bridge adapter has.
+    let base = crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+        .get("AMUX_BRIDGE_TELEGRAM_BASE").cloned()
+        .or_else(|| std::env::var("AMUX_BRIDGE_TELEGRAM_BASE").ok())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://api.telegram.org".into());
+    format!("{}/bot{token}", base.trim_end_matches('/'))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +292,24 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
     }
 
     if let Some(session) = text.strip_prefix("/link ").map(str::trim) {
+        // Linking gives a chat a line into a worker. Once the owner's Telegram
+        // id is listed (AMUX_BRIDGE_OWNERS=telegram:<id>), only the owner can.
+        let sender = msg.get("from").and_then(|f| f.get("id")).and_then(Value::as_i64).map(|i| i.to_string()).unwrap_or_default();
+        let owners_listed = crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+            .get("AMUX_BRIDGE_OWNERS").cloned().or_else(|| std::env::var("AMUX_BRIDGE_OWNERS").ok())
+            .is_some_and(|v| v.contains("telegram:"));
+        if owners_listed && !crate::bridge::is_owner("telegram", &sender) {
+            tracing::warn!(chat_id, sender, verdict = "telegram_link_refused_not_owner", measured = true, n_considered = 1,
+                "telegram_poll: someone other than the owner tried to /link a chat");
+            if !is_group {
+                send_reply(client, chat_id, "Only the owner of this amux can link a chat.").await;
+            }
+            return;
+        }
+        if !owners_listed {
+            tracing::warn!(chat_id, sender, verdict = "telegram_link_unverified_owner", measured = true, n_considered = 1,
+                "telegram_poll: a chat was linked with no owner id listed, so anyone who finds the bot can do this; set AMUX_BRIDGE_OWNERS=telegram:<your id>");
+        }
         link_chat(
             client,
             state,
@@ -420,15 +445,14 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
             .await;
     }
 
-    let stamped = format!("[from Telegram @{who}]: {message_text}");
-    let (ok, msg) = session_verbs::send_text(
-        state,
-        &target_session,
-        &stamped,
-        true,
-        session_verbs::SendOrigin::Automation,
-    )
-    .await;
+    // Through the chat bridge (bridge/mod.rs): a durable message with a reply
+    // ref, so the worker's answer comes back by the bridge's outbound loop
+    // rather than by reading the worker's screen.
+    let _ = who;
+    let mut inbound = crate::bridge::adapters::telegram_parse(update).unwrap_or_default();
+    inbound.text = message_text.clone();
+    let ok = crate::bridge::deliver_to_worker(state, inbound, &target_session).await;
+    let msg = if ok { String::new() } else { format!("'{target_session}' is not a worker amux can deliver to") };
     if ok {
         record_routed();
     } else {

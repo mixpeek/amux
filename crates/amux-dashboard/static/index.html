@@ -2100,6 +2100,8 @@
        message log stays below as "All messages". -->
   <aside id="cv-side" aria-label="Conversations">
     <div class="cv-side-head">
+      <button type="button" class="cv-me" id="cv-me" onclick="document.getElementById('cv-me-file').click()" aria-label="Change your picture" title="Your picture (click to change)"></button>
+      <input type="file" id="cv-me-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" onchange="_cvSetAvatar(_cvMeKey(), this.files[0]); this.value=''">
       <span class="cv-side-title">Messages</span>
       <button type="button" class="cv-side-toggle" id="cv-side-toggle" onclick="_cvToggleSide()" aria-expanded="true" aria-controls="cv-side" title="Collapse the sidebar">&#xAB;</button>
     </div>
@@ -2123,7 +2125,7 @@
       </div>
       <div class="cv-head-people" id="cv-head-people"></div>
     </header>
-    <div id="cv-posts" class="cv-posts" aria-live="polite"></div>
+    <div id="cv-posts" class="cv-posts" aria-live="polite" onscroll="_cvOnScroll(this)"></div>
     <div id="cv-typing" class="cv-typing"></div>
     <div class="peek-attach-bar card-attach-bar cv-attach-bar" id="card-attach-__messages__"></div>
     <div class="cv-compose" id="cv-compose">
@@ -2132,10 +2134,29 @@
       <input type="file" id="cv-file" multiple style="display:none" onchange="_cvAttach(this.files); this.value=''">
       <textarea id="cv-input" class="input" rows="1" placeholder="Message"
         oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)" onpaste="_cvPaste(event)"></textarea>
+      <button type="button" class="btn cv-mic" id="cv-mic" onclick="_cvVoiceToggle('main')" aria-label="Record a voice note" title="Record: the words are typed for you, and the audio is attached (remove either before sending)">&#x1F3A4;</button>
       <button class="btn primary cv-send" id="cv-send" onclick="_cvSend()" aria-label="Send">&#x27A4;</button>
     </div>
+    <div class="cv-voice-bar" id="cv-voice-main" hidden></div>
     <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
   </section>
+  <!-- A thread (Slack's): the post, its replies, and a composer that reaches
+       every worker already in the thread without a fresh @mention. -->
+  <aside id="cv-thread" class="cv-thread" aria-label="Thread" hidden>
+    <header class="cv-head">
+      <button class="btn cv-thread-close" onclick="_cvCloseThread()" aria-label="Close the thread">&#x2715;</button>
+      <div class="cv-head-main"><div class="cv-head-title">Thread</div><div class="cv-head-meta" id="cv-thread-meta"></div></div>
+    </header>
+    <div id="cv-thread-posts" class="cv-posts"></div>
+    <div class="cv-compose">
+      <textarea id="cv-thread-input" class="input" rows="1" placeholder="Reply in the thread"
+        oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,160)+'px'"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_cvSendThread()}"></textarea>
+      <button type="button" class="btn cv-mic" onclick="_cvVoiceToggle('thread')" aria-label="Record a voice reply">&#x1F3A4;</button>
+      <button class="btn primary cv-send" id="cv-thread-send" onclick="_cvSendThread()" aria-label="Reply">&#x27A4;</button>
+    </div>
+    <div class="cv-voice-bar" id="cv-voice-thread" hidden></div>
+  </aside>
   <div id="msgs-log-pane">
   <!-- One wrapper for every control above the list. On a phone it is ONE row
        that scrolls sideways (Ethan, 2026-10-21: "only 1 row at bottom and one

@@ -148,12 +148,24 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Refresh health | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ? | `_costOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | in … | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Delete | `_cvDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Edit | `_cvEdit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Reply in thread | `_cvOpenThread` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_cvOpenThread` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | in  + esc(_cvFindName(p.conv)) + (p.parent_id ?  | `_cvOpenThreadOrScroll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | React  | `_cvReact` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | … … | `_cvReact` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Cancel | `_cvRenderPosts` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Save | `_cvSaveEdit` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | button | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | button | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | cv-all-item | `_cvSelect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Send | `_cvSend` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| index.html | Reply | `_cvSendThread` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js | Stop | `_cvVoiceToggle` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Record a voice note | `_cvVoiceToggle` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Record a voice reply | `_cvVoiceToggle` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Re-run | `_dbAskRerun` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Ask | `_dbAskRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ? | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -1111,6 +1123,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | index.html | Attach files | `` | onclick |
+| index.html | Change your picture | `` | onclick |
 | index.html | Clear cache | `` | onclick |
 | index.html | Clear cache | `` | onclick |
 | index.html | Close | `` | onclick |
@@ -1182,10 +1195,14 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy id  | `_copyTextWithToast` | onclick |
 | app.js | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |
 | index.html | Back to conversations | `_cvBack` | onclick |
+| index.html | Close the thread | `_cvCloseThread` | onclick |
+| app.js | Copy link | `_cvCopyLink` | onclick |
+| app.js | More actions | `_cvMore` | onclick |
 | index.html | button | `_cvToggleSec` | onclick |
 | index.html | button | `_cvToggleSec` | onclick |
 | index.html | cv-people-sec | `_cvToggleSec` | onclick |
 | index.html | Collapse the sidebar | `_cvToggleSide` | onclick |
+| app.js | Remove the audio | `_cvVoiceClear` | onclick |
 | app.js | Copy | `_dbAskCopySql` | onclick |
 | app.js | + | `_dbAskEditSql` | onclick |
 | app.js | Query | `_dbAskToQuery` | onclick |

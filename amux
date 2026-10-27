@@ -1616,25 +1616,29 @@ USAGE
 # X-Amux-Session (api/conversations.rs).
 cmd_post() {
   local conv="${1:-}"
-  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [text]   (or text on stdin)
+  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [--thread <post id>] [text]   (or text on stdin)
   From a worker, p:<person> posts in your own thread as you, @mentioning them."
   shift
   [[ "$conv" == \#* ]] && conv="g:${conv#\#}"
+  # --thread <id>: reply in that post's thread (a Messages thread, like Slack's).
+  local thread=""
+  if [[ "${1:-}" == "--thread" ]]; then thread="${2:-}"; shift 2 || true; [[ "$thread" =~ ^[0-9]+$ ]] || die "--thread takes a post id"; fi
   local text
   if [[ $# -eq 0 || "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then text=$(cat); else text="$*"; fi
   [[ -n "${text//[[:space:]]/}" ]] || die "nothing to post"
   local api="${AMUX_API:-https://localhost:8824}" enc out code
   enc=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=":"))' "$conv")
   out=$(printf '%s' "$text" | _curl -sk -m 20 -w $'\n%{http_code}' -X POST \
-        -H 'Content-Type: text/plain' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+        -H 'Content-Type: text/plain' -H "X-Amux-Session: ${AMUX_SESSION:-}" ${thread:+-H "X-Amux-Thread: $thread"} \
         --data-binary @- "$api/api/conversations/$enc/posts") || true
   code="${out##*$'\n'}"; out="${out%$'\n'*}"
   case "$code" in
-    2??) OUT="$out" CONV="$conv" python3 -c 'import json,os
+    2??) OUT="$out" CONV="$conv" THREAD="$thread" python3 -c 'import json,os
 try: d=json.loads(os.environ["OUT"])
 except Exception: d={}
 to=[m.split(":",1)[1] for m in d.get("mentions",[]) if m.startswith("person:")]
-print("posted to %s as %s%s" % (d.get("conv") or os.environ["CONV"], d.get("author") or "unknown author", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
+th=os.environ.get("THREAD")
+print("posted to %s as %s%s%s" % (d.get("conv") or os.environ["CONV"], d.get("author") or d.get("author_name") or "unknown author", (" (thread %s)" % th) if th else "", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
     *)   echo "not posted (HTTP ${code:-none}): $out" >&2; return 1 ;;
   esac
 }

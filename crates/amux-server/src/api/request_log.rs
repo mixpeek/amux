@@ -2963,6 +2963,12 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/conversations/{conv}/posts", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/conversations/{conv}/read", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/{conv}/typing", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/posts/{id}", methods: &["PATCH", "DELETE"] },
+    RouteEntry { path: "/api/conversations/posts/{id}/reactions", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/unfurl", methods: &["GET"] },
+    RouteEntry { path: "/api/profiles", methods: &["GET"] },
+    RouteEntry { path: "/api/profiles/avatar/{name}", methods: &["GET"] },
+    RouteEntry { path: "/api/profiles/{key}/avatar", methods: &["POST"] },
     // -- saved messages / habits / token-baseline reset (AMUX-2871)
     RouteEntry {
         path: "/api/saved-messages",
@@ -3006,6 +3012,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/land/{id}",
         methods: &["DELETE"],
     },
+    // The chat bridge (api/bridge.rs).
+    RouteEntry { path: "/api/bridge", methods: &["GET"] },
+    RouteEntry { path: "/api/bridge/links", methods: &["POST"] },
+    RouteEntry { path: "/api/bridge/links/{platform}/{conversation}", methods: &["DELETE"] },
+    RouteEntry { path: "/api/bridge/outbound/{id}", methods: &["GET"] },
+    RouteEntry { path: "/api/bridge/outbound/{id}/approve", methods: &["POST"] },
+    RouteEntry { path: "/api/bridge/hook/whatsapp", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/bridge/hook/slack", methods: &["POST"] },
     // The owner's approval of an owner-gated change (scripts/land_gate.py).
     RouteEntry {
         path: "/api/land/approvals",

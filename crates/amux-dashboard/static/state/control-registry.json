@@ -1062,6 +1062,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvDelete": {
+      "kind": "command._cvDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvEdit": {
+      "kind": "command._cvEdit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvEnter": {
       "kind": "command._cvEnter",
       "feedback_required": true,
@@ -1086,6 +1098,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvOnLive": {
+      "kind": "command._cvOnLive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvOpenThreadOrScroll": {
+      "kind": "command._cvOpenThreadOrScroll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvPaste": {
       "kind": "command._cvPaste",
       "feedback_required": true,
@@ -1098,8 +1122,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvReact": {
+      "kind": "command._cvReact",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvResume": {
       "kind": "command._cvResume",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSaveEdit": {
+      "kind": "command._cvSaveEdit",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1118,6 +1154,36 @@
     },
     "_cvSend": {
       "kind": "command._cvSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSendThread": {
+      "kind": "command._cvSendThread",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSetAvatar": {
+      "kind": "command._cvSetAvatar",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvUploadVoice": {
+      "kind": "command._cvUploadVoice",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvVoiceDone": {
+      "kind": "command._cvVoiceDone",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvVoiceToggle": {
+      "kind": "command._cvVoiceToggle",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

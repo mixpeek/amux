@@ -51164,6 +51164,11 @@ function connectSSE() {
           _fireAmuxAlert(a);
           if (a.type === 'steering_delivered' && a.session === peekSession) { if (_peekTab === 'steering') _steeringRender(); else _steeringUpdateBadge(); }
         }
+      } else if (msg.type === 'state' && msg.payload && msg.payload.entity_type
+                 && msg.payload.entity_type.kind === 'other' && msg.payload.entity_type.data === 'conversation') {
+        let ev = {};
+        try { ev = JSON.parse(msg.payload.entity_id || '{}'); } catch (_) { ev = {}; }
+        _cvOnLive(ev);
       } else if (msg.type === 'typing') {
         _typingOnEvent(msg);
       } else if (msg.type === 'invalidate') {
@@ -54516,22 +54521,26 @@ async function loadTeamSection() {
   } catch(e) {}
 }
 
-// A person's picture: the chosen image is cropped to a centred square and
-// scaled to 256px before upload, so any photo fits the server's 1 MB limit.
+// A picture as a centred square, 256px PNG, so any photo fits the server's
+// 1 MB limit. null when the browser cannot read the image.
+async function _squarePng(file) {
+  try {
+    const img = await createImageBitmap(file);
+    const side = Math.min(img.width, img.height), out = 256;
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = out;
+    canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, out, out);
+    return await new Promise(res => canvas.toBlob(res, 'image/png'));
+  } catch (e) { return null; }
+}
+
+// A person's picture, set from Team settings.
 function pickMemberPhoto(email) {
   const input = document.createElement('input');
   input.type = 'file'; input.accept = 'image/png,image/jpeg,image/webp,image/gif';
   input.onchange = async () => {
     const file = input.files && input.files[0];
     if (!file) return;
-    let blob = null;
-    try {
-      const img = await createImageBitmap(file);
-      const side = Math.min(img.width, img.height), out = 256;
-      const canvas = document.createElement('canvas'); canvas.width = canvas.height = out;
-      canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, out, out);
-      blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-    } catch (e) {}
+    const blob = await _squarePng(file);
     if (!blob) { showToast('Could not read that image'); return; }
     const r = await fetch(API + '/api/avatars/' + encodeURIComponent(email), {method: 'PUT',
       headers: _authHeaders({'Content-Type': 'image/png'}), body: blob}).catch(() => null);
@@ -54977,6 +54986,37 @@ async function _handleDeeplink(hash) {
   // owner-gated path (scripts/land_gate.py, scripts/review-tiers.txt). The
   // link is in the needsyou card the gate files. The POST carries the owner
   // bearer; the server refuses any request with a worker identity.
+  // #bridge-approve=<message id> — a worker's reply into a WhatsApp, Slack,
+  // Telegram or Discord conversation that includes someone other than the
+  // owner waits for this (bridge/mod.rs). The link is in its needsyou card.
+  // #messages=<conv>[&post=<id>] — a Messages conversation, scrolled to a
+  // post or with its thread open (notifications and copied links).
+  if (hash && hash.startsWith('#messages=')) {
+    const params = new URLSearchParams(hash.slice(1));
+    const conv = params.get('messages'), post = Number(params.get('post') || 0);
+    if (conv) {
+      switchView('messages');
+      setTimeout(() => { _cvSelect(conv); if (post) _cvOpenThreadOrScroll(conv, post); }, 50);
+    }
+    return;
+  }
+  if (hash && hash.startsWith('#bridge-approve=')) {
+    const id = decodeURIComponent(hash.slice('#bridge-approve='.length)).trim();
+    try { history.replaceState({}, '', location.pathname + location.search); } catch(e) {}
+    try {
+      const r = await fetch(API + '/api/bridge/outbound/' + encodeURIComponent(id), { headers: _authHeaders() });
+      const d = await r.json();
+      if (!r.ok) { showAlert('No reply is waiting under ' + id + '.'); return; }
+      if (d.state !== 'held') { showToast(d.state === 'sent' ? 'Already sent' : 'Reply is ' + d.state); return; }
+      const body = '<div style="text-align:left">A worker wants to send this into a ' + esc(d.platform) + ' conversation that includes someone other than you:</div>'
+        + '<div style="text-align:left;white-space:pre-wrap;margin:var(--space-2) 0;max-height:40vh;overflow:auto">' + esc(d.body || '') + '</div>';
+      if (!(await showFormModal('Send this reply?', body, 'Send'))) return;
+      const a = await fetch(API + '/api/bridge/outbound/' + encodeURIComponent(id) + '/approve', { method: 'POST', headers: _authHeaders() });
+      const b = await a.json().catch(() => ({}));
+      showToast(a.ok ? 'Approved. It is being sent.' : ('Not sent: ' + (b.error || a.status)));
+    } catch (e) { showToast('Could not reach the reply: ' + e.message); }
+    return;
+  }
   if (hash && hash.startsWith('#land-approve=')) {
     const pid = decodeURIComponent(hash.slice('#land-approve='.length)).trim();
     try { history.replaceState({}, '', location.pathname + location.search); } catch(e) {}
@@ -66242,10 +66282,51 @@ function _avatarUrl(key) {
   return email && _avatars[email] ? _authUrl(API + '/api/avatars/' + encodeURIComponent(email) + '?v=' + _avatars[email]) : '';
 }
 function _cvAvatar(name, worker, key) {
+  // A picture set in Messages (profiles: workers, and an owner with no
+  // email), else a person's own picture (avatars), else initial or robot.
+  const prof = key && _cvProfiles[key];
+  if (prof && prof.avatar) return '<img class="cv-av cv-av-img" alt="" loading="lazy" src="' + esc(_authUrl(API + prof.avatar)) + '">';
   if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
   const pic = _avatarUrl(key);
   if (pic) return '<img class="cv-av cv-av-img" src="' + esc(pic) + '" alt="" title="' + esc(name || '') + '">';
   return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
+}
+// Every author's picture this page has seen (posts responses carry them).
+const _cvProfiles = {};
+async function _cvLoadProfiles() {
+  try { const d = await (await fetch(API + '/api/profiles')).json(); (d.profiles || []).forEach(p => { _cvProfiles[p.key] = p; }); } catch (e) {}
+  _cvRenderMe();
+}
+function _cvRenderMe() {
+  const b = document.getElementById('cv-me'); if (!b) return;
+  const me = (_cv.list && _cv.list.me) || {};
+  b.innerHTML = _cvAvatar(me.name || 'you', false, me.key);
+}
+async function _cvSetAvatar(key, file) {
+  if (!file) return;
+  // A click before the conversation list arrived: load it, never drop the pick.
+  if (!key) { await _cvLoadList(); key = _cvMeKey(); }
+  if (!key) { showToast('Not saved: amux did not say who you are yet; try again', 'error'); return; }
+  // A person with an email has one picture, the Team one (api/avatars.rs);
+  // profiles hold the rest: workers, and a local owner with no email.
+  const email = /^person:[^@\s]+@[^@\s]+$/.test(key) ? key.slice(7).toLowerCase() : '';
+  if (email) {
+    const blob = await _squarePng(file);
+    if (!blob) { showToast('Could not read that image', 'error'); return; }
+    const r = await fetch(API + '/api/avatars/' + encodeURIComponent(email), { method: 'PUT', headers: _authHeaders({ 'Content-Type': 'image/png' }), body: blob }).catch(() => null);
+    if (!r || !r.ok) { const d = r ? await r.json().catch(() => ({})) : {}; showToast(d.error || 'Picture not saved', 'error'); return; }
+    await _loadAvatars();
+    _cvRenderMe(); _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+    showToast('Picture saved');
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) { showToast('A picture is at most 2 MB', 'error'); return; }
+  const r = await fetch(API + '/api/profiles/' + encodeURIComponent(key) + '/avatar', { method: 'POST', headers: { 'Content-Type': file.type }, body: file });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast(d.error || 'Picture not saved', 'error'); return; }
+  _cvProfiles[key] = Object.assign(_cvProfiles[key] || { key }, { avatar: d.avatar });
+  _cvRenderMe(); _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+  showToast('Picture saved');
 }
 function _cvMeKey() { return _cv.list && _cv.list.me ? _cv.list.me.key : ''; }
 function _cvFindName(conv) {
@@ -66264,6 +66345,7 @@ async function _cvLoadList() {
     _cv.list = await r.json();
   } catch (e) { return; }
   _cvRenderBadge();
+  _cvRenderMe();
   if (_cvViewOn()) _cvRenderSide();
 }
 function _cvRenderBadge() {
@@ -66397,6 +66479,7 @@ function _cvEnter() {
 }
 function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
+  if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
   if (!auto) _cv.picked = true;
   if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
@@ -66421,7 +66504,10 @@ function _cvSelect(sel, auto) {
   const inp = document.getElementById('cv-input');
   inp.placeholder = 'Message ' + _cvFindName(sel) + (_cvMobile() ? '' : sel[0] === 'p' ? ' (use @ to give a worker a task)' : ' (use @ to mention a person or worker)');
   _cvPoll(true);
-  _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel) _cvPoll(false); }, 2500);
+  // Live events (_cvOnLive) carry every post as it lands; this poll is the
+  // fallback for a stream that is down (and for invited members, who get the
+  // wake-up but not the event).
+  _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel && (!_liveSSE || Date.now() - (_cv.liveAt || 0) > 15000)) _cvPoll(false); }, 2500);
   if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
 }
 function _cvFit() {
@@ -66444,7 +66530,13 @@ async function _cvPoll(full) {
   } catch (e) { return; }
   if (sel !== _cv.sel) return;
   const hadInfo = !!_cv.info;
+  // Whether older history exists comes from a FULL page: an incremental page
+  // (after=) is usually empty and would say "nothing older", disarming
+  // scroll-up loading.
+  const hadMore = _cv.info && _cv.info.has_more;
   _cv.info = d;
+  if (!full) _cv.info.has_more = hadMore;
+  Object.assign(_cvProfiles, d.profiles || {});
   // Typing "@" before the member list arrived left the picker empty; offer
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
@@ -66471,6 +66563,14 @@ function _cvRenderHead(sel, d) {
       (g === 'general' ? 'Everyone with workspace access' : 'Everything in the ' + g + ' group');
   } else if (sel.indexOf('w:') === 0) {
     meta.textContent = 'Messages here go to ' + sel.slice(2) + '. It replies here. ' + ppl.length + ' people can read this.';
+    // The owner can give a worker its picture from its thread.
+    if (_cvMeKey() === 'person:owner') {
+      const wkey = 'worker:' + sel.slice(2);
+      document.getElementById('cv-head-people').innerHTML = '<label class="cv-me" title="Set ' + esc(sel.slice(2)) + '\'s picture">'
+        + _cvAvatar(sel.slice(2), true, wkey) + '<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" '
+        + 'data-key="' + esc(wkey) + '" onchange="_cvSetAvatar(this.dataset.key, this.files[0]); this.value=\'\'"></label>';
+      return;
+    }
   } else {
     meta.textContent = 'Direct message';
   }
@@ -66528,15 +66628,284 @@ function _cvDelivHtml(p) {
   });
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
 }
-function _cvPostHtml(p, showConv) {
+const _CV_QUICK = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2764\uFE0F', '\u{1F602}'];
+function _cvPostHtml(p, showConv, inThread) {
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
+  const mine = p.author_key === _cvMeKey();
+  const owner = _cvMeKey() === 'person:owner';
+  const real = typeof p.id === 'number';
+  const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
+    : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
+  const reacts = Object.entries(p.reactions || {}).map(([e, who]) => '<button type="button" class="cv-react' + ((who || []).includes(_cvMeKey()) ? ' mine' : '')
+    + '" title="' + esc((who || []).map(k => k.replace(/^(person|worker):/, '')).join(', ')) + '" onclick="_cvReact(' + p.id + ',this.dataset.e)" data-e="' + esc(e) + '">'
+    + esc(e) + ' ' + (who || []).length + '</button>').join('');
+  const thread = !inThread && p.reply_count ? '<button type="button" class="cv-thread-line" onclick="_cvOpenThread(' + p.id + ')">'
+    + (p.repliers || []).slice(0, 3).map(n => _cvAvatar(n, false, null)).join('') + '<span>' + p.reply_count + (p.reply_count === 1 ? ' reply' : ' replies') + '</span>'
+    + (p.last_reply_ts ? '<span class="cv-thread-last">Last reply ' + esc(new Date(p.last_reply_ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) + '</span>' : '') + '</button>' : '';
+  const acts = real && !p.deleted && !p.pending ? '<div class="cv-acts" role="toolbar" aria-label="Message actions">'
+    + _CV_QUICK.slice(0, 3).map(e => '<button type="button" title="React ' + e + '" aria-label="React ' + e + '" onclick="_cvReact(' + p.id + ',\'' + e + '\')">' + e + '</button>').join('')
+    + (!inThread ? '<button type="button" title="Reply in thread" aria-label="Reply in thread" onclick="_cvOpenThread(' + p.id + ')">&#x1F4AC;</button>' : '')
+    + '<button type="button" title="Copy link" aria-label="Copy link" onclick="_cvCopyLink(' + p.id + ',' + (p.parent_id || 0) + ')">&#x1F517;</button>'
+    + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
+    + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
+    + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
   return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker, p.author_key) + '<div class="cv-post-main"><div class="cv-post-head">' +
-    '<span class="cv-post-who">' + esc(p.author_name) + (p.author_key === _cvMeKey() ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
+    '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
-    (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
+    (p.edited_at && !p.deleted ? '<span class="cv-edited" title="' + esc(new Date(p.edited_at).toLocaleString()) + '">(edited)</span>' : '') +
+    (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvOpenThreadOrScroll(this.dataset.cv,' + (p.parent_id || p.id) + ')">in ' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' (thread)' : '') + '</span>' : '') +
     (p.pending ? '<span class="cv-post-tag">Queued: sends when you are back online</span>' : p.tag ? '<span class="cv-post-tag">' + esc(p.tag) + '</span>' : '') +
-    '</div><div class="cv-post-body cv-md">' + _cvBodyHtml(p) + '</div>' + _cvDelivHtml(p) + '</div></div>';
+    '</div>' + body + (p.snippet ? '<div class="cv-snippet">' + esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') + '</div>' : '')
+    + (reacts ? '<div class="cv-reacts">' + reacts + '</div>' : '') + _cvDelivHtml(p) + thread + '</div>' + acts + '</div>';
+}
+// An audio note plays in place, with its transcript.
+function _cvAttachHtml(p) {
+  return (p.attachments || []).map(a => {
+    if (a.kind !== 'audio' || !a.path) return '';
+    const src = _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(a.path));
+    return '<div class="cv-audio"><audio controls preload="none" src="' + esc(src) + '"></audio>'
+      + (a.dur_ms ? '<span class="cv-audio-len">' + esc(_recorderClock(a.dur_ms)) + '</span>' : '') + '</div>';
+  }).join('');
+}
+// Link previews (api/conversations.rs unfurl): the first two web links.
+const _cvUnfurls = {};
+function _cvLinks(p) {
+  const out = [];
+  String(p.body || '').replace(/https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?]/g, u => { if (!out.includes(u) && out.length < 2 && u.indexOf(location.host) < 0) out.push(u); return u; });
+  return out;
+}
+function _cvPreviewHtml(p) {
+  return _cvLinks(p).map(u => {
+    const v = _cvUnfurls[u];
+    if (v === undefined) { _cvUnfurls[u] = null; _cvFetchUnfurl(u); return ''; }
+    if (!v || !(v.title || v.description)) return '';
+    return '<a class="cv-preview" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">'
+      + (v.image ? '<img alt="" loading="lazy" referrerpolicy="no-referrer" src="' + esc(v.image) + '">' : '')
+      + '<div><div class="cv-preview-site">' + esc(v.site || '') + '</div><div class="cv-preview-title">' + esc(v.title || u) + '</div>'
+      + (v.description ? '<div class="cv-preview-desc">' + esc(String(v.description).slice(0, 220)) + '</div>' : '') + '</div></a>';
+  }).join('');
+}
+async function _cvFetchUnfurl(u) {
+  try {
+    const d = await (await fetch(API + '/api/conversations/unfurl?url=' + encodeURIComponent(u))).json();
+    _cvUnfurls[u] = d;
+    if (d && (d.title || d.description)) { _cvRenderPosts(false); if (_cv.thread) _cvRenderThread(); }
+  } catch (e) { _cvUnfurls[u] = false; }
+}
+// On a phone the actions open as a sheet from the post's ⋯ button: a hover
+// toolbar appearing on tap shifts the post under the finger.
+async function _cvMore(btn) {
+  const acts = btn.parentElement.querySelector('.cv-acts'); if (!acts) return;
+  const items = [...acts.querySelectorAll('button')];
+  const html = '<div class="cv-sheet">' + items.map((b, i) => '<button type="button" class="btn cv-sheet-item" data-i="' + i + '">'
+    + b.innerHTML + ' <span>' + esc(b.getAttribute('aria-label') || '') + '</span></button>').join('') + '</div>';
+  const chosen = new Promise(resolve => {
+    setTimeout(() => document.querySelectorAll('.cv-sheet-item').forEach(el => el.onclick = () => { resolve(Number(el.dataset.i)); _modalClose(false); }), 0);
+    showFormModal('Message', html, 'Close').then(() => resolve(-1));
+  });
+  const i = await chosen;
+  if (i >= 0 && items[i]) items[i].click();
+}
+function _cvFindPost(id) {
+  return _cv.posts.find(p => p.id === id) || (_cv.thread && (_cv.thread.posts || []).find(p => p.id === id));
+}
+async function _cvReact(id, emoji) {
+  try {
+    const r = await fetch(API + '/api/conversations/posts/' + id + '/reactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ emoji }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+    const p = _cvFindPost(id); if (p) p.reactions = d.reactions;
+    _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+  } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
+}
+function _cvEdit(id) {
+  const p = _cvFindPost(id); if (!p) return;
+  document.querySelectorAll('[data-body-id="' + id + '"]').forEach(el => {
+    el.innerHTML = '<textarea class="input cv-edit" rows="2">' + esc(p.body) + '</textarea><div class="cv-edit-acts">'
+      + '<button type="button" class="btn" onclick="_cvRenderPosts(false);if(_cv.thread)_cvRenderThread()">Cancel</button>'
+      + '<button type="button" class="btn primary" onclick="_cvSaveEdit(' + id + ', this.closest(\'[data-body-id]\').querySelector(\'textarea\').value)">Save</button></div>';
+    const ta = el.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.onkeydown = e => { if (e.key === 'Escape') { _cvRenderPosts(false); if (_cv.thread) _cvRenderThread(); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _cvSaveEdit(id, ta.value); } };
+  });
+}
+async function _cvSaveEdit(id, body) {
+  body = String(body || '').trim(); if (!body) return;
+  const r = await fetch(API + '/api/conversations/posts/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+  const p = _cvFindPost(id); if (p) { p.body = body; p.edited_at = Date.now(); }
+  _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+}
+async function _cvDelete(id) {
+  if (!(await showConfirm('Delete this message for everyone?', 'Delete', true))) return;
+  const r = await fetch(API + '/api/conversations/posts/' + id, { method: 'DELETE' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast(d.error || 'Not deleted', 'error'); return; }
+  const p = _cvFindPost(id); if (p) { p.deleted = true; p.body = ''; p.attachments = []; }
+  _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+}
+function _cvCopyLink(id, parent) {
+  const u = location.origin + '/#messages=' + _cv.sel + '&post=' + (parent || id);
+  try { navigator.clipboard.writeText(u); showToast('Link copied'); } catch (e) { showToast(u); }
+}
+// ── Threads ──
+function _cvOpenThread(root) {
+  _cv.thread = { conv: _cv.sel, root, posts: [] };
+  const el = document.getElementById('cv-thread'); el.hidden = false;
+  document.getElementById('messages-view').classList.add('cv-thread-open');
+  document.getElementById('cv-thread-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
+  _cvLoadThread();
+  if (!_cvMobile()) setTimeout(() => document.getElementById('cv-thread-input').focus(), 50);
+}
+function _cvCloseThread() {
+  _cv.thread = null;
+  document.getElementById('cv-thread').hidden = true;
+  document.getElementById('messages-view').classList.remove('cv-thread-open');
+}
+async function _cvLoadThread() {
+  const t = _cv.thread; if (!t) return;
+  try {
+    const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(t.conv) + '/posts?thread=' + t.root + '&limit=500')).json();
+    if (_cv.thread !== t) return;
+    t.posts = d.posts || [];
+    Object.assign(_cvProfiles, d.profiles || {});
+    _cvRenderThread(true);
+  } catch (e) {}
+}
+function _cvRenderThread(scroll) {
+  const t = _cv.thread; if (!t) return;
+  const box = document.getElementById('cv-thread-posts');
+  const n = Math.max(0, t.posts.length - 1);
+  document.getElementById('cv-thread-meta').textContent = _cvFindName(t.conv) + ' · ' + n + (n === 1 ? ' reply' : ' replies');
+  box.innerHTML = t.posts.map((p, i) => _cvPostHtml(p, false, true) + (i === 0 && n ? '<div class="cv-day">' + n + (n === 1 ? ' reply' : ' replies') + '</div>' : '')).join('')
+    || '<div class="cv-empty">This thread is empty.</div>';
+  if (scroll) box.scrollTop = box.scrollHeight;
+}
+async function _cvSendThread() {
+  const t = _cv.thread; if (!t) return;
+  const el = document.getElementById('cv-thread-input'), btn = document.getElementById('cv-thread-send');
+  const voice = _cvVoice.thread && _cvVoice.thread.note;
+  const body = el.value.trim() || (voice ? 'Voice note' : '');
+  if (!body || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const payload = { body, parent_id: t.root };
+    if (voice) payload.attachments = [voice];
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(t.conv) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
+    el.value = ''; el.style.height = ''; _cvVoiceClear('thread');
+    await _cvLoadThread();
+    _cvRefreshPost(t.root);
+  } catch (e) { showToast('Not sent: ' + e.message, 'error'); }
+  finally { btn.disabled = false; el.focus(); }
+}
+// A link or notification names a post: open its thread when it has one (or
+// is a reply), else scroll to it in the conversation.
+async function _cvOpenThreadOrScroll(conv, id) {
+  if (_cv.sel !== conv) _cvSelect(conv);
+  for (let i = 0; i < 40 && !_cv.posts.length; i++) await new Promise(r => setTimeout(r, 100));
+  const top = _cv.posts.find(p => p.id === id);
+  if (top && !top.reply_count) {
+    const el = document.querySelector('#cv-posts .cv-post[data-id="' + id + '"]');
+    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('cv-flash'); setTimeout(() => el.classList.remove('cv-flash'), 1600); }
+    return;
+  }
+  _cvOpenThread(id);
+}
+// ── Older history: scrolling to the top loads the page before it ──
+async function _cvOnScroll(box) {
+  if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
+  _cv.loadingOlder = true;
+  const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
+  try {
+    const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?before=' + first + '&limit=100')).json();
+    if (sel !== _cv.sel) return;
+    _cv.posts = (d.posts || []).concat(_cv.posts);
+    _cv.info.has_more = d.has_more;
+    Object.assign(_cvProfiles, d.profiles || {});
+    _cvRenderPosts(false);
+    box.scrollTop = box.scrollHeight - h0;
+  } catch (e) {} finally { _cv.loadingOlder = false; }
+}
+// ── One voice capture for notes and dictation (owner, 2026-10-27: "record
+// audio notes and transcribe/dictate should be all the same"). The mic
+// records; on stop the audio is uploaded AND transcribed; the words go into
+// the composer and the audio rides along as a voice note. Send both, delete
+// the words (a pure voice note) or remove the audio (pure dictation).
+const _cvVoice = {};
+async function _cvVoiceToggle(where) {
+  const v = _cvVoice[where] = _cvVoice[where] || {};
+  if (v.rec) { v.rec.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('This browser cannot record audio', 'error'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }); }
+  catch (e) { showToast('Microphone unavailable: ' + (e.message || e.name), 'error'); return; }
+  // Opus where the browser has it (Chromium, Firefox), AAC where it does not
+  // (Safari). Chromium can claim AAC and then fail to encode it.
+  const mime = ['audio/webm;codecs=opus', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm'].find(m => !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(m)) || '';
+  let rec;
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : {}); }
+  catch (e) { rec = new MediaRecorder(stream); }
+  const chunks = []; const t0 = Date.now();
+  v.rec = rec; v.note = null;
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => { stream.getTracks().forEach(t => t.stop()); v.rec = null; _cvVoiceDone(where, new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }), Date.now() - t0); };
+  rec.onerror = ev => { showToast('Recording failed: ' + ((ev && ev.error && ev.error.message) || 'the encoder refused'), 'error'); try { rec.stop(); } catch (e) {} };
+  try { rec.start(1000); }
+  catch (e) { stream.getTracks().forEach(t => t.stop()); v.rec = null; showToast('Recording did not start: ' + e.message, 'error'); return; }
+  const bar = document.getElementById('cv-voice-' + where); bar.hidden = false;
+  bar.innerHTML = '<span class="cv-rec-dot"></span> Recording… <button type="button" class="btn" onclick="_cvVoiceToggle(\'' + where + '\')">Stop</button>';
+  document.querySelectorAll(where === 'main' ? '#cv-mic' : '#cv-thread .cv-mic').forEach(b => b.classList.add('recording'));
+}
+async function _cvVoiceDone(where, blob, ms) {
+  const bar = document.getElementById('cv-voice-' + where);
+  document.querySelectorAll(where === 'main' ? '#cv-mic' : '#cv-thread .cv-mic').forEach(b => b.classList.remove('recording'));
+  if (blob.size < 1200) { bar.hidden = true; showToast('Too short to keep'); return; }
+  bar.innerHTML = 'Saving the voice note…';
+  const ext = (blob.type.indexOf('mp4') >= 0 ? 'm4a' : 'webm');
+  const file = new File([blob], 'voice-note-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext, { type: blob.type });
+  const input = document.getElementById(where === 'main' ? 'cv-input' : 'cv-thread-input');
+  // The words come from the same transcription Dictate uses. The note does
+  // not wait for them: it can be sent as soon as the audio is saved, and the
+  // words land in the box when they arrive (if it has not been sent yet).
+  const v = _cvVoice[where];
+  const token = v.token = Date.now();
+  fetch(API + '/api/dictate', { method: 'POST', headers: { 'Content-Type': blob.type.split(';')[0] }, body: blob, signal: AbortSignal.timeout(90000) })
+    .then(r => r.json()).then(d => {
+      const text = (d && d.text) || '';
+      if (!text || v.token !== token) return;
+      input.value = (input.value.trim() ? input.value.trim() + ' ' : '') + text; input.dispatchEvent(new Event('input'));
+      if (v.note) v.note.transcript = text;
+      const words = document.getElementById('cv-voice-words-' + where); if (words) words.textContent = ' (its words are in the box)';
+    }).catch(() => {});
+  const path = await _cvUploadVoice(file);
+  if (v.token !== token) return;
+  if (!path) { bar.innerHTML = 'The audio could not be saved.'; return; }
+  v.note = { kind: 'audio', path, mime: blob.type, dur_ms: ms, transcript: '' };
+  bar.innerHTML = '&#x1F3A4; Voice note ' + esc(_recorderClock(ms)) + ' attached<span id="cv-voice-words-' + where + '"> (transcribing)</span>'
+    + ' <button type="button" class="btn" onclick="_cvVoiceClear(\'' + where + '\')" aria-label="Remove the audio">Remove audio</button>';
+  input.focus();
+}
+function _cvVoiceClear(where) {
+  if (_cvVoice[where]) _cvVoice[where].note = null;
+  const bar = document.getElementById('cv-voice-' + where); if (bar) { bar.hidden = true; bar.innerHTML = ''; }
+}
+// The upload API attachments use: start, 5 MB chunks, finish (returns the path).
+async function _cvUploadVoice(file) {
+  try {
+    const size = 5 * 1024 * 1024, chunks = Math.max(1, Math.ceil(file.size / size));
+    const st = await (await fetch(API + '/api/upload/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: file.name, size: file.size, chunks }) })).json();
+    if (!st.id) return '';
+    for (let i = 0; i < chunks; i++) {
+      const r = await fetch(API + '/api/upload/' + st.id + '/chunk/' + i, { method: 'PUT', body: file.slice(i * size, (i + 1) * size) });
+      if (!r.ok) return '';
+    }
+    const fin = await (await fetch(API + '/api/upload/' + st.id + '/finish', { method: 'POST' })).json();
+    return fin.path || '';
+  } catch (e) { return ''; }
 }
 function _cvDayLabel(ts) {
   const d = new Date(ts), today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
@@ -66663,15 +67032,18 @@ async function _cvSend() {
   if (!sel || sel[0] === '@' || btn.disabled) return;
   if (_blockedByAttachment(cf)) return;
   const refs = cf.filter(f => f.path).map(f => '@' + f.path).join(' ');
-  const body = text ? (refs ? text + ' ' + refs : text) : refs;
+  const voice = _cvVoice.main && _cvVoice.main.note;
+  const body = (text ? (refs ? text + ' ' + refs : text) : refs) || (voice ? 'Voice note' : '');
   if (!body) return;
   btn.disabled = true;
   try {
-    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+    const payload = { body };
+    if (voice) payload.attachments = [voice];
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { if (typeof showToast === 'function') showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
     el.value = ''; el.style.height = ''; _cv.typingAt = 0;
-    _clearCardFiles(_CV_FILES);
+    _clearCardFiles(_CV_FILES); _cvVoiceClear('main');
     // OFFLINE: the outbox accepted it and sends it on reconnect. Show it now,
     // marked, until the server has it, instead of a cleared box and nothing.
     if (_isLocallyQueued(r)) {
@@ -66684,9 +67056,72 @@ async function _cvSend() {
     if (typeof showToast === 'function') showToast('Not sent: ' + e.message, 'error');
   } finally { btn.disabled = false; el.focus(); }
 }
+// ── Live: a post, edit, delete or reaction arrives as an SSE state event
+// (api/conversations.rs post_event: conversation key, post id, operation; no
+// body). The open conversation or thread fetches just that change; the list
+// and badge refresh once per burst; a post addressed to you notifies.
+function _cvOnLive(ev) {
+  if (!ev || !ev.conv) return;
+  _cv.liveAt = Date.now();
+  clearTimeout(_cv.liveListT);
+  _cv.liveListT = setTimeout(_cvLoadList, 300);
+  if (ev.op === 'created') _cvMaybeNotify(ev);
+  if (_cvViewOn() && _cv.sel === ev.conv) {
+    if (ev.op === 'created' && !ev.parent_id) _cvPoll(false);
+    else _cvRefreshPost(ev.parent_id || ev.id);
+  }
+  if (_cv.thread && _cv.thread.conv === ev.conv && (ev.parent_id === _cv.thread.root || ev.id === _cv.thread.root)) _cvLoadThread();
+}
+async function _cvRefreshPost(id) {
+  const sel = _cv.sel;
+  try {
+    const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?after=' + (id - 1) + '&limit=500');
+    const d = await r.json();
+    if (sel !== _cv.sel) return;
+    for (const np of (d.posts || [])) { const i = _cv.posts.findIndex(p => p.id === np.id); if (i >= 0) _cv.posts[i] = np; }
+    Object.assign((_cv.info = _cv.info || {}).profiles = (_cv.info.profiles || {}), d.profiles || {});
+    _cvRenderPosts(false);
+  } catch (e) {}
+}
+// A notification for a post addressed to you, when you are not already
+// looking at it: through the Mac or iOS app natively, else the browser.
+const _cvNotified = new Set();
+async function _cvMaybeNotify(ev) {
+  if (_cvNotified.has(ev.id)) return;
+  const looking = !document.hidden && _cvViewOn() && _cv.sel === ev.conv && (!ev.parent_id || (_cv.thread && _cv.thread.root === ev.parent_id));
+  if (looking) return;
+  let p = null;
+  try {
+    const q = ev.parent_id ? '?thread=' + ev.parent_id + '&after=' + (ev.id - 1) : '?after=' + (ev.id - 1) + '&limit=1';
+    const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(ev.conv) + '/posts' + q)).json();
+    p = (d.posts || []).find(x => x.id === ev.id);
+  } catch (e) { return; }
+  if (!p || p.author_key === _cvMeKey()) return;
+  const me = _cvMeKey();
+  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || !!ev.parent_id;
+  if (!addressed) return;
+  _cvNotified.add(ev.id);
+  const title = (p.author_name || 'Someone') + (ev.parent_id ? ' replied in ' : ' in ') + _cvFindName(ev.conv);
+  const body = String(p.body || '').replace(/\s+/g, ' ').slice(0, 180) || 'New message';
+  const url = '#messages=' + ev.conv + '&post=' + (ev.parent_id || ev.id);
+  try {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxNotify) {
+      window.webkit.messageHandlers.amuxNotify.postMessage({ title, body, url, tag: 'conv-' + ev.conv });
+      return;
+    }
+  } catch (e) {}
+  try {
+    if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+      const n = new Notification(title, { body, tag: 'conv-' + ev.conv, icon: '/icon-192.png' });
+      n.onclick = () => { window.focus(); location.hash = url; };
+    }
+  } catch (e) {}
+}
+
 // The tab badge stays current in every view, not only while Messages is open.
 setInterval(() => { if (!document.hidden && !_cvViewOn()) _cvLoadList(); }, 20000);
 setTimeout(_cvLoadList, 3000);
+setTimeout(_cvLoadProfiles, 3500);
 
 // ── Converse tab: hands-free voice conversations with a worker ──────────────
 // Ethan, 2026-10-11: "create a new tab in the worker details page called

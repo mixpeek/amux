@@ -37,6 +37,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{conv}/posts", get(posts).post(create_post))
         .route("/api/conversations/{conv}/read", post(mark_read))
         .route("/api/conversations/{conv}/typing", post(typing))
+        .route("/api/conversations/posts/{id}", axum::routing::patch(edit_post).delete(delete_post))
+        .route("/api/conversations/posts/{id}/reactions", post(react_post))
+        .route("/api/conversations/unfurl", get(unfurl))
+        .route("/api/profiles", get(list_profiles))
+        .route("/api/profiles/avatar/{name}", get(get_avatar))
+        .route("/api/profiles/{key}/avatar", post(set_avatar))
 }
 
 const GENERAL: &str = "general";
@@ -240,14 +246,14 @@ fn owner_has_posted(conn: &rusqlite::Connection) -> bool {
 // ---- conversation keys and who may see them --------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Conv {
+pub(crate) enum Conv {
     Group(String),
     People(String, String),
     Worker(String),
 }
 
 impl Conv {
-    fn parse(raw: &str) -> Option<Conv> {
+    pub(crate) fn parse(raw: &str) -> Option<Conv> {
         let (kind, rest) = raw.split_once(':')?;
         let rest = rest.trim();
         if rest.is_empty() {
@@ -267,7 +273,7 @@ impl Conv {
             _ => None,
         }
     }
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         match self {
             Conv::Group(g) => format!("g:{g}"),
             Conv::People(a, b) => format!("p:{a}|{b}"),
@@ -572,15 +578,58 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
 fn post_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let parse = |s: String| serde_json::from_str::<Value>(&s).unwrap_or(json!([]));
+    let deleted = r.get::<_, Option<i64>>(10)?;
     Ok(json!({
         "id": r.get::<_, i64>(0)?, "conv": r.get::<_, String>(1)?,
         "author_key": r.get::<_, String>(2)?, "author_name": r.get::<_, String>(3)?,
-        "body": r.get::<_, String>(4)?, "mentions": parse(r.get(5)?),
+        // A deleted post keeps its place in the conversation, not its words.
+        "body": if deleted.is_some() { String::new() } else { r.get::<_, String>(4)? },
+        "mentions": parse(r.get(5)?),
         "deliveries": parse(r.get(6)?), "ts": r.get::<_, i64>(7)?,
+        "parent_id": r.get::<_, Option<i64>>(8)?, "edited_at": r.get::<_, Option<i64>>(9)?,
+        "deleted": deleted.is_some(),
+        "reactions": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or(json!({})),
+        "attachments": if deleted.is_some() { json!([]) } else { parse(r.get(12)?) },
     }))
 }
 
-const POST_COLS: &str = "id, conv, author_key, author_name, body, mentions, deliveries, ts";
+/// Reply counts, the last reply's time and up to three repliers, for the
+/// top-level posts shown (Slack's "3 replies" line under a post).
+fn add_thread_summaries(conn: &rusqlite::Connection, rows: &mut [Value]) {
+    for row in rows.iter_mut() {
+        let Some(id) = row["id"].as_i64() else { continue };
+        let (n, last): (i64, Option<i64>) = conn.query_row(
+            "SELECT COUNT(*), MAX(ts) FROM conversation_posts WHERE parent_id=?1 AND deleted_at IS NULL",
+            rusqlite::params![id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, None));
+        if n == 0 {
+            continue;
+        }
+        let who: Vec<String> = conn.prepare(
+            "SELECT author_name FROM conversation_posts WHERE parent_id=?1 AND deleted_at IS NULL GROUP BY author_key ORDER BY MAX(id) DESC LIMIT 3")
+            .and_then(|mut q| q.query_map(rusqlite::params![id], |r| r.get(0))?.collect()).unwrap_or_default();
+        row["reply_count"] = json!(n);
+        row["last_reply_ts"] = json!(last);
+        row["repliers"] = json!(who);
+    }
+}
+
+/// The pictures and names of the authors on a page (`profiles` rows).
+fn profiles_for(conn: &rusqlite::Connection, rows: &[Value]) -> Value {
+    let mut out = serde_json::Map::new();
+    for row in rows {
+        let Some(k) = row["author_key"].as_str() else { continue };
+        if out.contains_key(k) {
+            continue;
+        }
+        if let Ok((avatar, name)) = conn.query_row("SELECT avatar, display_name FROM profiles WHERE key=?1", rusqlite::params![k],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))) {
+            out.insert(k.to_string(), json!({"avatar": avatar.map(|a| format!("/api/profiles/avatar/{a}")), "display_name": name}));
+        }
+    }
+    Value::Object(out)
+}
+
+const POST_COLS: &str = "id, conv, author_key, author_name, body, mentions, deliveries, ts, parent_id, edited_at, deleted_at, reactions, attachments";
 
 fn qs(raw: &Option<String>) -> BTreeMap<String, String> {
     super::fs::parse_qs(raw.as_deref().unwrap_or("")).into_iter().collect()
@@ -604,18 +653,33 @@ async fn posts(
     seen(&me.key());
     let q = qs(&raw);
     let after: i64 = q.get("after").and_then(|v| v.parse().ok()).unwrap_or(0);
+    // Older history, a page at a time (scrolling up).
+    let before: i64 = q.get("before").and_then(|v| v.parse().ok()).unwrap_or(i64::MAX);
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 500);
+    // `thread=<root>`: the root and its replies. Otherwise the top level.
+    let thread: Option<i64> = q.get("thread").and_then(|v| v.parse().ok());
     let Ok(conn) = state.store.read() else {
         return err(StatusCode::SERVICE_UNAVAILABLE, "store unavailable");
     };
     let key = conv.key();
-    let sql = format!(
-        "SELECT * FROM (SELECT {POST_COLS} FROM conversation_posts WHERE conv=?1 AND id>?2 ORDER BY id DESC LIMIT ?3) ORDER BY id"
-    );
-    let rows: Vec<Value> = conn
+    let (sql, tid) = match thread {
+        Some(t) => (format!(
+            "SELECT * FROM (SELECT {POST_COLS} FROM conversation_posts WHERE conv=?1 AND id>?2 AND id<?4 AND (id=?5 OR parent_id=?5) ORDER BY id DESC LIMIT ?3) ORDER BY id"), t),
+        None => (format!(
+            "SELECT * FROM (SELECT {POST_COLS} FROM conversation_posts WHERE conv=?1 AND id>?2 AND id<?4 AND parent_id IS NULL AND ?5=?5 ORDER BY id DESC LIMIT ?3) ORDER BY id"), 0),
+    };
+    let mut rows: Vec<Value> = conn
         .prepare(&sql)
-        .and_then(|mut s| s.query_map(rusqlite::params![key, after, limit], post_row)?.collect())
+        .and_then(|mut s| s.query_map(rusqlite::params![key, after, limit, before, tid], post_row)?.collect())
         .unwrap_or_default();
+    if thread.is_none() {
+        add_thread_summaries(&conn, &mut rows);
+    }
+    let has_more = rows.first().and_then(|r| r["id"].as_i64()).is_some_and(|first| {
+        conn.query_row("SELECT 1 FROM conversation_posts WHERE conv=?1 AND id<?2 AND parent_id IS NULL LIMIT 1",
+            rusqlite::params![key, first], |_| Ok(())).is_ok()
+    });
+    let profiles = profiles_for(&conn, &rows);
     let last_read: i64 = conn
         .query_row("SELECT last_id FROM conversation_reads WHERE reader=?1 AND conv=?2",
             rusqlite::params![me.key(), key], |r| r.get(0))
@@ -628,7 +692,8 @@ async fn posts(
         .collect();
     let mut mentionable = mentionable_workers(&me, &conv, &lanes);
     mentionable.extend(mentionable_isolated(&me, &conv, &isolated_lanes()));
-    Json(json!({"conv": key, "posts": rows, "last_read": last_read,
+    Json(json!({"conv": key, "posts": rows, "last_read": last_read, "thread": thread, "has_more": has_more && thread.is_none(),
+        "profiles": profiles,
         "people": ppl, "workers": workers_in(&conv, &lanes),
         "mentionable_workers": mentionable,
         "typing": typing_now(&key, &me.key()), "measured": true}))
@@ -670,22 +735,57 @@ async fn search(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw)
     let Ok(conn) = state.store.read() else {
         return err(StatusCode::SERVICE_UNAVAILABLE, "store unavailable");
     };
-    let like = format!("%{}%", q.trim().replace('%', "\\%").replace('_', "\\_"));
-    let sql = format!("SELECT {POST_COLS} FROM conversation_posts WHERE body LIKE ?1 ESCAPE '\\' ORDER BY id DESC LIMIT 500");
-    let rows: Vec<Value> = conn
-        .prepare(&sql)
-        .and_then(|mut s| s.query_map([like], post_row)?.collect())
-        .unwrap_or_default();
+    // `in:<conv or #group>` and `from:<name>` narrow it, as in Slack.
+    let mut in_conv: Option<String> = None;
+    let mut from: Option<String> = None;
+    for w in q.split_whitespace() {
+        if let Some(v) = w.strip_prefix("in:") {
+            let v = v.trim_start_matches('#');
+            in_conv = Some(if v.contains(':') { v.to_string() } else { format!("g:{}", v.to_lowercase()) });
+        } else if let Some(v) = w.strip_prefix("from:") {
+            from = Some(v.trim_start_matches('@').to_lowercase());
+        }
+    }
+    let terms = fts_query(&q);
+    let sql = format!(
+        "SELECT {cols}, snippet(conversation_posts_fts, 0, '[[', ']]', '…', 16) FROM conversation_posts_fts f
+         JOIN conversation_posts p ON p.id = f.rowid
+         WHERE conversation_posts_fts MATCH ?1 AND p.deleted_at IS NULL ORDER BY rank LIMIT 500",
+        cols = POST_COLS.split(", ").map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", "));
+    let rows: Vec<Value> = if terms.is_empty() {
+        // Only filters: newest matching posts.
+        conn.prepare(&format!("SELECT {POST_COLS}, '' FROM conversation_posts WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 500"))
+            .and_then(|mut s| s.query_map([], |r| { let mut v = post_row(r)?; v["snippet"] = json!(""); Ok(v) })?.collect())
+            .unwrap_or_default()
+    } else {
+        conn.prepare(&sql)
+            .and_then(|mut s| s.query_map([terms.clone()], |r| { let mut v = post_row(r)?; v["snippet"] = json!(r.get::<_, String>(13)?); Ok(v) })?.collect())
+            .unwrap_or_default()
+    };
     let considered = rows.len();
     let rows: Vec<Value> = rows
         .into_iter()
         .filter(|p| p["conv"].as_str().and_then(Conv::parse).is_some_and(|c| may_read(&me, &c, &lanes)))
-        .take(50)
+        .filter(|p| in_conv.as_deref().is_none_or(|c| p["conv"] == c))
+        .filter(|p| from.as_deref().is_none_or(|f| p["author_name"].as_str().unwrap_or("").to_lowercase().contains(f)
+            || p["author_key"].as_str().unwrap_or("").to_lowercase().ends_with(f)))
+        .take(100)
         .collect();
     Json(json!({"posts": rows, "measured": true, "n_considered": considered})).into_response()
 }
 
 // ---- writing -------------------------------------------------------------
+
+/// `--thread 4`, `--thread 12 --stdin`: a message that is nothing but the
+/// flags of `amux post`, which only a CLI that does not parse them sends.
+fn looks_like_cli_flags(body: &str) -> bool {
+    let mut w = body.split_whitespace().peekable();
+    if w.peek() != Some(&"--thread") {
+        return false;
+    }
+    w.next();
+    w.next().is_some_and(|n| n.parse::<i64>().is_ok()) && w.all(|t| t == "--stdin" || t == "-")
+}
 
 fn body_text(headers: &HeaderMap, bytes: &Bytes) -> String {
     let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -825,6 +925,14 @@ async fn create_post(
     if body.chars().count() > MAX_BODY {
         return err(StatusCode::PAYLOAD_TOO_LARGE, format!("message over {MAX_BODY} characters"));
     }
+    // An `amux` CLI older than `post --thread` sends its flags as the message,
+    // and the chat bridge would forward "--thread 4" to WhatsApp (2026-10-27).
+    if looks_like_cli_flags(&body) {
+        tracing::warn!(author = %me.key(), body = %body, measured = true, n_considered = 1, verdict = "conversation_post_stale_cli",
+            "a post whose whole body is CLI flags was refused: the sender's amux CLI predates `post --thread`");
+        return err(StatusCode::BAD_REQUEST,
+            "the message is only CLI flags: this amux CLI predates `amux post --thread`; run `make install-cli` and post again");
+    }
     seen(&me.key());
     let (all, author_name) = {
         let Ok(conn) = state.store.read() else {
@@ -844,22 +952,71 @@ async fn create_post(
             return err(StatusCode::BAD_REQUEST, "a direct message needs two known people");
         }
     }
+    let hdrs = send_headers(&me, &headers);
+    let json_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let parent = json_body.get("parent_id").and_then(Value::as_i64)
+        .or_else(|| headers.get("x-amux-thread").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()));
+    let attachments = json_body.get("attachments").cloned().filter(Value::is_array).unwrap_or(json!([]));
+    match post_inner(&state, conv, &me, me.key(), author_name, body, hdrs, None, parent, attachments, dm_to, None).await {
+        Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+        Err(r) => *r,
+    }
+}
+
+/// A post into a conversation, from a person, a worker, or the chat bridge on
+/// someone's behalf (`author_key` and `author_name` then name the external
+/// sender, and `note` goes first in what a worker receives, e.g. that the
+/// sender is not the owner). Stores it, delivers it to the workers it
+/// reaches, and records each outcome on the post. Returns the created post.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn post_inner(
+    state: &AppState,
+    conv: Conv,
+    me: &Who,
+    author_key: String,
+    author_name: String,
+    body: String,
+    hdrs: HeaderMap,
+    note: Option<String>,
+    parent: Option<i64>,
+    attachments: Value,
+    // A worker's `p:<person>`: that person, @mentioned in the worker's thread.
+    dm_to: Option<String>,
+    // Written in the same transaction as the post (the chat bridge records
+    // which chat a post came from, so the post is never echoed back to it).
+    also: Option<AlsoWrite>,
+) -> Result<Value, Box<Response>> {
+    let lanes = lanes();
+    // A reply belongs to its thread's ROOT, in this same conversation.
+    let parent: Option<i64> = match parent {
+        None => None,
+        Some(pid) => {
+            let root = state.store.read().ok().and_then(|c| c.query_row(
+                "SELECT COALESCE(parent_id, id) FROM conversation_posts WHERE id=?1 AND conv=?2",
+                rusqlite::params![pid, conv.key()], |r| r.get::<_, i64>(0)).ok());
+            match root {
+                Some(r) => Some(r),
+                None => return Err(Box::new(err(StatusCode::BAD_REQUEST, "that thread is not in this conversation"))),
+            }
+        }
+    };
+    let all = state.store.read().map(|c| people(&c, true)).unwrap_or_default();
     let iso_lanes = isolated_lanes();
-    let iso = mentionable_isolated(&me, &conv, &iso_lanes);
-    let mut workers = mentionable_workers(&me, &conv, &lanes);
+    let iso = mentionable_isolated(me, &conv, &iso_lanes);
+    let mut workers = mentionable_workers(me, &conv, &lanes);
     workers.extend(iso.iter().cloned());
     let thread_readers = readers(&conv, &all, &lanes);
     let mut mentions = resolve_mentions(&body, &workers, &thread_readers);
     if let Some(to) = &dm_to {
         let Some(p) = find_person(&all, to) else {
-            return err(StatusCode::BAD_REQUEST, format!("no person '{to}' in this workspace"));
+            return Err(Box::new(err(StatusCode::BAD_REQUEST, format!("no person '{to}' in this workspace"))));
         };
         if !thread_readers.iter().any(|r| r.email == p.email) {
             tracing::warn!(conv = %conv.key(), to = %p.email, verdict = "conversation_worker_dm_unreadable",
                 "a worker's message to a person was refused: they cannot read the worker's thread");
-            return err(StatusCode::FORBIDDEN, format!(
+            return Err(Box::new(err(StatusCode::FORBIDDEN, format!(
                 "{} cannot read {}'s thread, so the message would not reach them; the owner can widen their access",
-                p.email, conv.key()));
+                p.email, conv.key()))));
         }
         let k = format!("person:{}", p.email);
         if !mentions.contains(&k) {
@@ -876,7 +1033,28 @@ async fn create_post(
             mentions.push(format!("worker:{w}"));
         }
     }
-    if let Who::Worker { name, .. } = &me {
+    // A reply reaches every worker already in the thread (it was mentioned in
+    // it, or posted in it), as a Slack thread does: no need to @ it again.
+    if let Some(root) = parent {
+        let inthread: Vec<String> = state.store.read().ok().and_then(|c| {
+            let mut q = c.prepare("SELECT author_key, mentions FROM conversation_posts WHERE id=?1 OR parent_id=?1").ok()?;
+            let rows = q.query_map(rusqlite::params![root], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()?;
+            let mut out = Vec::new();
+            for (a, m) in rows.flatten() {
+                if let Some(w) = a.strip_prefix("worker:") { out.push(w.to_string()); }
+                for k in serde_json::from_str::<Vec<String>>(&m).unwrap_or_default() {
+                    if let Some(w) = k.strip_prefix("worker:") { out.push(w.to_string()); }
+                }
+            }
+            Some(out)
+        }).unwrap_or_default();
+        for w in inthread {
+            if workers.contains(&w) && !targets.contains(&w) {
+                targets.push(w);
+            }
+        }
+    }
+    if let Who::Worker { name, .. } = me {
         targets.retain(|t| t != name);
         mentions.retain(|m| m != &format!("worker:{name}"));
         // Two workers @mentioning each other would reply forever. A worker's
@@ -893,18 +1071,25 @@ async fn create_post(
             targets.clear();
         }
     }
-    let (key, author_key, ts) = (conv.key(), me.key(), now_ms());
+    // What the channel said just before, so a mentioned worker answers in
+    // context the way a person scrolling up would.
+    let context = recent_context(state, &conv.key(), 8);
+    let (key, ts) = (conv.key(), now_ms());
     let id_cell = Arc::new(Mutex::new(0i64));
+    let att2 = attachments.to_string();
     let (k2, a2, n2, b2, m2, id2) = (key.clone(), author_key.clone(), author_name.clone(), body.clone(),
         serde_json::to_string(&mentions).unwrap_or_else(|_| "[]".into()), id_cell.clone());
     let wrote = state
         .store
         .write_async(move |c| {
             c.execute(
-                "INSERT INTO conversation_posts (conv, author_key, author_name, body, mentions, ts) VALUES (?1,?2,?3,?4,?5,?6)",
-                rusqlite::params![k2, a2, n2, b2, m2, ts],
+                "INSERT INTO conversation_posts (conv, author_key, author_name, body, mentions, ts, parent_id, attachments) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![k2, a2, n2, b2, m2, ts, parent, att2],
             )?;
             let id = c.last_insert_rowid();
+            if let Some(f) = also {
+                f(c, id)?;
+            }
             // Your own post is read by you.
             c.execute(
                 "INSERT INTO conversation_reads (reader, conv, last_id) VALUES (?1,?2,?3) \
@@ -914,11 +1099,12 @@ async fn create_post(
             if let Ok(mut g) = id2.lock() {
                 *g = id;
             }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            let evk = k2.clone();
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![post_event(&evk, id, parent, "created")] })
         })
         .await;
     if let Err(e) = wrote {
-        return err(StatusCode::SERVICE_UNAVAILABLE, format!("could not store the message: {e}"));
+        return Err(Box::new(err(StatusCode::SERVICE_UNAVAILABLE, format!("could not store the message: {e}"))));
     }
     let id = *id_cell.lock().unwrap_or_else(|p| p.into_inner());
     if let Ok(mut m) = typing_map().lock() {
@@ -932,13 +1118,25 @@ async fn create_post(
     // Deliver to workers in the background; the post exists either way, and
     // each outcome is written back onto it.
     if !targets.is_empty() {
-        let hdrs = send_headers(&me, &headers);
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
         tokio::spawn(async move {
             let mut outcomes = Vec::new();
             for w in targets {
                 let isolated = iso.contains(&w);
-                let (text, reply) = delivery_for(&conv2, &author, &text_body, &w, isolated);
+                let (mut text, reply) = delivery_for(&conv2, &author, &text_body, &w, isolated);
+                // In a channel, the answer goes in a thread under the post that
+                // asked (Slack's way); a reply stays in its thread.
+                let thread_root = parent.or(if matches!(conv2, Conv::Group(_)) { Some(id) } else { None });
+                if let (Some(root), false) = (thread_root, isolated) {
+                    let k = conv2.key();
+                    text = text.replace(&format!("amux post {k} <<'EOF'"), &format!("amux post {k} --thread {root} <<'EOF'"));
+                }
+                if !isolated && !context.is_empty() {
+                    text = format!("Recent messages in {} before this one:\n{}\n\n{text}", conv2.key(), context.join("\n"));
+                }
+                if let Some(n) = &note {
+                    text = format!("{n}\n\n{text}");
+                }
                 let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
                 let status = resp.status();
                 let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
@@ -970,9 +1168,25 @@ async fn create_post(
                 .await;
         });
     }
-    (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "conv": key, "author": author_key, "author_name": author_name, "mentions": mentions,
-        "delivering_to": mentions.iter().filter(|m| m.starts_with("worker:")).count()})))
-        .into_response()
+    crate::bridge::notify_outbound();
+    notify_owner(state, &conv, &author_key, &author_name, &body, id, parent, &mentions).await;
+    Ok(json!({"ok": true, "id": id, "conv": key, "parent_id": parent, "author": author_key, "author_name": author_name, "mentions": mentions,
+        "delivering_to": mentions.iter().filter(|m| m.starts_with("worker:")).count()}))
+}
+
+/// A write made in the same transaction as a post, given its id.
+pub(crate) type AlsoWrite = Box<dyn FnOnce(&rusqlite::Connection, i64) -> rusqlite::Result<()> + Send>;
+
+/// The conversation's last `n` posts, oldest first, as `- Name: text` lines.
+fn recent_context(state: &AppState, conv: &str, n: usize) -> Vec<String> {
+    let Ok(c) = state.store.read() else { return vec![] };
+    let Ok(mut q) = c.prepare("SELECT author_name, body FROM conversation_posts WHERE conv=?1 ORDER BY id DESC LIMIT ?2") else { return vec![] };
+    let rows = q.query_map(rusqlite::params![conv, n as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
+    let mut out: Vec<String> = rows.into_iter().flatten().flatten()
+        .map(|(a, b)| format!("- {a}: {}", b.chars().take(500).collect::<String>().replace('\n', " ")))
+        .collect();
+    out.reverse();
+    out
 }
 
 async fn mark_read(
@@ -1038,9 +1252,443 @@ async fn typing(State(state): State<AppState>, Path(conv): Path<String>, headers
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// The conversation a delivered prompt came from: every delivery tells the
+/// worker `amux post <conv>`, so the key is read back from that line.
+fn conv_of_prompt(prompt: &str) -> Option<(String, Option<i64>)> {
+    let i = prompt.rfind("amux post ")?;
+    let rest = &prompt[i + "amux post ".len()..];
+    let key: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    let thread = rest.split_once("--thread ").and_then(|(_, t)| t.split_whitespace().next()).and_then(|t| t.parse().ok());
+    Conv::parse(&key).map(|c| (c.key(), thread))
+}
+
+/// From the turn-end hook: a worker whose turn began with a Messages post and
+/// ended without posting its answer gets that turn's final text posted for
+/// it, so whoever wrote sees the answer where they wrote (the worker's
+/// terminal is not where they are reading). A worker that posted during the
+/// turn is left alone.
+pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, final_text: &str) {
+    let text = final_text.trim();
+    if text.is_empty() || !prompt.contains("amux Messages") {
+        return;
+    }
+    let Some((key, thread)) = conv_of_prompt(prompt) else { return };
+    let author = format!("worker:{worker}");
+    let mention = format!("%\"worker:{worker}\"%");
+    let already = state.store.read().ok().and_then(|c| c.query_row(
+        "SELECT 1 FROM conversation_posts WHERE conv=?1 AND author_key=?2 AND id > COALESCE(
+           (SELECT MAX(id) FROM conversation_posts WHERE conv=?1 AND (mentions LIKE ?3 OR conv=?4)), 0) LIMIT 1",
+        rusqlite::params![key, author, mention, format!("w:{worker}")], |_| Ok(())).ok()).is_some();
+    if already {
+        tracing::debug!(conv = %key, worker, verdict = "conversation_turn_already_posted", "turn-end: the worker posted its answer itself");
+        return;
+    }
+    let lanes = lanes();
+    let Some(lane) = lanes.iter().find(|l| l.name == worker) else { return };
+    let me = Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() };
+    let Some(conv) = Conv::parse(&key) else { return };
+    let mut hdrs = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(worker) {
+        hdrs.insert("x-amux-session", v);
+    }
+    let body: String = text.chars().take(MAX_BODY).collect();
+    match post_inner(state, conv, &me, author, worker.to_string(), body, hdrs, None, thread, json!([]), None, None).await {
+        Ok(v) => tracing::info!(conv = %key, worker, post = %v["id"], measured = true, n_considered = 1,
+            verdict = "conversation_turn_relayed", "turn-end: a worker's answer was posted where it was asked"),
+        Err(_) => tracing::warn!(conv = %key, worker, verdict = "conversation_turn_relay_failed",
+            "turn-end: a worker's answer could not be posted to the conversation"),
+    }
+}
+
+/// The chat bridge's `/link <target>`: a worker's thread (`w:<worker>`) or a
+/// group's channel (`g:<group>`, `general` included). An existing key passes
+/// through. Returns the key and a label for the confirmation.
+pub(crate) fn resolve_link_target(target: &str) -> Option<(String, String)> {
+    let t = target.trim().trim_start_matches('@').trim_start_matches('#');
+    if let Some(c) = Conv::parse(t) {
+        if !matches!(c, Conv::People(..)) {
+            return Some((c.key(), c.key()));
+        }
+    }
+    let lanes = lanes();
+    if lanes.iter().any(|l| l.name == t) {
+        return Some((format!("w:{t}"), format!("worker {t}")));
+    }
+    let g = t.to_lowercase();
+    if g == GENERAL || lanes.iter().any(|l| l.groups.contains(&g)) {
+        let members: Vec<String> = lanes.iter().filter(|l| l.groups.contains(&g) || g == GENERAL).map(|l| format!("@{}", l.name)).collect();
+        return Some((format!("g:{g}"), format!("#{g} ({})", members.join(", "))));
+    }
+    None
+}
+
+/// The chat bridge posting a platform message into a conversation. It posts
+/// with the owner's reach (the owner linked the conversation); `author_key`
+/// and `author_name` name the actual sender, and `note` (for anyone who is
+/// not the owner) is what the worker reads first.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn bridge_post(state: &AppState, conv_key: &str, author_key: &str, author_name: &str, body: &str,
+    note: Option<String>, record: AlsoWrite) -> Result<Value, String> {
+    let conv = Conv::parse(conv_key).ok_or_else(|| format!("not a conversation: {conv_key}"))?;
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let body: String = body.chars().take(MAX_BODY).collect();
+    post_inner(state, conv, &me, author_key.to_string(), author_name.to_string(), body, HeaderMap::new(), note, None, json!([]), None, Some(record)).await
+        .map_err(|_| "the post was not stored".to_string())
+}
+
+
+// ---- live events and notifications -------------------------------------------
+
+/// The SSE state event for a post: which conversation, which post, what
+/// happened. No body: every connected client receives it, and the post
+/// itself is fetched through the read-checked route.
+fn post_event(conv: &str, id: i64, parent: Option<i64>, op: &str) -> crate::db::PendingEvent {
+    crate::db::PendingEvent {
+        entity_type: amux_core::revision::EntityType::Other("conversation".into()),
+        // The SSE StateEvent carries entity_id and not the payload, so the
+        // client's whole need (which conversation, which post, which thread,
+        // what happened) rides here as JSON. Still no body.
+        entity_id: json!({"conv": conv, "id": id, "parent_id": parent, "op": op}).to_string(),
+        mutation: match op {
+            "created" => amux_core::revision::MutationKind::Created,
+            "deleted" => amux_core::revision::MutationKind::Deleted,
+            _ => amux_core::revision::MutationKind::Updated,
+        },
+        payload: Some(json!({"conv": conv, "id": id, "parent_id": parent, "op": op})),
+    }
+}
+
+/// Should this post reach the owner as a notification? A post written by
+/// someone else that is addressed to the owner: in a worker's thread (the
+/// worker answering), a direct message, an @mention of the owner, or a reply
+/// in a thread the owner posted in. Channel chatter is not.
+fn notifies_owner(conn: &rusqlite::Connection, conv: &Conv, author_key: &str, mentions: &[String], parent: Option<i64>) -> bool {
+    if author_key == "person:owner" {
+        return false;
+    }
+    if mentions.iter().any(|m| m == "person:owner") {
+        return true;
+    }
+    match conv {
+        Conv::Worker(_) => return true,
+        Conv::People(a, b) if a == "owner" || b == "owner" => return true,
+        _ => {}
+    }
+    parent.is_some_and(|root| conn.query_row(
+        "SELECT 1 FROM conversation_posts WHERE (id=?1 OR parent_id=?1) AND author_key='person:owner' LIMIT 1",
+        rusqlite::params![root], |_| Ok(())).is_ok())
+}
+
+/// Web push to the owner's subscribed devices (`push::send_all`); the Mac
+/// and iOS apps notify natively from the live event (amuxNotify bridge).
+#[allow(clippy::too_many_arguments)]
+async fn notify_owner(state: &AppState, conv: &Conv, author_key: &str, author_name: &str, body: &str, id: i64,
+    parent: Option<i64>, mentions: &[String]) {
+    let yes = state.store.read().map(|c| notifies_owner(&c, conv, author_key, mentions, parent)).unwrap_or(false);
+    if !yes {
+        return;
+    }
+    let place = match conv {
+        Conv::Group(g) => format!("#{g}"),
+        Conv::Worker(w) => w.clone(),
+        Conv::People(..) => "a direct message".into(),
+    };
+    let title = if parent.is_some() { format!("{author_name} replied in {place}") } else { format!("{author_name} in {place}") };
+    let snippet: String = body.chars().take(180).collect();
+    let url = format!("/#messages={}&post={}", conv.key(), parent.unwrap_or(id));
+    let sent = crate::push::send_all(state, &title, &snippet, "", &format!("conv-{}", conv.key()), &url).await;
+    tracing::info!(conv = %conv.key(), post = id, devices = sent.len(), measured = true, n_considered = 1,
+        verdict = "conversation_owner_notified", "Messages: the owner was notified of a post addressed to them");
+}
+
+// ---- edit, delete, react --------------------------------------------------------
+
+fn author_of(conn: &rusqlite::Connection, id: i64) -> Option<(String, String, Option<i64>)> {
+    conn.query_row("SELECT author_key, conv, parent_id FROM conversation_posts WHERE id=?1 AND deleted_at IS NULL",
+        rusqlite::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
+}
+
+/// Only the author edits or deletes a post; the owner may delete any.
+async fn edit_post(State(state): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, bytes: Bytes) -> Response {
+    let lanes = lanes();
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    let Some((author, conv, parent)) = state.store.read().ok().and_then(|c| author_of(&c, id)) else {
+        return err(StatusCode::NOT_FOUND, "no such post");
+    };
+    if author != me.key() {
+        return err(StatusCode::FORBIDDEN, "only its author can edit a post");
+    }
+    let body = body_text(&headers, &bytes);
+    if body.is_empty() || body.chars().count() > MAX_BODY {
+        return err(StatusCode::BAD_REQUEST, "a post needs 1 to 8000 characters");
+    }
+    let (b, c2) = (body.clone(), conv.clone());
+    let r = state.store.write_async(move |c| {
+        c.execute("UPDATE conversation_posts SET body=?1, edited_at=?2 WHERE id=?3", rusqlite::params![b, now_ms(), id])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![post_event(&c2, id, parent, "edited")] })
+    }).await;
+    match r {
+        Ok(_) => {
+            tracing::info!(post = id, conv = %conv, verdict = "conversation_post_edited", "Messages: a post was edited");
+            crate::bridge::notify_outbound();
+            Json(json!({"ok": true, "id": id, "body": body})).into_response()
+        }
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+async fn delete_post(State(state): State<AppState>, Path(id): Path<i64>, headers: HeaderMap) -> Response {
+    let lanes = lanes();
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    let Some((author, conv, parent)) = state.store.read().ok().and_then(|c| author_of(&c, id)) else {
+        return err(StatusCode::NOT_FOUND, "no such post");
+    };
+    let owner = matches!(&me, Who::Person { email, .. } if email == "owner");
+    if author != me.key() && !owner {
+        return err(StatusCode::FORBIDDEN, "only its author or the owner can delete a post");
+    }
+    let c2 = conv.clone();
+    let r = state.store.write_async(move |c| {
+        // The words go; the row stays, so its thread and read markers hold.
+        c.execute("UPDATE conversation_posts SET body='', attachments='[]', deleted_at=?1 WHERE id=?2", rusqlite::params![now_ms(), id])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![post_event(&c2, id, parent, "deleted")] })
+    }).await;
+    match r {
+        Ok(_) => {
+            tracing::info!(post = id, conv = %conv, by = %me.key(), verdict = "conversation_post_deleted", "Messages: a post was deleted");
+            Json(json!({"ok": true, "id": id, "deleted": true})).into_response()
+        }
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+/// Toggle the caller's reaction (one emoji) on a post.
+async fn react_post(State(state): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    let lanes = lanes();
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    let emoji: String = b["emoji"].as_str().unwrap_or("").trim().chars().take(16).collect();
+    if emoji.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "emoji is required");
+    }
+    let Some((_, conv, parent)) = state.store.read().ok().and_then(|c| author_of(&c, id)) else {
+        return err(StatusCode::NOT_FOUND, "no such post");
+    };
+    let Some(cv) = Conv::parse(&conv) else { return err(StatusCode::NOT_FOUND, "no such post") };
+    if !may_read(&me, &cv, &lanes) {
+        return err(StatusCode::FORBIDDEN, "not a conversation you can read");
+    }
+    let (key, c2) = (me.key(), conv.clone());
+    let out = Arc::new(Mutex::new(json!({})));
+    let o2 = out.clone();
+    let r = state.store.write_async(move |c| {
+        let raw: String = c.query_row("SELECT reactions FROM conversation_posts WHERE id=?1", rusqlite::params![id], |r| r.get(0))?;
+        let mut m: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let list = m.entry(emoji.clone()).or_insert_with(|| json!([]));
+        let mut who: Vec<String> = serde_json::from_value(list.clone()).unwrap_or_default();
+        if let Some(i) = who.iter().position(|k| k == &key) { who.remove(i); } else { who.push(key.clone()); }
+        if who.is_empty() { m.remove(&emoji); } else { m.insert(emoji.clone(), json!(who)); }
+        let js = Value::Object(m);
+        c.execute("UPDATE conversation_posts SET reactions=?1 WHERE id=?2", rusqlite::params![js.to_string(), id])?;
+        if let Ok(mut g) = o2.lock() { *g = js; }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![post_event(&c2, id, parent, "reacted")] })
+    }).await;
+    match r {
+        Ok(_) => Json(json!({"ok": true, "id": id, "reactions": out.lock().map(|g| g.clone()).unwrap_or(json!({}))})).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+// ---- search ---------------------------------------------------------------------
+
+/// The person's words as an FTS5 query: each word a quoted prefix term, so
+/// punctuation can never be read as query syntax.
+fn fts_query(q: &str) -> String {
+    q.split_whitespace()
+        .filter(|w| !w.contains(':'))
+        .map(|w| w.chars().filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '@')).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ---- link previews --------------------------------------------------------------
+
+/// A host whose address is loopback, private, link-local or otherwise not
+/// on the public internet: a preview fetch never goes there (SSRF).
+fn public_host(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (host, 443).to_socket_addrs() else { return false };
+    let addrs: Vec<_> = addrs.collect();
+    !addrs.is_empty() && addrs.iter().all(|a| match a.ip() {
+        std::net::IpAddr::V4(v) => !(v.is_loopback() || v.is_private() || v.is_link_local() || v.is_unspecified()
+            || v.is_broadcast() || v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]) || v.octets()[0] == 0),
+        std::net::IpAddr::V6(v) => !(v.is_loopback() || v.is_unspecified() || (v.segments()[0] & 0xfe00) == 0xfc00
+            || (v.segments()[0] & 0xffc0) == 0xfe80),
+    })
+}
+
+fn meta(html: &str, names: &[&str]) -> Option<String> {
+    for n in names {
+        for pat in [format!("property=\"{n}\""), format!("name=\"{n}\""), format!("property='{n}'"), format!("name='{n}'")] {
+            let Some(i) = html.find(&pat) else { continue };
+            let tag_start = html[..i].rfind('<').unwrap_or(i);
+            let tag_end = html[i..].find('>').map(|e| i + e).unwrap_or(html.len());
+            let tag = &html[tag_start..tag_end];
+            if let Some(c) = tag.find("content=") {
+                let rest = &tag[c + 8..];
+                let q = rest.chars().next().unwrap_or('"');
+                let v: String = rest[1..].chars().take_while(|ch| *ch != q).collect();
+                let v = v.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").trim().to_string();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn unfurl(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Response {
+    let q = qs(&raw);
+    let url = q.get("url").cloned().unwrap_or_default();
+    let Ok(parsed) = reqwest::Url::parse(&url) else { return err(StatusCode::BAD_REQUEST, "not a URL") };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return err(StatusCode::BAD_REQUEST, "only http and https links unfurl");
+    }
+    let day = 24 * 3600 * 1000;
+    if let Some(v) = state.store.read().ok().and_then(|c| c.query_row(
+        "SELECT status, title, description, image, site, fetched_at FROM link_previews WHERE url=?1", rusqlite::params![url],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?, r.get::<_, i64>(5)?))).ok()) {
+        if now_ms() - v.5 < day {
+            return Json(json!({"url": url, "status": v.0, "title": v.1, "description": v.2, "image": v.3, "site": v.4, "cached": true})).into_response();
+        }
+    }
+    let host = parsed.host_str().unwrap_or("").to_string();
+    let h2 = host.clone();
+    let public = tokio::task::spawn_blocking(move || public_host(&h2)).await.unwrap_or(false);
+    if !public {
+        tracing::info!(host = %host, verdict = "unfurl_refused_private", "Messages: a link to a non-public address is not fetched for a preview");
+        return Json(json!({"url": url, "status": 0, "refused": "not a public address"})).into_response();
+    }
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(6)).redirect(reqwest::redirect::Policy::limited(3))
+        .user_agent("amux-link-preview/1 (+https://amux.io)").build().unwrap_or_default();
+    let (status, html) = match client.get(parsed.clone()).send().await {
+        Ok(r) => {
+            let st = r.status().as_u16() as i64;
+            let ok_type = r.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.contains("html"));
+            let mut body = Vec::new();
+            let mut r = r;
+            while ok_type && body.len() < 512 * 1024 {
+                match r.chunk().await { Ok(Some(c)) => body.extend_from_slice(&c), _ => break }
+            }
+            (st, String::from_utf8_lossy(&body).to_string())
+        }
+        Err(e) => {
+            tracing::info!(host = %host, error = %e, verdict = "unfurl_fetch_failed", "Messages: a link preview could not be fetched");
+            (0, String::new())
+        }
+    };
+    let title = meta(&html, &["og:title", "twitter:title"]).or_else(|| {
+        let i = html.find("<title")?; let s = html[i..].find('>')? + i + 1; let e = html[s..].find("</title")? + s;
+        Some(html[s..e].trim().to_string()).filter(|t| !t.is_empty())
+    });
+    let desc = meta(&html, &["og:description", "twitter:description", "description"]);
+    let image = meta(&html, &["og:image", "twitter:image"]).and_then(|i| parsed.join(&i).ok()).map(|u| u.to_string());
+    let site = meta(&html, &["og:site_name"]).or(Some(host.clone()));
+    let (u2, t2, d2, i2, s2) = (url.clone(), title.clone(), desc.clone(), image.clone(), site.clone());
+    let _ = state.store.write_async(move |c| {
+        c.execute("INSERT OR REPLACE INTO link_previews (url, status, title, description, image, site, fetched_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![u2, status, t2, d2, i2, s2, now_ms()])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    Json(json!({"url": url, "status": status, "title": title, "description": desc, "image": image, "site": site, "cached": false})).into_response()
+}
+
+// ---- profile pictures -----------------------------------------------------------
+
+fn avatars_dir() -> std::path::PathBuf {
+    crate::config::amux_home().join("avatars")
+}
+
+/// Set a picture: the owner for anyone, a person or worker for itself.
+async fn set_avatar(State(state): State<AppState>, Path(key): Path<String>, headers: HeaderMap, bytes: Bytes) -> Response {
+    let lanes = lanes();
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    let owner = matches!(&me, Who::Person { email, .. } if email == "owner");
+    if key != me.key() && !owner {
+        return err(StatusCode::FORBIDDEN, "you can set only your own picture");
+    }
+    if !(key.starts_with("person:") || key.starts_with("worker:")) {
+        return err(StatusCode::BAD_REQUEST, "a profile key is person:<email> or worker:<name>");
+    }
+    let ext = match headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("") {
+        "image/png" => "png", "image/jpeg" | "image/jpg" => "jpg", "image/webp" => "webp", "image/gif" => "gif",
+        _ => return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "a picture is PNG, JPEG, WebP or GIF"),
+    };
+    if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+        return err(StatusCode::PAYLOAD_TOO_LARGE, "a picture is at most 2 MB");
+    }
+    let name = format!("{}.{ext}", &hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes))[..24]);
+    let dir = avatars_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&name), &bytes)) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    let (k2, n2) = (key.clone(), name.clone());
+    let r = state.store.write_async(move |c| {
+        c.execute("INSERT INTO profiles (key, avatar, updated_at) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET avatar=excluded.avatar, updated_at=excluded.updated_at",
+            rusqlite::params![k2, n2, now_ms()])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    match r {
+        Ok(_) => Json(json!({"ok": true, "key": key, "avatar": format!("/api/profiles/avatar/{name}")})).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+async fn get_avatar(Path(name): Path<String>) -> Response {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') || name.contains("..") {
+        return err(StatusCode::BAD_REQUEST, "bad picture name");
+    }
+    let Ok(bytes) = std::fs::read(avatars_dir().join(&name)) else { return err(StatusCode::NOT_FOUND, "no such picture") };
+    let ct = match name.rsplit('.').next() { Some("png") => "image/png", Some("jpg") => "image/jpeg", Some("webp") => "image/webp", _ => "image/gif" };
+    // Content-addressed by its hash: safe to cache for good.
+    ([(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable")], bytes).into_response()
+}
+
+async fn list_profiles(State(state): State<AppState>) -> Response {
+    let rows: Vec<Value> = state.store.read().ok().and_then(|c| c.prepare("SELECT key, avatar, display_name FROM profiles").ok().and_then(|mut q| {
+        q.query_map([], |r| Ok(json!({"key": r.get::<_, String>(0)?, "avatar": r.get::<_, Option<String>>(1)?.map(|a| format!("/api/profiles/avatar/{a}")),
+            "display_name": r.get::<_, Option<String>>(2)?}))).ok().map(|it| it.flatten().collect())
+    })).unwrap_or_default();
+    Json(json!({"profiles": rows, "measured": true, "n_considered": rows.len()})).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_cli_posting_its_flags_is_recognised_and_real_text_is_not() {
+        assert!(looks_like_cli_flags("--thread 4"));
+        assert!(looks_like_cli_flags("--thread 12 --stdin"));
+        assert!(!looks_like_cli_flags("--thread 4 here is the answer"));
+        assert!(!looks_like_cli_flags("use --thread 4 to reply"));
+        assert!(!looks_like_cli_flags("--thread"));
+    }
 
     fn lane(name: &str, groups: &[&str]) -> Lane {
         Lane { name: name.into(), groups: groups.iter().map(|g| g.to_string()).collect() }
@@ -1253,3 +1901,4 @@ mod tests {
         assert!(!t.contains('$'), "{t}");
     }
 }
+
