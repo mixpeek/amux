@@ -278,8 +278,16 @@ def _audit(kind, detail):
 # They run on the PUSHED COMMIT'S bytes (git archive), never the worktree,
 # which on a shared checkout holds peers' drafts. A test that also fails on
 # the remote's tip is not this push's doing and does not block it.
-_SPA_SUITE_DIRS = ("crates/amux-dashboard/static/", "skills/chrome-cdp/scripts/")
-_SPA_SUITE_FILES = ("tests/dashboard-outage-recovery.mjs", "package.json", "package-lock.json")
+_SPA_SUITE_DIRS = ("crates/amux-dashboard/", "skills/chrome-cdp/scripts/")
+_SPA_SUITE_FILES = ("tests/dashboard-outage-recovery.mjs", "package.json", "package-lock.json",
+                    # rust.yml's spa-gates also runs these, and spa-lint.sh fails on
+                    # what they generate going stale. Leaving spa-lint out let
+                    # e0b64b05f pass here and redden spa-gates on 3 runs
+                    # (velocity audit 2026-10-27).
+                    "tests/spa-no-undeclared-global-assignment.test.mjs", "eslint.config.mjs",
+                    "scripts/spa-lint.sh", "scripts/gen-spa-globals.mjs",
+                    "scripts/build-state.mjs", "scripts/button-audit.mjs",
+                    "docs/ux/button-feedback-audit.md")
 _SPA_NOT_OK = re.compile(r"^\s*not ok \d+ - (.+?)(?:\s+#.*)?$")
 
 
@@ -298,21 +306,34 @@ def _spa_failures(sha, node_modules):
         if arch.returncode != 0:
             return None
         os.symlink(node_modules, os.path.join(tmp, "node_modules"))
-        suites = [s for s in ["tests/dashboard-outage-recovery.mjs"]
+        suites = [s for s in ["tests/dashboard-outage-recovery.mjs",
+                              "tests/spa-no-undeclared-global-assignment.test.mjs"]
                   if os.path.exists(os.path.join(tmp, s))]
         suites += sorted(os.path.relpath(p, tmp)
                          for p in glob.glob(os.path.join(tmp, "e2e", "*.test.mjs")))
-        if not suites:
-            return 0, []
-        r = subprocess.run(["node", "--test"] + suites, cwd=tmp, capture_output=True,
-                           text=True, timeout=180)
-        m = re.search(r"^# tests (\d+)$", r.stdout, re.M)
-        if not m:
-            return None
-        names = sorted({x.group(1) for x in map(_SPA_NOT_OK.match, r.stdout.splitlines()) if x})
-        if r.returncode != 0 and not names:
-            return None
-        return int(m.group(1)), names
+        tests, names = 0, set()
+        # spa-gates' first step. It regenerates and checks the SPA's generated
+        # files, then runs eslint; a failure counts as one named test.
+        if os.path.exists(os.path.join(tmp, "scripts", "spa-lint.sh")):
+            lint = subprocess.run(["bash", "scripts/spa-lint.sh"], cwd=tmp, capture_output=True,
+                                  text=True, timeout=180)
+            tests += 1
+            if lint.returncode != 0:
+                said = [l.strip() for l in (lint.stdout + lint.stderr).splitlines()
+                        if re.search(r"stale|error|✖", l)]
+                names.add("scripts/spa-lint.sh: " + (said[0] if said else "exit %d" % lint.returncode))
+        if suites:
+            r = subprocess.run(["node", "--test"] + suites, cwd=tmp, capture_output=True,
+                               text=True, timeout=180)
+            m = re.search(r"^# tests (\d+)$", r.stdout, re.M)
+            if not m:
+                return None
+            run_names = {x.group(1) for x in map(_SPA_NOT_OK.match, r.stdout.splitlines()) if x}
+            if r.returncode != 0 and not run_names:
+                return None
+            tests += int(m.group(1))
+            names |= run_names
+        return tests, sorted(names)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -37,6 +37,14 @@ test('the readme is not red', () => {
 });
 """
 
+SPA_LINT = """#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+if grep -q LINTBAD crates/amux-dashboard/static/app.js; then
+  echo "docs/ux/button-feedback-audit.md is stale: run node scripts/button-audit.mjs" >&2; exit 1
+fi
+"""
+
 HARNESS_GUARD = """#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -156,6 +164,25 @@ def main():
         check("refusal names the override", "AMUX_SKIP_HARNESS_GUARD" in r.stderr, True)
         commit(work, "guards it", "scripts")
         check("guarding it lets the push through",
+              git(work, "push", "origin", "main").returncode, 0)
+
+        # spa-gates' first step, scripts/spa-lint.sh, which e0b64b05f failed
+        # in CI after passing this gate (velocity audit 2026-10-27).
+        os.makedirs(os.path.join(work, "node_modules"))
+        write(work, "scripts/spa-lint.sh", SPA_LINT)
+        commit(work, "adds the lint", "scripts")
+        r = git(work, "push", "origin", "main")
+        check("a push adding a passing spa-lint is allowed", r.returncode, 0)
+        check("  and counts the lint as a test", "SPA gates on" in r.stderr and "verdict=spa_gates_pass" in r.stderr, True)
+        write(work, "crates/amux-dashboard/static/app.js", "// GOOD LINTBAD\n")
+        commit(work, "dashboard: trips the lint", "crates")
+        r = git(work, "push", "origin", "main")
+        check("a push failing spa-lint is refused", r.returncode != 0, True)
+        check("  and the refusal names spa-lint and its reason",
+              "scripts/spa-lint.sh: docs/ux/button-feedback-audit.md is stale" in r.stderr, True)
+        write(work, "crates/amux-dashboard/static/app.js", "// GOOD lint fixed\n")
+        commit(work, "dashboard: fixes the lint", "crates")
+        check("fixing it lets the push through",
               git(work, "push", "origin", "main").returncode, 0)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
