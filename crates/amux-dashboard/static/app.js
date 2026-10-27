@@ -65134,7 +65134,7 @@ function _projectAcceptanceHtml(acc) {
       ? '<button class="btn primary" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'approve\')">Approve</button> <button class="btn" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'reject\')">Reject</button>' : '';
     return '<li><strong>'+esc(c.requirement)+'</strong> · '+esc(state)+receiptSummary+(result.receipt_error?'<p class="project-wait">Execution proof rejected: '+esc(result.receipt_error)+'</p>':'')+(links?'<div>'+links+'</div>':'')+(result.output?'<details><summary>Verifier output</summary><pre>'+esc(_projectClip(result.output,4000))+'</pre></details>':'')+review+'</li>';
   }).join('');
-  const rerun=['failed','operational_failure'].includes(acc.state)?'<button class="btn" onclick="_projectAcceptanceRerun()">Rerun whole-project acceptance</button>':'';
+  const rerun=(['failed','operational_failure'].includes(acc.state)||acc.reason==='failed_rerun_deferred')?'<button class="btn" onclick="_projectAcceptanceRerun()">Rerun whole-project acceptance</button>':'';
   const hold=acc.state==='awaiting_human'?'<p class="project-wait">Completed executors are stopped. Their worker records, terminals and the project worktree remain available until this review is approved.</p>':'';
   const retirement=acc.executor_retirement;
   const retirementNotice=retirement && retirement.allowed===false && retirement.state==='review_not_configured'?'<p class="project-wait">Executor expiration is held: '+esc(retirement.reason)+'.</p>':'';

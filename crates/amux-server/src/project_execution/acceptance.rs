@@ -772,8 +772,12 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         return Ok(view);
     }
     let Some((_, result)) = live.last() else {
+        let deferred = if rerun > 0 { None } else { deferred_rerun(conn, &p.name, &fp, contract.revision, &intent, &json!(heads))? };
         let reason = if rerun > 0 {
             "rerun_requested"
+        } else if let Some(wait) = deferred {
+            view["rerun_deferred_s"] = json!(wait.round() as u64);
+            "failed_rerun_deferred"
         } else {
             "not_yet_evaluated"
         };
@@ -865,6 +869,48 @@ fn runnable(conn: &Connection, project: &str, fp: &str) -> anyhow::Result<bool> 
         return Ok(false);
     }
     Ok(live.len() < MAX_OPERATIONAL_ATTEMPTS)
+}
+
+/// A failed evaluation is the project's to repair, and a repair changes the task heads, which
+/// reruns at once. When the base main is the only input that moved since, the next run waits
+/// this long: on a busy repository main moves every few minutes, and each run checks out the
+/// whole repository and runs the full verifier again for the same unrepaired failure
+/// (2026-10-27: 56 runs in 7.5 hours fed fseventsd to 7.6G).
+const FAILED_BASE_ONLY_RERUN_AFTER_S: f64 = 3600.0;
+
+/// Seconds the current fingerprint still waits, when the latest receipt failed on the same
+/// contract, intent and task heads and only the base main has moved since.
+fn failed_rerun_wait(last: &Value, fp: &str, contract_revision: u32, intent: &str, heads: &Value, now: f64) -> Option<f64> {
+    if last["state"] != "failed" || retryable_operational_result(last) || last["fingerprint"] == fp {
+        return None;
+    }
+    if last["contract_revision"] != json!(contract_revision) || last["intent"] != intent || last["task_heads"] != *heads {
+        return None;
+    }
+    let wait = FAILED_BASE_ONLY_RERUN_AFTER_S - (now - last["finished"].as_f64()?);
+    (wait > 0.0).then_some(wait)
+}
+
+fn deferred_rerun(conn: &Connection, project: &str, fp: &str, contract_revision: u32, intent: &str, heads: &Value) -> anyhow::Result<Option<f64>> {
+    if !events(conn, project, "project.acceptance_rerun", Some(fp))?.is_empty() {
+        return Ok(None);
+    }
+    let last: Option<String> = conn
+        .query_row(
+            "SELECT data FROM session_events WHERE session=?1 AND type='project.acceptance' ORDER BY id DESC LIMIT 1",
+            params![stream(project)],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(last) = last.and_then(|d| serde_json::from_str::<Value>(&d).ok()) else {
+        return Ok(None);
+    };
+    Ok(failed_rerun_wait(&last, fp, contract_revision, intent, heads, crate::config::now_f64()))
+}
+
+fn deferral_logged() -> &'static Mutex<HashMap<String, String>> {
+    static AT: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    AT.get_or_init(Default::default)
 }
 
 /// A pre-push gate checks the bytes that would be published. The signature contains both sides
@@ -1165,7 +1211,7 @@ pub fn request_rerun(
         matches!(
             view["state"].as_str(),
             Some("failed" | "operational_failure")
-        ),
+        ) || view["reason"] == "failed_rerun_deferred",
         "only a failed or operationally failed evaluation can be rerun"
     );
     insert(
@@ -2151,7 +2197,7 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
             }
         }
     }
-    let (fp, candidate, base_main, runnable) = {
+    let (fp, candidate, base_main, runnable, deferred) = {
         let c = state.store.read()?;
         let Some(fp) = current_fingerprint(&c, p)? else {
             return Ok(());
@@ -2167,9 +2213,17 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
             .unwrap_or_default()
             .to_string();
         let runnable = runnable(&c, &name, &fp)?;
-        (fp, candidate, base_main, runnable)
+        let deferred = if runnable { deferred_rerun(&c, &name, &fp, contract.revision, &intent, &json!(heads))? } else { None };
+        (fp, candidate, base_main, runnable, deferred)
     };
     if !runnable {
+        return Ok(());
+    }
+    if let Some(wait) = deferred {
+        if deferral_logged().lock().unwrap().insert(name.clone(), fp.clone()).as_deref() != Some(fp.as_str()) {
+            tracing::info!(project=%name, fingerprint=%fp, base_main=%base_main, wait_s=wait.round() as u64, measured=true, n_considered=1, verdict="project.acceptance_failed_rerun_deferred",
+                "the last evaluation failed on the same task heads and only main moved since; the rerun waits for a repair, an operator rerun, or the cooldown");
+        }
         return Ok(());
     }
     let Some(mut result) = run(state, p, &contract, &candidate, &intent, &fp).await? else {
@@ -2177,6 +2231,7 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
     };
     result["candidate"] = json!(candidate);
     result["base_main"] = json!(base_main);
+    result["task_heads"] = json!(heads);
     if result["state"] == "awaiting_human" || result["state"] == "accepted" {
         match ensure_publish_gate(state, p, &base_main, &candidate).await {
             Ok(gate) => result["publish_gate"] = gate,
@@ -3400,6 +3455,63 @@ path.write_text(json.dumps({
         results: Value,
     ) -> Value {
         json!({"fingerprint":fp,"contract_revision":contract.revision,"main":main,"intent":intent,"state":state,"finished":1.0,"results":results,"publish_gate":{"state":"passed","signature":"test"}})
+    }
+
+    #[test]
+    fn a_failed_evaluation_is_not_rerun_for_every_main_commit() {
+        let heads = json!([["T-1", "head1"]]);
+        let failed = json!({"fingerprint":"fp-old","contract_revision":2,"intent":"i1","state":"failed","finished":1000.0,"task_heads":heads,
+            "results":[{"criterion":"c","type":"execution","state":"failed","evidence":[]}]});
+        // Only main moved: the new fingerprint waits out the cooldown, then runs.
+        assert_eq!(failed_rerun_wait(&failed, "fp-new", 2, "i1", &heads, 1600.0), Some(3000.0));
+        assert_eq!(failed_rerun_wait(&failed, "fp-new", 2, "i1", &heads, 1000.0 + FAILED_BASE_ONLY_RERUN_AFTER_S), None);
+        // A repair (new task heads), a new contract or a new intent runs at once.
+        assert_eq!(failed_rerun_wait(&failed, "fp-new", 2, "i1", &json!([["T-1", "head2"]]), 1600.0), None);
+        assert_eq!(failed_rerun_wait(&failed, "fp-new", 3, "i1", &heads, 1600.0), None);
+        assert_eq!(failed_rerun_wait(&failed, "fp-new", 2, "i2", &heads, 1600.0), None);
+        // A pass, an operational failure, or a receipt from before task heads were recorded never defers.
+        let mut passed = failed.clone();
+        passed["state"] = json!("awaiting_human");
+        assert_eq!(failed_rerun_wait(&passed, "fp-new", 2, "i1", &heads, 1600.0), None);
+        let mut operational = failed.clone();
+        operational["state"] = json!("operational_failure");
+        assert_eq!(failed_rerun_wait(&operational, "fp-new", 2, "i1", &heads, 1600.0), None);
+        let mut legacy = failed.clone();
+        legacy.as_object_mut().unwrap().remove("task_heads");
+        assert_eq!(failed_rerun_wait(&legacy, "fp-new", 2, "i1", &heads, 1600.0), None);
+        // The same fingerprint is runnable()'s business, never deferred here.
+        assert_eq!(failed_rerun_wait(&failed, "fp-old", 2, "i1", &heads, 1600.0), None);
+
+        // Through the store: the latest recorded failure defers the next main, and an
+        // operator rerun of the current inputs overrides the cooldown.
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            let p = project(c, Some(two()));
+            let contract = p.policy.acceptance.clone().unwrap();
+            verified(c, "T-1");
+            let intent = intent_revision(c, "p").unwrap();
+            assert!(observe(c, &p, "base1", "main1", &[]).unwrap().applied);
+            let fp1 = status(c, &p).unwrap()["fingerprint"].as_str().unwrap().to_string();
+            let mut failing = result(&fp1, "failed", &contract, "main1", &intent, json!([{"criterion":"unit","verifier":"unit-tests","type":"command","command":"cargo test","state":"failed","exit":1}]));
+            failing["finished"] = json!(crate::config::now_f64());
+            failing["task_heads"] = json!([]);
+            assert!(record(c, "p", &contract, &intent, &failing).unwrap().applied);
+            assert!(observe(c, &p, "base2", "main2", &[]).unwrap().applied);
+            let fp2 = status(c, &p).unwrap()["fingerprint"].as_str().unwrap().to_string();
+            assert_ne!(fp1, fp2);
+            assert!(runnable(c, "p", &fp2).unwrap());
+            assert!(deferred_rerun(c, "p", &fp2, contract.revision, &intent, &json!([])).unwrap().is_some());
+            let s = status(c, &p).unwrap();
+            assert_eq!((s["state"].as_str(), s["reason"].as_str()), (Some("pending"), Some("failed_rerun_deferred")));
+            assert!(s["rerun_deferred_s"].as_u64().unwrap() > 3500);
+            assert!(deferred_rerun(c, "p", &fp2, contract.revision, &intent, &json!([["T-1", "fix"]])).unwrap().is_none());
+            assert!(request_rerun(c, &p, &fp2).unwrap().applied);
+            assert!(deferred_rerun(c, "p", &fp2, contract.revision, &intent, &json!([])).unwrap().is_none());
+            assert_eq!(status(c, &p).unwrap()["reason"], "rerun_requested");
+            Ok(WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
     }
 
     #[test]
