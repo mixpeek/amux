@@ -53,7 +53,15 @@ test('a send the server refused says so, with the reason, Send again and Remove'
   await page.route('**/api/sessions/pend-probe%40chat/send', (r: any) => r.fulfill({ json: { ok: true, msg_id: 'm-pend' } }));
   allowUnusedRoute(page, '**/api/sessions/pend-probe%40chat/send');   // the resend may not reach the network before the check
   // The chat body is rendered off screen here (no peek is open), so press it from the page.
-  await page.evaluate(() => (document.querySelector('#peek-body .chat-pending-retry') as HTMLButtonElement).click());
+  // A re-render can replace the chat body between the check above and this
+  // press, leaving no button for an instant (ios-safari, run 40571608259:
+  // "null is not an object"). Press it as soon as it is there.
+  await expect.poll(() => page.evaluate(() => {
+    const btn = document.querySelector('#peek-body .chat-pending-retry') as HTMLButtonElement | null;
+    if (!btn) return false;
+    btn.click();
+    return true;
+  }), { message: 'the Send again button to press', timeout: 5000 }).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const q = (globalThis as any).eval('offlineQueue');
     return q.length ? (q[0].needs_decision || 'none') : 'gone';
