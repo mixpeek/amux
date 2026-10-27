@@ -632,24 +632,50 @@ fi
     local root="$1" candidate="$2" result
     # Existing deterministic test seam may force a refusal, never bypass a real
     # process/lock check by setting the override empty.
-    if [ -n "${AMUX_BUILD_PEER_PIDS_OVERRIDE:-}" ]; then
-      echo "== WARN cargo_reclaim_deferred DEFERRED: peer build(s) in flight (pid $AMUX_BUILD_PEER_PIDS_OVERRIDE); retry after builds finish."
+    RECLAIM_DEFERRED=1
+    # Test seam: a peer that "finishes" when the test deletes this file.
+    local peer_override="${AMUX_BUILD_PEER_PIDS_OVERRIDE:-}"
+    if [ -n "${AMUX_BUILD_PEER_PIDS_FILE:-}" ] && [ -s "$AMUX_BUILD_PEER_PIDS_FILE" ]; then
+      peer_override=$(cat "$AMUX_BUILD_PEER_PIDS_FILE")
+    fi
+    if [ -n "$peer_override" ]; then
+      [ "${RECLAIM_QUIET:-0}" = 1 ] || echo "== WARN cargo_reclaim_deferred DEFERRED: peer build(s) in flight (pid $peer_override); retry after builds finish."
       return 0
     fi
     local guard_cmd=(python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$root" --path "$candidate")
     [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" != 1 ] || guard_cmd+=(--dry-run)
     if result=$("${guard_cmd[@]}"); then
+      RECLAIM_DEFERRED=0
       echo "== cargo_reclaim_result path=$candidate $result"
     else
-      echo "== WARN cargo_reclaim_deferred DEFERRED path=$candidate $result; retry after builds finish."
+      [ "${RECLAIM_QUIET:-0}" = 1 ] || echo "== WARN cargo_reclaim_deferred DEFERRED path=$candidate $result; retry after builds finish."
     fi
+  }
+  # One try per builder run lost every time on 2026-10-27: a lane ran cargo
+  # back to back, the debug lock was held at each 60s run, and debug/ grew to
+  # 64G while the Mac fell to 5.8G free. Retrying the same guarded clear every
+  # 2s found a gap within minutes. So while debug/ is over its cap, keep
+  # trying for a bounded window (it delays this run's build by at most that
+  # window, and only while the cache is oversized). The guard still decides:
+  # nothing is cleared while a build holds the target.
+  reclaim_debug_with_retries() { # <root> <path>
+    local tries=0 window=${AMUX_BUILD_RECLAIM_WINDOW_S:-45} poll=${AMUX_BUILD_RECLAIM_POLL_S:-2} started=$SECONDS
+    while :; do
+      tries=$((tries+1))
+      RECLAIM_QUIET=1 reclaim_target "$1" "$2"
+      [ "$RECLAIM_DEFERRED" = 1 ] || { echo "== cargo_reclaim_retry verdict=cleared attempts=$tries waited_s=$((SECONDS-started))"; return 0; }
+      [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" != 1 ] || break
+      [ $((SECONDS-started)) -lt "$window" ] || break
+      sleep "$poll"
+    done
+    echo "== WARN cargo_reclaim_deferred DEFERRED path=$2 attempts=$tries waited_s=$((SECONDS-started)) verdict=cargo_reclaim_retry_exhausted; a build held the target for the whole window, the next run retries."
   }
   DEBUG_DIR="$HOME/.amux/rust-build-target/debug"
   if [ -d "$DEBUG_DIR" ]; then
     DEBUG_GB=$(du -sk "$DEBUG_DIR" 2>/dev/null | awk '{print int($1/1048576)}')
     if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-32}" ]; then
       echo "== DEBUG ARTIFACTS: ${DEBUG_GB:-?}GB in $DEBUG_DIR. Clearing eligible artifacts only after the Cargo safety guard permits it."
-      reclaim_target "$HOME/.amux/rust-build-target" "$DEBUG_DIR"
+      reclaim_debug_with_retries "$HOME/.amux/rust-build-target" "$DEBUG_DIR"
     fi
   fi
 

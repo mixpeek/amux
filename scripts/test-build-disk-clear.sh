@@ -226,6 +226,9 @@ dbg_run() { # $1 = fake HOME leaf, $2 = MIN_FREE_GB, $3 = peer-pid override
   AMUX_BUILD_SACRIFICE_CACHE_BELOW_GB=0 \
   AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB=-1 \
   AMUX_BUILD_PEER_PIDS_OVERRIDE="$3" \
+  AMUX_BUILD_PEER_PIDS_FILE="${4:-}" \
+  AMUX_BUILD_RECLAIM_WINDOW_S="${5:-0}" \
+  AMUX_BUILD_RECLAIM_POLL_S=1 \
   AMUX_RS_DISK_CLEAR_ONLY=1 \
     bash "$SCRIPT" >/dev/null 2>&1
   cat "$lg" 2>/dev/null
@@ -253,6 +256,25 @@ if printf '%s\n' "$out8" | grep -q "cargo_reclaim_deferred"; then ok
 else bad "(l) below the fleet floor the clear must still defer" "$out8"; fi
 if [ -f "$TMP/peerbutfull/.amux/rust-build-target/debug/marker" ]; then ok
 else bad "(l) active debug artifacts must survive severe disk pressure" "$out8"; fi
+
+# (l2) A PEER THAT FINISHES MID-WINDOW: the clear retries and gets through.
+#      2026-10-27: one try per run lost to back-to-back builds until debug/ was
+#      64G and the Mac had 5.8G free. The peer "finishes" when its file goes.
+PF="$TMP/peer-finishes.pids"; echo 4242 > "$PF"; ( sleep 3; rm -f "$PF" ) &
+out9=$(dbg_run peerfinishes 0 "" "$PF" 20)
+if printf '%s\n' "$out9" | grep -Eq "cargo_reclaim_retry verdict=cleared attempts=([2-9]|[1-9][0-9])"; then ok
+else bad "(l2) the clear must retry and succeed once the peer build ends" "$out9"; fi
+if [ -f "$TMP/peerfinishes/.amux/rust-build-target/debug/marker" ]; then
+  bad "(l2) debug/ should be cleared after the peer finished" "$out9"
+else ok; fi
+
+# (l3) A PEER THAT HOLDS THE TARGET FOR THE WHOLE WINDOW: give up, say so, keep its files.
+PH="$TMP/peer-holds.pids"; echo 4242 > "$PH"
+out10=$(dbg_run peerholds 0 "" "$PH" 2)
+if printf '%s\n' "$out10" | grep -q "verdict=cargo_reclaim_retry_exhausted"; then ok
+else bad "(l3) a window spent waiting must end with the exhausted verdict" "$out10"; fi
+if [ -f "$TMP/peerholds/.amux/rust-build-target/debug/marker" ]; then ok
+else bad "(l3) a peer's debug artifacts must survive an exhausted window" "$out10"; fi
 
 # (m) THE DETECTOR'S PRECISION, exercised for real with NO override. A process
 #     whose COMMAND LINE merely mentions cargo must not read as a build: the
