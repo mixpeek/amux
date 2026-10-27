@@ -8,6 +8,7 @@ pub mod agent_limit_resume;
 pub mod alerts;
 pub mod aliases;
 pub mod auth;
+pub mod avatars;
 pub mod board;
 pub mod boundaries;
 pub mod contract;
@@ -396,6 +397,8 @@ pub fn router_with_connector_transport(
         .merge(land_queue::routes())
         .merge(vault::routes())
         .merge(vault_secrets::routes())
+        // People's pictures beside their names (avatars.rs).
+        .merge(avatars::routes())
         .merge(chatgpt_app::routes())
         .merge(chat_delegate::routes())
         .merge(self_update::routes())

@@ -53976,7 +53976,7 @@ async function loadTeamSection() {
     } else {
       // Local mode: use container-level org
       const [orgRes, teamsRes, membersRes, invitesRes] = await Promise.all([
-        fetch('/api/org'), fetch('/api/org/teams'), fetch('/api/org/members'), fetch('/api/org/invites')
+        fetch('/api/org'), fetch('/api/org/teams'), fetch('/api/org/members'), fetch('/api/org/invites'), _loadAvatars()
       ]);
       const org = await orgRes.json();
       _workspaceTeams = teamsRes.ok ? await teamsRes.json() : [];
@@ -53994,9 +53994,10 @@ async function loadTeamSection() {
       if (members.length) {
         html += members.map(m => `
           <div style="display:flex;justify-content:space-between;align-items:center;padding:var(--space-0-5) 0;border-bottom:1px solid var(--border);">
-            <span>${esc(m.name || m.email)}</span>
+            <span style="display:flex;align-items:center;gap:var(--space-1-5);min-width:0;">${_cvAvatar(m.name || m.email, false, m.email)}${esc(m.name || m.email)}</span>
             <span style="display:flex;align-items:center;gap:var(--space-1-5);color:var(--dim);font-size:var(--fs-xs);">
               ${esc(m.team_name || 'Legacy access')}
+              ${m.email ? `<button class="btn" data-member-photo="${esc(m.email)}" onclick="pickMemberPhoto(this.dataset.memberPhoto)" title="Set this person's picture (Messages, Team)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">photo</button>` : ''}
               <button class="btn" data-member-scope="${esc(m.id)}" data-email="${esc(m.email || '')}" data-team="${esc(m.team_id || '')}" onclick="openMemberScope(this.dataset.memberScope,this.dataset.email,this.dataset.team)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">change</button>
               ${m.role === 'owner' ? '' : `<label class="ui-help" title="An admin manages this server's vault secrets, with their own name in the log. Needs Everyone (global) access." style="display:flex;align-items:center;gap:var(--space-0-5);"><input type="checkbox" data-member-admin="${esc(m.id)}" ${m.role === 'admin' ? 'checked' : ''} onchange="setMemberAdmin(this.dataset.memberAdmin,this.checked,this)">admin</label>`}
               ${m.role === 'owner' ? '' : `<button class="btn danger" data-member-remove="${esc(m.id)}" data-email="${esc(m.email || m.name || '')}" onclick="removeMember(this.dataset.memberRemove,this.dataset.email)" style="font-size:var(--fs-3xs);padding:1px var(--space-1-5);">remove</button>`}
@@ -54014,6 +54015,33 @@ async function loadTeamSection() {
       list.innerHTML = html || '<span style="color:var(--dim);font-size:var(--fs-sm);">No members yet — invite someone!</span>';
     }
   } catch(e) {}
+}
+
+// A person's picture: the chosen image is cropped to a centred square and
+// scaled to 256px before upload, so any photo fits the server's 1 MB limit.
+function pickMemberPhoto(email) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    let blob = null;
+    try {
+      const img = await createImageBitmap(file);
+      const side = Math.min(img.width, img.height), out = 256;
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = out;
+      canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, out, out);
+      blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    } catch (e) {}
+    if (!blob) { showToast('Could not read that image'); return; }
+    const r = await fetch(API + '/api/avatars/' + encodeURIComponent(email), {method: 'PUT',
+      headers: _authHeaders({'Content-Type': 'image/png'}), body: blob}).catch(() => null);
+    if (!r || !r.ok) { const d = r ? await r.json().catch(() => ({})) : {}; showToast(d.error || 'Picture not saved'); return; }
+    showToast('Picture saved');
+    loadTeamSection();
+    if (typeof _cvLoadList === 'function') _cvLoadList();
+  };
+  input.click();
 }
 
 // The host owner makes a member an admin (PATCH role): an admin manages vault secrets.
@@ -65479,8 +65507,20 @@ const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: nu
 function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
 function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
 function _cvColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'color-mix(in srgb, ' + themeCategorical(h) + ' 75%, var(--shade))'; }
-function _cvAvatar(name, worker) {
+// People's pictures (server: api/avatars.rs), email -> version. A person
+// without one keeps their coloured initial.
+let _avatars = {};
+async function _loadAvatars() {
+  try { const r = await fetch(API + '/api/avatars'); if (r.ok) _avatars = await r.json(); } catch (e) {}
+}
+function _avatarUrl(key) {
+  const email = String(key || '').replace(/^person:/, '').toLowerCase();
+  return email && _avatars[email] ? _authUrl(API + '/api/avatars/' + encodeURIComponent(email) + '?v=' + _avatars[email]) : '';
+}
+function _cvAvatar(name, worker, key) {
   if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
+  const pic = _avatarUrl(key);
+  if (pic) return '<img class="cv-av cv-av-img" src="' + esc(pic) + '" alt="" title="' + esc(name || '') + '">';
   return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
 }
 function _cvMeKey() { return _cv.list && _cv.list.me ? _cv.list.me.key : ''; }
@@ -65495,7 +65535,7 @@ function _cvFindName(conv) {
 }
 async function _cvLoadList() {
   try {
-    const r = await fetch(API + '/api/conversations');
+    const [r] = await Promise.all([fetch(API + '/api/conversations'), _loadAvatars()]);
     if (!r.ok) return;
     _cv.list = await r.json();
   } catch (e) { return; }
@@ -65529,8 +65569,8 @@ function _cvRenderSide() {
   const ppl = (L.people || []);
   document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
   document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
-    ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
-    : _cvItem(p.conv, _cvAvatar(p.name), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+    ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
+    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -65681,7 +65721,7 @@ function _cvRenderHead(sel, d) {
     meta.textContent = 'Direct message';
   }
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
-    ppl.slice(0, 4).map(p => _cvAvatar(p.name)).join('');
+    ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('');
 }
 // A POST RENDERS LIKE CHAT (Ethan, 2026-10-11: "make sure chat has the same
 // rendering stuff", screenshot of `@/Users/ethan/.amux/uploads/x.png` as dead
@@ -65737,7 +65777,7 @@ function _cvDelivHtml(p) {
 function _cvPostHtml(p, showConv) {
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
-  return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker) + '<div class="cv-post-main"><div class="cv-post-head">' +
+  return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker, p.author_key) + '<div class="cv-post-main"><div class="cv-post-head">' +
     '<span class="cv-post-who">' + esc(p.author_name) + (p.author_key === _cvMeKey() ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
     (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvSelect(this.dataset.cv)">in ' + esc(_cvFindName(p.conv)) + '</span>' : '') +
@@ -65818,7 +65858,7 @@ function _cvRenderUnread() {
 // Composer: Enter sends, Shift+Enter is a new line, @ opens the picker.
 function _cvAcCandidates(q) {
   const d = _cv.info || {}; const me = _cvMeKey(); q = q.toLowerCase();
-  const ppl = (d.people || []).filter(p => p.key !== me).map(p => ({ handle: p.name.replace(/\s+/g, ''), label: p.name, kind: 'person' }));
+  const ppl = (d.people || []).filter(p => p.key !== me).map(p => ({ handle: p.name.replace(/\s+/g, ''), label: p.name, kind: 'person', key: p.key }));
   const wks = (d.mentionable_workers || []).map(w => ({ handle: w, label: w, kind: 'worker' }));
   return [...ppl, ...wks].filter(c => c.handle.toLowerCase().startsWith(q) || c.label.toLowerCase().includes(q)).slice(0, 8);
 }
@@ -65829,7 +65869,7 @@ function _cvOnInput(el) {
   if (m) {
     _cv.ac.items = _cvAcCandidates(m[2]); _cv.ac.i = 0; _cv.ac.open = _cv.ac.items.length > 0;
     ac.innerHTML = _cv.ac.items.map((c, i) => '<button type="button" class="' + (i === 0 ? 'sel' : '') + '" onmousedown="event.preventDefault();_cvAcPick(' + i + ')">' +
-      _cvAvatar(c.label, c.kind === 'worker') + '<span>' + esc(c.label) + '</span><small>' + (c.kind === 'worker' ? 'worker' : 'person') + '</small></button>').join('');
+      _cvAvatar(c.label, c.kind === 'worker', c.key) + '<span>' + esc(c.label) + '</span><small>' + (c.kind === 'worker' ? 'worker' : 'person') + '</small></button>').join('');
     ac.classList.toggle('open', _cv.ac.open);
   } else { _cv.ac.open = false; ac.classList.remove('open'); }
   if (el.value.trim() && Date.now() - _cv.typingAt > 3000 && _cv.sel && _cv.sel[0] !== '@') {

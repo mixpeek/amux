@@ -6114,6 +6114,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "pickMemberPhoto": {
+      "kind": "command.pickMemberPhoto",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "pullFromRemote": {
       "kind": "command.pullFromRemote",
       "feedback_required": true,

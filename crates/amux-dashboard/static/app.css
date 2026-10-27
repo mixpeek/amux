@@ -9038,6 +9038,7 @@ button.cv-sec:hover { color:var(--text); }
 .cv-head-title { font-weight:700; font-size:var(--fs-3xl); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cv-head-meta { font-size:var(--fs-sm); color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cv-head-people { display:flex; align-items:center; gap:var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
+.cv-av-img { object-fit:cover; background:var(--border); }
 .cv-head-people .cv-av { margin-left:calc(var(--space-1-5) * -1); border:2px solid var(--bg); }
 .cv-posts { flex:1; min-height:0; overflow-y:auto; padding:var(--space-2) var(--space-4); -webkit-overflow-scrolling:touch; }
 .cv-day { text-align:center; font-size:var(--fs-xs); color:var(--dim); margin:var(--space-3) 0 var(--space-1-5); }
