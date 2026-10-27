@@ -63,6 +63,10 @@ Two existing primitives, configured; nothing new to learn:
   scheduler's `wake` exit action delivers that output to the schedule's own
   lane (`scheduler.rs` `shell_wake`). A shell run costs no model turn.
 
+The delivered text is masked with the run's vault values (`[vault:KEY]`), using
+the same redactor as the stored run log, so a schedule cannot put a secret into
+a lane's prompt.
+
 Because delivery is your lane's own schedule, it reaches an **isolated** lane:
 a schedule is the owner-configured exception in CLAUDE.md "Isolated workers"
 (see `deliver_automated`, guard `sched:<id>`). A paused, archived or

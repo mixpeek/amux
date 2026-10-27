@@ -2286,7 +2286,7 @@ impl LiveDeliverer {
         // an isolated lane as that lane's own schedule and is refused for a
         // paused, archived or unregistered one.
         if act == "wake" {
-            return self.shell_wake(sched, code, &stdout, output).await;
+            return self.shell_wake(sched, code, &stdout, &vault_vals, output).await;
         }
         if act == "alert" || (act.is_empty() && code != 0 && !actions.is_empty()) {
             let why = reason(400);
@@ -2340,9 +2340,9 @@ impl LiveDeliverer {
     /// failed (not refused) delivery up to [`shell_wake_attempts`] times. This
     /// is the only retry layer on the path: the script that printed the text
     /// has already closed the watch, so it never re-sends.
-    async fn shell_wake(&self, sched: &DurableSchedule, code: i32, stdout: &str, output: Option<ShellOutput>) -> RunOutcome {
+    async fn shell_wake(&self, sched: &DurableSchedule, code: i32, stdout: &str, vault: &[(String, String)], output: Option<ShellOutput>) -> RunOutcome {
         let session = sched.str_field("session").trim().to_string();
-        let text = match shell_wake_text(&session, stdout) {
+        let text = match shell_wake_text(&session, stdout, vault) {
             Ok(t) => t,
             Err(why) => {
                 tracing::warn!(schedule = %sched.id(), session = %session, exit_code = code, measured = true, n_considered = 1,
@@ -2393,11 +2393,18 @@ pub fn shell_wake_backoff_s() -> u64 {
 }
 
 /// The message a wake run delivers, or why there is none.
-pub fn shell_wake_text(session: &str, stdout: &str) -> Result<String, String> {
+///
+/// The text goes into a lane's prompt, so it is masked with the run's vault
+/// values (`[vault:KEY]`) HERE, at the delivery boundary, with the redactor the
+/// run log uses. `run_shell` already masks the stdout it returns; this does not
+/// rely on that, so a later change to how stdout is captured cannot put a vault
+/// value into a prompt.
+pub fn shell_wake_text(session: &str, stdout: &str, vault: &[(String, String)]) -> Result<String, String> {
     if session.trim().is_empty() {
         return Err("the schedule has no session to wake".into());
     }
-    let t = stdout.trim();
+    let masked = crate::api::vault_secrets::redact(stdout, vault);
+    let t = masked.trim();
     if t.is_empty() {
         return Err("the run printed nothing to deliver".into());
     }
@@ -3955,12 +3962,22 @@ mod tests {
 
     #[test]
     fn shell_wake_text_refuses_empty_output_and_caps_long_output() {
-        assert!(shell_wake_text("", "hello").is_err());
-        assert!(shell_wake_text("lane", "  \n ").is_err());
-        assert_eq!(shell_wake_text("lane", " hi\n").unwrap(), "hi");
+        assert!(shell_wake_text("", "hello", &[]).is_err());
+        assert!(shell_wake_text("lane", "  \n ", &[]).is_err());
+        assert_eq!(shell_wake_text("lane", " hi\n", &[]).unwrap(), "hi");
         let long = "x".repeat(SHELL_WAKE_MAX_CHARS + 10);
-        let t = shell_wake_text("lane", &long).unwrap();
+        let t = shell_wake_text("lane", &long, &[]).unwrap();
         assert!(t.starts_with(&"x".repeat(SHELL_WAKE_MAX_CHARS)) && t.contains("[cut at"), "{t}");
+    }
+
+    /// A wake delivers into a lane's prompt, so a vault value the run printed
+    /// arrives masked as `[vault:KEY]`, never as the value.
+    #[test]
+    fn shell_wake_text_masks_vault_values_before_delivery() {
+        let vault = vec![("GH_PAT".to_string(), "ghp_s3cretVALUE123".to_string())];
+        let t = shell_wake_text("lane", "wake-watch: fired, token=ghp_s3cretVALUE123 done\n", &vault).unwrap();
+        assert!(!t.contains("ghp_s3cretVALUE123"), "vault value reached the delivered text: {t}");
+        assert_eq!(t, "wake-watch: fired, token=[vault:GH_PAT] done");
     }
 
     /// The exit action is honoured on the shipped path: exit 10 mapped to
