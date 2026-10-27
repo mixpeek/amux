@@ -1,5 +1,81 @@
 [
   {
+    "hash": "0e6f9b2fd162a8123ee2020474f126f3d5ee583e",
+    "short": "0e6f9b2f",
+    "title": "Schedule work for sunrise, sunset or after Shabbos",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "automation"
+    ],
+    "description": "Schedules can now follow the sun: daily at sunset, every day at sunrise, every Saturday at sunset+50m, or simply after shabbos, which ends 50 minutes after Saturday sunset by default. Set AMUX_LATITUDE and AMUX_LONGITUDE in server.env and the times move with the season and your location. Without a location the scheduler refuses the expression and names the two settings to add."
+  },
+  {
+    "hash": "000df491b777d76ff337548b61a91c7e9cd6c8a7",
+    "short": "000df491",
+    "title": "Pass/fail schedules that re-run until the check passes",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "automation",
+      "reliability"
+    ],
+    "description": "A schedule can now carry a pass check: a shell command whose exit code says whether the job really worked. After each run amux runs the check, and a failed schedule keeps being re-run until it passes. Turn on Pass/fail under Basic in the schedule editor and enter the check."
+  },
+  {
+    "hash": "3fcc7cf91776f1d0d128f959233f404a73619e3a",
+    "short": "3fcc7cf9",
+    "title": "Every amux Cloud server follows main within minutes, with rollback",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "cloud",
+      "deploy",
+      "reliability"
+    ],
+    "description": "amux Cloud servers now pick up each new release within minutes instead of waiting for an hourly check. If a new build does not report healthy within five minutes, the server puts the previous version back and holds the bad one. Your Cloud server stays current without you doing anything."
+  },
+  {
+    "hash": "ce35894739b553d669c42bd476ef8c8b6aa39213",
+    "short": "ce358947",
+    "title": "Install the Mac app from a double-click .dmg",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "mac",
+      "desktop",
+      "install"
+    ],
+    "description": "The amux Mac app now ships as a .dmg beside the zip on the desktop-latest release: open it and drag Amux to Applications. It is a universal app for macOS 12 and later. The app is not notarized yet, so macOS asks you to choose Open Anyway on first launch."
+  },
+  {
+    "hash": "e769a7b398248debe738be69431743664d64bcbb",
+    "short": "e769a7b3",
+    "title": "A Hotkeys tab, and ## to start dictation",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "productivity",
+      "voice"
+    ],
+    "description": "A new Hotkeys tab lists every keyboard shortcut and text trigger in amux and lets you add your own. Type ## in any input to start dictating into it. Shortcuts that collide with another hotkey or a built-in are refused, and your list follows you across the browser, phone and Mac app."
+  },
+  {
+    "hash": "3bbc04ee78f167809b73a5ba287c5a1857c5079c",
+    "short": "3bbc04ee",
+    "title": "Agents can download files through a signed-in browser profile",
+    "date": "2026-10-26",
+    "type": "feat",
+    "tags": [
+      "browser",
+      "automation"
+    ],
+    "description": "The browser automation can now download a file with the same sign-in as the page, so an agent can fetch a report or export from a site you are logged in to. Files land in ~/.amux/downloads/<session>/, up to 50 MB, and the reply gives the path, size and status. A response that is really a sign-in page is flagged instead of saved silently as the file."
+  },
+  {
     "hash": "4180992c9a4ed2728f0a3558e375738e87651aaf",
     "short": "4180992c",
     "title": "An urgent alert opens the worker that raised it",
