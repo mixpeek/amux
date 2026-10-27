@@ -810,6 +810,11 @@ mod tests {
     fn a_shared_folder_serves_only_what_is_inside_it_and_visible() {
         // Under HOME with a visible name: the OS temp dir is ".tmpXXXX" (hidden)
         // and may sit under a system prefix the file guard refuses.
+        // Read HOME under the shared env lock: two session_verbs tests repoint
+        // HOME at a tempdir while holding it, and under one-process cargo test
+        // (rust-nightly-deep) this read used to land on that tempdir after it
+        // was deleted, so tempdir_in failed NotFound (nightly runs 40286105439, 40466394121).
+        let _env = crate::api::settings::test_env::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         let base = tempfile::Builder::new().prefix("pubtest-").tempdir_in(&home).unwrap();
         let root = base.path().canonicalize().unwrap().join("share");
