@@ -60,6 +60,9 @@ const PUBLIC_PREFIXES: &[&str] = &[
     "/invite/",
     "/pub/",
     "/api/branding/",
+    // Chat platform webhooks (api/bridge.rs): authenticated by the platform's
+    // own signature over the body, which the handler checks first.
+    "/api/bridge/hook/",
 ];
 
 pub async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
