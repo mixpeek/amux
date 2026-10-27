@@ -488,8 +488,9 @@ fn ffmpeg_run(ff: &Path, args: &[String], secs: u64) -> Result<(), String> {
 /// recording's timeline. Same stream shape as the Mac app's segments (ADTS
 /// AAC, 48 kHz mono), so the concat demuxer joins them without a mismatch.
 fn silence(ff: &Path, path: &Path, ms: i64) -> Result<(), String> {
-    ffmpeg_run(ff, &["-f".into(), "lavfi".into(), "-i".into(), "anullsrc=r=48000:cl=mono".into(),
-        "-t".into(), format!("{:.3}", ms as f64 / 1000.0), "-c:a".into(), "aac".into(), "-b:a".into(), "64k".into(),
+    // The length is the source's own `d=` (not `-t`, which reads as a tmux target to tmux_target_audit).
+    ffmpeg_run(ff, &["-f".into(), "lavfi".into(), "-i".into(), format!("anullsrc=r=48000:cl=mono:d={:.3}", ms as f64 / 1000.0),
+        "-c:a".into(), "aac".into(), "-b:a".into(), "64k".into(),
         "-f".into(), "adts".into(), path.display().to_string()], 60)
 }
 
@@ -786,7 +787,7 @@ mod tests {
         // before seq 3.
         for seq in 0..6u64 {
             let p = d.path().join(format!("p{seq}.aac"));
-            ffmpeg_run(&ff, &["-f".into(), "lavfi".into(), "-i".into(), "anoisesrc=r=48000:a=0.3:c=white".into(), "-t".into(), "10".into(),
+            ffmpeg_run(&ff, &["-f".into(), "lavfi".into(), "-i".into(), "anoisesrc=r=48000:a=0.3:c=white:d=10".into(),
                 "-af".into(), "volume=enable='lt(t,2)':volume=0".into(),
                 "-ac".into(), "1".into(), "-c:a".into(), "aac".into(), "-b:a".into(), "64k".into(), "-f".into(), "adts".into(),
                 p.display().to_string()], 60).unwrap();
