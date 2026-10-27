@@ -6585,6 +6585,9 @@ ${BOLD}Coordination:${RESET}
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
+  amux watch add file --path P [--regex R] | add ci --repo O/R --run ID
+                                 Wake YOUR lane once when a file lands or a CI run concludes
+  amux watch ls | rm <ID>        Your watches, measured or not; remove one
   amux social post youtube <file> --caption-stdin [--title T] [--privacy P]
                                  Publish a video; prints the post id. Results land at 24h, 72h, 7d
   amux social track|ls|stats     Measure a post made elsewhere, list posts, read one post live
@@ -9362,6 +9365,26 @@ cmd_ci() {
   esac
 }
 
+# `amux watch add|ls|status|rm|check`: wake your lane once when a file arrives
+# or a CI run concludes (docs/wake-watch.md). Runs scripts/wake-watch.py from
+# origin/main of the amux checkout (committed bytes, not a peer's draft), and
+# falls back to the working tree with a WARN when origin has no copy yet.
+cmd_watch() {
+  local repo="${AMUX_REPO_DIR:-$HOME/Dev/amux}" tmp rc
+  case "${1:-}" in ''|-h|--help|help) set -- --help ;; esac
+  tmp="$(mktemp "${TMPDIR:-/tmp}/wake-watch.XXXXXX")" || die "amux watch: mktemp failed"
+  if ! git -C "$repo" show origin/main:scripts/wake-watch.py > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+    if [ -f "$repo/scripts/wake-watch.py" ]; then
+      echo "amux watch: WARN running $repo/scripts/wake-watch.py from a working tree: origin/main has no copy" >&2
+      cp "$repo/scripts/wake-watch.py" "$tmp"
+    else
+      rm -f "$tmp"; die "amux watch: scripts/wake-watch.py is not in $repo (set AMUX_REPO_DIR)"
+    fi
+  fi
+  AMUX_REPO_DIR="$repo" python3 "$tmp" "$@"; rc=$?
+  rm -f "$tmp"; return "$rc"
+}
+
 _ci_wait() {
   local run="" repo="" timeout=3600 poll="${AMUX_CI_WATCH_POLL_S:-60}" json=0
   while [ $# -gt 0 ]; do
@@ -11148,6 +11171,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
     ci)               shift; cmd_ci "$@" ;;
+    watch)            shift; cmd_watch "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;
     publish)          shift; cmd_publish "$@" ;;
     contribute)       shift; cmd_contribute "$@" ;;

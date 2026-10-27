@@ -180,6 +180,18 @@ The hand-run is not the scheduled run: the exec environment differs, and that is
 where the restic chain broke once already (launchd does not inherit shell PATH).
 Evidence is a log line carrying a timestamp from a run nobody started by hand.
 
+## Wake watches (`scripts/wake-watch.py`, `amux watch`, docs/wake-watch.md)
+
+```bash
+python3 scripts/test-wake-watch.py      # -> Ran 15 tests ... OK
+scripts/safe-cargo.sh test -p amux-server --lib -- shell_wake a_wake_exit_action
+```
+
+A pass is `OK` from the first and `test result: ok. 3 passed` from the second.
+Live evidence is a `verdict=watch_fired` line in `~/.amux/logs/wake-watch.log`
+followed by `verdict=shell_wake_delivered` (or `shell_wake_queued`) for the same
+lane in `~/.amux/logs/server-rs.log`.
+
 ## The /codex skill (`skills/codex.md`, `skills/codex/scripts/`)
 
 ```bash

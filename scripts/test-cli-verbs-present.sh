@@ -24,6 +24,8 @@ cell "main help names amux computer"    grep -q 'amux computer start|status' amu
 cell "dispatch: order"                  grep -q '^    order)' amux
 cell "dispatch: cdp (access rung 2)"    grep -q '^    cdp)' amux
 cell "dispatch: land"                   grep -q '^    land)' amux
+cell "dispatch: watch"                  grep -q '^    watch)' amux
+cell "amux watch --help prints usage"   bash -c 'AMUX_REPO_DIR="$PWD" bash amux watch --help 2>&1 | grep -q "add"'
 cell "land --help names --adopt"        bash -c 'bash amux land --help 2>&1 | grep -q -- "--adopt"'
 echo
 if [ "$FAILED" -eq 0 ]; then echo "PASS ($CELLS outcome cells)"; exit 0; fi

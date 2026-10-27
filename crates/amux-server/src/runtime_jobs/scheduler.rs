@@ -2280,6 +2280,14 @@ impl LiveDeliverer {
             verdict = if code == 0 { "shell_run_output_recorded" } else { "shell_run_failed_output_recorded" },
             "shell schedule finished; exit code and filtered output tail stored on the run row (AMUX-5241)"
         );
+        // `wake`: the run's stdout is a message for the schedule's own lane
+        // (scripts/wake-watch.py prints one and exits 10 when a watched file or
+        // CI run fires). Delivered like a tmux schedule's command, so it reaches
+        // an isolated lane as that lane's own schedule and is refused for a
+        // paused, archived or unregistered one.
+        if act == "wake" {
+            return self.shell_wake(sched, code, &stdout, output).await;
+        }
         if act == "alert" || (act.is_empty() && code != 0 && !actions.is_empty()) {
             let why = reason(400);
             // `why` already leads with "exit N"; keep the action tag beside it.
@@ -2324,6 +2332,125 @@ impl LiveDeliverer {
                 .filter(|s| !s.trim().is_empty()),
             output,
         }
+    }
+}
+
+impl LiveDeliverer {
+    /// Deliver a `wake` run's stdout to the schedule's own lane, retrying a
+    /// failed (not refused) delivery up to [`shell_wake_attempts`] times. This
+    /// is the only retry layer on the path: the script that printed the text
+    /// has already closed the watch, so it never re-sends.
+    async fn shell_wake(&self, sched: &DurableSchedule, code: i32, stdout: &str, output: Option<ShellOutput>) -> RunOutcome {
+        let session = sched.str_field("session").trim().to_string();
+        let text = match shell_wake_text(&session, stdout) {
+            Ok(t) => t,
+            Err(why) => {
+                tracing::warn!(schedule = %sched.id(), session = %session, exit_code = code, measured = true, n_considered = 1,
+                    verdict = "shell_wake_unsendable", why = %why, "wake exit action had nothing it could deliver");
+                return RunOutcome::ShellError { note: format!("exit {code} [wake] {why}"), output };
+            }
+        };
+        let guard = format!("sched:{}", sched.id());
+        let started = std::time::Instant::now();
+        let (d, attempts) = shell_wake_with_retry(shell_wake_attempts(), std::time::Duration::from_secs(shell_wake_backoff_s()), || {
+            crate::api::session_verbs::deliver_automated(&self.state, &session, &text, &guard)
+        })
+        .await;
+        let outcome = shell_wake_outcome(d);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let verdict = match &outcome {
+            RunOutcome::Delivered { .. } => "shell_wake_delivered",
+            RunOutcome::Queued { .. } => "shell_wake_queued",
+            RunOutcome::Refused { .. } => "shell_wake_refused",
+            _ => "shell_wake_failed",
+        };
+        if matches!(outcome, RunOutcome::Delivered { .. } | RunOutcome::Queued { .. }) {
+            tracing::info!(schedule = %sched.id(), session = %session, exit_code = code, attempts, elapsed_ms, chars = text.chars().count(),
+                status = outcome.status(), measured = true, n_considered = 1, verdict, "wake exit action delivered the run's output to its lane");
+        } else {
+            tracing::warn!(schedule = %sched.id(), session = %session, exit_code = code, attempts, elapsed_ms, status = outcome.status(),
+                measured = true, n_considered = 1, verdict, outcome = ?outcome, "wake exit action could not deliver the run's output to its lane");
+        }
+        if let RunOutcome::Delivered { .. } = &outcome {
+            let origin = schedule_message_origin(sched.str_field("title"), sched.id(), "wake");
+            crate::api::session_verbs::cmd_hist_record_schedule(&self.state, &session, &text, &origin).await;
+        }
+        outcome
+    }
+}
+
+/// Characters of a wake run's stdout delivered; the rest is cut with a marker.
+pub const SHELL_WAKE_MAX_CHARS: usize = 4000;
+
+/// Delivery attempts for one wake run (`AMUX_SHELL_WAKE_ATTEMPTS`, 1..=5, default 3).
+pub fn shell_wake_attempts() -> u32 {
+    std::env::var("AMUX_SHELL_WAKE_ATTEMPTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(3u32).clamp(1, 5)
+}
+
+/// Seconds between wake delivery attempts (`AMUX_SHELL_WAKE_BACKOFF_S`, 0..=30, default 5).
+pub fn shell_wake_backoff_s() -> u64 {
+    std::env::var("AMUX_SHELL_WAKE_BACKOFF_S").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(5u64).min(30)
+}
+
+/// The message a wake run delivers, or why there is none.
+pub fn shell_wake_text(session: &str, stdout: &str) -> Result<String, String> {
+    if session.trim().is_empty() {
+        return Err("the schedule has no session to wake".into());
+    }
+    let t = stdout.trim();
+    if t.is_empty() {
+        return Err("the run printed nothing to deliver".into());
+    }
+    if t.chars().count() <= SHELL_WAKE_MAX_CHARS {
+        return Ok(t.to_string());
+    }
+    let cut: String = t.chars().take(SHELL_WAKE_MAX_CHARS).collect();
+    Ok(format!("{cut}\n[cut at {SHELL_WAKE_MAX_CHARS} chars; the full output is in this schedule's Shell tab]"))
+}
+
+/// Is this delivery a failure worth another attempt? A refusal is a policy
+/// answer (paused, archived, unregistered) and a queued one is pending, so
+/// neither is retried.
+pub(crate) fn shell_wake_retryable(d: &crate::api::session_verbs::AutoDelivery) -> bool {
+    !d.refused && d.queue_id.is_none() && d.submitted == Some(false)
+}
+
+/// Run `attempt` until it is not retryable or `max` attempts are spent.
+/// Returns the last delivery and how many attempts were made.
+pub(crate) async fn shell_wake_with_retry<F, Fut>(
+    max: u32,
+    backoff: std::time::Duration,
+    mut attempt: F,
+) -> (crate::api::session_verbs::AutoDelivery, u32)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = crate::api::session_verbs::AutoDelivery>,
+{
+    let max = max.max(1);
+    let mut n = 0;
+    loop {
+        n += 1;
+        let d = attempt().await;
+        if !shell_wake_retryable(&d) || n >= max {
+            return (d, n);
+        }
+        tracing::warn!(attempt = n, max, measured = true, n_considered = 1, verdict = "shell_wake_retry",
+            message = %d.message, "wake delivery failed; retrying");
+        tokio::time::sleep(backoff).await;
+    }
+}
+
+/// The run outcome for a wake delivery, mapped exactly as a tmux fire maps it.
+pub(crate) fn shell_wake_outcome(d: crate::api::session_verbs::AutoDelivery) -> RunOutcome {
+    if d.refused {
+        return RunOutcome::Refused { reason: format!("[wake] {}", d.message) };
+    }
+    if let Some(queue_id) = d.queue_id {
+        return RunOutcome::Queued { queue_id, detail: format!("[wake] {}", d.message) };
+    }
+    match d.submitted {
+        Some(false) => RunOutcome::Failed { reason: format!("[wake] {}", d.message) },
+        _ => RunOutcome::Delivered { submission: d.submission.to_string(), detail: format!("[wake] {}", d.message) },
     }
 }
 
@@ -3776,6 +3903,93 @@ mod tests {
             assert_eq!(matches!(out, RunOutcome::ShellOk { .. }), success, "{out:?}");
             if !success { assert!(matches!(out, RunOutcome::ShellError { .. }), "{out:?}"); }
         }
+    }
+    fn wake_delivery(refused: bool, submitted: Option<bool>, queue_id: Option<&str>) -> crate::api::session_verbs::AutoDelivery {
+        crate::api::session_verbs::AutoDelivery {
+            message: format!("refused={refused} submitted={submitted:?}"),
+            submitted,
+            submission: "test",
+            queue_id: queue_id.map(String::from),
+            refused,
+        }
+    }
+
+    /// wake-watch: a failed delivery is retried, a success stops the loop, and
+    /// the attempts are bounded. A refusal is final on the first attempt.
+    #[tokio::test]
+    async fn shell_wake_retries_a_failed_delivery_and_stops_at_the_bound() {
+        let zero = std::time::Duration::ZERO;
+        // Fails twice, then lands: three attempts, delivered.
+        let mut calls = 0;
+        let (d, n) = shell_wake_with_retry(3, zero, || {
+            calls += 1;
+            let ok = calls >= 3;
+            async move { wake_delivery(false, Some(ok), None) }
+        })
+        .await;
+        assert_eq!((n, calls), (3, 3));
+        assert!(matches!(shell_wake_outcome(d), RunOutcome::Delivered { .. }));
+        // Never lands: stops at the bound and is recorded as a failure.
+        let mut calls = 0;
+        let (d, n) = shell_wake_with_retry(3, zero, || {
+            calls += 1;
+            async { wake_delivery(false, Some(false), None) }
+        })
+        .await;
+        assert_eq!((n, calls), (3, 3), "bounded at max attempts");
+        assert_eq!(shell_wake_outcome(d).status(), "error");
+        // A refusal is a policy answer: one attempt, recorded refused.
+        let mut calls = 0;
+        let (d, n) = shell_wake_with_retry(3, zero, || {
+            calls += 1;
+            async { wake_delivery(true, Some(false), None) }
+        })
+        .await;
+        assert_eq!((n, calls), (1, 1));
+        assert_eq!(shell_wake_outcome(d).status(), "refused");
+        // Queued is pending, not failed: no retry.
+        let (d, n) = shell_wake_with_retry(3, zero, || async { wake_delivery(false, None, Some("Q-1")) }).await;
+        assert_eq!(n, 1);
+        assert_eq!(shell_wake_outcome(d).queue_id(), Some("Q-1"));
+    }
+
+    #[test]
+    fn shell_wake_text_refuses_empty_output_and_caps_long_output() {
+        assert!(shell_wake_text("", "hello").is_err());
+        assert!(shell_wake_text("lane", "  \n ").is_err());
+        assert_eq!(shell_wake_text("lane", " hi\n").unwrap(), "hi");
+        let long = "x".repeat(SHELL_WAKE_MAX_CHARS + 10);
+        let t = shell_wake_text("lane", &long).unwrap();
+        assert!(t.starts_with(&"x".repeat(SHELL_WAKE_MAX_CHARS)) && t.contains("[cut at"), "{t}");
+    }
+
+    /// The exit action is honoured on the shipped path: exit 10 mapped to
+    /// `wake` goes to delivery (refused here: the lane is not registered, and
+    /// a paused lane is refused too), never to a plain shell ok/error.
+    #[tokio::test]
+    async fn a_wake_exit_action_delivers_instead_of_recording_shell_output() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let (store, _dir) = store();
+        let state = crate::api::AppState { store, started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let live = LiveDeliverer::new(state);
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/paused-lane.env"), "CC_PAUSED=1\n").unwrap();
+        for lane in ["ghost-lane", "paused-lane"] {
+            let mut row = make_row("WAKE", lane, None, "2020-01-01T00:00");
+            row.raw.insert("kind".into(), Value::from("shell"));
+            row.raw.insert("command".into(), Value::from("echo 'wake-watch: W-1 fired'; exit 10"));
+            row.raw.insert("exit_actions".into(), Value::from(r#"{"10":"wake"}"#));
+            let out = live.run_shell(&row).await;
+            assert!(matches!(out, RunOutcome::Refused { .. }), "{lane}: {out:?}");
+        }
+        // Empty output has nothing to deliver: an error, not a silent ok.
+        let mut row = make_row("WAKE", "ghost-lane", None, "2020-01-01T00:00");
+        row.raw.insert("kind".into(), Value::from("shell"));
+        row.raw.insert("command".into(), Value::from("exit 10"));
+        row.raw.insert("exit_actions".into(), Value::from(r#"{"10":"wake"}"#));
+        assert!(matches!(live.run_shell(&row).await, RunOutcome::ShellError { .. }));
     }
     /// AMUX-3546: a cadence has a number, and it is the number nobody saw.
     ///
