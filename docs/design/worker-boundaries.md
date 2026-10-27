@@ -49,6 +49,7 @@ Where it is visible:
 | email | external-send approval hold, send audit (`api/email_approval.rs`, `/api/email/log`) | Mail.app, sendmail and SMTP, provider APIs (Gmail, SendGrid, Mailgun, ...), stored Gmail and auth tokens, approving or editing held sends |
 | resources | `host_guard` holds automated dispatch at critical; admission refuses new workers under memory pressure | heavy commands refused at critical pressure, with an acknowledged override |
 | subagents | none | a new Agent/Task call while the worker already runs its subagent limit, or while the account's usage headroom is under the floor |
+| tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
 **What this cannot do yet.** Workers run as the owner's macOS user. The guard
@@ -106,6 +107,54 @@ exist, or an unreachable or unmeasured `/api/usage`. Verdicts in
 count was the unmeasured half, `unmeasured` naming which). The guard is wired
 for `Agent` and `Task` by `install-claude-status-hooks.py`; a box installed
 before this change needs `install.sh` rerun for the matcher to include them.
+
+## Tenant workloads
+
+Owner ask, 2026-10-27: before any lane scales, patches, restarts or load-tests
+a live tenant workload, it reads what scales it and records a gate. That day a
+worker scaled `deploy/api` in `ephemeral-r40255478404` to zero and paused its
+ScaledObject without reading the namespace; a second ScaledObject,
+`mvs-primary-scale-to-zero`, deactivates the mvs-primary shard when no
+`app=api` pods exist, so the shard died mid index rebuild. The same day a
+teardown deleted a booting pod, a mass `rollout restart` OOMed a node, and a
+replay burst wedged a shard.
+
+`scripts/tenant-gate.sh <context> <namespace> "<why>"` (installed as
+`~/.amux/hooks/tenant-gate.sh`) is read-only: it gets the namespace's
+ScaledObjects, HPAs, PDBs, Deployments and StatefulSets, prints what scales
+what (including `kubernetes-workload` triggers whose `podSelector` watches
+another workload, and paused annotations), and writes a receipt to
+`$AMUX_HOME/tenant-gates/<worker>/<context>__<namespace>.json` with the
+reason and a sha256 of the raw read. A failed or empty read writes none.
+Context `default` means kubectl's current context, and is what the guard uses
+for a command that names no `--context`.
+
+The `tenant-workload-gate` boundary's deny rule carries `requires_receipt`.
+Its patterns are tested per command segment (split on shell operators, and
+inside `bash -c`, `sh -c`, `eval` and `ssh` strings). A segment that mutates
+(`kubectl` scale, patch, delete, apply, replace, edit, annotate, label, drain,
+cordon, taint, create, `rollout restart|undo|pause|resume`,
+`set env|image|resources`; `helm` upgrade, rollback, uninstall, install; a
+named load tool such as `hey`, `k6 run`, `vegeta attack`, or a `*replay*` or
+`*load-test*` command) in a namespace matching `namespaces` (`mixpeek-*`,
+`ephemeral-*`) is refused unless this worker holds a receipt for that exact
+context and namespace younger than `max_age_s` (1800;
+`AMUX_TENANT_GATE_MAX_AGE_S` overrides). The refusal names the gate command
+with the parsed context and namespace. A mutation over `-A` is refused
+outright, since no one receipt covers it. This rule fails closed; the guard
+stays fail-open for unreadable payloads and registries. Verdicts in
+`boundaries.jsonl`, counted by `/api/boundaries` under the boundary:
+`tenant_gate_refused` (WARN, with each target's `cause`) and
+`tenant_gate_allowed_with_receipt` (INFO, with the receipt's age and sha256).
+
+What it cannot see: a command whose namespace comes from the kubeconfig
+(`kubectl config set-context --current --namespace=...`) or from a manifest
+(`kubectl apply -f x.yaml` with no `-n`); a script on disk that runs kubectl
+or sends load (only its own command line is read, so a `replay` script that
+names its namespace with `--namespace` or a `<svc>.<ns>.svc` host is caught,
+and one that reads it from config is not); load sent through a
+`port-forward` to localhost; and `kubectl exec` into a pod. The receipt proves
+the read happened, not that the worker understood it.
 
 ## Resources
 

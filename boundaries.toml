@@ -32,6 +32,9 @@
 #   path        file tools (Read, Edit, Write, ...): regex on the file path
 #   content_any file tools: the rule applies only if the written text matches
 #   reason      what the worker is told, including the sanctioned route
+#   requires_receipt  Bash: the rule refuses only when no fresh receipt for
+#               the parsed target exists (see tenant-workload-gate). Its
+#               match_all/match_none are tested per command segment.
 # Regexes are Python `re`, case-insensitive.
 
 version = 1
@@ -357,6 +360,105 @@ block_examples = [
   "tmux -S /private/tmp/tmux-501/default kill-server",
 ]
 allow_examples = ["tmux -L default ls", "tmux -S /tmp/tmux-501/demo kill-server"]
+
+[[boundary]]
+id = "tenant-workload-gate"
+title = "Read what scales a tenant workload before you change it"
+rule = """
+Before you scale, patch, restart, delete, apply to, roll back, drain or
+load-test anything in a live tenant Kubernetes namespace (mixpeek-* and
+ephemeral-*), run the read-only gate for that namespace and read its output:
+
+  ~/.amux/hooks/tenant-gate.sh <kube-context> <namespace> "<why>"
+
+(in the amux repo it is scripts/tenant-gate.sh; use `default` as the context
+when your command names no --context). It lists every ScaledObject, HPA, PDB,
+Deployment and StatefulSet in the namespace and says what scales what,
+including triggers that watch another workload's pods. Workloads depend on
+each other there: on 2026-10-27 scaling deploy/api to zero made a separate
+ScaledObject deactivate the mvs-primary shard mid index rebuild. The gate
+records a receipt for your session, and mutating commands in that namespace
+are refused without one from the last 30 minutes. Restart deployments one at
+a time and watch the node, and keep load and replay bursts off live tenant
+shards unless the task is that test.
+"""
+enforced_by = [
+  "hook: boundary-guard (kubectl/helm mutations and named load tools in a tenant namespace need a fresh gate receipt from this session)",
+]
+
+# The 2026-10-27 incidents are the block examples: a scale to zero that killed
+# a shard through another ScaledObject, a teardown deleting a booting pod, a
+# mass rollout restart that OOMed a node, and a replay burst that wedged a
+# shard. Each is refused without a receipt and allowed with a fresh one
+# (scripts/hooks/test-boundary-guard.py builds the receipts).
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['(?:^|\s)(?:(?:kubectl|oc)\s(?:[^;&|]*\s)?(?:scale|patch|delete|apply|replace|edit|annotate|label|drain|cordon|uncordon|taint|create|autoscale|rollout\s+(?:restart|undo|pause|resume)|set\s+(?:env|image|resources))|helm\s(?:[^;&|]*\s)?(?:upgrade|rollback|uninstall|delete|install)|(?:hey|k6\s+run|vegeta\s+attack|locust|wrk|ab|ghz|oha)|\S*(?:replay|load[-_]?test)\S*)(?=\s|$)']
+match_none = ['^\s*(?:grep|rg|man|which|echo|printf)\b', '(?:^|\s)auth\s+can-i\b', 'tenant-gate\.sh\b']
+reason = "This changes a live tenant workload, and this session has not read what scales it."
+block_examples = [
+  "kubectl -n ephemeral-r40255478404 scale deploy/api --replicas=0",
+  "kubectl -n ephemeral-r40255478404 annotate scaledobject api autoscaling.keda.sh/paused=true --overwrite",
+  "kubectl --context gke_mixpeek-inference-463103_us-central1_mixpeek-engine delete pod mvs-primary-0 -n mixpeek-tenant-a",
+  "for d in api worker mvs-primary; do kubectl -n mixpeek-tenant-a rollout restart deploy/$d; done",
+  "hey -z 60s -c 200 http://api.ephemeral-r40255478404.svc.cluster.local/v1/retrievers/x/execute",
+  "python3 scripts/replay_requests.py --namespace ephemeral-r40255478404 --rate 500",
+  "helm upgrade mvs charts/mvs -n mixpeek-tenant-a --set replicas=3",
+  "bash -c 'kubectl patch deploy api -n ephemeral-r1 -p {}'",
+  "kubectl delete ns ephemeral-r40255478404",
+]
+allow_examples = [
+  "kubectl -n ephemeral-r40255478404 get scaledobjects.keda.sh,hpa,deploy -o wide",
+  "kubectl -n ephemeral-r40255478404 describe scaledobject mvs-primary-scale-to-zero",
+  "kubectl -n mixpeek-tenant-a logs deploy/api --tail=50",
+  "kubectl -n mixpeek-tenant-a top pods",
+  "kubectl -n mixpeek-tenant-a get events --sort-by=.lastTimestamp",
+  "kubectl auth can-i delete pods -n mixpeek-tenant-a",
+  "kubectl -n mixpeek-tenant-a port-forward svc/api 8080:80",
+  "kubectl -n mixpeek-tenant-a rollout status deploy/api",
+  "kubectl -n kube-system rollout restart deploy/coredns",
+  "kubectl -n monitoring scale deploy/grafana --replicas=1",
+  "git commit -m 'kubectl -n ephemeral-r1 scale deploy/api --replicas=0 was the incident'",
+  "grep -rn 'kubectl scale -n mixpeek-a' docs/",
+  "~/.amux/hooks/tenant-gate.sh default ephemeral-r40255478404 'scale api to zero'",
+]
+
+[boundary.deny.requires_receipt]
+# The rule's match_all/match_none are tested against each command segment (split
+# on ; && || | and newlines, and into bash -c / sh -c / eval / ssh strings). A
+# segment that matches and names a namespace matching `namespaces` needs a
+# receipt at $AMUX_HOME/<dir>/<worker>/<context>__<namespace>.json, written by
+# the gate below for this worker, younger than max_age_s (env max_age_env
+# overrides). The receipt's own fields must name the same worker, context and
+# namespace. Fails CLOSED: no valid receipt, the command is refused.
+dir = "tenant-gates"
+max_age_s = 1800
+max_age_env = "AMUX_TENANT_GATE_MAX_AGE_S"
+namespaces = ['^mixpeek-', '^ephemeral-']
+# First capture group of the first pattern that matches the segment. A service
+# DNS name comes first so `hey -n 1000 http://api.<ns>.svc` reads the host.
+namespace_patterns = [
+  '[\w-]+\.([a-z0-9][-a-z0-9]*)\.svc(?:\.cluster\.local)?\b',
+  '(?:^|\s)(?:-n|--namespace)(?:=|\s+)?([a-z0-9][-a-z0-9.]*)',
+  '(?:^|\s)(?:ns|namespaces?)(?:/|\s+)([a-z0-9][-a-z0-9]*)',
+]
+# A mutation across every namespace can have no one receipt: refused.
+all_namespaces_patterns = ['(?:^|\s)(?:kubectl|oc)\s(?:[^;&|]*\s)?(?:-A|--all-namespaces)(?=\s|=|$)']
+context_patterns = ['(?:^|\s)--(?:kube-)?context(?:=|\s+)(\S+)']
+default_context = "default"
+gate_command = '~/.amux/hooks/tenant-gate.sh {context} {namespace} "<why you are changing it>"'
+verdict_refused = "tenant_gate_refused"
+verdict_allowed = "tenant_gate_allowed_with_receipt"
+
+# A receipt is written by the gate only. Hand-writing one skips the read.
+[[boundary.deny]]
+tools = ["Bash", "Edit", "Write", "MultiEdit"]
+match_all = ['\.amux/tenant-gates\b', '(>|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\btouch\b|\bln\b|\bpython3?\b|\bnode\b|\bperl\b|\bruby\b)']
+match_none = ['^\s*(cat|ls|jq|head|tail|grep|rg)\b[^>|;&]*$']
+path = '\.amux/tenant-gates/'
+reason = "Gate receipts are written by tenant-gate.sh after it reads the namespace. Run the gate instead of writing a receipt."
+block_examples = ["echo '{}' > ~/.amux/tenant-gates/me/default__ephemeral-r1.json", "Write /Users/ethan/.amux/tenant-gates/me/default__ephemeral-r1.json :: {}"]
+allow_examples = ["ls ~/.amux/tenant-gates/me", "cat ~/.amux/tenant-gates/me/default__ephemeral-r1.json"]
 
 [[boundary]]
 id = "boundaries-self"

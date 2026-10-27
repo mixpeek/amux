@@ -406,6 +406,12 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/boundary-guard.py" && -f "$SCRIPT_DIR/bounda
   install_hook_from_head scripts/hooks/boundary-guard.py "$AMUX_HOME/hooks/boundary-guard.py"
   install_hook_from_head boundaries.toml "$AMUX_HOME/hooks/boundaries.toml"
   chmod +x "$AMUX_HOME/hooks/boundary-guard.py"
+  # The read-only gate tenant-workload-gate's refusal names, at a path every
+  # repo's worker can run.
+  if [[ -f "$SCRIPT_DIR/scripts/tenant-gate.sh" ]]; then
+    install_hook_from_head scripts/tenant-gate.sh "$AMUX_HOME/hooks/tenant-gate.sh"
+    chmod +x "$AMUX_HOME/hooks/tenant-gate.sh"
+  fi
   rm -f "${AMUX_HOME:?}/hooks/mail-app-guard.py"
   say "boundary guard: $AMUX_HOME/hooks/boundary-guard.py ($(grep -c '^\[\[boundary\]\]' "$AMUX_HOME/hooks/boundaries.toml") boundaries)"
 fi

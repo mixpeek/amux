@@ -22,7 +22,9 @@ Every decision other than a plain allow is appended to
 Fail-open: a guard must never wedge a tool call. An unreadable payload or
 registry lets the call through, and a registry that does not load is logged
 as verdict=boundary_registry_unloadable so the sweep sees every boundary
-went dark.
+went dark. The one exception is a deny rule with `requires_receipt`
+(tenant-workload-gate): once its patterns match a command segment, a missing,
+stale or foreign receipt refuses the call, and so does a failed check.
 """
 from __future__ import annotations
 
@@ -146,6 +148,12 @@ def rule_applies(rule: dict, tool: str, command: str, path: str, content: str) -
         return False
     if tool == "Bash":
         alls = rule.get("match_all") or []
+        if rule.get("requires_receipt"):
+            # A cheap prefilter only: quotes read as spaces so a command inside
+            # bash -c '...' still passes it. match_none and the receipt are
+            # decided per segment in check_receipts.
+            loose = re.sub(r"[\"'`()]", " ", command)
+            return bool(alls) and all(search(p, loose) for p in alls)
         if not alls or not all(search(p, command) for p in alls):
             return False
         return not any(search(p, command) for p in rule.get("match_none") or [])
@@ -156,6 +164,176 @@ def rule_applies(rule: dict, tool: str, command: str, path: str, content: str) -
         anys = rule.get("content_any") or []
         return not anys or any(search(p, content) for p in anys)
     return False
+
+
+# ---- receipts (tenant-workload-gate, 2026-10-27) --------------------------------
+#
+# A deny rule with `requires_receipt` refuses only the command segments whose
+# target has no fresh receipt. On 2026-10-27 a worker scaled
+# ephemeral-r40255478404's deploy/api to zero without reading the namespace's
+# ScaledObjects, and a second ScaledObject that watches app=api pods
+# deactivated the mvs-primary shard mid index rebuild. The receipt is what the
+# read-only gate (scripts/tenant-gate.sh) writes after it reads what scales
+# what. Everything that decides scope (which segments, which namespaces, how
+# the namespace and context are found) is in the registry; this code only
+# splits the command, applies those patterns, and checks the file. Fail
+# CLOSED: a matching segment with no valid receipt is refused.
+
+SHELL_WRAPPERS = {"bash", "sh", "zsh", "eval", "ssh", "su", "watch"}
+OPERATORS = {";", "&&", "||", "|", "&", "\n", ";;", "|&"}
+
+
+def receipt_key(value: str) -> str:
+    """The receipt file name part for a context or namespace. tenant-gate.sh
+    applies the same substitution, so the two always agree."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value) or "_"
+
+
+def command_segments(command: str, depth: int = 0) -> list[str]:
+    """Simple commands, split on shell operators and newlines, with the string
+    given to bash -c / sh -c / eval / ssh split again. A quoted argument with
+    spaces in it (a commit message, a grep pattern) is not read as a command."""
+    import shlex
+
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:  # unbalanced quotes (a heredoc body, say): split crudely
+        tokens = []
+        for part in re.split(r"(;|&&|\|\||\||\n)", command):
+            tokens.extend(["\n"] if part in (";", "&&", "||", "|", "\n") else part.split())
+    segs: list[list[str]] = [[]]
+    for t in tokens:
+        if t in OPERATORS:
+            segs.append([])
+        else:
+            segs[-1].append(t)
+    out: list[str] = []
+    for seg in segs:
+        if not seg:
+            continue
+        # A quoted argument with spaces in it (a commit message, a JSON patch)
+        # is data to this command, so it reads as one placeholder word.
+        out.append(" ".join("_" if re.search(r"\s", t) else t for t in seg))
+        if depth < 2:
+            words = [w for w in seg if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+            if words and os.path.basename(words[0]) in SHELL_WRAPPERS:
+                for w in words[1:]:
+                    if re.search(r"\s", w):
+                        out.extend(command_segments(w, depth + 1))
+    return out
+
+
+def first_group(patterns: list[str], text: str) -> str | None:
+    for p in patterns or []:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            return m.group(1) if m.groups() else m.group(0)
+    return None
+
+
+def segment_matches(rule: dict, seg: str) -> bool:
+    alls = rule.get("match_all") or []
+    return bool(alls) and all(search(p, seg) for p in alls) and not any(search(p, seg) for p in rule.get("match_none") or [])
+
+
+def read_receipt(path: str, worker: str, context: str, namespace: str, max_age_s: float) -> tuple[dict | None, str]:
+    """(receipt, "") when valid, else (None, cause)."""
+    try:
+        with open(path) as fh:
+            r = json.load(fh)
+    except FileNotFoundError:
+        return None, "no_receipt"
+    except (OSError, ValueError):
+        return None, "receipt_unreadable"
+    if not isinstance(r, dict):
+        return None, "receipt_unreadable"
+    if r.get("session") != worker:
+        return None, "receipt_other_session"
+    if r.get("context") != context or r.get("namespace") != namespace:
+        return None, "receipt_other_target"
+    try:
+        age = time.time() - float(r.get("ts"))
+    except (TypeError, ValueError):
+        return None, "receipt_unreadable"
+    if age > max_age_s or age < -60:
+        return None, "receipt_expired"
+    return dict(r, age_s=round(age)), ""
+
+
+def check_receipts(b: dict, i: int, rule: dict, command: str) -> tuple[int, str]:
+    rr = rule.get("requires_receipt") or {}
+    in_scope = rr.get("namespaces") or []
+    targets: list[dict] = []
+    for seg in command_segments(command):
+        if not segment_matches(rule, seg):
+            continue
+        if first_group(rr.get("all_namespaces_patterns") or [], seg) is not None:
+            targets.append({"segment": seg, "namespace": "*", "context": first_group(rr.get("context_patterns"), seg) or rr.get("default_context", "default")})
+            continue
+        ns = first_group(rr.get("namespace_patterns"), seg)
+        if not ns or not any(re.search(p, ns, re.IGNORECASE) for p in in_scope):
+            continue  # no namespace named, or not a tenant namespace: out of scope
+        targets.append({"segment": seg, "namespace": ns,
+                        "context": first_group(rr.get("context_patterns"), seg) or rr.get("default_context", "default")})
+    if not targets:
+        return 0, ""
+    env_key = rr.get("max_age_env") or ""
+    raw = (scoped_env_value(env_key) if env_key else None) or (os.environ.get(env_key) if env_key else None)
+    try:
+        max_age = float(raw) if raw not in (None, "") else float(rr.get("max_age_s", 1800))
+    except ValueError:
+        max_age = float(rr.get("max_age_s", 1800))
+    rdir = os.path.join(amux_home(), rr.get("dir") or "receipts", receipt_key(WORKER))
+    refused: list[dict] = []
+    allowed: list[dict] = []
+    for t in targets:
+        if t["namespace"] == "*":
+            refused.append({**t, "cause": "all_namespaces"})
+            continue
+        path = os.path.join(rdir, f"{receipt_key(t['context'])}__{receipt_key(t['namespace'])}.json")
+        rec, cause = read_receipt(path, WORKER, t["context"], t["namespace"], max_age)
+        if rec is None:
+            refused.append({**t, "cause": cause, "receipt": path})
+        else:
+            allowed.append({**t, "receipt": path, "receipt_age_s": rec.get("age_s"), "receipt_sha256": rec.get("sha256")})
+    base = {"boundary": b.get("id"), "rule": i, "tool": "Bash", "subject": redact(command), "max_age_s": max_age,
+            "measured": True, "n_considered": len(targets)}
+    strip = lambda ts: [{k: (redact(v) if k == "segment" else v) for k, v in t.items()} for t in ts]  # noqa: E731
+    if not refused:
+        log({**base, "level": "INFO", "verdict": rr.get("verdict_allowed") or "receipt_allowed", "targets": strip(allowed)})
+        return 0, ""
+    log({**base, "level": "WARN", "verdict": rr.get("verdict_refused") or "receipt_refused", "targets": strip(refused),
+         "with_receipt": strip(allowed)})
+    gate = rr.get("gate_command") or ""
+    lines = []
+    for t in refused:
+        what = {"no_receipt": "this session has no gate receipt for it",
+                "receipt_expired": f"this session's gate receipt is older than {max_age / 60:.0f} min",
+                "receipt_other_session": "the receipt there was written for another worker",
+                "receipt_other_target": "the receipt there names another context or namespace",
+                "receipt_unreadable": "the receipt there does not parse",
+                "all_namespaces": "it spans every namespace, so no one receipt can cover it; name one namespace with -n"}.get(t["cause"], t["cause"])
+        lines.append(f"- `{t['segment'][:140]}`: namespace {t['namespace']}, context {t['context']}: {what}.")
+        if t["namespace"] != "*" and gate:
+            lines.append("  Run, as its own command:\n    " + gate.format(context=t["context"], namespace=t["namespace"]))
+            try:
+                others = sorted(n for n in os.listdir(rdir) if n.endswith(f"__{receipt_key(t['namespace'])}.json")
+                                and n != f"{receipt_key(t['context'])}__{receipt_key(t['namespace'])}.json")
+            except OSError:
+                others = []
+            if others:
+                lines.append(f"  (you hold receipts for this namespace under other contexts: {', '.join(others)}; "
+                             "name that --context in your command if it is the cluster you mean)")
+    return 2, (
+        f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}).\n"
+        f"{rule.get('reason', '').strip()}\n" + "\n".join(lines) + "\n"
+        "Read what the gate prints (what scales what, and which ScaledObjects watch this workload's pods), "
+        "then retry.\n\n" + b.get("rule", "").strip() + "\n"
+        "(boundary-guard; the registry is boundaries.toml, GET $AMUX_URL/api/boundaries)\n"
+    )
 
 
 # ---- resources -----------------------------------------------------------------
@@ -805,6 +983,23 @@ def main() -> None:
                 hit = rule_applies(rule, tool, command, path, content)
             except re.error as e:
                 log({"verdict": "boundary_rule_invalid", "boundary": b.get("id"), "rule": i, "error": str(e)})
+                continue
+            if hit and rule.get("requires_receipt"):
+                # The whole-command match is only the cheap prefilter; the
+                # rule is decided per segment against the receipts.
+                try:
+                    code, msg = check_receipts(b, i, rule, command)
+                except re.error as e:
+                    log({"verdict": "boundary_rule_invalid", "boundary": b.get("id"), "rule": i, "error": str(e)})
+                    continue
+                except Exception as e:  # noqa: BLE001 - this rule fails closed
+                    log({"level": "WARN", "verdict": "receipt_check_failed", "boundary": b.get("id"), "rule": i,
+                         "subject": redact(command), "error": str(e)[:300], "measured": False, "n_considered": 1})
+                    code, msg = 2, (f"BLOCKED by amux boundary '{b.get('id')}': the receipt check failed ({e}), and "
+                                    "this rule fails closed.\n" + b.get("rule", "").strip() + "\n(boundary-guard)\n")
+                if code:
+                    sys.stderr.write(msg)
+                    sys.exit(code)
                 continue
             if hit:
                 log({"verdict": "boundary_refused", "boundary": b.get("id"), "rule": i, "tool": tool,

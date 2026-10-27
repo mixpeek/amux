@@ -477,6 +477,33 @@ mod tests {
         assert!(dflt["budget_gb"].as_f64().unwrap_or(0.0) > 0.0, "{dflt}");
     }
 
+    /// tenant-workload-gate (2026-10-27): the registry names the two verdicts the
+    /// guard logs, and /api/boundaries counts both under the boundary.
+    #[test]
+    fn tenant_gate_verdicts_are_named_in_the_registry_and_counted() {
+        let l = layer(DEFAULT_REGISTRY).unwrap();
+        let b = l.iter().find(|b| s(b, "id") == "tenant-workload-gate").expect("tenant-workload-gate boundary");
+        let rr = b["deny"].as_array().unwrap().iter()
+            .find_map(|r| r.get("requires_receipt").and_then(|v| v.as_table()))
+            .expect("a deny rule with requires_receipt");
+        assert_eq!(rr["verdict_refused"].as_str(), Some("tenant_gate_refused"));
+        assert_eq!(rr["verdict_allowed"].as_str(), Some("tenant_gate_allowed_with_receipt"));
+        assert_eq!(rr["max_age_s"].as_integer(), Some(1800));
+        assert!(DEFAULT_GUARD.contains("def check_receipts"), "the embedded guard enforces requires_receipt");
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("b.jsonl");
+        let now = chrono::Utc::now().timestamp() as f64;
+        std::fs::write(&log, format!(
+            "{{\"ts\":{now},\"boundary\":\"tenant-workload-gate\",\"verdict\":\"tenant_gate_refused\"}}\n\
+             {{\"ts\":{now},\"boundary\":\"tenant-workload-gate\",\"verdict\":\"tenant_gate_refused\"}}\n\
+             {{\"ts\":{now},\"boundary\":\"tenant-workload-gate\",\"verdict\":\"tenant_gate_allowed_with_receipt\"}}\n")).unwrap();
+        let (c, n, read) = event_counts(&log, 86_400);
+        assert!(read);
+        assert_eq!(n, 3);
+        assert_eq!(c["tenant-workload-gate"]["tenant_gate_refused"], 2);
+        assert_eq!(c["tenant-workload-gate"]["tenant_gate_allowed_with_receipt"], 1);
+    }
+
     #[test]
     fn event_counts_read_only_the_window() {
         let dir = std::env::temp_dir().join(format!("amux-bnd-{}", std::process::id()));

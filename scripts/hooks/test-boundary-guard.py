@@ -138,6 +138,214 @@ def expect(label: str, ok: bool, detail: str = "") -> None:
         failures.append(label)
 
 
+GATE = os.path.join(REPO, "scripts", "tenant-gate.sh")
+INCIDENT_NS = "ephemeral-r40255478404"
+FAKE_KUBECTL = r"""#!/usr/bin/env bash
+# A kubectl that answers `get` from fixture files and records its argv.
+echo "$*" >> "$FAKE_KUBE_DIR/argv.log"
+case " $* " in *" get "*) ;; *) echo "fake kubectl: refusing non-get: $*" >&2; exit 9 ;; esac
+[[ -n "${FAKE_KUBE_FAIL:-}" ]] && { echo "The connection to the server was refused" >&2; exit 1; }
+if [[ "$*" == *scaledobjects.keda.sh* ]]; then
+  [[ -n "${FAKE_KUBE_NO_KEDA:-}" ]] && { echo 'error: the server doesn'"'"'t have a resource type "scaledobjects"' >&2; exit 1; }
+  cat "$FAKE_KUBE_DIR/${FAKE_KUBE_SET:-incident}.so.json"
+else
+  cat "$FAKE_KUBE_DIR/${FAKE_KUBE_SET:-incident}.rest.json"
+fi
+"""
+
+
+def incident_fixture() -> tuple[dict, dict]:
+    """ephemeral-r40255478404 as it stood on 2026-10-27: deploy/api, the
+    mvs-primary shard, api's own ScaledObject (paused), and the second
+    ScaledObject that scales mvs-primary to zero when no app=api pods exist."""
+    def workload(kind, name, labels, replicas):
+        return {"kind": kind, "metadata": {"name": name}, "spec": {"replicas": replicas, "template": {"metadata": {"labels": labels}}},
+                "status": {"readyReplicas": replicas}}
+    so = {"items": [
+        {"kind": "ScaledObject", "metadata": {"name": "api", "annotations": {"autoscaling.keda.sh/paused": "true"}},
+         "spec": {"scaleTargetRef": {"name": "api"}, "minReplicaCount": 0, "maxReplicaCount": 4,
+                  "triggers": [{"type": "prometheus", "metadata": {"query": "sum(rate(http_requests_total[1m]))", "threshold": "5"}}]}},
+        {"kind": "ScaledObject", "metadata": {"name": "mvs-primary-scale-to-zero"},
+         "spec": {"scaleTargetRef": {"kind": "StatefulSet", "name": "mvs-primary"}, "minReplicaCount": 0, "maxReplicaCount": 1,
+                  "triggers": [{"type": "kubernetes-workload", "metadata": {"podSelector": "app=api", "value": "1"}}]}}]}
+    rest = {"items": [
+        workload("Deployment", "api", {"app": "api"}, 1),
+        workload("StatefulSet", "mvs-primary", {"app": "mvs-primary"}, 1),
+        {"kind": "PodDisruptionBudget", "metadata": {"name": "mvs-primary"},
+         "spec": {"minAvailable": 1, "selector": {"matchLabels": {"app": "mvs-primary"}}}}]}
+    return so, rest
+
+
+def tenant_gate_cases(home: str, boundaries: list[dict]) -> None:
+    """tenant-workload-gate (2026-10-27): the four incidents refused without a
+    receipt and allowed with one from the REAL scripts/tenant-gate.sh, and the
+    negatives (expired, other namespace, other session, other context, read-only,
+    non-tenant, all namespaces, an innocent first segment)."""
+    b = next((x for x in boundaries if x.get("id") == "tenant-workload-gate"), None)
+    expect("the registry carries the tenant-workload-gate boundary", b is not None)
+    if b is None:
+        return
+    rr = next(r["requires_receipt"] for r in b["deny"] if r.get("requires_receipt"))
+    refused_v, allowed_v = rr["verdict_refused"], rr["verdict_allowed"]
+    kdir = os.path.join(home, "fake-kube")
+    os.makedirs(kdir, exist_ok=True)
+    kubectl = os.path.join(kdir, "kubectl")
+    with open(kubectl, "w") as fh:
+        fh.write(FAKE_KUBECTL)
+    os.chmod(kubectl, 0o755)
+    so, rest = incident_fixture()
+    for name, body in (("incident.so", so), ("incident.rest", rest), ("empty.so", {"items": []}), ("empty.rest", {"items": []})):
+        with open(os.path.join(kdir, name + ".json"), "w") as fh:
+            json.dump(body, fh)
+    gates = os.path.join(home, "tenant-gates")
+    receipt = os.path.join(gates, "boundary-test", f"default__{INCIDENT_NS}.json")
+
+    def gate(ctx: str, ns: str, extra: dict | None = None, reason: str = "incident replay test") -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AMUX_")}
+        env.update({"AMUX_HOME": home, "AMUX_SESSION": "boundary-test", "KUBECTL": kubectl, "FAKE_KUBE_DIR": kdir})
+        for k, v in (extra or {}).items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        return subprocess.run(["bash", GATE, ctx, ns, reason], text=True, capture_output=True, env=env, timeout=30)
+
+    def verdicts(ev: list[dict]) -> list[dict]:
+        return [e for e in ev if e.get("boundary") == "tenant-workload-gate"]
+
+    incidents = [
+        ("1 scale api to zero", f"kubectl -n {INCIDENT_NS} scale deploy/api --replicas=0"),
+        ("1 pause its ScaledObject", f"kubectl -n {INCIDENT_NS} annotate scaledobject api autoscaling.keda.sh/paused=true --overwrite"),
+        ("2 teardown deletes a booting pod", f"kubectl delete pod mvs-primary-0 -n {INCIDENT_NS} --grace-period=0"),
+        ("3 mass rollout restart", f"for d in api worker mvs-primary; do kubectl -n {INCIDENT_NS} rollout restart deploy/$d; done"),
+        ("4 replay burst at the shard", f"hey -z 60s -c 200 -m POST http://api.{INCIDENT_NS}.svc.cluster.local/v1/retrievers/r/execute"),
+    ]
+    for label, cmd in incidents:
+        code, ev = run(cmd, home)
+        v = verdicts(ev)
+        expect(f"tenant gate: incident {label} is refused without a receipt",
+               code == 2 and [e.get("verdict") for e in v] == [refused_v] and v[0]["targets"][0]["cause"] == "no_receipt"
+               and v[0]["targets"][0]["namespace"] == INCIDENT_NS, f"exit {code} {ev}")
+        expect(f"tenant gate: refusal for incident {label} names the gate command with context and namespace",
+               f"tenant-gate.sh default {INCIDENT_NS} " in last_stderr, last_stderr[:400])
+
+    # The gate itself, against the incident namespace.
+    p = gate("default", INCIDENT_NS)
+    rec = json.load(open(receipt)) if os.path.exists(receipt) else {}
+    expect("tenant gate script: reads the incident namespace and writes a receipt", p.returncode == 0 and rec.get("session") == "boundary-test"
+           and rec.get("namespace") == INCIDENT_NS and rec.get("context") == "default" and len(rec.get("sha256", "")) == 64
+           and rec.get("reason") == "incident replay test", f"exit {p.returncode} {p.stderr} {rec}")
+    expect("tenant gate script: names the ScaledObject that watches app=api pods and what it scales",
+           "mvs-primary-scale-to-zero scales StatefulSet/mvs-primary" in p.stdout
+           and "WATCHES pods app=api: Deployment/api. Scaling those changes StatefulSet/mvs-primary" in p.stdout
+           and "PAUSED" in p.stdout and (rec.get("summary") or {}).get("watches", [{}])[0].get("watched") == ["Deployment/api"],
+           p.stdout)
+    argv = open(os.path.join(kdir, "argv.log")).read().split("\n")
+    expect("tenant gate script: only ever calls kubectl get, with no --context for `default`",
+           all(" get " in f" {a} " for a in argv if a) and not any("--context" in a for a in argv), str(argv))
+
+    for label, cmd in incidents:
+        code, ev = run(cmd, home)
+        v = verdicts(ev)
+        expect(f"tenant gate: incident {label} is allowed with a fresh receipt and logged",
+               code == 0 and [e.get("verdict") for e in v] == [allowed_v]
+               and v[0]["targets"][0].get("receipt_sha256") == rec.get("sha256"), f"exit {code} {ev}")
+
+    scale = incidents[0][1]
+    # Expired receipt; then the window override.
+    stale = dict(rec, ts=time.time() - 3600)
+    with open(receipt, "w") as fh:
+        json.dump(stale, fh)
+    code, ev = run(scale, home)
+    v = verdicts(ev)
+    expect("tenant gate: a receipt older than 30 minutes is refused", code == 2 and v and v[0]["targets"][0]["cause"] == "receipt_expired", f"exit {code} {ev}")
+    code, ev = run(scale, home, {"AMUX_TENANT_GATE_MAX_AGE_S": "7200"})
+    expect("tenant gate: AMUX_TENANT_GATE_MAX_AGE_S widens the window", code == 0 and verdicts(ev)[0]["verdict"] == allowed_v, f"exit {code} {ev}")
+    with open(receipt, "w") as fh:
+        json.dump(rec, fh)
+
+    # Another namespace, another session, another context.
+    code, ev = run(f"kubectl -n ephemeral-r999 scale deploy/api --replicas=0", home)
+    expect("tenant gate: a receipt for another namespace does not cover this one",
+           code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "no_receipt", f"exit {code} {ev}")
+    code, ev = run(scale, home, {"AMUX_SESSION": "other-worker"})
+    expect("tenant gate: another worker's receipt does not cover this worker",
+           code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "no_receipt" and verdicts(ev)[0]["session"] == "other-worker", f"exit {code} {ev}")
+    with open(receipt, "w") as fh:
+        json.dump(dict(rec, session="other-worker"), fh)
+    code, ev = run(scale, home)
+    expect("tenant gate: a receipt naming another worker, in this worker's directory, is refused",
+           code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "receipt_other_session", f"exit {code} {ev}")
+    with open(receipt, "w") as fh:
+        json.dump(dict(rec, namespace="ephemeral-r999"), fh)
+    code, ev = run(scale, home)
+    expect("tenant gate: a receipt at this path whose fields name another namespace is refused",
+           code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "receipt_other_target", f"exit {code} {ev}")
+    with open(receipt, "w") as fh:
+        fh.write("{not json")
+    code, ev = run(scale, home)
+    expect("tenant gate: an unreadable receipt is refused", code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "receipt_unreadable", f"exit {code} {ev}")
+    with open(receipt, "w") as fh:
+        json.dump(rec, fh)
+    ctx = "gke_mixpeek-inference-463103_us-central1_mixpeek-engine"
+    code, ev = run(f"kubectl --context {ctx} -n {INCIDENT_NS} scale deploy/api --replicas=0", home)
+    expect("tenant gate: a receipt for context `default` does not cover a named --context, and the refusal says so",
+           code == 2 and verdicts(ev)[0]["targets"][0]["context"] == ctx and f"tenant-gate.sh {ctx} {INCIDENT_NS}" in last_stderr
+           and "under other contexts" in last_stderr, f"exit {code} {last_stderr[:500]}")
+    p = gate(ctx, INCIDENT_NS)
+    argv = open(os.path.join(kdir, "argv.log")).read()
+    code, ev = run(f"kubectl --context={ctx} -n {INCIDENT_NS} scale deploy/api --replicas=0", home)
+    expect("tenant gate: the gate for a named context passes --context and its receipt covers --context=<ctx>",
+           p.returncode == 0 and f"--context {ctx}" in argv and code == 0, f"gate {p.returncode} {p.stderr} guard {code} {ev}")
+    arn = "arn:aws:eks:us-east-1:1:cluster/x"
+    p = gate(arn, INCIDENT_NS)
+    code, ev = run(f"kubectl --context {arn} -n {INCIDENT_NS} scale deploy/api --replicas=0", home)
+    expect("tenant gate: a context with / and : keys the same file in the gate and the guard",
+           p.returncode == 0 and code == 0, f"gate {p.returncode} {p.stderr} guard {code} {ev}")
+
+    # Out of scope or read-only: no receipt needed, nothing logged.
+    for cmd in (f"kubectl -n ephemeral-r999 get pods -o wide", f"kubectl -n ephemeral-r999 describe scaledobject x",
+                f"kubectl -n ephemeral-r999 logs deploy/api", f"kubectl -n ephemeral-r999 top pods",
+                f"kubectl -n ephemeral-r999 get events", "kubectl auth can-i scale deploy -n ephemeral-r999",
+                f"kubectl -n ephemeral-r999 port-forward svc/api 8080:80",
+                "kubectl -n kube-system scale deploy/coredns --replicas=2", "kubectl -n default delete pod x",
+                "helm upgrade grafana charts/grafana -n monitoring"):
+        code, ev = run(cmd, home)
+        expect(f"tenant gate: passes without a receipt: {cmd[:60]}", code == 0 and not verdicts(ev), f"exit {code} {ev}")
+
+    code, ev = run("kubectl delete pods --all -A", home)
+    expect("tenant gate: a mutation across all namespaces is refused (no one receipt covers it)",
+           code == 2 and verdicts(ev)[0]["targets"][0]["cause"] == "all_namespaces", f"exit {code} {ev}")
+    code, ev = run(f"echo starting && kubectl -n ephemeral-r999 scale deploy/api --replicas=0", home)
+    expect("tenant gate: an innocent first segment (echo) does not exempt the mutation after it", code == 2, f"exit {code} {ev}")
+    code, ev = run(f"kubectl -n {INCIDENT_NS} get pods && kubectl -n ephemeral-r999 rollout restart deploy/api", home)
+    v = verdicts(ev)
+    expect("tenant gate: each mutating segment needs its own namespace's receipt",
+           code == 2 and [t["namespace"] for t in v[0]["targets"]] == ["ephemeral-r999"], f"exit {code} {ev}")
+    code, ev = run(f"sh -c \"kubectl -n ephemeral-r999 delete pod api-0\"", home)
+    expect("tenant gate: a mutation inside sh -c is seen", code == 2, f"exit {code} {ev}")
+
+    # The gate refuses to write a receipt for a failed or empty read.
+    os.remove(receipt)
+    p = gate("default", INCIDENT_NS, {"FAKE_KUBE_FAIL": "1"})
+    expect("tenant gate script: a failed read exits nonzero and writes no receipt", p.returncode != 0 and not os.path.exists(receipt), f"exit {p.returncode}")
+    p = gate("default", INCIDENT_NS, {"FAKE_KUBE_SET": "empty"})
+    expect("tenant gate script: an empty namespace exits nonzero and writes no receipt",
+           p.returncode != 0 and not os.path.exists(receipt) and "empty read" in p.stderr, f"exit {p.returncode} {p.stderr}")
+    p = gate("default", INCIDENT_NS, {"AMUX_SESSION": None})
+    expect("tenant gate script: no worker identity writes no receipt", p.returncode != 0 and not os.path.exists(receipt), f"exit {p.returncode}")
+    p = gate("default", INCIDENT_NS, {"FAKE_KUBE_NO_KEDA": "1"})
+    expect("tenant gate script: a cluster without the KEDA CRD is still read, and says so",
+           p.returncode == 0 and os.path.exists(receipt) and "no KEDA CRD" in p.stdout, f"exit {p.returncode} {p.stderr}")
+    # An isolated worker as launched: identity in AMUX_ISOLATED_WORKER only.
+    iso = {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "iso-tenant"}
+    code, ev = run(scale, home, iso)
+    expect("tenant gate: an isolated worker is refused without its own receipt", code == 2, f"exit {code} {ev}")
+    p = gate("default", INCIDENT_NS, iso)
+    code, ev = run(scale, home, iso)
+    expect("tenant gate: an isolated worker's own receipt lets it through", p.returncode == 0 and code == 0, f"gate {p.returncode} {p.stderr} guard {code} {ev}")
+
+
 def main() -> int:
     reg = tomllib.load(open(REGISTRY, "rb"))
     boundaries = reg["boundary"]
@@ -149,9 +357,10 @@ def main() -> int:
                 n_rules += 1
                 if not rule.get("block_examples"):
                     expect(f"{b['id']}#{i} has block examples", False, "a rule without one cannot be shown to work")
+                refused_verdict = (rule.get("requires_receipt") or {}).get("verdict_refused") or "boundary_refused"
                 for ex in rule.get("block_examples") or []:
                     code, ev = run(ex, home)
-                    by = [e.get("boundary") for e in ev if e.get("verdict") == "boundary_refused"]
+                    by = [e.get("boundary") for e in ev if e.get("verdict") == refused_verdict]
                     expect(f"{b['id']}#{i} blocks: {ex[:70]}", code == 2 and by == [b["id"]], f"exit {code}, refused by {by}")
                 for ex in rule.get("allow_examples") or []:
                     code, ev = run(ex, home)
@@ -322,6 +531,8 @@ def main() -> int:
             expect("subagents: apply_to_isolated = false lets an isolated worker fan out", code == 0 and not ev, f"exit {code} {ev}")
             code, ev = run_payload(agent_call(tp), home, registry=iso_exempt)
             expect("subagents: apply_to_isolated = false still caps a non-isolated worker", code == 2, f"exit {code} {ev}")
+
+        tenant_gate_cases(home, boundaries)
 
         sample = boundaries[0]["deny"][0]["block_examples"][0]
         code, _ = run(sample, home, {"AMUX_SESSION": ""})
