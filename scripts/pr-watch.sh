@@ -2,7 +2,8 @@
 # Wake the PR handler only when mixpeek/amux's open pull requests change.
 #
 # Runs as a `shell` schedule, so a quiet tick costs no model turn. It reads
-# the open PRs (number, head sha, updatedAt) plus fork CI runs waiting for a
+# the open PRs (number, head sha, and the ids of comments and reviews by
+# anyone except the handler's own identity) plus fork CI runs waiting for a
 # maintainer's approval, fingerprints them, and when the fingerprint differs
 # from the last one it handed off, runs the handler schedule
 # (POST /api/schedules/$PR_WATCH_HANDLER/run). That schedule is a `tmux`
@@ -17,11 +18,16 @@
 #   PR_WATCH_STATE    default ~/.amux/state/pr-watch.fingerprint
 #   PR_WATCH_GH       gh binary, for tests
 #   PR_WATCH_URL      amux base URL, default `amux url`
+#   PR_WATCH_SELF     the login the handler comments as (default esteininger).
+#                     Its own comments are left out of the fingerprint, so a
+#                     review the handler posts does not wake it again; a
+#                     contributor's reply or push does.
 set -euo pipefail
 
 repo=${PR_WATCH_REPO:-mixpeek/amux}
 state=${PR_WATCH_STATE:-$HOME/.amux/state/pr-watch.fingerprint}
 gh=${PR_WATCH_GH:-gh}
+self=${PR_WATCH_SELF:-esteininger}
 handler=${PR_WATCH_HANDLER:?set PR_WATCH_HANDLER to the handler schedule id}
 
 # The App token keeps these reads off the user budget every lane shares.
@@ -30,8 +36,8 @@ if [ -z "${PR_WATCH_GH:-}" ] && [ -x "$HOME/.amux/github-app/get-token.sh" ]; th
 fi
 
 if ! prs=$("$gh" pr list -R "$repo" --state open -L 100 \
-      --json number,headRefOid,updatedAt \
-      --jq '.[] | "\(.number) \(.headRefOid) \(.updatedAt)"' 2>&1); then
+      --json number,headRefOid,comments,reviews \
+      --jq ".[] | \"\\(.number) \\(.headRefOid) \\([(.comments[], .reviews[]) | select(.author.login != \"$self\") | .id] | sort | join(\",\"))\"" 2>&1); then
   echo "pr-watch: could not list PRs on $repo: $prs verdict=unmeasured"
   exit 1
 fi
