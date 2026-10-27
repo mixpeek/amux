@@ -61,3 +61,30 @@ test('with no single big consumer it says so and points at the full split', asyn
   await expect(items.first()).toContainText('spread across many small processes');
   await expect(items.first().locator('.host-fix-cmd')).toHaveText('amux resources');
 });
+
+// The fix names the busiest process in a tree, not the tree's root (a shell
+// or a service using nothing itself), and does not offer a renice for a
+// process that is already low priority (2026-10-27: a deploy build's rustc at
+// 181% was shown as "systemd" with `renice -n 10 -p 24876`).
+test('the fix names the busy process under a root, and skips renice when it is already niced', async ({ page }) => {
+  await page.route('**/api/metrics/host/pressure', r => r.fulfill({ json: strained({
+    workers: [],
+    top_unattributed: [
+      { kind: 'detached', cpu_percent: 182, root_pid: 800, command: 'bash', n_processes: 3, rss_mb: 2400,
+        top_pid: 802, top_command: 'rustc', top_cpu_percent: 181, top_nice: 10 },
+      { kind: 'detached', cpu_percent: 150, root_pid: 900, command: 'bash', n_processes: 2, rss_mb: 300,
+        top_pid: 901, top_command: '/usr/bin/ffmpeg', top_cpu_percent: 149, top_nice: 0 },
+    ] }) }));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).refreshHostPressure === 'function');
+  await page.evaluate(() => (window as any).refreshHostPressure());
+  await page.locator('#host-pressure-pill').click();
+  const items = page.locator('#host-pressure-detail .host-fix-list > li');
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toContainText('rustc (pid 802, under bash)');
+  await expect(items.nth(0)).toContainText('already runs at low priority');
+  await expect(items.nth(0).locator('.host-fix-cmd')).toHaveText('ps -o pid,ni,etime,args -p 802');
+  await expect(items.nth(1)).toContainText('ffmpeg (pid 901, under bash)');
+  await expect(items.nth(1).locator('.host-fix-cmd')).toHaveText('renice -n 10 -p 901');
+  await expect(page.locator('#host-pressure-detail .host-fix-list')).not.toContainText('renice -n 10 -p 800');
+});

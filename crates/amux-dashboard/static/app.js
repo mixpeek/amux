@@ -11235,8 +11235,19 @@ function _hostPressureSuggestions(p) {
     const prog = (o.command || '').split('/').pop().slice(0, 60) || 'pid ' + o.root_pid;
     if (o.kind === 'vm') out.push({ cpu: o.cpu_percent, text: 'A virtual machine (Docker or another VM) is using ' + cores(o.cpu_percent)
       + '. Stop the containers you are not using.', cmd: 'docker ps --format "{{.Names}}  {{.Status}}"   # then: docker stop <name>' });
-    else if (o.kind === 'detached' || o.kind === 'apps') out.push({ cpu: o.cpu_percent, text: (o.kind === 'apps' ? 'The app ' : 'A process no worker owns, ')
-      + prog + ', is using ' + cores(o.cpu_percent) + '. Lower its priority, or quit it if you do not need it.', cmd: 'renice -n 10 -p ' + o.root_pid });
+    else if (o.kind === 'detached' || o.kind === 'apps') {
+      // Name the busiest process in the tree, not its root: the root is often
+      // a shell or a service that uses nothing itself (2026-10-27: a deploy
+      // build's rustc at 181% was shown as "systemd" with a renice of the
+      // service manager, which would not have slowed the build at all).
+      const pid = o.top_pid || o.root_pid;
+      const hot = (o.top_command || '').split('/').pop().slice(0, 60) || prog;
+      const what = hot === prog ? prog : hot + ' (pid ' + pid + ', under ' + prog + ')';
+      const intro = (o.kind === 'apps' ? 'The app ' : 'A process no worker owns, ') + what + ', is using ' + cores(o.cpu_percent) + '. ';
+      if ((o.top_nice || 0) >= 10) out.push({ cpu: o.cpu_percent, text: intro + 'It already runs at low priority (nice ' + o.top_nice
+        + '), so it yields to workers; it still adds to the load. Stop it if you do not need it now.', cmd: 'ps -o pid,ni,etime,args -p ' + pid });
+      else out.push({ cpu: o.cpu_percent, text: intro + 'Lower its priority, or quit it if you do not need it.', cmd: 'renice -n 10 -p ' + pid });
+    }
   });
   out.sort((a, b) => b.cpu - a.cpu);
   if (!out.length && p.level && p.level !== 'ok') out.push({ text: 'Nothing single stands out: the load is spread across many small processes. See the full split.', cmd: 'amux resources' });
