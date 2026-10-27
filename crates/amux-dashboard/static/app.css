@@ -10603,3 +10603,50 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 
 /* Mac app: Split is one click (a new pane), so it has no menu caret. */
 body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
+
+/* Office viewers: Word and PowerPoint pages, with the comments, tracked
+   changes and speaker notes panel beside them (a bottom sheet on a phone,
+   opened from one floating button). Excel's editor uses the same panel. */
+.file-overlay-body.file-office { padding: 0; white-space: normal; overflow: hidden; display: flex; position: relative; background: var(--bg); font-family: inherit; }
+.file-office .office-doc { flex: 1; min-width: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
+.file-office .office-doc .docx-wrapper { background: var(--bg); padding: var(--space-4) var(--space-2); }
+.file-office .office-doc .docx-wrapper > section.docx { box-shadow: var(--shadow-md); margin-bottom: var(--space-4); }
+.file-office .office-doc.office-reflow .docx-wrapper { padding: var(--space-2); }
+.file-office .office-doc.office-reflow .docx-wrapper > section.docx { width: auto !important; min-height: 0 !important; padding: var(--space-4) var(--space-3) !important; }
+.file-office .office-doc ins { background: color-mix(in srgb, var(--green) 22%, transparent); color: inherit; text-decoration: underline; }
+.file-office .office-doc del { background: color-mix(in srgb, var(--red) 18%, transparent); color: inherit; text-decoration: line-through; }
+.file-office .office-doc ::highlight(docx-comments) { background-color: color-mix(in srgb, var(--yellow) 45%, transparent); }
+.file-office .office-slides { padding: var(--space-3) var(--space-2); display: block; }
+.file-office .office-slides .pptx-preview-wrapper { height: auto !important; overflow: visible !important; background: transparent !important; }
+.file-office .office-slides .pptx-preview-slide-wrapper { margin: 0 auto var(--space-3) !important; box-shadow: var(--shadow-md); }
+.office-flash { outline: 3px solid var(--accent); outline-offset: 2px; transition: outline-color 1.6s ease; }
+.office-panel { width: 320px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--card); color: var(--text); min-height: 0; }
+.file-xlsx-editor.office-has-panel { flex-direction: row; }
+.file-xlsx-editor.office-has-panel .xlsx-univer { min-width: 0; }
+.office-panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-weight: 600; font-size: var(--fs-md); border-bottom: 1px solid var(--border); }
+.office-panel-close { display: none; min-width: 44px; min-height: 44px; }
+.office-panel-list { overflow: auto; flex: 1; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.office-panel-group { font-size: var(--fs-sm); color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-top: var(--space-2); }
+.office-item { text-align: left; display: block; width: 100%; border: 1px solid var(--border); border-left: 3px solid var(--yellow); border-radius: var(--radius-md); background: var(--bg); color: var(--text); padding: var(--space-2) var(--space-2-5); font: inherit; cursor: pointer; min-height: 44px; }
+.office-item:hover, .office-item.active { border-color: var(--accent); }
+.office-item-reply { margin-left: var(--space-4); border-left-color: var(--orange); }
+.office-item-change.op-ins { border-left-color: var(--green); }
+.office-item-change.op-del { border-left-color: var(--red); }
+.office-item-note { border-left-color: var(--accent); }
+.office-item.is-done { opacity: .65; }
+.office-item-meta { display: flex; flex-wrap: wrap; gap: var(--space-1-5); font-size: var(--fs-sm); color: var(--dim); margin-bottom: var(--space-1); }
+.office-item-kind { font-weight: 600; color: var(--text); }
+.office-item-done { color: var(--green); }
+.office-item-quote { font-size: var(--fs-sm); color: var(--dim); border-left: 2px solid var(--border); padding-left: var(--space-2); margin-bottom: var(--space-1); font-style: italic; }
+.office-item-text { white-space: pre-wrap; word-break: break-word; font-size: var(--fs-md); }
+.office-panel-fab { display: none; }
+@media (max-width: 900px) {
+  .office-panel { position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-height: 70%; border-left: 0; border-top: 1px solid var(--border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-xl); transform: translateY(105%); transition: transform .2s ease; z-index: 5;
+    padding-bottom: env(safe-area-inset-bottom); }
+  .office-panel-open .office-panel { transform: none; }
+  .office-panel-close { display: inline-flex; align-items: center; justify-content: center; }
+  .office-panel-fab { display: inline-flex; align-items: center; position: absolute; right: calc(var(--space-3) + env(safe-area-inset-right)); bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    z-index: 4; min-height: 44px; min-width: 44px; border-radius: var(--radius-pill); box-shadow: var(--shadow-lg); }
+  .office-panel-open .office-panel-fab { display: none; }
+}

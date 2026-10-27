@@ -2982,6 +2982,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_officeBeacon": {
+      "kind": "command._officeBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_officeCommentsMount": {
+      "kind": "command._officeCommentsMount",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_offlineCapSet": {
       "kind": "command._offlineCapSet",
       "feedback_required": true,
@@ -4112,6 +4124,12 @@
     },
     "_renderGroupsTab": {
       "kind": "command._renderGroupsTab",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_renderOffice": {
+      "kind": "command._renderOffice",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5330,6 +5348,12 @@
     },
     "_wselRun": {
       "kind": "command._wselRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_xlNormalizeComments": {
+      "kind": "command._xlNormalizeComments",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -29098,6 +29098,287 @@ function _presentClose() {
   window._presentState = null;
 }
 
+// ---------------------------------------------------------------------------
+// OFFICE VIEWERS (Ethan, 2026-10-27): Word and PowerPoint render in the file
+// view, and what makes them Office files stays visible: a document's comments
+// (with replies and resolved state) and tracked changes, a deck's speaker notes
+// and comments. Excel renders in the spreadsheet editor, whose cell notes use
+// the same panel. Everything renders in the browser, so the same code works on
+// the Mac and in the cloud. A file that fails to render falls back to the
+// download card and says why (beacon kind office-viewer).
+// ---------------------------------------------------------------------------
+const _OFFICE_RE = /\.(docx|docm|dotx|pptx|pptm|ppsx|potx)$/i;
+let _officeGen = 0;
+
+function _officeXml(text) {
+  return new DOMParser().parseFromString(text || '<x/>', 'application/xml');
+}
+// Elements by local name, whatever the namespace prefix (w:, p:, p188:, a:).
+function _officeEls(node, local) {
+  return [...node.getElementsByTagName('*')].filter(e => e.localName === local);
+}
+function _officeAttr(el, local) {
+  for (const a of el.attributes || []) if (a.localName === local) return a.value;
+  return '';
+}
+function _officeText(node) {
+  return _officeEls(node, 't').map(t => t.textContent).join('');
+}
+function _officeWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+function _officeBeacon(meta) {
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'office-viewer', measured: true, n_considered: 1, ver: APP_VER, ...meta }) }).catch(() => {});
+}
+
+// The panel beside the document (a sheet from the bottom on a phone, opened
+// from one floating button so the view keeps its single control row).
+function _officeCommentsMount(host, items, onPick, meta) {
+  host.querySelectorAll(':scope > .office-panel, :scope > .office-panel-fab').forEach(e => e.remove());
+  const counts = { comment: 0, reply: 0, change: 0, note: 0 };
+  for (const it of items) counts[it.kind] = (counts[it.kind] || 0) + 1;
+  _officeBeacon({ verdict: meta && meta.rendered === false ? 'office_render_failed' : 'office_rendered', format: meta && meta.format,
+    comments: counts.comment + counts.reply, changes: counts.change, notes: counts.note, ms: meta && meta.ms, error: meta && meta.error });
+  if (!items.length) return;
+  const label = it => it.kind === 'change' ? (it.op === 'del' ? 'Deleted' : 'Inserted') : it.kind === 'note' ? 'Speaker notes' : it.kind === 'reply' ? 'Reply' : 'Comment';
+  const groups = [];
+  for (const it of items) {
+    const g = it.group || '';
+    if (!groups.length || groups[groups.length - 1].name !== g) groups.push({ name: g, items: [] });
+    groups[groups.length - 1].items.push(it);
+  }
+  const total = counts.comment + counts.reply;
+  const title = [total ? total + (total === 1 ? ' comment' : ' comments') : '', counts.change ? counts.change + (counts.change === 1 ? ' change' : ' changes') : '',
+    counts.note ? counts.note + ' with notes' : ''].filter(Boolean).join(' · ');
+  const panel = document.createElement('aside');
+  panel.className = 'office-panel';
+  panel.setAttribute('aria-label', 'Comments and changes');
+  let html = '<div class="office-panel-head"><span>' + esc(title) + '</span><button class="btn office-panel-close" type="button" aria-label="Close">✕</button></div><div class="office-panel-list">';
+  let i = 0;
+  for (const g of groups) {
+    if (g.name) html += '<div class="office-panel-group">' + esc(g.name) + '</div>';
+    for (const it of g.items) {
+      html += '<button type="button" class="office-item office-item-' + it.kind + (it.done ? ' is-done' : '') + (it.op ? ' op-' + it.op : '') + '" data-i="' + (i++) + '">'
+        + '<div class="office-item-meta"><span class="office-item-kind">' + esc(label(it)) + '</span>'
+        + (it.who ? '<span class="office-item-who">' + esc(it.who) + '</span>' : '')
+        + (it.when ? '<span class="office-item-when">' + esc(_officeWhen(it.when)) + '</span>' : '')
+        + (it.where ? '<span class="office-item-where">' + esc(it.where) + '</span>' : '')
+        + (it.done ? '<span class="office-item-done">Resolved</span>' : '') + '</div>'
+        + (it.quote ? '<div class="office-item-quote">' + esc(it.quote) + '</div>' : '')
+        + '<div class="office-item-text">' + esc(it.text || '') + '</div></button>';
+    }
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+  const flat = groups.flatMap(g => g.items);
+  panel.addEventListener('click', e => {
+    if (e.target.closest('.office-panel-close')) { host.classList.remove('office-panel-open'); return; }
+    const b = e.target.closest('.office-item');
+    if (!b) return;
+    panel.querySelectorAll('.office-item.active').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    if (window.matchMedia('(max-width: 900px)').matches) host.classList.remove('office-panel-open');
+    try { onPick && onPick(flat[+b.dataset.i]); } catch (err) {}
+  });
+  const fab = document.createElement('button');
+  fab.type = 'button';
+  fab.className = 'btn office-panel-fab';
+  fab.textContent = '💬 ' + (total || counts.change || counts.note);
+  fab.title = 'Show ' + title;
+  fab.onclick = () => host.classList.toggle('office-panel-open');
+  host.classList.add('office-has-panel');
+  host.appendChild(panel);
+  host.appendChild(fab);
+}
+
+function _officeFlash(el) {
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('office-flash'); void el.offsetWidth; el.classList.add('office-flash');
+}
+
+async function _renderOffice(data, body) {
+  const gen = ++_officeGen;
+  const isDoc = /\.(docx|docm|dotx)$/i.test(data.path);
+  const t0 = performance.now();
+  body.className = 'file-overlay-body file-office';
+  body.innerHTML = '<div class="office-doc"><div class="pdf-note">Loading ' + (isDoc ? 'document' : 'slides') + '…</div></div>';
+  const doc = body.querySelector('.office-doc');
+  const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+  try {
+    const [buf] = await Promise.all([
+      fetch(rawUrl, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }),
+      _lazyLib(isDoc ? 'docx' : 'pptx')]);
+    if (gen !== _officeGen) return;
+    const zip = await window.JSZip.loadAsync(buf);
+    const items = isDoc ? await _docxRender(buf, zip, doc) : await _pptxRender(buf, zip, doc);
+    if (gen !== _officeGen) return;
+    _officeCommentsMount(body, items.list, items.pick, { format: isDoc ? 'docx' : 'pptx', ms: Math.round(performance.now() - t0) });
+  } catch (e) {
+    if (gen !== _officeGen) return;
+    const msg = String(e && e.message || e);
+    _officeBeacon({ verdict: 'office_render_failed', format: isDoc ? 'docx' : 'pptx', error: msg, ms: Math.round(performance.now() - t0) });
+    const fname = data.path.split('/').pop();
+    body.className = 'file-overlay-body file-image';
+    body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:var(--space-3);padding:var(--space-8);">'
+      + '<div style="font-size:var(--fs-2xl);color:var(--dim);">' + esc(fname) + '</div>'
+      + '<div style="color:var(--dim);max-width:28em;text-align:center;">This file could not be shown here: ' + esc(msg) + '</div>'
+      + '<a class="btn" href="' + _authUrl(rawUrl) + '" download="' + esc(fname) + '">Download</a></div>';
+  }
+}
+
+// WORD: docx-preview draws the pages, highlights each commented range and
+// marks insertions and deletions. The panel adds what it does not list: every
+// comment with its author, date, the text it is on, replies and resolved state
+// (commentsExtended.xml), and every tracked change with who made it.
+async function _docxRender(buf, zip, doc) {
+  doc.innerHTML = '';
+  await window.docx.renderAsync(buf, doc, null, { renderComments: true, renderChanges: true, inWrapper: true,
+    ignoreLastRenderedPageBreak: true, experimental: true, useBase64URL: true });
+  // A page is drawn at its printed width (8.5in is 816px), wider than a
+  // phone. On a phone the text reflows to the screen, as Word's mobile view
+  // does (a whole page scaled down to 375px is unreadably small); on a
+  // tablet-width pane the page keeps its layout and scales to fit.
+  const room = doc.clientWidth - 16;
+  const reflow = room > 0 && room < 600;
+  doc.classList.toggle('office-reflow', reflow);
+  if (!reflow) for (const sec of doc.querySelectorAll('.docx-wrapper > section.docx')) {
+    const w = sec.offsetWidth;
+    if (w > room && room > 0) sec.style.zoom = String(Math.max(0.3, room / w));
+  }
+  const read = async name => { const f = zip.file(name); return f ? await f.async('string') : ''; };
+  const [commentsXml, extXml, bodyXml] = await Promise.all([read('word/comments.xml'), read('word/commentsExtended.xml'), read('word/document.xml')]);
+  const list = [];
+  // Replies and resolved state are keyed by the paraId of a comment's last paragraph.
+  const ext = new Map();
+  for (const e of _officeEls(_officeXml(extXml), 'commentEx')) ext.set(_officeAttr(e, 'paraId'), { parent: _officeAttr(e, 'paraIdParent'), done: _officeAttr(e, 'done') === '1' });
+  const bodyDoc = _officeXml(bodyXml);
+  // The text each comment is on: everything between its range start and end.
+  const quotes = new Map();
+  {
+    const open = new Map();
+    const walk = node => {
+      for (const ch of node.children) {
+        if (ch.localName === 'commentRangeStart') open.set(_officeAttr(ch, 'id'), '');
+        else if (ch.localName === 'commentRangeEnd') { const id = _officeAttr(ch, 'id'); if (open.has(id)) { quotes.set(id, open.get(id)); open.delete(id); } }
+        else if (ch.localName === 't' || ch.localName === 'delText') { for (const k of open.keys()) open.set(k, open.get(k) + ch.textContent); }
+        else walk(ch);
+      }
+    };
+    walk(bodyDoc.documentElement);
+  }
+  const byPara = new Map();
+  const comments = _officeEls(_officeXml(commentsXml), 'comment').map(c => {
+    const paras = _officeEls(c, 'p');
+    const last = paras[paras.length - 1];
+    const it = { kind: 'comment', id: _officeAttr(c, 'id'), who: _officeAttr(c, 'author'), when: _officeAttr(c, 'date'),
+      text: paras.map(p => _officeText(p)).filter(Boolean).join('\n'), quote: (quotes.get(_officeAttr(c, 'id')) || '').trim().slice(0, 160) };
+    const x = last ? ext.get(_officeAttr(last, 'paraId')) : null;
+    if (x) { it.done = x.done; it.parentPara = x.parent; }
+    if (last) byPara.set(_officeAttr(last, 'paraId'), it);
+    return it;
+  });
+  // A reply follows its thread's first comment.
+  const roots = [], replies = new Map();
+  for (const c of comments) {
+    const parent = c.parentPara && byPara.get(c.parentPara);
+    if (parent) { c.kind = 'reply'; c.quote = ''; (replies.get(parent) || replies.set(parent, []).get(parent)).push(c); }
+    else roots.push(c);
+  }
+  for (const r of roots) { list.push({ ...r, group: comments.length ? 'Comments' : '' }); for (const rep of replies.get(r) || []) list.push({ ...rep, group: 'Comments', done: rep.done || r.done }); }
+  // Tracked changes, in document order, matched to the rendered ins/del by position.
+  const changes = [];
+  const walkChanges = node => {
+    for (const ch of node.children) {
+      if (ch.localName === 'ins' || ch.localName === 'del') {
+        const text = _officeEls(ch, ch.localName === 'del' ? 'delText' : 't').map(t => t.textContent).join('');
+        if (text.trim()) changes.push({ kind: 'change', op: ch.localName, who: _officeAttr(ch, 'author'), when: _officeAttr(ch, 'date'), text, group: 'Tracked changes' });
+      } else walkChanges(ch);
+    }
+  };
+  walkChanges(bodyDoc.documentElement);
+  list.push(...changes);
+  const refs = [...doc.querySelectorAll('.docx_commentreference')].filter(el => [...el.childNodes].some(n => n.nodeType === 8));
+  const refFor = id => refs.find(el => [...el.childNodes].some(n => n.nodeType === 8 && new RegExp('comment #' + id + '\\b').test(n.textContent)));
+  const marks = { ins: [...doc.querySelectorAll('ins')], del: [...doc.querySelectorAll('del')] };
+  const seen = { ins: 0, del: 0 };
+  for (const c of changes) c.nth = seen[c.op]++;
+  return { list, pick: it => {
+    if (it.kind === 'change') return _officeFlash(marks[it.op][it.nth]);
+    const root = it.kind === 'reply' ? roots.find(r => (replies.get(r) || []).some(x => x.id === it.id)) : it;
+    _officeFlash(refFor(root ? root.id : it.id));
+  } };
+}
+
+// POWERPOINT: pptx-preview draws every slide. Speaker notes and comments are
+// read from the deck itself: legacy comments (ppt/comments/*.xml with
+// commentAuthors.xml) and the modern threaded ones (modernComment_*.xml with
+// authors.xml), each mapped to its slide through the slide's relationships.
+async function _pptxRender(buf, zip, doc) {
+  const read = async name => { const f = zip.file(name); return f ? await f.async('string') : ''; };
+  const relsOf = async part => {
+    const dir = part.slice(0, part.lastIndexOf('/'));
+    const xml = await read(dir + '/_rels/' + part.slice(part.lastIndexOf('/') + 1) + '.rels');
+    return _officeEls(_officeXml(xml), 'Relationship').map(r => {
+      let target = r.getAttribute('Target') || '';
+      if (!target.startsWith('/')) { const parts = (dir + '/' + target).split('/'); const out = []; for (const x of parts) { if (x === '..') out.pop(); else if (x !== '.') out.push(x); } target = out.join('/'); }
+      else target = target.slice(1);
+      return { id: r.getAttribute('Id'), type: r.getAttribute('Type') || '', target };
+    });
+  };
+  const presRels = await relsOf('ppt/presentation.xml');
+  // A slide's r:id is the id attribute in the relationships namespace; the
+  // bare id beside it is a number.
+  const order = _officeEls(_officeXml(await read('ppt/presentation.xml')), 'sldId')
+    .map(s => ([...s.attributes].find(a => a.localName === 'id' && /relationships/.test(a.namespaceURI || '')) || {}).value)
+    .map(rid => (presRels.find(r => r.id === rid) || {}).target).filter(Boolean);
+  const legacyAuthors = new Map(_officeEls(_officeXml(await read('ppt/commentAuthors.xml')), 'cmAuthor').map(a => [_officeAttr(a, 'id'), a.getAttribute('name') || '']));
+  const modernAuthors = new Map(_officeEls(_officeXml(await read('ppt/authors.xml')), 'author').map(a => [_officeAttr(a, 'id'), a.getAttribute('name') || '']));
+  const list = [];
+  for (let i = 0; i < order.length; i++) {
+    const rels = await relsOf(order[i]);
+    const group = 'Slide ' + (i + 1);
+    const notesRel = rels.find(r => /\/notesSlide$/.test(r.type));
+    if (notesRel) {
+      const ndoc = _officeXml(await read(notesRel.target));
+      const bodySp = _officeEls(ndoc, 'sp').find(sp => _officeEls(sp, 'ph').some(ph => ph.getAttribute('type') === 'body'));
+      const text = bodySp ? _officeEls(bodySp, 'p').map(p => _officeText(p)).filter(Boolean).join('\n') : '';
+      if (text.trim()) list.push({ kind: 'note', slide: i, group, text });
+    }
+    for (const r of rels.filter(r => /\/comments$/.test(r.type))) {
+      const cdoc = _officeXml(await read(r.target));
+      for (const cm of _officeEls(cdoc, 'cm')) {
+        const modern = !!_officeEls(cm, 'txBody').length;
+        const textEl = modern ? _officeEls(cm, 'txBody')[0] : _officeEls(cm, 'text')[0];
+        const authorId = _officeAttr(cm, 'authorId');
+        list.push({ kind: 'comment', slide: i, group, who: (modern ? modernAuthors : legacyAuthors).get(authorId) || '',
+          when: _officeAttr(cm, 'created') || _officeAttr(cm, 'dt'), text: modern ? _officeEls(textEl, 'p').map(p => _officeText(p)).join('\n') : (textEl ? textEl.textContent : ''),
+          done: _officeAttr(cm, 'status') === 'resolved' });
+        for (const reply of _officeEls(cm, 'reply')) {
+          list.push({ kind: 'reply', slide: i, group, who: modernAuthors.get(_officeAttr(reply, 'authorId')) || '', when: _officeAttr(reply, 'created'),
+            text: _officeEls(reply, 'p').map(p => _officeText(p)).join('\n') });
+        }
+      }
+    }
+  }
+  // Size the slides to the room left beside the panel (it docks on the right
+  // on a wide screen). The library keeps each slide at the deck's own aspect;
+  // its wrapper's fixed height and inner scroll are undone in app.css so every
+  // slide sits in the page's one scroll.
+  doc.innerHTML = '';
+  doc.classList.add('office-slides');
+  const host = doc.parentElement;
+  const docked = list.length && !window.matchMedia('(max-width: 900px)').matches;
+  const width = Math.max(280, Math.min(1100, (host.clientWidth || 960) - (docked ? 320 : 0) - 24));
+  const viewer = window.pptxPreview.init(doc, { width, height: Math.round(width * 0.75), mode: 'list' });
+  await viewer.preview(buf);
+  const slideEls = () => [...doc.querySelectorAll('.pptx-preview-slide-wrapper')];
+  return { list, pick: it => _officeFlash(slideEls()[it.slide]) };
+}
+
 function _renderFileBody(data, mode) {
   _presentSetup(data);
   _readPosDetach();   // flush + detach the previous file's reading-position tracker
@@ -29210,6 +29491,10 @@ function _renderFileBody(data, mode) {
       <div style="font-size:var(--fs-lg);color:var(--dim);">${sizeMB || ''}</div>
       <div style="font-size:var(--fs-md);color:var(--dim);text-align:center;">Playing in persistent player below.<br>Close this overlay — audio keeps playing.</div>
     </div>`;
+    return;
+  }
+  if (data.is_binary && !data.is_ebook && _OFFICE_RE.test(data.path || '')) {
+    _renderOffice(data, body);
     return;
   }
   if (data.is_binary) {
@@ -29484,17 +29769,17 @@ const _UNIVER_PKGS = ['themes', 'protocol', 'core', 'network', 'rpc', 'design', 
   'sheets-numfmt', 'sheets-numfmt-ui',
   'find-replace', 'sheets-find-replace', 'sheets-sort', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui',
   'sheets-conditional-formatting', 'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation',
-  'sheets-data-validation-ui', 'sheets-hyper-link', 'sheets-hyper-link-ui'];
+  'sheets-data-validation-ui', 'sheets-hyper-link', 'sheets-hyper-link-ui', 'sheets-note', 'sheets-note-ui'];
 const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt',
   'sheets-find-replace', 'sheets-sort', 'sheets-filter', 'sheets-conditional-formatting', 'sheets-data-validation',
-  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+  'sheets-hyper-link', 'sheets-hyper-link-ui', 'sheets-note'];
 const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
   'find-replace', 'sheets-sort-ui', 'sheets-filter', 'sheets-filter-ui', 'sheets-conditional-formatting',
   'sheets-conditional-formatting-ui', 'data-validation', 'sheets-data-validation', 'sheets-data-validation-ui',
-  'sheets-hyper-link', 'sheets-hyper-link-ui'];
+  'sheets-hyper-link', 'sheets-hyper-link-ui', 'sheets-note-ui'];
 const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui',
   'find-replace', 'sheets-sort-ui', 'sheets-filter-ui', 'sheets-conditional-formatting-ui', 'sheets-data-validation-ui',
-  'sheets-hyper-link-ui'];
+  'sheets-hyper-link-ui', 'sheets-note-ui'];
 // The tool plugins, in dependency order: [UMD global, plugin export].
 const _UNIVER_TOOL_PLUGINS = [
   ['UniverFindReplace', 'UniverFindReplacePlugin'], ['UniverSheetsFindReplace', 'UniverSheetsFindReplacePlugin'],
@@ -29505,10 +29790,12 @@ const _UNIVER_TOOL_PLUGINS = [
   ['UniverDataValidation', 'UniverDataValidationPlugin'], ['UniverSheetsDataValidation', 'UniverSheetsDataValidationPlugin'],
   ['UniverSheetsDataValidationUi', 'UniverSheetsDataValidationUIPlugin'],
   ['UniverSheetsHyperLink', 'UniverSheetsHyperLinkPlugin'], ['UniverSheetsHyperLinkUi', 'UniverSheetsHyperLinkUIPlugin'],
+  // Excel's cell comments (notes): the red corner mark and the popup on hover.
+  ['UniverSheetsNote', 'UniverSheetsNotePlugin'], ['UniverSheetsNoteUi', 'UniverSheetsNoteUIPlugin'],
 ];
 const _UNIVER_TOOL_LOCALES = ['UniverFindReplaceEnUS', 'UniverSheetsSortUiEnUS', 'UniverSheetsFilterEnUS', 'UniverSheetsFilterUiEnUS',
   'UniverSheetsConditionalFormattingEnUS', 'UniverSheetsConditionalFormattingUiEnUS', 'UniverDataValidationEnUS',
-  'UniverSheetsDataValidationEnUS', 'UniverSheetsDataValidationUiEnUS', 'UniverSheetsHyperLinkEnUS', 'UniverSheetsHyperLinkUiEnUS'];
+  'UniverSheetsDataValidationEnUS', 'UniverSheetsDataValidationUiEnUS', 'UniverSheetsHyperLinkEnUS', 'UniverSheetsHyperLinkUiEnUS', 'UniverSheetsNoteUiEnUS'];
 let _univerLoading = null;
 const _UNIVER_LOAD_BUDGET_MS = 30000;
 let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
@@ -29541,6 +29828,14 @@ const _LAZY_LIBS = {
     js: ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'],
     ready: () => typeof L !== 'undefined' },
   fullcalendar: { js: ['https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'], ready: () => !!window.FullCalendar },
+  jszip: { js: ['https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'], ready: () => !!window.JSZip },
+  // Word and PowerPoint viewers (Ethan, 2026-10-27: "native sota viewer ...
+  // see inline comments and everything"). JSZip also reads the comments,
+  // tracked changes and speaker notes these renderers do not list.
+  docx: { js: ['https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js'],
+    ready: () => !!(window.JSZip && window.docx && window.docx.renderAsync) },
+  pptx: { js: ['https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'https://cdn.jsdelivr.net/npm/pptx-preview@1.0.7/dist/pptx-preview.umd.js'],
+    ready: () => !!(window.JSZip && window.pptxPreview && window.pptxPreview.init) },
 };
 const _lazyLibLoads = {};
 function _lazyLib(name) {
@@ -30302,7 +30597,7 @@ async function _openXlsxEditor(path, body) {
   const res = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const etag = res.headers.get('etag') || '';
-  const raw = await res.arrayBuffer();
+  const raw = await _xlNormalizeComments(await res.arrayBuffer());
   const defaultFont = await _xlDefaultFont(raw);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(raw);
@@ -30353,8 +30648,13 @@ async function _openXlsxEditor(path, body) {
   const fwb = api.getActiveWorkbook();
   const sheets = fwb.getSheets();
   if (sheets[active]) fwb.setActiveSheet(sheets[active]);
+  const notes0 = _xlNotesToUniver(wb, fwb);
   _xlsxEd = { univer, api, wb, defaultFont, initial: JSON.parse(JSON.stringify(fwb.save())), path, etag, dirty: false, sub: null,
-    skipped: features.skipped, features: features.counts };
+    skipped: features.skipped, features: features.counts, notes0 };
+  _officeCommentsMount(body, _xlNoteItems(notes0), it => {
+    const ws = fwb.getSheets().find(x => x.getSheetName() === it.sheet);
+    if (ws) { fwb.setActiveSheet(ws); ws.getRange(it.row, it.col).activate(); }
+  }, { format: 'xlsx', rendered: true });
   _xlsxEd.sub = api.addEvent(api.Event.CommandExecuted, e => {
     if (_xlsxEd && !_xlsxEd.saving && _xlsxIsEdit(e)) _xlsxSetDirty(true);
   });
@@ -30378,6 +30678,132 @@ async function _openXlsxEditor(path, body) {
   }, true);
   const btn = document.getElementById('file-save-btn');
   if (btn) { btn.style.display = ''; btn.textContent = 'Save'; }
+}
+
+// ExcelJS reads a sheet's comments only from xl/commentsN.xml and its note
+// shapes only from xl/drawings/vmlDrawingN.vml, keyed by the relative target
+// Excel writes (../comments1.xml). openpyxl, which most agents use to write
+// workbooks, stores them as xl/comments/comment1.xml with absolute targets,
+// and ExcelJS threw "Cannot read properties of undefined (reading 'comments')"
+// so any such workbook with a comment fell back to the read-only table. Rename
+// those parts to Excel's layout before loading; a workbook already in it is
+// returned unchanged.
+async function _xlNormalizeComments(raw) {
+  try {
+    await _lazyLib('jszip');
+    const zip = await window.JSZip.loadAsync(raw);
+    const relFiles = Object.keys(zip.files).filter(n => /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/.test(n));
+    const COMMENTS = /\/comments$/, VML = /\/vmlDrawing$/;
+    let nComments = 0, nVml = 0, changed = false;
+    for (const n of Object.keys(zip.files)) {
+      const c = /^xl\/comments(\d+)\.xml$/.exec(n); if (c) nComments = Math.max(nComments, +c[1]);
+      const v = /^xl\/drawings\/vmlDrawing(\d+)\.vml$/.exec(n); if (v) nVml = Math.max(nVml, +v[1]);
+    }
+    let types = zip.file('[Content_Types].xml') ? await zip.file('[Content_Types].xml').async('string') : '';
+    for (const relName of relFiles) {
+      let xml = await zip.file(relName).async('string');
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      let relChanged = false;
+      for (const r of [...doc.getElementsByTagName('Relationship')]) {
+        const type = r.getAttribute('Type') || '', target = r.getAttribute('Target') || '';
+        const isC = COMMENTS.test(type), isV = VML.test(type);
+        if (!isC && !isV) continue;
+        const part = target.startsWith('/') ? target.slice(1) : ('xl/' + target.replace(/^\.\.\//, ''));
+        const ok = isC ? /^xl\/comments\d+\.xml$/.test(part) : /^xl\/drawings\/vmlDrawing\d+\.vml$/.test(part);
+        let dest = part;
+        if (!ok) {
+          if (!zip.file(part)) continue;
+          dest = isC ? 'xl/comments' + (++nComments) + '.xml' : 'xl/drawings/vmlDrawing' + (++nVml) + '.vml';
+          zip.file(dest, await zip.file(part).async('uint8array'));
+          zip.remove(part);
+          types = types.split('"/' + part + '"').join('"/' + dest + '"');
+        }
+        const rel = isC ? '../' + dest.slice(3) : '../' + dest.slice(3);
+        if (target !== rel) { r.setAttribute('Target', rel); relChanged = true; }
+      }
+      if (relChanged) { zip.file(relName, new XMLSerializer().serializeToString(doc)); changed = true; }
+    }
+    // ExcelJS reads a comment's text only from rich-text runs (<r><t>);
+    // openpyxl writes plain <text><t>…</t></text>, which loaded as an empty note.
+    for (const n of Object.keys(zip.files).filter(n => /^xl\/comments\d+\.xml$/.test(n))) {
+      const doc = new DOMParser().parseFromString(await zip.file(n).async('string'), 'application/xml');
+      let wrapped = 0;
+      for (const text of [...doc.getElementsByTagName('*')].filter(e => e.localName === 'text')) {
+        for (const t of [...text.children].filter(c => c.localName === 't')) {
+          const r = doc.createElementNS(t.namespaceURI, t.prefix ? t.prefix + ':r' : 'r');
+          text.replaceChild(r, t); r.appendChild(t); wrapped++;
+        }
+      }
+      if (wrapped) { zip.file(n, new XMLSerializer().serializeToString(doc)); changed = true; }
+    }
+    if (!changed) return raw;
+    if (types) zip.file('[Content_Types].xml', types);
+    return await zip.generateAsync({ type: 'arraybuffer' });
+  } catch (e) {
+    return raw;
+  }
+}
+
+// CELL COMMENTS (Excel notes). ExcelJS reads a cell's note as a string or as
+// rich text; Univer's note plugin draws the corner mark and the popup. The
+// notes as loaded are kept per sheet so a save writes back only what changed.
+function _xlNoteText(n) {
+  if (!n) return '';
+  if (typeof n === 'string') return n;
+  if (Array.isArray(n.texts)) return n.texts.map(t => (t && t.text) || '').join('');
+  return String(n.text || '');
+}
+function _xlNotesToUniver(wb, fwb) {
+  const out = {};
+  const byName = new Map(fwb.getSheets().map(s => [s.getSheetName(), s]));
+  wb.eachSheet(ws => {
+    const fws = byName.get(ws.name);
+    if (!fws) return;
+    ws.eachRow({ includeEmpty: false }, row => row.eachCell({ includeEmpty: true }, cell => {
+      const text = _xlNoteText(cell.note);
+      if (!text) return;
+      (out[ws.name] = out[ws.name] || {})[(row.number - 1) + ',' + (cell.col - 1)] = text;
+      try { fws.getRange(row.number - 1, cell.col - 1).createOrUpdateNote({ note: text, width: 220, height: 96 }); } catch (e) {}
+    }));
+  });
+  return out;
+}
+function _xlNotesNow(fwb) {
+  const out = {};
+  for (const ws of fwb.getSheets()) {
+    let notes = [];
+    try { notes = ws.getNotes ? ws.getNotes() : []; } catch (e) {}
+    for (const n of notes) if (n && n.note) (out[ws.getSheetName()] = out[ws.getSheetName()] || {})[n.row + ',' + n.col] = n.note;
+  }
+  return out;
+}
+function _xlPatchNotes(wb, fwb, before) {
+  const now = _xlNotesNow(fwb);
+  let n = 0;
+  for (const name of new Set([...Object.keys(before), ...Object.keys(now)])) {
+    const ws = wb.getWorksheet(name);
+    if (!ws) continue;
+    const a = before[name] || {}, b = now[name] || {};
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (a[key] === b[key]) continue;
+      const [r, c] = key.split(',').map(Number);
+      const cell = ws.getCell(r + 1, c + 1);
+      try { if (b[key]) cell.note = b[key]; else cell._comment = undefined; n++; } catch (e) {}
+    }
+  }
+  return n;
+}
+function _xlNoteItems(notes) {
+  const colName = c => { let s = ''; c++; while (c > 0) { const m = (c - 1) % 26; s = String.fromCharCode(65 + m) + s; c = Math.floor((c - 1) / 26); } return s; };
+  const items = [];
+  for (const [sheet, cells] of Object.entries(notes || {})) for (const [key, text] of Object.entries(cells)) {
+    const [row, col] = key.split(',').map(Number);
+    // Excel prefixes a note with "Author:" on its first line.
+    const m = /^([^\n:]{1,60}):\s*\n?([\s\S]*)$/.exec(text);
+    items.push({ kind: 'comment', sheet, row, col, where: sheet + '!' + colName(col) + (row + 1),
+      who: m ? m[1] : '', text: m ? m[2] : text });
+  }
+  return items;
 }
 
 // Only a sheet MUTATION is an edit. Opening a workbook alone fires
@@ -30408,6 +30834,7 @@ async function _xlsxSave() {
     after.__activeId = fwb.getActiveSheet().getSheetId();
     const changed = _uvPatchWorkbook(ed.wb, ed.initial, after);
     Object.assign(changed, _uvPatchFeatures(ed.wb, ed.initial, after, ed.skipped || {}));
+    changed.notes = _xlPatchNotes(ed.wb, fwb, ed.notes0 || {});
     if (ed.defaultFont) {
       ed.wb.eachSheet(ws => ws.eachRow({ includeEmpty: false }, row => row.eachCell({ includeEmpty: false }, cell => {
         const f = cell.font;
@@ -30431,6 +30858,7 @@ async function _xlsxSave() {
     }
     if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
     ed.etag = d.etag || ed.etag;
+    ed.notes0 = _xlNotesNow(fwb);
     delete after.__activeId;
     ed.initial = JSON.parse(JSON.stringify(after));
     _xlsxSetDirty(false);
