@@ -79,7 +79,8 @@ mkdir -p "$(dirname "$LOG")" "$STATE_DIR"
 VERIFY_MIN="${STALL_VERIFY_MIN:-8}"            # a fired rung gets this long to show progress
 RESTART_COOLDOWN_H="${STALL_RESTART_COOLDOWN_H:-6}"  # at most one ladder restart per worker per window
 SUB_IDLE_MIN="${STALL_SUBAGENT_IDLE_MIN:-60}"   # a running subagent silent this long is stale
-SUB_MAX_H="${STALL_SUBAGENT_MAX_H:-4}"          # a running subagent older than this is stale
+SUB_MAX_H="${STALL_SUBAGENT_MAX_H:-4}"          # a running subagent older than this is stale...
+SUB_AGE_IDLE_MIN="${STALL_SUBAGENT_AGE_IDLE_MIN:-15}"  # ...only if also silent this long (a reused agent still writing is working)
 U="$(amux url 2>/dev/null)"
 now="${STALL_NOW:-$(date -u +%s)}"
 ts=$(date -u -r "$now" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)
@@ -289,9 +290,10 @@ fi
 
 subagent_check() {
   local w=$1 res status fields ids summary code prev
-  res=$(python3 - "$GUARD_PY" "$w" "$now" "$((SUB_IDLE_MIN * 60))" "$((SUB_MAX_H * 3600))" "${STALL_FIXTURE_TRANSCRIPT:-}" "${AMUX_HOME:-$HOME/.amux}" <<'PY'
+  res=$(python3 - "$GUARD_PY" "$w" "$now" "$((SUB_IDLE_MIN * 60))" "$((SUB_MAX_H * 3600))" "${STALL_FIXTURE_TRANSCRIPT:-}" "${AMUX_HOME:-$HOME/.amux}" "$((SUB_AGE_IDLE_MIN * 60))" <<'PY'
 import glob, importlib.util, json, os, sys
 guard, w, now, idle_s, max_s, tp, home = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5]), sys.argv[6], sys.argv[7]
+age_idle_s = float(sys.argv[8])
 def out(status, fields, ids="", summary=""):
     print(status); print(fields); print(ids); print(summary); sys.exit()
 def unmeasured(why):
@@ -322,7 +324,7 @@ c = g.count_running_subagents(tp, {"stale_s": max_s, "no_meta_warm_s": max_s}, n
 if not c.get("measured"):
     unmeasured(str(c.get("why_unmeasured") or "guard reader unmeasured"))
 stale = [a for a in c.get("running_agents") or []
-         if a.get("idle_s", 0) > idle_s or (a.get("age_s") is not None and a["age_s"] > max_s)]
+         if a.get("idle_s", 0) > idle_s or (a.get("age_s") is not None and a["age_s"] > max_s and a.get("idle_s", 0) > age_idle_s)]
 fields = "measured=true n_considered=%d running=%d stale=%d" % (c.get("n_considered", 0), c.get("running", 0), len(stale))
 summary = "; ".join("%s (%s) running %s, last wrote %s ago" % (a["id"], a.get("description") or "no description",
                      g.fmt_age(a.get("age_s")), g.fmt_age(a.get("idle_s"))) for a in stale)
@@ -339,7 +341,7 @@ PY
       # One wake per new stale set, not one every run.
       if [ "$(cat "$prev" 2>/dev/null)" != "$ids" ]; then
         if [ "${STALL_DRY_RUN:-}" = 1 ]; then code=dry
-        else code=$(send_wake "$w" "Stall watchdog: subagent(s) look stale (silent over ${SUB_IDLE_MIN} min or running over ${SUB_MAX_H} h): $summary. Check them and TaskStop any that are stuck or no longer needed." 15)
+        else code=$(send_wake "$w" "Stall watchdog: subagent(s) look stale (silent over ${SUB_IDLE_MIN} min, or running over ${SUB_MAX_H} h and silent over ${SUB_AGE_IDLE_MIN} min): $summary. Check them and TaskStop any that are stuck or no longer needed." 15)
         fi
         case "$code" in
           2??|dry) logl "worker=$w verdict=subagent_stale action=wake_sent http=$code ids=$ids"; echo "$ids" > "$prev" ;;

@@ -294,19 +294,21 @@ function transcriptFixture(d, agents) {
 }
 const healthy = { name: 'w1', last_progress_at: NOW - 60, turn_state: 'running', steering_queue: [] };
 
-test('subagent age: silent > 60 min or running > 4 h is subagent_stale, with one wake per stale set', () => {
+test('subagent age: silent > 60 min, or running > 4 h and silent > 15 min, is subagent_stale; a long-running agent still writing is not', () => {
   const s = setup();
   const tp = transcriptFixture(s.d, [
     { id: 'old', desc: 'running five hours', ageS: 5 * 3600, idleS: 30 },
+    { id: 'oldquiet', desc: 'running five hours, silent twenty minutes', ageS: 5 * 3600, idleS: 20 * 60 },
     { id: 'quiet', desc: 'silent ninety minutes', ageS: 2 * 3600, idleS: 90 * 60 },
     { id: 'fresh', desc: 'healthy', ageS: 600, idleS: 20 },
     { id: 'done', desc: 'finished', ageS: 5 * 3600, idleS: 90 * 60, finished: true },
   ]);
   let r = s.tick({ session: healthy, send: ['200'], env: { STALL_FIXTURE_TRANSCRIPT: tp } });
-  assert.match(r.log, /WARN worker=w1 verdict=subagent_stale measured=true n_considered=4 running=3 stale=2 idle_min=60 max_h=4 ids=old,quiet/);
-  assert.match(r.log, /verdict=subagent_stale action=wake_sent http=200 ids=old,quiet/);
+  assert.match(r.log, /WARN worker=w1 verdict=subagent_stale measured=true n_considered=5 running=4 stale=2 idle_min=60 max_h=4 ids=oldquiet,quiet/);
+  assert.match(r.log, /verdict=subagent_stale action=wake_sent http=200 ids=oldquiet,quiet/);
   const wake = r.calls.split('\n').find((l) => l.includes('/send'));
-  assert.match(wake, /agent-old|old \(running five hours\) running 5h00m/);
+  assert.match(wake, /oldquiet \(running five hours, silent twenty minutes\) running 5h00m/);
+  assert.doesNotMatch(r.log, /ids=[^ ]*\bold\b/);
   assert.match(wake, /TaskStop/);
   r = s.tick({ session: healthy, send: ['200'], env: { STALL_FIXTURE_TRANSCRIPT: tp } });
   assert.equal((r.calls.match(/\/send/g) || []).length, 1, 'the same stale set is not re-woken');
