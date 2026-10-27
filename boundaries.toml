@@ -292,7 +292,11 @@ agent stops at once. Keep the number of subagents you run at the same time
 small: a new one is refused while you already have the limit running
 (AMUX_MAX_SUBAGENTS, default below) or while the account has less usage left
 than the floor below. When refused, wait for one of your agents to finish, do
-the step yourself, or retry after the window resets. `amux usage` and
+the step yourself, or retry after the window resets. The refusal lists your
+running subagents with their ages: if the new task matters more, stop your
+lowest-priority or stale one (TaskStop) and retry. A task that is your most
+important one may start one over the cap when its description begins with
+`[P1]` (or `#1`); use that sparingly. `amux usage` and
 GET $AMUX_URL/api/sessions/<you>/quota show the remaining window.
 """
 enforced_by = [
@@ -315,6 +319,20 @@ min_headroom_pct = 10
 # no_meta_warm_s.
 stale_s = 1800
 no_meta_warm_s = 240
+# Priority (2026-10-27, MSG-98201: mxp-gs12 was refused 11 times that day,
+# including for its most important task). With the cap full, an Agent call
+# whose description or prompt start matches one of these regexes still
+# starts, up to over_cap_max above the cap (0 turns the allowance off), and is
+# logged as subagent_cap_preempt_allowed. A hook cannot stop another agent,
+# so the refusal lists the running ones with their ages for the lane to stop
+# its lowest-priority or stale one (TaskStop). The headroom floor still holds.
+priority_markers = ['^\s*\[P1\]', '^\s*#1\b']
+priority_example = ["[P1]", "#1"]
+over_cap_max = 1
+# An Agent call while any running subagent is older than this logs
+# subagent_long_running (WARN), so a sweep finds agents running for hours.
+# 0 turns it off.
+long_running_s = 7200
 
 [[boundary]]
 id = "orchestrator-modal"

@@ -586,6 +586,63 @@ def main() -> int:
             code, ev = run_payload(agent_call(calm), home, {"AMUX_USAGE_SAMPLE": None, "AMUX_URL": "https://127.0.0.1:9"})
             expect("subagents: an unreachable amux server is unmeasured headroom, allowed",
                    code == 0 and any(e.get("verdict") == "subagent_cap_allowed_unmeasured" for e in ev), f"exit {code} {ev}")
+            # Priority-aware over-cap allowance and subagent age (2026-10-27, MSG-98201).
+            def marked(tp: str, desc: str = "[P1] land the shard fix", prompt: str = "y") -> dict:
+                pl = agent_call(tp)
+                pl["tool_input"] = {**pl["tool_input"], "description": desc, "prompt": prompt}
+                return pl
+
+            def verdict(ev: list[dict], v: str) -> list[dict]:
+                return [e for e in ev if e.get("verdict") == v]
+
+            aged = conversation(home, "aged", running=4)
+            subs_dir = os.path.join(os.path.dirname(aged), "conv", "subagents")
+            three_h = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3 * 3600 - 120))
+            with open(os.path.join(subs_dir, "agent-run0.jsonl"), "w") as fh:
+                fh.write(json.dumps({"type": "user", "message": {"role": "user", "content": "say \"timestamp\":\"2001-01-01T00:00:00Z\""},
+                                     "timestamp": three_h}) + "\n")
+            with open(os.path.join(subs_dir, "agent-run0.meta.json"), "w") as fh:
+                json.dump({"requestShape": "background", "description": "BM25 parity sweep"}, fh)
+            code, ev = run_payload(agent_call(aged), home)
+            hit = refused(ev, "running_cap")
+            ages = {a.get("id"): a.get("age_s") for a in (hit[0].get("running_agents") or [])} if hit else {}
+            expect("subagents: an unmarked call at the cap is refused and logs each running agent's age",
+                   code == 2 and bool(hit) and 3 * 3600 < (ages.get("run0") or 0) < 4 * 3600
+                   and hit[0].get("oldest_age_s") == ages.get("run0") and len(ages) == 4, f"exit {code} {ev}")
+            expect("subagents: the refusal names the marker and lists running agents with description and age",
+                   "[P1]" in last_stderr and "BM25 parity sweep" in last_stderr and "running 3h0" in last_stderr
+                   and "TaskStop" in last_stderr, last_stderr)
+            expect("subagents: an agent running for hours logs subagent_long_running for a sweep",
+                   bool(verdict(ev, "subagent_long_running")), f"{ev}")
+            code, ev = run_payload(marked(aged), home)
+            hit = verdict(ev, "subagent_cap_preempt_allowed")
+            expect("subagents: a [P1] call at the cap is allowed once, logged with the running count",
+                   code == 0 and bool(hit) and hit[0].get("running") == 4 and hit[0].get("limit") == 4
+                   and hit[0].get("priority_marker") == "[P1]" and not refused(ev, "running_cap"), f"exit {code} {ev}")
+            code, ev = run_payload(marked(aged, desc="parity", prompt="#1 priority: land it"), home)
+            expect("subagents: a #1 marker at the start of the prompt counts too",
+                   code == 0 and bool(verdict(ev, "subagent_cap_preempt_allowed")), f"exit {code} {ev}")
+            code, ev = run_payload(marked(aged, desc="#10 of 12 sweeps"), home)
+            expect("subagents: #10 is not the #1 marker", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
+            code, ev = run_payload(marked(aged, desc="fix [P1] later"), home)
+            expect("subagents: a marker mid-description does not count", code == 2 and bool(refused(ev, "running_cap")), f"exit {code} {ev}")
+            over = conversation(home, "over", running=5)
+            code, ev = run_payload(marked(over), home)
+            hit = refused(ev, "over_cap_bound")
+            expect("subagents: a marked call past cap + over_cap_max is refused (cause over_cap_bound)",
+                   code == 2 and bool(hit) and hit[0].get("running") == 5 and "at most 5" in last_stderr, f"exit {code} {ev}")
+            code, ev = run_payload(marked(conversation(home, "below", running=2)), home)
+            expect("subagents: below the cap a marked call logs nothing",
+                   code == 0 and not any(str(e.get("verdict", "")).startswith("subagent_cap") for e in ev), f"exit {code} {ev}")
+            code, ev = run_payload(marked(aged), home, {"AMUX_USAGE_SAMPLE": low})
+            expect("subagents: a marked call at the cap still obeys the usage headroom floor",
+                   code == 2 and bool(refused(ev, "usage_headroom")) and not verdict(ev, "subagent_cap_preempt_allowed"), f"exit {code} {ev}")
+            no_over = os.path.join(home, "no-over-cap.toml")
+            with open(REGISTRY) as src, open(no_over, "w") as fh:
+                fh.write(src.read().replace("over_cap_max = 1", "over_cap_max = 0"))
+            expect("subagents: test fixture set over_cap_max = 0", "over_cap_max = 0" in open(no_over).read())
+            code, ev = run_payload(marked(aged), home, registry=no_over)
+            expect("subagents: over_cap_max = 0 turns the allowance off", code == 2 and bool(refused(ev, "over_cap_bound")), f"exit {code} {ev}")
             # Isolated workers as launched: AMUX_SESSION unset, AMUX_ISOLATED_WORKER set.
             iso_env = {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "iso-big"}
             code, ev = run_payload(agent_call(tp), home, iso_env)

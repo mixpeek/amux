@@ -790,6 +790,7 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
     except OSError as e:
         return {"measured": False, "why_unmeasured": f"cannot list {subs}: {e}", "n_considered": 0}
     running: list[str] = []
+    details: list[dict] = []
     ended_by_restart = 0
     ended_by_stop_n = 0
     for n in names:
@@ -816,9 +817,38 @@ def count_running_subagents(transcript_path: str, cfg: dict, now: float | None =
             continue
         if live:
             running.append(stem)
+            started = agent_started_at(os.path.join(subs, n))
+            details.append({"id": stem[len("agent-"):] if stem.startswith("agent-") else stem,
+                            "description": str((meta or {}).get("description") or "")[:80],
+                            "age_s": round(now - started) if started is not None else None,
+                            "idle_s": round(age)})
+    details.sort(key=lambda d: -(d["age_s"] if d["age_s"] is not None else -1))
+    ages = [d["age_s"] for d in details if d["age_s"] is not None]
     return {"measured": True, "running": len(running), "n_considered": len(names), "running_ids": sorted(running)[:12],
+            "running_agents": details[:12], "oldest_age_s": max(ages) if ages else None,
             "ended_by_restart": ended_by_restart, "ended_by_stop": ended_by_stop_n,
             "host_start_measured": host_start is not None}
+
+
+TS_RE = re.compile(r'"timestamp"\s*:\s*"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z"')
+
+
+def agent_started_at(path: str) -> float | None:
+    """When a subagent started: the first transcript entry's timestamp (the
+    prompt the parent sent), else the file's birth time, else None. Only the
+    first 256 KB are read; a key inside the prompt text is escaped, so the
+    first raw match is the entry's own field."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(262144).decode("utf-8", "replace")
+        m = TS_RE.search(head)
+        if m:
+            import calendar
+            return float(calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")))
+        st = os.stat(path)
+        return float(getattr(st, "st_birthtime", 0) or 0) or None
+    except (OSError, ValueError):
+        return None
 
 
 def usage_headroom() -> dict:
@@ -884,10 +914,37 @@ def subagent_max(cfg: dict) -> int | None:
     return n if n > 0 else None
 
 
-def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]:
+def fmt_age(s: float | None) -> str:
+    if s is None:
+        return "age unknown"
+    s = int(s)
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+
+def priority_marker(cfg: dict, ti: dict) -> str | None:
+    """The registry's priority marker this Agent call carries, if any. Matched
+    against the description and the start of the prompt."""
+    text = [str(ti.get("description") or ""), str(ti.get("prompt") or "")[:400]]
+    for p in cfg.get("priority_markers") or []:
+        for t in text:
+            m = re.search(p, t, re.IGNORECASE | re.MULTILINE)
+            if m:
+                return m.group(0).strip()
+    return None
+
+
+def running_list(count: dict) -> str:
+    rows = count.get("running_agents") or []
+    return "\n".join(
+        f"  - {r['id']}  {r.get('description') or '(no description)'}  running {fmt_age(r.get('age_s'))}, "
+        f"last wrote {fmt_age(r.get('idle_s'))} ago" for r in rows)
+
+
+def check_subagents(b: dict, tool: str, transcript_path: str, ti: dict | None = None) -> tuple[int, str]:
     cfg = b.get("subagents") or {}
     if tool not in (cfg.get("tools") or ["Agent", "Task"]):
         return 0, ""
+    ti = ti or {}
     limit = subagent_max(cfg)
     floor = float(cfg.get("min_headroom_pct", 0) or 0)
     if limit is None and floor <= 0:
@@ -895,19 +952,53 @@ def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]
     count = (count_running_subagents(transcript_path, cfg, host_start=host_process_start()) if limit is not None
              else {"measured": False, "why_unmeasured": "cap off"})
     head = usage_headroom() if floor > 0 else {"measured": False, "why_unmeasured": "headroom floor off"}
+    marker = priority_marker(cfg, ti)
+    over_cap = max(0, int(cfg.get("over_cap_max", 0) or 0))
     base = {"boundary": b.get("id"), "tool": tool, "limit": limit, "min_headroom_pct": floor,
             "running": count.get("running"), "running_ids": count.get("running_ids"),
+            "running_agents": count.get("running_agents"), "oldest_age_s": count.get("oldest_age_s"),
+            "priority_marker": marker, "over_cap_max": over_cap,
             "ended_by_restart": count.get("ended_by_restart"), "ended_by_stop": count.get("ended_by_stop"),
             "host_start_measured": count.get("host_start_measured"),
             "measured": bool(count.get("measured")), "n_considered": count.get("n_considered", 0),
             "headroom_pct": head.get("headroom_pct"), "headroom_measured": bool(head.get("measured")),
             "window": head.get("window"), "resets_at": head.get("resets_at")}
-    if limit is not None and count.get("measured") and count["running"] >= limit:
-        log({**base, "level": "WARN", "verdict": "subagent_cap_refused", "cause": "running_cap"})
+    markers = " or ".join(f"`{m}`" for m in cfg.get("priority_example") or []) or "a priority marker"
+    long_s = float(cfg.get("long_running_s", 0) or 0)
+    if long_s > 0 and (count.get("oldest_age_s") or 0) >= long_s:
+        # Logged whatever this call's outcome: a line a sweep can find when a subagent has run for hours.
+        log({**base, "level": "WARN", "verdict": "subagent_long_running", "long_running_s": long_s})
+    at_cap = limit is not None and bool(count.get("measured")) and count["running"] >= limit
+    listing = running_list(count)
+    preempt = ""
+    if at_cap and marker and over_cap > 0 and count["running"] < limit + over_cap:
+        # Priority-aware allowance (2026-10-27, MSG-98201): the lane's most
+        # important task starts even with the cap full, bounded at
+        # limit + over_cap_max. True preemption (stopping another agent) is
+        # impossible from a PreToolUse hook: it can only allow or refuse this
+        # call, and subagents run inside the Claude process with no handle the
+        # hook could stop. The lane stops one itself (TaskStop). The usage
+        # headroom floor below still applies to a marked call.
+        preempt = (f"amux boundary '{b.get('id')}': started over the cap on priority marker {marker!r} "
+                   f"({count['running']} running, limit {limit}, at most {limit + over_cap} with a marker). Stop your "
+                   f"lowest-priority or stale subagent (TaskStop) so the next marked task has room:\n{listing}\n")
+    if at_cap and not preempt:
+        n = count["running"]
+        cause = "over_cap_bound" if marker else "running_cap"
+        log({**base, "level": "WARN", "verdict": "subagent_cap_refused", "cause": cause})
+        why = (f"it carries priority marker {marker!r}, but you already use the {over_cap} over-cap slot(s) a marked "
+               f"task may take (at most {limit + over_cap})" if marker else
+               f"a task marked {markers} at the start of its description may start {over_cap} over the cap"
+               if over_cap > 0 else "")
         return 2, (
-            f"BLOCKED by amux boundary '{b.get('id')}': you already have {count['running']} subagents running "
-            f"and the limit is {limit} (AMUX_MAX_SUBAGENTS), so this new agent was not started.\n"
-            "Retry when one of them finishes (a background agent notifies you when it stops), or do this step "
+            f"BLOCKED by amux boundary '{b.get('id')}': you already have {n} subagents running "
+            f"and the limit is {limit} (AMUX_MAX_SUBAGENTS), so this new agent was not started"
+            + (f"; {why}" if why else "") + ".\n"
+            f"Running now (oldest first):\n{listing or '  (no details)'}\n"
+            "If this task matters more than one of those, stop the lowest-priority or stale one yourself with "
+            "TaskStop (its id is listed) and retry"
+            + (f", or mark this one {markers}" if not marker and over_cap > 0 else "")
+            + ". Retry when one of them finishes (a background agent notifies you when it stops), or do this step "
             "yourself. Fanning out past the account's capacity is how a usage limit stops every agent at once.\n"
             "(boundary-guard; the registry is boundaries.toml)\n"
         )
@@ -921,6 +1012,9 @@ def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]
             f"Retry after the window resets ({head.get('resets_at') or 'see `amux usage`'}), finish the work with the "
             "agents you have, or do this step yourself.\n(boundary-guard; the registry is boundaries.toml)\n"
         )
+    if preempt:
+        log({**base, "level": "WARN", "verdict": "subagent_cap_preempt_allowed", "cause": "priority_marker"})
+        sys.stderr.write(preempt)
     unmeasured = [k for k, r, on in (("count", count, limit is not None), ("headroom", head, floor > 0))
                   if on and not r.get("measured")]
     if unmeasured:
@@ -1088,7 +1182,7 @@ def main() -> None:
                 sys.stderr.write(msg)
                 sys.exit(code)
         if b.get("kind") == "subagents":
-            code, msg = check_subagents(b, tool, str(payload.get("transcript_path") or ""))
+            code, msg = check_subagents(b, tool, str(payload.get("transcript_path") or ""), ti)
             if code:
                 sys.stderr.write(msg)
                 sys.exit(code)

@@ -48,7 +48,7 @@ Where it is visible:
 | payments | vault approval limit and single-use grants (`api/vault.rs`) | payment provider APIs, vault files, approving grants or editing vault rules |
 | email | external-send approval hold, send audit (`api/email_approval.rs`, `/api/email/log`) | Mail.app, sendmail and SMTP, provider APIs (Gmail, SendGrid, Mailgun, ...), stored Gmail and auth tokens, approving or editing held sends |
 | resources | `host_guard` holds automated dispatch at critical; admission refuses new workers under memory pressure | heavy commands refused at critical pressure, with an acknowledged override |
-| subagents | none | a new Agent/Task call while the worker already runs its subagent limit, or while the account's usage headroom is under the floor |
+| subagents | none | a new Agent/Task call while the worker already runs its subagent limit (a `[P1]` call may take one slot over it), or while the account's usage headroom is under the floor |
 | orchestrator-modal | none | AskUserQuestion, EnterPlanMode and ExitPlanMode for a worker marked as an orchestrator |
 | tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
@@ -90,6 +90,25 @@ or `Task` tool call when either holds:
 The refusal tells the model the running count, the limit, and when to retry
 (when one of its agents finishes, or the window's reset time). It is a refusal
 only: no prompt, no routing.
+
+**Priority and age (2026-10-27, MSG-98201).** mxp-gs12 was refused 11 times
+on 10-27, including for its most important task. With the cap full, an Agent
+call whose description or prompt start matches a `priority_markers` regex
+(`[P1]` or `#1` at the start) still starts, up to `over_cap_max` (1) above the
+cap; it is logged as `subagent_cap_preempt_allowed` with the running count.
+Past that bound a marked call is refused with `cause` `over_cap_bound`;
+`over_cap_max = 0` turns the allowance off. The headroom floor still applies
+to a marked call. A PreToolUse hook cannot stop another agent: it can only
+allow or refuse the call in front of it, and subagents run inside the Claude
+process with no handle the hook could reach. So the refusal lists every
+running subagent with its description (from its meta file), how long it has
+run (the first transcript entry's timestamp, else the file's birth time) and
+how long since it last wrote, and tells the lane to stop its lowest-priority
+or stale one with TaskStop. Each log line carries `running_agents` and
+`oldest_age_s`, and an Agent call while any subagent is older than
+`long_running_s` (7200) also logs `subagent_long_running` (WARN), so a sweep
+finds agents running for hours. The guard sees subagents only when the lane
+makes an Agent call; it has no view of them between calls.
 
 The count comes from Claude Code's own files, so it needs no amux reporting
 (isolated workers send none). The hook payload's `transcript_path` names the
