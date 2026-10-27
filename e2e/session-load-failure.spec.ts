@@ -161,16 +161,27 @@ for (const initial of ['', 'obsolete-test-credential']) {
     // (ios-safari flake that reddened main on an innocent merge, AMUX-6142).
     // Poll it within the same bootstrap deadline rather than failing on a
     // sub-second race; a genuinely unrecovered roster still times out and fails.
+    // Each probe has its own 3s deadline: on webkit a probe whose request was
+    // cancelled (status -1 in the trace) never settled, and that one pending
+    // evaluate spent the whole 15s poll without a retry (run 40514068471).
     let names: string[] = [];
+    let lastProbe = 'none';
     await expect.poll(async () => {
-      const roster = await page.evaluate(async () => {
-        const response = await fetch('/api/sessions');
-        if (!response.ok) return null;
-        return (await response.json()).map((row: any) => row.name);
+      const probe = await page.evaluate(async () => {
+        const read = (async () => {
+          const response = await fetch('/api/sessions', {cache:'no-store'});
+          if (!response.ok) return {outcome:`http ${response.status}`, roster:null};
+          return {outcome:'ok', roster:(await response.json()).map((row: any) => row.name)};
+        })().catch((error) => ({outcome:`error ${error?.name || error}`, roster:null}));
+        const deadline = new Promise<{outcome:string, roster:null}>((resolve) =>
+          setTimeout(() => resolve({outcome:'no answer in 3s', roster:null}), 3000));
+        return Promise.race([read, deadline]);
       });
-      if (roster) names = roster;
-      return roster !== null;
-    }, {timeout:15000, message:'recovered roster read (credential race)'}).toBe(true);
+      lastProbe = probe.outcome;
+      if (probe.roster) names = probe.roster;
+      return probe.roster !== null;
+    }, {timeout:15000, message:'recovered roster read (credential race)'}).toBe(true)
+      .catch((error) => { throw new Error(`${error.message}\nlast probe: ${lastProbe}`); });
     if (!names.length) await expect(page.locator('#cards')).toContainText('No workers yet');
     else for (const name of names) await expect(page.locator('#cards')).toContainText(name);
     await expect(page.locator('#conn-status').first()).toHaveText(/Live|Polling/);
