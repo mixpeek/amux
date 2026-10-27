@@ -13,7 +13,8 @@
   under the usage headroom floor, and allows an unmeasured count
 - an owner override in ~/.amux/boundaries.toml can disable a boundary
 - push-gates refuses a git push to main or master that skips the hooks or
-  runs in a temp repo that ships a pre-push hook it has not installed
+  runs in a temp repo that ships a pre-push hook it has not installed, and a
+  direct push to main in a repo that lands through `amux land` (mixpeek)
 
 Example strings: a Bash command as-is, or "<Tool> <path>" for a file tool,
 optionally followed by " :: <content written>".
@@ -556,6 +557,56 @@ def push_gate_cases(home: str, boundaries: list[dict]) -> None:
     # Isolated workers as launched are covered.
     code, ev = push("git push origin main", by_url, {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "iso-push"})
     expect("push gate: an isolated worker (AMUX_ISOLATED_WORKER only) is refused too", code == 2, f"exit {code} {ev}")
+
+    # Land queue (2026-10-27, L-141): a repo whose `repos` entry sets land = true
+    # (mixpeek) lands main through `amux land`; a direct push is refused even with
+    # the hook installed. amux has no land: its flow is a direct push.
+    land_repo = repo("land-mixpeek", "git@github.com:mixpeek/mixpeek.git", True)
+    amux_repo = repo("direct-amux", "https://github.com/mixpeek/amux.git", True)
+    for d in (land_repo, amux_repo):
+        git("config", "core.hooksPath", ".githooks", cwd=d)
+    git("remote", "add", "mx", "git@github.com:mixpeek/mixpeek.git", cwd=amux_repo)
+
+    def land_refused(ev: list[dict]) -> bool:
+        return any(e.get("verdict") == "push_gate_land_required" and e.get("level") == "WARN"
+                   and any(t.get("cause") == "land_required" for t in e.get("targets", [])) for e in ev)
+
+    for cmd, where in (("git push origin main", land_repo),
+                       ("git push origin HEAD:main", land_repo),
+                       ("git push", land_repo),
+                       (f"git -C {land_repo} push origin HEAD:main", elsewhere),
+                       (f"cd {land_repo} && git push origin main", elsewhere),
+                       ("./precheck.sh && git push origin main", land_repo),
+                       ("git push mx HEAD:main", amux_repo),
+                       ("git push git@github.com:mixpeek/mixpeek.git HEAD:main", amux_repo)):
+        code, ev = push(cmd, where)
+        expect(f"push gate: a direct push to main in a land repo is refused (land_required): {cmd[:70]} in {os.path.basename(where)}",
+               code == 2 and land_refused(ev) and "`amux land --detach`" in last_stderr, f"exit {code} {ev} {last_stderr[:300]}")
+    code, ev = push("git push origin main", land_repo)
+    expect("push gate: the land refusal says to run `amux land --detach` instead of git push, from the repo",
+           f"{os.sep}land-mixpeek, run `amux land --detach` instead of git push" in last_stderr, last_stderr[:500])
+    for cmd, where, logged in (("git push origin main", amux_repo, True),
+                               ("git push origin HEAD:main", amux_repo, True),
+                               ("git push https://github.com/someone/fork.git HEAD:main", land_repo, True),
+                               ("amux land --detach", land_repo, False),
+                               ("amux land --detach --branch main", land_repo, False),
+                               ("git push origin feature", land_repo, False),
+                               ("git push -u origin HEAD:refs/heads/fix-land", land_repo, False),
+                               ("git push --dry-run origin main", land_repo, False),
+                               ("git push -n origin HEAD:main", land_repo, False)):
+        code, ev = push(cmd, where)
+        ok = code == 0 and (bool(ev) and ev[0]["verdict"] == "push_gate_allowed" if logged else not ev)
+        expect(f"push gate: allowed beside the land rule{' and logged' if logged else ', nothing logged'}: {cmd[:60]} in {os.path.basename(where)}",
+               ok, f"exit {code} {ev} {last_stderr[:300]}")
+    code, ev = push("git push origin main", by_url)
+    expect("push gate: a land repo without the hook names the install step, then amux land --detach",
+           code == 2 and refused(ev, "hook_not_installed")
+           and "git config core.hooksPath .githooks`, then run `amux land --detach`" in last_stderr, last_stderr[:500])
+    code, ev = push(f"cd {amux_repo} && git push origin main && cd {land_repo} && git push origin main", elsewhere)
+    expect("push gate: in one command, the amux push passes and the land-repo push is refused",
+           code == 2 and land_refused(ev) and [os.path.basename(t["repo"]) for e in ev for t in e.get("targets", [])
+                                               if e.get("verdict") == "push_gate_land_required"] == ["land-mixpeek"],
+           f"exit {code} {ev}")
 
 
 def main() -> int:

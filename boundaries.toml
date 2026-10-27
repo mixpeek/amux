@@ -519,10 +519,12 @@ from a clone that has not installed the hook its repository ships (a fresh
 clone installs none until you run the repo's install step: for mixpeek
 `git config core.hooksPath .githooks`, for amux `./scripts/install-hooks.sh`).
 Run the push as its own command after its checks pass, not chained after a
-precheck. If a gate refuses, fix what it reports and push again.
+precheck. If a gate refuses, fix what it reports and push again. In a repo that
+lands through the queue (mixpeek), never push main directly: run
+`amux land --detach`, which rebases, runs the gates and pushes for you.
 """
 enforced_by = [
-  "hook: boundary-guard (git push to main or master with --no-verify, with core.hooksPath emptied inline, or from a repo that ships a pre-push hook it has not installed)",
+  "hook: boundary-guard (git push to main or master with --no-verify, with core.hooksPath emptied inline, from a repo that ships a pre-push hook it has not installed, or a direct push in a repo that lands through amux land)",
 ]
 
 [boundary.push_gates]
@@ -541,16 +543,26 @@ shipped_hooks = [
 ]
 # Or when any remote URL (or the URL pushed to) matches one of these, even if
 # the checkout lacks the file (a shallow or sparse clone, say).
+#
+# `land = true` (2026-10-27, L-141): that repository lands main through the
+# `amux land` queue, so a direct push to a protected branch is refused and the
+# refusal says to run `land_command`. Lanes that pushed mixpeek main directly
+# lost races to the queue and re-ran its pre-push gates (mixpeek-cicd: 39 min
+# of refusals). Judged on the URL of the remote pushed to. amux has no `land`:
+# its flow is a rebase and a direct `git push origin HEAD:main`. land's own
+# push runs inside its process, so this hook never sees it.
 repos = [
-  { remote = 'github\.com[:/]mixpeek/mixpeek(\.git)?/?$', install = "git config core.hooksPath .githooks" },
+  { remote = 'github\.com[:/]mixpeek/mixpeek(\.git)?/?$', install = "git config core.hooksPath .githooks", land = true },
   { remote = 'github\.com[:/]mixpeek/amux(\.git)?/?$', install = "./scripts/install-hooks.sh" },
 ]
+land_command = "amux land --detach"
 default_install = "git config core.hooksPath .githooks"
 # Each git probe (rev-parse, config, symbolic-ref) is bounded by this. A probe
 # that fails or times out refuses the push (the check fails closed).
 timeout_s = 3
 verdict_refused = "push_gate_refused"
 verdict_allowed = "push_gate_allowed"
+verdict_land_required = "push_gate_land_required"
 
 [[boundary]]
 id = "boundaries-self"

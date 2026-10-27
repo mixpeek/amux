@@ -51,7 +51,7 @@ Where it is visible:
 | subagents | none | a new Agent/Task call while the worker already runs its subagent limit (a `[P1]` call may take one slot over it), or while the account's usage headroom is under the floor |
 | orchestrator-modal | none | AskUserQuestion, EnterPlanMode and ExitPlanMode for a worker marked as an orchestrator |
 | tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
-| push-gates | GitHub branch protection, where it is on (not set by amux) | `git push` to main or master with `--no-verify`, with `core.hooksPath` emptied inline, or from a repo that ships a pre-push hook it has not installed |
+| push-gates | GitHub branch protection, where it is on (not set by amux) | `git push` to main or master with `--no-verify`, with `core.hooksPath` emptied inline, from a repo that ships a pre-push hook it has not installed, or directly in a repo that lands through `amux land` (mixpeek) |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
 **What this cannot do yet.** Workers run as the owner's macOS user. The guard
@@ -237,6 +237,23 @@ checked. Verdicts: `push_gate_refused` (WARN, each target's `cause`:
 `no_verify`, `hooks_disabled_inline`, `hook_not_installed`, `probe_failed`,
 `repo_unknown`) and `push_gate_allowed` (INFO, only for a push that wrote a
 protected branch and was checked).
+
+**Land queue.** Owner rule, 2026-10-27 (L-141): every Mixpeek main land goes
+through `amux land --detach`, which queues lanes behind one per-repo lock,
+rebases, runs the pre-push gates once and pushes. Lanes that pushed main
+directly lost races to the queue and re-ran the gates (mixpeek-cicd: 39
+minutes of refusals). A `repos` entry with `land = true` (mixpeek only) marks
+such a repo, judged on the URL of the remote pushed to (`origin` by default,
+or a URL given on the command line). A push that writes a protected branch
+there, and passes every hook check above, is refused with cause
+`land_required` and verdict `push_gate_land_required` (WARN), and the
+refusal says to run `land_command` (`amux land --detach`) from that repo. When
+a hook cause also applies, that cause is reported and its fix ends with
+`amux land --detach` in place of "push again". amux has no `land`: its flow
+is a rebase and a direct `git push origin HEAD:main`. `amux land` itself is
+allowed, and its own `git push` (in the `amux` CLI's `cmd_land`) runs inside
+its process, where no tool hook sees it, so land needs no marker. There is no
+bypass, as for the rest of push-gates.
 
 What it cannot see: a script on disk that pushes (only the command line is
 read), a git alias for push, a push from a shell amux does not run (a

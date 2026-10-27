@@ -29,8 +29,9 @@ went dark. The one exception is a deny rule with `requires_receipt`
 stale or foreign receipt refuses the call, and so does a failed check. The
 other is the push-gates boundary (kind push_gates): a `git push` segment that
 writes main or master is refused when it skips the hooks or runs in a repo
-that ships a pre-push hook it has not installed, and when the hook state
-cannot be read.
+that ships a pre-push hook it has not installed, when the hook state
+cannot be read, and in a repo whose `repos` entry sets `land = true` (it lands
+main through `amux land`, whose own push runs in its subprocess, unseen here).
 """
 from __future__ import annotations
 
@@ -591,7 +592,14 @@ def check_push_gates(b: dict, command: str, cwd: str) -> tuple[int, str]:
                 install = install or r.get("install", "")
                 break
         install = install or cfg.get("default_install") or "git config core.hooksPath .githooks"
-        rec.update(ships_hook=ships or False, install=install, hooks_dir=hooks_dir)
+        # Does this repository land through the queue (`amux land`)? Judged on
+        # the remote actually pushed to; a remote name with no URL in config
+        # falls back to every remote URL (fails closed).
+        push_urls = [remote] if remote and ("/" in remote or ":" in remote) else \
+            (config.get(f"remote.{(remote or 'origin').lower()}.url") or urls)
+        land = next((r.get("remote") for r in cfg.get("repos") or [] if r.get("land")
+                     and any(re.search(r.get("remote", "$^"), u, re.I) for u in push_urls)), "")
+        rec.update(ships_hook=ships or False, install=install, hooks_dir=hooks_dir, land_required=bool(land))
         if pp.no_verify:
             rec.update(cause="no_verify", why="it passes --no-verify, which skips the pre-push gates")
             continue
@@ -606,6 +614,10 @@ def check_push_gates(b: dict, command: str, cwd: str) -> tuple[int, str]:
             rec.update(cause="hook_not_installed",
                        why=f"this repository ships a pre-push hook ({ships}) and none is installed at {hook}")
             continue
+        if land:
+            rec.update(cause="land_required", land_cmd=cfg.get("land_command") or "amux land --detach",
+                       why=f"this repository lands main through the queue ({land}), and a direct push races it")
+            continue
         rec["allowed"] = True
     checked = [r for r in results if "skip" not in r]
     if not checked:
@@ -616,17 +628,28 @@ def check_push_gates(b: dict, command: str, cwd: str) -> tuple[int, str]:
     if not refused:
         log({**base, "level": "INFO", "verdict": cfg.get("verdict_allowed") or "push_gate_allowed", "targets": checked})
         return 0, ""
-    log({**base, "level": "WARN", "verdict": cfg.get("verdict_refused") or "push_gate_refused", "targets": refused,
-         "measured": not any(r["cause"] in ("probe_failed", "repo_unknown") for r in refused)})
+    land_cmd = cfg.get("land_command") or "amux land --detach"
+    for verdict, group in ((cfg.get("verdict_land_required") or "push_gate_land_required",
+                            [r for r in refused if r["cause"] == "land_required"]),
+                           (cfg.get("verdict_refused") or "push_gate_refused",
+                            [r for r in refused if r["cause"] != "land_required"])):
+        if group:
+            log({**base, "level": "WARN", "verdict": verdict, "targets": group,
+                 "measured": not any(r["cause"] in ("probe_failed", "repo_unknown") for r in group)})
     lines = []
     for r in refused:
         lines.append(f"- `{r['segment'][:140]}`" + (f" in {r['repo']}" if r.get("repo") else "") + f": {r['why']}.")
-        if r["cause"] == "hook_not_installed":
-            lines.append(f"  Fix: in {r['repo']}, run `{r['install']}`, then push again.")
+        # How this repository's main is written once the cause is fixed.
+        again = f"run `{land_cmd}` from {r['repo']} instead of git push" if r.get("land_required") else "push again"
+        if r["cause"] == "land_required":
+            lines.append(f"  Fix: from {r['repo']}, run `{land_cmd}` instead of git push. It queues behind other "
+                         "lanes, rebases, runs the pre-push gates and pushes for you (`amux land --help`).")
+        elif r["cause"] == "hook_not_installed":
+            lines.append(f"  Fix: in {r['repo']}, run `{r['install']}`, then {again}.")
         elif r["cause"] == "no_verify":
-            lines.append("  Fix: push again without --no-verify. If a gate refuses, fix what it reports.")
+            lines.append(f"  Fix: drop --no-verify and {again}. If a gate refuses, fix what it reports.")
         elif r["cause"] == "hooks_disabled_inline":
-            lines.append("  Fix: drop the core.hooksPath override and push again.")
+            lines.append(f"  Fix: drop the core.hooksPath override and {again}.")
         else:
             lines.append("  This check fails closed. Run the push as its own command from inside the repository "
                          "(cd <repo> && git push ...), with the repo's pre-push hook installed.")
