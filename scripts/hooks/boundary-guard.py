@@ -8,7 +8,8 @@ boundaries.toml (repo root; installed beside this file as
 registry, refuses the tool calls a `deny` rule describes, refuses heavy
 commands while the machine is critical (the `resources` boundary), and refuses
 a new Agent/Task call past the running-subagent cap or under the account's
-usage headroom floor (the `subagents` boundary).
+usage headroom floor (the `subagents` boundary), and refuses modal prompt tools
+(AskUserQuestion, plan mode) for orchestrator lanes (the `modal` boundary).
 
 Who it applies to: amux workers (AMUX_SESSION set), and isolated ones
 (AMUX_ISOLATED_WORKER set) while the registry's top-level `apply_to_isolated`
@@ -928,6 +929,72 @@ def check_subagents(b: dict, tool: str, transcript_path: str) -> tuple[int, str]
     return 0, ""
 
 
+# ---- modal prompts for orchestrator lanes (2026-10-27, MSG-98201) ----------------
+#
+# On 2026-10-24/25 the orchestrator amux-helper called AskUserQuestion while the
+# owner slept. The tool blocks the whole turn until a human answers, so for
+# about 8 h peer messages queued unread and its wakeup chain could not fire.
+# For a worker the registry marks as an orchestrator (the `orchestrators` list,
+# or the scoped env named by `env`), the modal tools are refused and the reason
+# carries the question back as plain text, so the worker can decide and go on.
+
+ON_VALUES = ("1", "true", "yes", "on")
+OFF_VALUES = ("0", "false", "no", "off")
+
+
+def is_orchestrator(cfg: dict) -> tuple[bool, str]:
+    """(orchestrator?, why). The scoped env wins over the registry list."""
+    key = cfg.get("env") or ""
+    raw = scoped_env_value(key) if key else None
+    src = "scope"
+    if raw is None and key:
+        raw, src = os.environ.get(key), "env"
+    val = (raw or "").strip().lower()
+    if val in ON_VALUES:
+        return True, f"{key}={raw} ({src})"
+    if val in OFF_VALUES:
+        return False, f"{key}={raw} ({src})"
+    if WORKER and WORKER in (cfg.get("orchestrators") or []):
+        return True, "listed in orchestrators"
+    return False, "not listed"
+
+
+def question_text(ti: dict) -> str:
+    """AskUserQuestion's questions as numbered plain-text options."""
+    out = []
+    for q in (ti.get("questions") or [])[:4]:
+        if not isinstance(q, dict):
+            continue
+        out.append(f"  Q: {str(q.get('question') or '').strip()[:300]}")
+        for n, o in enumerate(q.get("options") or [], 1):
+            o = o if isinstance(o, dict) else {"label": str(o)}
+            desc = str(o.get("description") or "").strip()
+            out.append(f"    {n}. {str(o.get('label') or '').strip()[:120]}" + (f": {desc[:200]}" if desc else ""))
+    return "\n".join(out)
+
+
+def check_modal(b: dict, tool: str, ti: dict) -> tuple[int, str]:
+    cfg = b.get("modal") or {}
+    if tool not in (cfg.get("tools") or []):
+        return 0, ""
+    orch, why = is_orchestrator(cfg)
+    if not orch:
+        return 0, ""
+    qs = question_text(ti) if tool == "AskUserQuestion" else ""
+    log({"level": "WARN", "verdict": cfg.get("verdict") or "modal_prompt_refused", "boundary": b.get("id"),
+         "tool": tool, "orchestrator_by": why, "subject": redact(qs.replace("\n", " ")) if qs else "",
+         "measured": True, "n_considered": 1})
+    return 2, (
+        f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}): this worker is an orchestrator ({why}), "
+        f"and {tool} would block the whole turn until a human answers.\n"
+        + (f"Your question:\n{qs}\n" if qs else "")
+        + "Write the question in your turn output as plain text with numbered options, pick the option you "
+        "recommend inside your standing authority, say which one you took and why, and keep working. "
+        "If it touches money, an outside send, production data or a foreign push, leave that one step for the "
+        "owner and carry on with the rest.\n(boundary-guard; the registry is boundaries.toml)\n"
+    )
+
+
 def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--measure-disk":
         # The detached measurement disk_usage() starts. Bounded so a wedged
@@ -1012,6 +1079,11 @@ def main() -> None:
                 sys.exit(2)
         if b.get("kind") == "resources" and tool == "Bash" and command:
             code, msg = check_resources(b, command, session)
+            if code:
+                sys.stderr.write(msg)
+                sys.exit(code)
+        if b.get("kind") == "modal":
+            code, msg = check_modal(b, tool, ti)
             if code:
                 sys.stderr.write(msg)
                 sys.exit(code)

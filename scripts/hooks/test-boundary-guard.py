@@ -346,6 +346,74 @@ def tenant_gate_cases(home: str, boundaries: list[dict]) -> None:
     expect("tenant gate: an isolated worker's own receipt lets it through", p.returncode == 0 and code == 0, f"gate {p.returncode} {p.stderr} guard {code} {ev}")
 
 
+ASK = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{
+    "question": "Resubmit the failed GS-12 batch now or wait for the morning window?", "header": "Batch",
+    "multiSelect": False, "options": [{"label": "Resubmit now", "description": "uses the night window"},
+                                      {"label": "Wait", "description": "owner reviews first"}]}]}}
+
+
+def modal_cases(home: str, boundaries: list[dict]) -> None:
+    """orchestrator-modal (2026-10-27): an orchestrator never opens a modal prompt."""
+    b = next((b for b in boundaries if b.get("kind") == "modal"), None)
+    expect("the registry carries the orchestrator-modal boundary", b is not None)
+    if b is None:
+        return
+    cfg = b["modal"]
+    verdict = cfg.get("verdict")
+    expect("orchestrator-modal: the verdict is modal_prompt_refused", verdict == "modal_prompt_refused", str(verdict))
+    # The guard only sees the tools its settings matcher names.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("installer", os.path.join(HERE, "install-claude-status-hooks.py"))
+    inst = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inst)
+    import re as _re
+    matcher = inst.canonical_boundary_guard("/x/boundary-guard.py")[0]["matcher"]
+    sub = next((x for x in boundaries if x.get("kind") == "subagents"), {}).get("subagents") or {}
+    wanted = list(cfg.get("tools") or []) + list(sub.get("tools") or [])
+    missing = [t for t in wanted if not _re.search(matcher, t)]
+    expect("the installed guard matcher names every modal and subagent tool", not missing, f"missing {missing} from {matcher}")
+    expect("the guard matcher stays anchored (no AskUserQuestionX)", not _re.search(matcher, "AskUserQuestionX"), matcher)
+
+    def modal(ev: list[dict]) -> list[dict]:
+        return [e for e in ev if e.get("verdict") == verdict and e.get("boundary") == b["id"]]
+
+    listed = cfg["orchestrators"][0]
+    for tool in cfg.get("tools") or []:
+        pl = ASK if tool == "AskUserQuestion" else {"tool_name": tool, "tool_input": {"plan": "x"}}
+        code, ev = run_payload(pl, home, {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": listed})
+        hit = modal(ev)
+        expect(f"orchestrator-modal: {tool} is refused for listed orchestrator {listed} (isolated, as launched)",
+               code == 2 and bool(hit) and hit[0].get("tool") == tool and hit[0].get("level") == "WARN", f"exit {code} {ev}")
+    run_payload(ASK, home, {"AMUX_SESSION": listed})
+    expect("orchestrator-modal: the refusal restates the question as numbered options and says keep working",
+           "1. Resubmit now" in last_stderr and "2. Wait" in last_stderr and "numbered options" in last_stderr
+           and "keep working" in last_stderr, last_stderr)
+    code, ev = run_payload(ASK, home, {"AMUX_SESSION": "some-builder"})
+    expect("orchestrator-modal: AskUserQuestion is allowed for an unlisted worker", code == 0 and not modal(ev), f"exit {code} {ev}")
+    code, ev = run_payload(ASK, home, {"AMUX_SESSION": "some-builder", "AMUX_ORCHESTRATOR": "1"})
+    expect("orchestrator-modal: AMUX_ORCHESTRATOR=1 makes an unlisted worker an orchestrator",
+           code == 2 and bool(modal(ev)) and "AMUX_ORCHESTRATOR" in modal(ev)[0].get("orchestrator_by", ""), f"exit {code} {ev}")
+    code, ev = run_payload(ASK, home, {"AMUX_SESSION": listed, "AMUX_ORCHESTRATOR": "0"})
+    expect("orchestrator-modal: AMUX_ORCHESTRATOR=0 releases a listed worker", code == 0 and not modal(ev), f"exit {code} {ev}")
+    env_file = os.path.join(home, "sessions", "some-builder.env")
+    with open(env_file, "w") as fh:
+        fh.write('AMUX_ORCHESTRATOR="1"\n')
+    code, ev = run_payload(ASK, home, {"AMUX_SESSION": "some-builder"})
+    expect("orchestrator-modal: a scoped AMUX_ORCHESTRATOR=1 in sessions/<worker>.env applies without a restart",
+           code == 2 and bool(modal(ev)), f"exit {code} {ev}")
+    os.unlink(env_file)
+    code, ev = run_payload({"tool_name": "Bash", "tool_input": {"command": "echo hi"}}, home, {"AMUX_SESSION": listed})
+    expect("orchestrator-modal: other tools are untouched for an orchestrator", code == 0 and not modal(ev), f"exit {code} {ev}")
+    # Nothing configured: an empty list and no env refuse nobody.
+    bare = os.path.join(home, "no-orchestrators.toml")
+    with open(REGISTRY) as src, open(bare, "w") as fh:
+        text = src.read()
+        fh.write(text.replace('orchestrators = ["amux-helper", "mxp-gs12", "tubescience-parity"]', "orchestrators = []"))
+    expect("orchestrator-modal: test fixture emptied the orchestrators list", "orchestrators = []" in open(bare).read())
+    code, ev = run_payload(ASK, home, {"AMUX_SESSION": listed}, registry=bare)
+    expect("orchestrator-modal: with nothing configured AskUserQuestion is allowed", code == 0 and not modal(ev), f"exit {code} {ev}")
+
+
 def main() -> int:
     reg = tomllib.load(open(REGISTRY, "rb"))
     boundaries = reg["boundary"]
@@ -532,6 +600,7 @@ def main() -> int:
             code, ev = run_payload(agent_call(tp), home, registry=iso_exempt)
             expect("subagents: apply_to_isolated = false still caps a non-isolated worker", code == 2, f"exit {code} {ev}")
 
+        modal_cases(home, boundaries)
         tenant_gate_cases(home, boundaries)
 
         sample = boundaries[0]["deny"][0]["block_examples"][0]

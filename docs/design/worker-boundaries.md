@@ -49,6 +49,7 @@ Where it is visible:
 | email | external-send approval hold, send audit (`api/email_approval.rs`, `/api/email/log`) | Mail.app, sendmail and SMTP, provider APIs (Gmail, SendGrid, Mailgun, ...), stored Gmail and auth tokens, approving or editing held sends |
 | resources | `host_guard` holds automated dispatch at critical; admission refuses new workers under memory pressure | heavy commands refused at critical pressure, with an acknowledged override |
 | subagents | none | a new Agent/Task call while the worker already runs its subagent limit, or while the account's usage headroom is under the floor |
+| orchestrator-modal | none | AskUserQuestion, EnterPlanMode and ExitPlanMode for a worker marked as an orchestrator |
 | tenant-workload-gate | none | kubectl/helm mutations and named load tools in a tenant namespace without a fresh gate receipt from this worker; hand-written receipts |
 | boundaries-self | none | editing the installed registry or guard, removing hooks from Claude settings |
 
@@ -107,6 +108,29 @@ exist, or an unreachable or unmeasured `/api/usage`. Verdicts in
 count was the unmeasured half, `unmeasured` naming which). The guard is wired
 for `Agent` and `Task` by `install-claude-status-hooks.py`; a box installed
 before this change needs `install.sh` rerun for the matcher to include them.
+
+## Orchestrator lanes and modal prompts
+
+On 2026-10-24/25 the orchestrator `amux-helper` called `AskUserQuestion` while
+the owner slept. The tool blocks the whole turn until a human answers, so for
+about 8 h its peer messages queued unread and its wakeup chain could not fire
+(`scripts/worker-stall-watch.sh` detects that stall after the fact). The
+`orchestrator-modal` boundary (`kind = "modal"`) prevents it: for a worker
+marked as an orchestrator, the tools in `[boundary.modal].tools`
+(`AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`) are refused. The refusal
+restates an `AskUserQuestion`'s questions as numbered options and tells the
+worker to put them in its turn output, decide inside its standing authority,
+say which option it took, and keep working.
+
+A worker is an orchestrator when its scoped `AMUX_ORCHESTRATOR` is on (read
+live from `sessions/<worker>.env`, then the process env), or, when that is
+unset, when its name is in `[boundary.modal].orchestrators` (default
+`amux-helper`, `mxp-gs12`, `tubescience-parity`). `AMUX_ORCHESTRATOR=0`
+releases a listed worker. Isolated workers are covered under
+`apply_to_isolated`. Verdict: `modal_prompt_refused` (WARN, with `tool` and
+`orchestrator_by`). The guard sees these tools only once
+`install-claude-status-hooks.py` has rewired its matcher, so a box installed
+before this change needs `install.sh` rerun.
 
 ## Tenant workloads
 

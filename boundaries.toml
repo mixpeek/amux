@@ -317,6 +317,36 @@ stale_s = 1800
 no_meta_warm_s = 240
 
 [[boundary]]
+id = "orchestrator-modal"
+title = "Orchestrator lanes never wait on a modal prompt"
+kind = "modal"
+rule = """
+An orchestrator lane (listed in this boundary's `orchestrators`, or with
+AMUX_ORCHESTRATOR=1 in its scope) runs while the owner is away and other lanes
+wait on it. It never opens a modal prompt (AskUserQuestion, EnterPlanMode,
+ExitPlanMode): such a prompt blocks the whole turn until a human answers, so
+peer messages queue unread and scheduled wakeups cannot fire. Put a question in
+your turn output as plain text with numbered options, decide it yourself inside
+your standing authority, say which option you took, and keep working.
+"""
+enforced_by = [
+  "hook: boundary-guard (AskUserQuestion, EnterPlanMode and ExitPlanMode refused for orchestrator lanes)",
+]
+
+[boundary.modal]
+# 2026-10-24/25: the orchestrator amux-helper called AskUserQuestion while the
+# owner slept. The turn blocked for about 8 h, peer messages queued unread and
+# its wakeup chain could not fire (scripts/worker-stall-watch.sh header).
+# The guard's settings matcher must name every tool here
+# (scripts/hooks/install-claude-status-hooks.py; the test checks it).
+tools = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]
+# Workers that are orchestrators. The scoped env below wins over this list:
+# AMUX_ORCHESTRATOR=1 adds a worker, AMUX_ORCHESTRATOR=0 removes a listed one.
+orchestrators = ["amux-helper", "mxp-gs12", "tubescience-parity"]
+env = "AMUX_ORCHESTRATOR"
+verdict = "modal_prompt_refused"
+
+[[boundary]]
 id = "fleet-tmux"
 title = "The fleet's tmux server is not yours to stop"
 rule = """
