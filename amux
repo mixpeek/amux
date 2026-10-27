@@ -1616,7 +1616,8 @@ USAGE
 # X-Amux-Session (api/conversations.rs).
 cmd_post() {
   local conv="${1:-}"
-  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker> [text]   (or text on stdin)"
+  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [text]   (or text on stdin)
+  From a worker, p:<person> posts in your own thread as you, @mentioning them."
   shift
   [[ "$conv" == \#* ]] && conv="g:${conv#\#}"
   local text
@@ -1629,7 +1630,11 @@ cmd_post() {
         --data-binary @- "$api/api/conversations/$enc/posts") || true
   code="${out##*$'\n'}"; out="${out%$'\n'*}"
   case "$code" in
-    2??) echo "posted to $conv" ;;
+    2??) OUT="$out" CONV="$conv" python3 -c 'import json,os
+try: d=json.loads(os.environ["OUT"])
+except Exception: d={}
+to=[m.split(":",1)[1] for m in d.get("mentions",[]) if m.startswith("person:")]
+print("posted to %s as %s%s" % (d.get("conv") or os.environ["CONV"], d.get("author") or "unknown author", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
     *)   echo "not posted (HTTP ${code:-none}): $out" >&2; return 1 ;;
   esac
 }
@@ -6566,7 +6571,8 @@ ${BOLD}Interaction:${RESET}
   amux attach <name>             Attach to a running worker (detach: Ctrl-b d)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
-  amux post <conv> [text]        Post to Messages: g:<group>, #group or w:<worker> (text or stdin)
+  amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
+                                 worker: lands in your thread as you, @mentioning them). Prints who it posted as
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
                                  ${DIM}  fix the auth bug in login.ts${RESET}

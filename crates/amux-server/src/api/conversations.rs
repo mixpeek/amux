@@ -87,7 +87,12 @@ fn who(headers: &HeaderMap, lanes: &[Lane]) -> Who {
         };
     }
     let claimed = super::groups::hdr_worker(headers);
-    if let Some(lane) = lanes.iter().find(|l| l.name == claimed) {
+    // A worker's Chat companion (`<worker>@chat`) posts as that worker. It fell
+    // through to the owner, so "send this to @doron" from mtp-demo's chat went
+    // out as the owner person, in a thread the member who asked could not see
+    // (2026-10-27).
+    let base = claimed.strip_suffix("@chat").unwrap_or(&claimed);
+    if let Some(lane) = lanes.iter().find(|l| l.name == base) {
         return Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() };
     }
     // CLOUD: several people share one org container, and the gateway (the sole
@@ -98,6 +103,25 @@ fn who(headers: &HeaderMap, lanes: &[Lane]) -> Who {
         return Who::Person { email, scope: MemberScope::Global };
     }
     Who::Person { email: "owner".into(), scope: MemberScope::Global }
+}
+
+/// `who`, refusing a worker claim that names no worker. Such a claim used to
+/// read as the owner, so any caller with a stale or mistyped X-Amux-Session
+/// (or an isolated worker, which has no Messages route) read and wrote the
+/// owner's conversations as the owner.
+/// The refusal is the message; callers answer it with a 403.
+fn identify(headers: &HeaderMap, lanes: &[Lane]) -> Result<Who, String> {
+    let me = who(headers, lanes);
+    let claimed = super::groups::hdr_worker(headers);
+    let person_by_header = org::local_member_actor(headers).is_some() || gateway_email(headers).is_some();
+    if matches!(me, Who::Person { .. }) && !claimed.is_empty() && !person_by_header {
+        tracing::warn!(claimed = %claimed, verdict = "conversation_unknown_worker_claim",
+            "Messages refused a session that names no worker instead of treating it as the owner");
+        return Err(format!(
+            "X-Amux-Session '{claimed}' names no worker with a Messages route here (isolated workers have none); refusing rather than acting as the owner"
+        ));
+    }
+    Ok(me)
 }
 
 // ---- the fleet and the people ---------------------------------------------
@@ -469,7 +493,10 @@ fn counts(conn: &rusqlite::Connection, reader: &str) -> HashMap<String, (i64, i6
 
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let my_key = me.key();
     seen(&my_key);
     let Ok(conn) = state.store.read() else {
@@ -566,7 +593,10 @@ async fn posts(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
     if !may_read(&me, &conv, &lanes) {
         return err(StatusCode::FORBIDDEN, "not a conversation you can read");
@@ -607,7 +637,10 @@ async fn posts(
 
 async fn mentions(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let Ok(conn) = state.store.read() else {
         return err(StatusCode::SERVICE_UNAVAILABLE, "store unavailable");
     };
@@ -626,7 +659,10 @@ async fn mentions(State(state): State<AppState>, headers: HeaderMap) -> Response
 
 async fn search(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw): RawQuery) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let q = qs(&raw).get("q").cloned().unwrap_or_default();
     if q.trim().is_empty() {
         return Json(json!({"posts": [], "measured": false, "why_unmeasured": "empty query"})).into_response();
@@ -741,6 +777,23 @@ fn delivery_for(conv: &Conv, author: &str, body: &str, worker: &str, isolated: b
     (delivery_text(conv, author, body), "here")
 }
 
+/// A worker's `p:<person>` (one person, no `|`) is its own thread plus that
+/// person; anything else is unchanged.
+fn route_worker_dm(me: &Who, conv: String) -> (String, Option<String>) {
+    match (me, conv.strip_prefix("p:")) {
+        (Who::Worker { name, .. }, Some(rest)) if !rest.contains('|') && !rest.trim().is_empty() => {
+            (format!("w:{name}"), Some(rest.trim().trim_start_matches('@').to_ascii_lowercase()))
+        }
+        _ => (conv, None),
+    }
+}
+
+/// A person by email, display name or the local part of their email.
+fn find_person<'a>(all: &'a [Person], to: &str) -> Option<&'a Person> {
+    all.iter().find(|p| p.email == to)
+        .or_else(|| all.iter().find(|p| p.name.to_lowercase() == to || p.email.split('@').next() == Some(to)))
+}
+
 async fn create_post(
     State(state): State<AppState>,
     Path(conv): Path<String>,
@@ -748,9 +801,21 @@ async fn create_post(
     bytes: Bytes,
 ) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    // A worker writes to one person as `p:<email or handle>`. The post goes in
+    // the worker's own thread, as the worker, @mentioning that person: they see
+    // who wrote and can answer there, and whoever asked the worker to send it
+    // can read it too. A worker never writes into two people's private DM.
+    let (conv, dm_to) = route_worker_dm(&me, conv);
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
     if !may_read(&me, &conv, &lanes) {
+        if let (Who::Worker { .. }, Conv::People(..)) = (&me, &conv) {
+            return err(StatusCode::FORBIDDEN, "a worker cannot post in two people's direct message; \
+                write to one person with p:<email> and it goes in your thread, from you");
+        }
         return err(StatusCode::FORBIDDEN, "not a conversation you can post in");
     }
     let body = body_text(&headers, &bytes);
@@ -783,7 +848,24 @@ async fn create_post(
     let iso = mentionable_isolated(&me, &conv, &iso_lanes);
     let mut workers = mentionable_workers(&me, &conv, &lanes);
     workers.extend(iso.iter().cloned());
-    let mut mentions = resolve_mentions(&body, &workers, &readers(&conv, &all, &lanes));
+    let thread_readers = readers(&conv, &all, &lanes);
+    let mut mentions = resolve_mentions(&body, &workers, &thread_readers);
+    if let Some(to) = &dm_to {
+        let Some(p) = find_person(&all, to) else {
+            return err(StatusCode::BAD_REQUEST, format!("no person '{to}' in this workspace"));
+        };
+        if !thread_readers.iter().any(|r| r.email == p.email) {
+            tracing::warn!(conv = %conv.key(), to = %p.email, verdict = "conversation_worker_dm_unreadable",
+                "a worker's message to a person was refused: they cannot read the worker's thread");
+            return err(StatusCode::FORBIDDEN, format!(
+                "{} cannot read {}'s thread, so the message would not reach them; the owner can widen their access",
+                p.email, conv.key()));
+        }
+        let k = format!("person:{}", p.email);
+        if !mentions.contains(&k) {
+            mentions.push(k);
+        }
+    }
     let mut targets: Vec<String> = mentions
         .iter()
         .filter_map(|k| k.strip_prefix("worker:").map(str::to_string))
@@ -888,7 +970,7 @@ async fn create_post(
                 .await;
         });
     }
-    (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "conv": key, "mentions": mentions,
+    (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "conv": key, "author": author_key, "author_name": author_name, "mentions": mentions,
         "delivering_to": mentions.iter().filter(|m| m.starts_with("worker:")).count()})))
         .into_response()
 }
@@ -900,7 +982,10 @@ async fn mark_read(
     bytes: Bytes,
 ) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
     if !may_read(&me, &conv, &lanes) {
         return err(StatusCode::FORBIDDEN, "not a conversation you can read");
@@ -931,7 +1016,10 @@ async fn mark_read(
 
 async fn typing(State(state): State<AppState>, Path(conv): Path<String>, headers: HeaderMap) -> Response {
     let lanes = lanes();
-    let me = who(&headers, &lanes);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
     if !may_read(&me, &conv, &lanes) {
         return err(StatusCode::FORBIDDEN, "not a conversation you can read");
@@ -1091,6 +1179,41 @@ mod tests {
         assert!(matches!(me, Who::Person { scope: MemberScope::Group(ref g), .. } if g == "wexus"));
         let people = vec![Person { email: "ann@test.io".into(), name: "ann".into(), scope: MemberScope::Global }];
         assert_eq!(resolve_mentions("@ann look", &[], &people), vec![me.key()]);
+    }
+
+    #[test]
+    fn a_chat_companion_posts_as_its_worker_and_an_unknown_claim_is_not_the_owner() {
+        let lanes = vec![Lane { name: "mtp-demo".into(), groups: ["video".to_string()].into_iter().collect() }];
+        let hdr = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert("x-amux-session", HeaderValue::from_static(v));
+            h
+        };
+        assert_eq!(identify(&hdr("mtp-demo@chat"), &lanes).map(|w| w.key()).ok().as_deref(), Some("worker:mtp-demo"));
+        assert_eq!(identify(&hdr("mtp-demo"), &lanes).map(|w| w.key()).ok().as_deref(), Some("worker:mtp-demo"));
+        let refused = identify(&hdr("nobody@chat"), &lanes).expect_err("an unknown worker is refused");
+        assert!(refused.contains("nobody@chat") && refused.contains("refusing"), "{refused}");
+        assert_eq!(identify(&HeaderMap::new(), &lanes).map(|w| w.key()).ok().as_deref(), Some("person:owner"),
+            "no claim at all is still the owner");
+    }
+
+    #[test]
+    fn a_worker_writes_to_one_person_from_its_own_thread() {
+        let w = Who::Worker { name: "mtp-demo".into(), groups: BTreeSet::new() };
+        let owner = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+        assert_eq!(route_worker_dm(&w, "p:Doron@x.io".into()), ("w:mtp-demo".into(), Some("doron@x.io".into())));
+        assert_eq!(route_worker_dm(&w, "p:@doron".into()), ("w:mtp-demo".into(), Some("doron".into())));
+        assert_eq!(route_worker_dm(&w, "p:a@x.io|owner".into()), ("p:a@x.io|owner".into(), None), "a two-person DM is not rerouted");
+        assert_eq!(route_worker_dm(&owner, "p:a@x.io".into()), ("p:a@x.io".into(), None), "only workers are rerouted");
+        let dm = Conv::parse("p:a@x.io|owner").unwrap();
+        assert!(!may_read(&w, &dm, &[]), "a worker never posts into two people's DM, so never as the owner");
+        let people = vec![
+            Person { email: "doron@x.io".into(), name: "doron".into(), scope: MemberScope::Global },
+            Person { email: "ethan@x.io".into(), name: "Ethan".into(), scope: MemberScope::Global },
+        ];
+        assert_eq!(find_person(&people, "doron").map(|p| p.email.as_str()), Some("doron@x.io"));
+        assert_eq!(find_person(&people, "ethan").map(|p| p.email.as_str()), Some("ethan@x.io"));
+        assert!(find_person(&people, "nobody").is_none());
     }
 
     #[test]
