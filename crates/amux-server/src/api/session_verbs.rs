@@ -38270,7 +38270,7 @@ mod tests {
         assert_eq!(subagent_state(&[tool.clone(), result.clone()], 60, 1800), (Some("running"), Some("model".into())));
         // A long tool call is silent too, and says which tool owes the record.
         assert_eq!(subagent_state(&[result.clone(), tool.clone()], 4_000, 1800), (Some("silent"), Some("tool:Bash".into())));
-        assert_eq!(subagent_state(&[att.clone()], 4_000, 1800), (None, None), "no conversation yet: unclassified");
+        assert_eq!(subagent_state(std::slice::from_ref(&att), 4_000, 1800), (None, None), "no conversation yet: unclassified");
         // Handing the report back ends the subagent, before and after the tool result lands.
         let handback = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"SubagentHandback","input":{}}]}});
         assert_eq!(subagent_state(&[tool.clone(), result.clone(), handback.clone(), result.clone(), att], 187_000, 1800), (Some("finished"), None));

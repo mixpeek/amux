@@ -72,7 +72,12 @@ class CargoReclaimTests(unittest.TestCase):
         scope.write_text('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n'); scope.chmod(0o755)
         cargo = bin_dir / 'cargo'
         cargo.write_text('#!/bin/sh\nif [ "$1" = clean ]; then rm "$CLEAN_MARKER"; exit 0; fi\nprintf "ready\\n"\nread -r release\n'); cargo.chmod(0o755)
-        env = {**os.environ, 'PATH':str(bin_dir)+':'+os.environ['PATH'], 'CARGO_TARGET_DIR':str(self.root), 'CLEAN_MARKER':str(self.marker), 'AMUX_HOME':str(self.base/'fixture-home'), 'AMUX_SESSION':'target-guard-fixture'}
+        env = {**os.environ, 'PATH':str(bin_dir)+':'+os.environ['PATH'], 'CARGO_TARGET_DIR':str(self.root), 'CLEAN_MARKER':str(self.marker), 'AMUX_HOME':str(self.base/'fixture-home'), 'AMUX_SESSION':'target-guard-fixture',
+               # Two slots: this pins the cleanup LEASE, not the build throttle. On a
+               # host under 16 GB safe-cargo.sh now allows one build at a time
+               # (27d00777b), so the clean below queued behind the holder until the
+               # 15s timeout on a GitHub runner instead of reaching the lease check.
+               'AMUX_CARGO_MAX_CONCURRENT':'2'}
         wrapper = str(SCRIPT.with_name('safe-cargo.sh'))
         holder = subprocess.Popen(['bash',wrapper,'test'], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         try:
