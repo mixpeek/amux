@@ -6535,10 +6535,12 @@ pub(crate) fn grok_new_session_id() -> String {
 ///   (a live worker did exactly that the moment this launch began appending
 ///   one). The model reaches OpenCode through the subcommands that accept it:
 ///   `run --model` and ACP's `session/set_config_option`, both on the
-///   structured path. `OPENCODE_CONFIG_CONTENT` is not a channel either —
-///   measured in the same session: `{"model":"opencode-go/beam-free"}` was
-///   ignored (the run still used its own default) while `--model` on `run`
-///   switched to `beam-free`.
+///   structured path. `OPENCODE_CONFIG_CONTENT` was measured NOT to reach
+///   `run` on 2.1.4 — `{"model":"opencode-go/beam-free"}` was ignored while
+///   `--model` on `run` switched — but on 2.2.0 the same env DOES change the
+///   TUI's own model (footer went MiMo-V2.6-Flash -> DeepSeek V4 Pro, measured
+///   2026-10-27), so the launch re-attaches the stripped value there instead of
+///   letting it vanish: see [`opencode_config_content_with_model`].
 pub(crate) fn opencode_launch_opts(flags: &str, extra_flags: &str) -> String {
     let mut oflags = flags.to_string();
     let oyolo = PROVIDER_YOLO_FLAGS.iter().any(|f| oflags.contains(f));
@@ -6607,15 +6609,58 @@ fn drop_model_flags(raw: &str) -> String {
         i += 1;
     }
     if let Some(flag) = dropped {
-        // Said out loud, because the lane will NOT run the model the worker's
-        // row shows: the TUI cannot receive one. The worker's structured turns
-        // (run/ACP) still do.
+        // Said out loud, because the flag is no longer on argv — and the log
+        // must say where the value went, not just that it left. The launch
+        // re-attaches it to OPENCODE_CONFIG_CONTENT (`opencode_model_routed`)
+        // for the TUI, and the structured turns (run/ACP) take `--model`
+        // themselves.
         tracing::warn!(
             flag = %flag,
-            "opencode's TUI accepts no model flag; dropped it from the launch. The worker's model still applies to its structured (headless) turns"
+            "opencode's TUI accepts no model flag; removed it from argv and re-attached it to the launch's OPENCODE_CONFIG_CONTENT (verdict=opencode_model_routed). The worker's structured (headless) turns still pass --model themselves"
         );
     }
     kept.join(" ")
+}
+
+/// The model an opencode worker was CREATED with, if any — from `CC_FLAGS` or
+/// the caller's extra flags, both spellings (`--model x`, `--model=x`).
+///
+/// The half of the launch contract that used to be missing: [`drop_model_flags`]
+/// takes the flag off argv (the TUI cannot parse it), and without this the
+/// value simply vanished — the lane started, but never on the model its row
+/// promised. This is where the value is picked back up.
+pub(crate) fn opencode_model_from_flags(flags: &str, extra_flags: &str) -> Option<String> {
+    let model = extract_model_from_flags(flags);
+    let model = if model.is_empty() {
+        extract_model_from_flags(extra_flags)
+    } else {
+        model
+    };
+    (!model.is_empty()).then_some(model)
+}
+
+/// Merge `model` into opencode's inline config (`OPENCODE_CONFIG_CONTENT`),
+/// creating the object when the scoped-context channel produced none.
+///
+/// ONE env var, ONE writer: the launch already sets `OPENCODE_CONFIG_CONTENT`
+/// for the worker's rules/instructions, and two `-e` pairs for the same key
+/// would let the last one win — dropping either the model or the context.
+///
+/// Whether OpenCode acts on it is version- and path-dependent, and both
+/// measurements are on record: 2.1.4's `run` ignored `{"model": ...}` while
+/// `--model` on `run` switched (2026-10-25, the reason `drop_model_flags`
+/// exists), whereas on 2.2.0 the TUI footer — the interactive lane's whole
+/// model surface — changed from MiMo-V2.6-Flash to DeepSeek V4 Pro with this
+/// env set and no flag at all (measured 2026-10-27). The key costs nothing to
+/// set and is what the TUI actually reads, so the launch sets it and the WARN
+/// in [`drop_model_flags`] still says what left argv.
+pub(crate) fn opencode_config_content_with_model(existing: Option<&str>, model: &str) -> String {
+    let mut value: serde_json::Value = existing
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    value["model"] = serde_json::Value::String(model.to_string());
+    value.to_string()
 }
 
 /// Muse Code (`muse`) is the one provider whose session id amux CANNOT mint.
@@ -6909,8 +6954,8 @@ mod grok_launch_tests {
 #[cfg(test)]
 mod opencode_provider_tests {
     use super::{
-        default_model_for_provider, launch_base_binary, opencode_launch_opts,
-        provider_yolo_flag, SESSION_PROVIDERS,
+        default_model_for_provider, launch_base_binary, opencode_config_content_with_model,
+        opencode_launch_opts, opencode_model_from_flags, provider_yolo_flag, SESSION_PROVIDERS,
     };
 
     #[test]
@@ -6982,6 +7027,47 @@ mod opencode_provider_tests {
         // Even with nothing configured, the private server rides along.
         let opts = opencode_launch_opts("", "");
         assert_eq!(opts.trim(), "--standalone");
+    }
+
+    #[test]
+    fn opencode_model_is_extracted_from_either_flag_string_and_both_spellings() {
+        assert_eq!(
+            opencode_model_from_flags("--model opencode-go/deepseek-v4.1-flash", ""),
+            Some("opencode-go/deepseek-v4.1-flash".to_string())
+        );
+        assert_eq!(
+            opencode_model_from_flags("", "--model=opencode-go/mimo-v2.6-flash"),
+            Some("opencode-go/mimo-v2.6-flash".to_string())
+        );
+        assert_eq!(opencode_model_from_flags("--auto", ""), None);
+        assert_eq!(opencode_model_from_flags("", ""), None);
+        // CC_FLAGS (the created-with model) wins over an extra flag.
+        assert_eq!(
+            opencode_model_from_flags("--model a/b", "--model c/d"),
+            Some("a/b".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_merges_into_inline_config_without_losing_instructions() {
+        // No scoped context yet: the object starts out carrying the model.
+        let only = opencode_config_content_with_model(None, "opencode-go/mimo-v2.6-flash");
+        let value: serde_json::Value = serde_json::from_str(&only).expect("valid json");
+        assert_eq!(value["model"], "opencode-go/mimo-v2.6-flash");
+
+        // Scoped context present: BOTH payloads survive. They share one env
+        // var, and a second `-e` pair would have silently dropped one of them.
+        let existing = r#"{"instructions":["/home/x/.amux/rules/oc.md"]}"#;
+        let merged =
+            opencode_config_content_with_model(Some(existing), "opencode-go/mimo-v2.6-flash");
+        let value: serde_json::Value = serde_json::from_str(&merged).expect("valid json");
+        assert_eq!(value["model"], "opencode-go/mimo-v2.6-flash");
+        assert_eq!(value["instructions"][0], "/home/x/.amux/rules/oc.md");
+
+        // A corrupt inline value must not take the launch down with it.
+        let repaired = opencode_config_content_with_model(Some("not json"), "a/b");
+        let value: serde_json::Value = serde_json::from_str(&repaired).expect("valid json");
+        assert_eq!(value["model"], "a/b");
     }
 }
 
@@ -16691,6 +16777,13 @@ pub(crate) async fn start_session(
     // so the check and the launcher cannot disagree about what gets run.
     let base_bin = launch_base_binary(&provider);
     let rules_opts = worker_rules_shell(name, &provider, isolated);
+    // The model an opencode worker was created with, lifted OUT of the flags
+    // before they become argv: the TUI rejects `--model` (usage + exit 1,
+    // measured 2026-10-27) and would never start. It is re-attached to the
+    // launch env below, which is the channel opencode actually reads.
+    let opencode_model = (provider == "opencode")
+        .then(|| opencode_model_from_flags(&flags, extra_flags))
+        .flatten();
     let cmd = match provider.as_str() {
         "codex" => {
             codex_login_with_saved_key(name).await;
@@ -17139,7 +17232,26 @@ pub(crate) async fn start_session(
     // composed and wrote ~/.amux/rules/<name>.md for this launch; opencode
     // loads that file as ambient instructions through its merged inline
     // config. Every other provider carries its context in argv instead.
-    for (key, value) in worker_rules_env(name, &provider, isolated) {
+    let mut rules_env = worker_rules_env(name, &provider, isolated);
+    // THE MODEL JOINS THAT SAME CONFIG — one env var, one writer. `--model`
+    // cannot travel in argv (the TUI exits 1 on it), and two `-e` pairs for
+    // OPENCODE_CONFIG_CONTENT would silently drop one of the two payloads, so
+    // the model is merged into whatever the scoped-context channel produced.
+    // opencode honours it: measured live 2026-10-27, `{"model": ...}` in this
+    // env changed the TUI footer's model without any CLI flag.
+    if let Some(model) = &opencode_model {
+        let existing = rules_env
+            .iter()
+            .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
+            .map(|(_, value)| value.as_str());
+        let merged = opencode_config_content_with_model(existing, model);
+        rules_env.retain(|(key, _)| key != "OPENCODE_CONFIG_CONTENT");
+        rules_env.push(("OPENCODE_CONFIG_CONTENT".to_string(), merged));
+        tracing::info!(session = name, provider = %provider, model = %model, measured = true,
+            n_considered = 1, verdict = "opencode_model_routed",
+            "the opencode TUI has no --model flag; the worker's model rides OPENCODE_CONFIG_CONTENT");
+    }
+    for (key, value) in rules_env {
         env_args.push("-e".into());
         env_args.push(format!("{key}={value}"));
     }
