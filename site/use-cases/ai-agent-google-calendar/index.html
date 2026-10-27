@@ -128,7 +128,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p>Scheduled tasks (configured in the Scheduler tab) appear as calendar events at their scheduled fire times. The event title matches the task title. The iCal feed updates whenever schedules change.</p>
 
     <h3>Step 5 — Subscribe your calendar</h3>
-    <p>Open Google Calendar → Other Calendars → From URL → paste <code>https://localhost:8824/api/calendar.ics</code> (or your tunnel URL for a stable public address). Google polls the feed periodically. Your scheduled agent tasks appear as events on their scheduled dates.</p>
+    <p>Open Google Calendar → Other Calendars → From URL → paste <code>https://localhost:8824/api/calendar.ics</code> (Google cannot reach localhost, so use the S3 feed described below or your amux Cloud address). Google polls the feed periodically. Your scheduled agent tasks appear as events on their scheduled dates.</p>
 
     <h2>Real-world use cases</h2>
 
@@ -148,7 +148,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p>If you do not want to connect Google OAuth, or if you use Apple Calendar, Outlook, or another calendar application, amux also exposes a standard iCal feed:</p>
     <pre><code>GET https://localhost:8824/api/calendar.ics</code></pre>
     <p>Subscribe to this URL from any iCal-compatible calendar app. The feed contains your <strong>scheduled agent tasks</strong> as RFC 5545 events — one event per scheduled run at its fire time. Your calendar app polls the feed on its own schedule (typically every few hours) and shows upcoming tasks as events.</p>
-    <p>The iCal feed is a passive subscription — Google Calendar polls it; amux does not push. For a stable public URL you can subscribe to without exposing localhost, use the amux tunnel: <code>https://&lt;id&gt;.t.amux.io/api/calendar.ics</code> (requires amux cloud).</p>
+    <p>The iCal feed is a passive subscription — Google Calendar polls it; amux does not push. For a public URL you can subscribe to without exposing localhost, use the S3 option below.</p>
     <p>If you configure an S3 bucket (via <code>AMUX_S3_BUCKET</code> in <code>~/.amux/server.env</code>), amux uploads the iCal feed to S3 on every board write, giving you a public URL you can subscribe to from Google Calendar without exposing <code>localhost:8824</code> to the internet. See the <a href="/docs/">docs</a> for S3 setup.</p>
 
     <h2>Why no other AI agent tool does this</h2>

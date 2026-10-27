@@ -4,25 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux Tunnel: Expose localhost to the internet</title>
+  <title>amux Tunnel (retired) | amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux tunnel gives your local AI agent dashboard a stable public HTTPS URL. No port forwarding. Machine dials out. HTTP/HTTPS relay included with amux Cloud.">
-  <meta name="keywords" content="amux tunnel, expose localhost HTTPS, localhost public URL, ngrok alternative 2026, local tunnel AI agent dashboard, amux cloud tunnel">
+  <meta name="description" content="amux tunnel was retired on October 25, 2026. Share a local app from the amux Pages tab, or use ngrok or cloudflared for a public URL to a local port.">
+  <meta name="robots" content="noindex">
   <link rel="canonical" href="https://amux.io/features/tunnel/">
-  <meta property="og:title" content="amux Tunnel: Expose localhost to the internet">
-  <meta property="og:description" content="amux tunnel gives your local AI agent dashboard a stable public HTTPS URL. No port forwarding. Machine dials out.">
-  <meta property="og:url" content="https://amux.io/features/tunnel/">
-  <meta property="og:image" content="https://amux.io/og-image.png">
-  <meta property="og:type" content="article">
-  <meta name="twitter:card" content="summary_large_image">
-  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"amux Tunnel","item":"https://amux.io/features/tunnel/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux Tunnel: Expose localhost to the internet","description":"amux tunnel gives your local AI agent dashboard a stable public HTTPS URL. No port forwarding required: your machine dials out to the amux cloud gateway.","url":"https://amux.io/features/tunnel/","datePublished":"2026-07-11","dateModified":"2026-10-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux tunnel?","acceptedAnswer":{"@type":"Answer","text":"amux tunnel is a built-in HTTP/HTTPS relay that gives your local amux dashboard a stable public URL at https://<id>.t.amux.io/. Your machine dials out to the amux cloud gateway: no port forwarding, no firewall changes, no router configuration needed. The tunnel URL is stable across restarts as long as your token stays the same."}},{"@type":"Question","name":"How do I start the amux tunnel?","acceptedAnswer":{"@type":"Answer","text":"Run: amux tunnel start 8824\nThis starts a relay that forwards https://<id>.t.amux.io/ to http://localhost:8824 on your machine. The tunnel ID is derived from your amux cloud token (sha256[:16]), so the URL is the same every time."}},{"@type":"Question","name":"Does amux tunnel support WebSocket or SSE?","acceptedAnswer":{"@type":"Answer","text":"No. amux tunnel is an HTTP/HTTPS relay only. It does not support WebSocket connections, Server-Sent Events (SSE), TCP tunneling, or UDP. If you need WebSocket tunneling, use ngrok or Cloudflare Tunnel instead."}},{"@type":"Question","name":"Is amux tunnel free?","acceptedAnswer":{"@type":"Answer","text":"amux tunnel requires an amux Cloud subscription, from $39/month, which also gives you your own always-on amux server at yourname.amux.io. Everything else in amux: the dashboard, agent orchestration, kanban board, mobile app, self-healing watchdog: is free and open source under MIT license. You can also self-host the tunnel gateway using the code in cloud/gateway/."}},{"@type":"Question","name":"What is the amux tunnel URL format?","acceptedAnswer":{"@type":"Answer","text":"The URL format is https://<id>.t.amux.io/ where <id> is the first 16 hex characters of the SHA-256 hash of your amux cloud token. This means the URL is deterministic and stable: it does not change between restarts."}},{"@type":"Question","name":"Can I use amux tunnel to test webhooks?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux tunnel is well-suited for webhook testing: start the tunnel, give the public URL to Stripe, GitHub, or any webhook provider, and incoming webhook requests are forwarded to your local server. Because the URL is stable (derived from your token), you only need to configure the webhook URL once."}},{"@type":"Question","name":"How is amux tunnel different from ngrok?","acceptedAnswer":{"@type":"Answer","text":"amux tunnel is simpler and purpose-built for exposing your AI agent dashboard. It has fewer features than ngrok (no TCP, no custom domains, no request inspector) and requires zero configuration beyond amux tunnel start 8824. ngrok has a free tier and cheaper tunnel-only plans; amux Cloud (from $39/month) bundles the tunnel with your own always-on amux server."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -48,191 +38,24 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>amux Tunnel</span></div>
-    <h1>amux Tunnel</h1>
-    <p class="subtitle">A stable public HTTPS URL for your local AI agent dashboard: no port forwarding, no router changes.</p>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Retired</span></div>
+    <h1>amux tunnel has been retired</h1>
+    <p class="subtitle">This page described <code>amux tunnel</code>, which was removed from amux on October 25, 2026.</p>
 
-    <p><strong>Quick answer:</strong> amux tunnel is a built-in HTTP relay. Run <code>amux tunnel start 8824</code> and your local dashboard becomes reachable at <code>https://&lt;id&gt;.t.amux.io/</code>. The URL is stable across restarts. Requires <a href="/start/">amux Cloud</a> (from $39/mo, includes your own always-on server).</p>
+    <p>The command now exits with a message and does nothing. amux has one supported way to share a local app, the Pages tab. For anything else, a dedicated tunnel tool is the better fit.</p>
 
-    <h2>Quick start</h2>
-    <pre><code># 1. Get amux Cloud token at amux.io/cloud
-# 2. Set the token in your config
-amux config set cloud_token YOUR_TOKEN
-
-# 3. Start the tunnel (forward to local port 8824)
-amux tunnel start 8824
-
-# Output:
-# Tunnel active: https://a3f8c1d2e4b5f6a7.t.amux.io/
-# Forwarding to http://localhost:8824</code></pre>
-    <p>Your amux dashboard is now publicly reachable at the URL shown. Share it with teammates, configure it as a webhook endpoint, or open it on your phone from anywhere.</p>
-
-    <h2>How it works</h2>
-    <p>amux tunnel uses an <strong>outbound-dial architecture</strong>: your machine initiates the connection to the amux cloud gateway over TLS. The gateway holds the connection open and routes incoming HTTPS requests back through it. This means:</p>
+    <h2>What to use instead</h2>
     <ul>
-      <li>No inbound firewall holes: your machine never accepts unsolicited connections</li>
-      <li>Works behind NAT, corporate firewalls, and home routers without any configuration</li>
-      <li>TLS terminates at the gateway; traffic to your local port is plain HTTP</li>
+      <li><strong>Share a local app or file from amux:</strong> open the Pages tab, or run <code>amux publish PORT</code> (anyone with the link) or <code>amux publish --internal PORT</code> (only you, inside amux). Anything an agent adds stays pending until you approve it, and you can revoke a link at any time.</li>
+      <li><strong>Reach your amux dashboard from anywhere:</strong> use <a href="/guides/remote-access-tailscale/">Tailscale</a> to reach your own machine, or run <a href="/cloud/">amux Cloud</a>, your own always-on server at <code>yourname.amux.io</code> that you sign in to from a browser or the iOS app.</li>
+      <li><strong>A public URL for any local port, webhooks or TCP:</strong> use <a href="https://ngrok.com/" target="_blank" rel="noopener">ngrok</a> or Cloudflare's <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/" target="_blank" rel="noopener">cloudflared</a>.</li>
     </ul>
-    <p>The tunnel ID is <code>sha256(token)[:16]</code>: deterministic and stable. Same token = same URL, every time.</p>
 
-    <h2>Use cases</h2>
-    <table>
-      <thead><tr><th>Use case</th><th>How tunnel helps</th></tr></thead>
-      <tbody>
-        <tr><td>Mobile dashboard access</td><td>Open your amux dashboard from iPhone or Android: same URL you set in the iOS app</td></tr>
-        <tr><td>Webhook testing</td><td>Give Stripe, GitHub, or Linear your tunnel URL; webhooks reach your local server. URL is stable: configure once</td></tr>
-        <tr><td>OAuth redirect URIs</td><td>Register <code>https://&lt;id&gt;.t.amux.io/auth/callback</code> once; it works across restarts</td></tr>
-        <tr><td>Team demo sharing</td><td>Let a teammate see your local agent fleet in real time without VPN</td></tr>
-        <tr><td>Remote access from second machine</td><td>Access your dev machine's amux from a second laptop on another network</td></tr>
-        <tr><td>CI/CD integration</td><td>Trigger amux sessions from GitHub Actions via the public URL</td></tr>
-      </tbody>
-    </table>
-
-    <h2>Limitations</h2>
-    <p>amux tunnel is an HTTP/HTTPS relay: nothing more. Know what it does <em>not</em> support:</p>
-    <ul>
-      <li><strong>No WebSocket</strong>: the amux SSE event stream uses long-polling fallback when accessed through the tunnel</li>
-      <li><strong>No TCP or UDP tunneling</strong>: databases, SSH, and raw sockets are not supported</li>
-      <li><strong>No custom domains</strong>: URLs are always <code>*.t.amux.io</code></li>
-      <li><strong>No free tier</strong>: tunnel requires amux Cloud (from $39/mo)</li>
-      <li><strong>One tunnel per token</strong>: each cloud token forwards exactly one local port</li>
-    </ul>
-    <p>If you need WebSocket support or custom domains, see <a href="/guides/expose-localhost-publicly/">alternatives to amux tunnel</a>.</p>
-
-    <h2>Tunnel vs alternatives</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>Price</th>
-          <th>HTTP</th>
-          <th>WebSocket</th>
-          <th>TCP</th>
-          <th>Custom domain</th>
-          <th>Stable URL (no restart)</th>
-          <th>Setup effort</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>amux tunnel</strong></td>
-          <td>From $39/mo (bundled with your own amux Cloud server)</td>
-          <td>Yes</td>
-          <td>No</td>
-          <td>No</td>
-          <td>No</td>
-          <td>Yes (token-derived)</td>
-          <td>Zero: one command</td>
-        </tr>
-        <tr>
-          <td>ngrok (free)</td>
-          <td>$0 (random URL per restart)</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>No</td>
-          <td>No</td>
-          <td>No</td>
-          <td>Low</td>
-        </tr>
-        <tr>
-          <td>ngrok (paid)</td>
-          <td>Monthly paid plan (tunnel only)</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Low</td>
-        </tr>
-        <tr>
-          <td>Cloudflare Tunnel</td>
-          <td>$0 (free)</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>No (HTTP only)</td>
-          <td>Yes (own domain)</td>
-          <td>Yes</td>
-          <td>Medium: cloudflared daemon + DNS</td>
-        </tr>
-        <tr>
-          <td>localtunnel</td>
-          <td>$0 (open source)</td>
-          <td>Yes</td>
-          <td>No</td>
-          <td>No</td>
-          <td>No</td>
-          <td>No</td>
-          <td>Low</td>
-        </tr>
-        <tr>
-          <td>SSH reverse tunnel</td>
-          <td>~$5/mo (VPS)</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Yes</td>
-          <td>Yes (own domain)</td>
-          <td>Yes</td>
-          <td>High: VPS + nginx + certs</td>
-        </tr>
-        <tr>
-          <td>Self-host amux gateway</td>
-          <td>$0 (open source in cloud/gateway/)</td>
-          <td>Yes</td>
-          <td>No</td>
-          <td>No</td>
-          <td>Yes (own domain)</td>
-          <td>Yes</td>
-          <td>Medium: GCP/AWS VM + Terraform</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h2>Self-hosting the gateway</h2>
-    <p>The tunnel gateway is open source. The <code>cloud/gateway/</code> directory contains Terraform and a setup script to deploy your own relay to GCP (or any VM with a public IP). Point the DNS to your server, configure your token, and <code>amux tunnel start 8824</code> works exactly the same way: except traffic stays on your infrastructure.</p>
-    <pre><code># Deploy your own tunnel gateway (one-time setup)
-cd cloud/gateway
-terraform init
-terraform apply   # prompts for GCP project + region
-
-# Then point amux at your gateway
-amux config set tunnel_gateway https://t.yourdomain.com</code></pre>
-
-    <h2>Security</h2>
-    <p>The tunnel forwards all HTTP traffic without authentication by default: anyone who knows the URL can reach your amux dashboard. Protect it by enabling amux's built-in password protection:</p>
-    <pre><code>amux config set dashboard_password yourpassword
-amux serve  # dashboard now requires login</code></pre>
-    <p>All traffic between your machine and the gateway uses TLS. The gateway does not log request bodies.</p>
-
-    <div class="cta-box">
-      <h3>Get amux tunnel with Cloud</h3>
-      <p>amux Cloud, from $39/month, includes the tunnel relay and your own always-on amux server. Everything else is free and open source.</p>
-      <a class="btn btn-primary" href="/start/">Get amux Cloud</a>
-      <a class="btn" href="https://github.com/mixpeek/amux" style="margin-left:0.75rem">View on GitHub</a>
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Keep your agents running when your laptop sleeps</h3>
+      <p>amux Cloud is your own always-on amux server at yourname.amux.io. Steer your agents from your phone. From $39/mo.</p>
+      <p><a class="btn" href="/start/?source=tunnel">Run it in the cloud</a> <a href="https://github.com/mixpeek/amux">Self-host free on GitHub</a></p>
     </div>
-
-    <h2>Frequently asked questions</h2>
-
-    <h3>What is amux tunnel?</h3>
-    <p>amux tunnel is a built-in HTTP/HTTPS relay that gives your local amux dashboard a stable public URL at <code>https://&lt;id&gt;.t.amux.io/</code>. Your machine dials out to the amux cloud gateway: no port forwarding, no firewall changes, no router configuration needed. The tunnel URL is stable across restarts as long as your token stays the same.</p>
-
-    <h3>How do I start the amux tunnel?</h3>
-    <p>Run: <code>amux tunnel start 8824</code>. This starts a relay that forwards <code>https://&lt;id&gt;.t.amux.io/</code> to <code>http://localhost:8824</code> on your machine. The tunnel ID is derived from your amux cloud token (<code>sha256[:16]</code>), so the URL is the same every time.</p>
-
-    <h3>Does amux tunnel support WebSocket or SSE?</h3>
-    <p>No. amux tunnel is an HTTP/HTTPS relay only. It does not support WebSocket connections, Server-Sent Events (SSE), TCP tunneling, or UDP. If you need WebSocket tunneling, use ngrok or Cloudflare Tunnel instead.</p>
-
-    <h3>Is amux tunnel free?</h3>
-    <p>amux tunnel requires an <a href="/start/">amux Cloud</a> subscription, from $39/month, which also gives you your own always-on amux server. Everything else in amux (the dashboard, agent orchestration, kanban board, mobile app, self-healing watchdog) is free and open source under MIT license. You can also self-host the tunnel gateway using the code in <code>cloud/gateway/</code>.</p>
-
-    <h3>What is the amux tunnel URL format?</h3>
-    <p>The URL format is <code>https://&lt;id&gt;.t.amux.io/</code> where <code>&lt;id&gt;</code> is the first 16 hex characters of the SHA-256 hash of your amux cloud token. The URL is deterministic and stable: it does not change between restarts.</p>
-
-    <h3>Can I use amux tunnel to test webhooks?</h3>
-    <p>Yes. Start the tunnel, give the public URL to Stripe, GitHub, or any webhook provider, and incoming webhook requests are forwarded to your local server. Because the URL is stable (derived from your token), you only need to configure the webhook URL once.</p>
-
-    <h3>How is amux tunnel different from ngrok?</h3>
-    <p>amux tunnel is simpler and purpose-built for exposing your AI agent dashboard. It has fewer features than ngrok (no TCP, no custom domains, no request inspector UI). ngrok has a free tier and cheaper tunnel-only plans; amux Cloud starts at $39/mo and bundles the tunnel with your own always-on amux server. If you need WebSocket tunneling or TCP, use ngrok or Cloudflare Tunnel.</p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

@@ -24,7 +24,6 @@
   <url><loc>https://amux.io/for/data-scientists/</loc><lastmod>2026-09-28</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/team-leads/</loc><lastmod>2026-10-13</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-zed/</loc><lastmod>2026-08-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/compare/amux-vs-ngrok/</loc><lastmod>2026-09-30</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-n8n/</loc><lastmod>2026-09-26</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-skills/</loc><lastmod>2026-07-13</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-database-workbench/</loc><lastmod>2026-07-13</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -32,15 +31,12 @@
   <url><loc>https://amux.io/use-cases/ai-agent-daily-standup/</loc><lastmod>2026-07-12</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-codex/</loc><lastmod>2026-09-09</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/detached-agent-sessions/</loc><lastmod>2026-07-10</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/guides/expose-localhost-publicly/</loc><lastmod>2026-08-15</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/use-cases/webhook-testing/</loc><lastmod>2026-08-17</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
     <url><loc>https://amux.io/guides/amux-mental-model/</loc><lastmod>2026-07-21</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/agent-fleet-operations/</loc><lastmod>2026-08-02</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-team-review/</loc><lastmod>2026-08-02</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-read-aloud/</loc><lastmod>2026-08-03</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/debug-ai-coding-agents/</loc><lastmod>2026-08-04</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/claude-code-plan-monitoring/</loc><lastmod>2026-07-11</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/features/tunnel/</loc><lastmod>2026-10-19</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/cloud/</loc><lastmod>2026-07-11</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/use-cases/ai-agent-google-calendar/</loc><lastmod>2026-07-09</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-plandex/</loc><lastmod>2026-08-28</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -264,7 +260,6 @@
   <url><loc>https://amux.io/glossary/prompt-replay/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/glossary/pwa-progressive-web-app/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/glossary/rest-api-orchestration/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/glossary/reverse-tunnel/</loc><lastmod>2026-08-23</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/glossary/self-healing-agent/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/glossary/session-persistence/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/glossary/sqlite-backed-board/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>

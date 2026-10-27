@@ -4,30 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Test Webhooks Locally with a Stable Public URL | amux</title>
+  <title>Webhook testing with amux tunnel (retired page) | amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Receive webhooks on your local machine without ngrok. amux tunnel exposes any localhost port at a stable HTTPS URL — same address on every restart. No IP whitelisting, no firewall config, works with Stripe, GitHub, Twilio, and any webhook provider.">
-  <meta name="keywords" content="test webhooks locally, localhost webhook testing, stable webhook URL development, webhook testing without ngrok, send webhooks to localhost, ngrok alternative webhook, expose localhost webhook, amux tunnel webhook">
+  <meta name="description" content="amux tunnel was retired on October 25, 2026. Share a local app from the amux Pages tab, or use ngrok or cloudflared for a public URL to a local port.">
+  <meta name="robots" content="noindex">
   <link rel="canonical" href="https://amux.io/use-cases/webhook-testing/">
-  <meta property="og:title" content="Test Webhooks Locally with a Stable Public URL">
-  <meta property="og:description" content="Receive real webhook events on localhost without changing your URL on every restart. amux tunnel gives you a stable HTTPS endpoint your webhook provider can reach — no firewall config, no account needed beyond amux cloud.">
-  <meta property="og:url" content="https://amux.io/use-cases/webhook-testing/">
-  <meta property="og:image" content="https://amux.io/og-image.png">
-  <meta property="og:type" content="article">
-  <meta name="twitter:card" content="summary_large_image">
-  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Webhook Testing","item":"https://amux.io/use-cases/webhook-testing/"}]}</script>
-
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Test Webhooks Locally with a Stable Public URL","description":"Receive real webhook events on your local machine using amux tunnel. Stable HTTPS URL, no firewall changes, same address on every restart.","datePublished":"2026-08-17","dateModified":"2026-08-17","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"url":"https://amux.io/use-cases/webhook-testing/","mainEntityOfPage":"https://amux.io/use-cases/webhook-testing/","keywords":["test webhooks locally","ngrok alternative","stable webhook URL","localhost tunnel","webhook testing development","amux tunnel"]}</script>
-
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to test webhooks locally with amux tunnel","description":"Expose a local development server at a stable public HTTPS URL so any webhook provider can deliver events to your machine without a static IP, port forwarding, or firewall changes.","totalTime":"PT5M","supply":[{"@type":"HowToSupply","name":"amux (open source, MIT + Commons Clause)"},{"@type":"HowToSupply","name":"An active amux cloud subscription (tunnel is a cloud feature)"},{"@type":"HowToSupply","name":"A local web server or development app"}],"step":[{"@type":"HowToStep","position":1,"name":"Install amux and start the server","text":"Install amux with curl -fsSL https://amux.io/install.sh | bash and run amux serve. The dashboard opens at https://localhost:8824. The tunnel feature is built into the same binary — no extra installation."},{"@type":"HowToStep","position":2,"name":"Start a tunnel on your local port","text":"Run amux tunnel start 3000 (replace 3000 with your server's port). amux dials out to the cloud gateway and returns a stable public URL like https://a3f9bc12.t.amux.io. Your machine made an outbound connection — no inbound port needed and no firewall rule to add."},{"@type":"HowToStep","position":3,"name":"Register the tunnel URL with your webhook provider","text":"Paste the https://....t.amux.io URL into your webhook provider's settings — Stripe, GitHub, Twilio, Shopify, or any service that sends HTTP POST events. The URL is the same every time amux restarts, so you only need to configure it once."},{"@type":"HowToStep","position":4,"name":"Trigger an event and inspect the delivery","text":"Fire a test event from your webhook provider's dashboard. The request flows from their server to the amux cloud gateway and then to your local app. Check your local server logs to see the payload. Iterate freely — every change in your local code is immediately live through the same URL."}]}</script>
-
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Do I need a static IP to test webhooks locally?","acceptedAnswer":{"@type":"Answer","text":"No. amux tunnel works the opposite way: your machine makes an outbound connection to the amux cloud gateway. The gateway forwards incoming webhook requests to your local server over that persistent connection. You never need to open an inbound port, configure NAT, or have a static IP."}},{"@type":"Question","name":"What is the difference between amux tunnel and ngrok for webhook testing?","acceptedAnswer":{"@type":"Answer","text":"The main practical difference is the free tier. ngrok's free tier gives you an ephemeral URL that changes on every restart — which breaks your webhook registration every time you restart your machine. amux tunnel gives you a stable URL derived from your account token, so it survives restarts and you only configure the webhook provider once. ngrok wins on request inspection UI, TCP tunneling, and custom domains. amux tunnel wins on URL stability without a paid ngrok subscription, and it is built into the same tool you use to orchestrate your AI agents — no separate binary."}},{"@type":"Question","name":"Does the webhook URL change when I restart my machine?","acceptedAnswer":{"@type":"Answer","text":"No. The amux tunnel URL is derived from a SHA-256 hash of your account token, so it is always https://<same-id>.t.amux.io regardless of restarts, IP changes, or network switches. Register it with your webhook provider once and leave it."}},{"@type":"Question","name":"Is the tunnel URL public — can anyone reach it?","acceptedAnswer":{"@type":"Answer","text":"Yes. The URL is public and reachable by anyone who knows it. It is not authenticated. The URL itself is unguessable (derived from a hash, not a sequential ID), but you should treat any data that arrives at it as untrusted and validate webhook signatures on your local server the same way you would in production."}},{"@type":"Question","name":"Does amux tunnel support WebSockets or Server-Sent Events?","acceptedAnswer":{"@type":"Answer","text":"No. amux tunnel buffers responses and does not support streaming protocols. For standard webhook testing — where the provider sends a POST and waits for a 200 OK — it works without issue. For WebSocket or SSE workloads, use ngrok or a dedicated tunnel tool."}},{"@type":"Question","name":"Is amux tunnel free?","acceptedAnswer":{"@type":"Answer","text":"The tunnel feature requires an active amux cloud subscription. The rest of amux — agent orchestration, dashboard, kanban, scheduler — is open source and MIT licensed and runs entirely on your machine for free."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -52,196 +37,26 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
-
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>Webhook Testing</span></div>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use cases</a> <span class="sep">›</span> <span>Retired</span></div>
+    <h1>amux tunnel has been retired</h1>
+    <p class="subtitle">This page described <code>amux tunnel</code>, which was removed from amux on October 25, 2026.</p>
 
-    <h1>Test Webhooks Locally with a Stable Public URL</h1>
-    <p class="subtitle">Receive real webhook events on your local machine without reconfiguring your webhook provider on every restart. <em>Updated August 2026.</em></p>
+    <p>The command now exits with a message and does nothing. amux has one supported way to share a local app, the Pages tab. For anything else, a dedicated tunnel tool is the better fit.</p>
 
-    <!-- EXP-046: top-of-page green CTA on webhook-testing use-case -->
+    <h2>What to use instead</h2>
+    <ul>
+      <li><strong>Share a local app or file from amux:</strong> open the Pages tab, or run <code>amux publish PORT</code> (anyone with the link) or <code>amux publish --internal PORT</code> (only you, inside amux). Anything an agent adds stays pending until you approve it, and you can revoke a link at any time.</li>
+      <li><strong>Reach your amux dashboard from anywhere:</strong> use <a href="/guides/remote-access-tailscale/">Tailscale</a> to reach your own machine, or run <a href="/cloud/">amux Cloud</a>, your own always-on server at <code>yourname.amux.io</code> that you sign in to from a browser or the iOS app.</li>
+      <li><strong>A public URL for any local port, webhooks or TCP:</strong> use <a href="https://ngrok.com/" target="_blank" rel="noopener">ngrok</a> or Cloudflare's <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/" target="_blank" rel="noopener">cloudflared</a>.</li>
+    </ul>
 
-    <div style="background:var(--bg-2,var(--panel));border:1px solid var(--line,var(--panel-3));border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
-      <p style="margin:0;font-size:.95rem;line-height:1.65">To test webhooks locally, you need a public HTTPS URL that routes to your machine. <strong>amux tunnel</strong> exposes any local port at a stable URL — <code>https://&lt;id&gt;.t.amux.io</code> — that survives machine restarts, network changes, and IP reassignments. Your machine dials out to the amux cloud gateway; the gateway forwards incoming webhook payloads to your local server. No inbound port, no firewall rule, no static IP. Register the URL with Stripe, GitHub, Twilio, or any webhook provider once and leave it there through your entire development cycle.</p>
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Keep your agents running when your laptop sleeps</h3>
+      <p>amux Cloud is your own always-on amux server at yourname.amux.io. Steer your agents from your phone. From $39/mo.</p>
+      <p><a class="btn" href="/start/?source=webhook-testing">Run it in the cloud</a> <a href="https://github.com/mixpeek/amux">Self-host free on GitHub</a></p>
     </div>
-
-    <pre><code>amux tunnel start 3000
-# → Tunnel live: https://a3f9bc12.t.amux.io
-# Forwarding to http://localhost:3000</code></pre>
-
-    <h2>Why Stable URL Matters for Webhooks</h2>
-    <p>The fundamental problem with tools that give you an ephemeral public URL is that you have to re-register it with your webhook provider every time it changes. With ngrok's free tier, the URL changes on every restart. That means:</p>
-    <ul>
-      <li>Every time you restart your machine, you open the Stripe dashboard (or GitHub, or Twilio) and paste a new URL.</li>
-      <li>If you forget, webhook deliveries go to the old URL and silently fail.</li>
-      <li>You cannot share a webhook URL with teammates who need to fire test events at your local server.</li>
-    </ul>
-    <p>amux tunnel generates the URL from a hash of your account token. Same token, same URL, always. You configure the webhook provider once and stop thinking about it.</p>
-
-    <h2>Tunnel Comparison for Webhook Testing</h2>
-    <div style="overflow-x:auto;margin:1.5rem 0">
-      <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
-        <thead>
-          <tr style="background:var(--surface);border-bottom:2px solid var(--border)">
-            <th style="padding:10px 16px;text-align:left">Feature</th>
-            <th style="padding:10px 16px;text-align:center">amux tunnel</th>
-            <th style="padding:10px 16px;text-align:center">ngrok (free)</th>
-            <th style="padding:10px 16px;text-align:center">ngrok (paid)</th>
-            <th style="padding:10px 16px;text-align:center">localtunnel</th>
-            <th style="padding:10px 16px;text-align:center">Cloudflare Tunnel</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">Stable URL across restarts</td>
-            <td style="padding:10px 16px;text-align:center">Yes</td>
-            <td style="padding:10px 16px;text-align:center">No (changes each run)</td>
-            <td style="padding:10px 16px;text-align:center">Yes (static subdomain)</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">Yes (requires domain)</td>
-          </tr>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">Cost for stable URL</td>
-            <td style="padding:10px 16px;text-align:center">amux cloud subscription</td>
-            <td style="padding:10px 16px;text-align:center">Paid plan ($10+/mo)</td>
-            <td style="padding:10px 16px;text-align:center">$10+/mo</td>
-            <td style="padding:10px 16px;text-align:center">Not available</td>
-            <td style="padding:10px 16px;text-align:center">Free (Cloudflare acct)</td>
-          </tr>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">Setup complexity</td>
-            <td style="padding:10px 16px;text-align:center">1 command</td>
-            <td style="padding:10px 16px;text-align:center">1 command</td>
-            <td style="padding:10px 16px;text-align:center">1 command + config</td>
-            <td style="padding:10px 16px;text-align:center">1 command (npm)</td>
-            <td style="padding:10px 16px;text-align:center">cloudflared config + DNS</td>
-          </tr>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">HTTP request inspection UI</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">Yes (localhost:4040)</td>
-            <td style="padding:10px 16px;text-align:center">Yes (+ cloud dashboard)</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-          </tr>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">WebSocket / SSE support</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">Yes</td>
-            <td style="padding:10px 16px;text-align:center">Yes</td>
-            <td style="padding:10px 16px;text-align:center">Limited</td>
-            <td style="padding:10px 16px;text-align:center">Yes</td>
-          </tr>
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 16px">Custom domain</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">Yes</td>
-            <td style="padding:10px 16px;text-align:center">No</td>
-            <td style="padding:10px 16px;text-align:center">Yes (your domain)</td>
-          </tr>
-          <tr>
-            <td style="padding:10px 16px">Best for</td>
-            <td style="padding:10px 16px;text-align:center">Already running amux for agent orchestration</td>
-            <td style="padding:10px 16px;text-align:center">Quick one-off test (ephemeral)</td>
-            <td style="padding:10px 16px;text-align:center">Teams, CI, production use</td>
-            <td style="padding:10px 16px;text-align:center">Ephemeral sharing, no account</td>
-            <td style="padding:10px 16px;text-align:center">Permanent public endpoints</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p><strong>Honest call:</strong> if you do not already run amux, ngrok free tier is the path of least resistance for a one-time test. amux tunnel earns its place when you are already using amux for AI agent orchestration — the stable URL is a side-effect of the same subscription, no extra tool to manage.</p>
-
-    <h2>How to Set Up Webhook Testing with amux</h2>
-
-    <h3>Step 1 — Install amux and start the server</h3>
-    <p>If amux is not installed:</p>
-    <pre><code>curl -fsSL https://amux.io/install.sh | bash
-amux serve       # dashboard at https://localhost:8824</code></pre>
-    <p>The tunnel client is built into the same binary — nothing extra to install.</p>
-
-    <h3>Step 2 — Start the tunnel on your webhook port</h3>
-    <pre><code>amux tunnel start 3000   # replace 3000 with your app's port</code></pre>
-    <p>amux connects outbound to the cloud gateway and prints your stable public URL:</p>
-    <pre><code>Tunnel live: https://a3f9bc12.t.amux.io
-Forwarding → http://localhost:3000</code></pre>
-    <p>Note your URL. It will be the same on every restart.</p>
-
-    <h3>Step 3 — Register the URL with your webhook provider</h3>
-    <p>Go to your webhook provider's dashboard and paste the <code>https://....t.amux.io</code> URL as the endpoint. Examples:</p>
-    <ul>
-      <li><strong>Stripe:</strong> Developers → Webhooks → Add endpoint → paste URL, select events.</li>
-      <li><strong>GitHub:</strong> Repo Settings → Webhooks → Add webhook → paste URL, select content type <code>application/json</code>.</li>
-      <li><strong>Twilio:</strong> Phone number configuration → Webhook URL for SMS/voice.</li>
-      <li><strong>Shopify:</strong> Settings → Notifications → Create webhook → paste URL, choose format.</li>
-    </ul>
-    <p>You do this once. The URL does not change between sessions.</p>
-
-    <h3>Step 4 — Trigger an event and verify delivery</h3>
-    <p>Use your provider's "Send test webhook" or "Redeliver" feature to fire an event. Check your local server logs to confirm the payload arrived. Then make changes to your handler code and fire another test — the same URL stays live as long as amux is running.</p>
-    <pre><code># Example: inspect the raw payload in your local Express app
-app.post('/webhooks/stripe', express.raw({type:'application/json'}), (req, res) => {
-  console.log('Received:', JSON.stringify(JSON.parse(req.body), null, 2));
-  res.sendStatus(200);
-});</code></pre>
-
-    <h2>When to Use amux Tunnel vs ngrok for Webhooks</h2>
-    <p><strong>Use amux tunnel when:</strong></p>
-    <ul>
-      <li>You already run amux for AI agent orchestration — the stable URL costs you nothing extra.</li>
-      <li>You are tired of re-pasting URLs into Stripe/GitHub/Twilio every morning.</li>
-      <li>You want to share a stable webhook endpoint URL with teammates working on the same integration.</li>
-      <li>You want to subscribe a real service (like Google Calendar via iCal feed) and need the URL to survive restarts.</li>
-    </ul>
-    <p><strong>Use ngrok when:</strong></p>
-    <ul>
-      <li>You need the request inspection UI (ngrok's <code>localhost:4040</code> inspector is genuinely excellent — replay, headers, body diff).</li>
-      <li>You need WebSocket or SSE passthrough.</li>
-      <li>You need a custom domain or TCP tunneling.</li>
-      <li>You do not run amux and want the fastest possible setup for a one-off test.</li>
-    </ul>
-
-    <h2>Frequently Asked Questions</h2>
-
-    <h3>Do I need a static IP to test webhooks locally?</h3>
-    <p>No. amux tunnel works outbound: your machine connects to the cloud gateway, and the gateway forwards webhook POSTs to your machine over that connection. Your IP address is irrelevant. You do not need to configure NAT, open any inbound port, or ask your ISP for a static IP.</p>
-
-    <h3>What is the difference between amux tunnel and ngrok for webhook testing?</h3>
-    <p>The practical difference is URL stability. ngrok free tier gives you an ephemeral URL that changes on every restart. amux tunnel gives you a stable URL derived from your account token — same URL across every restart. ngrok wins on the request inspection UI (excellent), WebSocket support, TCP tunneling, and custom domains. amux tunnel wins when you want a stable development URL without paying for ngrok Pro, and when you are already using amux for agent orchestration.</p>
-
-    <h3>Does the webhook URL change when I restart my machine?</h3>
-    <p>No. The URL is derived from a hash of your amux cloud token. Same token, same URL, always. The format is <code>https://&lt;hash&gt;.t.amux.io</code>. You register it once with your webhook provider and it stays valid through restarts, network changes, and IP reassignments.</p>
-
-    <h3>Is the tunnel URL public — can anyone reach it?</h3>
-    <p>Yes. The URL is publicly reachable. It is not behind any authentication. The hash-derived URL is not guessable from a sequential ID, but you should still validate webhook signatures on your local server exactly as you would in production. Treat every incoming payload as untrusted and verify the provider's HMAC signature before acting on it.</p>
-
-    <h3>Does amux tunnel support WebSockets or Server-Sent Events?</h3>
-    <p>No. amux tunnel buffers responses and does not pass streaming protocols through. For standard webhook deliveries — where the provider sends an HTTP POST and expects a 200 OK — it works correctly. For WebSocket or SSE workloads, use ngrok or Cloudflare Tunnel.</p>
-
-    <h3>Is amux tunnel free?</h3>
-    <p>The tunnel feature requires an active amux cloud subscription. The core amux platform — agent orchestration, dashboard, kanban board, scheduler, CRM, email, notes — is open source, MIT licensed, and runs entirely on your machine at no cost.</p>
-
-    <div class="cta-box">
-      <h3>Run AI agents and receive webhooks from the same tool</h3>
-      <p>amux is open source and self-hosted. Install in 30 seconds.</p>
-      <pre><code>curl -fsSL https://amux.io/install.sh | bash
-amux serve       # → https://localhost:8824
-amux tunnel start 3000   # → stable public URL</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
-      <a class="btn" href="/guides/getting-started/" style="margin-left:.5rem">Getting started guide →</a>
-    </div>
-
-    <h2>Related</h2>
-    <ul>
-      <li><a href="/compare/amux-vs-ngrok/">amux tunnel vs ngrok — full comparison</a></li>
-      <li><a href="/guides/expose-localhost-publicly/">Expose any localhost port to the public internet with amux</a></li>
-      <li><a href="/guides/getting-started/">Get started with amux in 5 minutes</a></li>
-      <li><a href="/use-cases/ai-agent-browser-profiles/">Browser profiles for AI agents — persistent authentication</a></li>
-      <li><a href="/use-cases/ai-agent-google-calendar/">Subscribe Google Calendar to your AI agent schedule</a></li>
-    </ul>
   </main>
-
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">

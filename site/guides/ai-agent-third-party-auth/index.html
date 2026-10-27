@@ -140,7 +140,7 @@
         "name": "Are OAuth tokens stored securely in amux?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "OAuth tokens are stored in the amux SQLite database on your own machine or server — the same database that holds board cards, schedules, and session history. The database is not encrypted at rest by default, but it is local to your infrastructure and never transmitted off-machine unless you explicitly configure the amux Cloud tunnel. Tokens are not written into CLAUDE.md files, not included in git history, and not echoed in agent transcripts."
+          "text": "OAuth tokens are stored in the amux SQLite database on your own machine or server — the same database that holds board cards, schedules, and session history. The database is not encrypted at rest by default, but it is local to your infrastructure and never transmitted off-machine unless you run amux on amux Cloud, where they live on your own dedicated server. Tokens are not written into CLAUDE.md files, not included in git history, and not echoed in agent transcripts."
         }
       }
     ]

@@ -68,7 +68,7 @@
         "@type": "HowToStep",
         "position": 2,
         "name": "Start the amux server and note the access URL",
-        "text": "Run amux serve. The dashboard is available at https://localhost:8824 by default. For remote team access, use amux tunnel (exposes a public URL) or connect via SSH port forwarding."
+        "text": "Run amux serve. The dashboard is available at https://localhost:8824 by default. For remote team access, use Tailscale, SSH port forwarding, or amux Cloud (a hosted server at yourname.amux.io)."
       },
       {
         "@type": "HowToStep",
@@ -126,7 +126,7 @@
         "name": "How do team members access the shared amux dashboard?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The amux dashboard is a web app served by the amux binary. If amux runs on a shared server, team members access it at the server's IP or hostname on port 8824. For remote teams on different networks, amux cloud tunnel creates an unguessable public URL. The iOS app and PWA support phone access from anywhere."
+          "text": "The amux dashboard is a web app served by the amux binary. If amux runs on a shared server, team members access it at the server's IP or hostname on port 8824. For remote teams on different networks, use Tailscale or amux Cloud, a hosted server at yourname.amux.io with sign-in. The iOS app and PWA support phone access from anywhere."
         }
       },
       {
@@ -213,7 +213,7 @@ curl -sSL https://amux.io/install.sh | bash</code></pre>
 
     <pre><code>amux serve  # → dashboard at https://localhost:8824</code></pre>
 
-    <p>For remote access, use <a href="/guides/run-ai-agents-remotely/">SSH port forwarding</a> or amux cloud tunnel. The tunnel creates an unguessable public URL; share it with your team. Note: the tunnel URL is public, not authenticated, so treat it like an internal tool URL and share it only within the team.</p>
+    <p>For remote access, use <a href="/guides/run-ai-agents-remotely/">SSH port forwarding</a> or Tailscale. For a team on different networks, <a href="/cloud/">amux Cloud</a> gives you a hosted server at <code>yourname.amux.io</code> that each person signs in to. Never expose port 8824 directly to the internet.</p>
 
     <h3>Step 3: Create scoped teams</h3>
 
@@ -334,7 +334,7 @@ AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1 amux start alice-api</code></pre>
 
     <details>
       <summary>How do remote team members access the dashboard?</summary>
-      <p>If amux runs on a shared server, team members access it at the server's address on port 8824. For teams on different networks, amux cloud tunnel creates a public URL. The iOS app and PWA support access from anywhere.</p>
+      <p>If amux runs on a shared server, team members access it at the server's address on port 8824. For teams on different networks, use Tailscale or amux Cloud at yourname.amux.io. The iOS app and PWA support access from anywhere.</p>
     </details>
 
     <details>

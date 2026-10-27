@@ -124,7 +124,7 @@
         "name": "Can I manage my agent fleet from my phone?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. amux is built phone-first. The native iOS app and PWA give you the full fleet operations surface on a 375px screen — session list with status dots, bulk-actions modal, peek panel with subagent switcher, plan strip, quick-action chips, and the send bar. As of v0.9.85, the peek panel also reflows transcript text to match your phone's actual character width, eliminating double-wrapping. For remote access, use Tailscale or amux tunnel to reach your home machine from anywhere."
+          "text": "Yes. amux is built phone-first. The native iOS app and PWA give you the full fleet operations surface on a 375px screen — session list with status dots, bulk-actions modal, peek panel with subagent switcher, plan strip, quick-action chips, and the send bar. As of v0.9.85, the peek panel also reflows transcript text to match your phone's actual character width, eliminating double-wrapping. For remote access, use Tailscale to reach your home machine from anywhere, or run amux Cloud at yourname.amux.io."
         }
       },
       {
@@ -409,7 +409,7 @@ done
     <p>Use the "Load earlier output" bar at the top of the peek panel (v0.9.82). It pages backward through the session's persistent log file, loading older output above the live view. Keep clicking to reach the beginning of the session. Works on phone and desktop, no terminal attachment needed.</p>
 
     <h3>Can I manage my agent fleet from my phone?</h3>
-    <p>Yes. The amux iOS app and PWA provide the full fleet operations surface on any screen size. As of v0.9.85, the peek panel reflows to your phone's character width — no double-wrapping. Use Tailscale for secure remote access from anywhere, or <a href="/guides/expose-localhost-publicly/">amux tunnel</a> for a public HTTPS URL.</p>
+    <p>Yes. The amux iOS app and PWA provide the full fleet operations surface on any screen size. As of v0.9.85, the peek panel reflows to your phone's character width — no double-wrapping. Use Tailscale for secure remote access from anywhere, or run <a href="/cloud/">amux Cloud</a>, your own always-on server at <code>yourname.amux.io</code>.</p>
 
     <h3>What does the status dot color mean?</h3>
     <p><span style="color:var(--c-green)">Green</span> = actively working. <span style="color:light-dark(oklch(0.48 0.150 86.0), #eab308)">Yellow</span> = idle or waiting for input (needs attention or just finished). <span style="color:#ef4444">Red</span> = crashed or errored. The self-healing watchdog auto-restarts red sessions if configured. For yellow sessions, use "Continue all idle sessions" from the bulk-actions modal.</p>

@@ -72,7 +72,7 @@
         "name": "Can engineering teams use amux on their own infrastructure without sending code to third-party servers?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — amux is fully self-hosted by default. The server is a single Rust binary on your own machine or internal server. No code, task content, or agent output leaves your network unless you configure amux Cloud (a tunnel relay for public URL access — the relay handles HTTP proxying only, not storage or execution). Everything runs locally: the dashboard, agents, kanban board, CRM, email, and scheduler."
+          "text": "Yes — amux is fully self-hosted by default. The server is a single Rust binary on your own machine or internal server. No code, task content, or agent output leaves your network unless you choose amux Cloud, which runs amux on a dedicated server for your team. Everything runs locally: the dashboard, agents, kanban board, CRM, email, and scheduler."
         }
       },
       {
@@ -233,8 +233,8 @@
             <td style="padding:10px 16px;">Large engineering orgs where teams have separate security boundaries but need cross-team agent coordination</td>
           </tr>
           <tr>
-            <td style="padding:10px 16px;font-weight:600;">amux Cloud (public URL)</td>
-            <td style="padding:10px 16px;">Run amux locally, add <code>$20/month</code> amux Cloud for a stable public HTTPS URL. All agents and data still run locally — Cloud is only a tunnel relay.</td>
+            <td style="padding:10px 16px;font-weight:600;">amux Cloud (hosted server)</td>
+            <td style="padding:10px 16px;">amux Cloud runs your amux on its own dedicated, always-on server at <code>yourname.amux.io</code>, from $39/month (Team $69/month). Agents keep running when laptops sleep.</td>
             <td style="padding:10px 16px;">Distributed teams who need to access the shared dashboard from outside the office network without a VPN</td>
           </tr>
         </tbody>

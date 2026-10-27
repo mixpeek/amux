@@ -143,7 +143,7 @@
         <tr><td>Dashboard</td><td>Web dashboard + iOS app</td><td>ChatGPT / OpenAI platform</td><td>Terminal only</td></tr>
         <tr><td>Pricing</td><td>API tokens only (Anthropic/OpenAI/Google rates)</td><td>OpenAI API usage</td><td>OpenAI API usage</td></tr>
         <tr><td>Self-hosted</td><td>Yes (single Rust binary, zero deps)</td><td>No</td><td>Yes</td></tr>
-        <tr><td>Tunnel (localhost → public URL)</td><td>Yes (<a href="/compare/amux-vs-ngrok/">amux cloud</a>)</td><td>N/A (cloud-native)</td><td>No</td></tr>
+        <tr><td>Share a local app by link</td><td>Yes (Pages tab, after the owner approves)</td><td>N/A (cloud-native)</td><td>No</td></tr>
       </tbody>
     </table>
 
@@ -200,7 +200,7 @@ amux serve  # → dashboard at https://localhost:8824</code></pre>
 
     <h2>Pricing model</h2>
 
-    <p><strong>amux</strong>: free and open source. You pay only for API tokens consumed by the agents — at Anthropic, OpenAI, or Google rates depending on which runtime you use. No subscription fee for the orchestrator itself. Cloud features (tunnel, hosted dashboard) are paid separately via amux cloud.</p>
+    <p><strong>amux</strong>: free and open source. You pay only for API tokens consumed by the agents — at Anthropic, OpenAI, or Google rates depending on which runtime you use. No subscription fee for the orchestrator itself. amux Cloud, your own always-on hosted server, is paid separately from $39/mo.</p>
 
     <p><strong>Codex cloud</strong>: billed through OpenAI API usage. Pricing depends on model (GPT-4o vs o3) and token consumption. No separate orchestration cost, but all execution happens on OpenAI's infrastructure with their pricing.</p>
 

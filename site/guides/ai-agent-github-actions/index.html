@@ -42,7 +42,7 @@
     "description": "Call a named amux worker via REST API from a GitHub Actions workflow",
     "step": [
       {"@type": "HowToStep", "position": 1, "name": "Start an amux worker with a known name", "text": "Register and start a named Claude Code session: amux register reviewer --dir ~/Dev/myproject --yolo && amux start reviewer"},
-      {"@type": "HowToStep", "position": 2, "name": "Expose amux to GitHub Actions", "text": "Use amux tunnel or deploy amux on a cloud server reachable from GitHub's runner network. Store the server URL in a GitHub Actions secret: AMUX_URL."},
+      {"@type": "HowToStep", "position": 2, "name": "Expose amux to GitHub Actions", "text": "Run amux on a server reachable from GitHub's runner network, such as amux Cloud at yourname.amux.io or your own VPS. Store the server URL in a GitHub Actions secret: AMUX_URL."},
       {"@type": "HowToStep", "position": 3, "name": "Add a workflow dispatch step", "text": "In your GitHub Actions YAML, add a step that calls POST /api/sessions/<worker-name>/send with your task text as the body."},
       {"@type": "HowToStep", "position": 4, "name": "Trigger on GitHub events", "text": "Wire the workflow to pull_request, issues, push, or any other GitHub event. The amux worker receives the task and runs it against your codebase."},
       {"@type": "HowToStep", "position": 5, "name": "Poll for completion and read output", "text": "Call GET /api/sessions/<worker-name>/peek to stream or snapshot the worker's output. Check the board card status for task completion."}
@@ -150,7 +150,7 @@ amux start reviewer
     <p>GitHub Actions runners need HTTP access to your amux server. Two options:</p>
 
     <ul>
-      <li><strong>amux tunnel</strong> (easiest): <code>amux tunnel start 8824</code> gives you a stable public HTTPS URL. Store it in a GitHub Actions secret (<code>AMUX_URL</code>). The tunnel stays alive as long as amux runs — no open inbound port required.</li>
+      <li><strong>amux Cloud</strong> (easiest): your own always-on server at <code>yourname.amux.io</code>. Store that URL in a GitHub Actions secret (<code>AMUX_URL</code>) with an API token.</li>
       <li><strong>Cloud deployment</strong>: Deploy amux on a VPS or cloud server with a public IP. The amux server runs as a single binary; full setup takes under 10 minutes.</li>
     </ul>
 
@@ -237,7 +237,7 @@ curl -s -X POST \
     <h2>Security considerations</h2>
 
     <ul>
-      <li><strong>Store the AMUX_URL as a secret.</strong> The amux tunnel URL is an unguessable token-derived URL, not publicly advertised — but treat it like an API key. Use GitHub Actions secrets, not hardcoded values.</li>
+      <li><strong>Store the AMUX_URL as a secret.</strong> The server URL and its token give control of your agents, so treat them like an API key. Use GitHub Actions secrets, not hardcoded values.</li>
       <li><strong>Scope the worker's permissions.</strong> The Claude Code session runs with the same filesystem and Git permissions as the user who started it. On a shared server, register each worker under a user with appropriate scope.</li>
       <li><strong>Validate the event payload.</strong> If your workflow includes PR diff content in the task body, sanitize or escape it before inclusion to prevent prompt injection.</li>
       <li><strong>Rate your triggers.</strong> A workflow that fires on every commit push can quickly consume many agent turns. Use <code>paths</code> or <code>branch</code> filters to scope when the workflow runs.</li>

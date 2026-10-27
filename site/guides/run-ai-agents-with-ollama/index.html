@@ -276,7 +276,7 @@
 
     <p>The key difference from cloud providers is that authentication is local. Ollama requires no API key for localhost access, so amux skips the credential prompt entirely when you select the Ollama provider. The model name (<code>qwen3.8:27b</code> by default) is the only setting you need to configure.</p>
 
-    <p>amux does not relay traffic through its cloud infrastructure when using Ollama. The worker runs on your machine, Ollama runs on your machine, and all inference stays local. The amux dashboard itself can optionally be accessed remotely via <a href="/guides/expose-localhost-publicly/">amux tunnel</a>, but the model inference never leaves your network.</p>
+    <p>amux does not relay traffic through its cloud infrastructure when using Ollama. The worker runs on your machine, Ollama runs on your machine, and all inference stays local. The amux dashboard itself can optionally be accessed remotely via <a href="/guides/remote-access-tailscale/">Tailscale</a>, but the model inference never leaves your network.</p>
 
     <h2 id="use-cases">When to use local agents</h2>
 
@@ -452,7 +452,7 @@
           <ul>
             <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
             <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-ngrok/">vs ngrok</a></li>
+            <li><a href="/compare/amux-vs-cmux/">vs cmux</a></li>
             <li><a href="/compare/">All comparisons</a></li>
           </ul>
         </div>
