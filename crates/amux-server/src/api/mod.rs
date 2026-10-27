@@ -15,6 +15,7 @@ pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
 pub mod prompt_block;
+pub mod land_approvals;
 pub mod land_queue;
 pub mod worker_identity;
 pub mod contract_fresh;
@@ -394,6 +395,7 @@ pub fn router_with_connector_transport(
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
         .merge(contract::routes())
+        .merge(land_approvals::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
         .merge(vault_secrets::routes())

@@ -307,6 +307,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/git-hooks/test_pre_push_spa_gates.py
+      # The land gate (scripts/land_gate.py): the push legs on the real hook
+      # with a fake approvals server, and the review's round rules on a fake
+      # claude. No model, no network.
+      - name: the land gate refuses unreceipted, unapproved and unrevertable pushes; the review converges
+        run: |
+          set -euo pipefail
+          python3 scripts/git-hooks/test_land_gate.py
       - name: the PR watcher wakes its handler once per change, never on a failed read
         run: |
           set -euo pipefail

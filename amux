@@ -6584,7 +6584,8 @@ ${BOLD}Interaction:${RESET}
   amux send <name> --keys 'C-c'  Send raw key sequence (e.g., Ctrl-C)
 
 ${BOLD}Coordination:${RESET}
-  amux land [--branch main]      Rebase and push HEAD holding a per-repo lock, so lanes queue instead of racing
+  amux land [--branch main]      Gate HEAD on origin/main plus the change (scripts/land_gate.py), then rebase and push it holding a per-repo lock
+  amux explain <path>... [--since 14d] [--save]   An explainer of that slice of the code and what changed in it lately
   amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
   amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
   amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
@@ -9554,6 +9555,61 @@ PY
   return "$rc"
 }
 
+cmd_explain() {
+  # amux explain <path>... [--since 14d] [--save] [--model M]
+  #
+  # An explainer of one slice of the code, written fresh from the code and its
+  # recent history: what it does, how it is wired, the contracts that guard
+  # it, and what changed lately. The Claude Code team uses this instead of
+  # reading every diff to learn the code ("How the Claude Code team does code
+  # review", 2026-10-26): it takes minutes, is about exactly the slice you are
+  # about to change, and is never out of date. --save writes it to
+  # docs/explainers/<slug>.md in this checkout (committing it is your call).
+  local since=14d save=0 model="${AMUX_EXPLAIN_MODEL:-}" paths=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:?--since needs a value like 14d}"; shift 2 ;;
+      --save) save=1; shift ;;
+      --model) model="${2:?--model needs a value}"; shift 2 ;;
+      -h|--help) sed -n '/^cmd_explain()/,/^  local since/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
+      -*) die "usage: amux explain <path>... [--since 14d] [--save] [--model M]" ;;
+      *) paths+=("$1"); shift ;;
+    esac
+  done
+  [ "${#paths[@]}" -gt 0 ] || die "usage: amux explain <path>... [--since 14d] [--save] [--model M]"
+  command -v claude >/dev/null 2>&1 || die "amux explain needs the claude CLI on PATH"
+  local root days p
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "amux explain runs inside a git checkout"
+  days="${since%d}"
+  case "$days" in ''|*[!0-9]*) die "--since takes days, like 14d" ;; esac
+  for p in "${paths[@]}"; do [ -e "$p" ] || [ -e "$root/$p" ] || die "no such path: $p"; done
+  local prompt
+  prompt="Write an explainer of this slice of the code for an engineer who is about to change it: ${paths[*]}
+
+Read the code itself before writing anything. Cover, in this order:
+1. What it does, in two or three sentences.
+2. How it is wired: entry points, who calls it, what it reads and writes, and the one or two paths a request or event takes through it. Name files and functions so the reader can open them.
+3. The contracts that guard it: tests that pin its behaviour, tree-wide checks it must satisfy, invariants and verdict names it logs.
+4. What changed in it in the last ${days} days: run git log --since=${days}.days -- ${paths[*]} and summarise the changes that matter, citing short shas.
+5. Gotchas: anything surprising, and anything frustrations.md or a comment warns about.
+Plain markdown with headings, short paragraphs, no filler. Say plainly when something is unclear from the code."
+  local out
+  out="$(cd "$root" && env -u AMUX_SESSION -u AMUX_WORKER -u TMUX -u TMUX_PANE claude -p "$prompt" \
+    --setting-sources project --strict-mcp-config --no-session-persistence \
+    --allowedTools Read Grep Glob 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git blame:*)' 'Bash(git grep:*)' \
+    --disallowedTools Edit Write NotebookEdit ${model:+--model "$model"})" || die "amux explain: claude exited non-zero"
+  [ -n "$out" ] || die "amux explain: claude printed nothing"
+  if [ "$save" = 1 ]; then
+    local slug file
+    slug="$(printf '%s' "${paths[*]}" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-' | cut -c1-80)"
+    file="$root/docs/explainers/${slug}.md"
+    mkdir -p "$root/docs/explainers"
+    { printf '<!-- amux explain %s, %s, since %sd -->\n\n' "${paths[*]}" "$(git -C "$root" rev-parse --short HEAD)" "$days"; printf '%s\n' "$out"; } > "$file"
+    echo "saved: $file" >&2
+  fi
+  printf '%s\n' "$out"
+}
+
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] [--json] | --cancel | --status
   #
@@ -9651,7 +9707,7 @@ cmd_land() {
       for _jx in "$@"; do [ "$_jx" = --json ] || _ja+=("$_jx"); done
       _land_json ${_ja[@]+"${_ja[@]}"}; return $? ;;
   esac
-  local remote=origin branch=main tries=8 max_hold=3600 batch=1 priority=0 batch_max="${AMUX_LAND_BATCH_MAX:-}" detach=0 land_sha="" prio_reason=""
+  local remote=origin branch=main tries=8 max_hold=3600 batch=1 priority=0 batch_max="${AMUX_LAND_BATCH_MAX:-}" detach=0 land_sha="" prio_reason="" land_gate=1
   local fwd_args=()
   local orig_args=(${1+"$@"})
   while [ $# -gt 0 ]; do
@@ -9661,6 +9717,7 @@ cmd_land() {
       --tries) tries="${2:?}"; fwd_args+=("$1" "$2"); shift 2 ;;
       --max-hold) max_hold="${2:?}"; fwd_args+=("$1" "$2"); shift 2 ;;
       --no-batch) batch=0; fwd_args+=("$1"); shift ;;
+      --no-gate) land_gate=0; shift ;;
       --priority) priority=1; fwd_args+=("$1"); shift ;;
       --reason) prio_reason="${2:?}"; fwd_args+=("$1" "$2"); shift 2 ;;
       --demote) shift; _land_demote "${1:-}"; return $? ;;
@@ -9673,7 +9730,7 @@ cmd_land() {
       --to-head) shift; _land_to_head "$@"; return $? ;;
       --status) _land_status; return $? ;;
       -h|--help) sed -n '/^cmd_land()/,/^  local remote/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
-      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
+      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
     esac
   done
   # LAND GUARDS before anything queues, on either path (the server queue below
@@ -9691,6 +9748,24 @@ cmd_land() {
         echo "amux land: refused before queueing by a land guard (details above and in ~/.amux/logs/land.log); nothing queued" >&2
         return 4
       }
+    fi
+  fi
+  # LAND GATE (scripts/land_gate.py): in a repo whose origin/main has one, run
+  # the checks main runs on origin/main plus this change before it queues, so
+  # a red result comes back here instead of turning main red for every lane.
+  # origin/main's copy runs, never this checkout's. --no-gate skips it; the
+  # pre-push hook still refuses an agent's commits with no passing receipt.
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ -z "$land_sha" ] \
+     && git cat-file -e "$remote/$branch:scripts/land_gate.py" 2>/dev/null; then
+    local _lg_dir _lg_rc=0
+    _lg_dir="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-gate.XXXXXX")"
+    git show "$remote/$branch:scripts/land_gate.py" > "$_lg_dir/land_gate.py" \
+      && git show "$remote/$branch:scripts/land_review.py" > "$_lg_dir/land_review.py" \
+      && python3 "$_lg_dir/land_gate.py" || _lg_rc=$?
+    rm -rf "$_lg_dir"
+    if [ "$_lg_rc" != 0 ]; then
+      echo "amux land: the land gate did not pass (above); nothing queued. Fix it and run amux land again." >&2
+      return 5
     fi
   fi
   # CONTRACT RULE 5 (AH-380): where the server owns landing for this lane, queue
@@ -11176,6 +11251,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     social)           shift; cmd_social "$@" ;;
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
+    explain)          shift; cmd_explain "$@" ;;
     ci)               shift; cmd_ci "$@" ;;
     watch)            shift; cmd_watch "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;

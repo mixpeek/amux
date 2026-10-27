@@ -98,6 +98,18 @@ Verify a hook by what it WROTE, not by the settings file.
   `git fetch origin main && git rebase origin/main && git push origin HEAD:main` (retry on a
   lost race). The pre-commit hook refuses a commit onto a branch that has forked from
   `origin/main` (`fork_commit`), because those commits can never deploy.
+- **Gate before main: `amux land` (or `scripts/land_gate.py`, then push).** It replays
+  your commits onto origin/main and runs what turns main red: the tests of every changed
+  Rust module and crate, the e2e specs `scripts/ci-affected.mjs` selects, and a
+  fresh-context review against `REVIEW.md`. A test that passes on rerun, or that also fails
+  on origin/main, is named and does not block. The pre-push hook refuses an agent's
+  commits with no passing receipt (`AMUX_SKIP_LAND_GATE=1` with
+  `AMUX_SKIP_LAND_GATE_REASON` skips once, logged). Tiers in `scripts/review-tiers.txt`,
+  read from origin/main: `[owner]` paths (money, credentials, the guards) need the owner's
+  approval of that exact diff; `[deep]` paths need a `Revert:` trailer. A review finding is
+  fixed or closed with `scripts/land_gate.py --resolve <id> "<why>"`; after three rounds the
+  review stops hunting and says to rethink. `amux explain <path>` writes an explainer of a
+  slice of the code. Reviewer scoring: `scripts/land_review_eval.py --score`.
 - **Only main deploys.** The builder activates the newest `origin/main` commit that passed
   CI (`rust` and `checks`), within about a minute. A local commit, a branch, a fork or a
   hand-built binary deploys nothing and is replaced. Never copy a build over

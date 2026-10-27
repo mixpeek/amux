@@ -1,0 +1,43 @@
+# Review tiers for scripts/land_gate.py, set by the CHANGE, never the author
+# (the Claude Code team's review write-up, 2026-10-26: "The tier is determined by
+# the change, not the author").
+#
+# The gate reads this file from origin/main, never from the change under review,
+# so a change cannot lower its own tier. Editing this file is itself owner-gated.
+#
+# One glob per line under a [section]. `**` crosses directories, `*` does not.
+#
+# [owner]  needs the owner's approval of this exact diff (its patch-id) before it
+#          lands, from the dashboard (#land-approve=<patch-id>). Kept to the
+#          owner's own boundary: money, credentials and the guards that enforce
+#          it. Everything else is inside the standing authority in
+#          ~/.claude/CLAUDE.md and must not wait on him.
+# [deep]   reviewed in deep mode (three hunters), and every commit touching it
+#          carries a `Revert:` trailer saying how to undo it, because a plain
+#          `git revert` is not enough for a workflow, an installer, a deploy
+#          script or a migration.
+
+[owner]
+crates/amux-server/src/api/vault*.rs
+crates/amux-server/src/api/vault_fill.js
+crates/amux-server/src/api/brex.rs
+crates/amux-server/src/api/auth.rs
+crates/amux-server/src/api/boundaries.rs
+scripts/hooks/boundary-guard.py
+boundaries.toml
+scripts/land_gate.py
+scripts/land_review.py
+scripts/review-tiers.txt
+
+[deep]
+.github/workflows/**
+install.sh
+scripts/install-cli.sh
+scripts/install-hooks.sh
+scripts/rust-auto-build.sh
+scripts/git-hooks/**
+crates/amux-server/migrations/**
+crates/amux-server/src/api/connection.rs
+crates/amux-server/src/api/land_queue.rs
+crates/amux-server/src/api/self_update.rs
+desktop/**

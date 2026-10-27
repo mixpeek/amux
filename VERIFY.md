@@ -162,6 +162,19 @@ keystore; the Keychain backend is checked once on the live server by adding a
 throwaway item and running `security find-generic-password -s amux-vault-master`
 WITHOUT `-w`, which prints the item's attributes and never the key.
 
+## The land gate (`scripts/land_gate.py`, `land_review.py`, `review-tiers.txt`)
+
+```bash
+python3 scripts/git-hooks/test_land_gate.py
+scripts/land_gate.py            # on a real change: the receipt it prints is the proof
+```
+
+Pass: `land gate: N passed, 0 failed`, and for a real change `verdict=land_gate_pass`
+with every leg's verdict on the same line in `~/.amux/logs/land-gate.log`. A leg that
+reads `_unmeasured` did not run and is not a pass. Changing the reviewer's prompts,
+tools or model: rescore with `scripts/land_review_eval.py --score` and quote its
+`recall ... noise ...` line beside the previous one.
+
 ## A deployed server change
 
 A fix in `git log` is not live until the running binary carries it.

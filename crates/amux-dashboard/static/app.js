@@ -54934,6 +54934,33 @@ async function _handleDeeplink(hash) {
   // #task=<worker>@<unix s> — one worker task, opened in the Tasks view (the
   // task detail's "Copy link"). Ethan, 2026-10-18: "shareable links to a
   // single task".
+  // #land-approve=<patch-id> — the owner approves one exact change to an
+  // owner-gated path (scripts/land_gate.py, scripts/review-tiers.txt). The
+  // link is in the needsyou card the gate files. The POST carries the owner
+  // bearer; the server refuses any request with a worker identity.
+  if (hash && hash.startsWith('#land-approve=')) {
+    const pid = decodeURIComponent(hash.slice('#land-approve='.length)).trim();
+    try { history.replaceState({}, '', location.pathname + location.search); } catch(e) {}
+    try {
+      const r = await fetch(API + '/api/land/approvals?patch_id=' + encodeURIComponent(pid), { headers: _authHeaders() });
+      const d = await r.json();
+      if (!d.known) { showAlert('No change is waiting for approval under patch-id ' + pid + '.'); return; }
+      if (d.approved) { showToast('Already approved'); return; }
+      const q = d.request || {};
+      const pre = 'style="text-align:left;white-space:pre-wrap;font-size:var(--fs-sm);margin:var(--space-2) 0"';
+      const body = '<div style="text-align:left">' + esc(q.lane || 'A person') + ' wants to land a change to owner-gated files:</div>'
+        + '<div class="mono" ' + pre + '>' + esc((q.files || []).join('\n')) + '\n\n' + esc((q.diffstat || '').trim()) + '</div>'
+        + '<div ' + pre + '>' + esc((q.subjects || []).join('\n')) + '</div>'
+        + '<div style="text-align:left">Any later edit to these files needs a new approval.</div>';
+      if (!(await showFormModal('Approve this exact change?', body, 'Approve'))) return;
+      const a = await fetch(API + '/api/land/approvals', { method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+        body: JSON.stringify({ patch_id: pid }) });
+      const b = await a.json().catch(() => ({}));
+      showToast(a.ok ? 'Approved. It can land now.' : ('Not approved: ' + (b.error || a.status)));
+    } catch (e) { showToast('Could not reach the approval: ' + e.message); }
+    return;
+  }
   if (hash && hash.startsWith('#task=')) {
     const raw = decodeURIComponent(hash.slice(6));
     const at = raw.lastIndexOf('@');

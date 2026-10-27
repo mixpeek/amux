@@ -3006,6 +3006,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/land/{id}",
         methods: &["DELETE"],
     },
+    // The owner's approval of an owner-gated change (scripts/land_gate.py).
+    RouteEntry {
+        path: "/api/land/approvals",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/land/approvals/request",
+        methods: &["POST"],
+    },
     RouteEntry {
         path: "/api/contract/done-line/{epic}",
         methods: &["GET", "POST"],

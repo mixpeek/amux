@@ -438,6 +438,40 @@ def _spa_gates(refs):
     return 0
 
 
+def _land_gate_leg(stdin_text):
+    """scripts/land_gate.py --pre-push for each push to main: an owner-gated
+    change needs the owner's approval of its exact diff, a change to a
+    workflow, installer, guard or schema says how to revert it, and an agent's
+    commits carry a passing land-gate receipt (the checks main runs, run on
+    origin/main plus the change before it lands). ORIGIN/MAIN'S COPY of the
+    gate runs, never the pushed one, so a change cannot loosen its own gate.
+    Returns 1 to refuse."""
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                          text=True, timeout=10).stdout.strip()
+    tmp = tempfile.mkdtemp(prefix="amux-land-gate-")
+    try:
+        for name in ("land_gate.py", "land_review.py"):
+            r = subprocess.run(["git", "show", "origin/main:scripts/" + name], capture_output=True,
+                               text=True, timeout=30)
+            if r.returncode != 0:
+                sys.stderr.write("amux pre-push: scripts/%s is not on origin/main yet, so the land "
+                                 "gate did not run verdict=land_gate_not_on_main\n" % name)
+                return 0
+            with open(os.path.join(tmp, name), "w") as f:
+                f.write(r.stdout)
+        for line in stdin_text.splitlines():
+            p = line.split()
+            if len(p) < 4 or p[1].strip("0") == "" or p[2] != "refs/heads/main":
+                continue
+            r = subprocess.run([sys.executable, os.path.join(tmp, "land_gate.py"), "--pre-push",
+                                "--local", p[1], "--remote", p[3]], cwd=root, timeout=300)
+            if r.returncode != 0:
+                return 1
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     # DATA-LOSS GUARD FIRST, and BEFORE the session early-returns: a stale
     # shared-file republish (MG-1483 — 10 pushed entry-lines silently reverted,
@@ -539,6 +573,16 @@ def main():
     except Exception as e:
         sys.stderr.write("amux pre-push: the pushed-commit gates errored (%s); CI still runs "
                          "them verdict=spa_gates_unmeasured\n" % e)
+
+    # LAND GATE (_land_gate_leg above). Before the session early-returns too:
+    # the gate itself tells an agent's push from a person's.
+    try:
+        if _land_gate_leg(stdin_text):
+            return 1
+    except Exception as e:
+        sys.stderr.write("amux pre-push: the land gate errored (%s); not blocking "
+                         "verdict=land_gate_unmeasured\n" % e)
+        _audit("land_gate", "verdict=land_gate_unmeasured error=%s" % str(e)[:200])
 
     sess = os.environ.get("AMUX_SESSION", "")
     if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):
