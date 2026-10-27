@@ -91,6 +91,45 @@ export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
 # exists to contain) -- unlike flock, the kernel does not clean it up. Each
 # slot records its holder's pid; a blocked acquirer that finds a dead pid
 # reclaims the slot instead of queuing behind a lock nobody will ever release.
+# --- SIZED TO THE HOST (2026-10-27) -------------------------------------------
+# The defaults below were sized for the 64 GB Mac: two builds at once, each
+# allowed 12 GB. On a 7.7 GB amux Cloud server that budget is larger than the
+# machine. Measured on the sandbox: the builder's deploy build, a worker's
+# clippy and a cargo test ran together, the box hit memory pressure level 4
+# with load 54 and 18 MB free, the kernel OOM-killed three compilers, and
+# amux-server stopped answering so nobody could reach their workers.
+#
+# So a host under 16 GB runs one build at a time, and every build is capped at
+# 70% of the host's RAM (never above 12 GB), with swap up to half the cap. The
+# sandbox's deploy build of amux-server peaks at 4.3-5.8 GB (budget log), so
+# 5.4 GB of RAM plus 2.7 GB of swap fits it and still leaves 2.3 GB of RAM for
+# the server and workers. On systemd the cap is a cgroup limit on
+# the build's own scope (MemoryMax), so the kernel stops the build instead of
+# swapping the server and every worker out from under it. AMUX_CARGO_HOST_MB
+# stands in for the measured size (tests, and hosts that cannot report one).
+_host_mb="${AMUX_CARGO_HOST_MB:-}"
+if [ -z "$_host_mb" ]; then
+  if [ -r /proc/meminfo ]; then
+    _host_mb=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || true)
+  else
+    _host_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))
+  fi
+fi
+case "$_host_mb" in ''|*[!0-9]*) _host_mb=0 ;; esac
+if [ "$_host_mb" -gt 0 ]; then
+  _host_cap=$(( _host_mb * 70 / 100 ))
+  [ "$_host_cap" -le 12288 ] || _host_cap=12288
+  export AMUX_CARGO_MAX_RSS_MB="${AMUX_CARGO_MAX_RSS_MB:-$_host_cap}"
+  if [ "$_host_mb" -lt 16384 ]; then
+    export AMUX_CARGO_MAX_CONCURRENT="${AMUX_CARGO_MAX_CONCURRENT:-1}"
+  fi
+  echo "safe-cargo.sh: host ${_host_mb} MB: ${AMUX_CARGO_MAX_CONCURRENT:-2} build(s) at a time," \
+       "each capped at ${AMUX_CARGO_MAX_RSS_MB} MB (verdict=cargo_host_sized measured=true)" >&2
+else
+  echo "safe-cargo.sh: host memory unreadable; using the fixed defaults" \
+       "(verdict=cargo_host_sized measured=false)" >&2
+fi
+
 _throttle_max="${AMUX_CARGO_MAX_CONCURRENT:-2}"
 case "$_throttle_max" in
   ''|*[!0-9]*|0) echo 'cargo_budget_refused: AMUX_CARGO_MAX_CONCURRENT must be positive' >&2; exit 75 ;;
@@ -173,7 +212,22 @@ if [ -d /run/systemd/system ]; then
          "Offload remotely instead, or run systemd-run --user --scope by hand." >&2
     exit 1
   fi
-  CMD=(systemd-run --user --scope --quiet
+  _scope_limits=()
+  if [ -n "${AMUX_CARGO_MAX_RSS_MB:-}" ]; then
+    # The budget's sampled RSS check can overshoot between probes; the cgroup
+    # cannot. Swap is held to half the cap: room for a deploy build's peak,
+    # bounded so a capped build cannot thrash the disk everyone pages from.
+    _scope_limits=(-p "MemoryMax=${AMUX_CARGO_MAX_RSS_MB}M"
+                   -p "MemorySwapMax=$(( AMUX_CARGO_MAX_RSS_MB / 2 ))M")
+    # With the kernel holding RAM to the cap, the budget's sampled check is
+    # only a backstop. It sums RSS over the build's processes, which counts
+    # shared pages twice (the deploy build has read 5.8 GB that way), so at
+    # the same number it would stop builds the cgroup lets finish.
+    echo "safe-cargo.sh: kernel cap ${AMUX_CARGO_MAX_RSS_MB} MB RAM + $(( AMUX_CARGO_MAX_RSS_MB / 2 )) MB swap" \
+         "on the build scope (verdict=cargo_scope_capped)" >&2
+    export AMUX_CARGO_MAX_RSS_MB=$(( AMUX_CARGO_MAX_RSS_MB * 3 / 2 ))
+  fi
+  CMD=(systemd-run --user --scope --quiet ${_scope_limits[@]+"${_scope_limits[@]}"}
        --working-directory="$(pwd)"
        --setenv=CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
        --setenv=PATH="$PATH"

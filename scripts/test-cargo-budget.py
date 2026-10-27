@@ -411,6 +411,52 @@ class CargoBudgetTests(unittest.TestCase):
         self.assertIn('must be a positive integer', invalid.stderr)
 
 
+    def run_wrapper(self, host_mb, **extra):
+        bindir = self.base / 'bin'
+        bindir.mkdir(exist_ok=True)
+        fake = bindir / 'cargo'
+        fake.write_text('#!' + sys.executable + '\nimport os,json\nprint(json.dumps({k:v for k,v in os.environ.items() if k.startswith("AMUX_CARGO_")}))\n')
+        fake.chmod(0o755)
+        env = {k:v for k,v in os.environ.items() if not k.startswith(('CARGO_', 'AMUX_CARGO_', 'RUST_TEST_'))}
+        env.update(HOME=str(self.base), PATH=str(bindir) + os.pathsep + os.environ['PATH'],
+                   AMUX_CARGO_HOST_MB=str(host_mb), **extra)
+        result = subprocess.run(['bash', str(ROOT / 'safe-cargo.sh'), 'check'], env=env,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout), result.stderr
+
+    def test_a_small_host_runs_one_build_capped_below_its_memory(self):
+        data, err = self.run_wrapper(7745)
+        self.assertEqual(data['AMUX_CARGO_MAX_CONCURRENT'], '1')
+        self.assertIn('verdict=cargo_host_sized measured=true', err)
+        # 70% of 7745 MB. Under systemd the kernel holds RAM to that and the
+        # sampled budget backs it up at RAM plus swap.
+        if 'verdict=cargo_scope_capped' in err:
+            self.assertIn('kernel cap 5421 MB RAM + 2710 MB swap', err)
+            rss = 5421 * 3 // 2
+        else:
+            rss = 5421
+        self.assertEqual(data['AMUX_CARGO_MAX_RSS_MB'], str(rss))
+        self.assertIn('"max_rss_bytes": %d' % (rss * 1024**2), err)
+
+    def test_a_large_host_keeps_two_builds_and_the_12_gb_ceiling(self):
+        data, err = self.run_wrapper(65536)
+        self.assertNotIn('AMUX_CARGO_MAX_CONCURRENT', data)
+        self.assertEqual(data['AMUX_CARGO_MAX_RSS_MB'], '18432' if 'cargo_scope_capped' in err else '12288')
+
+    def test_an_explicit_setting_outranks_the_host_size(self):
+        data, err = self.run_wrapper(7745, AMUX_CARGO_MAX_CONCURRENT='3', AMUX_CARGO_MAX_RSS_MB='2048')
+        self.assertEqual(data['AMUX_CARGO_MAX_CONCURRENT'], '3')
+        self.assertEqual(data['AMUX_CARGO_MAX_RSS_MB'], '3072' if 'cargo_scope_capped' in err else '2048')
+
+    @unittest.skipUnless(Path('/proc/self/oom_score_adj').exists(), 'Linux only')
+    def test_the_build_is_the_first_thing_the_kernel_kills(self):
+        seen = self.base / 'adj'
+        rc, _ = self.run_budget("open(%r, 'w').write(open('/proc/self/oom_score_adj').read())" % str(seen))
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen.read_text().strip(), '900')
+
+
 class BuildRetryTests(unittest.TestCase):
     def test_normal_workspace_cache_is_kept_and_oversized_cache_is_selected(self):
         with tempfile.TemporaryDirectory(prefix='amux-budget-cache.') as directory:

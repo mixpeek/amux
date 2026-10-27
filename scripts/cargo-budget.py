@@ -218,6 +218,22 @@ def stop_group(proc):
              note='the supervised process did not exit within 10s of SIGKILL')
 
 
+# When a host runs out of memory the kernel kills the process with the highest
+# oom_score_adj. A build and the amux server it serves used to tie at 200 on
+# amux Cloud (both are user units), so the kernel could pick the server. Any
+# process may raise its own score without privilege; the build's compilers
+# inherit it. Linux only; elsewhere there is nothing to set.
+OOM_SCORE_ADJ = os.environ.get('AMUX_CARGO_OOM_SCORE_ADJ', '900')
+
+
+def first_to_go():
+    try:
+        with open('/proc/self/oom_score_adj', 'w') as f:
+            f.write(OOM_SCORE_ADJ)
+    except OSError:
+        pass
+
+
 def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
               interval=2, disk_interval=30, profile=None):
     started = time.monotonic()
@@ -287,7 +303,8 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
          unenforced=sorted(unenforced))
     # Preserve the inherited Cargo lifetime lease in the child. If this monitor
     # is killed, cleanup must still see the active compiler/test as leased.
-    proc = subprocess.Popen(command, start_new_session=True, close_fds=False)
+    proc = subprocess.Popen(command, start_new_session=True, close_fds=False,
+                            preexec_fn=first_to_go)
     interrupted = []
     prior = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
