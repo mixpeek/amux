@@ -251,6 +251,9 @@ pub(crate) fn store_chunk(
     start_ms: Option<i64>,
     dur_ms: Option<i64>,
 ) -> Result<Value, (StatusCode, String)> {
+    if seq > MAX_SEQ {
+        return Err((StatusCode::BAD_REQUEST, format!("seq is over {MAX_SEQ}")));
+    }
     let sdir = session_dir(dir, id);
     let io = |e: std::io::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     let _g = lock();
@@ -303,8 +306,12 @@ fn seqs(m: &Value, track: &str) -> BTreeSet<u64> {
 /// finish must either fill or declare lost.
 fn missing(have: &BTreeSet<u64>, through: Option<u64>) -> Vec<u64> {
     let Some(top) = through.or_else(|| have.iter().next_back().copied()) else { return vec![] };
-    (0..=top).filter(|s| !have.contains(s)).collect()
+    (0..=top.min(MAX_SEQ)).filter(|s| !have.contains(s)).collect()
 }
+
+/// The highest seq a session may name: 10 s pieces for 30 days. A finish's
+/// last_seq above it is refused before anything is walked under the lock.
+const MAX_SEQ: u64 = 260_000;
 
 fn summary(m: &Value) -> Value {
     let mut tracks = Map::new();
@@ -417,6 +424,9 @@ pub(crate) fn mark_finishing(dir: &Path, id: &str, body: &Value, abandoned: bool
         let t = t.as_str().unwrap_or("").to_string();
         let have = seqs(&m, &t);
         let through = body["last_seq"].get(&t).and_then(Value::as_u64);
+        if through.is_some_and(|n| n > MAX_SEQ) {
+            return Err((StatusCode::BAD_REQUEST, json!({"ok": false, "error": format!("last_seq for {t} is over {MAX_SEQ}")})));
+        }
         let declared: BTreeSet<u64> = body["lost"].get(&t).and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
         let miss = missing(&have, through);
@@ -727,6 +737,12 @@ mod tests {
         let v = mark_finishing(d.path(), "sess-002", &json!({"last_seq": {"mic": 4}, "lost": {"mic": [2]}, "ended_at": t0 + 5000}), false).unwrap();
         assert_eq!(v["state"], "finishing");
         assert!(put(d.path(), "sess-002", "mic", 5, b"late", t0, 1).is_err(), "a finishing session takes no more chunks");
+        open(d.path(), "sess-007", "bytes", &["mic"], t0);
+        let started = std::time::Instant::now();
+        let (st, _) = mark_finishing(d.path(), "sess-007", &json!({"last_seq": {"mic": 999_999_999_999u64}}), false).unwrap_err();
+        assert_eq!(st, StatusCode::BAD_REQUEST, "an absurd last_seq is refused, not walked");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(put(d.path(), "sess-007", "mic", MAX_SEQ + 1, b"x", t0, 1).unwrap_err().0, StatusCode::BAD_REQUEST);
     }
 
     #[test]

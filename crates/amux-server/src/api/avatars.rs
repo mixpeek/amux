@@ -49,7 +49,7 @@ fn file_for(email: &str) -> Option<PathBuf> {
 }
 
 /// The image type, from the bytes alone.
-fn sniff(b: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {

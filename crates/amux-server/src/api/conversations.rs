@@ -1523,18 +1523,42 @@ fn fts_query(q: &str) -> String {
 
 // ---- link previews --------------------------------------------------------------
 
-/// A host whose address is loopback, private, link-local or otherwise not
-/// on the public internet: a preview fetch never goes there (SSRF).
-fn public_host(host: &str) -> bool {
+/// An address on the public internet. Loopback, private, link-local, CGNAT,
+/// multicast and reserved are not, and neither is an IPv6 address that only
+/// wraps one of those (::ffff:127.0.0.1, ::10.0.0.1, 64:ff9b::a9fe:a9fe).
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+    let v4 = |v: Ipv4Addr| {
+        let o = v.octets();
+        !(v.is_loopback() || v.is_private() || v.is_link_local() || v.is_unspecified() || v.is_broadcast()
+            || v.is_multicast() || v.is_documentation() || o[0] == 0 || o[0] >= 240
+            || (o[0] == 100 && (64..128).contains(&o[1])) || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+            || (o[0] == 198 && (o[1] == 18 || o[1] == 19)))
+    };
+    match ip {
+        IpAddr::V4(v) => v4(v),
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            if let Some(m) = v.to_ipv4_mapped() {
+                return v4(m);
+            }
+            // IPv4-compatible (::a.b.c.d) and NAT64 (64:ff9b::/96) carry a v4 inside.
+            if s[..6] == [0; 6] || (s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4]) {
+                return !(s[6] == 0 && s[7] <= 1) && v4(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8));
+            }
+            !(v.is_loopback() || v.is_unspecified() || v.is_multicast() || (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
+}
+
+/// The one address a preview fetch may connect to for `host`, or None when
+/// any of its addresses is not public. The fetch is pinned to it, so a second
+/// DNS answer cannot swap in a private address (rebinding).
+fn public_addr(host: &str, port: u16) -> Option<std::net::SocketAddr> {
     use std::net::ToSocketAddrs;
-    let Ok(addrs) = (host, 443).to_socket_addrs() else { return false };
-    let addrs: Vec<_> = addrs.collect();
-    !addrs.is_empty() && addrs.iter().all(|a| match a.ip() {
-        std::net::IpAddr::V4(v) => !(v.is_loopback() || v.is_private() || v.is_link_local() || v.is_unspecified()
-            || v.is_broadcast() || v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]) || v.octets()[0] == 0),
-        std::net::IpAddr::V6(v) => !(v.is_loopback() || v.is_unspecified() || (v.segments()[0] & 0xfe00) == 0xfc00
-            || (v.segments()[0] & 0xffc0) == 0xfe80),
-    })
+    let addrs: Vec<_> = (host.trim_start_matches('[').trim_end_matches(']'), port).to_socket_addrs().ok()?.collect();
+    (!addrs.is_empty() && addrs.iter().all(|a| public_ip(a.ip()))).then(|| addrs[0])
 }
 
 fn meta(html: &str, names: &[&str]) -> Option<String> {
@@ -1545,9 +1569,13 @@ fn meta(html: &str, names: &[&str]) -> Option<String> {
             let tag_end = html[i..].find('>').map(|e| i + e).unwrap_or(html.len());
             let tag = &html[tag_start..tag_end];
             if let Some(c) = tag.find("content=") {
-                let rest = &tag[c + 8..];
-                let q = rest.chars().next().unwrap_or('"');
-                let v: String = rest[1..].chars().take_while(|ch| *ch != q).collect();
+                // Quoted, unquoted or empty (`content=` at the end of a tag).
+                let mut rest = tag[c + 8..].chars().peekable();
+                let v: String = match rest.peek().copied() {
+                    Some(q @ ('"' | '\'')) => rest.skip(1).take_while(|ch| *ch != q).collect(),
+                    Some(_) => rest.take_while(|ch| !ch.is_whitespace() && *ch != '/').collect(),
+                    None => String::new(),
+                };
                 let v = v.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").trim().to_string();
                 if !v.is_empty() {
                     return Some(v);
@@ -1575,15 +1603,34 @@ async fn unfurl(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Respo
         }
     }
     let host = parsed.host_str().unwrap_or("").to_string();
-    let h2 = host.clone();
-    let public = tokio::task::spawn_blocking(move || public_host(&h2)).await.unwrap_or(false);
-    if !public {
-        tracing::info!(host = %host, verdict = "unfurl_refused_private", "Messages: a link to a non-public address is not fetched for a preview");
-        return Json(json!({"url": url, "status": 0, "refused": "not a public address"})).into_response();
+    // Redirects are followed here, not by reqwest: every hop's host is
+    // checked and the connection pinned to the address that was checked.
+    let mut at = parsed.clone();
+    let mut sent: Result<reqwest::Response, String> = Err("more than 3 redirects".into());
+    for _hop in 0..4 {
+        let h = at.host_str().unwrap_or("").to_string();
+        let port = at.port_or_known_default().unwrap_or(443);
+        let h2 = h.clone();
+        let Some(addr) = tokio::task::spawn_blocking(move || public_addr(&h2, port)).await.ok().flatten() else {
+            tracing::info!(host = %h, first_host = %host, verdict = "unfurl_refused_private",
+                "Messages: a link (or a redirect it took) to a non-public address is not fetched for a preview");
+            return Json(json!({"url": url, "status": 0, "refused": "not a public address"})).into_response();
+        };
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(6)).redirect(reqwest::redirect::Policy::none())
+            .resolve(h.trim_start_matches('[').trim_end_matches(']'), addr)
+            .user_agent("amux-link-preview/1 (+https://amux.io)").build().unwrap_or_default();
+        match client.get(at.clone()).send().await {
+            Ok(r) if r.status().is_redirection() => {
+                match r.headers().get("location").and_then(|v| v.to_str().ok()).and_then(|l| at.join(l).ok()) {
+                    Some(n) if matches!(n.scheme(), "http" | "https") => at = n,
+                    _ => { sent = Ok(r); break; }
+                }
+            }
+            Ok(r) => { sent = Ok(r); break; }
+            Err(e) => { sent = Err(e.to_string()); break; }
+        }
     }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(6)).redirect(reqwest::redirect::Policy::limited(3))
-        .user_agent("amux-link-preview/1 (+https://amux.io)").build().unwrap_or_default();
-    let (status, html) = match client.get(parsed.clone()).send().await {
+    let (status, html) = match sent {
         Ok(r) => {
             let st = r.status().as_u16() as i64;
             let ok_type = r.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.contains("html"));
@@ -1604,7 +1651,7 @@ async fn unfurl(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Respo
         Some(html[s..e].trim().to_string()).filter(|t| !t.is_empty())
     });
     let desc = meta(&html, &["og:description", "twitter:description", "description"]);
-    let image = meta(&html, &["og:image", "twitter:image"]).and_then(|i| parsed.join(&i).ok()).map(|u| u.to_string());
+    let image = meta(&html, &["og:image", "twitter:image"]).and_then(|i| at.join(&i).ok()).map(|u| u.to_string());
     let site = meta(&html, &["og:site_name"]).or(Some(host.clone()));
     let (u2, t2, d2, i2, s2) = (url.clone(), title.clone(), desc.clone(), image.clone(), site.clone());
     let _ = state.store.write_async(move |c| {
@@ -1617,8 +1664,10 @@ async fn unfurl(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Respo
 
 // ---- profile pictures -----------------------------------------------------------
 
+/// Not `avatars/`: that folder is api/avatars.rs's, one file per email, and
+/// it lists every file in it.
 fn avatars_dir() -> std::path::PathBuf {
-    crate::config::amux_home().join("avatars")
+    crate::config::amux_home().join("profile-pictures")
 }
 
 /// Set a picture: the owner for anyone, a person or worker for itself.
@@ -1635,8 +1684,13 @@ async fn set_avatar(State(state): State<AppState>, Path(key): Path<String>, head
     if !(key.starts_with("person:") || key.starts_with("worker:")) {
         return err(StatusCode::BAD_REQUEST, "a profile key is person:<email> or worker:<name>");
     }
-    let ext = match headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("") {
-        "image/png" => "png", "image/jpeg" | "image/jpg" => "jpg", "image/webp" => "webp", "image/gif" => "gif",
+    // A person with an email has one picture, kept by api/avatars.rs.
+    if key.starts_with("person:") && key.contains('@') {
+        return err(StatusCode::BAD_REQUEST, "a person's picture is set with PUT /api/avatars/<email>");
+    }
+    // The type from the bytes, never the header, so nothing but an image is served.
+    let ext = match super::avatars::sniff(&bytes) {
+        Some("image/png") => "png", Some("image/jpeg") => "jpg", Some("image/webp") => "webp", Some("image/gif") => "gif",
         _ => return err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "a picture is PNG, JPEG, WebP or GIF"),
     };
     if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
@@ -1666,7 +1720,8 @@ async fn get_avatar(Path(name): Path<String>) -> Response {
     let Ok(bytes) = std::fs::read(avatars_dir().join(&name)) else { return err(StatusCode::NOT_FOUND, "no such picture") };
     let ct = match name.rsplit('.').next() { Some("png") => "image/png", Some("jpg") => "image/jpeg", Some("webp") => "image/webp", _ => "image/gif" };
     // Content-addressed by its hash: safe to cache for good.
-    ([(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable")], bytes).into_response()
+    ([(axum::http::header::CONTENT_TYPE, ct), (axum::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
+        (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")], bytes).into_response()
 }
 
 async fn list_profiles(State(state): State<AppState>) -> Response {
@@ -1680,6 +1735,26 @@ async fn list_profiles(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preview_never_reaches_a_private_address_however_it_is_spelled() {
+        for a in ["127.0.0.1", "10.1.2.3", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1",
+            "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:169.254.169.254", "::127.0.0.1", "64:ff9b::a9fe:a9fe"] {
+            assert!(!public_ip(a.parse().unwrap()), "{a} must not be fetched");
+        }
+        for a in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:93.184.216.34"] {
+            assert!(public_ip(a.parse().unwrap()), "{a} is public");
+        }
+        assert!(public_addr("127.0.0.1", 80).is_none() && public_addr("[::ffff:127.0.0.1]", 80).is_none());
+    }
+
+    #[test]
+    fn a_meta_tag_with_an_empty_or_unquoted_content_does_not_panic() {
+        assert_eq!(meta(r#"<meta property="og:title" content=>"#, &["og:title"]), None);
+        assert_eq!(meta(r#"<meta property="og:title" content="#, &["og:title"]), None);
+        assert_eq!(meta(r#"<meta property="og:title" content=Hello>"#, &["og:title"]).as_deref(), Some("Hello"));
+        assert_eq!(meta(r#"<meta property="og:title" content='A &amp; B'>"#, &["og:title"]).as_deref(), Some("A & B"));
+    }
 
     #[test]
     fn a_stale_cli_posting_its_flags_is_recognised_and_real_text_is_not() {

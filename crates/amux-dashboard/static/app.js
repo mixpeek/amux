@@ -67080,6 +67080,7 @@ async function _cvRefreshPost(id) {
     if (sel !== _cv.sel) return;
     for (const np of (d.posts || [])) { const i = _cv.posts.findIndex(p => p.id === np.id); if (i >= 0) _cv.posts[i] = np; }
     Object.assign((_cv.info = _cv.info || {}).profiles = (_cv.info.profiles || {}), d.profiles || {});
+    Object.assign(_cvProfiles, d.profiles || {});
     _cvRenderPosts(false);
   } catch (e) {}
 }
