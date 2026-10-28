@@ -42561,7 +42561,9 @@ function _sxPassCheckState(s) {
   const why = String(s.pass_detail || '').split('\n')[0];
   const st = s.pass_state || '';
   const map = {
-    pass: { word: 'Passing', tone: 'ok' },
+    // A passing check says so in the list too (Ethan, 2026-10-28: "make sure
+    // the ux reflects this"), rather than reading as a plain Scheduled.
+    pass: { word: 'Passing', tone: 'ok', status: { key: 'passing', label: 'Passing', why: 'The pass check passed: ' + why } },
     fail: { word: 'Failing', tone: 'bad', status: { key: 'failing', label: 'Check failing', why: 'The pass check fails: ' + why } },
     unrunnable: { word: 'Check cannot run', tone: 'bad', status: { key: 'failing', label: 'Check broken', why: 'The pass check itself cannot run (' + why + '). Fix the check; re-running the schedule cannot.' } },
     reconciling: { word: 'Re-running (attempt ' + (s.pass_attempts || 1) + ')', tone: 'warn', status: { key: 'running', label: 'Reconciling', why: 'The pass check failed, so the schedule was run again: ' + why } },
@@ -43273,10 +43275,14 @@ function _sxRenderDetail() {
     const pc = _sxPassCheckState(s);
     if (pc) {
       const cls = pc.tone === 'bad' ? 'sx-bad' : pc.tone === 'dim' ? 'sx-dim' : '';
-      rows.push(['Pass check', `<code class="sx-expr">${esc(s.pass_check)}</code>`
-        + `<div class="sx-sub"><span class="${cls}">${esc(pc.word)}</span>`
+      // What the last check found leads, in its own words (a check's first
+      // line is written for people); the command is one tap away.
+      const found = String(s.pass_detail || '').trim();
+      rows.push(['Pass check', `<div><span class="${cls}">${esc(pc.word)}</span>`
         + (s.pass_checked_at ? ` <span class="sx-dim">· checked ${_sxFmtWhen(s.pass_checked_at)}</span>` : '') + '</div>'
-        + (s.pass_detail && s.pass_state !== 'pass' ? `<pre class="sx-shell">${esc(s.pass_detail)}</pre>` : '')]);
+        + (found ? `<div class="sx-pass-found">${esc(found.split('\n')[0])}</div>` : '')
+        + (found && found.includes('\n') ? `<pre class="sx-shell">${esc(found.split('\n').slice(1).join('\n'))}</pre>` : '')
+        + `<details class="sx-pass-how"><summary>How it's checked</summary><code class="sx-expr">${esc(s.pass_check)}</code></details>`]);
     }
     const cmdLabel = s.kind === 'shell' ? 'Shell command' : 'Message sent to the worker';
     const recent = (_sxDetailRuns && _sxDetailRuns.id === id)

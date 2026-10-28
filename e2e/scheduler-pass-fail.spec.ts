@@ -84,7 +84,7 @@ test('a failing check reads as failing, with the check output, even after a deli
   expect(r.fail).toMatchObject({ key: 'failing', label: 'Check failing' });
   expect(r.fail.why).toContain('exit 1');
   expect(r.broken.label).toBe('Check broken');
-  expect(r.passing.key).toBe('scheduled');
+  expect(r.passing).toMatchObject({ key: 'passing', label: 'Passing' });
 
   await page.evaluate("switchView('scheduler')");
   await expect.poll(() => page.evaluate("(schedules || []).some(s => s.id === 'SCHED-pf')")).toBe(true);
@@ -93,4 +93,27 @@ test('a failing check reads as failing, with the check output, even after a deli
   const body = page.locator('#sched-detail-body');
   await expect(body).toContainText('no report yet');
   await expect(body).toContainText('test -s /tmp/report.md');
+});
+
+// The Mac health check's pass check (scripts/mac-health-pass.sh) writes its
+// first line for people; a passing check shows it and a green Passing pill.
+test('a passing check reads as Passing, leads with what it found, and keeps the command one tap away', async ({ page }) => {
+  const row = { id: 'SCHED-pp', title: 'Mac system health check', kind: 'shell', command: 'tick', enabled: 1,
+    schedule_expr: 'every 1h', sched_type: 'recurring', session: '',
+    pass_check: 'bash scripts/mac-health-pass.sh', pass_state: 'pass', pass_attempts: 0,
+    pass_checked_at: Math.floor(Date.now() / 1000),
+    pass_detail: 'Ran 12:57 and cleaned up. Still over a floor, already escalated to its owner: disk 125G free (floor 150G)\nmac-cleanup: done elapsed=398s' };
+  await page.route(/\/api\/schedules(\?.*)?$/, (route) => route.request().method() === 'GET'
+    ? route.fulfill({ json: [row] }) : route.continue());
+  await settle(page);
+  await page.evaluate("switchView('scheduler')");
+  await expect.poll(() => page.evaluate("(schedules || []).some(s => s.id === 'SCHED-pp')")).toBe(true);
+  await expect(page.locator('.sx-pill-passing').first()).toHaveText('Passing');
+  await page.evaluate("openSchedDetail('SCHED-pp')");
+  await expect(page.locator('#sched-detail-status')).toContainText('Passing');
+  const body = page.locator('#sched-detail-body');
+  await expect(body.locator('.sx-pass-found')).toHaveText(/Ran 12:57 and cleaned up\. Still over a floor/);
+  await expect(body.locator('.sx-pass-how code')).toBeHidden();
+  await body.locator('.sx-pass-how summary').click();
+  await expect(body.locator('.sx-pass-how code')).toHaveText('bash scripts/mac-health-pass.sh');
 });

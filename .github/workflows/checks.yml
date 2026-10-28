@@ -485,6 +485,7 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-fseventsd.sh
+          ./scripts/test-mac-health-pass.sh
       - name: an orphaned sqlite .backup of an amux db is stopped, and nothing else (DESKT-94)
         run: |
           set -uo pipefail

@@ -9343,6 +9343,10 @@ button.cv-sec:hover { color:var(--text); }
 .sx-pill-running::before { animation:sched-running-pulse 1.2s ease-in-out infinite; }
 .sx-pill-scheduled { color:var(--accent); background:color-mix(in srgb, var(--accent) 13%, transparent); }
 .sx-pill-failing { color:var(--red); background:color-mix(in srgb, var(--red) 13%, transparent); }
+.sx-pill-passing { color:var(--green); background:color-mix(in srgb, var(--green) 13%, transparent); }
+.sx-pass-found { margin-top:var(--space-1); }
+.sx-pass-how { margin-top:var(--space-1); }
+.sx-pass-how summary { cursor:pointer; color:var(--dim); font-size:var(--fs-sm); min-height:44px; display:flex; align-items:center; }
 .sx-pill-overdue, .sx-pill-unparsed { color:var(--yellow); background:color-mix(in srgb, var(--yellow) 15%, transparent); }
 .sx-pill-paused { color:var(--dim); background:color-mix(in srgb, var(--dim) 14%, transparent); }
 .sx-morec { display:flex; justify-content:flex-end; }
