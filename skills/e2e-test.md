@@ -58,4 +58,17 @@ Prove that the requested functionality works as a real user would experience it.
    - Diagnose failures using captured evidence.
    - Fix issues at their root cause.
    - Rerun the affected journey and relevant regression tests.
-   - Repeat until all
+   - Repeat until all acceptance criteria pass with evidence, or until a failure is understood
+     and needs a decision that is not yours; then stop and report it.
+
+## Output
+
+Report, with evidence for every line:
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| ... | pass / fail | screenshot, trace, log line or metric |
+
+Then the scores (functionality, usability, reliability, performance, visual
+quality, 0 to 10), what was fixed and how it was re-verified, and what still
+fails. Never report success for a journey that was not run end to end.
