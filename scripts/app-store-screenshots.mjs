@@ -20,7 +20,7 @@ const W = (o) => ({
   auto_pickup: true, auto_continue: true, standing_orders: true, board_decompose: true,
   board_force_adherence: false, branch: 'main', composer_preview: '', composer_stuck_since: 0,
   creator: 'MacBook Pro', credit_limited: false, api_error: false, rate_limit_banner: false,
-  rate_limited_until: 0, review_held: false, steering: [], steering_queue: [], subagent_live_ids: [],
+  rate_limited_until: 0, steering: [], steering_queue: [], subagent_live_ids: [],
   subagents_live: 0, agents_working: false, spans_groups: true, waiting_since: 0,
   worktree: '', worktree_active: false, worktree_integration: null, worktree_path: '',
   worktree_repo: '', mcp: '', model: '', model_source: 'self-report', task_source: 'board',

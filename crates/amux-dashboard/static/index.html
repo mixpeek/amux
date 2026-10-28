@@ -769,7 +769,6 @@
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
-  <button id="tab-projects" onclick="switchView('projects')"><span class="tab-ico">◈</span><span class="tab-lbl">Projects</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
@@ -835,8 +834,6 @@
   <div id="offline-ops" class="offline-queue-ops"></div>
 </div>
 <div id="cards" class="cards"></div>
-<div id="project-workers-section"></div>
-<div id="review-section"></div>
 <div id="paused-section"></div>
 <div id="expired-section"></div>
 <div id="archived-section"></div>
@@ -845,8 +842,7 @@
   <div id="groups-container"></div>
 </div>
 <div id="board-view" style="display:none;">
-  <div class="board-page-heading"><div><h1>Board <span class="board-legacy-badge">Legacy</span></h1><p>Legacy board/history · start new work in <button class="btn compact" type="button" onclick="switchView('projects')">Projects</button></p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
-  <!-- No launch surface here: new work starts in Projects. Existing boards below remain for legacy maintenance. -->
+  <div class="board-page-heading"><div><h1>Board</h1></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
   <div class="board-control-row" aria-label="Board controls">
     <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
     <div class="board-toolbar">
@@ -2498,7 +2494,6 @@
   </div>
 </div>
 
-<div id="projects-view" style="display:none" class="projects-view"></div>
 <div id="graph-view" style="display:none;flex-direction:row;overflow:hidden;">
   <!-- Graph sidebar -->
   <div class="graph-sidebar" id="graph-sidebar">
@@ -3446,7 +3441,6 @@
             <button type="button" onclick="_peekMoreClose();setPeekTab('dictation')">&#128220; Dictation history</button>
             <button type="button" onclick="_peekMoreClose();_readLatestMessage(peekSession)" title="Read the worker's most recent full message aloud">&#x1F50A; Read aloud latest</button>
             <button type="button" onclick="_peekMoreClose();setPeekTab('readalouds')">&#x1F50A; Read-aloud history</button>
-            <button type="button" onclick="_peekMoreClose();closePeek();switchView('projects')" title="New work starts in Projects">&#x1F4CB; Open Projects</button>
             <!-- Last, and separated: the only DESTRUCTIVE entry in this menu.
                  Everything above opens something; this throws work away, so it
                  does not sit where a thumb lands by accident reaching for
