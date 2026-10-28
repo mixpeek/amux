@@ -274,12 +274,17 @@ echo "12346 1-09:08:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-b
 echo "12347 00:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-3.sh"
 FPS
 chmod +x "$FIX/fake-ps.sh"
-out=$(AMUX_CLEANUP_STALE_PS_CMD="$FIX/fake-ps.sh" AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 \
+# 12345 is an orphan (its session ended); 12346 still has its claude parent.
+printf '#!/bin/bash\ncase "$1" in 12345) echo "    1";; 12346) echo " 4242";; *) echo "    1";; esac\n' > "$FIX/fake-ppid.sh"; chmod +x "$FIX/fake-ppid.sh"
+out=$(AMUX_CLEANUP_STALE_PPID_CMD="$FIX/fake-ppid.sh" AMUX_CLEANUP_STALE_PS_CMD="$FIX/fake-ps.sh" AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 \
       AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 AMUX_CLEANUP_AGENTS="" \
       AMUX_CLEANUP_REPORT_GB=99999 "$TICK" --dry-run 2>&1)
 check "no octal error on 08/09 fields" "0" "$(printf '%s\n' "$out" | grep -c 'value too great')"
 check "both stale times are found, the 9-second one is not" "2" \
   "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=\([0-9]*\) .*/\1/p')"
+check "the orphan would be killed" "1" "$(printf '%s\n' "$out" | grep -c 'stale shell-snapshot pid=12345 .*would be killed')"
+check "a live session's shell is kept, however old" "1" "$(printf '%s\n' "$out" | grep -c 'kept shell-snapshot pid=12346 .*verdict=stale_shell_kept_live_session')"
+check "the summary counts it as kept" "1" "$(printf '%s\n' "$out" | sed -n 's/.*kept_live=\([0-9]*\) .*/\1/p')"
 case "$out" in *"pid=12345 age=08:09:07"*"pid=12346 age=1-09:08:09"*) echo "  ok   each stale process is named with its age" ;;
   *) echo "  FAIL stale processes not named with their ages: $(printf '%s' "$out" | grep -E 'stale shell|shell-snapshots' | head -3)"; fails=$((fails+1)) ;; esac
 check "dry run killed nothing" "0" "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=[0-9]* killed=\([0-9]*\) .*/\1/p')"

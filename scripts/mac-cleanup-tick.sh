@@ -600,6 +600,10 @@ STALE_SHELL_SNAPSHOT_H=${AMUX_CLEANUP_STALE_SHELL_SNAPSHOT_H:-6}
 # Seam: the test points this at a fixture so the arm can be fed elapsed times
 # without a real process. The default is what the scheduler actually runs.
 STALE_PS_CMD=${AMUX_CLEANUP_STALE_PS_CMD:-ps -eo pid=,etime=,args=}
+# The parent of a candidate shell. Only an orphan (parent 1: its Claude session
+# has ended) is stale; a shell whose claude process is still its parent is a
+# live background task, however long it has run.
+STALE_PPID_CMD=${AMUX_CLEANUP_STALE_PPID_CMD:-ps -o ppid= -p}
 # Orphaned `sqlite3 <amux db> .backup` copies (DESKT-94). SQLite's online backup
 # restarts whenever another connection writes the source, so a .backup of the
 # live amux.db never finishes (AMUX-3491 measured it; VACUUM INTO is the fix).
@@ -3384,7 +3388,14 @@ done
 # servers, CI polls). They persist after the session that created them ends, and
 # occasionally hold busy-loops that burn a full core. Safe to kill: they are
 # abandoned scaffolding, not user work.
-stale_killed=0; stale_found=0
+#
+# ONLY ORPHANS (2026-10-28). This arm used to kill every shell past the age
+# floor, so a live lane's long-running background loop died at the first :57
+# tick after 6h: mxp-gs12 lost fallback-alarm (6h39m), restore-watch (6h05m) and
+# export-watch (06:29:07, "killed stale shell-snapshot pid=57216") to it. A shell
+# whose parent is still its claude process is that session's work; only a shell
+# reparented to pid 1 has outlived its session. An unreadable parent is kept.
+stale_killed=0; stale_found=0; stale_live=0
 stale_cutoff_s=$((STALE_SHELL_SNAPSHOT_H * 3600))
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -3401,6 +3412,12 @@ while IFS= read -r line; do
   case "$elapsed_s" in ''|*[!0-9]*) continue ;; esac
   [ "$elapsed_s" -ge "$stale_cutoff_s" ] || continue
   stale_found=$((stale_found+1))
+  ppid=$($STALE_PPID_CMD "$pid" 2>/dev/null | tr -d ' ')
+  if [ "$ppid" != 1 ]; then
+    stale_live=$((stale_live+1))
+    echo "mac-cleanup: kept shell-snapshot pid=$pid age=${elapsed_raw} parent=${ppid:-unreadable}: its session is alive (verdict=stale_shell_kept_live_session)"
+    continue
+  fi
   cpu=$(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')
   if [ "$DRY" = "1" ]; then
     echo "mac-cleanup: stale shell-snapshot pid=$pid age=${elapsed_raw} cpu=${cpu}% would be killed (dry run)"
@@ -3411,7 +3428,7 @@ while IFS= read -r line; do
 done <<EOF
 $($STALE_PS_CMD 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v grep)
 EOF
-echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} (floor ${STALE_SHELL_SNAPSHOT_H}h)"
+echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} kept_live=${stale_live} (floor ${STALE_SHELL_SNAPSHOT_H}h, orphans only)"
 
 # ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
 reap_orphan_sqlite_backups "$DRY"
