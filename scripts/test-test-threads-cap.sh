@@ -14,8 +14,8 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expec
 # A. install.sh's cargo-config block, run on its own against a temp checkout and home.
 sed -n '/^if \[\[ -n "\${AMUX_NO_CARGO_CONFIG:-}" \]\]; then/,/^fi$/p' install.sh > "$T/block.sh"
 [ -s "$T/block.sh" ] || { echo "  FAIL could not find install.sh's cargo config block"; exit 1; }
-run_block() { # extra env assignments...
-  rm -rf "$T/checkout" "$T/home"; mkdir -p "$T/checkout" "$T/home"
+run_block() { # extra env assignments... (KEEP_HOME=1 keeps the last run's amux home)
+  rm -rf "$T/checkout"; [ "${KEEP_HOME:-0}" = 1 ] || rm -rf "$T/home"; mkdir -p "$T/checkout" "$T/home"
   env "$@" SCRIPT_DIR="$T/checkout" AMUX_HOME="$T/home" SHARED_TARGET_DIR="$T/target" \
     bash -c 'say() { :; }; set -euo pipefail; source "$0"' "$T/block.sh"
 }
@@ -27,7 +27,23 @@ run_block AMUX_CARGO_JOBS=2
 check "with a jobs cap, jobs is still a [build] key" "$(awk '/^\[env\]/{e=1} /^jobs/{print (e?"env":"build")}' "$T/checkout/.cargo/config.toml")" "build"
 run_block AMUX_TEST_THREADS=0
 check "AMUX_TEST_THREADS=0 lifts the cap" "$(grep -c RUST_TEST_THREADS "$T/checkout/.cargo/config.toml" || true)" 0
-check "and writes no amux home config" "$([ -e "$T/home/.cargo/config.toml" ] && echo yes || echo no)" no
+check "and the amux home's config carries no cap" "$(grep -c RUST_TEST_THREADS "$T/home/.cargo/config.toml" || true)" 0
+
+# Dev debug info (self RCA 20261028-143032): debug = 0 by default, overridable.
+run_block
+check "dev builds keep no debug info by default" "$(awk '/^\[profile.dev\]/{p=1} p && /^debug = 0$/{print "yes"}' "$T/checkout/.cargo/config.toml")" yes
+check "in the amux home's config too" "$(grep -c '^debug = 0$' "$T/home/.cargo/config.toml")" 1
+run_block AMUX_CARGO_DEBUG=line-tables-only
+check "AMUX_CARGO_DEBUG sets another value, quoted" "$(grep -c '^debug = "line-tables-only"$' "$T/checkout/.cargo/config.toml")" 1
+run_block AMUX_CARGO_DEBUG=keep
+check "keep leaves cargo's default" "$(grep -c '^\[profile.dev\]' "$T/checkout/.cargo/config.toml" || true)" 0
+# An earlier install's home config does not outlive turning both settings off.
+run_block
+KEEP_HOME=1 run_block AMUX_TEST_THREADS=0 AMUX_CARGO_DEBUG=keep
+check "with nothing to set, the generated home config is removed" "$([ -e "$T/home/.cargo/config.toml" ] && echo yes || echo no)" no
+printf 'jobs = 1\n' > "$T/home/.cargo/config.toml"
+KEEP_HOME=1 run_block AMUX_TEST_THREADS=0 AMUX_CARGO_DEBUG=keep
+check "a home config install.sh did not write is left alone" "$([ -e "$T/home/.cargo/config.toml" ] && echo yes || echo no)" yes
 
 # The cap reaches a test binary in a worktree under the amux home.
 run_block
@@ -48,6 +64,11 @@ if (cd "$T/home/tmp/lane/wt" && env -u RUST_TEST_THREADS CARGO_TARGET_DIR="$T/pr
   check "a worktree under the amux home runs its tests capped" pass pass
 else
   check "a worktree under the amux home runs its tests capped" fail pass; tail -5 "$T/probe.log"
+fi
+if [ "$(uname)" = Darwin ]; then
+  # macOS keeps codegen units for unpacked debug info; with debug = 0 it keeps none.
+  check "the probe build left no .rcgu.o beside its test binary" \
+    "$(find "$T/probe-target/debug/deps" -name '*.rcgu.o' 2>/dev/null | wc -l | tr -d ' ')" 0
 fi
 
 # B. The tick's note on a test binary, with ps stubbed.
