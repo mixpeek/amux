@@ -67745,6 +67745,7 @@ async function _cvSendThread() {
     const r = await fetch(API + '/api/conversations/' + encodeURIComponent(t.conv) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
+    _cvWarnUnreachable(d);
     el.value = ''; el.style.height = ''; _cvVoiceClear('thread');
     await _cvLoadThread();
     _cvRefreshPost(t.root);
@@ -67967,6 +67968,12 @@ function _cvOnKey(e) {
   }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); _cvSend(); }
 }
+// An @worker you cannot reach from here is sent nothing; say so instead of
+// leaving it as plain text that looks delivered (2026-10-28).
+function _cvWarnUnreachable(d) {
+  const u = (d && d.unreachable) || [];
+  if (u.length) showToast('Not sent to ' + u.map(w => '@' + w).join(', ') + ': you do not have access to ' + (u.length > 1 ? 'those workers' : 'that worker'), 'error');
+}
 // Attachments use the same chunked, resumable upload as the worker composer
 // (the card sink, keyed for this composer), and ride the post as @path refs.
 const _CV_FILES = '__messages__';
@@ -68016,6 +68023,7 @@ async function _cvSend() {
     const r = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { if (typeof showToast === 'function') showToast(d.error || ('Not sent: HTTP ' + r.status), 'error'); return; }
+    _cvWarnUnreachable(d);
     el.value = ''; el.style.height = ''; _cv.typingAt = 0;
     _clearCardFiles(_CV_FILES); _cvVoiceClear('main');
     // OFFLINE: the outbox accepted it and sends it on reconnect. Show it now,

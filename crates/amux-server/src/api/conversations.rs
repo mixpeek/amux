@@ -305,11 +305,11 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
     }
 }
 
-/// A worker a PERSON @mentioned in a direct message may read and answer that
-/// one thread, and nothing else of the conversation. `root` is any post id; it
-/// is resolved to its thread's root.
+/// A worker a PERSON @mentioned in a direct message, or in a channel outside
+/// its groups, may read and answer that one thread, and nothing else of the
+/// conversation. `root` is any post id; it is resolved to its thread's root.
 fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &str) -> bool {
-    if !matches!(conv, Conv::People(..)) {
+    if matches!(conv, Conv::Worker(_)) {
         return false;
     }
     conn.query_row(
@@ -356,7 +356,18 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
             })
             .map(|l| l.name.clone())
             .collect(),
-        Conv::Group(g) => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
+        // A channel's own workers first; a PERSON may also bring in any other
+        // worker they can reach, as in Slack (Ethan, 2026-10-28: "@workflows"
+        // in #wexus reached nobody because workflows is in another group). That
+        // worker answers in the post's thread and reads only that thread
+        // (worker_invited). A worker poster stays inside the channel's group.
+        Conv::Group(g) => {
+            let mut v: Vec<String> = lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect();
+            if let Who::Person { scope, .. } = who {
+                v.extend(lanes.iter().filter(|l| !l.groups.contains(g) && person_allows(scope, &l.name, lanes)).map(|l| l.name.clone()));
+            }
+            v
+        }
         Conv::Worker(w) => vec![w.clone()],
         // A direct message is two people: either may hand a worker a task
         // from it, the same workers they could reach from #general.
@@ -377,8 +388,9 @@ fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
     iso.iter()
         .filter(|l| match conv {
             Conv::Group(g) if g == GENERAL => person_allows(scope, &l.name, iso),
-            Conv::Group(g) => l.groups.contains(g) && person_allows(scope, &l.name, iso),
-            Conv::People(..) => person_allows(scope, &l.name, iso),
+            // Any channel, as for other workers: a person brings in a worker
+            // they can reach. An isolated one answers in its terminal.
+            Conv::Group(_) | Conv::People(..) => person_allows(scope, &l.name, iso),
             Conv::Worker(_) => false,
         })
         .map(|l| l.name.clone())
@@ -1028,6 +1040,18 @@ pub(crate) async fn post_inner(
     workers.extend(iso.iter().cloned());
     let thread_readers = readers(&conv, &all, &lanes);
     let mut mentions = resolve_mentions(&body, &workers, &thread_readers);
+    // An @name that is a worker this poster cannot reach used to vanish: the
+    // post landed as plain text and nobody was told. Name it in the reply and
+    // the log instead.
+    let unreachable: Vec<String> = mention_tokens(&body).into_iter()
+        .filter(|t| !workers.iter().any(|w| w.to_lowercase() == *t))
+        .filter(|t| lanes.iter().chain(iso_lanes.iter()).any(|l| l.name.to_lowercase() == *t))
+        .collect();
+    if !unreachable.is_empty() {
+        tracing::warn!(conv = %conv.key(), author = %author_key, workers = ?unreachable, measured = true,
+            n_considered = unreachable.len(), verdict = "conversation_mention_unreachable",
+            "a post @mentioned workers this poster cannot reach here; they were not sent anything");
+    }
     if let Some(to) = &dm_to {
         let Some(p) = find_person(&all, to) else {
             return Err(Box::new(err(StatusCode::BAD_REQUEST, format!("no person '{to}' in this workspace"))));
@@ -1140,6 +1164,7 @@ pub(crate) async fn post_inner(
     // each outcome is written back onto it.
     if !targets.is_empty() {
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
+        let channel_workers = workers_in(&conv, &lanes);
         tokio::spawn(async move {
             let mut outcomes = Vec::new();
             for w in targets {
@@ -1152,7 +1177,15 @@ pub(crate) async fn post_inner(
                     let k = conv2.key();
                     text = text.replace(&format!("amux post '{k}' <<'EOF'"), &format!("amux post '{k}' --thread {root} <<'EOF'"));
                 }
-                if !isolated && !context.is_empty() {
+                // A channel's recent messages go only to workers who could read
+                // the channel anyway (its group's, or anyone in #general); a
+                // worker brought in from another group sees just the post. In a
+                // DM the poster chose to bring the worker in.
+                let member = match &conv2 {
+                    Conv::Group(g) => g == GENERAL || channel_workers.contains(&w),
+                    _ => true,
+                };
+                if !isolated && member && !context.is_empty() {
                     text = format!("Recent messages in {} before this one:\n{}\n\n{text}", conv2.key(), context.join("\n"));
                 }
                 if let Some(n) = &note {
@@ -1192,7 +1225,7 @@ pub(crate) async fn post_inner(
     crate::bridge::notify_outbound();
     notify_owner(state, &conv, &author_key, &author_name, &body, id, parent, &mentions).await;
     Ok(json!({"ok": true, "id": id, "conv": key, "parent_id": parent, "author": author_key, "author_name": author_name, "mentions": mentions,
-        "delivering_to": mentions.iter().filter(|m| m.starts_with("worker:")).count()}))
+        "delivering_to": mentions.iter().filter(|m| m.starts_with("worker:")).count(), "unreachable": unreachable}))
 }
 
 /// A write made in the same transaction as a post, given its id.
@@ -1933,7 +1966,8 @@ mod tests {
         let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
         assert_eq!(mentionable_isolated(&owner, &dm, &iso), vec!["amux-helper".to_string()]);
         assert_eq!(mentionable_isolated(&owner, &Conv::Group(GENERAL.into()), &iso), vec!["amux-helper".to_string()]);
-        assert!(mentionable_isolated(&owner, &Conv::Group("wexus".into()), &iso).is_empty(), "not in that group");
+        assert_eq!(mentionable_isolated(&owner, &Conv::Group("wexus".into()), &iso), vec!["amux-helper".to_string()],
+            "a person reaches it from any channel, as any other worker they can reach");
         assert!(mentionable_isolated(&owner, &Conv::Worker("ed".into()), &iso).is_empty(), "another worker's thread");
         let scoped = Who::Person { email: "doron@z.com".into(), scope: MemberScope::Worker("ed".into()) };
         assert!(mentionable_isolated(&scoped, &dm, &iso).is_empty(), "outside a member's access");
@@ -1962,8 +1996,15 @@ mod tests {
         assert!(!worker_invited(&c, &dm, 3, "ed"), "another thread of the same DM");
         assert!(!worker_invited(&c, &dm, 1, "other"), "a worker nobody mentioned");
         assert!(!worker_invited(&c, &dm, 4, "mallory"), "only a person's mention invites");
-        assert!(!worker_invited(&c, &Conv::Group("wexus".into()), 1, "ed"), "channels use group access");
+        assert!(!worker_invited(&c, &Conv::Group("wexus".into()), 1, "ed"), "a thread of another conversation");
         assert!(!worker_invited(&c, &dm, 99, "ed"));
+        // A channel: a person brought a worker from another group into one thread.
+        c.execute("INSERT INTO conversation_posts VALUES (10,'g:wexus','person:ethan@x.com','[\"worker:workflows\"]',NULL)", []).unwrap();
+        c.execute("INSERT INTO conversation_posts VALUES (11,'g:wexus','person:ethan@x.com','[]',NULL)", []).unwrap();
+        let wexus = Conv::Group("wexus".into());
+        assert!(worker_invited(&c, &wexus, 10, "workflows"));
+        assert!(!worker_invited(&c, &wexus, 11, "workflows"), "another thread of the channel");
+        assert!(!worker_invited(&c, &Conv::Worker("workflows".into()), 10, "workflows"));
     }
 
     #[test]
@@ -1998,7 +2039,14 @@ mod tests {
         assert_eq!(mentionable_workers(&elliot, &Conv::Group(GENERAL.into()), &lanes), vec!["ed".to_string()]);
         let global = person("ethan@x.com", MemberScope::Global);
         assert_eq!(mentionable_workers(&global, &Conv::Group(GENERAL.into()), &lanes).len(), 2);
-        assert_eq!(mentionable_workers(&global, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string()]);
+        // In a channel: its own workers first, then any other the person can reach.
+        assert_eq!(mentionable_workers(&global, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string(), "ed".to_string()]);
+        assert_eq!(mentionable_workers(&elliot, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string(), "ed".to_string()],
+            "elliot reaches ed through wexus, so may bring ed into #mtp");
+        let scoped = person("w@y.com", MemberScope::Worker("other".into()));
+        assert_eq!(mentionable_workers(&scoped, &Conv::Group("wexus".into()), &lanes), vec!["ed".to_string(), "other".to_string()]);
+        let ed = Who::Worker { name: "ed".into(), groups: ["wexus".to_string()].into() };
+        assert_eq!(mentionable_workers(&ed, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string()], "a worker stays inside the group");
     }
 
     #[test]
