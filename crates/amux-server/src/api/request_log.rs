@@ -263,6 +263,18 @@ impl RequestLogger {
                                 retain_days,
                                 "request-log retention sweep"
                             );
+                            // Worker tool calls (audit.rs) keep the same window
+                            // as the requests they sit beside, capped the same way.
+                            let cutoff_rfc = chrono::DateTime::from_timestamp(cutoff as i64, 0)
+                                .map(|t| t.to_rfc3339()).unwrap_or_default();
+                            let tools = conn.execute(
+                                "DELETE FROM _amux_tool_events WHERE id IN (
+                                    SELECT id FROM _amux_tool_events WHERE created_at < ?1 LIMIT ?2)",
+                                rusqlite::params![cutoff_rfc, RETENTION_BATCH_ROWS],
+                            ).unwrap_or(0);
+                            if tools > 0 {
+                                tracing::info!(deleted = tools, retain_days, verdict = "tool_event_retention", "tool-event retention sweep");
+                            }
                         }
                         // applied:false — deliberately NO revision bump. The
                         // request log is observability substrate, not fleet
@@ -2366,6 +2378,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/scope",
         methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/audit",
+        methods: &["GET"],
     },
     // -- browser
     RouteEntry {

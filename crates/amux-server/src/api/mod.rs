@@ -30,6 +30,7 @@ pub mod branding;
 pub mod brex;
 pub mod browser;
 pub mod browser_import;
+pub mod audit;
 pub mod browser_routing;
 pub mod browser_scope;
 pub mod calendar;
@@ -255,6 +256,8 @@ pub fn router_with_connector_transport(
         // turn ledger). The CLI verb is a printer over this; the correlation
         // lives here so there is one place to be wrong.
         .nest("/api/why", why::routes())
+        // One worker's browser, tool and API actions, newest first (audit.rs).
+        .nest("/api/audit", audit::routes())
         .nest("/api/verify", verify::routes())
         .nest(
             "/api/harness",
