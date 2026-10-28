@@ -177,10 +177,14 @@ async fn the_dashboard_no_longer_serves_proxy_links() {
     assert!(!String::from_utf8_lossy(&body).contains("internal app"), "/proxy/ relayed an app");
 }
 
-/// A file inside amux (`amux publish --internal --file`): the owner sees one
-/// HTML file in Pages with no server started, and only that file. Before this a
-/// worker served a whole folder with `python3 -m http.server` to show one deck
-/// (sandbox rothco, 2026-10-26), which listed its build scripts beside it.
+/// A file inside amux, added to Pages by the owner: one HTML file with no
+/// server started, and only that file. Before this a worker served a whole
+/// folder with `python3 -m http.server` to show one deck (sandbox rothco,
+/// 2026-10-26), which listed its build scripts beside it.
+///
+/// A worker may not put a file for the owner in Pages (Ethan, 2026-10-28: "it
+/// is making page apps for just files"): it is refused with the file's link in
+/// amux's file viewer, which is what it should hand over instead.
 #[tokio::test]
 async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
     let port = echo_app().await;
@@ -191,7 +195,7 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
     std::fs::write(&deck, "<h1>the deck</h1>").unwrap();
     std::fs::write(base.path().join("build_deck.py"), "SECRET_SCRIPT").unwrap();
 
-    // A worker asks: it is pending, and a person's request is live.
+    // A worker is refused and told the file's link; the owner's request is live.
     let make = |cookie: bool| {
         let mut b = Request::builder().method("POST").uri("/api/page-links").header(header::HOST, "sandbox.amux.io")
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}")).header(header::CONTENT_TYPE, "application/json")
@@ -202,11 +206,20 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
         b.body(Body::from(serde_json::json!({"kind": "internal", "path": deck, "title": "Deck"}).to_string())).unwrap()
     };
     let res = dashboard().oneshot(make(false)).await.unwrap();
-    assert_eq!(res.status(), StatusCode::CREATED);
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!((v["kind"].as_str(), v["pending"].as_bool(), v["public"].as_bool()), (Some("internal"), Some(true), Some(false)), "{v}");
-    let (st, _) = open(v["id"].as_str().unwrap(), true).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "a worker's file opened without approval");
+    assert_eq!(v["code"].as_str(), Some("file_not_a_page"), "{v}");
+    let canon = deck.canonicalize().unwrap();
+    let link = v["file_link"].as_str().unwrap();
+    assert!(link.ends_with(&format!("/f{}", canon.to_string_lossy())), "the refusal names the file's link: {link}");
+    assert!(v["error"].as_str().unwrap().contains(link), "{v}");
+    let res = dashboard()
+        .oneshot(Request::builder().uri("/api/page-links").header(header::HOST, "sandbox.amux.io")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let listed = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
+    assert!(!listed.contains("deck.html"), "a refused file was still added to Pages: {listed}");
 
     let res = dashboard().oneshot(make(true)).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();

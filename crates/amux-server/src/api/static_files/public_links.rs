@@ -220,6 +220,18 @@ fn normalize_url(u: &str) -> Option<String> {
 /// a cloud box sets it to https://<its domain>) wins; otherwise the address the
 /// owner last opened the dashboard at. None when neither is known: callers say
 /// so rather than guessing.
+/// The owner's link to a file in amux's file viewer (deep_links.rs), built
+/// the way the dashboard's copy-link builds it: `<address>/f/<path>`, each
+/// segment encoded. Relative to the server when its address is unknown.
+pub(crate) fn file_link(home: &Path, path: &str) -> String {
+    let enc: Vec<String> = path.split('/').map(|seg| {
+        seg.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+    }).collect();
+    let p = enc.join("/");
+    let p = if p.starts_with('/') { p } else { format!("/{p}") };
+    format!("{}/f{p}", public_url(home).unwrap_or_default().trim_end_matches('/'))
+}
+
 pub(crate) fn public_url(home: &Path) -> Option<String> {
     if let Some(u) = crate::api::settings::effective_env(home, "AMUX_PUBLIC_URL").as_deref().and_then(normalize_url) {
         return Some(u);
@@ -281,25 +293,23 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     };
     format!(
         "{address}\n\n\
-         The owner manages everything below in the Pages tab ({base}/#view=pages), so register what you \
-         build there rather than only printing a link:\n\
-         - An app for the owner, inside amux: `amux publish --internal <port> [title]`. It is listed in \
-         Pages and opens inside the amux UI; its link is {base}/#view=pages&open=<id>, with the id \
-         `amux publish` prints. Never hand the owner localhost or a port. A Page is \
-         {base}/pages/<name>.\n\
-         - A file or folder for the owner, inside amux (an HTML deck, a report, a static demo): \
-         `amux publish --internal --file <absolute path> [title]`. Publish the file itself, not the \
-         folder around it, and never start a web server (such as `python3 -m http.server`) just to \
-         show static files: that serves every file beside it, scripts and data included.\n\
-         - An app for anyone with the link (no amux sign-in), only when the owner wants it shared: \
-         `amux publish <port> [title]`, which prints {base}/pub/<id>/.\n\
-         - A file or folder for anyone with the link, only when the owner wants it shared: \
-         `amux publish --file <absolute path> [title]`. Never link a file as {base}/api/file/...: \
-         that needs the owner's sign-in.\n\
-         Anything you add (inside amux or public) stays pending until the owner approves it in \
-         Pages; tell them it is waiting there. Never try to approve it yourself.\n\
+         A file for the owner (a workbook, a report, a deck, an HTML page) is not a Page. Give each file \
+         its own link, {base}/f/<absolute path>, one per file, never a bare path or a folder: it opens in \
+         amux's file viewer, signed in, with nothing to approve, and it downloads from there. Never start \
+         a web server (such as `python3 -m http.server`) to show files.\n\n\
+         Pages holds apps with a backend (a server, inside amux or outside it) and files shared outside \
+         amux. Use it only when the owner asks for one of those:\n\
+         - An app for the owner, inside amux: `amux publish --internal <port> [title]`. Its link is \
+         {base}/#view=pages&open=<id>, with the id `amux publish` prints. Never hand the owner localhost \
+         or a port. A Page is {base}/pages/<name>.\n\
+         - An app for anyone with the link (no amux sign-in): `amux publish <port> [title]`, which prints \
+         {base}/pub/<id>/.\n\
+         - A file or folder for anyone with the link: `amux publish --file <absolute path> [title]`. Never \
+         link a file as {base}/api/file/...: that needs the owner's sign-in.\n\
+         Anything you add stays pending until the owner approves it in Pages; tell them it is waiting \
+         there. Never try to approve it yourself.\n\
          `amux publish --list` lists them and `amux publish --revoke <id>` turns one off.\n\n\
-         Build pages, demos and documents as files in your workspace and register them here. Never \
+         Build demos and documents as files in your workspace and link them as above. Never \
          publish to claude.ai (the Artifact tool): that lives outside this amux, where the owner cannot \
          list, serve or turn it off, and amux denies the tool."
     )
@@ -426,6 +436,23 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
             if let Some(why) = file_refused(&canon) {
                 tracing::warn!(kind = %kind, measured = true, n_considered = 1, verdict = "public_link_refused", why, "file link refused");
                 return bad(StatusCode::BAD_REQUEST, why);
+            }
+            // A FILE FOR THE OWNER IS NOT A PAGE (Ethan, 2026-10-28: "it is
+            // making page apps for just files. pages apps should only be used
+            // if we're being explicitly asked"). A worker showed three
+            // workbooks and a rules doc as four Pages, each waiting for
+            // approval, because this module's own guidance told it to. A
+            // worker gets the file link instead; the owner adding one in
+            // Pages is the explicit ask, so that still works.
+            if kind == "internal" && person_of(&state, &headers).is_none() {
+                let link = file_link(&crate::config::amux_home(), &canon.to_string_lossy());
+                tracing::warn!(created_by = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).unwrap_or("-"),
+                    measured = true, n_considered = 1, verdict = "pages_internal_file_refused", "file for the owner sent to Pages");
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error": format!("a file for the owner is not a Page: Pages holds apps with a backend and files shared outside amux. \
+                        Give the owner {link}, which opens it in amux's file viewer with nothing to approve."),
+                    "code": "file_not_a_page", "file_link": link,
+                }))).into_response();
             }
             (0, canon.to_string_lossy().into_owned())
         }

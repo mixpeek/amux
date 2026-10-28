@@ -7064,13 +7064,14 @@ cmd_publish() {
 ${BOLD}amux publish${RESET} — apps and files in the Pages tab
 
   amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
-  amux publish --internal --file PATH [TITLE]  A file or folder for you, inside amux; no server needed
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
 
-To show an HTML file, publish the file itself with --file. Do not start a web
-server for static files: it serves every file beside them.
+Pages holds apps with a backend and files shared outside amux, used only when
+the owner asks for one. A file for the owner is not a Page: give them its link,
+<amux address>/f/<absolute path>, which opens in amux's file viewer. Do not
+start a web server for static files: it serves every file beside them.
   amux publish --revoke ID               Remove one (a public link stops working)
 
 Anything a worker adds stays PENDING (a public link serves nobody, an app
