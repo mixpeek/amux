@@ -380,7 +380,8 @@ async fn only_prefs_are_editable_env_controls_are_readouts() {
     }
     assert_eq!(
         editable,
-        vec!["autofix".to_string()],
-        "the only live toggle should be the autofix pref that already exists in Settings"
+        vec!["autofix".to_string(), "recordings-live".to_string()],
+        "the live toggles are the prefs the server re-reads: autofix (Settings) and \
+         recordings_live (the Record tab's live option, 3f47251f8)"
     );
 }

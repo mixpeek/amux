@@ -106,11 +106,11 @@ test('system jobs render with real data, separated from user schedules', async (
   await expect(sysSection.locator('button.sysjob-run:enabled')).toHaveCount(triggerable);
   await expect(sysSection.locator('button.sysjob-run:disabled')).toHaveCount(jobs.jobs.length - triggerable);
 
-  // Exactly one live switch — the autofix pref, which the server re-reads on
-  // every tick. Env vars render as readouts; a checkbox over one would claim
-  // an effect it cannot have.
-  await expect(sysSection.locator('.sysjob-toggle input[type=checkbox]')).toHaveCount(1);
-  await expect(sysSection.locator('.sysjob-toggle span')).toHaveText('autofix_enabled');
+  // A live switch only for a pref the server re-reads on every tick: autofix,
+  // and the Record tab's live-transcript option (3f47251f8). Env vars render as
+  // readouts; a checkbox over one would claim an effect it cannot have.
+  await expect(sysSection.locator('.sysjob-toggle input[type=checkbox]')).toHaveCount(2);
+  await expect(sysSection.locator('.sysjob-toggle span')).toHaveText(['autofix_enabled', 'recordings_live']);
   expect(await sysSection.locator('.sysjob-env').count()).toBeGreaterThan(0);
 
   await page.screenshot({ path: `${SHOT}-real-${info.project.name}.png`, fullPage: true });
