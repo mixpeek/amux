@@ -1023,10 +1023,15 @@
     padding: var(--space-3-5) var(--space-4) var(--space-2-5); border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
   .modal-header h3 { font-size: var(--fs-2xl); }
+  /* One close X everywhere (app.js _modalXEnsure): borderless, top right, 44x44. */
   .modal-close {
-    background: none; border: none; color: var(--dim); font-size: var(--fs-4xl);
-    cursor: pointer; min-width: 44px; min-height: 32px; line-height: 1;
+    background: none; border: none; color: var(--dim); font-size: var(--fs-2xl);
+    cursor: pointer; min-width: 44px; min-height: 44px; line-height: 1; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    margin-left: auto; border-radius: var(--radius-md);
   }
+  .modal-close:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .modal-close.modal-close-corner { position: absolute; top: var(--space-1); right: var(--space-1); z-index: 3; margin: 0; }
   .modal-body { padding: var(--space-3-5) var(--space-4); overflow-y: auto; -webkit-overflow-scrolling: touch; }
   .input, .modal-body .input {
     width: 100%; box-sizing: border-box; padding: var(--space-2) var(--space-2-5);
