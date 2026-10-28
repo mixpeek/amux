@@ -3699,6 +3699,22 @@ if printf '%s\n' "$verdicts" | grep -q '^disk '; then
     esac
   fi
 fi
+# A cargo test binary (target/<profile>/deps/<crate>-<hash>) runs one test
+# thread per core unless RUST_TEST_THREADS caps it, so one plain `cargo test`
+# takes all 28 cores of this shared Mac (2026-10-28: amux at 1088% CPU from one
+# test binary). The repo's .cargo/config.toml sets the cap; this names a binary
+# running without one, so the next escalation shows the cause, not just a pid.
+test_binary_note() { # pid command-path
+  case "$2" in */deps/*-[0-9a-f][0-9a-f][0-9a-f]*) ;; *) return 0 ;; esac
+  local thr cap
+  thr=$(ps -M -p "$1" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+  cap=$(ps -E -o command= -p "$1" 2>/dev/null | grep -o 'RUST_TEST_THREADS=[0-9]*' | head -1)
+  if [ -n "$cap" ]; then
+    echo " [cargo test binary, $thr threads, $cap]"
+  else
+    echo " [cargo test binary, $thr threads, RUST_TEST_THREADS unset: one test thread per core (verdict=cpu_test_threads_unbounded)]"
+  fi
+}
 escalated=0
 if [ -z "$verdicts" ]; then
   echo "mac-cleanup: constraints none"
@@ -3718,7 +3734,7 @@ else
       echo "- $mem pid=$pid $cmd — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
     echo; echo "## Top CPU (with owner)"
     ps -Ao pid=,pcpu=,comm= 2>/dev/null | sort -k2 -rn | head -10 | while read -r pid cpu cmd; do
-      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
+      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")"; done
     if printf '%s\n' "$verdicts" | grep -q '^disk '; then
       echo; echo "## Files over 500M written in the last hour (the writers)"
       # Open files first: wherever they live, and only seconds of the budget.
