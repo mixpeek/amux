@@ -415,6 +415,7 @@ final class MicSource: RecSource {
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, when in
             let src = when.isSampleTimeValid ? Double(when.sampleTime) / fmt.sampleRate * 1000 : nil
+            self?.buffersSeen += 1   // the no-audio watchdog counts these too (land gate review F1)
             self?.writer.append(buf, arrivedMs: nowMs(), sourceMs: src)
         }
         engine.prepare()

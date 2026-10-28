@@ -65328,13 +65328,14 @@ function _recLineHtml(s) {
     + '<div class="rec-line-body">' + (sp.who ? '<div class="rec-line-who">' + esc(sp.who === 'You' ? 'You' : 'Them') + '</div>' : '') + esc(sp.text) + '</div></div>';
 }
 function _recMeta(d) {
+  // Text is escaped as it goes in; the link is the one piece of markup.
   const bits = [];
   const st = Number(d.started_at || 0);
-  if (st) bits.push(new Date(st).toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}));
-  if (d.dur_ms) bits.push(_recClock(d.dur_ms));
+  if (st) bits.push(esc(new Date(st).toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})));
+  if (d.dur_ms) bits.push(esc(_recClock(d.dur_ms)));
   if (d.meeting && d.meeting.meeting_url) bits.push('<a href="' + esc(d.meeting.meeting_url) + '" target="_blank" rel="noopener">Call link</a>');
   const ppl = (d.meeting && d.meeting.attendees) || [];
-  let h = bits.map((b, i) => i === 2 ? b : esc(b)).join(' · ');
+  let h = bits.join(' · ');
   if (ppl.length) h += ' · <span class="rec-people">' + ppl.slice(0, 4).map(p => _cvAvatar(p, false, '')).join('') + (ppl.length > 4 ? '<span class="rec-more">+' + (ppl.length - 4) + '</span>' : '') + '</span>';
   return h;
 }
