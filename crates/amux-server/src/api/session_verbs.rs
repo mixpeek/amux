@@ -33825,6 +33825,62 @@ async fn record_turn_end_without_outcome(state: &AppState, session: &str) {
     }
 }
 
+/// One Claude Code tool call, from the PostToolUse report the hook already
+/// sends, into `_amux_tool_events` (until now filled only for OpenCode
+/// workers, so a Claude worker's Bash, Edit and WebFetch calls left no record
+/// at all, 2026-10-27). The input is a short summary the hook builds, passed
+/// through the secret redactor again here and capped; never the tool output.
+pub(crate) fn tool_event_detail(body: &Value, tool: &Value) -> (String, String) {
+    let name: String = tool.get("name").and_then(Value::as_str).unwrap_or("unknown").chars().take(64).collect();
+    let input = tool.get("input").and_then(Value::as_str).unwrap_or("");
+    let input: String = redact_secrets(input).chars().take(400).collect();
+    let detail = json!({
+        "input": input,
+        "ok": tool.get("ok").cloned().unwrap_or(Value::Null),
+        "exit_code": tool.get("exit_code").cloned().unwrap_or(Value::Null),
+        "tool_use_id": tool.get("use_id").cloned().unwrap_or(Value::Null),
+        "conversation": body.get("session_id").cloned().unwrap_or(Value::Null),
+        "agent_id": tool.get("agent_id").cloned().unwrap_or(Value::Null),
+        "provider": body.get("provider").cloned().unwrap_or(Value::Null),
+    });
+    (name, detail.to_string())
+}
+
+async fn record_tool_event(state: &AppState, worker: &str, body: &Value, tool: &Value) {
+    use rusqlite::OptionalExtension;
+    let (name, detail) = tool_event_detail(body, tool);
+    let (w, n) = (worker.to_string(), name.clone());
+    let use_id = tool.get("use_id").and_then(Value::as_str).unwrap_or("").to_string();
+    let at = chrono::Utc::now().to_rfc3339();
+    let since = (chrono::Utc::now() - chrono::Duration::hours(6)).to_rfc3339();
+    let wrote = state
+        .store
+        .write_async(move |c| {
+            if !use_id.is_empty() {
+                let seen: Option<i64> = c
+                    .query_row(
+                        "SELECT 1 FROM _amux_tool_events WHERE worker_id=?1 AND created_at>=?2 AND instr(detail, ?3)>0 LIMIT 1",
+                        rusqlite::params![w, since, format!("\"tool_use_id\":{}", json!(use_id))],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if seen.is_some() {
+                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                }
+            }
+            c.execute(
+                "INSERT INTO _amux_tool_events(worker_id,task_id,turn_id,tool,detail,created_at) VALUES(?1,NULL,NULL,?2,?3,?4)",
+                rusqlite::params![w, n, detail, at],
+            )?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .await;
+    if let Err(e) = wrote {
+        tracing::warn!(target: "amux::audit", worker, tool = %name, verdict = "tool_event_dropped", error = %e,
+            "a worker tool call happened but its audit record could not be written");
+    }
+}
+
 pub(crate) async fn report_post(
     state: &AppState,
     name: &str,
@@ -33892,6 +33948,17 @@ pub(crate) async fn report_post(
             StatusCode::UNPROCESSABLE_ENTITY,
             json!({"error":"report provider does not match worker"}),
         );
+    }
+    // `tools_pending` holds tool calls an earlier queued report carried
+    // forward (the hook's state row is latest-wins); `tool` is this one.
+    for tool in body.get("tools_pending").and_then(Value::as_array).into_iter().flatten()
+        .chain(body.get("tool")).filter(|t| t.is_object())
+    {
+        record_tool_event(state, name, body, tool).await;
+    }
+    if let Some(n) = body.get("tools_dropped").and_then(Value::as_u64).filter(|n| *n > 0) {
+        tracing::warn!(target: "amux::audit", worker = name, dropped = n, verdict = "tool_events_dropped_in_queue",
+            "the hook queue held more tool calls than it carries; the oldest were not recorded");
     }
     // SELF-REPORTED CONVERSATION ID (AMUX-2936). Handled here, above the
     // subagent early-return, so EVERY report shape carries it — a lane that only
@@ -38277,6 +38344,21 @@ mod tests {
         assert_eq!(subagent_state(&[result.clone(), handback.clone()], 90_000, 1800), (Some("finished"), None));
         // A handback earlier in the transcript does not finish a subagent that kept working.
         assert_eq!(subagent_state(&[handback, result.clone(), tool.clone(), result], 4_000, 1800), (Some("silent"), Some("model".into())));
+    }
+
+    #[test]
+    fn a_tool_event_keeps_a_redacted_capped_summary_and_its_outcome() {
+        let body = json!({"session_id":"conv-1","provider":"claude"});
+        let tool = json!({"name":"Bash","input":format!("curl -H 'Authorization: Bearer {}' {}", format!("sk-ant-{}-{}", "api03", "ABCDEFGHIJKLMNOPQRSTUV"), "x".repeat(900)),
+            "ok":false,"exit_code":7,"use_id":"tu1"});
+        let (name, detail) = tool_event_detail(&body, &tool);
+        assert_eq!(name, "Bash");
+        let d: Value = serde_json::from_str(&detail).unwrap();
+        assert!(!detail.contains("ABCDEFGHIJKLMNOPQRSTUV"), "secrets redacted: {detail}");
+        assert!(d["input"].as_str().unwrap().chars().count() <= 400, "input capped");
+        assert_eq!((d["ok"].as_bool(), d["exit_code"].as_i64(), d["tool_use_id"].as_str(), d["conversation"].as_str()),
+            (Some(false), Some(7), Some("tu1"), Some("conv-1")));
+        assert!(detail.contains("\"tool_use_id\":\"tu1\""), "the dedupe probe matches this exact spelling");
     }
 
     #[test]

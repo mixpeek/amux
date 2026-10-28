@@ -179,6 +179,28 @@ mod tests {
     use super::{request_lock, Config};
 
     #[test]
+    fn a_route_call_is_audited_with_outcome_and_without_typed_secrets() {
+        use super::route_audit_event;
+        use axum::http::StatusCode;
+        let body = serde_json::json!({"action":"type","text":"hunter2-password","selector":"#pw"});
+        let v = serde_json::json!({"ok":true,"url":"https://app.example/login?token=abc123secret&q=1","route":{"backend":"amux","profile":"netsuite"}});
+        let e = route_audit_event("action", &body, &v, StatusCode::OK, 42);
+        let s = e.to_string();
+        assert!(!s.contains("hunter2"), "typed text never recorded: {s}");
+        assert!(!s.contains("abc123secret"), "credential-shaped query values redacted: {s}");
+        assert_eq!((e["verb"].as_str(), e["action"].as_str(), e["backend"].as_str(), e["profile"].as_str()),
+            (Some("action"), Some("type"), Some("amux"), Some("netsuite")));
+        assert_eq!((e["ok"].as_bool(), e["latency_ms"].as_u64(), e["via"].as_str()), (Some(true), Some(42), Some("route")));
+        assert_eq!(e["typed_chars"], 16);
+
+        let failed = route_audit_event("start", &serde_json::json!({"url":"https://x.example/"}),
+            &serde_json::json!({"error":"page did not load; api_key=sk-live-SECRETSECRET1234"}), StatusCode::BAD_GATEWAY, 7);
+        assert_eq!(failed["ok"], false);
+        assert_eq!(failed["target_url"], "https://x.example/");
+        assert!(!failed.to_string().contains("SECRETSECRET1234"), "errors pass through the secret redactor: {failed}");
+    }
+
+    #[test]
     fn the_committed_methods_registry_parses_with_its_ladder_and_a_disabled_opagent() {
         let t = super::methods_layer(super::METHODS_DEFAULT).expect("browser-methods.toml parses");
         let ladder: Vec<&str> = t["ladder"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
@@ -318,7 +340,65 @@ struct Request {
     body: Value,
     session: String,
 }
+/// Every route verb, on every backend, leaves one `browser.route.<verb>` event
+/// in the session ledger beside the native `browser.*` events: who, which
+/// backend and profile, what was asked (through the same redaction as native
+/// actions), the page it ended on, the outcome and how long it took. A route
+/// was a tracing line only, so "what did this worker click, on which page"
+/// had no answer for the main way workers drive a browser (2026-10-27).
 async fn request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(r): Json<Request>,
+) -> Response {
+    let started = std::time::Instant::now();
+    let (session, verb, body) = (r.session.clone(), r.verb.clone(), r.body.clone());
+    let response = request_inner(State(state.clone()), headers, Json(r)).await;
+    let (parts, b) = response.into_parts();
+    let bytes = axum::body::to_bytes(b, 256 << 20).await.unwrap_or_default();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let event = route_audit_event(&verb, &body, &v, parts.status, started.elapsed().as_millis() as u64);
+    super::browser::record_browser_event(&state, Some(&session), &session, &format!("route.{verb}"), event).await;
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// The audit record for one route call. Pure, so redaction is testable.
+fn route_audit_event(verb: &str, body: &Value, v: &Value, status: StatusCode, latency_ms: u64) -> Value {
+    let first_str = |ptrs: &[&str]| ptrs.iter().find_map(|p| v.pointer(p).and_then(Value::as_str)).map(str::to_string);
+    let page = first_str(&["/url", "/data/url", "/state/url", "/page/url", "/launch_url"]).unwrap_or_default();
+    let mut ev = if verb == "action" {
+        super::browser::action_audit_fields(body, &page)
+    } else {
+        json!({"url": super::browser::audit_url(&page), "sensitive_values_recorded": false})
+    };
+    let ok = status.is_success() && v.get("ok").and_then(Value::as_bool) != Some(false) && v.get("error").is_none();
+    let error = v.get("error").map(|e| {
+        let t = e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string());
+        let t = super::session_verbs::redact_secrets(&t);
+        t.chars().take(300).collect::<String>()
+    });
+    if let Some(o) = ev.as_object_mut() {
+        o.insert("verb".into(), json!(verb));
+        o.insert("url_after".into(), json!(super::browser::audit_url(&page)));
+        if let Some(target) = body.get("url").and_then(Value::as_str) {
+            o.insert("target_url".into(), json!(super::browser::audit_url(target)));
+        }
+        o.insert("backend".into(), v.pointer("/route/backend").cloned().unwrap_or(Value::Null));
+        o.insert("profile".into(), v.pointer("/route/profile").cloned().unwrap_or(Value::Null));
+        o.insert("page_ready".into(), v.get("page_ready").cloned().unwrap_or(Value::Null));
+        o.insert("http_status".into(), json!(status.as_u16()));
+        o.insert("ok".into(), json!(ok));
+        o.insert("error".into(), error.map(Value::from).unwrap_or(Value::Null));
+        o.insert("latency_ms".into(), json!(latency_ms));
+        if let Some(shot) = first_str(&["/path", "/screenshot_path", "/data/path"]) {
+            o.insert("screenshot".into(), json!(shot));
+        }
+        o.insert("via".into(), json!("route"));
+    }
+    ev
+}
+
+async fn request_inner(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(mut r): Json<Request>,

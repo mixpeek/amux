@@ -240,7 +240,7 @@ fn now_epoch() -> i64 {
 /// research parameters while redacting credential-shaped values, userinfo and
 /// every fragment (implicit-flow tokens live there). The action trail must be
 /// safer than the browser history it replaces, not a second credential store.
-fn audit_url(raw: &str) -> String {
+pub(crate) fn audit_url(raw: &str) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
         return String::new();
@@ -317,7 +317,7 @@ fn action_text_chars(body: &Value, key: &str) -> usize {
 /// Describe a browser action without retaining what the user typed, the code
 /// they evaluated, or local file paths. Those are precisely the values most
 /// likely to contain passwords, tokens, private prompts or customer data.
-fn action_audit_fields(body: &Value, page_url: &str) -> Value {
+pub(crate) fn action_audit_fields(body: &Value, page_url: &str) -> Value {
     let action = body.get("action").and_then(Value::as_str).unwrap_or("");
     let mut out = json!({
         "action": action,
@@ -419,7 +419,7 @@ fn action_audit_fields(body: &Value, page_url: &str) -> Value {
 /// history, not a ninth storage primitive. A failed audit write cannot undo a
 /// browser action, but it is WARNed with a machine-readable verdict so the log
 /// sweep catches the missing record instead of silently claiming completeness.
-async fn record_browser_event(
+pub(crate) async fn record_browser_event(
     state: &AppState,
     actor: Option<&str>,
     binding_session: &str,
@@ -468,6 +468,18 @@ async fn record_browser_event(
             error = %error,
             "browser action completed but its durable audit event could not be written"
         ),
+    }
+}
+
+/// What a triage needs beside the action: the page it ended on (`url` is the
+/// page it started on) and how long it took. Bounded to two seconds so a
+/// wedged page cannot hold the response.
+async fn finish_action_audit(cdp: &mut chrome::CdpClient, audit: &mut Value, started: std::time::Instant) {
+    let after = cdp.eval("location.href", 2).await.ok().and_then(|v| v.as_str().map(audit_url));
+    if let Some(o) = audit.as_object_mut() {
+        o.insert("url_before".into(), o.get("url").cloned().unwrap_or(Value::Null));
+        o.insert("url_after".into(), after.map(Value::from).unwrap_or(Value::Null));
+        o.insert("latency_ms".into(), json!(started.elapsed().as_millis() as u64));
     }
 }
 
@@ -4008,12 +4020,14 @@ async fn action_inner(
     };
     crate::integrations::browser::touch_verb_for_session(&session);
     let ten = Duration::from_secs(10);
-    let audit = action_audit_fields(&body, &page.url);
+    let mut audit = action_audit_fields(&body, &page.url);
+    let action_started = std::time::Instant::now();
 
     macro_rules! audited_return {
         ($response:expr) => {{
             let response = $response;
             let status = response.status();
+            finish_action_audit(&mut cdp, &mut audit, action_started).await;
             record_action_response(&state, actor.as_deref(), &session, audit.clone(), status).await;
             return response;
         }};
@@ -4443,6 +4457,7 @@ async fn action_inner(
         _ => unreachable!("validated above"),
     };
     let status = response.status();
+    finish_action_audit(&mut cdp, &mut audit, action_started).await;
     record_action_response(&state, actor.as_deref(), &session, audit, status).await;
     response
 }

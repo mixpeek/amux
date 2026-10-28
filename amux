@@ -1643,6 +1643,70 @@ print("posted to %s as %s%s%s" % (d.get("conv") or os.environ["CONV"], d.get("au
   esac
 }
 
+# amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]:
+# what a worker did, newest first: browser verbs (with the page before and
+# after), tool calls, and calls to amux's own API (api/audit.rs). Read-only.
+cmd_audit() {
+  local worker="" since="24h" kind="browser,tool,api" limit=200 raw=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --since) since="${2:?--since needs a duration like 30m, 2h, 3d}"; shift 2 ;;
+      --kind)  kind="${2:?--kind needs browser, tool, api or a comma list}"; shift 2 ;;
+      --limit) limit="${2:?--limit needs a number}"; shift 2 ;;
+      --json)  raw=1; shift ;;
+      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"; return 0 ;;
+      *) worker="$1"; shift ;;
+    esac
+  done
+  worker="${worker:-${AMUX_SESSION:-}}"
+  [[ -n "$worker" ]] || die "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"
+  local hours
+  hours=$(python3 -c 'import re,sys
+m=re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)",sys.argv[1].strip())
+if not m: sys.exit(1)
+n=float(m.group(1)); u=m.group(2) or "h"
+print(n*{"s":1/3600,"m":1/60,"h":1,"d":24}[u])' "$since") || die "--since must look like 30m, 2h or 3d"
+  local api="${AMUX_API:-https://localhost:8824}" out
+  out=$(_curl -sk -m 30 -G "$api/api/audit" --data-urlencode "worker=$worker" --data-urlencode "since_h=$hours" \
+        --data-urlencode "kind=$kind" --data-urlencode "limit=$limit") || die "amux server unreachable"
+  if [[ -n "$raw" ]]; then printf '%s\n' "$out"; return 0; fi
+  OUT="$out" python3 - <<'PYAUDIT'
+import json, os
+try:
+    d = json.loads(os.environ["OUT"])
+except Exception:
+    print("amux audit: the server did not answer with JSON"); raise SystemExit(1)
+if d.get("error"):
+    print("amux audit:", d["error"]); raise SystemExit(1)
+for e in reversed(d.get("events") or []):
+    at = (e.get("at") or "")[11:19]
+    det = e.get("detail") or {}
+    k, t = e.get("kind"), e.get("type", "")
+    if k == "browser":
+        bits = [det.get("verb") or det.get("action") or ""]
+        if det.get("action") and det.get("verb"): bits.append(det["action"])
+        tgt = det.get("target") or {}
+        if tgt.get("kind") == "coordinates": bits.append("at %s,%s" % (tgt.get("x"), tgt.get("y")))
+        elif tgt.get("kind"): bits.append(tgt["kind"])
+        if det.get("target_url"): bits.append("-> " + det["target_url"])
+        before, after = det.get("url_before") or det.get("url"), det.get("url_after")
+        if before and after and before != after: bits.append("%s => %s" % (before, after))
+        elif after or before: bits.append("on " + (after or before))
+        if det.get("backend"): bits.append("[%s]" % det["backend"])
+        ok = det.get("ok", det.get("http_success"))
+        line = "%s  browser  %s  %s%s" % (at, t.replace("browser.", ""), " ".join(b for b in bits if b), "" if ok in (None, True) else "  FAILED " + str(det.get("error") or det.get("http_status") or ""))
+    elif k == "tool":
+        ok = det.get("ok")
+        line = "%s  tool     %-10s %s%s" % (at, t, (det.get("input") or "")[:140], "" if ok in (None, True) else "  FAILED" + (" exit %s" % det["exit_code"] if det.get("exit_code") is not None else ""))
+    else:
+        line = "%s  api      %s  %s" % (at, t, det.get("status"))
+    print(line)
+srcs = ", ".join("%s %s/%s" % (s["table"], s["rows"], s["rows_total"]) + (" ERROR " + s["error"] if s.get("error") else "") for s in d.get("sources") or [])
+print("\n%d shown, %d in window%s. sources: %s" % (len(d.get("events") or []), d.get("n_considered", 0), " (truncated, raise --limit)" if d.get("truncated") else "", srcs))
+print("not visible here: " + "; ".join(x.split(":")[0] for x in d.get("blind_spots") or []))
+PYAUDIT
+}
+
 # amux receipts [--keep] [<worker>]: outcomes held so they would not wake you.
 # A clean detached `amux land` writes one here instead of sending a message;
 # the server attaches pending receipts to the next wake it sends anyway (a
@@ -6594,6 +6658,8 @@ ${BOLD}Interaction:${RESET}
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
                                  worker: lands in your thread as you, @mentioning them). Prints who it posted as
+  amux audit <worker> [--since 2h] [--kind browser,tool,api]
+                                 What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
                                  ${DIM}  fix the auth bug in login.ts${RESET}
@@ -11264,6 +11330,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     peek|p)           shift; cmd_peek "$@" ;;
     send)             shift; cmd_send "$@" ;;
     post)             shift; cmd_post "$@" ;;
+    audit)            shift; cmd_audit "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;

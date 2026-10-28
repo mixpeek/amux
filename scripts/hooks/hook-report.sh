@@ -379,6 +379,25 @@ try:
     if not sid and tp and tp.endswith(".jsonl"):
         sid=os.path.basename(tp)[:-6]
     if sid: out["session_id"]=sid
+    # TOOL AUDIT (2026-10-27). A PostToolUse payload names the tool and its
+    # input; the server writes one _amux_tool_events row from it, so every
+    # Bash, Edit or WebFetch call a worker makes can be triaged later. Only
+    # a short summary of the input goes out (the command, the path, the url),
+    # never the tool output. tool_response is present only after the call.
+    tn=h.get("tool_name") or ""
+    if tn and "tool_response" in h and "subagent" not in out:
+        ti=h.get("tool_input") if isinstance(h.get("tool_input"),dict) else {}
+        keys=("command","file_path","path","url","pattern","query","description","notebook_path","skill","subagent_type")
+        summ=" ".join(str(ti.get(k)) for k in keys if ti.get(k) not in (None,""))
+        if not summ: summ="keys:"+",".join(sorted(ti.keys()))[:120]
+        tr=h.get("tool_response")
+        bad=isinstance(tr,dict) and bool(tr.get("is_error") or tr.get("interrupted") or tr.get("error"))
+        code=None
+        if isinstance(tr,dict):
+            for k in ("exit_code","exitCode","returnCode","code"):
+                if isinstance(tr.get(k),int): code=tr.get(k); break
+        if code not in (None,0): bad=True
+        out["tool"]={"name":tn,"input":summ[:400],"ok":not bad,"exit_code":code,"use_id":h.get("tool_use_id") or "","agent_id":h.get("agent_id") or ""}
     if "subagent" in out:
         sub=out.get("subagent") or ""
         aid=h.get("agent_id") or h.get("agentId") or ""
@@ -395,7 +414,7 @@ try:
             # The same conversation may be resumed by a NEW process. Each
             # SessionStart is therefore a distinct reset; response-loss retries
             # keep this generated id in the durable queue row below.
-            event_id=f"{sid or os.environ.get('AMUX_SESSION','')}:reset:{time.time_ns()}"
+            event_id=(sid or os.environ.get("AMUX_SESSION",""))+f":reset:{time.time_ns()}"
         else:
             # No provider identity means no safe equivalence relation. Two
             # empty-payload starts may be two concurrent agents, so each hook
@@ -602,6 +621,20 @@ with open(path+".lock","a+") as guard:
         except Exception: pass
         previous=[]
     attempts=max(0,int(previous[0].get("attempts",0))) if previous else 0
+    # Latest-wins is right for the state, wrong for the tool audit: a burst
+    # of tool calls before the drain runs would keep only the last one. Carry
+    # every undelivered tool record forward (the server skips a tool_use_id
+    # it already has, so a row sent just before this replacement is not
+    # counted twice). Capped so a long outage cannot grow the row unbounded.
+    carried=[]
+    for prev in previous:
+        pb=prev.get("body") or {}
+        carried+= [t for t in (pb.get("tools_pending") or []) if isinstance(t,dict)]
+        if isinstance(pb.get("tool"),dict): carried.append(pb["tool"])
+    if carried:
+        if len(carried)>200:
+            body["tools_dropped"]=int(pb.get("tools_dropped") or 0)+len(carried)-200
+        body["tools_pending"]=carried[-200:]
     row={"event_id":event_id,"body":body,"attempts":attempts}
     fd,tmp=tempfile.mkstemp(prefix="state.",dir=os.path.dirname(path))
     try:
