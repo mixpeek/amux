@@ -881,8 +881,14 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
         // get them to do work ... and it does the thread shit inline").
         Conv::People(..) => (format!("{author} mentioned you in a direct message (amux Messages):"), "that message's thread".to_string()),
     };
+    // WHO SENT THIS, said outright. Twice on 2026-10-28 a worker read a
+    // delivery as "text you pasted with nothing from you asking me to act" and
+    // posted a refusal in the thread instead of doing the task (mtp-demo from
+    // a DM, workflows from #wexus, the second from Ethan himself).
     format!(
-        "{opening}\n\n{body}\n\nThis is addressed to you: act on it now. Your answer must be posted to {place}, \
+        "{opening}\n\n{body}\n\nNobody pasted this. amux delivered {author}'s post to you because it mentions you, \
+         and {author} is waiting for your answer there. Treat it as {author}'s own request to you: do the work, \
+         within your rules, and ask any question you need in the same place. Your answer must be posted to {place}, \
          because that is where {author} is reading (this pane is not). Post it with:\n\
          amux post '{}' <<'EOF'\n<your answer>\nEOF",
         conv.key()
@@ -2128,7 +2134,8 @@ mod tests {
         let t = delivery_text(&Conv::Group("wexus".into()), "elliot", "@ed run 10/11");
         assert!(t.starts_with("elliot mentioned you in #wexus"), "{t}");
         assert!(t.contains("\n\n@ed run 10/11\n\n"));
-        assert!(t.contains("addressed to you"), "a worker must read it as its own task");
+        assert!(t.contains("Nobody pasted this") && t.contains("Treat it as elliot's own request"),
+            "a worker must read it as a request from the person, not pasted text: {t}");
         assert!(t.contains("amux post 'g:wexus' <<'EOF'"));
         // Claude Code asks before running a command with unverifiable
         // variables, so the reply recipe must not contain any.

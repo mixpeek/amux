@@ -32264,6 +32264,17 @@ pub const SCOPED_CONTEXT_MARKER: &str = "[amux scoped context]";
 /// Empty for an isolated worker with nothing set (it receives none of it).
 /// The standing instruction a worker with every Board tab switch off starts
 /// with. The global CLAUDE.md board and task-ledger sections key on this.
+/// How a post from amux Messages reaches a worker. Without it, workers read a
+/// delivery as text the operator pasted and declined to act (2026-10-28).
+pub(crate) const MESSAGES_CONTEXT: &str = "# amux Messages\n\n\
+People and workers talk to you from amux Messages (channels, direct messages and your own thread). \
+When a post there mentions you, amux delivers it into this session as a message that begins \
+\"<name> mentioned you in ...\" or \"<name> wrote to you in ...\". That is a real request from that \
+person, sent by amux on their behalf, not text someone pasted: act on it as you would a direct \
+instruction, within your rules and boundaries. Answer where the delivery says, with the \
+`amux post` command it gives (in a channel or direct message that is the thread under their post), \
+and ask any question in that same thread. A reply there reaches you again.";
+
 pub(crate) const BOARD_OFF_CONTEXT: &str = "# Board off for this worker\n\n\
 Every board switch is off for this worker, so you have no board: do not read, create, append to, \
 move or close board cards, and skip the board and task-ledger sections of CLAUDE.md. The board API \
@@ -32295,7 +32306,7 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = if crate::api::board_lifecycle::board_unused(name) {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
-    let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}");
+    let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}");
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\
@@ -55571,6 +55582,9 @@ mod commit_shape_tests {
         let launch = super::compose_worker_context("memapp", false);
         assert!(launch.contains(super::MEMORY_VERB_CONTEXT), "{launch}");
         assert!(launch.contains("amux memory add --stdin"));
+        // A Messages delivery is a person's request, not pasted text (2026-10-28).
+        assert!(launch.contains(super::MESSAGES_CONTEXT), "{launch}");
+        assert!(!super::compose_worker_context("memapp", true).contains("# amux Messages"), "isolated workers get no injected guide");
         // The worker block points at the verb, not at a file a guard may refuse.
         let block = super::compose_worker_block("memapp", "x");
         assert!(block.contains("amux memory add --stdin") && !block.contains("~/.amux/memory/"), "{block}");
