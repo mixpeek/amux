@@ -1039,8 +1039,16 @@
      saved locally as it arrives and the recording syncs to the configured
      folder when amux is reachable. -->
 <div id="record-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <div class="recorder-wrap">
-    <div class="recorder-hero">
+  <div class="recorder-wrap rec-app">
+    <div class="rec-head">
+      <div class="rec-head-text">
+        <div class="rec-title">Record</div>
+        <div class="rec-sub ui-help">Capture conversations, get live transcripts, take notes, and send them to workers.</div>
+      </div>
+      <input id="rec-search" class="input rec-search" type="search" placeholder="Search recordings" aria-label="Search recordings" oninput="_recSetQuery(this.value)">
+      <button id="rec-hotkey-chip" class="btn rec-hotkey" type="button" onclick="_recorderToggle()" title="Start or stop recording (change it in the Hotkeys tab)"><span id="rec-hotkey-combo">Alt+Shift+R</span> Start/Stop</button>
+    </div>
+    <div class="recorder-hero rec-strip">
       <button id="recorder-btn" class="recorder-btn" type="button" onclick="_recorderToggle()" aria-pressed="false" aria-label="Start recording">
         <span class="recorder-btn-dot" aria-hidden="true"></span>
       </button>
@@ -1048,14 +1056,62 @@
         <div id="recorder-elapsed" class="recorder-elapsed">0:00</div>
         <div class="recorder-level" aria-hidden="true"><div id="recorder-level-fill" class="recorder-level-fill"></div></div>
         <div id="recorder-status" class="recorder-status" role="status" aria-live="polite">Tap to record. Each second is saved on this device as it records.</div>
+      </div>
+      <div id="rec-meters" class="rec-meters" aria-hidden="true"></div>
+      <div class="rec-strip-acts">
         <button id="recorder-pause" class="btn" type="button" onclick="_recorderPauseToggle()" hidden>Pause</button>
+        <button id="rec-stop" class="btn danger" type="button" onclick="_recorderToggle()" hidden>Stop</button>
       </div>
     </div>
-    <div class="recorder-sync-row">
-      <span id="recorder-sync-summary" class="recorder-sync-summary"></span>
-      <button class="btn" type="button" onclick="_recorderSync(true)">Sync now</button>
+    <div class="rec-body" id="rec-body">
+      <div class="rec-list-pane">
+        <div class="rec-filter" role="tablist" aria-label="Show">
+          <button type="button" class="rec-seg active" data-f="all" onclick="_recSetFilter('all')">All</button>
+          <button type="button" class="rec-seg" data-f="meeting" onclick="_recSetFilter('meeting')">Meetings</button>
+          <button type="button" class="rec-seg" data-f="voice" onclick="_recSetFilter('voice')">Voice notes</button>
+        </div>
+        <div class="recorder-sync-row">
+          <span id="recorder-sync-summary" class="recorder-sync-summary"></span>
+          <button class="btn" type="button" onclick="_recorderSync(true)">Sync now</button>
+        </div>
+        <div id="recorder-list" class="recorder-list"></div>
+      </div>
+      <div class="rec-detail-pane" id="rec-detail">
+        <div class="rec-detail-head">
+          <button type="button" class="btn rec-back" onclick="_recBack()" aria-label="Back to recordings">&#x2039;</button>
+          <div class="rec-detail-titles">
+            <div class="rec-detail-title-row"><input id="rec-detail-title" class="rec-detail-title" aria-label="Recording title" onchange="_recRename(this.value)" placeholder="Untitled recording"></div>
+            <div id="rec-detail-meta" class="rec-detail-meta ui-help"></div>
+          </div>
+        </div>
+        <div class="rec-tabs" role="tablist">
+          <button type="button" class="rec-tab active" data-t="transcript" onclick="_recSetTab('transcript')">Transcript</button>
+          <button type="button" class="rec-tab" data-t="notes" onclick="_recSetTab('notes')">Notes</button>
+          <button type="button" class="rec-tab" data-t="audio" onclick="_recSetTab('audio')">Audio</button>
+          <button type="button" class="rec-tab" data-t="details" onclick="_recSetTab('details')">Details</button>
+        </div>
+        <div id="recorder-live" class="recorder-live" hidden>
+          <label for="recorder-notes" class="recorder-live-label">Your notes</label>
+          <textarea id="recorder-notes" class="input recorder-notes" rows="3" placeholder="Jot what matters. Type @worker to send it the recording." oninput="_recorderNotesInput(this.value)"></textarea>
+          <div class="recorder-live-label">Live transcript <span id="recorder-live-state" class="ui-help"></span></div>
+          <div id="recorder-live-text" class="recorder-live-text" aria-live="polite"></div>
+        </div>
+        <div id="rec-detail-body" class="rec-detail-body"></div>
+        <div class="rec-addnote">
+          <input id="rec-addnote" class="input" placeholder="Add a note" aria-label="Add a note at this point" onkeydown="if(event.key==='Enter'){event.preventDefault();_recAddNote()}">
+          <button type="button" class="btn primary" onclick="_recAddNote()">Add</button>
+        </div>
+      </div>
+      <div class="rec-side-pane" id="rec-side">
+        <div class="rec-tabs" role="tablist">
+          <button type="button" class="rec-tab active" data-s="summary" onclick="_recSetSide('summary')">Summary</button>
+          <button type="button" class="rec-tab" data-s="actions" onclick="_recSetSide('actions')">Actions</button>
+          <button type="button" class="rec-tab" data-s="workers" onclick="_recSetSide('workers')">Workers</button>
+          <button type="button" class="rec-tab" data-s="meeting" onclick="_recSetSide('meeting')">Meeting</button>
+        </div>
+        <div id="rec-side-body" class="rec-side-body"></div>
+      </div>
     </div>
-    <div id="recorder-list" class="recorder-list"></div>
     <details class="recorder-settings">
       <summary>Settings</summary>
       <div class="ui-field">
@@ -1075,8 +1131,16 @@
           <option value="auto">Record it, and stop when the call ends</option>
         </select>
       </div>
+      <div class="ui-field" id="recorder-input-row" hidden>
+        <label for="recorder-input">Microphone</label>
+        <select id="recorder-input" class="input" onchange="_recorderSetInput(this.value)"></select>
+      </div>
       <label class="recorder-check" id="recorder-system-row" hidden><input id="recorder-system" type="checkbox" onchange="_recorderSetSystem(this.checked)"> Also record the Mac's sound (calls and meetings). macOS asks for Screen Recording permission the first time.</label>
       <div id="recorder-transcriber" class="ui-help"></div>
+      <label class="recorder-check"><input id="recorder-opt-live" type="checkbox" onchange="_recorderSetOption('live', this.checked)"> Transcribe live while recording, so the words so far are saved if anything goes wrong</label>
+      <label class="recorder-check"><input id="recorder-opt-notes" type="checkbox" onchange="_recorderSetOption('notes', this.checked)"> Write meeting notes from the transcript and your notes</label>
+      <label class="recorder-check"><input id="recorder-opt-organize" type="checkbox" onchange="_recorderSetOption('organize', this.checked)"> Work out what the meeting is about and file it with the workers and groups it concerns</label>
+      <div id="recorder-opt-help" class="ui-help"></div>
     </details>
   </div>
 </div>

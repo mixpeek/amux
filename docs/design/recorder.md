@@ -118,6 +118,53 @@ does not touch it.
 Long audio is split into 10-minute pieces for Gemini, with timestamps offset back.
 A crash during transcription no longer spends an attempt.
 
+### Live transcription (2026-10-28, `api/recording_live.rs`)
+
+On by default (Settings in the Record tab). While a session is open, the
+`recordings-live` job (every 5 s) takes each track's newly arrived audio in
+windows of about 15 s and transcribes it with the same engine as the finished
+transcript (local whisper.cpp here, Gemini where that is the engine). Each
+window lands in `<session>/live.json` and the readable `live.md` before the next
+one starts, so a crash of the app, the device or the server keeps every word up
+to that point. The Record tab shows the words as they arrive. When the session
+is filed, the live pieces travel in its sidecar (`live`) and the finished
+transcript is those pieces plus only the untranscribed tail: progressive, never
+all at the end. Two tracks are labelled You (microphone) and Them (the
+computer's sound). Verdicts: `recording_live_transcribed`, `recording_live_failed`,
+`recording_live_unavailable`, `recording_transcript_from_live`.
+
+### Notes, filing, sending to workers, the calendar
+
+- **Your notes.** A notes box in the Record tab while recording (also kept in
+  the browser, so a crash cannot take it), and "Add a note" stamps a line with
+  the time in the recording. They ride on the recording as `user_notes`.
+- **Meeting notes** (opt-in). After the transcript, the helper model
+  (`AMUX_HELPER_MODEL`) writes `<base>.notes.md`: title, summary, key points,
+  decisions, action items with owners (ticked in the Record tab), then your
+  notes verbatim. It also suggests the workers the meeting concerns, choosing
+  only from the fleet's names (a made-up name is dropped).
+- **Filing** (opt-in, off by default). The meeting is filed with the workers
+  and groups it concerns and a summary is posted in each group's channel as the
+  Recorder, with no @mention, so it wakes nobody.
+- **Sending to a worker.** Tag a worker (the Workers panel, or `@worker` in your
+  notes) and once the transcript (and notes, if on) is ready the worker gets a
+  message from the owner in its Messages thread (an isolated worker, a direct
+  send): date, length, participants, the calendar event, absolute paths to the
+  audio, transcript and notes, your instructions for it, and "handle it as fits
+  your role" (a presales worker catalogues the meeting, for example). It
+  answers in the thread. `POST /api/recordings/<id>/send`.
+- **The calendar.** A recording is matched to the event it overlaps most (at
+  least half the recording or ten minutes) in the amux calendar and every
+  connected Google account; the event names the meeting and lists its people.
+- **Hotkey.** "Start or stop recording" in the Hotkeys tab, Alt+Shift+R by
+  default; the Mac app's Control-Option-R works from any app.
+- **Microphone choice** (Mac). The Record tab lists the inputs; the recorder
+  checks microphone permission before starting and says "the microphone gives
+  no audio" within 4 s instead of recording nothing.
+- **Signing.** The Mac app is signed ad hoc with its bundle id as the
+  designated requirement. With the default (the binary's hash) every rebuild
+  silently lost the microphone grant.
+
 ### Dictation
 
 Records in 1 s chunks persisted as they arrive, so a reload keeps the take, and the
@@ -168,6 +215,24 @@ for a 10 s piece, 140 s for one that opens quietly); every piece now carries
 the manifest's duration. The Mac writer also summed whole-ms buffer
 durations, running start_ms 50 ms a segment behind the audio; it keeps the
 timeline in exact milliseconds. At most two segments ever waited for upload.
+
+### Evidence, 2026-10-28
+
+- `desktop/test/recorder-live-e2e.py`, real speech (macOS `say`, 53 s): the
+  browser leg (Chromium's microphone is the speech) passed every check: the
+  hotkey started and stopped it, live words 28 s in, the finished transcript
+  built from the live pieces, typed notes and an `@worker` in them delivered to
+  the worker's thread with the file paths, notes and filing by a stand-in helper
+  (said in the script). The Mac leg records the "Background Music" loopback
+  through the real microphone path; it needs the one microphone grant for the
+  newly signed app.
+- Live windows on a private server: three 5 s pieces of real speech were in
+  the live transcript 18.7 s after upload, word for word.
+- `ios/AmuxAppTests/RecorderCoreTests`: the recorder core on the iOS runtime
+  (Simulator): segments and manifest, a call interruption filed as a gap with
+  its reason, a killed recording recovered on relaunch. It found that an
+  expected gap's reason was wiped by audio still in flight.
+- `e2e/recorder-panes.spec.ts`: the three panes, desktop and phone.
 
 ## Limits
 

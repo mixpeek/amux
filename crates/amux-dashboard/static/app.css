@@ -7983,6 +7983,109 @@ select.input { height:var(--control-height); }
 .recorder-sync-empty { color:var(--dim); }
 .recorder-transcript-state { font-size:var(--fs-md); color:var(--dim); }
 .recorder-excerpt { font-size:var(--fs-lg); color:var(--text); line-height:1.45; overflow-wrap:anywhere; }
+.recorder-about { font-size:var(--fs-md); color:var(--text); overflow-wrap:anywhere; }
+/* Record, three panes (owner's mockup, 2026-10-28): list | recording | summary.
+   Phones: the list, then the open recording full screen with its panel below. */
+.recorder-wrap.rec-app { max-width:none; gap:var(--space-3); }
+.rec-head { display:flex; align-items:center; gap:var(--space-3); flex-wrap:nowrap; min-width:0; }
+.rec-head-text { flex:1; min-width:0; }
+.rec-title { font-size:var(--fs-2xl); font-weight:700; color:var(--text); }
+.rec-search { width:260px; max-width:40vw; }
+.rec-hotkey { white-space:nowrap; }
+.rec-strip { padding:var(--space-3); }
+.rec-strip .recorder-btn { width:96px; height:96px; min-width:96px; }
+.rec-meters { display:flex; gap:var(--space-4); min-width:0; }
+.rec-meter { display:flex; flex-direction:column; gap:var(--space-1); font-size:var(--fs-sm); color:var(--dim); width:160px; }
+.rec-strip-acts { display:flex; gap:var(--space-2); }
+.rec-body { display:grid; grid-template-columns:minmax(240px, 300px) minmax(0, 1fr) minmax(260px, 340px); gap:var(--space-3); min-height:0; flex:1; }
+.rec-list-pane, .rec-detail-pane, .rec-side-pane { display:flex; flex-direction:column; gap:var(--space-2); min-width:0; min-height:0; }
+.rec-detail-pane, .rec-side-pane { background:var(--card); border:1px solid var(--border); border-radius:var(--radius-dialog); padding:var(--space-3); }
+.rec-filter { display:flex; gap:var(--space-1); padding:var(--space-0-5); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-control); }
+.rec-seg, .rec-tab { outline:none; box-shadow:none; }
+.rec-seg:focus-visible, .rec-tab:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.rec-seg { flex:1; min-height:36px; border:1px solid transparent; background:none; border-radius:var(--radius-sm); color:var(--dim); cursor:pointer; font:inherit; }
+.rec-seg.active { background:var(--bg); color:var(--text); font-weight:600; box-shadow:var(--shadow-sm); }
+.recorder-item { cursor:pointer; }
+.recorder-item.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+.recorder-item.live .rec-item-title { color:var(--red); }
+.rec-item-title { display:flex; align-items:center; gap:var(--space-1-5); font-weight:600; color:var(--text); min-width:0; overflow-wrap:anywhere; }
+.rec-item-ico { flex:0 0 auto; }
+.rec-item-people { margin-left:auto; font-size:var(--fs-sm); color:var(--dim); font-weight:400; }
+.rec-detail-head { display:flex; gap:var(--space-2); align-items:flex-start; }
+.rec-back { display:none; min-width:44px; min-height:44px; }
+.rec-detail-titles { flex:1; min-width:0; }
+.rec-detail-title { width:100%; font:inherit; font-size:var(--fs-xl); font-weight:700; color:var(--text); background:none; border:1px solid transparent; border-radius:var(--radius-sm); padding:var(--space-0-5) var(--space-1); box-sizing:border-box; }
+.rec-detail-title:hover:not(:disabled), .rec-detail-title:focus { border-color:var(--border); }
+.rec-detail-meta { display:flex; align-items:center; gap:var(--space-1); flex-wrap:wrap; }
+.rec-people { display:inline-flex; }
+.rec-people .cv-av { width:22px; height:22px; flex-basis:22px; margin-left:calc(-1 * var(--space-1)); border:2px solid var(--card); font-size:var(--fs-3xs); }
+.rec-more { font-size:var(--fs-sm); color:var(--dim); margin-left:var(--space-1); }
+.rec-tabs { display:flex; gap:var(--space-1); border-bottom:1px solid var(--border); overflow-x:auto; flex-wrap:nowrap; }
+.rec-tab { border:none; background:none; padding:var(--space-2) var(--space-2-5); min-height:40px; color:var(--dim); cursor:pointer; font:inherit; border-bottom:2px solid transparent; white-space:nowrap; }
+.rec-tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+.rec-detail-body, .rec-side-body { overflow-y:auto; min-height:0; flex:1; display:flex; flex-direction:column; gap:var(--space-2); }
+.rec-lines { display:flex; flex-direction:column; gap:var(--space-1); }
+.rec-line { display:flex; gap:var(--space-2); align-items:flex-start; padding:var(--space-1-5); border-radius:var(--radius-sm); }
+.rec-line:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
+.rec-line[hidden] { display:none; }
+.rec-line-at { border:none; background:none; color:var(--dim); font:inherit; font-size:var(--fs-sm); font-variant-numeric:tabular-nums; cursor:pointer; padding:0; min-width:44px; text-align:left; }
+.rec-line-av { width:26px; height:26px; flex:0 0 26px; font-size:var(--fs-xs); }
+.rec-line-av.you { background:var(--accent); color:var(--on-accent); }
+.rec-line-av.them { background:var(--border); color:var(--text); }
+.rec-line-body { flex:1; min-width:0; overflow-wrap:anywhere; line-height:1.45; }
+.rec-line-who { font-weight:600; font-size:var(--fs-sm); }
+.rec-tsearch { width:100%; box-sizing:border-box; }
+.rec-notes { line-height:1.5; }
+.rec-usernotes { white-space:pre-wrap; overflow-wrap:anywhere; }
+.rec-audio { width:100%; }
+.rec-details { border-collapse:collapse; font-size:var(--fs-md); }
+.rec-details th { text-align:left; color:var(--dim); font-weight:400; padding:var(--space-1) var(--space-3) var(--space-1) 0; vertical-align:top; white-space:nowrap; }
+.rec-details td { overflow-wrap:anywhere; padding:var(--space-1) 0; }
+.rec-addnote { display:flex; gap:var(--space-2); }
+.rec-addnote .input { flex:1; min-width:0; }
+.rec-side-head { display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); }
+.rec-side-sub { font-weight:600; margin-top:var(--space-2); }
+.rec-summary { line-height:1.5; }
+.rec-points { margin:0; padding-left:var(--space-5); line-height:1.5; }
+.rec-actions-list { display:flex; flex-direction:column; gap:var(--space-1); }
+.rec-action { display:flex; align-items:flex-start; gap:var(--space-2); min-height:36px; cursor:pointer; }
+.rec-action-owner { margin-left:auto; color:var(--dim); font-size:var(--fs-sm); white-space:nowrap; }
+.rec-worker { display:flex; flex-direction:column; gap:var(--space-1); padding:var(--space-2); border:1px solid var(--border); border-radius:var(--radius-control); }
+.rec-worker.rec-suggest { flex-direction:row; align-items:center; justify-content:space-between; }
+.rec-worker-name { display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); font-weight:600; }
+.rec-worker-state { font-weight:400; font-size:var(--fs-sm); color:var(--dim); }
+.rec-worker-ins { font-size:var(--fs-sm); white-space:pre-wrap; }
+.rec-addworker { display:flex; gap:var(--space-2); }
+.rec-addworker .input { flex:1; min-width:0; }
+.rec-send { align-self:flex-start; }
+@media (max-width: 1200px) {
+  .rec-body { grid-template-columns:minmax(220px, 280px) minmax(0, 1fr); }
+  .rec-side-pane { grid-column:2; }
+}
+@media (max-width: 900px) {
+  .rec-head-text .rec-sub, .rec-hotkey { display:none; }
+  .rec-search { width:auto; flex:1; max-width:none; }
+  .rec-body { display:flex; flex-direction:column; }
+  .rec-detail-pane, .rec-side-pane { display:none; }
+  #record-view.rec-open .rec-list-pane { display:none; }
+  #record-view.rec-open .rec-detail-pane, #record-view.rec-open .rec-side-pane { display:flex; }
+  #record-view.rec-open .rec-back { display:inline-flex; align-items:center; justify-content:center; }
+  .rec-meters { display:none; }
+}
+@media (max-width: 600px) {
+  .rec-strip .recorder-btn { width:96px; height:96px; min-width:96px; }
+  .rec-strip { flex-wrap:wrap; }
+  .rec-tab { min-height:44px; }
+  .rec-seg { min-height:44px; }
+}
+/* Live panel: your notes and the words so far, while a recording runs. */
+.recorder-live { display:flex; flex-direction:column; gap:var(--space-1-5); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md); }
+.recorder-live[hidden] { display:none; }
+.recorder-live-label { font-size:var(--fs-md); font-weight:600; color:var(--text); }
+.recorder-notes { width:100%; min-height:88px; font:inherit; box-sizing:border-box; resize:vertical; }
+.recorder-live-text { max-height:240px; overflow-y:auto; font-size:var(--fs-md); line-height:1.45; color:var(--text); -webkit-overflow-scrolling:touch; }
+.recorder-live-line { padding:var(--space-0-5) 0; overflow-wrap:anywhere; }
+.recorder-live-at { color:var(--dim); font-variant-numeric:tabular-nums; margin-right:var(--space-1-5); }
 .recorder-actions { display:flex; gap:var(--space-2); flex-wrap:wrap; margin-top:var(--space-1); }
 .recorder-settings { background:var(--card); border:1px solid var(--border); border-radius:var(--radius-control); padding:var(--space-3); }
 .recorder-settings summary { cursor:pointer; font-weight:600; min-height:44px; display:flex; align-items:center; }

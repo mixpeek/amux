@@ -87,6 +87,7 @@ mod poll_watch;
 /// derived from the spawn sites rather than declared alongside them.
 pub mod receipts;
 pub mod recordings_transcribe;
+pub mod recordings_live;
 pub mod registry;
 pub mod scheduler;
 pub mod schedule_failure;

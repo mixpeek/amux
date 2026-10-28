@@ -252,6 +252,16 @@ pub async fn list_events(
     Ok(Json(body))
 }
 
+/// Every connected account's events between two RFC 3339 times, read as the
+/// owner (the Recorder names a meeting by the event it overlaps). Accounts
+/// that fail are skipped; the result says how many were read.
+pub(crate) async fn events_between(state: &AppState, tmin: &str, tmax: &str) -> (Vec<Value>, usize) {
+    let targets = super::connectors::google_calendar_accounts(&crate::config::amux_home());
+    let body = list_window(state, &HeaderMap::new(), &targets, tmin, tmax).await;
+    let ok = body["accounts"].as_array().map(|a| a.iter().filter(|o| o["ok"] == true).count()).unwrap_or(0);
+    (body["events"].as_array().cloned().unwrap_or_default(), ok)
+}
+
 /// The windowed read: every eligible account concurrently.
 async fn list_window(
     state: &AppState,

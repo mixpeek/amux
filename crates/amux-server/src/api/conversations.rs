@@ -1344,6 +1344,63 @@ pub(crate) fn resolve_link_target(target: &str) -> Option<(String, String)> {
     None
 }
 
+/// Every worker Messages can route to: (name, groups, description). The
+/// Recorder files a meeting with the workers it concerns from this list.
+pub(crate) fn fleet_directory() -> Vec<(String, Vec<String>, String)> {
+    let home = super::groups::amux_home();
+    lanes().into_iter().map(|l| {
+        let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{}.env", l.name)));
+        let desc = env.get("CC_DESC").map(|v| v.trim().trim_matches('"').to_string()).unwrap_or_default();
+        (l.name, l.groups.into_iter().collect(), desc)
+    }).collect()
+}
+
+/// Every worker, isolated ones too: (name, groups, description, isolated).
+/// A recording can be sent to any of them; the owner's send reaches all.
+pub(crate) fn fleet_directory_all() -> Vec<(String, Vec<String>, String, bool)> {
+    let home = super::groups::amux_home();
+    let desc = |n: &str| crate::config::parse_env_file(&home.join("sessions").join(format!("{n}.env")))
+        .get("CC_DESC").map(|v| v.trim().trim_matches('"').to_string()).unwrap_or_default();
+    let mut out: Vec<(String, Vec<String>, String, bool)> = lanes().into_iter()
+        .map(|l| { let d = desc(&l.name); (l.name, l.groups.into_iter().collect(), d, false) }).collect();
+    out.extend(isolated_lanes().into_iter().map(|l| { let d = desc(&l.name); (l.name, l.groups.into_iter().collect(), d, true) }));
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The owner's post into a worker's own thread (the Recorder sending a
+/// recording the owner tagged it on). The worker answers in the thread.
+pub(crate) async fn owner_post_to_worker(state: &AppState, worker: &str, body: &str) -> Result<String, String> {
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let name = display_for("owner", "");
+    post_inner(state, Conv::Worker(worker.to_string()), &me, me.key(), name, body.to_string(), HeaderMap::new(),
+        None, None, json!([]), None, None).await
+        .map(|v| format!("posted in w:{worker} (post {})", v["id"]))
+        .map_err(|_| format!("the post into {worker}'s thread was refused"))
+}
+
+/// The owner's direct send to a worker Messages has no route to (isolated).
+pub(crate) async fn owner_send_direct(state: &AppState, worker: &str, body: &str) -> Result<String, String> {
+    let resp = super::session_verbs::send_post(state, worker, &HeaderMap::new(), &json!({"text": body, "record_history": true})).await;
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+    if status.is_success() && v["ok"].as_bool().unwrap_or(false) {
+        Ok(format!("sent directly ({})", v["submission"].as_str().unwrap_or("accepted")))
+    } else {
+        Err(format!("HTTP {}: {}", status.as_u16(), v["error"].as_str().unwrap_or("not accepted")))
+    }
+}
+
+/// A post into a group's channel by the Recorder (recording_live.rs): its own
+/// author, never the owner's name, and no @mention, so it wakes no worker.
+pub(crate) async fn recorder_post(state: &AppState, group: &str, body: &str) -> Result<(), String> {
+    let conv = Conv::Group(group.to_string());
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    post_inner(state, conv, &me, "recorder:amux".into(), "Recorder".into(), body.replace('@', ""), HeaderMap::new(),
+        None, None, json!([]), None, None).await.map(|_| ()).map_err(|_| format!("the post into #{group} was refused"))
+}
+
 /// The chat bridge posting a platform message into a conversation. It posts
 /// with the owner's reach (the owner linked the conversation); `author_key`
 /// and `author_name` name the actual sender, and `note` (for anyone who is

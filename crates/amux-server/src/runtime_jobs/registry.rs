@@ -140,6 +140,7 @@ pub mod ids {
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
     pub const RECORDINGS_TRANSCRIBE: &str = "recordings-transcribe";
+    pub const RECORDINGS_LIVE: &str = "recordings-live";
     pub const MODEL_CATALOG_REFRESH: &str = "model-catalog-refresh";
     pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
@@ -206,6 +207,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
     ids::RECORDINGS_TRANSCRIBE,
+    ids::RECORDINGS_LIVE,
     ids::MODEL_CATALOG_REFRESH,
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
@@ -943,6 +945,21 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/recordings/config"),
+    },
+    Doc {
+        id: ids::RECORDINGS_LIVE,
+        name: "Live recording transcripts",
+        purpose: "Transcribes each open recording session in windows of about 15 seconds while it is recorded, so the words up to any crash are already on disk (live.json, live.md) and the finished transcript only adds the tail. Off with the Record tab's live option.",
+        env: &[EnvControl {
+            var: "AMUX_RECORDINGS_LIVE_SECS",
+            effect: "tick seconds (default 5); 0 disables the job",
+            off: Some("0"),
+        }],
+        pref: Some(PrefControl {
+            key: "recordings_live",
+            effect: "off: nothing is transcribed while recording; the finished transcript is made at the end, all at once",
+        }),
+        detail: Some("/api/recordings/options"),
     },
     Doc {
         id: ids::CONVERSE_RETENTION,

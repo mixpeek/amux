@@ -64599,6 +64599,9 @@ function _recorderSetSystem(on) {
   try { localStorage.setItem('amux_recorder_system', on ? '1' : '0'); } catch (e) {}
   if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', system: !!on});
 }
+function _recorderSetInput(name) {
+  if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', input: String(name || '')});
+}
 function _recorderSetMeeting(mode) {
   if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', meeting: mode});
 }
@@ -64621,12 +64624,28 @@ function _nativeRecorderPaint() {
   }
   const tab = document.getElementById('tab-record');
   if (tab) tab.classList.toggle('recording', on);
+  _recorderLiveSync();
   const pause = document.getElementById('recorder-pause');
   if (pause) { pause.hidden = !on; pause.textContent = st.state === 'paused' ? 'Resume' : 'Pause'; }
+  const stopBtn = document.getElementById('rec-stop');
+  if (stopBtn) stopBtn.hidden = !on;
+  _recPaintMeters();
   const meetRow = document.getElementById('recorder-meeting-row');
   if (meetRow) meetRow.hidden = !('meeting' in st);
   const meet = document.getElementById('recorder-meeting');
   if (meet && st.meeting && document.activeElement !== meet) meet.value = st.meeting;
+  const inRow = document.getElementById('recorder-input-row');
+  if (inRow) inRow.hidden = !Array.isArray(st.inputs);
+  const inSel = document.getElementById('recorder-input');
+  if (inSel && Array.isArray(st.inputs) && document.activeElement !== inSel) {
+    const opts = [''].concat(st.inputs);
+    const want = opts.map(n => n || 'default').join('|');
+    if (inSel.dataset.opts !== want) {
+      inSel.innerHTML = opts.map(n => '<option value="' + esc(n) + '">' + esc(n || 'The Mac\'s default input') + '</option>').join('');
+      inSel.dataset.opts = want;
+    }
+    inSel.value = st.input || '';
+  }
   const sysRow = document.getElementById('recorder-system-row');
   if (sysRow) sysRow.hidden = !st.system_audio_available;
   const sys = document.getElementById('recorder-system');
@@ -65121,6 +65140,418 @@ async function _recorderLoadConfig() {
   _recorderRenderSettings();
 }
 
+// ── Live transcript, your notes, meeting notes (server: api/recording_live.rs) ──
+// While a recording runs the server transcribes it in ~30 s windows; this
+// panel shows those words as they land and saves what you type beside the
+// recording (and in this browser, so a crash cannot take it).
+let _recorderOptions = null;
+let _recorderLiveT = null, _recorderLiveId = '', _recorderNotesT = null;
+async function _recorderLoadOptions() {
+  try {
+    const r = await fetch(API + '/api/recordings/options', {cache: 'no-store'});
+    _recorderOptions = r.ok ? await r.json() : null;
+  } catch (e) { _recorderOptions = null; }
+  _recorderRenderOptions();
+}
+function _recorderRenderOptions() {
+  const o = _recorderOptions || {};
+  for (const k of ['live', 'notes', 'organize']) {
+    const el = document.getElementById('recorder-opt-' + k);
+    if (el) { el.checked = !!o[k]; el.disabled = !_recorderOptions; }
+  }
+  const help = document.getElementById('recorder-opt-help');
+  if (help) help.textContent = _recorderOptions ? 'Notes and filing use the helper model set in Settings. Filing posts a summary in each matching group channel and wakes no worker.'
+    : 'These options are unavailable: amux did not answer.';
+}
+async function _recorderSetOption(name, on) {
+  try {
+    const r = await fetch(API + '/api/recordings/options', {method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({[name]: !!on})});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    _recorderOptions = d;
+  } catch (e) { showToast('Not saved: ' + ((e && e.message) || 'offline'), 'error'); }
+  _recorderRenderOptions();
+}
+// The recording in progress, from the Mac app or this page.
+function _recorderCurrentId() {
+  if (_nativeRecorderActive() && _nativeRec.id) return _nativeRec.id;
+  return _recorderLive ? _recorderLive.id : '';
+}
+function _recorderLiveSync() {
+  const id = _recorderCurrentId();
+  const panel = document.getElementById('recorder-live');
+  // The live panel belongs to the live recording's view, not to any other one opened meanwhile.
+  if (panel) panel.hidden = !id || (_recSel && _recSel !== id);
+  if (id && id !== _recorderLiveId) {
+    _recorderLiveId = id;
+    const ta = document.getElementById('recorder-notes');
+    let saved = '';
+    try { saved = localStorage.getItem('amux_recorder_notes_' + id) || ''; } catch (e) {}
+    if (ta) ta.value = saved;
+    const box = document.getElementById('recorder-live-text');
+    if (box) box.innerHTML = '';
+    clearInterval(_recorderLiveT);
+    _recorderLiveT = setInterval(_recorderLivePoll, 4000);
+    _recorderLivePoll();
+  } else if (!id && _recorderLiveId) {
+    // Stopped: send the last of the notes, then let the list take over.
+    _recorderNotesFlush(_recorderLiveId);
+    clearInterval(_recorderLiveT); _recorderLiveT = null; _recorderLiveId = '';
+  }
+}
+async function _recorderLivePoll() {
+  const id = _recorderLiveId; if (!id) return;
+  let d;
+  try {
+    const r = await fetch(API + '/api/recordings/sessions/' + encodeURIComponent(id) + '/live', {cache: 'no-store'});
+    if (r.status === 404) { _recorderLiveState('Starting. The first words appear about 20 seconds in.'); return; }
+    d = await r.json();
+  } catch (e) { _recorderLiveState('Offline: the transcript catches up when amux is reachable.'); return; }
+  if (id !== _recorderLiveId) return;
+  const segs = d.segments || [];
+  const box = document.getElementById('recorder-live-text');
+  if (box) {
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = segs.length ? segs.map(s => '<div class="recorder-live-line"><span class="recorder-live-at">' + esc(_recorderClock(s.from_ms)) + '</span> ' + esc(s.text) + '</div>').join('')
+      : '<div class="ui-help">Nothing transcribed yet. Words appear in windows of about 15 seconds.</div>';
+    if (near) box.scrollTop = box.scrollHeight;
+  }
+  const errs = (d.errors || []).map(e => e.track + ': ' + e.error);
+  _recorderLiveState(errs.length ? 'Behind: ' + errs.join('; ') + '. Retrying; the finished transcript covers it either way.'
+    : (_recorderOptions && _recorderOptions.live === false ? 'Live transcription is off in Settings below.' : segs.length + ' line' + (segs.length === 1 ? '' : 's') + ' so far'));
+}
+function _recorderLiveState(t) { const el = document.getElementById('recorder-live-state'); if (el) el.textContent = t; }
+function _recorderNotesInput(v) {
+  const id = _recorderLiveId; if (!id) return;
+  try { localStorage.setItem('amux_recorder_notes_' + id, v); } catch (e) {}
+  clearTimeout(_recorderNotesT);
+  _recorderNotesT = setTimeout(() => _recorderNotesFlush(id), 1500);
+}
+async function _recorderNotesFlush(id) {
+  let v = '';
+  try { v = localStorage.getItem('amux_recorder_notes_' + id) || ''; } catch (e) {}
+  if (!id || !v) return;
+  try {
+    const r = await fetch(API + '/api/recordings/sessions/' + encodeURIComponent(id) + '/notes', {method: 'PUT', headers: _authHeaders({'Content-Type': 'text/plain'}), body: v});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) { setTimeout(() => _recorderNotesFlush(id), 10000); }
+}
+async function _recorderShowNotes(id) {
+  let d;
+  try {
+    const r = await fetch(API + '/api/recordings/' + encodeURIComponent(id), {cache: 'no-store'});
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) { showToast('Notes unavailable: ' + ((e && e.message) || 'offline')); return; }
+  const n = d.notes || {};
+  const ab = d.about || null;
+  const filed = ab && ((ab.workers || []).length || (ab.groups || []).length)
+    ? '<div class="ui-help">Filed with ' + esc([...(ab.workers || []), ...(ab.groups || []).map(g => '#' + g)].join(', ')) + (ab.why ? ': ' + esc(ab.why) : '') + '</div>' : '';
+  const copy = await showFormModal(n.title || 'Meeting notes', filed + '<div class="recorder-transcript">' + esc(n.text || n.error || 'No notes yet.') + '</div>', 'Copy notes');
+  if (copy && n.text) { try { await navigator.clipboard.writeText(n.text); showToast('Notes copied'); } catch (e) { showToast('Copy failed'); } }
+}
+async function _recorderWriteNotes(id) {
+  showToast('Writing meeting notes…');
+  try {
+    const r = await fetch(API + '/api/recordings/' + encodeURIComponent(id) + '/notes', {method: 'POST', headers: _authHeaders()});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || (d.notes && d.notes.error) || ('HTTP ' + r.status));
+  } catch (e) { showToast('Notes not written: ' + ((e && e.message) || 'offline'), 'error'); }
+  await _recorderLoadServer(); _recorderRender();
+}
+
+// ── Record, three panes (the owner's mockup, 2026-10-28) ────────────────────
+// The list on the left, the open recording in the middle (transcript, notes,
+// audio, details) and its summary, action items, workers and calendar event
+// on the right. While a recording runs, the middle shows it live.
+let _recSel = '', _recFilter = 'all', _recQuery = '', _recTab = 'transcript', _recSideTab = 'summary';
+let _recDetail = null, _recPick = {};
+function _recTitle(row) {
+  const s = row.server || {};
+  if (s.title) return s.title;
+  if (s.notes && s.notes.title) return s.notes.title;
+  if (s.meeting && s.meeting.title) return s.meeting.title;
+  if (row.id && row.id === _recorderCurrentId()) return 'Recording now';
+  return _recKind(row) === 'meeting' ? 'Meeting' : 'Voice note';
+}
+function _recKind(row) {
+  const s = row.server || {};
+  const tracks = (s.session && s.session.tracks) || [];
+  return (tracks.includes('system') || (s.meeting && s.meeting.title)) ? 'meeting' : 'voice';
+}
+function _recSetFilter(f) {
+  _recFilter = f;
+  document.querySelectorAll('#record-view .rec-seg').forEach(b => b.classList.toggle('active', b.dataset.f === f));
+  _recorderRender();
+}
+function _recSetQuery(q) { _recQuery = q || ''; _recorderRender(); }
+function _recSetTab(t) {
+  _recTab = t;
+  document.querySelectorAll('#rec-detail .rec-tab').forEach(b => b.classList.toggle('active', b.dataset.t === t));
+  _recRenderDetail();
+}
+function _recSetSide(t) {
+  _recSideTab = t;
+  document.querySelectorAll('#rec-side .rec-tab').forEach(b => b.classList.toggle('active', b.dataset.s === t));
+  _recRenderSide();
+}
+function _recBack() { document.getElementById('record-view').classList.remove('rec-open'); }
+async function _recSelect(id) {
+  _recSel = id;
+  document.getElementById('record-view').classList.add('rec-open');
+  document.querySelectorAll('#recorder-list .recorder-item').forEach(e => e.classList.toggle('selected', e.dataset.recId === id));
+  await _recLoadDetail(id);
+}
+async function _recLoadDetail(id) {
+  if (!id) { _recDetail = null; _recRenderDetail(); _recRenderSide(); return; }
+  if (id === _recorderCurrentId()) {
+    _recDetail = {id, live: true};
+  } else {
+    try {
+      const r = await fetch(API + '/api/recordings/' + encodeURIComponent(id), {cache: 'no-store'});
+      _recDetail = r.ok ? await r.json() : {id, missing: true, local: true};
+    } catch (e) { _recDetail = {id, missing: true, offline: true}; }
+  }
+  if (_recSel !== id) return;
+  _recRenderDetail();
+  _recRenderSide();
+}
+function _recClock(ms) { return _recorderClock(Math.max(0, Number(ms) || 0)); }
+function _recSpeaker(text) {
+  const m = /^(You|Them):\s*/.exec(text || '');
+  return m ? {who: m[1], text: text.slice(m[0].length)} : {who: '', text: text || ''};
+}
+function _recLineHtml(s) {
+  const sp = _recSpeaker(s.text);
+  return '<div class="rec-line"><button type="button" class="rec-line-at" onclick="_recSeek(' + Number(s.from_ms || 0) + ')" title="Play from here">' + esc(_recClock(s.from_ms)) + '</button>'
+    + (sp.who ? '<span class="cv-av rec-line-av ' + (sp.who === 'You' ? 'you' : 'them') + '">' + esc(sp.who[0]) + '</span>' : '')
+    + '<div class="rec-line-body">' + (sp.who ? '<div class="rec-line-who">' + esc(sp.who === 'You' ? 'You' : 'Them') + '</div>' : '') + esc(sp.text) + '</div></div>';
+}
+function _recMeta(d) {
+  const bits = [];
+  const st = Number(d.started_at || 0);
+  if (st) bits.push(new Date(st).toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}));
+  if (d.dur_ms) bits.push(_recClock(d.dur_ms));
+  if (d.meeting && d.meeting.meeting_url) bits.push('<a href="' + esc(d.meeting.meeting_url) + '" target="_blank" rel="noopener">Call link</a>');
+  const ppl = (d.meeting && d.meeting.attendees) || [];
+  let h = bits.map((b, i) => i === 2 ? b : esc(b)).join(' · ');
+  if (ppl.length) h += ' · <span class="rec-people">' + ppl.slice(0, 4).map(p => _cvAvatar(p, false, '')).join('') + (ppl.length > 4 ? '<span class="rec-more">+' + (ppl.length - 4) + '</span>' : '') + '</span>';
+  return h;
+}
+function _recRenderDetail() {
+  const d = _recDetail;
+  const body = document.getElementById('rec-detail-body');
+  const title = document.getElementById('rec-detail-title');
+  const meta = document.getElementById('rec-detail-meta');
+  const live = document.getElementById('recorder-live');
+  if (!body) return;
+  if (!d) {
+    if (title) { title.value = ''; title.disabled = true; }
+    if (meta) meta.textContent = '';
+    if (live) live.hidden = true;
+    body.innerHTML = '<div class="recorder-empty">Choose a recording, or press record. The transcript shows here as you talk.</div>';
+    return;
+  }
+  if (d.live) {
+    if (title) { title.value = 'Recording now'; title.disabled = true; }
+    if (meta) meta.textContent = 'Live: the transcript fills in about every 15 seconds.';
+    if (live) live.hidden = false;
+    body.innerHTML = '';
+    return;
+  }
+  if (live) live.hidden = true;
+  const row = {id: d.id, server: d};
+  if (title && document.activeElement !== title) { title.value = d.missing ? 'Not synced yet' : _recTitle(row); title.disabled = !!d.missing; }
+  if (meta) meta.innerHTML = d.missing ? 'This recording is on this device and syncs when amux is reachable.' : _recMeta(d);
+  if (d.missing) { body.innerHTML = ''; return; }
+  const t = d.transcript || {};
+  if (_recTab === 'transcript') {
+    const segs = t.segments || [];
+    if (!segs.length) {
+      body.innerHTML = '<div class="recorder-empty">' + esc(_recorderTranscriptWords(row) || 'No transcript yet.') + '</div>';
+      return;
+    }
+    body.innerHTML = '<input class="input rec-tsearch" type="search" placeholder="Search transcript" aria-label="Search transcript" oninput="_recFilterLines(this.value)">'
+      + '<div id="rec-lines" class="rec-lines">' + segs.map(_recLineHtml).join('') + '</div>';
+  } else if (_recTab === 'notes') {
+    const n = d.notes || {};
+    let h = '';
+    if (n.status === 'done' && n.text) h += '<div class="rec-notes md-body">' + renderMarkdown(n.text) + '</div>';
+    else if (n.status === 'pending') h += '<div class="recorder-empty">Writing meeting notes…</div>';
+    else h += '<div class="recorder-empty">' + esc(n.status === 'failed' ? 'Notes failed: ' + (n.error || '') : 'No meeting notes yet.') + '</div>'
+      + (t.status === 'done' ? '<button type="button" class="btn primary" onclick="_recorderWriteNotes(\'' + esc(d.id) + '\')">Write notes</button>' : '');
+    if (d.user_notes && !(n.status === 'done' && n.text)) h += '<div class="recorder-live-label">Your notes</div><div class="rec-usernotes">' + esc(d.user_notes) + '</div>';
+    body.innerHTML = h;
+  } else if (_recTab === 'audio') {
+    const src = d.path ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(d.path)) : '';
+    body.innerHTML = src ? '<audio id="rec-audio" controls preload="metadata" src="' + esc(src) + '" class="rec-audio"></audio>'
+      + '<div class="ui-help">' + esc(d.file || '') + '</div>' : '<div class="recorder-empty">No audio file on the server yet.</div>';
+  } else {
+    const ses = d.session || {};
+    const rows = [['File', d.path || d.file], ['Recorded', d.recorded_at_local], ['Length', _recClock(d.dur_ms)], ['Size', _recorderSize(d.bytes)],
+      ['Tracks', (ses.tracks || ['mic']).join(', ')], ['Gaps', ses.gaps ? ses.gaps.length + (ses.gap_ms ? ' (' + _recClock(ses.gap_ms) + ')' : '') : '0'],
+      ['Partial', d.partial ? 'yes' : 'no'], ['Transcript', (t.engine || '') + (t.live ? ', built live' : '') + (t.md ? ' · ' + t.md : '')],
+      ['Notes', (d.notes && d.notes.md) || ''], ['Id', d.id]];
+    body.innerHTML = '<table class="rec-details">' + rows.filter(r => r[1]).map(r => '<tr><th>' + esc(r[0]) + '</th><td>' + esc(String(r[1])) + '</td></tr>').join('') + '</table>';
+  }
+}
+function _recFilterLines(q) {
+  q = (q || '').toLowerCase();
+  document.querySelectorAll('#rec-lines .rec-line').forEach(e => { e.hidden = !!q && !e.textContent.toLowerCase().includes(q); });
+}
+function _recSeek(ms) {
+  _recSetTab('audio');
+  const a = document.getElementById('rec-audio');
+  if (!a) return;
+  const go = () => { a.currentTime = ms / 1000; a.play().catch(() => {}); };
+  if (a.readyState >= 1) go(); else a.addEventListener('loadedmetadata', go, {once: true});
+}
+function _recWorkerInfo(name) {
+  return ((_recorderOptions && _recorderOptions.workers) || []).find(w => w.name === name) || {name, desc: ''};
+}
+function _recRenderSide() {
+  const box = document.getElementById('rec-side-body');
+  if (!box) return;
+  const d = _recDetail;
+  if (!d || d.missing) { box.innerHTML = '<div class="recorder-empty">Summary, action items and workers appear once a recording is transcribed.</div>'; return; }
+  const n = d.notes || {};
+  let h = '';
+  if (_recSideTab === 'summary') {
+    if (d.live) h = '<div class="ui-help">The summary is written when the recording ends' + (_recorderOptions && _recorderOptions.notes ? '.' : ', if meeting notes are on in Settings.') + '</div>';
+    else if (n.status === 'done') {
+      h = '<div class="rec-side-head"><b>Summary</b><button type="button" class="btn" onclick="_recorderWriteNotes(\'' + esc(d.id) + '\')">Regenerate</button></div>'
+        + '<div class="rec-summary">' + esc(n.summary || '') + '</div>'
+        + ((n.key_points || []).length ? '<div class="rec-side-sub">Key points</div><ul class="rec-points">' + n.key_points.map(k => '<li>' + esc(k) + '</li>').join('') + '</ul>' : '')
+        + ((n.decisions || []).length ? '<div class="rec-side-sub">Decisions</div><ul class="rec-points">' + n.decisions.map(k => '<li>' + esc(k) + '</li>').join('') + '</ul>' : '');
+    } else h = '<div class="ui-help">' + esc(n.status === 'pending' ? 'Writing the summary…' : n.status === 'failed' ? 'The summary failed: ' + (n.error || '') : 'No summary yet.') + '</div>'
+      + (d.transcript && d.transcript.status === 'done' && n.status !== 'pending' ? '<button type="button" class="btn primary" onclick="_recorderWriteNotes(\'' + esc(d.id) + '\')">Write summary and notes</button>' : '');
+  } else if (_recSideTab === 'actions') {
+    const items = n.action_items || [];
+    h = items.length ? '<div class="rec-actions-list">' + items.map((it, i) => '<label class="rec-action"><input type="checkbox" ' + (it.done ? 'checked ' : '')
+      + 'onchange="_recToggleAction(' + i + ', this.checked)"><span>' + esc(it.text) + '</span>' + (it.owner ? '<span class="rec-action-owner">' + esc(it.owner) + '</span>' : '') + '</label>').join('') + '</div>'
+      : '<div class="ui-help">No action items' + (n.status === 'done' ? ' were found.' : ' yet.') + '</div>';
+  } else if (_recSideTab === 'workers') {
+    const sent = d.send_to || [];
+    const pick = _recPick[d.id] || [];
+    const chosen = new Set([...sent.map(s => s.worker), ...pick.map(p => p.worker)]);
+    h = '<div class="rec-side-head"><b>Send to workers</b></div><div class="ui-help">A worker gets the audio, transcript, notes, date and participants, and handles it its own way (a presales worker catalogues the meeting, for example).</div>';
+    for (const s of sent) {
+      const w = _recWorkerInfo(s.worker);
+      h += '<div class="rec-worker"><div class="rec-worker-name">@' + esc(s.worker) + '<span class="rec-worker-state">' + esc(s.state ? (s.state === 'failed' ? 'not sent: ' + (s.error || '') : 'sent') : (d.live ? 'sends when transcribed' : 'waiting for the transcript')) + '</span></div>'
+        + (w.desc ? '<div class="ui-help">' + esc(w.desc) + '</div>' : '') + (s.instructions ? '<div class="rec-worker-ins">' + esc(s.instructions) + '</div>' : '') + '</div>';
+    }
+    pick.forEach((p, i) => {
+      const w = _recWorkerInfo(p.worker);
+      h += '<div class="rec-worker"><div class="rec-worker-name">@' + esc(p.worker) + '<button type="button" class="btn" aria-label="Remove" onclick="_recRemoveWorker(' + i + ')">&#x2715;</button></div>'
+        + (w.desc ? '<div class="ui-help">' + esc(w.desc) + '</div>' : '')
+        + '<input class="input" placeholder="Instructions for this worker (optional)" value="' + esc(p.instructions || '') + '" oninput="_recPick[\'' + esc(d.id) + '\'][' + i + '].instructions=this.value"></div>';
+    });
+    h += '<div class="rec-addworker"><input id="rec-worker-input" class="input" list="rec-worker-names" placeholder="@worker" aria-label="Add a worker">'
+      + '<datalist id="rec-worker-names">' + ((_recorderOptions && _recorderOptions.workers) || []).map(w => '<option value="@' + esc(w.name) + '">' + esc((w.desc || '').slice(0, 80)) + '</option>').join('') + '</datalist>'
+      + '<button type="button" class="btn" onclick="_recAddWorker(document.getElementById(\'rec-worker-input\').value)">Add</button></div>';
+    if (pick.length) h += '<button type="button" class="btn primary rec-send" onclick="_recSendWorkers()">' + (d.live ? 'Send when transcribed' : 'Send to ' + pick.length + ' worker' + (pick.length === 1 ? '' : 's')) + '</button>';
+    const sug = ((d.about && d.about.workers) || []).filter(w => !chosen.has(w));
+    if (sug.length) {
+      h += '<div class="rec-side-sub">Suggested workers' + (d.about.why ? ' <span class="ui-help">(' + esc(d.about.why) + ')</span>' : '') + '</div>';
+      h += sug.map(w => '<div class="rec-worker rec-suggest"><div><div class="rec-worker-name">@' + esc(w) + '</div><div class="ui-help">' + esc(_recWorkerInfo(w).desc || '') + '</div></div>'
+        + '<button type="button" class="btn" onclick="_recAddWorker(\'' + esc(w) + '\')">Add</button></div>').join('');
+    }
+  } else {
+    const m = d.meeting;
+    h = m ? '<div class="rec-side-head"><b>' + esc(m.title || 'Calendar event') + '</b></div>'
+      + '<div class="ui-help">' + esc((m.start || '') + (m.end ? ' to ' + m.end : '')) + (m.calendar ? ' · ' + esc(m.calendar) : '') + ' · ' + esc(m.source === 'google' ? 'Google Calendar' : 'amux calendar') + '</div>'
+      + (m.organizer ? '<div class="rec-side-sub">Organizer</div><div>' + esc(typeof m.organizer === 'string' ? m.organizer : (m.organizer.email || m.organizer.display_name || '')) + '</div>' : '')
+      + ((m.attendees || []).length ? '<div class="rec-side-sub">Participants</div><ul class="rec-points">' + m.attendees.map(a => '<li>' + esc(a) + '</li>').join('') + '</ul>' : '')
+      + (m.meeting_url ? '<a class="btn" href="' + esc(m.meeting_url) + '" target="_blank" rel="noopener">Open the call link</a>' : '')
+      : '<div class="ui-help">' + (d.live ? 'The calendar event is matched when the recording ends.' : 'No calendar event overlaps this recording. Events come from the amux calendar and connected Google calendars.') + '</div>';
+  }
+  box.innerHTML = h;
+}
+function _recAddWorker(raw) {
+  const d = _recDetail; if (!d) return;
+  const name = String(raw || '').trim().replace(/^@/, '');
+  if (!name) return;
+  if (!_recWorkerInfo(name).groups && !((_recorderOptions && _recorderOptions.workers) || []).some(w => w.name === name)) { showToast('No worker named ' + name, 'error'); return; }
+  const pick = _recPick[d.id] = _recPick[d.id] || [];
+  if (!pick.some(p => p.worker === name)) pick.push({worker: name, instructions: ''});
+  _recRenderSide();
+}
+function _recRemoveWorker(i) { const d = _recDetail; if (!d) return; (_recPick[d.id] || []).splice(i, 1); _recRenderSide(); }
+async function _recSendWorkers() {
+  const d = _recDetail; if (!d) return;
+  const pick = (_recPick[d.id] || []).filter(p => p.worker);
+  if (!pick.length) return;
+  try {
+    const url = d.live ? '/api/recordings/sessions/' + encodeURIComponent(d.id) + '/send-to' : '/api/recordings/' + encodeURIComponent(d.id) + '/send';
+    const r = await fetch(API + url, {method: d.live ? 'PUT' : 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({workers: pick})});
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(out.error || ('HTTP ' + r.status));
+    showToast(d.live ? 'They get it once it is transcribed' : (out.waiting ? 'Queued: sends once the transcript is done' : 'Sent'));
+    if (!d.live) _recPick[d.id] = [];
+  } catch (e) { showToast('Not sent: ' + ((e && e.message) || 'offline'), 'error'); return; }
+  if (!d.live) await _recLoadDetail(d.id); else _recRenderSide();
+}
+async function _recRename(t) {
+  const d = _recDetail; if (!d || d.live || d.missing) return;
+  try {
+    const r = await fetch(API + '/api/recordings/' + encodeURIComponent(d.id) + '/edit', {method: 'PATCH', headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({title: t})});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d.title = t;
+    await _recorderLoadServer(); _recorderRender();
+  } catch (e) { showToast('Not renamed: ' + ((e && e.message) || 'offline'), 'error'); }
+}
+async function _recToggleAction(i, done) {
+  const d = _recDetail; if (!d) return;
+  try {
+    const r = await fetch(API + '/api/recordings/' + encodeURIComponent(d.id) + '/edit', {method: 'PATCH', headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({action_done: {index: i, done: !!done}})});
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(out.error || ('HTTP ' + r.status));
+    d.notes = out.notes || d.notes;
+  } catch (e) { showToast('Not saved: ' + ((e && e.message) || 'offline'), 'error'); }
+  _recRenderSide();
+}
+// "Add a note at 04:12": a line in your notes, stamped with where you are.
+async function _recAddNote() {
+  const inp = document.getElementById('rec-addnote');
+  const text = (inp && inp.value || '').trim();
+  const d = _recDetail;
+  if (!text || !d) return;
+  let at = 0;
+  if (d.live) at = _nativeRecorderActive() ? Number(_nativeRec.elapsed_ms || 0) : (_recorderLive ? Date.now() - _recorderLive.started_at : 0);
+  else { const a = document.getElementById('rec-audio'); at = a ? a.currentTime * 1000 : 0; }
+  const line = '[' + _recClock(at) + '] ' + text;
+  inp.value = '';
+  if (d.live) {
+    const ta = document.getElementById('recorder-notes');
+    if (ta) { ta.value = (ta.value ? ta.value.replace(/\s*$/, '\n') : '') + line; _recorderNotesInput(ta.value); }
+    return;
+  }
+  const notes = (d.user_notes ? d.user_notes.replace(/\s*$/, '\n') : '') + line;
+  try {
+    const r = await fetch(API + '/api/recordings/sessions/' + encodeURIComponent(d.id) + '/notes', {method: 'PUT', headers: _authHeaders({'Content-Type': 'text/plain'}), body: notes});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d.user_notes = notes;
+    showToast('Note added' + (d.notes && d.notes.status === 'done' ? '. Regenerate the summary to include it.' : ''));
+  } catch (e) { showToast('Note not saved: ' + ((e && e.message) || 'offline'), 'error'); }
+  _recRenderDetail();
+}
+// The strip: one meter per track while the Mac app records (mic, system).
+function _recPaintMeters() {
+  const box = document.getElementById('rec-meters');
+  if (!box) return;
+  const st = _nativeRec;
+  const on = _nativeRecorderActive();
+  if (!on || !st || !st.levels) { box.innerHTML = ''; return; }
+  box.innerHTML = Object.entries(st.levels).map(([t, v]) => '<div class="rec-meter"><span>' + esc(t === 'system' ? "Mac's sound" : (st.input || 'Microphone')) + '</span>'
+    + '<div class="recorder-level"><div class="recorder-level-fill" style="width:' + Math.min(100, Math.round(Number(v) * 400)) + '%"></div></div></div>').join('');
+}
+function _recPaintHotkey() {
+  const el = document.getElementById('rec-hotkey-combo');
+  if (!el) return;
+  const h = (typeof _hkList !== 'undefined' ? _hkList : []).find(x => x.action === 'record' && x.type === 'keys' && x.enabled);
+  el.textContent = h ? h.trigger : 'No hotkey';
+}
+
 async function _recorderSaveDir() {
   const inp = document.getElementById('recorder-dir');
   const help = document.getElementById('recorder-dir-help');
@@ -65220,7 +65651,11 @@ async function _recorderRender() {
   const tab = document.getElementById('tab-record');
   if (tab) tab.classList.toggle('recording', on);
   if (!on && !_nativeRecorderAvailable()) _recorderTick();
+  const stopB = document.getElementById('rec-stop');
+  if (stopB && !_nativeRecorderAvailable()) stopB.hidden = !on;
   _nativeRecorderPaint();
+  _recorderLiveSync();
+  _recPaintHotkey();
   const summary = document.getElementById('recorder-sync-summary');
   const waiting = _recorderLocal.filter(m => ['local', 'failed', 'syncing', 'conflict'].includes(m.state)).length;
   if (summary) {
@@ -65236,7 +65671,12 @@ async function _recorderRender() {
   if (_recorderServerDir) h += '<div class="ui-help recorder-note">Folder: ' + esc(_recorderServerDir) + '</div>';
   if (!rows.length) h += '<div class="recorder-empty">No recordings yet.</div>';
   let day = '';
-  for (const row of rows) {
+  const q = _recQuery.trim().toLowerCase();
+  const shown = rows.filter(row => (_recFilter === 'all' || _recKind(row) === _recFilter)
+    && (!q || [_recTitle(row), row.server && row.server.transcript && row.server.transcript.excerpt, row.server && row.server.notes && row.server.notes.summary]
+      .some(t => String(t || '').toLowerCase().includes(q))));
+  if (rows.length && !shown.length) h += '<div class="recorder-empty">Nothing matches.</div>';
+  for (const row of shown) {
     const l = row.local, s = row.server;
     const d = new Date(row.started || Date.now());
     const dayKey = d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'});
@@ -65251,19 +65691,44 @@ async function _recorderRender() {
     let actions = '';
     if (canPlay) actions += '<button class="btn" type="button" onclick="_recorderPlay(\'' + id + '\')">Play</button>';
     if (s && s.transcript && s.transcript.status === 'done') actions += '<button class="btn" type="button" onclick="_recorderShowTranscript(\'' + id + '\')">Transcript</button>';
+    if (s && s.notes && s.notes.status === 'done') actions += '<button class="btn" type="button" onclick="_recorderShowNotes(\'' + id + '\')">Notes</button>';
+    else if (s && s.transcript && s.transcript.status === 'done' && !(s.notes && s.notes.status === 'pending')) actions += '<button class="btn" type="button" onclick="_recorderWriteNotes(\'' + id + '\')">Write notes</button>';
     if (l && (l.state === 'failed' || l.state === 'conflict')) actions += '<button class="btn primary" type="button" onclick="_recorderRetry(\'' + id + '\')">Retry sync</button>';
     if (s && s.transcript && (s.transcript.status === 'failed' || s.transcript.status === 'unavailable')) actions += '<button class="btn" type="button" onclick="_recorderRetranscribe(\'' + id + '\')">Transcribe again</button>';
     if (l && l.state !== 'recording' && l.state !== 'syncing' && (l.state !== 'synced' || l.keep_local)) actions += '<button class="btn danger" type="button" onclick="_recorderDeleteLocal(\'' + id + '\')">Delete from this device</button>';
-    h += '<div class="recorder-item" data-rec-id="' + id + '" data-sync-state="' + esc((l && l.state) || 'synced') + '">'
+    const people = s && s.meeting && (s.meeting.attendees || []).length;
+    const live = row.id === _recorderCurrentId();
+    h += '<div class="recorder-item' + (row.id === _recSel ? ' selected' : '') + (live ? ' live' : '') + '" data-rec-id="' + id + '" data-sync-state="' + esc((l && l.state) || 'synced') + '" onclick="if(!event.target.closest(\'button\'))_recSelect(this.dataset.recId)">'
+      + '<div class="rec-item-title"><span class="rec-item-ico" aria-hidden="true">' + (live ? '&#x1F534;' : _recKind(row) === 'meeting' ? '&#x1F465;' : '&#x1F399;&#xFE0F;') + '</span>' + esc(_recTitle(row))
+      + (people ? '<span class="rec-item-people" title="Participants">' + people + '</span>' : '') + '</div>'
       + '<div class="recorder-item-head"><span class="recorder-when">' + esc(d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})) + '</span>'
       + '<span class="recorder-meta">' + esc(_recorderClock(dur)) + ' · ' + esc(_recorderSize(bytes)) + (l && l.recovered ? ' · recovered after a reload' : '') + '</span></div>'
       + '<div class="recorder-sync recorder-sync-' + sync.cls + '">' + esc(sync.text) + '</div>'
       + (tWords ? '<div class="recorder-transcript-state">' + esc(tWords) + '</div>' : '')
+      + (s && s.notes && s.notes.title ? '<div class="recorder-about"><b>' + esc(s.notes.title) + '</b>'
+        + (s.about && ((s.about.workers || []).length || (s.about.groups || []).length) ? ' · filed with ' + esc([...(s.about.workers || []), ...(s.about.groups || []).map(g => '#' + g)].join(', ')) : '') + '</div>' : '')
+      + (s && s.notes && s.notes.status === 'pending' ? '<div class="recorder-transcript-state">Writing meeting notes</div>' : '')
+      + (s && s.notes && s.notes.status === 'failed' ? '<div class="recorder-transcript-state">Notes failed: ' + esc(s.notes.error || 'unknown') + '</div>' : '')
       + (excerpt ? '<div class="recorder-excerpt">' + esc(excerpt) + '</div>' : '')
       + (actions ? '<div class="recorder-actions">' + actions + '</div>' : '')
       + '</div>';
   }
   list.innerHTML = h;
+  _recAfterList(rows);
+}
+// Keep the open recording current without refetching on every repaint: only
+// when its server state (transcript, notes, sends) moved.
+let _recSig = '';
+function _recAfterList(rows) {
+  const cur = _recorderCurrentId();
+  if (cur && _recSel !== cur) { _recSel = cur; _recSig = ''; }
+  if (!_recSel && rows.length && !(window.matchMedia && window.matchMedia('(max-width: 900px)').matches)) _recSel = rows[0].id;
+  const row = rows.find(r => r.id === _recSel);
+  const s = row && row.server;
+  const sig = _recSel + '|' + (cur === _recSel) + '|' + (s ? [s.transcript && s.transcript.status, s.notes && s.notes.status, s.title,
+    JSON.stringify(s.send_to || []), s.meeting && s.meeting.title].join('|') : 'local');
+  if (sig !== _recSig) { _recSig = sig; _recLoadDetail(_recSel); }
+  document.querySelectorAll('#recorder-list .recorder-item').forEach(e => e.classList.toggle('selected', e.dataset.recId === _recSel));
 }
 
 async function _recorderPlay(id) {
@@ -65344,6 +65809,7 @@ async function _recorderInit() {
   }
   _recorderRender();
   _recorderLoadConfig();
+  _recorderLoadOptions();
   await _recorderLoadServer();
   await _recorderRender();
   _recorderSync();
@@ -71633,6 +72099,7 @@ const _HK_ACTIONS = {
   open_board: { label: 'Open Board', desc: 'Go to the Board tab', ico: '☷', tone: 'gray', run: () => switchView('board') },
   open_messages: { label: 'Open Messages', desc: 'Go to the Messages tab', ico: '✉', tone: 'red', run: () => switchView('messages') },
   open_draw: { label: 'Open Draw', desc: 'Open the drawing canvas', ico: '✎', tone: 'orange', run: () => switchView('draw') },
+  record: { label: 'Start or stop recording', desc: 'Record from anywhere in amux (the Mac app records natively)', ico: '●', tone: 'red', run: () => _recorderToggle() },
   open_hotkeys: { label: 'Open Hotkeys', desc: 'Come back to this tab', ico: '⌘', tone: 'gray', run: () => switchView('hotkeys') },
   go_back: { label: 'Back', desc: 'Go back to the previous tab, worker, card or file', ico: '‹', tone: 'gray', run: () => navBack() },
   go_forward: { label: 'Forward', desc: 'Go forward again after going back', ico: '›', tone: 'gray', run: () => navForward() },
@@ -71647,6 +72114,7 @@ const _HK_BUILTIN = [
   { combo: 'Mod+-', label: 'Zoom out', desc: 'Make the page smaller' },
   { combo: 'Mod+0', label: 'Reset zoom', desc: 'Back to 100%' },
   { combo: 'Ctrl+Alt+Space', label: 'Show amux', desc: 'Mac app, from any app on the Mac' },
+  { combo: 'Ctrl+Alt+R', label: 'Start or stop recording', desc: 'Mac app, from any app on the Mac' },
 ];
 const _HK_DEFAULTS = [
   { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
@@ -71656,6 +72124,7 @@ const _HK_DEFAULTS = [
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
   { id: 'hk-back', action: 'go_back', type: 'keys', trigger: 'Mod+[', enabled: true, remove: true, indicator: false },
   { id: 'hk-forward', action: 'go_forward', type: 'keys', trigger: 'Mod+]', enabled: true, remove: true, indicator: false },
+  { id: 'hk-record', action: 'record', type: 'keys', trigger: 'Alt+Shift+R', enabled: true, remove: true, indicator: false },
 ];
 let _hkList = _HK_DEFAULTS.map(h => Object.assign({}, h));
 let _hkLoaded = false;

@@ -207,6 +207,9 @@ test('a second the device lost is filed as a declared gap, never closed up silen
 });
 
 test('a second window never takes over a recording another window is still making', async ({ page, context }) => {
+  // The poll below waits up to 45 s for the lease to lapse; the default 30 s
+  // test budget cut it short whenever a run was slow (23 s typical, 30.2 s seen).
+  test.setTimeout(60_000);
   await useTempFolder(page);
   await openRecord(page);
   await page.locator('#recorder-btn').click();

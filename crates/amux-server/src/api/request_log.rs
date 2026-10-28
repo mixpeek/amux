@@ -3855,6 +3855,35 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/recordings/sessions/{id}/finish",
         methods: &["POST"],
     },
+    // Live transcripts, meeting notes and filing (api/recording_live.rs).
+    RouteEntry {
+        path: "/api/recordings/options",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}/live",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}/notes",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/recordings/{id}/notes",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/recordings/sessions/{id}/send-to",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/recordings/{id}/send",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/recordings/{id}/edit",
+        methods: &["PATCH"],
+    },
     RouteEntry {
         path: "/api/tts",
         methods: &["POST"],

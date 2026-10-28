@@ -90,6 +90,7 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}", get(get_one))
         .route("/{id}/transcribe", post(retranscribe))
         .merge(super::recording_sessions::routes())
+        .merge(super::recording_live::routes())
 }
 
 // ---- folder ----------------------------------------------------------------
@@ -535,6 +536,29 @@ fn find_sidecar(dir: &Path, id: &str) -> Option<(PathBuf, Value)> {
     })
 }
 
+/// Change a sidecar under the folder lock, keeping every field `f` leaves alone.
+pub(crate) fn update_sidecar(path: &Path, f: impl FnOnce(&mut Value)) -> std::io::Result<Value> {
+    let _g = folder_lock();
+    let mut v = read_json(path).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "unreadable sidecar"))?;
+    f(&mut v);
+    write_atomic(path, &serde_json::to_vec_pretty(&v).unwrap_or_default())?;
+    if let Some(ms) = v["started_at"].as_i64() {
+        let _ = stamp_times(path, ms);
+    }
+    Ok(v)
+}
+
+/// The recordings folder, for a job (no HTTP response to build).
+pub(crate) async fn folder_path(state: &AppState) -> anyhow::Result<PathBuf> {
+    current_dir(state).await.map(|(d, _)| d)
+}
+
+/// `write_transcript` for the live path (recording_live.rs).
+pub(crate) fn write_transcript_pub(dir: &Path, sidecar: &Value, segments: &[Segment], engine: &str, model: &str,
+    language: Value, t0: Instant) -> Result<Value, String> {
+    write_transcript(dir, sidecar, segments, engine, model, language, t0)
+}
+
 /// Replace a sidecar's `transcript` object, keeping every other field exactly
 /// as it is on disk.
 fn set_transcript(path: &Path, transcript: Value) -> std::io::Result<Value> {
@@ -813,7 +837,7 @@ const GEMINI_MAX_AUDIO: usize = 18 * 1024 * 1024;
 
 /// Run a future from the blocking transcription pass: the job runs it on a
 /// blocking thread inside the runtime, a unit test on a bare thread.
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
+pub(crate) fn block_on<F: std::future::Future>(f: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         Ok(h) => h.block_on(f),
         Err(_) => tokio::runtime::Builder::new_current_thread()
@@ -1160,7 +1184,16 @@ pub(crate) fn mark_unavailable(owed: &[(PathBuf, Value)], why: &str) {
 /// One pass over `dir`: every recording that still owes a transcript, oldest
 /// first, one at a time, until the tick budget is spent. Returns how many
 /// transcripts were written.
+#[cfg(test)]
 pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration, plan: &Plan) -> usize {
+    let opts = super::recording_live::Options { live: true, notes: false, organize: false };
+    transcribe_pending_with(dir, budget, plan, opts)
+}
+
+/// The pass, with the Record options: a recording transcribed live is
+/// finished from its live pieces, and a finished transcript owes notes when
+/// the options ask for them.
+pub(crate) fn transcribe_pending_with(dir: &Path, budget: Duration, plan: &Plan, opts: super::recording_live::Options) -> usize {
     let now = now_ms();
     let mut owed: Vec<(PathBuf, Value)> = read_sidecars(dir)
         .into_iter()
@@ -1216,10 +1249,14 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration, plan: &Plan) -
         {
             continue;
         }
-        let result = match (&local, &plan.gemini) {
-            (Some((ffmpeg, tr)), _) => transcribe_one(dir, &v, tr, ffmpeg),
-            (None, Some((key, vocab))) => transcribe_one_gemini(dir, &v, ffmpeg_for_gemini.as_deref(), key, vocab),
-            (None, None) => Err("no transcription engine".to_string()),
+        // Transcribed live: the pieces are kept and only the tail is new work.
+        let from_live = super::recording_live::ClipEngine::from_plan(plan).ok()
+            .and_then(|eng| super::recording_live::transcribe_with_live(dir, &v, &eng));
+        let result = match (from_live, &local, &plan.gemini) {
+            (Some(r), _, _) => r,
+            (None, Some((ffmpeg, tr)), _) => transcribe_one(dir, &v, tr, ffmpeg),
+            (None, None, Some((key, vocab))) => transcribe_one_gemini(dir, &v, ffmpeg_for_gemini.as_deref(), key, vocab),
+            (None, None, None) => Err("no transcription engine".to_string()),
         };
         match result {
             Ok(mut t) => {
@@ -1229,7 +1266,10 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration, plan: &Plan) -
                     t["words"],
                     t["secs"]
                 );
-                let _ = set_transcript(&path, t);
+                let _ = update_sidecar(&path, |s| {
+                    s["transcript"] = t;
+                    super::recording_live::owe_notes(s, opts);
+                });
                 done += 1;
             }
             Err(e) => {
@@ -1256,6 +1296,7 @@ pub async fn transcribe_pending(state: AppState) {
         }
     };
     let store = state.store.clone();
+    let notes_dir = dir.clone();
     let _ = tokio::task::spawn_blocking(move || {
         // Sessions first: a finished or abandoned session becomes a filed
         // recording, which this same tick can then transcribe.
@@ -1265,16 +1306,18 @@ pub async fn transcribe_pending(state: AppState) {
             tracing::info!(filed, failed, measured = true, n_considered = filed + failed,
                 verdict = "recording_sessions_tick", "recordings: assembled finished sessions");
         }
-        let plan = match store.read() {
-            Ok(conn) => Plan::read(&conn),
+        let (plan, opts) = match store.read() {
+            Ok(conn) => (Plan::read(&conn), super::recording_live::options(&conn)),
             Err(e) => {
                 tracing::warn!("[recordings] could not read the transcription setting: {e}");
                 return 0;
             }
         };
-        transcribe_pending_in(&dir, TICK_BUDGET, &plan)
+        transcribe_pending_with(&dir, TICK_BUDGET, &plan, opts)
     })
     .await;
+    // Notes and meeting understanding follow the transcripts, in this tick.
+    super::recording_live::notes_pass(&state, &notes_dir).await;
 }
 
 // ---- handlers --------------------------------------------------------------------
@@ -1422,6 +1465,17 @@ async fn get_one(State(state): State<AppState>, AxPath(id): AxPath<String>) -> R
         if let Some(md) = v["transcript"]["md"].as_str().map(str::to_string) {
             if let Ok(text) = std::fs::read_to_string(dir.join(md)) {
                 v["transcript"]["text"] = json!(strip_front_matter(&text));
+            }
+        }
+        // The lines, for the transcript view: who, when, what.
+        if let Some(f) = v["transcript"]["segments_file"].as_str().map(str::to_string) {
+            if let Some(j) = read_json(&dir.join(f)) {
+                v["transcript"]["segments"] = j["segments"].clone();
+            }
+        }
+        if let Some(md) = v["notes"]["md"].as_str().map(str::to_string) {
+            if let Ok(text) = std::fs::read_to_string(dir.join(md)) {
+                v["notes"]["text"] = json!(text);
             }
         }
         Some(v)

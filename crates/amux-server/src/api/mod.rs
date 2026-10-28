@@ -116,6 +116,7 @@ pub mod py_proxy;
 pub mod reclaim;
 pub(crate) mod reclaim_owner;
 pub mod reconciliation;
+pub mod recording_live;
 pub mod recording_sessions;
 pub mod recordings;
 pub(crate) mod transcription;

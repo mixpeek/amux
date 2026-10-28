@@ -48,6 +48,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const SESSIONS_DIR: &str = ".sessions";
+/// The prefix of the assembly error for a session with no audio at all.
+const EMPTY: &str = "empty";
 const MANIFEST: &str = "manifest.json";
 const MAX_CHUNK_BYTES: usize = 64 << 20;
 const MAX_TRACKS: usize = 4;
@@ -90,6 +92,12 @@ fn valid_track(t: &str) -> bool {
 
 pub(crate) fn session_dir(dir: &Path, id: &str) -> PathBuf {
     dir.join(SESSIONS_DIR).join(id)
+}
+
+/// A session's manifest under the manifest lock (recording_live.rs).
+pub(crate) fn read_manifest_pub(sdir: &Path) -> Option<Value> {
+    let _g = lock();
+    read_manifest(sdir)
 }
 
 fn read_manifest(sdir: &Path) -> Option<Value> {
@@ -392,6 +400,7 @@ async fn finish_route(State(state): State<AppState>, AxPath(id): AxPath<String>,
                     let triggered = crate::runtime_jobs::registry::trigger(crate::runtime_jobs::registry::ids::RECORDINGS_TRANSCRIBE);
                     Json(json!({"ok": true, "id": id, "state": "finished", "recording": sidecar, "transcribe_triggered": triggered})).into_response()
                 }
+                Ok(Err(e)) if e.starts_with(EMPTY) => Json(json!({"ok": true, "id": id, "state": "empty", "error": e})).into_response(),
                 Ok(Err(e)) => (StatusCode::ACCEPTED, Json(json!({"ok": true, "id": id, "state": "finishing",
                     "error": e, "retry": "the recordings job retries the assembly on its next tick"}))).into_response(),
                 Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -608,7 +617,21 @@ pub(crate) fn assemble(dir: &Path, id: &str, ff: Option<&Path>) -> Result<Value,
         files.push((t.clone(), f));
     }
     if files.is_empty() {
-        return Err("no track has any audio".into());
+        // Nothing to file: the session is closed as empty, with the reason and
+        // its manifest kept, instead of waiting in `finishing` for audio that
+        // will never come (a microphone that gave nothing, 2026-10-28).
+        let why = "no track has any audio";
+        {
+            let _g = lock();
+            if let Some(mut m2) = read_manifest(&sdir) {
+                m2["state"] = json!("empty");
+                m2["error"] = json!(why);
+                let _ = write_manifest(&sdir, &m2);
+            }
+        }
+        tracing::warn!(id, measured = true, n_considered = tracks.len(), verdict = "recording_session_empty",
+            "recordings: a session finished with no audio on any track; closed as empty, its manifest kept");
+        return Err(format!("{EMPTY}: {why}"));
     }
     let main = if files.len() == 1 {
         files[0].1.clone()
@@ -638,11 +661,16 @@ pub(crate) fn assemble(dir: &Path, id: &str, ff: Option<&Path>) -> Result<Value,
         }
     }
     let n_chunks: usize = tracks.iter().map(|t| seqs(&m, t).len()).sum();
-    let extra = json!({"session": {
+    let mut extra = json!({"session": {
         "chunk_kind": m["chunk_kind"], "tracks": tracks, "track_files": track_files, "chunks": n_chunks,
         "gaps": gaps, "gap_ms": gaps.iter().filter_map(|g| g["dur_ms"].as_i64()).sum::<i64>(),
         "lost_chunks": lost, "partial": partial, "abandoned": abandoned,
     }, "partial": partial});
+    // The live transcript and the notes typed during the meeting travel with
+    // the recording: the session folder is removed once it is filed.
+    for (k, v) in super::recording_live::session_extras(&sdir) {
+        extra[k] = v;
+    }
     let staged = dir.join(format!(".{base}.upload.{}", meta.ext));
     std::fs::rename(&main, &staged).map_err(|e| e.to_string())?;
     let (sha, len) = sha_file(&staged).map_err(|e| e.to_string())?;
@@ -822,6 +850,19 @@ mod tests {
         let (_, sc) = recordings::find_sidecar_pub(d.path(), "sess-004").expect("filed");
         assert_eq!((sc["partial"].clone(), sc["session"]["abandoned"].clone(), sc["recovered"].clone()),
             (json!(true), json!(true), json!(true)));
+    }
+
+    #[test]
+    fn a_session_with_no_audio_is_closed_as_empty_not_retried_forever() {
+        let d = tempfile::tempdir().unwrap();
+        let t0 = 1_793_000_000_000;
+        open(d.path(), "sess-008", "segment", &["mic"], t0);
+        mark_finishing(d.path(), "sess-008", &json!({"last_seq": {}}), false).unwrap();
+        let e = assemble(d.path(), "sess-008", None).unwrap_err();
+        assert!(e.starts_with(EMPTY), "{e}");
+        let m = read_manifest(&session_dir(d.path(), "sess-008")).unwrap();
+        assert_eq!(m["state"], "empty", "closed, with its manifest kept as evidence");
+        assert_eq!(finish_sessions_in(d.path(), None, now_ms()), (0, 0), "and not assembled again");
     }
 
     #[test]

@@ -549,6 +549,12 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Decline | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Turn off | `_pubRevoke` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Read aloud latest | `_readLatestMessage` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Add | `_recAddNote` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | + | `_recSelect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + (d.live ? Send when transcribed : Send to … wo | `_recSendWorkers` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| index.html | All | `_recSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Meetings | `_recSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Voice notes | `_recSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${safeN ? Clean ${safeN} item${safeN === 1 ?  :  | `_reclaimCleanSafe` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | g | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -561,12 +567,20 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Run host cleanup now | `_reclaimRunHostCleanup` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${scan ? Rescan : Run scan} | `_reclaimStartScan` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Re-include | `_reclaimUnskip` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Delete from this device | `_recorderDeleteLocal` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Transcribe again | `_recorderRetranscribe` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Retry sync | `_recorderRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save | `_recorderSaveDir` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Notes | `_recorderShowNotes` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Transcript | `_recorderShowTranscript` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Sync now | `_recorderSync` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| index.html | Start or stop recording (change it in the Hotkey | `_recorderToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Start recording | `_recorderToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Stop | `_recorderToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Regenerate | `_recorderWriteNotes` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Write notes | `_recorderWriteNotes` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Write notes | `_recorderWriteNotes` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Write summary and notes | `_recorderWriteNotes` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Discard this queued change | `_removeQueuedOperation` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ↻ | `_resourcesLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Retry connection | `_retrySessionRead` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1409,13 +1423,25 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Cancel | `_projectSettingsCancel` | onclick |
 | app.js | Delete | `_raDelete` | onclick |
 | app.js | Replay | `_raReplay` | onclick |
+| app.js | Add | `_recAddWorker` | onclick |
+| app.js | Add | `_recAddWorker` | onclick |
+| index.html | Back to recordings | `_recBack` | onclick |
+| app.js | Remove | `_recRemoveWorker` | onclick |
+| app.js | … | `_recSeek` | onclick |
+| index.html | Actions | `_recSetSide` | onclick |
+| index.html | Meeting | `_recSetSide` | onclick |
+| index.html | Summary | `_recSetSide` | onclick |
+| index.html | Workers | `_recSetSide` | onclick |
+| index.html | Audio | `_recSetTab` | onclick |
+| index.html | Details | `_recSetTab` | onclick |
+| index.html | Notes | `_recSetTab` | onclick |
+| index.html | Transcript | `_recSetTab` | onclick |
 | app.js | Copy script | `_reclaimCopyScript` | onclick |
 | app.js | Clear | `_reclaimRender` | onclick |
 | app.js | select all regenerable | `_reclaimSelectCategory` | onclick |
 | app.js | Select safe | `_reclaimSelectSafe` | onclick |
 | app.js | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
 | app.js | clear filter | `_reclaimSetCat` | onclick |
-| app.js | Delete from this device | `_recorderDeleteLocal` | onclick |
 | index.html | Pause | `_recorderPauseToggle` | onclick |
 | app.js | Play | `_recorderPlay` | onclick |
 | app.js | Remove | `_removeConnection` | onclick |
