@@ -102,7 +102,9 @@ test('a passing check reads as Passing, leads with what it found, and keeps the 
     schedule_expr: 'every 1h', sched_type: 'recurring', session: '',
     pass_check: 'bash scripts/mac-health-pass.sh', pass_state: 'pass', pass_attempts: 0,
     pass_checked_at: Math.floor(Date.now() / 1000),
-    pass_detail: 'Ran 12:57 and cleaned up. Still over a floor, already escalated to its owner: disk 125G free (floor 150G)\nmac-cleanup: done elapsed=398s' };
+    // The server's own shape (schedule_check.rs CheckResult::detail): how the
+    // check ended, then its output.
+    pass_detail: 'exit 0\nRan 12:57 and cleaned up. Still over a floor, already escalated to its owner: disk 125G free (floor 150G)\nmac-cleanup: done elapsed=398s' };
   await page.route(/\/api\/schedules(\?.*)?$/, (route) => route.request().method() === 'GET'
     ? route.fulfill({ json: [row] }) : route.continue());
   await settle(page);
@@ -113,6 +115,7 @@ test('a passing check reads as Passing, leads with what it found, and keeps the 
   await expect(page.locator('#sched-detail-status')).toContainText('Passing');
   const body = page.locator('#sched-detail-body');
   await expect(body.locator('.sx-pass-found')).toHaveText(/Ran 12:57 and cleaned up\. Still over a floor/);
+  await expect(body).toContainText('Passing · exit 0');
   await expect(body.locator('.sx-pass-how code')).toBeHidden();
   await body.locator('.sx-pass-how summary').click();
   await expect(body.locator('.sx-pass-how code')).toHaveText('bash scripts/mac-health-pass.sh');

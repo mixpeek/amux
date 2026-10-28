@@ -43388,8 +43388,14 @@ function _sxRenderDetail() {
       const cls = pc.tone === 'bad' ? 'sx-bad' : pc.tone === 'dim' ? 'sx-dim' : '';
       // What the last check found leads, in its own words (a check's first
       // line is written for people); the command is one tap away.
-      const found = String(s.pass_detail || '').trim();
+      // The server's detail opens with how the check ended (schedule_check.rs
+      // CheckResult::detail: "exit 0", "timed out after Ns"), then the check's
+      // own output. That first line goes beside the time; the output leads.
+      const raw = String(s.pass_detail || '').trim();
+      const ended = raw.match(/^(exit -?\d+|timed out after \d+s|did not run)(?:\n|$)/);
+      const found = ended ? raw.slice(ended[0].length).trim() : raw;
       rows.push(['Pass check', `<div><span class="${cls}">${esc(pc.word)}</span>`
+        + (ended ? ` <span class="sx-dim">· ${esc(ended[1])}</span>` : '')
         + (s.pass_checked_at ? ` <span class="sx-dim">· checked ${_sxFmtWhen(s.pass_checked_at)}</span>` : '') + '</div>'
         + (found ? `<div class="sx-pass-found">${esc(found.split('\n')[0])}</div>` : '')
         + (found && found.includes('\n') ? `<pre class="sx-shell">${esc(found.split('\n').slice(1).join('\n'))}</pre>` : '')
