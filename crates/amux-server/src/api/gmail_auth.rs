@@ -72,16 +72,40 @@ pub const GMAIL_SCOPES: [&str; 4] = [
 /// account could re-authorize. Deriving it from the canonical port means the
 /// callback is always served where this server actually listens, and a future
 /// port move is a console re-registration rather than a second code change.
+///
+/// A cloud server is opened at its domain, never at localhost, so Google's
+/// redirect to localhost reached nothing (sandbox, 2026-10-28: "i cant connect
+/// gmail"). `AMUX_OAUTH_ORIGIN` names the address the owner's browser reaches
+/// this server at; cloud bootstrap and update set it to `https://<domain>`. The
+/// Mac leaves it unset and keeps the localhost URI its OAuth client registered.
 pub fn gmail_redirect_uri() -> String {
-    std::env::var("GMAIL_REDIRECT_URI")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "http://localhost:{}/api/gmail/callback",
-                crate::config::canonical_port()
-            )
-        })
+    let home = crate::config::amux_home();
+    if let Some(u) = crate::api::settings::effective_env(&home, "GMAIL_REDIRECT_URI").filter(|s| !s.trim().is_empty()) {
+        return u.trim().to_string();
+    }
+    match oauth_origin() {
+        Some(o) => format!("{o}/api/gmail/callback"),
+        None => format!("http://localhost:{}/api/gmail/callback", crate::config::canonical_port()),
+    }
+}
+
+/// `AMUX_OAUTH_ORIGIN` as `scheme://host[:port]` (no path, no trailing slash),
+/// or None when unset or malformed. Read per call, like `AMUX_PUBLIC_URL`, so
+/// setting it needs no restart.
+pub(crate) fn oauth_origin() -> Option<String> {
+    let raw = crate::api::settings::effective_env(&crate::config::amux_home(), "AMUX_OAUTH_ORIGIN")?;
+    normalize_origin(&raw)
+}
+
+fn normalize_origin(raw: &str) -> Option<String> {
+    let u = raw.trim().trim_end_matches('/');
+    let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"))?;
+    let ok = !rest.is_empty() && !rest.contains('/') && !rest.contains(char::is_whitespace);
+    if !ok {
+        tracing::warn!(value = raw, measured = true, n_considered = 1, verdict = "oauth_origin_malformed",
+            "AMUX_OAUTH_ORIGIN is not scheme://host[:port]; OAuth redirects fall back to localhost");
+    }
+    ok.then(|| u.to_string())
 }
 /// Whose mailbox a freshly-exchanged token can actually act on (AMUX-3839).
 ///
@@ -1051,6 +1075,15 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn a_cloud_origin_is_kept_only_as_scheme_host_and_port() {
+        assert_eq!(normalize_origin(" https://sandbox.amux.io/ ").as_deref(), Some("https://sandbox.amux.io"));
+        assert_eq!(normalize_origin("http://localhost:8824").as_deref(), Some("http://localhost:8824"));
+        for bad in ["", "sandbox.amux.io", "https://", "https://a.io/api", "ftp://a.io", "https://a b.io"] {
+            assert_eq!(normalize_origin(bad), None, "{bad:?} is not an origin");
+        }
+    }
 
     #[test]
     fn prerequisite_names_the_console_client_and_redirect_uri() {

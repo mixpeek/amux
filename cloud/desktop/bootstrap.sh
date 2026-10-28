@@ -340,6 +340,9 @@ set_env AMUX_AUTH_TOKEN none
 # The address workers build links from (static_files/public_links.rs): without it a worker
 # handed the owner a link on the raw IP (sandbox, 2026-10-25).
 [[ -n "$DOMAIN" ]] && set_env AMUX_PUBLIC_URL "https://$DOMAIN"
+# Where Google and Slack send the browser back after a connector sign-in: the domain, since
+# nothing reaches this server at localhost (sandbox, 2026-10-28: "i cant connect gmail").
+[[ -n "$DOMAIN" ]] && set_env AMUX_OAUTH_ORIGIN "https://$DOMAIN"
 # Apps inside amux run on their own origin (static_files/apps_origin.rs): Caddy serves the
 # apps listener (amux's port + 1) at https://<domain>:8443.
 [[ -n "$DOMAIN" ]] && set_env AMUX_APPS_URL "https://$DOMAIN:8443"

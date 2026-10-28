@@ -535,8 +535,10 @@ fn env_keys(p: &Provider) -> Vec<&'static str> {
 
 /// This server's origin for redirect URIs, canonical-port so it is right in
 /// both the laptop (8824) and the container (8822) with no build flag.
+/// `AMUX_OAUTH_ORIGIN` wins (a cloud server is reached at its domain, so a
+/// localhost redirect reaches nothing there).
 fn origin() -> String {
-    format!("https://localhost:{}", canonical_port())
+    super::gmail_auth::oauth_origin().unwrap_or_else(|| format!("https://localhost:{}", canonical_port()))
 }
 
 /// The redirect URI every google-family grant uses: the GMAIL one, on purpose
@@ -1045,7 +1047,15 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
                 } => (
                     "oauth2",
                     json!({
-                        "redirect_uri": format!("{}{}", origin(), callback_path),
+                        // The URI the grant actually sends: Google reuses the
+                        // gmail one (google_redirect_uri), so showing the
+                        // connectors path told the owner to register a URI no
+                        // request ever used (sandbox, 2026-10-28).
+                        "redirect_uri": if p.category == "Google" {
+                            google_redirect_uri()
+                        } else {
+                            format!("{}{}", origin(), callback_path)
+                        },
                         "scopes": scopes,
                     }),
                 ),

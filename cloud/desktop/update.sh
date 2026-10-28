@@ -217,6 +217,15 @@ if [[ -f $CF && -f $ENVF ]] && ! grep -q '^AMUX_PUBLIC_URL=' "$ENVF"; then
     say "verdict=public_url_set url=https://$site"
   fi
 fi
+# Where connector sign-ins (Google, Slack) return, for servers bootstrapped before bootstrap.sh
+# wrote it. Taken from AMUX_PUBLIC_URL, which the block above guarantees on a Caddy server.
+if [[ -f $CF && -f $ENVF ]] && ! grep -q '^AMUX_OAUTH_ORIGIN=' "$ENVF"; then
+  pub=$(grep -m1 '^AMUX_PUBLIC_URL=' "$ENVF" | cut -d= -f2-)
+  if [[ $pub == https://* ]]; then
+    printf 'AMUX_OAUTH_ORIGIN=%s\n' "$pub" >> "$ENVF"
+    say "verdict=oauth_origin_set url=$pub"
+  fi
+fi
 
 # The agent CLIs, once a day. bootstrap.sh installs them globally as root, so they cannot update
 # themselves (Claude Code showed "Auto-update failed: no write permission to npm prefix" to the
