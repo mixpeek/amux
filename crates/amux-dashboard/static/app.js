@@ -67135,6 +67135,15 @@ function _cvFindName(conv) {
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  // A direct message the list has not named (not loaded yet, or not in it):
+  // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
+  // composer's placeholder on a phone and wrapped it to three rows.
+  if (conv && conv.indexOf('p:') === 0) {
+    const me = (_cloudEmail || _localMemberEmail || '').toLowerCase();
+    const emails = conv.slice(2).split('|');
+    const other = emails.find(e => e.toLowerCase() !== me) || emails[0];
+    return String(other).split('@')[0];
+  }
   return conv || '';
 }
 async function _cvLoadList() {

@@ -9188,6 +9188,9 @@ button.cv-sec:hover { color:var(--text); }
 /* The worker input's box, menu and Send (index.html #cv-compose); only the row layout is Messages'. */
 .cv-compose .peek-composer-input { flex:1; min-width:0; position:relative; }
 .cv-compose .send-input { display:block; width:100%; box-sizing:border-box; }
+/* The box sizes to its content (field-sizing), the placeholder included, so a
+   long name wrapped an empty box to three rows on a phone. One row, ellipsis. */
+.cv-compose .send-input::placeholder { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .cv-compose > .peek-more-wrap { align-self:flex-end; }
 .cv-compose .peek-attach-btn { width:44px; height:44px; justify-content:center; }
 .cv-compose .cv-send-split .send-split-main { border-radius:var(--radius-lg); padding-right:var(--space-3); min-height:44px; }

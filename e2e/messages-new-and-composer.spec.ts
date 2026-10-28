@@ -40,7 +40,12 @@ test('New message picks a person, a channel or a worker and keeps the draft', as
   await expect(page.locator('#cv-title')).toHaveText('doron');
   await page.locator('#cv-input').fill('@ed get me customer A\'s reply from the inbox');
   // A second New message keeps what was typed and moves it to the new conversation.
-  await page.locator('#cv-new-btn').click();
+  // On a phone an open conversation covers the list and its ✎, so New message
+  // is the header's + menu there.
+  if ((page.viewportSize()?.width ?? 1280) <= 600) {
+    await page.locator('#add-btn').click();
+    await page.locator('#add-menu .card-menu-item', { hasText: 'New message' }).click();
+  } else await page.locator('#cv-new-btn').click();
   await list.locator('.cv-item', { hasText: 'ed' }).click();
   await expect(page.locator('#cv-title')).toHaveText('ed');
   await expect(page.locator('#cv-input')).toHaveValue('@ed get me customer A\'s reply from the inbox');
@@ -52,9 +57,12 @@ test('the header + menu starts a new message from any view', async ({ page }) =>
   await page.locator('#add-btn').click();
   await page.locator('#add-menu .card-menu-item', { hasText: 'New message' }).click();
   await expect(page.locator('#cv-new-to')).toBeFocused();
+  // Opening the conversation marks it read once its posts load.
+  const read = page.waitForResponse(/\/api\/conversations\/[^/]+\/read$/);
   await page.locator('#cv-new-list .cv-item', { hasText: '#general' }).click();
   await expect(page.locator('#messages-view')).toBeVisible();
   await expect(page.locator('#cv-title')).toHaveText('#general');
+  await read;
 });
 
 test('the Messages input is the worker input: box, grip, ⋮ menu and Send', async ({ page }) => {
