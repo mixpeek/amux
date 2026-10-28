@@ -661,6 +661,14 @@ where
 /// capture card because its sibling finished would be the harness vouching for
 /// itself.
 pub(crate) fn cited_by_closed_card(row: &bs::IssueRow) -> BTreeSet<i64> {
+    let own = intake_msg_ids(row.log.as_deref().unwrap_or(""));
+    msg_ids_in(&closed_card_text(row)).difference(&own).copied().collect()
+}
+
+/// The text a finished card cites through: title, desc, evidence and
+/// last_result. Its MSG ids and the card ids it names come from the same
+/// text, so a card named only in `last_result` still counts.
+fn closed_card_text(row: &bs::IssueRow) -> String {
     let mut text = String::new();
     text.push_str(&row.title);
     text.push('\n');
@@ -673,8 +681,7 @@ pub(crate) fn cited_by_closed_card(row: &bs::IssueRow) -> BTreeSet<i64> {
         text.push('\n');
         text.push_str(r);
     }
-    let own = intake_msg_ids(row.log.as_deref().unwrap_or(""));
-    msg_ids_in(&text).difference(&own).copied().collect()
+    text
 }
 
 /// Path 3: `card` just moved to done/verified. Close the same lane's capture
@@ -700,10 +707,7 @@ pub(crate) async fn on_card_done(state: &AppState, card: &str) {
         return;
     }
     let lanes: BTreeSet<String> = [lane].into_iter().collect();
-    let target = Target::of(
-        &format!("{}\n{}\n{}", row.title, row.desc, row.evidence.as_deref().unwrap_or("")),
-        None,
-    );
+    let target = Target::of(&closed_card_text(&row), None);
     for msg in msgs {
         reconcile(
             state,
@@ -1175,9 +1179,18 @@ mod tests {
             .write_async(|conn| {
                 conn.execute(
                     "INSERT INTO issues (id,title,\"desc\",status,session,created,updated,archived,source,creator,type,evidence) \
-                     VALUES ('PRIMI-281','Pilot follow-up','Structured from MSG-68754 into PRIMI-271','done','primis',0,0,0,NULL,'primis','code','sent')",
+                     VALUES ('PRIMI-281','Pilot follow-up','Structured from MSG-68754','done','primis',0,0,0,NULL,'primis','code','sent')",
                     [],
                 )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        // Named only in last_result, which is also where a lane's MSG citation
+        // can live (land review F1, 2026-10-28).
+        st.store
+            .write_async(|conn| {
+                conn.execute("UPDATE issues SET last_result='delivered as PRIMI-271' WHERE id='PRIMI-281'", [])?;
                 Ok(WriteOutcome { applied: true, events: vec![] })
             })
             .await
