@@ -989,6 +989,11 @@ extension AppDelegate {
             // A tab still waiting to load has no view yet; its saved URL names it.
             controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }?
                 .rename(q.first { $0.name == "name" }?.value)
+        // A notification click, the handler a real click runs (notify-click-e2e.py).
+        case "/notification-click":
+            if let w = q.first(where: { $0.name == "worker" })?.value { openNotificationTab("#peek=" + w, why: "worker") }
+            else if let h = q.first(where: { $0.name == "hash" })?.value { openNotificationTab(h, why: "message") }
+        case "/hide": NSApp.hide(nil)
         // Run a script in the shown tab's page (download-e2e.py starts a page
         // download with it). Test mode only, like every hook here.
         case "/js":

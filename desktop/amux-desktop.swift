@@ -1002,10 +1002,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// 2026-10-26: "if i open a new tab from an active one that has a certain
     /// connection (like sandbox) it should open the tab in that"); only a tab on
     /// no server falls back to the default connection.
-    func newTab(nextTo c: DashboardWindowController) {
+    func newTab(nextTo c: DashboardWindowController, hash: String = "#view=sessions") {
         let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
         controllers.append(n)
-        let u = url(withHash: "#view=sessions", on: c.serverOrigin)
+        let u = url(withHash: hash, on: c.serverOrigin)
         dlog("verdict=new_tab_server server=\(u.flatMap { $0.host } ?? "-") from_tab=\(c.serverOrigin != nil)")
         if let u = u { n.load(u) } else { n.showConnectPage() }
         if let w = c.window, let nw = n.window {
@@ -1573,7 +1573,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         content.title = "amux needs you" + (card.isEmpty ? "" : " · " + card)
         content.body = (item["question"] as? String) ?? (item["context"] as? String) ?? ""
         content.sound = .default
-        content.userInfo = ["card": card]
+        // The worker too: a click opens it, in a tab of the window you have.
+        content.userInfo = ["card": card, "worker": (item["worker"] as? String) ?? ""]
         let req = UNNotificationRequest(identifier: (item["key"] as? String) ?? UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
@@ -1587,7 +1588,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         NSApp.activate(ignoringOtherApps: true)
         if let hash = response.notification.request.content.userInfo["hash"] as? String, hash.hasPrefix("#messages=") || hash == "#view=messages" {
-            openHash(hash)
+            openNotificationTab(hash, why: "message")
             completionHandler()
             return
         }
@@ -1596,8 +1597,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             completionHandler()
             return
         }
-        openCard((response.notification.request.content.userInfo["card"] as? String) ?? "")
+        let info = response.notification.request.content.userInfo
+        let worker = (info["worker"] as? String) ?? ""
+        let card = (info["card"] as? String) ?? ""
+        if !worker.isEmpty, worker.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) {
+            openNotificationTab("#peek=" + worker, why: "worker")
+        } else {
+            openCard(card)
+        }
         completionHandler()
+    }
+
+    /// A notification click opens what it is about in a NEW TAB of the window
+    /// you already have, on that window's server. It used to reuse only a
+    /// visible key window and otherwise open a whole new window, which is what
+    /// a click from another app (amux hidden, minimized, on another Space)
+    /// always got (owner, 2026-10-28). A new window only when none exists.
+    func openNotificationTab(_ hash: String, why: String) {
+        let safe = hash.allSatisfy { $0.isLetter || $0.isNumber || "#=&:-_.%|@".contains($0) }
+        guard safe else { return }
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let withWindow = controllers.filter { $0.window != nil }
+        let host = withWindow.first { $0.window == NSApp.keyWindow }
+            ?? withWindow.last { $0.window?.isVisible == true }
+            ?? withWindow.last
+        guard let c = host, let w = c.window else {
+            dlog("verdict=notification_opened where=new_window why=\(why) reason=no_window")
+            openWindow(url: url(withHash: hash), frame: nil)
+            return
+        }
+        if w.isMiniaturized { w.deminiaturize(nil) }
+        newTab(nextTo: c, hash: hash)
+        dlog("verdict=notification_opened where=new_tab why=\(why) hash=\(hash)")
     }
 
     /// Open a dashboard hash in the key window, or a new one.
