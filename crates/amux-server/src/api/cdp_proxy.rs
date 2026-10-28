@@ -203,11 +203,11 @@ async fn relay(p: Proxy, rest: String, client: WebSocket) {
                                 json!({"profile": p.profile, "via": "cdp_proxy", "command": ev, "sensitive_values_recorded": false})).await;
                         }
                     }
-                    TMsg::Text(t.as_str().to_string().into())
+                    TMsg::Text(t.as_str().to_string())
                 }
-                AxMsg::Binary(b) => TMsg::Binary(b.to_vec().into()),
-                AxMsg::Ping(b) => TMsg::Ping(b.to_vec().into()),
-                AxMsg::Pong(b) => TMsg::Pong(b.to_vec().into()),
+                AxMsg::Binary(b) => TMsg::Binary(b.to_vec()),
+                AxMsg::Ping(b) => TMsg::Ping(b.to_vec()),
+                AxMsg::Pong(b) => TMsg::Pong(b.to_vec()),
                 AxMsg::Close(_) => break,
             };
             if up_tx.send(out).await.is_err() {
