@@ -67,8 +67,10 @@ test('send, live, react, edit, thread, delete: the whole collaboration loop', as
   await expect(post(page, `from elsewhere ${tag}`)).toBeVisible({ timeout: 8000 });
   const liveMs = Date.now() - t1;
 
-  // React.
-  const mine = post(page, `hello ${tag}`);
+  // React. The post is held by its id: while it is being edited its text is
+  // the draft, which no longer contains the original words.
+  const mineId = await post(page, `hello ${tag}`).getAttribute('data-id');
+  const mine = page.locator(`#cv-posts .cv-post[data-id="${mineId}"]`);
   await act(page, mine, /React/);
   await expect(mine.locator('.cv-react.mine')).toContainText('1');
 
@@ -137,6 +139,28 @@ test('search finds words across conversations, highlights them, and opens the po
   expect(odd.status, 'punctuation is never query syntax').toBe(200);
   await hit.locator('.cv-post-conv').click();
   await expect(page.locator('#cv-posts .cv-post', { hasText: word }).first()).toBeVisible();
+});
+
+test('an edit in progress survives a post arriving, words and all', async ({ page, request }) => {
+  await openMessages(page);
+  const tok = await token(page);
+  const tag = 'editlive-' + Date.now();
+  await page.locator('#cv-input').fill(`draft ${tag}`);
+  await page.locator('#cv-send').click();
+  const mine = post(page, `draft ${tag}`);
+  await expect(mine).toBeVisible();
+  await act(page, mine, 'Edit');
+  const box = page.locator('.cv-edit');
+  await box.fill(`edited mid-stream ${tag}`);
+  await page.waitForFunction(() => (window as any).eval('_liveSSE') === true, null, { timeout: 15000 });
+  // Someone else posts while the edit is open: the list re-renders.
+  await api(request, tok, 'POST', `/api/conversations/${CONV}/posts`, { body: `interrupt ${tag}` });
+  await expect(post(page, `interrupt ${tag}`)).toBeVisible({ timeout: 8000 });
+  await expect(box).toHaveValue(`edited mid-stream ${tag}`);
+  await expect(box).toBeFocused();
+  await page.locator('.cv-edit-acts .btn.primary').click();
+  await expect(post(page, `edited mid-stream ${tag}`)).toBeVisible();
+  await expect(page.locator('.cv-edit')).toHaveCount(0);
 });
 
 test('scrolling up loads older history', async ({ page, request }) => {

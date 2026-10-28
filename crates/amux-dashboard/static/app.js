@@ -66483,6 +66483,7 @@ function _cvEnter() {
 function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
+  if (_cv.sel !== sel) _cv.editing = null;
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
   if (!auto) _cv.picked = true;
   if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
@@ -66658,6 +66659,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const owner = _cvMeKey() === 'person:owner';
   const real = typeof p.id === 'number';
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
+    : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
   const reacts = Object.entries(p.reactions || {}).map(([e, who]) => '<button type="button" class="cv-react' + ((who || []).includes(_cvMeKey()) ? ' mine' : '')
     + '" title="' + esc((who || []).map(k => k.replace(/^(person|worker):/, '')).join(', ')) + '" onclick="_cvReact(' + p.id + ',this.dataset.e)" data-e="' + esc(e) + '">'
@@ -66741,15 +66743,35 @@ async function _cvReact(id, emoji) {
     _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
   } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
 }
+// An open edit is state, not DOM: a post arriving while you edit re-renders
+// the list, which used to wipe the box and the words in it (CI, 2026-10-27).
+// Every render draws `_cv.editing` with its draft and gives focus back.
 function _cvEdit(id) {
   const p = _cvFindPost(id); if (!p) return;
-  document.querySelectorAll('[data-body-id="' + id + '"]').forEach(el => {
-    el.innerHTML = '<textarea class="input cv-edit" rows="2">' + esc(p.body) + '</textarea><div class="cv-edit-acts">'
-      + '<button type="button" class="btn" onclick="_cvRenderPosts(false);if(_cv.thread)_cvRenderThread()">Cancel</button>'
-      + '<button type="button" class="btn primary" onclick="_cvSaveEdit(' + id + ', this.closest(\'[data-body-id]\').querySelector(\'textarea\').value)">Save</button></div>';
-    const ta = el.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-    ta.onkeydown = e => { if (e.key === 'Escape') { _cvRenderPosts(false); if (_cv.thread) _cvRenderThread(); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _cvSaveEdit(id, ta.value); } };
-  });
+  _cv.editing = { id, text: p.body, caret: p.body.length, focus: true };
+  _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+}
+function _cvEditHtml(id) {
+  return '<textarea class="input cv-edit" rows="2" data-edit-id="' + id + '" oninput="_cvEditDraft(this)" onkeydown="_cvEditKey(event,' + id + ',this)">'
+    + esc(_cv.editing.text) + '</textarea><div class="cv-edit-acts">'
+    + '<button type="button" class="btn" onclick="_cvCancelEdit()">Cancel</button>'
+    + '<button type="button" class="btn primary" onclick="_cvSaveEdit(' + id + ', _cv.editing ? _cv.editing.text : \'\')">Save</button></div>';
+}
+function _cvEditDraft(ta) { if (_cv.editing) { _cv.editing.text = ta.value; _cv.editing.caret = ta.selectionStart; } }
+function _cvEditKey(e, id, ta) {
+  if (e.key === 'Escape') _cvCancelEdit();
+  else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _cvSaveEdit(id, ta.value); }
+}
+function _cvCancelEdit() { _cv.editing = null; _cvRenderPosts(false); if (_cv.thread) _cvRenderThread(); }
+// Before a render replaces the list: keep the draft and whether it had focus.
+function _cvEditBeforeRender() {
+  const ta = _cv.editing && document.querySelector('.cv-edit[data-edit-id="' + _cv.editing.id + '"]');
+  if (ta && document.activeElement === ta) { _cv.editing.text = ta.value; _cv.editing.caret = ta.selectionStart; _cv.editing.focus = true; }
+}
+function _cvEditAfterRender(box) {
+  if (!_cv.editing || !_cv.editing.focus) return;
+  const ta = box.querySelector('.cv-edit[data-edit-id="' + _cv.editing.id + '"]'); if (!ta) return;
+  ta.focus(); const c = Math.min(_cv.editing.caret, ta.value.length); ta.setSelectionRange(c, c);
 }
 async function _cvSaveEdit(id, body) {
   body = String(body || '').trim(); if (!body) return;
@@ -66757,6 +66779,7 @@ async function _cvSaveEdit(id, body) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
   const p = _cvFindPost(id); if (p) { p.body = body; p.edited_at = Date.now(); }
+  _cv.editing = null;
   _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
 }
 async function _cvDelete(id) {
@@ -66800,8 +66823,10 @@ function _cvRenderThread(scroll) {
   const box = document.getElementById('cv-thread-posts');
   const n = Math.max(0, t.posts.length - 1);
   document.getElementById('cv-thread-meta').textContent = _cvFindName(t.conv) + ' · ' + n + (n === 1 ? ' reply' : ' replies');
+  _cvEditBeforeRender();
   box.innerHTML = t.posts.map((p, i) => _cvPostHtml(p, false, true) + (i === 0 && n ? '<div class="cv-day">' + n + (n === 1 ? ' reply' : ' replies') + '</div>' : '')).join('')
     || '<div class="cv-empty">This thread is empty.</div>';
+  _cvEditAfterRender(box);
   if (scroll) box.scrollTop = box.scrollHeight;
 }
 async function _cvSendThread() {
@@ -66973,7 +66998,9 @@ function _cvRenderPosts(scroll) {
   }
   let html = '', day = '';
   for (const p of all) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  _cvEditBeforeRender();
   box.innerHTML = html;
+  _cvEditAfterRender(box);
   if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
 }
 async function _cvMarkRead() {

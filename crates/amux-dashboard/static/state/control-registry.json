@@ -1068,8 +1068,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_cvEdit": {
-      "kind": "command._cvEdit",
+    "_cvEditKey": {
+      "kind": "command._cvEditKey",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
