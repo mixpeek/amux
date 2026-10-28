@@ -79,7 +79,7 @@ test('a scratchpad edit and a worker send share the offline outbox and both repl
     await page.evaluate((w) => (window as unknown as Win).openPeek(w), worker);
     await expect(page.locator('#peek-cmd-input')).toBeVisible();
     await page.locator('#peek-cmd-input').fill(`ping ${marker}`);
-    await page.locator('.send-split-main').click();
+    await page.locator('#peek-overlay .send-split-main').click();
 
     // THE PARITY CLAIM: both the note PUT and the worker send are in the ONE
     // outbox. Wait for BOTH to register (the send lands a beat after its click).

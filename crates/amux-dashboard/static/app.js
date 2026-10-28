@@ -55141,10 +55141,16 @@ window.addEventListener('popstate', e => {
   if (!_navEnabled() || _nav.pos < 0) return;
   const st = e.state || {};
   if (st.amuxPresent) return;   // the presentation's own entry (_presentOpen)
-  // An entry whose state another writer replaced has no index; the only way
-  // onto it from here is one step back.
+  // An entry with no index is a NEW one: a hash change (a #task= link, a
+  // deep link, the address bar) pushes it and fires popstate before
+  // hashchange. Reading it as one step back restored the previous place and
+  // swallowed the hashchange, so a task link opened the task before it and
+  // main's e2e went red across tasks-tab, offline-roundtrip and scratchpad
+  // (2026-10-28). The hashchange handler opens it, and the wrapped place
+  // functions record it. replaceState keeps the index on amux's own entries.
+  if (typeof st.amuxNav !== 'number') { _navBeacon('nav_new_entry_left_to_hash', { hash: location.hash.slice(0, 40) }); return; }
   // An entry older than the kept list lands on the oldest place still kept.
-  let to = typeof st.amuxNav === 'number' ? st.amuxNav - _nav.base : _nav.pos - 1;
+  let to = st.amuxNav - _nav.base;
   to = Math.max(0, Math.min(_nav.list.length - 1, to));
   if (to === _nav.pos) return;
   const from = _nav.pos;
