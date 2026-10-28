@@ -23,6 +23,14 @@ e2e/
 skills/
 # api/skills.rs include_str!s this one (2fcc84d97); Dockerfile COPYs skills.
 !skills/amux-contribute.md
+!skills/slop.md
+!skills/iterate.md
+!skills/codex.md
+!skills/muse.md
+!skills/imessage.md
+!skills/pr-merge.md
+!skills/e2e-test.md
+!skills/worker-audit.md
 assets/
 templates/
 integrations/
