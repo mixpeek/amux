@@ -592,7 +592,33 @@ use crate::config::env_i64;
 /// enforces (AMUX-3948). A frontier computing its own cap would offer a card the
 /// gate then refuses, which is the view/mechanism split ethos rule 1 names.
 pub(crate) fn wip_cap() -> i64 {
-    env_i64("AMUX_MAX_DOING_PER_SESSION", 1).max(1)
+    env_i64(WIP_CAP_KEY, 1).max(1)
+}
+
+/// Scope key for the per-lane WIP cap. The process env still wins (the same
+/// precedence every scoped gate uses), then worker > group > global, then 1.
+pub const WIP_CAP_KEY: &str = "AMUX_MAX_DOING_PER_SESSION";
+
+/// This lane's WIP cap. Per lane because one cap of 1 idled a lane whose
+/// `doing` card was its own hour-long background job while todo cards waited
+/// (MSG-99658: "skipped wip-cap holding 1/1 in doing: TP-140").
+pub(crate) fn wip_cap_for(session: &str) -> i64 {
+    wip_cap_in(&crate::api::session_verbs::home(), session, std::env::var(WIP_CAP_KEY).ok().as_deref())
+}
+
+pub(crate) fn wip_cap_in(home: &std::path::Path, session: &str, process_value: Option<&str>) -> i64 {
+    let parse = |v: &str| v.trim().parse::<i64>().ok();
+    process_value
+        .and_then(parse)
+        .or_else(|| {
+            (!session.is_empty())
+                .then(|| crate::api::session_verbs::scoped_setting_in(home, session, WIP_CAP_KEY))
+                .flatten()
+                .as_deref()
+                .and_then(parse)
+        })
+        .unwrap_or(1)
+        .max(1)
 }
 /// py:6885 `AMUX_NEEDSYOU_RENAG_DAYS`.
 fn needsyou_renag_days() -> f64 {
@@ -4237,7 +4263,7 @@ pub fn select_pickup_with(
     // the sanctioned exit the decompose nudge asks for — makes the card stop
     // matching and start counting again, which is correct: at that point it IS
     // a unit of work.
-    let cap = wip_cap();
+    let cap = wip_cap_for(session);
     let holding = match wip_holding_ids(conn, session, None) {
         Ok(holding) => holding,
         Err(error) => {
@@ -4266,7 +4292,8 @@ pub fn select_pickup_with(
         return Pickup::None {
             reason: "wip-cap",
             detail: format!(
-                "holding {}/{} in doing: {}",
+                "holding {}/{} in doing: {}. A lane whose doing card is its own long job can take more: \
+                 set {WIP_CAP_KEY} for this worker in the Scope tab",
                 holding.len(),
                 cap,
                 holding.join(", ")
@@ -18772,5 +18799,21 @@ mod concurrent_cap_tests {
         assert!(concurrent_cap_blocks("c", &full, 2), "a new lane waits while the cap is full");
         assert!(!concurrent_cap_blocks("c", &full, 3), "below the cap a new lane may start");
         assert!(!concurrent_cap_blocks("c", &full, 0), "0 turns the cap off");
+    }
+}
+
+#[cfg(test)]
+mod wip_cap_scope_tests {
+    /// MSG-99658 item 2: the WIP cap is per lane, worker scope over global,
+    /// with the process env still winning and 1 as the floor.
+    #[test]
+    fn a_worker_scope_raises_its_own_wip_cap() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions").join("etl.env"), "AMUX_MAX_DOING_PER_SESSION=\"2\"\n").unwrap();
+        assert_eq!(super::wip_cap_in(home.path(), "etl", None), 2, "the worker's own scope");
+        assert_eq!(super::wip_cap_in(home.path(), "other", None), 1, "unset is 1");
+        assert_eq!(super::wip_cap_in(home.path(), "etl", Some("3")), 3, "the process env wins");
+        assert_eq!(super::wip_cap_in(home.path(), "etl", Some("0")), 1, "never below 1");
     }
 }

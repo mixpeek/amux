@@ -1324,7 +1324,7 @@ pub(crate) fn lane_frontier(conn: &rusqlite::Connection, lane: &str, limit: usiz
     let holding_result = crate::runtime_jobs::board_drive::wip_holding_ids(conn, lane, None);
     let wip_measured = holding_result.is_ok();
     let holding = holding_result.unwrap_or_default();
-    let cap = crate::runtime_jobs::board_drive::wip_cap().max(0) as usize;
+    let cap = crate::runtime_jobs::board_drive::wip_cap_for(lane).max(0) as usize;
     let available = if wip_measured {
         cap.saturating_sub(holding.len())
     } else {
