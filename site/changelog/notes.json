@@ -1,5 +1,91 @@
 [
   {
+    "hash": "74d568a2492a094484e7d6661aee8604d84e4d89",
+    "short": "74d568a2",
+    "title": "Pass/fail schedules show a green Passing pill and lead with what the check found",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "ui"
+    ],
+    "description": "A schedule whose pass check succeeds now reads Passing in green in the list and on its detail page, where it used to look like any other scheduled job. The detail view starts with the check's own one-line finding and keeps the shell command one tap away under How it's checked."
+  },
+  {
+    "hash": "17c48b8f1cf0db972bf3a96e122dcf7ccf036bb5",
+    "short": "17c48b8f",
+    "title": "Messages grows into a team chat, with WhatsApp, Slack, Telegram and Discord bridged in",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "chat",
+      "integrations"
+    ],
+    "description": "The Messages tab now works like a team chat: replies open threads, an @worker mention delivers the message with recent context, and posts can be edited, deleted, reacted to and searched. Voice notes are transcribed, link previews appear, and new posts reach every open client in about a third of a second, with native notifications on the Mac and iOS apps. A chat bridge links WhatsApp, Slack, Telegram or Discord chats to a worker or a group, and holds a worker's reply for your approval when a stranger is in the chat."
+  },
+  {
+    "hash": "953ff8416c8bc39b3b523a838eb5774722cc770b",
+    "short": "953ff841",
+    "title": "Open Word, PowerPoint and Excel files with their comments and tracked changes",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "files",
+      "documents"
+    ],
+    "description": "The file view now renders Office documents natively. Word files show each page with commented ranges highlighted, insertions and deletions marked, and a panel listing every comment, reply and tracked change; click one to jump to it. PowerPoint decks render every slide with its speaker notes and comments, and Excel cell comments show as notes you can edit and save. On a phone, Word text reflows to the screen."
+  },
+  {
+    "hash": "2249e086558ec1e76e5d8a7d9a86ba877ee4fe8d",
+    "short": "2249e086",
+    "title": "Eight skills ship with every amux install, including a new worker audit",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "skills",
+      "claude-code"
+    ],
+    "description": "slop, iterate, codex, muse, imessage, pr-merge, e2e-test and a new worker-audit now come with amux and install as Claude Code commands at boot. amux keeps its own copies current and never overwrites a copy you edited. /worker-audit reports whether chosen workers are turning time, tokens and attention into validated progress, and why not."
+  },
+  {
+    "hash": "ed0416b643da1b46222f0e9fedb9b318b7b50d25",
+    "short": "ed0416b6",
+    "title": "Recordings save to disk in pieces as you record, so a long one is never lost",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "recorder",
+      "reliability"
+    ],
+    "description": "The recorder now streams audio to the server in finished pieces while you record, instead of uploading one file at the end. A long recording survives closing the window or quitting the Mac app, gaps are detected, and a second window can no longer end the first one's recording. Transcription works on recordings past an hour."
+  },
+  {
+    "hash": "59c19777aa81af212f222a6dccce6a5ec36c3d36",
+    "short": "59c19777",
+    "title": "The PR handler posts its own reviews, and a contributor's reply wakes it",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "github",
+      "automation"
+    ],
+    "description": "The pull request watcher is now a closed loop. The handler posts one review or comment per new head commit, skips a PR that has not changed since its last verdict, and wakes again only when a contributor pushes or replies, never because of its own comment."
+  },
+  {
+    "hash": "4e53f5c8858c8aaa9cd45733d21ef2f162464472",
+    "short": "4e53f5c8",
+    "title": "amux watch wakes a worker once when a file lands or a CI run finishes",
+    "date": "2026-10-27",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "automation",
+      "ci"
+    ],
+    "description": "Instead of hand-written polling loops, a worker can register a watch with amux watch add file or amux watch add ci. A per-worker shell schedule checks every watch each minute and delivers one message to the worker when a file appears, a CI run concludes, or the watch expires. Secret values are masked in the delivered text."
+  },
+  {
     "hash": "0e6f9b2fd162a8123ee2020474f126f3d5ee583e",
     "short": "0e6f9b2f",
     "title": "Schedule work for sunrise, sunset or after Shabbos",
