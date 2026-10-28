@@ -3186,6 +3186,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openOwnLink": {
+      "kind": "command._openOwnLink",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openPathFromOutput": {
       "kind": "command._openPathFromOutput",
       "feedback_required": true,
@@ -5114,6 +5120,12 @@
     },
     "_termDisconnect": {
       "kind": "command._termDisconnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_termLinkOpen": {
+      "kind": "command._termLinkOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

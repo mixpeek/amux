@@ -36568,6 +36568,54 @@ function _fileLinkUrl(path) {
   const p = String(path || '').split('/').map(encodeURIComponent).join('/');
   return (_deepLinkBase || location.origin) + '/f' + (p.startsWith('/') ? p : '/' + p);
 }
+// A LINK TO THIS AMUX OPENS IN THIS AMUX (Ethan, 2026-10-28: "it should
+// recognize links when links are local and use them within the app rather
+// than opening a new browser/window"). A worker's /f/<path> file link, a /w/
+// worker link or a /#... view link opened a new browser tab or Mac app window.
+// A plain click now opens it here through the same deep-link handling a
+// pasted URL gets; a modifier click still opens a new tab. Beaconed as
+// kind=own-link.
+function _ownLinkHash(href) {
+  let u;
+  try { u = new URL(href, location.href); } catch (_) { return null; }
+  const own = [location.origin];
+  try { if (_deepLinkBase) own.push(new URL(_deepLinkBase).origin); } catch (_) {}
+  if (!own.includes(u.origin)) return null;
+  let m;
+  if ((m = u.pathname.match(/^\/f(\/.+)$/))) {
+    let path; try { path = decodeURIComponent(m[1]); } catch (_) { return null; }
+    return '#path=' + _encodeHashPath(path);
+  }
+  if ((m = u.pathname.match(/^\/w\/([^/]+)\/?$/))) return '#peek=' + m[1];
+  if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
+  return null;
+}
+function _openOwnLink(href, how) {
+  const hash = _ownLinkHash(href);
+  if (!hash) return false;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'own-link', verdict: 'opened_here', how, target: hash.split('=')[0], measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (_) {}
+  if (location.hash === hash) _handleDeeplink(hash);
+  else location.hash = hash;
+  return true;
+}
+document.addEventListener('click', e => {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest && e.target.closest('a[href]');
+  if (!a || a.hasAttribute('download') || a.closest('#file-body iframe')) return;
+  if (!_ownLinkHash(a.getAttribute('href'))) return;
+  e.preventDefault(); e.stopPropagation();
+  _openOwnLink(a.href, 'anchor');
+}, true);
+// The terminal's links (xterm's web-links addon) open the same way.
+function _termLinkOpen(e, uri) {
+  if (!(e && (e.metaKey || e.ctrlKey)) && _openOwnLink(uri, 'terminal')) return;
+  window.open(uri, '_blank');
+}
+
 function _copyFileDeeplink(path) {
   _copyTextWithToast(_fileLinkUrl(path), 'Link copied');
 }
@@ -50450,7 +50498,7 @@ async function _initWsTermPane(pid) {
 
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  term.loadAddon(new WebLinksAddon.WebLinksAddon(_termLinkOpen));
   term.open(container);
   fit.fit();
   p.term = term; p.fit = fit;
@@ -58916,7 +58964,7 @@ async function _termConnect() {
 
   _termFit = new FitAddon.FitAddon();
   _term.loadAddon(_termFit);
-  _term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  _term.loadAddon(new WebLinksAddon.WebLinksAddon(_termLinkOpen));
 
   _term.open(container);
   _termLayout();   // pin container to full viewport height BEFORE measuring cols/rows
@@ -67404,7 +67452,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
-  _cv.posts = []; _cv.lastId = 0; _cv.info = null; _cv.history = [];
+  _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
@@ -67476,11 +67524,17 @@ async function _cvPollOnce(full) {
   const top = _cv.posts.reduce((m, p) => typeof p.id === 'number' && p.id > m ? p.id : m, 0);
   const grew = !!top && top !== _cv.lastId;
   if (top) _cv.lastId = Math.max(full ? 0 : _cv.lastId, top);
+  // Read up to the conversation's newest post, thread replies included: the
+  // unread badge counts replies, and this page never lists a reply.
+  const latest = Math.max(_cv.lastId, Number(d.latest_id) || 0);
+  const readGrew = latest > (_cv.readId || 0);
+  if (full) _cv.readId = 0;
+  _cv.readId = Math.max(_cv.readId || 0, latest);
   _cvRenderHead(sel, d);
   if (full || grew || pending.length) _cvRenderPosts(full || grew);
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
     ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
-  if (grew || full) _cvMarkRead();
+  if (grew || full || readGrew) _cvMarkRead();
 }
 function _cvRenderHead(sel, d) {
   const meta = document.getElementById('cv-meta');
@@ -67912,7 +67966,7 @@ function _cvRenderPosts(scroll) {
 }
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
-  try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: _cv.lastId }) }); } catch (e) {}
+  try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: Math.max(_cv.lastId, _cv.readId || 0) }) }); } catch (e) {}
   _cvLoadList();
 }
 async function _cvLoadFeed(url, title, meta) {

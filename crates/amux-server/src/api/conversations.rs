@@ -504,6 +504,13 @@ fn me_json(who: &Who, all: &[Person]) -> Value {
     }
 }
 
+/// The newest post id in a conversation, thread replies included: what a
+/// reader looking at it has caught up to.
+fn latest_post_id(conn: &rusqlite::Connection, conv: &str) -> i64 {
+    conn.query_row("SELECT COALESCE(MAX(id),0) FROM conversation_posts WHERE conv=?1", rusqlite::params![conv], |r| r.get(0))
+        .unwrap_or(0)
+}
+
 /// (unread, mentions, last_ts) per conversation for one reader.
 fn counts(conn: &rusqlite::Connection, reader: &str) -> HashMap<String, (i64, i64, i64)> {
     let mut out: HashMap<String, (i64, i64, i64)> = HashMap::new();
@@ -717,6 +724,11 @@ async fn posts(
         .query_row("SELECT last_id FROM conversation_reads WHERE reader=?1 AND conv=?2",
             rusqlite::params![me.key(), key], |r| r.get(0))
         .unwrap_or(0);
+    // The newest post in the conversation, thread replies included. The
+    // unread count covers replies, but the top-level page cannot see a reply
+    // to an older thread, so a reader marking read up to the page's newest id
+    // kept the badge on a channel they were looking at (Ethan, 2026-10-28).
+    let latest_id = latest_post_id(&conn, &key);
     let include_owner = owner_has_posted(&conn) || matches!(&me, Who::Person { email, .. } if email == "owner");
     let all = people(&conn, include_owner);
     let ppl: Vec<Value> = readers(&conv, &all, &lanes)
@@ -725,7 +737,7 @@ async fn posts(
         .collect();
     let mut mentionable = mentionable_workers(&me, &conv, &lanes);
     mentionable.extend(mentionable_isolated(&me, &conv, &isolated_lanes()));
-    Json(json!({"conv": key, "posts": rows, "last_read": last_read, "thread": thread, "has_more": has_more && thread.is_none(),
+    Json(json!({"conv": key, "posts": rows, "last_read": last_read, "latest_id": latest_id, "thread": thread, "has_more": has_more && thread.is_none(),
         "profiles": profiles,
         "people": ppl, "workers": workers_in(&conv, &lanes),
         "mentionable_workers": mentionable,
@@ -2011,6 +2023,25 @@ mod tests {
         assert!(worker_invited(&c, &wexus, 10, "workflows"));
         assert!(!worker_invited(&c, &wexus, 11, "workflows"), "another thread of the channel");
         assert!(!worker_invited(&c, &Conv::Worker("workflows".into()), 10, "workflows"));
+    }
+
+    #[test]
+    fn reading_a_channel_up_to_its_latest_post_clears_a_reply_the_page_never_lists() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE conversation_posts (id INTEGER PRIMARY KEY, conv TEXT, author_key TEXT, mentions TEXT, parent_id INTEGER, ts INTEGER);
+                         CREATE TABLE conversation_reads (reader TEXT, conv TEXT, last_id INTEGER, PRIMARY KEY (reader, conv));").unwrap();
+        let add = |id: i64, author: &str, parent: Option<i64>| {
+            c.execute("INSERT INTO conversation_posts VALUES (?1,'g:wexus',?2,'[]',?3,?1)", rusqlite::params![id, author, parent]).unwrap();
+        };
+        add(1, "person:ethan@x.com", None);
+        add(2, "worker:ed", Some(1)); // a reply: the top-level page never lists it
+        let me = "person:ethan@x.com";
+        let read_to = |n: i64| c.execute("INSERT OR REPLACE INTO conversation_reads VALUES (?1,'g:wexus',?2)", rusqlite::params![me, n]).unwrap();
+        read_to(1); // the newest TOP-LEVEL post, which is what the page used to send
+        assert_eq!(counts(&c, me)["g:wexus"].0, 1, "the reply stays unread");
+        assert_eq!(latest_post_id(&c, "g:wexus"), 2);
+        read_to(latest_post_id(&c, "g:wexus"));
+        assert_eq!(counts(&c, me)["g:wexus"].0, 0, "reading up to the latest post clears it");
     }
 
     #[test]
