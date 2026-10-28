@@ -225,3 +225,39 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     if (sharedDir && sharedDir.includes('/Shared/upload-')) fs.rmSync(sharedDir, { recursive: true, force: true });
   }
 });
+
+// Ethan, 2026-10-28: "Not approved: only the owner, signed in to the dashboard,
+// can approve a Pages link" on his own click. A browser on this Mac gets the
+// owner bearer in the page and never the owner-session cookie approval takes,
+// unless it went through ?_token= first (the test above does; the owner does
+// not). Approve now signs in once with the page's token and retries.
+test('the owner approves a pending link from a plain page load, with no sign-in step', async ({ page, playwright }, testInfo) => {
+  const dir = fs.mkdtempSync(path.join(os.homedir(), 'pagesapprove-'));
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'approve me\n');
+  const anon = await playwright.request.newContext({ ignoreHTTPSErrors: true });
+  try {
+    await page.goto('/');
+    await page.waitForFunction(() => !!(window as any)._AMUX_AUTH_TOKEN, { timeout: 20000 });
+    const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
+    const base = new URL(page.url()).origin;
+    const title = `plain approve ${testInfo.project.name}`;
+    const asked = await anon.post(`${base}/api/page-links`, { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      data: { kind: 'file', path: dir, title } });
+    expect(asked.status()).toBe(201);
+    const link = await asked.json();
+    expect(link.pending).toBe(true);
+    // The bearer alone (a worker's kind of caller) is still refused.
+    const self = await anon.post(`${base}/api/page-links/${link.id}/approve`, { headers: { Authorization: 'Bearer ' + token } });
+    expect(self.status()).toBe(403);
+    await page.goto('/#view=pages');
+    const pending = page.locator('#pub-files .pub-file', { hasText: title });
+    await expect(pending).toContainText('Waiting for your approval');
+    await pending.getByRole('button', { name: 'Approve' }).click();
+    await page.locator('#modal-btns').getByRole('button', { name: 'Approve' }).click();
+    await expect(pending).not.toContainText('Waiting for your approval', { timeout: 15000 });
+    expect((await anon.get(new URL(link.path, base).toString())).status()).toBe(200);
+  } finally {
+    await cleanup('dispose the anonymous request context', () => anon.dispose(), testInfo);
+    await cleanup('remove the approved folder', () => fs.rmSync(dir, { recursive: true, force: true }), testInfo);
+  }
+});

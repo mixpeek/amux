@@ -60358,8 +60358,25 @@ async function _pubApprove(id) {
       : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
     : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
   if (!(await showConfirm(ask, 'Approve', true))) return;
-  try { await _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' }); showToast('Public link approved'); }
-  catch (e) { showToast('Not approved: ' + e.message); }
+  const approve = () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+  try { await approve(); showToast('Public link approved'); }
+  catch (e) {
+    // Approval takes the owner's session cookie, which only a sign-in sets: a
+    // worker can hold the bearer, never the cookie. A browser on this Mac gets
+    // the bearer in the page and no cookie, so the owner's own click was
+    // refused. Sign in once with the page's owner token (same origin), then
+    // try again.
+    let retried = false;
+    if (_authToken && /signed in/i.test(e.message || '')) {
+      try {
+        const s = await fetch(location.origin + '/api/connection/session', { method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: _authToken }) });
+        if (s.ok) { await approve(); retried = true; showToast('Public link approved'); }
+        window._clientDebug && window._clientDebug('pages-approve', { verdict: s.ok ? 'owner_session_established_for_approve' : 'owner_session_sign_in_refused', status: s.status, measured: true, n_considered: 1 });
+      } catch (e2) { e = e2; }
+    }
+    if (!retried) showToast('Not approved: ' + e.message);
+  }
   _pubList();
 }
 async function _pubList() {

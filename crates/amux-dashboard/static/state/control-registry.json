@@ -4014,6 +4014,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pubApprove": {
+      "kind": "command._pubApprove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pubMenu": {
       "kind": "command._pubMenu",
       "feedback_required": true,

@@ -537,8 +537,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Opened | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Size | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | div | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | Approve | `_pubApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js | Approve | `_pubApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Approve | `_pubApprove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Approve | `_pubApprove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | More actions for ${name} | `_pubMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | + Add app | `_pubNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Share a file | `_pubNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
