@@ -738,13 +738,25 @@ class Door(BaseHTTPRequestHandler):
         return self.send(303, headers=[("Location", "/"), ("Cache-Control", "no-store")] + session_cookies(email))
 
 
+class DoorServer(ThreadingHTTPServer):
+    """The listen backlog. Every dashboard request passes through the door
+    (Caddy forward_auth), and a page load fires ~100 at once. socketserver's
+    default backlog is 5: the kernel dropped the rest, each dropped connection
+    was retried a second later, and every call on a sandbox page load took
+    1.2 s against a 5 ms server (TcpExtListenOverflows 21785, 2026-10-28:
+    "the sandbox cloud is very slow")."""
+    request_queue_size = 1024
+    daemon_threads = True
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "hash":
         print("%s %s" % (sys.argv[2], scrypt_hash(sys.stdin.readline().rstrip("\n"))))
         return
     if len(sys.argv) >= 2 and sys.argv[1] == "serve":
-        log(event="start", port=PORT, users=len(users()), verdict="door_started")
-        ThreadingHTTPServer(("127.0.0.1", PORT), Door).serve_forever()
+        log(event="start", port=PORT, users=len(users()), backlog=DoorServer.request_queue_size,
+            verdict="door_started")
+        DoorServer(("127.0.0.1", PORT), Door).serve_forever()
         return
     sys.exit(__doc__)
 
