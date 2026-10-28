@@ -6987,6 +6987,11 @@ function _waitingLabel(s) {
 // minutes while every turn ended on "The only thing left is TP-37: sign in
 // once...". Its own colour, the card id, the one-line ask, and tapping it opens
 // the card, because answering the card is the whole remedy.
+// A background job's age as "1h02m" or "7m" (MSG-99658).
+function _bgJobAge(sec) {
+  const m = Math.max(0, Math.round((+sec || 0) / 60));
+  return m >= 60 ? Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm' : m + 'm';
+}
 function _needsInputBadge(s, opts) {
   const b = s.owner_block || {};
   const card = b.card || '';
@@ -7961,7 +7966,12 @@ function _statusWhy(s, evidence) {
   else if (status === 'waiting') { head = 'Waiting for your answer to a question.'; action = 'Open the worker and answer it.'; }
   else if (pr.agent_state === 'unknown') { head = 'amux can\'t tell what it is doing.';
     action = 'Restart the worker to restore its status reports. Automation will not act on it meanwhile.'; }
-  else if (pr.activity === 'background_shell') { head = 'Turn finished; a background job it started is still running.'; action = 'Nothing. It picks up again when the job ends.'; }
+  else if (pr.activity === 'background_shell') {
+    const jobs = (pr.background_jobs || []).filter(j => !j.waiting);
+    head = 'Turn finished; ' + (jobs.length ? (jobs.length === 1 ? 'its job ' : jobs.length + ' jobs it started are still running: ')
+      + jobs.map(j => j.label + ' ' + _bgJobAge(j.elapsed_s)).join(', ') + (jobs.length === 1 ? ' is still running' : '') : 'a background job it started is still running') + '.';
+    action = 'Nothing. It picks up again when the job ends.';
+  }
   else if (pr.activity === 'subagents') head = 'Working through subagents.';
   else if (pr.activity === 'tool') head = 'Running a tool call' + (rep.age_s != null ? ' (started ' + ago(rep.age_s) + ')' : '') + '.';
   else if (status === 'active') head = 'Working.';
@@ -8074,7 +8084,16 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
     + esc('Agent state unknown: only a screen guess (' + (s.status || '?') + ') is available and the status channel is ' + (tele.health || 'unmeasured') + '. ' + (tele.reason || '') + ' Automation will not act on it.')
     + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">unknown ▾</button>';
   else if (s.running && s.status === 'active' && s.activity === 'api_retry') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
-  else if (s.running && s.status === 'active' && s.activity === 'background_shell') badge = '<span class="status-badge background" title="The turn is finished; a background shell it started is still running. The agent resumes on its own when that ends.">background job</span>';
+  else if (s.running && s.status === 'active' && s.activity === 'background_shell') {
+    // Name the job and its age (MSG-99658: "idle" for 16 minutes while
+    // etl_rest2.sh ran for 1h02m). The tooltip lists every job.
+    const jobs = (s.background_jobs || []).filter(j => !j.waiting);
+    const lead = jobs[0];
+    const text = lead ? esc(lead.label) + ' ' + _bgJobAge(lead.elapsed_s) + (jobs.length > 1 ? ' +' + (jobs.length - 1) : '') : 'background job';
+    const tip = 'The turn is finished; a background job it started is still running. The agent resumes on its own when that ends.'
+      + (jobs.length ? ' ' + jobs.map(j => j.label + ' (' + _bgJobAge(j.elapsed_s) + ')').join(', ') : '');
+    badge = '<span class="status-badge background" title="' + esc(tip) + '">' + text + '</span>';
+  }
   else if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
   else if (s.status === 'waiting' && s.waiting_reason === 'owner') badge = _needsInputBadge(s);
   else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';

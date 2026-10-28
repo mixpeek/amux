@@ -1629,6 +1629,111 @@ fn parse_list_sessions_line(l: &str) -> Option<(&str, Option<i64>, Option<i64>)>
 /// native provider is tool work. This avoids treating the provider process's
 /// mere existence as activity while keeping a long-running cargo/browser child
 /// authoritative when rollout writes are naturally quiet.
+/// One background job a Claude lane started: a Bash-tool shell under its
+/// `claude` process (MSG-99658: tubescience-parity read idle for 16 minutes
+/// while `bash etl_rest2.sh` ran for 1h02m, and the status said nothing about
+/// it). `waiting` is a watch loop (`until`/`while` … `sleep`, `sleep N`,
+/// `tail -f`), which only waits for something else; anything else is work,
+/// even while the script sleeps between writes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct BackgroundJob {
+    pub pid: String,
+    pub label: String,
+    pub elapsed_s: i64,
+    pub waiting: bool,
+}
+
+/// session -> the pids of the Bash-tool shells directly under its `claude`.
+fn claude_shell_pids(pane_roots: &[(String, String)], ps_output: &str) -> BTreeMap<String, Vec<String>> {
+    let base = |c: &str| Path::new(c).file_name().and_then(|n| n.to_str()).unwrap_or(c).trim_start_matches('-').to_string();
+    let mut children: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut comm_of: BTreeMap<String, String> = BTreeMap::new();
+    for line in ps_output.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next(), f.next()) else { continue };
+        let _state = f.next();
+        let comm = base(f.next().unwrap_or(""));
+        children.entry(ppid.to_string()).or_default().push((pid.to_string(), comm.clone()));
+        comm_of.insert(pid.to_string(), comm);
+    }
+    let mut out = BTreeMap::new();
+    for (session, root) in pane_roots {
+        let mut queue = vec![root.clone()];
+        let mut claude = None;
+        let mut seen = 0;
+        while let Some(pid) = queue.pop() {
+            seen += 1;
+            if seen > 256 { break; }
+            if comm_of.get(&pid).is_some_and(|c| c == "claude") { claude = Some(pid); break; }
+            if let Some(k) = children.get(&pid) { queue.extend(k.iter().map(|(p, _)| p.clone())); }
+        }
+        let Some(claude) = claude else { continue };
+        let shells: Vec<String> = children.get(&claude).map(|k| k.iter()
+            .filter(|(_, c)| matches!(c.as_str(), "bash" | "sh" | "zsh"))
+            .map(|(p, _)| p.clone()).collect()).unwrap_or_default();
+        if !shells.is_empty() { out.insert(session.clone(), shells); }
+    }
+    out
+}
+
+/// `ps` etime (`[[dd-]hh:]mm:ss`) in seconds.
+fn etime_secs(s: &str) -> Option<i64> {
+    let (days, rest) = match s.split_once('-') { Some((d, r)) => (d.parse::<i64>().ok()?, r), None => (0, s) };
+    let parts: Vec<i64> = rest.split(':').map(|p| p.parse::<i64>().ok()).collect::<Option<_>>()?;
+    let (h, m, sec) = match parts.as_slice() { [h, m, s] => (*h, *m, *s), [m, s] => (0, *m, *s), _ => return None };
+    Some(days * 86_400 + h * 3_600 + m * 60 + sec)
+}
+
+/// The command a Claude Bash-tool shell runs: the text inside its
+/// `eval '…'` wrapper, else the shell's whole argument line.
+fn shell_command(args: &str) -> String {
+    if let Some(i) = args.find("eval '") {
+        let rest = &args[i + 6..];
+        let end = rest.find("' < /dev/null").or_else(|| rest.rfind('\'')).unwrap_or(rest.len());
+        return rest[..end].replace("'\"'\"'", "'").trim().to_string();
+    }
+    args.trim().to_string()
+}
+
+/// A watch loop only waits for something else to happen.
+fn is_watch_command(cmd: &str) -> bool {
+    let c = cmd.trim_start();
+    ["until ", "while ", "sleep ", "tail -f", "tail -F"].iter().any(|p| c.starts_with(p))
+}
+
+/// What to call a job: the script it runs, else the start of its command.
+fn job_label(cmd: &str) -> String {
+    for tok in cmd.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|' || c == '(' || c == ')') {
+        let t = tok.trim_matches(|c| c == '"' || c == '\'');
+        if [".sh", ".py", ".mjs", ".js", ".ts", ".rb"].iter().any(|e| t.ends_with(e)) {
+            return Path::new(t).file_name().and_then(|n| n.to_str()).unwrap_or(t).to_string();
+        }
+    }
+    let one = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
+    one.chars().take(60).collect()
+}
+
+/// Parse `ps -o pid=,etime=,args=` for the shells in `shells` into jobs.
+fn background_jobs_from_ps(shells: &BTreeMap<String, Vec<String>>, ps_args: &str) -> BTreeMap<String, Vec<BackgroundJob>> {
+    let mut by_pid: BTreeMap<String, (i64, String)> = BTreeMap::new();
+    for line in ps_args.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(et)) = (f.next(), f.next()) else { continue };
+        let args = f.collect::<Vec<_>>().join(" ");
+        if let Some(secs) = etime_secs(et) { by_pid.insert(pid.to_string(), (secs, args)); }
+    }
+    let mut out = BTreeMap::new();
+    for (session, pids) in shells {
+        let mut jobs: Vec<BackgroundJob> = pids.iter().filter_map(|p| by_pid.get(p).map(|(secs, args)| {
+            let cmd = shell_command(args);
+            BackgroundJob { pid: p.clone(), label: job_label(&cmd), elapsed_s: *secs, waiting: is_watch_command(&cmd) }
+        })).collect();
+        jobs.sort_by_key(|j| std::cmp::Reverse(j.elapsed_s));
+        if !jobs.is_empty() { out.insert(session.clone(), jobs); }
+    }
+    out
+}
+
 /// Claude lanes whose Bash-tool shells are all just WAITING: every process
 /// below the shell wrappers Claude starts is a shell, `sleep`, `tail` or a
 /// similar idle helper, so nothing is being worked on.
@@ -1806,6 +1911,9 @@ pub struct FleetSignals {
     /// Claude lanes whose background shells are only waiting (see
     /// [`claude_lanes_with_only_waiting_shells`]).
     pub(crate) claude_waiting_shells: BTreeSet<String>,
+    /// session -> the background jobs its Claude Bash-tool shells run, with
+    /// their age (MSG-99658). Shown on the session row.
+    pub(crate) background_jobs: BTreeMap<String, Vec<BackgroundJob>>,
     /// session name -> raw pane capture, for lanes that PAINTED recently.
     ///
     /// The only physical evidence in this struct: everything else is a claim
@@ -1996,6 +2104,7 @@ impl FleetSignals {
         let mut shell_only = BTreeSet::new();
         let mut provider_child_activity = BTreeSet::new();
         let mut claude_waiting_shells = BTreeSet::new();
+        let mut background_jobs: BTreeMap<String, Vec<BackgroundJob>> = BTreeMap::new();
         let mut provider_children_measured = false;
         // BOUNDED (AF-301) — was a bare `.output()`.
         let panes_probe = {
@@ -2126,6 +2235,25 @@ impl FleetSignals {
                     }
                     provider_child_activity = sessions_with_codex_tool_children(&pane_roots, out);
                     claude_waiting_shells = claude_lanes_with_only_waiting_shells(&pane_roots, out);
+                    // Name each lane's background jobs, with their age: one more
+                    // `ps`, and only for the Bash-tool shells found above.
+                    let shells = claude_shell_pids(&pane_roots, out);
+                    let pids: Vec<&str> = shells.values().flatten().map(String::as_str).collect();
+                    if !pids.is_empty() {
+                        let mut c = std::process::Command::new("ps");
+                        c.args(["-o", "pid=,etime=,args=", "-p", &pids.join(",")])
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::null());
+                        if let Some(args_out) = run_bounded(c, probe_budget(), "ps/jobs") {
+                            background_jobs = background_jobs_from_ps(&shells, &args_out);
+                            // A shell running a script is work even while that
+                            // script sleeps between writes; only lanes whose
+                            // every job is a watch loop stay "only waiting".
+                            claude_waiting_shells.retain(|s| {
+                                background_jobs.get(s).is_none_or(|jobs| jobs.iter().all(|j| j.waiting))
+                            });
+                        }
+                    }
                 }
                 None => tracing::warn!(
                     target: "amux::sessions",
@@ -2273,6 +2401,7 @@ impl FleetSignals {
             provider_child_activity,
             provider_children_measured,
             claude_waiting_shells,
+            background_jobs,
             panes: BTreeMap::new(),
             subagent_activity: scan_subagent_activity(),
             now: chrono::Utc::now().timestamp() as f64,
@@ -2896,10 +3025,18 @@ impl FleetSignals {
             let ts = self.now - ex["codex_rollout"]["age_s"].as_f64().unwrap_or(0.0);
             progress = Some(progress.map_or(ts, |p| p.max(ts)));
         }
+        // Between turns, say WHY the lane is quiet: its own job is running, it
+        // only has watch loops, or nothing at all (MSG-99658).
+        let jobs = self.background_jobs.get(name).cloned().unwrap_or_default();
+        let idle_reason = (turn_state == "completed").then(|| {
+            if jobs.iter().any(|j| !j.waiting) { "own_job_running" } else if !jobs.is_empty() { "watch_only" } else { "idle" }
+        });
         json!({
             "process_state": "running",
             "turn_state": turn_state,
             "activity": activity,
+            "background_jobs": jobs,
+            "idle_reason": idle_reason,
             "authority": authority,
             "agent_state": agent_state,
             "telemetry": {
@@ -6152,6 +6289,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             last["agent_state"] = projection["agent_state"].clone();
             last["turn_state"] = projection["turn_state"].clone();
             last["activity"] = projection["activity"].clone();
+            last["background_jobs"] = projection["background_jobs"].clone();
+            last["idle_reason"] = projection["idle_reason"].clone();
             last["status_authority"] = projection["authority"].clone();
             last["telemetry"] = projection["telemetry"].clone();
             last["last_progress_at"] = projection["last_progress_at"].clone();
@@ -8511,6 +8650,7 @@ pub(crate) mod tests {
             provider_child_activity: BTreeSet::new(),
             provider_children_measured: true,
             claude_waiting_shells: BTreeSet::new(),
+            background_jobs: BTreeMap::new(),
             panes: BTreeMap::new(),
             now: 1_000_000.0,
         }
@@ -10698,6 +10838,43 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert!(!w.contains("busy"), "a shell running ffmpeg is work");
         let none = vec![("x".to_string(), "300".to_string())];
         assert!(super::claude_lanes_with_only_waiting_shells(&none, "300 1 S /bin/sh\n301 300 S claude\n").is_empty(), "no shells: nothing to discount");
+    }
+
+    /// MSG-99658: tubescience-parity read idle while `bash etl_rest2.sh` ran
+    /// for 1h02m. Its shell's children were `sleep` between writes, so it read
+    /// exactly like a watch loop. The command line tells them apart, and the
+    /// session row now names each job with its age.
+    #[test]
+    fn a_script_job_is_named_with_its_age_and_is_work_while_a_watch_loop_only_waits() {
+        assert_eq!(super::etime_secs("1:02:05"), Some(3725));
+        assert_eq!(super::etime_secs("02:05"), Some(125));
+        assert_eq!(super::etime_secs("2-01:00:00"), Some(176_400));
+        assert_eq!(super::etime_secs("x"), None);
+        let wrap = |cmd: &str| format!(
+            "/bin/bash -c -l source /Users/u/.claude/shell-snapshots/snapshot-bash-1.sh 2>/dev/null || true && eval '{cmd}' < /dev/null && pwd -P >| /tmp/claude-1-cwd");
+        assert_eq!(super::shell_command(&wrap("cd /w && bash etl_rest2.sh --views")), "cd /w && bash etl_rest2.sh --views");
+        assert_eq!(super::job_label("cd /w && bash scripts/etl_rest2.sh --views"), "etl_rest2.sh");
+        assert_eq!(super::job_label("make build -j 4"), "make build -j 4");
+        assert!(super::is_watch_command("until grep -q done log; do sleep 15; done"));
+        assert!(!super::is_watch_command("cd /w && bash etl_rest2.sh"));
+
+        let roots = vec![("tsp".to_string(), "100".to_string()), ("lfv".to_string(), "200".to_string())];
+        let ps = "100 1 S /bin/sh\n101 100 S+ claude\n102 101 Ss /bin/bash\n103 102 S sleep\n\
+                  200 1 S /bin/sh\n201 200 S+ claude\n202 201 Ss /bin/bash\n203 202 S sleep\n";
+        let shells = super::claude_shell_pids(&roots, ps);
+        assert_eq!(shells.get("tsp"), Some(&vec!["102".to_string()]));
+        let args = format!("102 1:02:05 {}\n202 3:00 {}\n",
+            wrap("cd /w && bash etl_rest2.sh"), wrap("until grep -q done log; do sleep 15; done"));
+        let jobs = super::background_jobs_from_ps(&shells, &args);
+        assert_eq!(jobs["tsp"], vec![super::BackgroundJob { pid: "102".into(), label: "etl_rest2.sh".into(), elapsed_s: 3725, waiting: false }]);
+        assert!(jobs["lfv"][0].waiting, "an until/sleep loop only waits");
+
+        // On the row: the jobs, with their age.
+        let mut s = signals();
+        s.background_jobs = jobs;
+        let p = s.status_projection("tsp", "idle", "report", &serde_json::Map::new());
+        assert_eq!(p["background_jobs"][0]["label"], "etl_rest2.sh", "{p}");
+        assert_eq!(p["background_jobs"][0]["elapsed_s"], 3725);
     }
 
     #[test]
