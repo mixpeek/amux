@@ -65951,7 +65951,7 @@ async function _cvSetAvatar(key, file) {
 function _cvMeKey() { return _cv.list && _cv.list.me ? _cv.list.me.key : ''; }
 function _cvFindName(conv) {
   const L = _cv.list || {};
-  const c = (L.channels || []).find(x => x.conv === conv); if (c) return '#' + c.name;
+  const c = (L.channels || []).find(x => x.conv === conv); if (c) return '#' + (c.title || c.name);
   const p = (L.people || []).find(x => x.conv === conv); if (p) return p.name;
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
@@ -66000,7 +66000,7 @@ const _cvNew = { items: [], shown: [], pick: null };
 function _cvNewCandidates() {
   const L = _cv.list || {};
   return [
-    ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + c.name, kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
+    ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
     ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
@@ -66042,8 +66042,12 @@ function _cvRenderSide() {
   document.querySelectorAll('#cv-side .cv-nav > .cv-item[data-cv^="@"]').forEach(b => b.classList.toggle('active', b.dataset.cv === _cv.sel));
   const allItem = document.getElementById('cv-all-item');
   if (allItem) allItem.style.display = L.me && L.me.scope_level && L.me.scope_level !== 'global' ? 'none' : '';
-  document.getElementById('cv-channels').innerHTML = (L.channels || []).map(c =>
-    _cvItem(c.conv, '<span class="cv-ico">#</span>', c.name, c.unread, c.mentions)).join('') || '<div class="cv-empty">No channels yet</div>';
+  const admin = !!(L.me && L.me.can_admin_channels);
+  document.getElementById('cv-channels').innerHTML = ((L.channels || []).map(c =>
+    _cvItem(c.conv, '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>', c.title || c.name, c.unread, c.mentions)).join('') || '<div class="cv-empty">No channels yet</div>')
+    // Owners and admins manage channels from here (AA-52). The server refuses
+    // everyone else, so this only hides a button nobody else could use.
+    + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
   const ppl = (L.people || []);
   document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
   document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
@@ -66055,6 +66059,88 @@ function _cvRenderSide() {
     return _cvItem(w.conv, _cvAvatar(w.name, true), w.name, w.unread, w.mentions, '<span class="cv-dot' + (act ? ' on' : '') + '" title="' + (act ? 'working' : 'idle') + '"></span>');
   }).join('') || '<div class="cv-empty">No workers you can reach</div>';
   _cvApplyFolds();
+}
+// CHANNEL SETTINGS (AA-52, Ethan 2026-10-28: "only owners/admins can but i
+// want to be able to create new channels, add people, remove people").
+// One dialog on the shared modal: the channel list (with New channel), and a
+// channel's settings (name, private, archive, people). A channel is a group;
+// people start from their team's access and an admin adds or removes them.
+const _cvCh = { view: 'list', name: null };
+async function _cvChApi(method, path, body) {
+  const r = await fetch(API + '/api/conversations/channels' + path, body === undefined ? { method } :
+    { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast(d.error || ('HTTP ' + r.status), 'error'); return null; }
+  return d;
+}
+async function _cvManageChannels(name) {
+  _cvCh.view = name ? 'channel' : 'list'; _cvCh.name = name || null;
+  const shown = showFormModal('Channels', '<div id="cv-ch-body" class="cv-ch-body"><div class="cv-empty">Loading…</div></div>', 'Done');
+  _cvChRender();
+  await shown;
+  await _cvLoadList();
+  if (_cv.sel && _cv.sel.indexOf('g:') === 0) _cvPoll(true);
+}
+async function _cvChRender() {
+  const box = document.getElementById('cv-ch-body'); if (!box) return;
+  if (_cvCh.view === 'channel') return _cvChRenderOne(box, _cvCh.name);
+  const d = await _cvChApi('GET', ''); if (!d) return;
+  box.innerHTML = '<div class="cv-ch-row"><input id="cv-ch-new" class="input" placeholder="new-channel-name" autocomplete="off" aria-label="New channel name"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_cvChCreate()}">'
+    + '<label class="cv-ch-check"><input type="checkbox" id="cv-ch-new-private"> Private</label>'
+    + '<button type="button" class="btn primary" id="cv-ch-create" onclick="_cvChCreate()">Create</button></div>'
+    + (d.channels || []).map(c => '<div class="cv-ch-row" data-ch="' + esc(c.name) + '"><span class="cv-ch-name">'
+      + (c.private ? '&#x1F512; ' : '#') + esc(c.title || c.name) + (c.title ? ' <small class="cv-ch-dim">#' + esc(c.name) + '</small>' : '')
+      + '<small class="cv-ch-dim">' + c.people + (c.people === 1 ? ' person' : ' people') + (c.archived ? ' · archived' : '') + '</small></span>'
+      + '<button type="button" class="btn" data-ch="' + esc(c.name) + '" onclick="_cvChOpen(this.dataset.ch)">Settings</button></div>').join('');
+}
+function _cvChOpen(name) { _cvCh.view = 'channel'; _cvCh.name = name; _cvChRender(); }
+function _cvChBack() { _cvCh.view = 'list'; _cvCh.name = null; _cvChRender(); }
+async function _cvChCreate() {
+  const inp = document.getElementById('cv-ch-new');
+  const name = String(inp && inp.value || '').trim().replace(/^#/, '').toLowerCase();
+  if (!name) { inp && inp.focus(); return; }
+  const d = await _cvChApi('POST', '', { name, private: !!document.getElementById('cv-ch-new-private')?.checked });
+  if (!d) return;
+  showToast('#' + d.name + ' created');
+  _cvChOpen(d.name);
+}
+async function _cvChRenderOne(box, name) {
+  const d = await _cvChApi('GET', '/' + encodeURIComponent(name) + '/members'); if (!d) return;
+  const c = d.channel || {}; const general = name === 'general';
+  const via = { owner: 'owner', added: 'added', team: 'from their team', removed: 'removed', none: '' };
+  const ppl = (d.people || []).slice().sort((a, b) => (b.member - a.member) || String(a.name).localeCompare(b.name));
+  box.innerHTML = '<div class="cv-ch-row"><button type="button" class="btn" onclick="_cvChBack()" aria-label="Back to channels">&#x2039; Channels</button>'
+    + '<span class="cv-ch-name">#' + esc(name) + (c.archived ? ' <small class="cv-ch-dim">archived</small>' : '') + '</span></div>'
+    + '<div class="cv-ch-row"><input id="cv-ch-title" class="input" placeholder="Display name" value="' + esc(c.title || '') + '" aria-label="Display name"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_cvChSet({title:this.value})}">'
+    + '<button type="button" class="btn" id="cv-ch-rename" onclick="_cvChSet({title:document.getElementById(\'cv-ch-title\').value})">Rename</button></div>'
+    + (general ? '' : '<div class="cv-ch-row"><label class="cv-ch-check"><input type="checkbox" id="cv-ch-private"' + (c.private ? ' checked' : '')
+      + ' onchange="_cvChSet({private:this.checked})"> Private (only people added)</label>'
+      + '<button type="button" class="btn' + (c.archived ? '' : ' danger') + '" id="cv-ch-archive" onclick="_cvChArchive(' + (c.archived ? 'false' : 'true') + ')">'
+      + (c.archived ? 'Restore' : 'Archive') + '</button></div>')
+    + '<div class="cv-ch-dim cv-ch-sub">People (' + ppl.filter(p => p.member).length + ' in)</div>'
+    + ppl.map(p => '<div class="cv-ch-row cv-ch-person' + (p.member ? ' in' : '') + '" data-email="' + esc(p.email) + '">'
+      + _cvAvatar(p.name, false, 'person:' + p.email) + '<span class="cv-ch-name">' + esc(p.name)
+      + '<small class="cv-ch-dim">' + esc(p.email === 'owner' ? '' : p.email) + (via[p.via] ? ' · ' + via[p.via] : '') + '</small></span>'
+      + (p.via === 'owner' ? '' : '<button type="button" class="btn' + (p.member ? '' : ' primary') + '" data-email="' + esc(p.email) + '" data-add="' + (p.member ? '0' : '1')
+        + '" onclick="_cvChMember(this.dataset.email, this.dataset.add === \'1\')">' + (p.member ? 'Remove' : 'Add') + '</button>') + '</div>').join('');
+}
+async function _cvChSet(patch) {
+  if (patch.title !== undefined) patch.title = String(patch.title).trim();
+  if (await _cvChApi('PATCH', '/' + encodeURIComponent(_cvCh.name), patch)) { showToast('Saved'); _cvChRender(); }
+}
+// Archiving asks twice in place: the dialog is already the shared modal, so
+// a second confirm dialog would replace it.
+async function _cvChArchive(on) {
+  const b = document.getElementById('cv-ch-archive');
+  if (on && b && !b.dataset.sure) { b.dataset.sure = '1'; b.textContent = 'Archive: nobody can read or post. Sure?'; return; }
+  _cvChSet({ archived: on });
+}
+async function _cvChMember(email, add) {
+  const d = add ? await _cvChApi('POST', '/' + encodeURIComponent(_cvCh.name) + '/members', { email })
+    : await _cvChApi('DELETE', '/' + encodeURIComponent(_cvCh.name) + '/members/' + encodeURIComponent(email));
+  if (d) _cvChRender();
 }
 // Collapsible sidebar (Ethan, 2026-10-13: "this in messages tab contents
 // should be collapsible?"). A folded section still lists the open
@@ -66259,8 +66345,14 @@ function _cvRenderHead(sel, d) {
   const on = ppl.filter(p => p.online).length;
   if (sel.indexOf('g:') === 0) {
     const g = sel.slice(2);
+    const ch = ((_cv.list || {}).channels || []).find(c => c.conv === sel) || {};
     meta.textContent = ppl.length + (ppl.length === 1 ? ' person' : ' people') + ' · ' + wk.length + (wk.length === 1 ? ' worker' : ' workers') + ' · ' +
-      (g === 'general' ? 'Everyone with workspace access' : 'Everything in the ' + g + ' group');
+      (g === 'general' ? 'Everyone with workspace access' : ch.private ? 'Private: only people added' : 'Everything in the ' + g + ' group');
+    if (_cv.list && _cv.list.me && _cv.list.me.can_admin_channels) {
+      document.getElementById('cv-head-people').innerHTML = ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('')
+        + '<button type="button" class="btn cv-chan-gear" id="cv-chan-gear" data-ch="' + esc(g) + '" onclick="_cvManageChannels(this.dataset.ch)" aria-label="Channel settings" title="Channel settings">&#x2699;</button>';
+      return;
+    }
   } else if (sel.indexOf('w:') === 0) {
     meta.textContent = 'Messages here go to ' + sel.slice(2) + '. It replies here. ' + ppl.length + ' people can read this.';
     // The owner can give a worker its picture from its thread.

@@ -1089,6 +1089,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),
     ("profiles", "updated_at", true),
+    // Channel settings (0139): conversations.rs writes the channel columns
+    // with Utc::now().timestamp() and membership rows with now_ms().
+    ("conversation_members", "ts", true),
+    ("group_config", "channel_created_at", false),
+    ("group_config", "channel_archived_at", false),
     ("link_previews", "fetched_at", true),
     // The chat bridge (0136): bridge/mod.rs writes epoch milliseconds.
     ("bridge_links", "linked_at", true),

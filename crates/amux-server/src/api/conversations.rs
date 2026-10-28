@@ -34,6 +34,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations", get(list))
         .route("/api/conversations/search", get(search))
         .route("/api/conversations/mentions", get(mentions))
+        .route("/api/conversations/channels", get(list_channels).post(create_channel))
+        .route("/api/conversations/channels/{name}", axum::routing::patch(patch_channel))
+        .route("/api/conversations/channels/{name}/members", get(channel_members).post(add_member))
+        .route("/api/conversations/channels/{name}/members/{email}", axum::routing::delete(remove_member))
         .route("/api/conversations/{conv}/posts", get(posts).post(create_post))
         .route("/api/conversations/{conv}/read", post(mark_read))
         .route("/api/conversations/{conv}/typing", post(typing))
@@ -326,6 +330,124 @@ fn owner_has_posted(conn: &rusqlite::Connection) -> bool {
     .is_ok()
 }
 
+// ---- channels an owner or admin configured ----------------------------------
+//
+// A channel IS a group: `g:<group>` and the group's name are the same key.
+// What an owner or admin configures about one lives in the group's own row,
+// `group_config` (title, private, archived, and `channel_created_at` for a
+// group that exists before any worker carries its tag). Who reads a channel
+// still starts from each member's team scope; `conversation_members` keeps
+// only the exceptions to that rule (a person added outside their team, or
+// removed from a channel their team covers). Teams cannot express this: a
+// member has exactly one team, and adding someone to a second channel must
+// not move them out of their first.
+
+#[derive(Clone, Debug, Default)]
+struct ChannelMeta {
+    title: String,
+    created: bool,
+    archived: bool,
+    private: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Channels {
+    meta: BTreeMap<String, ChannelMeta>,
+    /// conv key -> email -> true (added) | false (removed).
+    members: HashMap<String, BTreeMap<String, bool>>,
+    /// The configuration could not be read (an old schema, a locked store).
+    unreadable: bool,
+}
+
+impl Channels {
+    fn meta(&self, g: &str) -> ChannelMeta {
+        self.meta.get(g).cloned().unwrap_or_default()
+    }
+    fn member_override(&self, conv: &str, email: &str) -> Option<bool> {
+        self.members.get(conv).and_then(|m| m.get(email).copied())
+    }
+    fn load(conn: &rusqlite::Connection) -> Channels {
+        let mut out = Channels::default();
+        let meta = conn.prepare(
+            "SELECT name, COALESCE(channel_title,''), channel_created_at IS NOT NULL, \
+                    channel_archived_at IS NOT NULL, COALESCE(channel_private,0) \
+             FROM group_config WHERE channel_created_at IS NOT NULL OR channel_archived_at IS NOT NULL \
+                OR COALESCE(channel_title,'')<>'' OR COALESCE(channel_private,0)<>0",
+        ).and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get::<_, String>(0)?, ChannelMeta {
+                title: r.get(1)?, created: r.get(2)?, archived: r.get(3)?, private: r.get::<_, i64>(4)? != 0,
+            })))?.collect::<rusqlite::Result<Vec<_>>>()
+        });
+        match meta {
+            Ok(rows) => out.meta = rows.into_iter().map(|(n, m)| (n.to_lowercase(), m)).collect(),
+            Err(e) => {
+                out.unreadable = true;
+                tracing::warn!(error = %e, measured = false, verdict = "conversation_channels_unreadable",
+                    "channel configuration could not be read; channels fall back to team access");
+            }
+        }
+        let rows = conn.prepare("SELECT conv, email, state FROM conversation_members").and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        });
+        match rows {
+            Ok(rows) => {
+                for (conv, email, state) in rows {
+                    out.members.entry(conv).or_default().insert(email.to_ascii_lowercase(), state == "added");
+                }
+            }
+            Err(e) => {
+                out.unreadable = true;
+                tracing::warn!(error = %e, measured = false, verdict = "conversation_channels_unreadable",
+                    "channel membership could not be read; channels fall back to team access");
+            }
+        }
+        out
+    }
+}
+
+/// The lanes plus the channel configuration: everything `may_read` needs.
+/// Derefs to the lanes, so every helper that only needs workers takes it.
+#[derive(Clone, Debug, Default)]
+struct Fleet {
+    lanes: Vec<Lane>,
+    ch: Channels,
+}
+
+impl std::ops::Deref for Fleet {
+    type Target = [Lane];
+    fn deref(&self) -> &[Lane] {
+        &self.lanes
+    }
+}
+
+impl Fleet {
+    #[cfg(test)]
+    fn of(lanes: Vec<Lane>) -> Fleet {
+        Fleet { lanes, ch: Channels::default() }
+    }
+}
+
+fn fleet(state: &AppState) -> Fleet {
+    let ch = state.store.read().map(|c| Channels::load(&c)).unwrap_or_else(|_| Channels { unreadable: true, ..Default::default() });
+    Fleet { lanes: lanes(), ch }
+}
+
+/// A channel exists for #general, every group a worker carries, and every
+/// group an owner or admin created here (archived ones included).
+fn channel_exists(g: &str, f: &Fleet) -> bool {
+    g == GENERAL || f.lanes.iter().any(|l| l.groups.contains(g)) || f.ch.meta(g).created
+}
+
+/// Who reads a channel when nobody added or removed them by hand: the team
+/// scope, unless the channel is private (then only the people added).
+fn default_channel_access(scope: &MemberScope, g: &str, f: &Fleet) -> bool {
+    if f.ch.meta(g).private {
+        return false;
+    }
+    if g == GENERAL { scope.is_global() } else { person_sees_group(scope, g) }
+}
+
 // ---- conversation keys and who may see them --------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -405,18 +527,23 @@ fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &
     .is_ok()
 }
 
-fn may_read(who: &Who, conv: &Conv, lanes: &[Lane]) -> bool {
-    // A channel exists only for a real group (or #general). Without this a
-    // workspace-wide member could post to any `g:<typo>` and create a
-    // conversation nobody lists.
+fn may_read(who: &Who, conv: &Conv, lanes: &Fleet) -> bool {
+    // A channel exists only for a real group, #general, or one an owner or
+    // admin created. Without this a workspace-wide member could post to any
+    // `g:<typo>` and create a conversation nobody lists. An archived channel
+    // is closed to everyone until it is restored.
     if let Conv::Group(g) = conv {
-        if g != GENERAL && !lanes.iter().any(|l| l.groups.contains(g)) {
+        if !channel_exists(g, lanes) || lanes.ch.meta(g).archived {
             return false;
         }
     }
     match (who, conv) {
-        (Who::Person { scope, .. }, Conv::Group(g)) if g == GENERAL => scope.is_global(),
-        (Who::Person { scope, .. }, Conv::Group(g)) => person_sees_group(scope, g),
+        // The owner reads every channel; nobody can remove them.
+        (Who::Person { email, .. }, Conv::Group(_)) if email == "owner" => true,
+        (Who::Person { email, scope }, Conv::Group(g)) => match lanes.ch.member_override(&conv.key(), email) {
+            Some(added) => added,
+            None => default_channel_access(scope, g, lanes),
+        },
         (Who::Person { scope, .. }, Conv::Worker(w)) => {
             lanes.iter().any(|l| &l.name == w) && person_allows(scope, w, lanes)
         }
@@ -444,13 +571,17 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
         // in #wexus reached nobody because workflows is in another group). That
         // worker answers in the post's thread and reads only that thread
         // (worker_invited). A worker poster stays inside the channel's group.
-        Conv::Group(g) => {
-            let mut v: Vec<String> = lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect();
-            if let Who::Person { scope, .. } = who {
+        // A person added to a channel by hand reaches only the workers their
+        // own access covers: channel membership grants the conversation, not
+        // the group's workers.
+        Conv::Group(g) => match who {
+            Who::Person { scope, .. } => {
+                let mut v: Vec<String> = lanes.iter().filter(|l| l.groups.contains(g) && person_allows(scope, &l.name, lanes)).map(|l| l.name.clone()).collect();
                 v.extend(lanes.iter().filter(|l| !l.groups.contains(g) && person_allows(scope, &l.name, lanes)).map(|l| l.name.clone()));
+                v
             }
-            v
-        }
+            Who::Worker { .. } => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
+        },
         Conv::Worker(w) => vec![w.clone()],
         // A direct message is two people: either may hand a worker a task
         // from it, the same workers they could reach from #general.
@@ -481,7 +612,7 @@ fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
 }
 
 /// People who can read a conversation.
-fn readers(conv: &Conv, all: &[Person], lanes: &[Lane]) -> Vec<Person> {
+fn readers(conv: &Conv, all: &[Person], lanes: &Fleet) -> Vec<Person> {
     all.iter()
         .filter(|p| {
             may_read(&Who::Person { email: p.email.clone(), scope: p.scope.clone() }, conv, lanes)
@@ -617,7 +748,7 @@ fn counts(conn: &rusqlite::Connection, reader: &str) -> HashMap<String, (i64, i6
 }
 
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -633,10 +764,8 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let stat = |k: &str| c.get(k).copied().unwrap_or((0, 0, 0));
     let (mut tu, mut tm) = (0i64, 0i64);
 
-    let mut groups: BTreeSet<String> = lanes.iter().flat_map(|l| l.groups.iter().cloned()).collect();
-    groups.insert(GENERAL.into());
     let mut channels = Vec::new();
-    for g in groups {
+    for g in channel_names(&lanes) {
         let conv = Conv::Group(g.clone());
         if !may_read(&me, &conv, &lanes) {
             continue;
@@ -644,7 +773,8 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
         let (u, m, ts) = stat(&conv.key());
         tu += u;
         tm += m;
-        channels.push(json!({"conv": conv.key(), "name": g,
+        let meta = lanes.ch.meta(&g);
+        channels.push(json!({"conv": conv.key(), "name": g, "title": meta.title, "private": meta.private,
             "people": readers(&conv, &all, &lanes).len(), "workers": workers_in(&conv, &lanes).len(),
             "unread": u, "mentions": m, "last_ts": ts}));
     }
@@ -678,7 +808,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 
     let mut wks = Vec::new();
-    for l in &lanes {
+    for l in lanes.iter() {
         let conv = Conv::Worker(l.name.clone());
         if !may_read(&me, &conv, &lanes) {
             continue;
@@ -689,7 +819,11 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
         wks.push(json!({"name": l.name, "conv": conv.key(), "groups": l.groups,
             "unread": u, "mentions": m, "last_ts": ts}));
     }
-    Json(json!({"me": me_json(&me, &all), "channels": channels, "people": ppl, "workers": wks,
+    let mut me_v = me_json(&me, &all);
+    // Shown so the Messages tab can offer channel settings; every settings
+    // route checks again on its own.
+    me_v["can_admin_channels"] = json!(channel_admin(&headers, &lanes).is_ok());
+    Json(json!({"me": me_v, "channels": channels, "people": ppl, "workers": wks,
         "totals": {"unread": tu, "mentions": tm},
         "measured": true, "n_considered": lanes.len()}))
     .into_response()
@@ -760,7 +894,7 @@ async fn posts(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -829,7 +963,7 @@ async fn posts(
 }
 
 async fn mentions(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -851,7 +985,7 @@ async fn mentions(State(state): State<AppState>, headers: HeaderMap) -> Response
 }
 
 async fn search(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw): RawQuery) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -1028,7 +1162,7 @@ async fn create_post(
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -1120,7 +1254,7 @@ pub(crate) async fn post_inner(
     // which chat a post came from, so the post is never echoed back to it).
     also: Option<AlsoWrite>,
 ) -> Result<Value, Box<Response>> {
-    let lanes = lanes();
+    let lanes = fleet(state);
     // A reply belongs to its thread's ROOT, in this same conversation.
     let parent: Option<i64> = match parent {
         None => None,
@@ -1350,7 +1484,7 @@ async fn mark_read(
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -1384,7 +1518,7 @@ async fn mark_read(
 }
 
 async fn typing(State(state): State<AppState>, Path(conv): Path<String>, headers: HeaderMap) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -1439,7 +1573,7 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
         tracing::debug!(conv = %key, worker, verdict = "conversation_turn_already_posted", "turn-end: the worker posted its answer itself");
         return;
     }
-    let lanes = lanes();
+    let lanes = fleet(state);
     let Some(lane) = lanes.iter().find(|l| l.name == worker) else { return };
     let me = Who::Worker { name: lane.name.clone(), groups: lane.groups.clone() };
     let Some(conv) = Conv::parse(&key) else { return };
@@ -1683,7 +1817,7 @@ async fn delete_post(State(state): State<AppState>, Path(id): Path<i64>, headers
 
 /// Toggle the caller's reaction (one emoji) on a post.
 async fn react_post(State(state): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
-    let lanes = lanes();
+    let lanes = fleet(&state);
     let me = match identify(&headers, &lanes) {
         Ok(w) => w,
         Err(m) => return err(StatusCode::FORBIDDEN, m),
@@ -1945,6 +2079,263 @@ async fn list_profiles(State(state): State<AppState>) -> Response {
     Json(json!({"profiles": rows, "measured": true, "n_considered": rows.len()})).into_response()
 }
 
+// ---- channel settings (owner and admins only) -------------------------------
+//
+// Create a channel, rename it, make it private, archive it, and add or remove
+// people. The owner and admin members (Settings > Workspace access, role
+// admin) may; everyone else, workers included, gets a 403 with
+// `code: "channel_admin_only"` and a WARN line with the same verdict.
+
+const CHANNEL_NAME_MAX: usize = 40;
+
+fn refuse(code: StatusCode, code_name: &str, msg: impl Into<String>) -> Response {
+    (code, Json(json!({"ok": false, "error": msg.into(), "code": code_name}))).into_response()
+}
+
+/// The owner, or an admin member speaking as themselves. Returns who, for the
+/// audit line. A request carrying a worker session is never an admin, even
+/// with an admin's cookie (the vault's rule, vault_secrets.rs `admin_member`).
+fn channel_admin(headers: &HeaderMap, lanes: &[Lane]) -> Result<String, String> {
+    let me = identify(headers, lanes)?;
+    match &me {
+        Who::Person { email, .. } if email == "owner" && gateway_email(headers).is_none() => Ok("owner".into()),
+        Who::Person { email, .. } => {
+            let actor = org::local_member_actor(headers).unwrap_or("");
+            let own = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).is_none_or(|s| s.trim() == actor);
+            if org::local_member_is_admin(headers) && own && !headers.contains_key("x-amux-worker") {
+                Ok(format!("member:{email}"))
+            } else {
+                Err(format!("{} is not the owner or an admin; only they change channel settings", me.key()))
+            }
+        }
+        Who::Worker { name, .. } => Err(format!("worker:{name} cannot change channel settings; ask the owner or an admin")),
+    }
+}
+
+fn require_admin(headers: &HeaderMap, lanes: &[Lane], action: &str) -> Result<String, Box<Response>> {
+    channel_admin(headers, lanes).map_err(|why| {
+        tracing::warn!(action, why = %why, measured = true, n_considered = 1, verdict = "conversation_channel_admin_refused",
+            "a channel settings change was refused: the caller is not the owner or an admin");
+        Box::new(refuse(StatusCode::FORBIDDEN, "channel_admin_only", why))
+    })
+}
+
+fn valid_channel_name(name: &str) -> bool {
+    let mut cs = name.chars();
+    matches!(cs.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.len() <= CHANNEL_NAME_MAX
+        && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Every channel that exists, archived ones included, sorted with #general first.
+fn channel_names(f: &Fleet) -> Vec<String> {
+    let mut g: BTreeSet<String> = f.lanes.iter().flat_map(|l| l.groups.iter().cloned()).collect();
+    g.extend(f.ch.meta.iter().filter(|(_, m)| m.created).map(|(n, _)| n.clone()));
+    g.remove(GENERAL);
+    std::iter::once(GENERAL.to_string()).chain(g).collect()
+}
+
+fn channel_json(g: &str, f: &Fleet, all: &[Person]) -> Value {
+    let conv = Conv::Group(g.to_string());
+    let meta = f.ch.meta(g);
+    // Readers as if it were open, so an archived channel still shows who it had.
+    let open = Fleet { lanes: f.lanes.clone(), ch: Channels { meta: f.ch.meta.iter().map(|(k, m)| (k.clone(),
+        ChannelMeta { archived: false, ..m.clone() })).collect(), members: f.ch.members.clone(), unreadable: f.ch.unreadable } };
+    json!({"conv": conv.key(), "name": g, "title": meta.title, "private": meta.private, "archived": meta.archived,
+        "custom": meta.created && !f.lanes.iter().any(|l| l.groups.contains(g)), "general": g == GENERAL,
+        "people": readers(&conv, all, &open).len(), "workers": workers_in(&conv, f)})
+}
+
+fn channel_event(name: &str, op: &str) -> crate::db::PendingEvent {
+    crate::db::PendingEvent {
+        entity_type: amux_core::revision::EntityType::Other("conversation_channel".into()),
+        entity_id: json!({"conv": format!("g:{name}"), "op": op}).to_string(),
+        mutation: amux_core::revision::MutationKind::Updated,
+        payload: Some(json!({"conv": format!("g:{name}"), "op": op})),
+    }
+}
+
+async fn list_channels(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let f = fleet(&state);
+    if let Err(r) = require_admin(&headers, &f, "list") {
+        return *r;
+    }
+    let all = state.store.read().map(|c| people(&c, true)).unwrap_or_default();
+    let names = channel_names(&f);
+    let rows: Vec<Value> = names.iter().map(|g| channel_json(g, &f, &all)).collect();
+    Json(json!({"channels": rows, "measured": !f.ch.unreadable, "n_considered": names.len(),
+        "why_unmeasured": f.ch.unreadable.then_some("channel configuration could not be read")})).into_response()
+}
+
+async fn create_channel(State(state): State<AppState>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    let f = fleet(&state);
+    let actor = match require_admin(&headers, &f, "create") {
+        Ok(a) => a,
+        Err(r) => return *r,
+    };
+    let name = b.get("name").and_then(Value::as_str).unwrap_or("").trim().trim_start_matches('#').to_lowercase();
+    if !valid_channel_name(&name) {
+        return refuse(StatusCode::BAD_REQUEST, "channel_name_invalid",
+            format!("a channel name is 1 to {CHANNEL_NAME_MAX} lowercase letters, digits, - or _"));
+    }
+    if channel_exists(&name, &f) {
+        let hint = if f.ch.meta(&name).archived { " (it is archived: restore it instead)" } else { "" };
+        return refuse(StatusCode::CONFLICT, "channel_exists", format!("#{name} already exists{hint}"));
+    }
+    let title = b.get("title").and_then(Value::as_str).unwrap_or("").trim().chars().take(80).collect::<String>();
+    let private = b.get("private").and_then(Value::as_bool).unwrap_or(false) as i64;
+    let (n2, t2, now) = (name.clone(), title, chrono::Utc::now().timestamp());
+    let wrote = state.store.write_async(move |c| {
+        c.execute(
+            "INSERT INTO group_config (name, updated, channel_title, channel_created_at, channel_private, channel_archived_at) \
+             VALUES (?1, ?2, ?3, ?2, ?4, NULL) ON CONFLICT(name) DO UPDATE SET updated=?2, channel_title=?3, \
+             channel_created_at=?2, channel_private=?4, channel_archived_at=NULL",
+            rusqlite::params![n2, now, t2, private],
+        )?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![channel_event(&n2, "created")] })
+    }).await;
+    if let Err(e) = wrote {
+        return err(StatusCode::SERVICE_UNAVAILABLE, format!("could not store the channel: {e}"));
+    }
+    tracing::info!(channel = %name, actor = %actor, private = private != 0, measured = true, n_considered = 1,
+        verdict = "conversation_channel_created", "a channel was created");
+    (StatusCode::CREATED, Json(json!({"ok": true, "conv": format!("g:{name}"), "name": name}))).into_response()
+}
+
+async fn patch_channel(State(state): State<AppState>, Path(name): Path<String>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    let f = fleet(&state);
+    let actor = match require_admin(&headers, &f, "update") {
+        Ok(a) => a,
+        Err(r) => return *r,
+    };
+    let name = name.trim().trim_start_matches("g:").to_lowercase();
+    if !channel_exists(&name, &f) {
+        return refuse(StatusCode::NOT_FOUND, "channel_not_found", format!("no channel #{name}"));
+    }
+    let title = b.get("title").and_then(Value::as_str).map(|t| t.trim().chars().take(80).collect::<String>());
+    let private = b.get("private").and_then(Value::as_bool);
+    let archived = b.get("archived").and_then(Value::as_bool);
+    if name == GENERAL && (archived == Some(true) || private == Some(true)) {
+        return refuse(StatusCode::BAD_REQUEST, "general_is_permanent", "#general cannot be archived or made private");
+    }
+    if title.is_none() && private.is_none() && archived.is_none() {
+        return refuse(StatusCode::BAD_REQUEST, "nothing_to_change", "send title, private or archived");
+    }
+    let (n2, now) = (name.clone(), chrono::Utc::now().timestamp());
+    let (t2, p2, a2) = (title.clone(), private, archived);
+    let wrote = state.store.write_async(move |c| {
+        c.execute("INSERT OR IGNORE INTO group_config (name, updated) VALUES (?1, ?2)", rusqlite::params![n2, now])?;
+        if let Some(t) = &t2 {
+            c.execute("UPDATE group_config SET channel_title=?2, updated=?3 WHERE name=?1", rusqlite::params![n2, t, now])?;
+        }
+        if let Some(p) = p2 {
+            c.execute("UPDATE group_config SET channel_private=?2, updated=?3 WHERE name=?1", rusqlite::params![n2, p as i64, now])?;
+        }
+        if let Some(a) = a2 {
+            c.execute("UPDATE group_config SET channel_archived_at=?2, updated=?3 WHERE name=?1",
+                rusqlite::params![n2, a.then_some(now), now])?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![channel_event(&n2, "updated")] })
+    }).await;
+    if let Err(e) = wrote {
+        return err(StatusCode::SERVICE_UNAVAILABLE, format!("could not store the change: {e}"));
+    }
+    tracing::info!(channel = %name, actor = %actor, title = ?title, private = ?private, archived = ?archived,
+        measured = true, n_considered = 1, verdict = "conversation_channel_updated", "a channel's settings changed");
+    let f = fleet(&state);
+    let all = state.store.read().map(|c| people(&c, true)).unwrap_or_default();
+    Json(json!({"ok": true, "channel": channel_json(&name, &f, &all)})).into_response()
+}
+
+/// A person's place in a channel and why: `owner`, `added`, `removed`, `team`
+/// (their team covers the group) or `none`.
+fn membership(p: &Person, g: &str, f: &Fleet) -> (bool, &'static str) {
+    if p.email == "owner" {
+        return (true, "owner");
+    }
+    match f.ch.member_override(&format!("g:{g}"), &p.email) {
+        Some(true) => (true, "added"),
+        Some(false) => (false, "removed"),
+        None if default_channel_access(&p.scope, g, f) => (true, "team"),
+        None => (false, "none"),
+    }
+}
+
+async fn channel_members(State(state): State<AppState>, Path(name): Path<String>, headers: HeaderMap) -> Response {
+    let f = fleet(&state);
+    if let Err(r) = require_admin(&headers, &f, "members") {
+        return *r;
+    }
+    let name = name.trim().trim_start_matches("g:").to_lowercase();
+    if !channel_exists(&name, &f) {
+        return refuse(StatusCode::NOT_FOUND, "channel_not_found", format!("no channel #{name}"));
+    }
+    let all = state.store.read().map(|c| people(&c, true)).unwrap_or_default();
+    let rows: Vec<Value> = all.iter().map(|p| {
+        let (member, via) = membership(p, &name, &f);
+        json!({"email": p.email, "name": p.name, "member": member, "via": via,
+            "scope_level": p.scope.level(), "scope_name": p.scope.name()})
+    }).collect();
+    Json(json!({"channel": channel_json(&name, &f, &all), "people": rows,
+        "measured": !f.ch.unreadable, "n_considered": all.len(),
+        "why_unmeasured": f.ch.unreadable.then_some("channel configuration could not be read")})).into_response()
+}
+
+async fn set_member(state: &AppState, headers: &HeaderMap, name: &str, email: &str, add: bool) -> Response {
+    let f = fleet(state);
+    let actor = match require_admin(headers, &f, if add { "add_member" } else { "remove_member" }) {
+        Ok(a) => a,
+        Err(r) => return *r,
+    };
+    let name = name.trim().trim_start_matches("g:").to_lowercase();
+    if !channel_exists(&name, &f) {
+        return refuse(StatusCode::NOT_FOUND, "channel_not_found", format!("no channel #{name}"));
+    }
+    let email = email.trim().to_ascii_lowercase();
+    if email == "owner" {
+        return refuse(StatusCode::BAD_REQUEST, "owner_always_member", "the owner is in every channel");
+    }
+    let all = state.store.read().map(|c| people(&c, false)).unwrap_or_default();
+    let Some(p) = all.iter().find(|p| p.email == email) else {
+        return refuse(StatusCode::NOT_FOUND, "unknown_person", format!("{email} is not a member of this workspace"));
+    };
+    // A row is kept only where it differs from the team rule, so removing a
+    // hand-added person (or re-adding a removed one) simply deletes it.
+    let by_team = default_channel_access(&p.scope, &name, &f);
+    let conv = format!("g:{name}");
+    let (c2, e2, a2, now) = (conv.clone(), email.clone(), actor.clone(), now_ms());
+    let wrote = state.store.write_async(move |c| {
+        if add == by_team {
+            c.execute("DELETE FROM conversation_members WHERE conv=?1 AND email=?2", rusqlite::params![c2, e2])?;
+        } else {
+            c.execute(
+                "INSERT INTO conversation_members (conv, email, state, by_key, ts) VALUES (?1,?2,?3,?4,?5) \
+                 ON CONFLICT(conv, email) DO UPDATE SET state=excluded.state, by_key=excluded.by_key, ts=excluded.ts",
+                rusqlite::params![c2, e2, if add { "added" } else { "removed" }, a2, now],
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![channel_event(&c2[2..], "members")] })
+    }).await;
+    if let Err(e) = wrote {
+        return err(StatusCode::SERVICE_UNAVAILABLE, format!("could not store the change: {e}"));
+    }
+    tracing::info!(channel = %name, person = %email, add, by_team, actor = %actor, measured = true, n_considered = 1,
+        verdict = if add { "conversation_channel_member_added" } else { "conversation_channel_member_removed" },
+        "a channel's membership changed");
+    let f = fleet(state);
+    let (member, via) = membership(p, &name, &f);
+    Json(json!({"ok": true, "conv": conv, "email": email, "member": member, "via": via})).into_response()
+}
+
+async fn add_member(State(state): State<AppState>, Path(name): Path<String>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    let email = b.get("email").and_then(Value::as_str).unwrap_or("").to_string();
+    set_member(&state, &headers, &name, &email, true).await
+}
+
+async fn remove_member(State(state): State<AppState>, Path((name, email)): Path<(String, String)>, headers: HeaderMap) -> Response {
+    set_member(&state, &headers, &name, &email, false).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1999,7 +2390,7 @@ mod tests {
 
     #[test]
     fn scoped_member_reads_only_their_group() {
-        let lanes = vec![lane("ed", &["wexus"]), lane("other", &["mtp"])];
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"]), lane("other", &["mtp"])]);
         let elliot = person("elliot@y.com", MemberScope::Group("wexus".into()));
         assert!(may_read(&elliot, &Conv::Group("wexus".into()), &lanes));
         assert!(!may_read(&elliot, &Conv::Group("mtp".into()), &lanes));
@@ -2015,7 +2406,7 @@ mod tests {
 
     #[test]
     fn a_channel_must_be_a_real_group() {
-        let lanes = vec![lane("ed", &["wexus"])];
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"])]);
         let owner = person("owner", MemberScope::Global);
         assert!(may_read(&owner, &Conv::Group("wexus".into()), &lanes));
         assert!(may_read(&owner, &Conv::Group(GENERAL.into()), &lanes));
@@ -2024,7 +2415,7 @@ mod tests {
 
     #[test]
     fn workers_read_their_groups_and_own_thread_only() {
-        let lanes = vec![lane("ed", &["wexus"]), lane("other", &["mtp"])];
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"]), lane("other", &["mtp"])]);
         let ed = Who::Worker { name: "ed".into(), groups: ["wexus".to_string()].into() };
         assert!(may_read(&ed, &Conv::Group("wexus".into()), &lanes));
         assert!(!may_read(&ed, &Conv::Group("mtp".into()), &lanes));
@@ -2061,7 +2452,7 @@ mod tests {
     fn a_person_can_mention_an_isolated_worker_and_a_worker_cannot() {
         // Sandbox, 2026-10-25: "@amux-helper ..." in a direct message between
         // two people resolved nothing; amux-helper is isolated.
-        let lanes = vec![lane("ed", &["wexus"])];
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"])]);
         let iso = vec![lane("amux-helper", &[])];
         let owner = Who::Person { email: "ethan@x.com".into(), scope: MemberScope::Global };
         let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
@@ -2154,7 +2545,7 @@ mod tests {
 
     #[test]
     fn general_mentions_stay_inside_the_posters_access() {
-        let lanes = vec![lane("ed", &["wexus"]), lane("other", &["mtp"])];
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"]), lane("other", &["mtp"])]);
         let elliot = person("elliot@y.com", MemberScope::Group("wexus".into()));
         assert_eq!(mentionable_workers(&elliot, &Conv::Group(GENERAL.into()), &lanes), vec!["ed".to_string()]);
         let global = person("ethan@x.com", MemberScope::Global);
@@ -2185,7 +2576,7 @@ mod tests {
 
     #[test]
     fn a_chat_companion_posts_as_its_worker_and_an_unknown_claim_is_not_the_owner() {
-        let lanes = vec![Lane { name: "mtp-demo".into(), groups: ["video".to_string()].into_iter().collect() }];
+        let lanes = Fleet::of(vec![Lane { name: "mtp-demo".into(), groups: ["video".to_string()].into_iter().collect() }]);
         let hdr = |v: &'static str| {
             let mut h = HeaderMap::new();
             h.insert("x-amux-session", HeaderValue::from_static(v));
@@ -2208,7 +2599,7 @@ mod tests {
         assert_eq!(route_worker_dm(&w, "p:a@x.io|owner".into()), ("p:a@x.io|owner".into(), None), "a two-person DM is not rerouted");
         assert_eq!(route_worker_dm(&owner, "p:a@x.io".into()), ("p:a@x.io".into(), None), "only workers are rerouted");
         let dm = Conv::parse("p:a@x.io|owner").unwrap();
-        assert!(!may_read(&w, &dm, &[]), "a worker never posts into two people's DM, so never as the owner");
+        assert!(!may_read(&w, &dm, &Fleet::default()), "a worker never posts into two people's DM, so never as the owner");
         let people = vec![
             Person { email: "doron@x.io".into(), name: "doron".into(), scope: MemberScope::Global },
             Person { email: "ethan@x.io".into(), name: "Ethan".into(), scope: MemberScope::Global },
@@ -2228,7 +2619,7 @@ mod tests {
         assert_eq!(ann.key(), "person:ann@org.io");
         assert_ne!(ann.key(), bob.key(), "two cloud users are two people");
         let dm = Conv::People("bob@org.io".into(), "carol@org.io".into());
-        assert!(!may_read(&ann, &dm, &[]), "ann cannot read bob and carol's DM");
+        assert!(!may_read(&ann, &dm, &Fleet::default()), "ann cannot read bob and carol's DM");
         assert_eq!(who(&HeaderMap::new(), &[]).key(), "person:owner", "locally the owner stays the owner");
         let h = send_headers(&ann, &a);
         assert_eq!(h.get("x-amux-user-email").and_then(|v| v.to_str().ok()), Some("ann@org.io"));

@@ -1092,6 +1092,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvManageChannels": {
+      "kind": "command._cvManageChannels",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvMarkRead": {
       "kind": "command._cvMarkRead",
       "feedback_required": true,

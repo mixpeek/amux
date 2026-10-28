@@ -8981,6 +8981,16 @@ button.cv-sec:hover { color:var(--text); }
 .cv-head-people { display:flex; align-items:center; gap:var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
 .cv-av-img { object-fit:cover; background:var(--border); }
 .cv-head-people .cv-av { margin-left:calc(var(--space-1-5) * -1); border:2px solid var(--bg); }
+/* Channel settings (AA-52): a button in the channel header and one dialog. */
+.cv-chan-gear { margin-left:var(--space-2); min-width:36px; min-height:36px; padding:0; font-size:var(--fs-xl); }
+.cv-ch-body { display:flex; flex-direction:column; gap:var(--space-1-5); max-height:min(60vh, 520px); overflow-y:auto; min-width:min(420px, 80vw); }
+.cv-ch-row { display:flex; align-items:center; gap:var(--space-2); min-width:0; }
+.cv-ch-row .input { flex:1; min-width:0; }
+.cv-ch-name { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.cv-ch-dim { color:var(--dim); font-weight:400; font-size:var(--fs-sm); }
+.cv-ch-sub { margin-top:var(--space-2); }
+.cv-ch-check { display:inline-flex; align-items:center; gap:var(--space-1); font-size:var(--fs-sm); white-space:nowrap; }
+.cv-ch-person:not(.in) .cv-ch-name { opacity:.7; }
 .cv-posts { flex:1; min-height:0; overflow-y:auto; padding:var(--space-2) var(--space-4); -webkit-overflow-scrolling:touch; }
 .cv-day { text-align:center; font-size:var(--fs-xs); color:var(--dim); margin:var(--space-3) 0 var(--space-1-5); }
 .cv-post { display:flex; gap:var(--space-2-5); padding:var(--space-1-5) 0; }
@@ -9047,6 +9057,11 @@ button.cv-sec:hover { color:var(--text); }
   .cv-compose { padding:var(--space-1-5) var(--space-2-5) var(--space-1); }
   .cv-hint { display:none; }
   .cv-head-people { display:none; }
+  /* An admin's channel settings stay in the one header row; the avatars do not. */
+  .cv-head-people:has(.cv-chan-gear) { display:flex; }
+  .cv-head-people:has(.cv-chan-gear) .cv-av { display:none; }
+  .cv-chan-gear { min-width:44px; min-height:44px; }
+  .cv-ch-body .btn, .cv-ch-body .input, .cv-ch-check { min-height:44px; }
   #msgs-log-pane { padding:var(--space-2) var(--space-2-5); }
   /* Worker and From filters stay 44px tall. */
   /* WebKit ignores min-height on a native menulist select, so the control
