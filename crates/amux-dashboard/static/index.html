@@ -232,6 +232,7 @@
 <div id="chrome-tab-frames" class="chrome-tab-frames"></div>
 <div class="header-row">
   <div class="header-brand" style="display:flex;gap:var(--space-2);align-items:center;">
+    <button id="nav-back-btn" class="nav-back-btn" type="button" aria-label="Back" title="Back" hidden>&#x2039;</button>
     <h1 role="button" tabindex="0" aria-label="About amux" title="About amux" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAbout()}" id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:var(--space-1-5);" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
     <span role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_connPillClick()}" id="conn-status" class="conn-status online" title="Connection and sync status. Tap for pending changes or disconnection history" onclick="_connPillClick()"></span>
     <div style="position:relative;">

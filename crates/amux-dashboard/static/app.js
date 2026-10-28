@@ -54901,6 +54901,201 @@ toggleSettings = function() {
 
 // Deep-link: #path=/some/path (or ?path= for backwards compat)
 // Hash-based routing works in PWA mode — SW never strips fragments, no iOS query-param loss
+// ── Back and forward (Ethan, 2026-10-28) ────────────────────────────────────
+// "some kind of back functionality that doesnt take up a lot of real estate".
+// Every URL write in amux used replaceState, so the browser's Back, the
+// phone's swipe and ⌘[ left amux instead of returning to the last place.
+// Now a change of PLACE (a tab, a worker, a card, a file) is one history entry,
+// and the same history drives:
+//   - the ‹ button at the left of the header, shown only when there is
+//     somewhere to go back to (no new bar);
+//   - a long press or right click on it: the recent places, newest first,
+//     which is the breadcrumb trail without taking a row;
+//   - the browser's Back/Forward, and the go_back/go_forward hotkeys
+//     (⌘[ and ⌘] by default, editable in Hotkeys).
+// A place is recorded once navigation SETTLES, so the transient states of
+// one action (close the card, switch the tab, open the worker) are one step.
+// Each move is beaconed as kind=nav so a dead Back shows in server-rs.log.
+const _nav = { list: [], pos: -1, restoring: false, timer: 0, suppressHash: false };
+const _NAV_MAX = 50;
+
+function _navEnabled() { return !(window._peekSplitChild || window._peekEmbed); }
+
+function _navCurrent() {
+  const fo = document.getElementById('file-overlay');
+  if (fo && fo.classList.contains('active') && _fileData && _fileData.path) return { k: 'file', id: _fileData.path };
+  if (peekSession) return { k: 'peek', id: peekSession, tab: _peekTab };
+  if (boardDetailId) return { k: 'card', id: boardDetailId };
+  return { k: 'view', id: activeView || 'sessions' };
+}
+function _navSame(a, b) { return !!a && !!b && a.k === b.k && a.id === b.id; }
+
+function _navLabel(p) {
+  if (p.k === 'file') return '📄 ' + String(p.id).split('/').pop();
+  if (p.k === 'peek') return '▸ ' + p.id;
+  if (p.k === 'card') {
+    const it = (typeof boardItems !== 'undefined' && boardItems || []).find(i => i.id === p.id);
+    return '☷ ' + p.id + (it && it.title ? ' · ' + it.title : '');
+  }
+  const t = document.getElementById('tab-' + p.id);
+  const name = (t && (t.getAttribute('aria-label') || t.title || t.textContent) || p.id).trim();
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function _navBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true,
+      headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(Object.assign({ kind: 'nav', verdict, measured: true, n_considered: _nav.list.length,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
+
+function _navRender() {
+  const b = document.getElementById('nav-back-btn');
+  if (!b) return;
+  const prev = _nav.pos > 0 ? _nav.list[_nav.pos - 1] : null;
+  b.hidden = !prev;
+  if (prev) b.title = 'Back to ' + _navLabel(prev) + ' (' + (_HK_IS_MAC ? '⌘[' : 'Ctrl+[') + '). Hold for history';
+}
+
+// Record the current place once the action that changed it has settled.
+function _navSoon() {
+  if (!_navEnabled()) return;
+  clearTimeout(_nav.timer);
+  _nav.timer = setTimeout(_navNote, 350);
+}
+function _navNote() {
+  if (_nav.restoring || !_navEnabled()) return;
+  const cur = _navCurrent();
+  if (_navSame(cur, _nav.list[_nav.pos])) { _nav.list[_nav.pos] = cur; _navRender(); return; }
+  _nav.list = _nav.list.slice(0, _nav.pos + 1);
+  _nav.list.push(cur);
+  if (_nav.list.length > _NAV_MAX) _nav.list.shift();
+  _nav.pos = _nav.list.length - 1;
+  try {
+    if (_nav.pos === 0) history.replaceState(Object.assign({}, history.state, { amuxNav: 0 }), '', location.href);
+    else history.pushState({ amuxNav: _nav.pos }, '', location.href);
+  } catch (e) {}
+  _navRender();
+}
+
+// Show `p` by closing whatever sits above it, then opening it if needed.
+function _navRestore(p) {
+  _nav.restoring = true;
+  try {
+    const fo = document.getElementById('file-overlay');
+    if (fo && fo.classList.contains('active') && !(p.k === 'file' && _fileData && _fileData.path === p.id)) closeFilePreview();
+    if (boardDetailId && !(p.k === 'card' && boardDetailId === p.id)) closeBoardDetail();
+    if (peekSession && !(p.k === 'peek' && peekSession === p.id)) closePeek();
+    if (p.k === 'view' && activeView !== p.id) switchView(p.id);
+    else if (p.k === 'peek' && peekSession !== p.id) {
+      openPeek(p.id);
+      if (p.tab && p.tab !== 'terminal') setTimeout(() => { try { setPeekTab(p.tab); } catch (e) {} }, 0);
+    } else if (p.k === 'card' && boardDetailId !== p.id) { if (activeView !== 'board') switchView('board'); openBoardDetail(p.id); }
+    else if (p.k === 'file' && !(_fileData && _fileData.path === p.id && fo && fo.classList.contains('active'))) openFilePreview(p.id);
+  } catch (e) {
+    _navBeacon('nav_restore_failed', { place: p.k, error: String(e && e.message || e).slice(0, 200) });
+  } finally {
+    clearTimeout(_nav.timer);
+    // A move made while this restore settled was ignored; look again.
+    setTimeout(() => { _nav.restoring = false; _navNote(); }, 400);
+  }
+}
+
+// Back and forward go through the browser's history, so the ‹ button, ⌘[,
+// the browser's own Back and a phone's swipe are one mechanism.
+function navBack() { if (_nav.pos > 0) history.back(); }
+function navForward() { if (_nav.pos < _nav.list.length - 1) history.forward(); }
+function _navGo(i) { if (i >= 0 && i < _nav.list.length && i !== _nav.pos) history.go(i - _nav.pos); }
+
+// Most of amux writes the URL with replaceState(null or {}) (the view and
+// worker hash, the board filter, the file path), which would wipe the index
+// stored on the entry; a jump of several steps then could not tell where it
+// landed. Writes keep the entry's index unless they set their own.
+(() => {
+  const rs = history.replaceState.bind(history);
+  history.replaceState = function (state, title, url) {
+    const cur = history.state;
+    if (cur && typeof cur.amuxNav === 'number' && !(state && typeof state.amuxNav === 'number')) {
+      state = Object.assign({}, state && typeof state === 'object' ? state : {}, { amuxNav: cur.amuxNav });
+    }
+    return rs(state, title, url);
+  };
+})();
+
+window.addEventListener('popstate', e => {
+  if (!_navEnabled() || _nav.pos < 0) return;
+  const st = e.state || {};
+  if (st.amuxPresent) return;   // the presentation's own entry (_presentOpen)
+  // An entry whose state another writer replaced has no index; the only way
+  // onto it from here is one step back.
+  let to = typeof st.amuxNav === 'number' ? st.amuxNav : _nav.pos - 1;
+  to = Math.max(0, Math.min(_nav.list.length - 1, to));
+  if (to === _nav.pos) return;
+  const from = _nav.pos;
+  _nav.pos = to;
+  _nav.suppressHash = true;   // this move restores the place itself; the hashchange that may follow must not open it again
+  setTimeout(() => { _nav.suppressHash = false; }, 0);
+  _navBeacon(to < from ? 'nav_back' : 'nav_forward', { place: _nav.list[to].k, steps: to - from });
+  _navRestore(_nav.list[to]);
+});
+
+function _navMenu(anchor) {
+  document.getElementById('nav-history-menu')?.remove();
+  if (_nav.list.length < 2) return;
+  const m = document.createElement('div');
+  m.id = 'nav-history-menu';
+  m.className = 'nav-history-menu';
+  m.setAttribute('role', 'menu');
+  let html = '';
+  for (let i = _nav.list.length - 1; i >= 0 && i >= _nav.list.length - 15; i--) {
+    html += '<button type="button" role="menuitem" class="nav-history-item' + (i === _nav.pos ? ' current' : '') + '" data-i="' + i + '">'
+      + esc(_navLabel(_nav.list[i])) + '</button>';
+  }
+  m.innerHTML = html;
+  const r = anchor.getBoundingClientRect();
+  m.style.top = Math.round(r.bottom + 4) + 'px';
+  m.style.left = Math.round(Math.max(4, r.left)) + 'px';
+  document.body.appendChild(m);
+  m.addEventListener('click', ev => {
+    const b = ev.target.closest('.nav-history-item');
+    if (!b) return;
+    m.remove();
+    _navGo(+b.dataset.i);
+  });
+  setTimeout(() => document.addEventListener('click', function off(ev) {
+    if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', off, true); }
+  }, true), 0);
+}
+
+function _navBindButton() {
+  const b = document.getElementById('nav-back-btn');
+  if (!b || b._navBound) return;
+  b._navBound = true;
+  let hold = 0, held = false;
+  b.addEventListener('click', e => { if (held) { held = false; e.preventDefault(); return; } navBack(); });
+  b.addEventListener('contextmenu', e => { e.preventDefault(); _navMenu(b); });
+  b.addEventListener('pointerdown', () => { held = false; hold = setTimeout(() => { held = true; _navMenu(b); }, 500); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(ev, () => clearTimeout(hold));
+}
+
+// Wrap the functions that change place. Top-level function declarations are
+// properties of window, so inline onclick handlers and internal calls both go
+// through the wrapper.
+for (const fn of ['switchView', 'openPeek', 'closePeek', 'openFilePreview', 'closeFilePreview', 'openBoardDetail', 'closeBoardDetail']) {
+  const orig = window[fn];
+  if (typeof orig !== 'function') { _navBeacon('nav_hook_missing', { fn }); continue; }
+  window[fn] = function () {
+    const r = orig.apply(this, arguments);
+    _navSoon();
+    if (r && typeof r.then === 'function') r.then(_navSoon, _navSoon);
+    return r;
+  };
+}
+document.addEventListener('DOMContentLoaded', () => { _navBindButton(); _navSoon(); });
+if (document.readyState !== 'loading') setTimeout(() => { _navBindButton(); _navSoon(); }, 0);
+
 async function _handleDeeplink(hash) {
   // #view=<tab> (or ?view=<tab>) — land on a top-level view directly. Rig
   // deeplink like #peek= below: simulator verification needs to reach a TAB on
@@ -55284,7 +55479,7 @@ function _restoreAppScreen() {
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _restoreAppScreen, {once:true});
 else queueMicrotask(_restoreAppScreen);
 // On hash change (e.g. paste URL into address bar while app already open — no page reload)
-window.addEventListener('hashchange', () => _handleDeeplink(location.hash));
+window.addEventListener('hashchange', () => { if (_nav.suppressHash) return; _handleDeeplink(location.hash); });
 
 function forceUpdate() {
   const el = document.getElementById('update-status');
@@ -71268,6 +71463,8 @@ const _HK_ACTIONS = {
   open_messages: { label: 'Open Messages', desc: 'Go to the Messages tab', ico: '✉', tone: 'red', run: () => switchView('messages') },
   open_draw: { label: 'Open Draw', desc: 'Open the drawing canvas', ico: '✎', tone: 'orange', run: () => switchView('draw') },
   open_hotkeys: { label: 'Open Hotkeys', desc: 'Come back to this tab', ico: '⌘', tone: 'gray', run: () => switchView('hotkeys') },
+  go_back: { label: 'Back', desc: 'Go back to the previous tab, worker, card or file', ico: '‹', tone: 'gray', run: () => navBack() },
+  go_forward: { label: 'Forward', desc: 'Go forward again after going back', ico: '›', tone: 'gray', run: () => navForward() },
 };
 // Shortcuts bound elsewhere in amux. Shown so this tab is the whole map, and
 // so a new hotkey cannot silently shadow one of them.
@@ -71286,6 +71483,8 @@ const _HK_DEFAULTS = [
   { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
+  { id: 'hk-back', action: 'go_back', type: 'keys', trigger: 'Mod+[', enabled: true, remove: true, indicator: false },
+  { id: 'hk-forward', action: 'go_forward', type: 'keys', trigger: 'Mod+]', enabled: true, remove: true, indicator: false },
 ];
 let _hkList = _HK_DEFAULTS.map(h => Object.assign({}, h));
 let _hkLoaded = false;

@@ -1598,6 +1598,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | m | `ev` | addEventListener |
 | app.js | m | `ev` | addEventListener |
 | app.js | m | `ev` | addEventListener |
+| app.js | m | `ev` | addEventListener |
 | index.html | Exit | `exitGridMode` | onclick |
 | index.html | JSON | `exportBoard` | onclick |
 | index.html | MD | `exportBoard` | onclick |
@@ -1611,6 +1612,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | iframe.contentDocument | `function` | addEventListener |
 | app.js | / | `go` | onclick |
 | app.js | … | `go` | onclick |
+| app.js | nav-back-btn | `navBack` | addEventListener |
 | index.html | Continue all limited workers | `openBulkActions` | onclick |
 | app.js | + | `openCustomChipForm` | onclick |
 | index.html | Filters | `openFiltersModal` | onclick |

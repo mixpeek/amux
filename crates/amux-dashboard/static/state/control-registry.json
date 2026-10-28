@@ -2970,6 +2970,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_navBeacon": {
+      "kind": "command._navBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_navRestore": {
+      "kind": "command._navRestore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_niAct": {
       "kind": "command._niAct",
       "feedback_required": true,

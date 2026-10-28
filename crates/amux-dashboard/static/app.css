@@ -10728,3 +10728,20 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
   .cv-voice-bar { padding:0 var(--space-2-5) var(--space-1); }
   .cv-preview img { width:56px; height:56px; flex-basis:56px; }
 }
+
+/* Back (Ethan, 2026-10-28): one small button at the left of the header, shown
+   only when there is a previous place; a long press lists the recent places. */
+.nav-back-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; padding: 0 var(--space-1);
+  background: none; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--text); font-size: var(--fs-3xl); line-height: 1;
+  cursor: pointer; -webkit-touch-callout: none; user-select: none; }
+.nav-back-btn:hover { border-color: var(--border); }
+.nav-back-btn[hidden] { display: none; }
+@media (max-width: 600px) { .nav-back-btn { min-width: 44px; min-height: 44px; } }
+.nav-history-menu { position: fixed; z-index: 1000; display: flex; flex-direction: column; min-width: 200px; max-width: min(360px, 90vw);
+  max-height: 60vh; overflow-y: auto; padding: var(--space-1); background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.nav-history-item { text-align: left; background: none; border: 0; border-radius: var(--radius-md); color: var(--text); font: inherit;
+  padding: var(--space-1-5) var(--space-2-5); min-height: 36px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; flex-shrink: 0; }
+.nav-history-item:hover { background: var(--bg-inset); }
+.nav-history-item.current { color: var(--accent); font-weight: 600; }
+@media (max-width: 600px) { .nav-history-item { min-height: 44px; } }
