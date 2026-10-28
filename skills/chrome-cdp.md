@@ -1,5 +1,5 @@
 ---
-description: Use when the user asks to interact with a web page, take a screenshot of a site, click or type in Chrome, scrape content, or debug a web UI. Connects to real Chrome tabs with existing logins.
+description: Fallback only. Drive web pages with `amux browser route` (start, state, shot, action) first; use this raw Chrome DevTools Protocol CLI only when a route cannot do the job, and say why. Connects to real Chrome tabs with existing logins.
 allowed-tools: Bash, Read
 argument-hint: <command> [args...]
 ---
@@ -7,6 +7,21 @@ argument-hint: <command> [args...]
 # /chrome-cdp — Chrome Browser Automation
 
 Control the user's **live Chrome browser** via Chrome DevTools Protocol. Connects to real tabs with existing cookies/logins — no fresh browser needed.
+
+## Route first, CDP only when a route cannot do it
+
+Ethan, 2026-10-27: "i prefer using amux browser and only cdp if we cannot accomplish".
+`amux browser route start|state|shot|action` covers clicking, typing, reading,
+screenshots, eval and downloads on amux's saved profiles, and every verb is
+audited. Use this CLI only for what a route cannot do, and say so:
+
+```bash
+AMUX_CDP_REASON="<why the route cannot do it>" AMUX_PROFILE=<profile> node skills/chrome-cdp/scripts/cdp.mjs list
+```
+
+For an amux profile, amux withholds the CDP port unless a reason is given, and
+then hands out a logging proxy: the grant, its reason, and every command that
+acts on a page (navigate, evaluate, input, cookies) appear in `amux audit <worker>`.
 
 ## Prerequisites
 

@@ -586,4 +586,8 @@ Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
 `amux browser route goal '{"task":"..."}'` hands a whole task to an agent method
 from `browser-methods.toml` (OpAgent first; disabled until its model is served),
 which drives the route and returns its answer and a trajectory.
-Standalone `/chrome-cdp` remains available for explicit tab work.
+Raw CDP (`/chrome-cdp`, Playwright `connectOverCDP`) is a fallback only when a
+route cannot do the job (Ethan, 2026-10-27): `cdp_port` is withheld from
+`/api/browser/status`, `start` and route responses unless the caller passes
+`cdp_reason`, and what it then gets is a logging proxy (`api/cdp_proxy.rs`), so
+the grant and every page-acting command land in `amux audit <worker>`.

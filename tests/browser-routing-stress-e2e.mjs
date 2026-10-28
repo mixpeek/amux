@@ -33,7 +33,7 @@ const site=createServer((q,s)=>{
 await new Promise(r=>site.listen(0,'127.0.0.1',r));
 const url='http://127.0.0.1:'+site.address().port;
 const workers=Array.from({length:8},(_,i)=>'routing-stress-worker-'+i), owner='routing-stress-owner';
-const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body},session);
+const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body:{cdp_reason:'e2e: verifying browser state from outside the route',...body}},session);
 const rejection=async(session,verb,body)=>{try{await route(session,verb,body);return null;}catch(e){return e;}};
 const seedRoot=join(home,'stress-source');mkdirSync(seedRoot,{recursive:true});
 const seed=await chromium.launchPersistentContext(seedRoot,{executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,ignoreDefaultArgs:['--use-mock-keychain']});
@@ -55,7 +55,7 @@ try{
   // it opts out. The join path is covered in browser-routing-e2e.mjs.
   const begun=Date.now();const started=await Promise.all(workers.map(session=>route(session,'start',{profile:nativeProfile,url:url+'/protected',join:false})));
   prove('eight simultaneous workers with join:false fall back to real CDP',started.every(r=>r.route.backend==='cdp'&&r.route.attempts[0].status===409));
-  prove('eight workers share one isolated Chrome process',new Set(started.map(r=>r.route.cdp_port)).size===1);
+  prove('eight workers share one isolated Chrome process',new Set(started.map(r=>r.route.browser_ref)).size===1);
   prove('eight worker tabs are distinct',new Set(started.map(r=>r.route.target)).size===8);
   timings.concurrent_start_ms=Date.now()-begun;
   console.log('Concurrent start wall time: '+timings.concurrent_start_ms+'ms');

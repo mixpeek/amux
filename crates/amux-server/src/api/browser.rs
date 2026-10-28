@@ -1273,6 +1273,10 @@ pub(crate) async fn connect_session(
 struct StartBody {
     #[serde(default)]
     profile: String,
+    /// Why a route cannot do the job, if the caller wants the CDP port
+    /// (cdp_proxy.rs). Without it `cdp_port` is withheld.
+    #[serde(default)]
+    cdp_reason: Option<String>,
     #[serde(default)]
     url: String,
     /// Same resolution as every driver verb. `start` needs it for the reason
@@ -1322,6 +1326,24 @@ struct StartBody {
 
 // `HeaderMap` before `Json` — axum requires the body extractor last.
 async fn start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<StartBody>>,
+) -> Response {
+    let reason = body.as_ref().and_then(|Json(b)| b.cdp_reason.clone());
+    let session = explicit_session(body.as_ref().and_then(|Json(b)| b.session.as_deref()), &headers)
+        .unwrap_or_else(|| "owner".to_string());
+    let resp = start_inner(State(state.clone()), headers, body).await;
+    let (parts, b) = resp.into_parts();
+    let bytes = axum::body::to_bytes(b, 16 << 20).await.unwrap_or_default();
+    let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    super::cdp_proxy::gate(&state, &session, reason.as_deref(), &mut v, &[("/cdp_port", "/profile")]).await;
+    (parts.status, Json(v)).into_response()
+}
+
+async fn start_inner(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Option<Json<StartBody>>,
@@ -1679,7 +1701,32 @@ fn start_failure(e: &anyhow::Error) -> (StatusCode, Value) {
     (status, body)
 }
 
-async fn status() -> Response {
+/// `cdp_port` here is gated (cdp_proxy.rs): withheld unless the caller says
+/// why a route cannot do the job, and then a logged proxy port. The rest of
+/// the status is unchanged.
+async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let resp = status_inner().await;
+    let (parts, b) = resp.into_parts();
+    let bytes = axum::body::to_bytes(b, 16 << 20).await.unwrap_or_default();
+    let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    let reason = q.get("cdp_reason").cloned();
+    let session = explicit_session(None, &headers).unwrap_or_else(|| "owner".to_string());
+    let n = v.get("browsers").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let ptrs: Vec<(String, String)> = std::iter::once(("/cdp_port".to_string(), "/profile".to_string()))
+        .chain((0..n).map(|i| (format!("/browsers/{i}/cdp_port"), format!("/browsers/{i}/profile"))))
+        .collect();
+    let refs: Vec<(&str, &str)> = ptrs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    super::cdp_proxy::gate(&state, &session, reason.as_deref(), &mut v, &refs).await;
+    (parts.status, Json(v)).into_response()
+}
+
+async fn status_inner() -> Response {
     // Adopt BEFORE reading (AMUX-3414): status is the first place anyone looks
     // after a death, and it was the one verb that never ran the adopt — so a
     // browser surviving a restart read as "running": false here while every

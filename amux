@@ -6107,6 +6107,9 @@ it. Read back values before submitting. amux browser actions lists every action;
 eval runs JavaScript; download '{"action":"download","url":"..."}' saves a file
 with the profile's sign-in. amux browser hold <profile> --for 2h keeps it open.
 A start whose page has not loaded says page_ready:false with a note; run state again.
+Drive the browser with route verbs. Raw CDP is a fallback for what a route
+cannot do: add "cdp_reason":"<why>" to start (or ?cdp_reason= on status) to get
+a logged CDP proxy port; without a reason cdp_port is withheld.
 Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
 Verify the intended page effect after each action; ok means dispatch only.
 If the session cannot accomplish the goal:
@@ -6172,7 +6175,7 @@ if d.get("error"):
 for b in d.get("identified", []):
     raised = "raised" if b.get("raised") else (
         b.get("raise_error") or ("not raised (several windows)" if not d.get("raised") else "raise not supported here"))
-    print(f"  {b['profile']}  pid={b['pid']}  cdp={b['cdp_port']}  "
+    print(f"  {b['profile']}  pid={b['pid']}  cdp={b.get('cdp_port') or 'withheld'}  "
           f"started-by={b.get('started_by') or '?'}  "
           f"labelled {b.get('labeled', 0)}/{b.get('pages', 0)} tab(s)  [{raised}]")
     for e in b.get("errors", []):
