@@ -3288,6 +3288,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxRestoreOwned": {
+      "kind": "command._outboxRestoreOwned",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxRetryNow": {
       "kind": "command._outboxRetryNow",
       "feedback_required": true,

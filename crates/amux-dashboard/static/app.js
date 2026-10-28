@@ -1707,13 +1707,75 @@ function _writeUserStorage(key, value) {
   // Re-throw the browser's real failure after exhausting disposable data.
   localStorage.setItem(key, value);
 }
+// A WINDOW'S STALE QUEUE MUST NOT ERASE ANOTHER WINDOW'S MESSAGE (Ethan,
+// 2026-10-28: "these messages arent going thru"). Four messages to
+// mixpeek-meta-worker were accepted in one Mac app window and never attempted,
+// and the queue was then empty. That app's WebKit storage was wedged
+// (outbox_upload_list_timeout with after_reset=1 for three hours), and the
+// windows run in separate WebContent processes that share localStorage through
+// that storage process. A window that had not received the new entry still
+// rewrote the queue on every sync pass, even with nothing to change, so its
+// copy replaced the one holding the messages.
+//
+// So a mutation that changes nothing writes nothing, and each window keeps the
+// entries it queued until it sees them settled: removed by a change here or in
+// another window (delivered, discarded, expired), which is recorded under
+// amux_outbox_settled. An unsettled entry missing from the queue is put back
+// (verdict=outbox_entry_restored) and delivered by the next pass. If another
+// window delivered it and its settled record has not arrived, the replay
+// carries the same msg_id and the server answers deduped.
+const _outboxOwned = new Map();
+const _OUTBOX_SETTLED_KEY = 'amux_outbox_settled', _OUTBOX_SETTLED_MAX = 500;
+function _outboxSettledRead() {
+  try { const v = JSON.parse(localStorage.getItem(_OUTBOX_SETTLED_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+  catch (_) { return []; }
+}
+function _outboxRestoreOwned(current) {
+  if (!_outboxOwned.size) return 0;
+  const have = new Set(current.map(e => e.id));
+  const settled = new Set(_outboxSettledRead());
+  let restored = 0;
+  for (const [id, entry] of _outboxOwned) {
+    if (settled.has(id)) { _outboxOwned.delete(id); continue; }
+    if (have.has(id)) continue;
+    const copy = JSON.parse(JSON.stringify(entry));
+    const at = current.findIndex(e => (e.timestamp || 0) > (copy.timestamp || 0));
+    current.splice(at < 0 ? current.length : at, 0, copy);
+    restored++;
+    _outboxDiagnostic('outbox_entry_restored', {id, msg_id:_outboxMessageId(copy), message:_outboxIsMessage(copy) ? 1 : 0,
+      age_ms:Math.max(0, Date.now() - (copy.timestamp || Date.now())), queue_count:current.length});
+  }
+  return restored;
+}
+// Entries this window queued that its view of the queue no longer holds.
+function _outboxOwnedMissing() {
+  if (!_outboxOwned.size) return 0;
+  const have = new Set(offlineQueue.map(e => e.id));
+  const settled = new Set(_outboxSettledRead());
+  let n = 0;
+  for (const id of _outboxOwned.keys()) if (!have.has(id) && !settled.has(id)) n++;
+  return n;
+}
 async function _mutateQueue(change) {
   return _outboxLock('amux-outbox-storage', () => {
+    const raw = localStorage.getItem('amux_offline_queue') || '[]';
     const current = _readQueue();
     for (const entry of current) if (!entry.id) entry.id = crypto.randomUUID();
+    _outboxRestoreOwned(current);
+    const before = new Set(current.map(e => e.id));
     const result = change(current);
-    _writeUserStorage('amux_offline_queue', JSON.stringify(current));
+    const after = new Set(current.map(e => e.id));
+    const settled = [...before].filter(id => !after.has(id));
+    const next = JSON.stringify(current);
+    if (next === raw && !settled.length) { offlineQueue = current; return result; }
+    _writeUserStorage('amux_offline_queue', next);
     offlineQueue = current;
+    for (const entry of current) if (_outboxOwned.has(entry.id)) _outboxOwned.set(entry.id, JSON.parse(JSON.stringify(entry)));
+    if (settled.length) {
+      for (const id of settled) _outboxOwned.delete(id);
+      try { _writeUserStorage(_OUTBOX_SETTLED_KEY, JSON.stringify([..._outboxSettledRead(), ...settled].slice(-_OUTBOX_SETTLED_MAX))); }
+      catch (_) {}
+    }
     if (typeof _idb !== 'undefined') _idb.set('offline_queue', current);
     _outboxViewsRefresh();
     return result;
@@ -1731,7 +1793,12 @@ function _outboxViewsRefresh() {
 }
 window.addEventListener('storage', event => {
   if (event.key !== 'amux_offline_queue') return;
-  try { offlineQueue = _readQueue(); updateConnectionStatus(); _scheduleSyncRetry(); _outboxViewsRefresh(); }
+  try {
+    offlineQueue = _readQueue();
+    // Another window's write dropped an entry this window queued: put it back.
+    if (_outboxOwnedMissing()) _mutateQueue(() => {}).then(() => _scheduleSyncRetry()).catch(() => {});
+    updateConnectionStatus(); _scheduleSyncRetry(); _outboxViewsRefresh();
+  }
   catch (error) { _writeError = error.message; updateConnectionStatus(); }
 });
 
@@ -4555,7 +4622,8 @@ const _SYNC_MIN_MS = 2000, _SYNC_MAX_MS = 60000;
 function _syncBackoffReset() { _syncBackoffMs = 0; }
 function _scheduleSyncRetry() {
   clearTimeout(_syncRetryTimer);
-  const pending = offlineQueue.some(q => q.state !== 'blocked' || _outboxUncertainMessage(q)) || drafts.length || _uploadSyncPending;
+  const pending = offlineQueue.some(q => q.state !== 'blocked' || _outboxUncertainMessage(q)) || drafts.length || _uploadSyncPending
+    || _outboxOwnedMissing() > 0;
   if (!pending) { _syncBackoffMs = 0; return; }
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
@@ -4854,7 +4922,11 @@ async function _runSyncBanner(quiet = false, token = null) {
     _syncSetPhase('deliver');
     await _outboxDeliveryLock('amux-outbox-delivery:' + q.id, async () => {
     const fresh = _readQueue().find(entry => entry.id === q.id);
-    if (!fresh) { offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++; return; }
+    if (!fresh) {
+      offlineQueue = _readQueue(); item.status = 'skipped'; item.label += ' — no longer queued in this tab'; skipped++;
+      if (_outboxIsMessage(q)) _outboxDiagnostic('outbox_entry_vanished', {id:q.id, msg_id:_outboxMessageId(q), stage:'before_lock', owned:_outboxOwned.has(q.id) ? 1 : 0});
+      return;
+    }
     Object.assign(q, fresh);
     if (q.state === 'blocked' && !_outboxUncertainMessage(q)) { item.status = 'failed'; return; }
     const interaction = _interactionReplay(q);
@@ -4877,7 +4949,11 @@ async function _runSyncBanner(quiet = false, token = null) {
       q.attempted_at ||= Date.now();
       let stillQueued = false;
       await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) { saved.attempted_at = q.attempted_at; saved.not_attempted = false; stillQueued = true; } });
-      if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
+      if (!stillQueued) {
+        item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++;
+        if (_outboxIsMessage(q)) _outboxDiagnostic('outbox_entry_vanished', {id:q.id, msg_id:_outboxMessageId(q), stage:'before_attempt', owned:_outboxOwned.has(q.id) ? 1 : 0});
+        return;
+      }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _ownerMentionHeaders(q.url, q.options.body, _authHeaders(q.options.headers)) };
       let retryableMessageRefusal = false;
@@ -5527,6 +5603,7 @@ async function _queueOp(url, options) {
   }
   const entry = { id: options._outboxId || crypto.randomUUID(), url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now(), state: 'pending', not_attempted:true };
   if (options._queueError) Object.assign(entry, {error:options._queueError, not_attempted:false, attempted_at:Date.now()});
+  let queuedHere = false;
   try {
     await _mutateQueue(current => {
       const existing = current.find(q => q.id === entry.id);
@@ -5541,7 +5618,10 @@ async function _queueOp(url, options) {
       }
       if (current.length >= 200) throw new Error('Queue full — this change was not queued; keep the draft');
       current.push(entry);
+      queuedHere = true;
     });
+    // Owned only once it is stored: a refused write must not come back later.
+    if (queuedHere) _outboxOwned.set(entry.id, JSON.parse(JSON.stringify(entry)));
   } catch (e) {
     _writeError = e.name === 'QuotaExceededError'
       ? 'Device storage full — change is not safely queued; keep the draft' : e.message;

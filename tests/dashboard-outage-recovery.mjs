@@ -48,8 +48,8 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase']) vm.runInContext(declaration(name), ctx);
-  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_lockRequest', '_outboxLock', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
+  for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase', '_outboxOwned', '_OUTBOX_SETTLED_KEY']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_lockRequest', '_outboxLock', '_outboxSettledRead', '_outboxRestoreOwned', '_outboxOwnedMissing', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
 const patch = {method:'PATCH', body:'{"title":"saved","expect_rev":1}'};
@@ -215,6 +215,70 @@ function sharedStorage() {
     return flight;
   }}};
 }
+
+// Two Mac app windows are separate WebContent processes sharing localStorage
+// through WebKit's storage process. With that process wedged (2026-10-28,
+// outbox_upload_list_timeout after_reset=1 for hours) a write in one window
+// had not reached the other, which then wrote its own copy over it. Each
+// window here gets its own copy of storage; `propagate` is the storage process
+// finally applying one window's write to the other's.
+function laggedWindows() {
+  const locks = sharedStorage().locks;
+  const x = fixture([], {locks, stored: new Map()}), y = fixture([], {locks, stored: new Map()});
+  const propagate = (from, to) => { for (const [k, v] of from.stored) to.stored.set(k, v); to.ctx.offlineQueue = to.ctx._readQueue(); };
+  const beacons = [];
+  for (const w of [x, y]) w.ctx.fetch = async (url, init) => { beacons.push(JSON.parse(init.body)); return new Response('{}'); };
+  return {x, y, propagate, beacons};
+}
+const message = text => ({method:'POST', body:JSON.stringify({text, msg_id:'m-' + text})});
+
+test('a sync pass that changes nothing does not rewrite the queue', async () => {
+  const {x, y, propagate} = laggedWindows();
+  assert.equal(await x.ctx._queueOp('/api/sessions/w/send', message('hello')), true);
+  let writes = 0;
+  const set = y.ctx.localStorage.setItem;
+  y.ctx.localStorage.setItem = (k, v) => { writes++; set(k, v); };
+  await y.ctx._mutateQueue(() => {});   // the first step of every sync pass
+  assert.equal(writes, 0, 'an idle pass in a window that has not seen the message writes nothing');
+  propagate(y, x);
+  assert.equal(JSON.parse(x.stored.get('amux_offline_queue')).length, 1, 'the message is still queued');
+});
+
+test("a window's stale write that drops another window's message is repaired, and the message is delivered", async () => {
+  const {x, y, propagate, beacons} = laggedWindows();
+  assert.equal(await x.ctx._queueOp('/api/sessions/w/send', message('hello')), true);
+  // Window y has not received it, makes a real change from its stale copy, and
+  // that copy reaches window x.
+  assert.equal(await y.ctx._queueOp('/api/board/TASK-1', patch), true);
+  propagate(y, x);
+  assert.deepEqual(x.ctx.offlineQueue.map(q => q.url), ['/api/board/TASK-1'], 'the stale write dropped the message');
+  assert.ok(x.ctx._outboxOwnedMissing() === 1, 'the window that queued it knows it is missing');
+  const posted = [];
+  x.ctx._origFetch = async (url, init) => {
+    posted.push(url.endsWith('/send') ? JSON.parse(init.body).msg_id : url);
+    return new Response(url.endsWith('/send') ? '{"ok":true,"submitted":true}' : '{"id":"TASK-1"}', {status:200});
+  };
+  await x.ctx.runSyncBanner();
+  assert.ok(posted.includes('m-hello'), 'the message is delivered: ' + JSON.stringify(posted));
+  assert.equal(posted.filter(p => p === 'm-hello').length, 1, 'once');
+  assert.equal(JSON.parse(x.stored.get('amux_offline_queue')).length, 0);
+  assert.ok(beacons.some(b => b.verdict === 'outbox_entry_restored' && b.msg_id === 'm-hello' && b.message === 1), JSON.stringify(beacons));
+});
+
+test('an entry another window delivered is not put back', async () => {
+  const shared = sharedStorage();
+  const a = fixture([], shared), b = fixture([], shared);
+  assert.equal(await a.ctx._queueOp('/api/sessions/w/send', message('hello')), true);
+  b.ctx.offlineQueue = b.ctx._readQueue();
+  let sends = 0;
+  b.ctx._origFetch = async () => { sends++; return new Response('{"ok":true,"submitted":true}', {status:200}); };
+  await b.ctx.runSyncBanner();
+  assert.equal(sends, 1);
+  await a.ctx._mutateQueue(() => {});
+  assert.equal(JSON.parse(shared.stored.get('amux_offline_queue')).length, 0, 'the delivered message stays settled');
+  assert.equal(a.ctx._outboxOwnedMissing(), 0);
+  assert.equal(vm.runInContext('_outboxOwned.size', a.ctx), 0, 'the window that queued it lets it go');
+});
 
 test('concurrent tabs append without overwriting another tab and replay each intent once', async () => {
   const shared = sharedStorage();
