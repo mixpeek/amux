@@ -1010,6 +1010,31 @@ extension AppDelegate {
                     try? out.data(using: .utf8)?.write(to: URL(fileURLWithPath: path + ".js"), options: .atomic)
                 }
             }
+        // View > Zoom In / Zoom Out / Actual Size / Zoom All Windows (?op=in|out|reset|all).
+        case "/zoom":
+            switch q.first(where: { $0.name == "op" })?.value {
+            case "in": zoomIn(nil)
+            case "out": zoomOut(nil)
+            case "reset": zoomReset(nil)
+            case "all": toggleZoomAllWindows(nil)
+            default: break
+            }
+        // Every page's zoom, in allPages order, to <state file>.zoom:
+        // {"all": on, "levels": [dashboard level, or pageZoom percent as a negative]}.
+        case "/zoom-levels":
+            guard let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"] else { break }
+            let pages = allPages
+            var levels = [Int](repeating: 0, count: pages.count), left = pages.count
+            for (i, c) in pages.enumerated() {
+                c.webView.evaluateJavaScript("typeof _zoomLevel === 'number' ? _zoomLevel : 0") { [weak self] r, _ in
+                    let n = (r as? NSNumber)?.intValue ?? 0
+                    levels[i] = n > 0 ? n : -Int((c.webView.pageZoom * 100).rounded())
+                    left -= 1
+                    if left == 0, let data = try? JSONSerialization.data(withJSONObject: ["all": self?.zoomAllWindows ?? false, "levels": levels]) {
+                        try? data.write(to: URL(fileURLWithPath: path + ".zoom"), options: .atomic)
+                    }
+                }
+            }
         // A click on the Split button of the focused pane (or the only page).
         case "/split":
             let host = controllers.first { $0.grid != nil && isShown($0) } ?? controllers.first { isShown($0) }

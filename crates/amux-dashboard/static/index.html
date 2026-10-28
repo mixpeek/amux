@@ -704,10 +704,10 @@
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:var(--space-2);">
             <span style="font-size:var(--fs-lg);">Zoom</span>
             <div style="display:flex;align-items:center;gap:var(--space-1-5);">
-              <button class="btn" style="font-size:var(--fs-base);padding:var(--space-0-5) var(--space-2);min-width:28px;" onclick="zoomOut()">−</button>
+              <button class="btn" style="font-size:var(--fs-base);padding:var(--space-0-5) var(--space-2);min-width:28px;" onclick="zoomOut(); _zoomShare()">−</button>
               <span id="zoom-level-display" style="font-size:var(--fs-md);font-weight:600;min-width:38px;text-align:center;">100%</span>
-              <button class="btn" style="font-size:var(--fs-base);padding:var(--space-0-5) var(--space-2);min-width:28px;" onclick="zoomIn()">+</button>
-              <button class="btn" style="font-size:var(--fs-3xs);padding:var(--space-0-5) var(--space-1-5);color:var(--dim);" onclick="resetZoom()">Reset</button>
+              <button class="btn" style="font-size:var(--fs-base);padding:var(--space-0-5) var(--space-2);min-width:28px;" onclick="zoomIn(); _zoomShare()">+</button>
+              <button class="btn" style="font-size:var(--fs-3xs);padding:var(--space-0-5) var(--space-1-5);color:var(--dim);" onclick="resetZoom(); _zoomShare()">Reset</button>
             </div>
           </div>
           <div style="font-size:var(--fs-2xs);color:var(--dim);margin-top:var(--space-0-5);">&#x2318;+/&#x2318;− or Ctrl+/Ctrl−</div>

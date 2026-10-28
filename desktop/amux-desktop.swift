@@ -118,6 +118,8 @@ struct Config: Codable {
     var activeWorkspace: String?
     // false while the app runs; still false at launch means it did not quit cleanly.
     var cleanExit: Bool?
+    // View > Zoom All Windows (2026-10-28). Unset means on.
+    var zoomAllWindows: Bool?
 }
 
 /// One line in the app's log: NSLog, which reaches the file below too.
@@ -466,6 +468,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // when the window is hidden and click through to the conversation.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotify")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotify")
+        // A zoom from the page (app.js _zoomShare): every other page follows it.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxZoom")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxZoom")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -479,6 +484,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "amuxZoom" {
+            if let n = message.body as? NSNumber { app?.zoomOthers(from: self, level: n.intValue) }
+            return
+        }
         if message.name == "amuxNotify" {
             if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any] {
                 app?.notifyMessage(d)
@@ -1660,10 +1669,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // ran off the window at 130% (Ethan, 2026-10-19: "cant scroll to the
     // bottom without zooming out"). pageZoom is only the fallback for a page
     // without the dashboard's zoom, such as the connect page.
+    //
+    // With View > Zoom All Windows on, every other window, tab and pane takes
+    // the new level too (Ethan, 2026-10-28). The page's own zoom controls
+    // report theirs through amuxZoom (app.js _zoomShare).
     func zoom(_ fn: String, fallback: @escaping (WKWebView) -> Void) {
-        guard let wv = keyPage?.webView else { return }
-        wv.evaluateJavaScript("typeof \(fn) === 'function' ? (\(fn)(), 'dashboard') : 'none'") { r, _ in
-            if (r as? String) != "dashboard" { fallback(wv) }
+        guard let page = keyPage else { return }
+        let wv = page.webView
+        wv.evaluateJavaScript("typeof \(fn) === 'function' ? (\(fn)(), _zoomLevel) : 'none'") { [weak self] r, _ in
+            if let n = r as? NSNumber { self?.zoomOthers(from: page, level: n.intValue); return }
+            fallback(wv)
+            self?.zoomOthers(from: page, level: Int((wv.pageZoom * 100).rounded()))
+        }
+    }
+
+    var zoomAllWindows: Bool { config.zoomAllWindows ?? true }
+
+    @objc func toggleZoomAllWindows(_ sender: Any?) {
+        config = loadConfig()
+        config.zoomAllWindows = !zoomAllWindows
+        saveConfig(config)
+        dlog("verdict=zoom_all_toggled on=\(zoomAllWindows ? 1 : 0)")
+        // Turning it on brings every window to the level of the one you are in.
+        guard zoomAllWindows, let page = keyPage else { return }
+        page.webView.evaluateJavaScript("typeof _zoomLevel === 'number' ? _zoomLevel : 0") { [weak self] r, _ in
+            let n = (r as? NSNumber)?.intValue ?? 0
+            self?.zoomOthers(from: page, level: n > 0 ? n : Int((page.webView.pageZoom * 100).rounded()))
+        }
+    }
+
+    /// Every page the app shows: each window and every tab of each of its panes.
+    var allPages: [DashboardWindowController] {
+        var seen = Set<ObjectIdentifier>()
+        var out: [DashboardWindowController] = []
+        for c in controllers {
+            for p in [c] + (c.grid?.stacks.values.flatMap { $0 } ?? []) where seen.insert(ObjectIdentifier(p)).inserted {
+                out.append(p)
+            }
+        }
+        return out
+    }
+
+    /// Puts every page but `src` at `level` percent: the dashboard's own zoom
+    /// where the page has it, pageZoom elsewhere (the connect page).
+    func zoomOthers(from src: DashboardWindowController, level: Int) {
+        guard zoomAllWindows else { return }
+        let lv = min(300, max(25, level))
+        let others = allPages.filter { $0 !== src }
+        var dashboard = 0, fallback = 0, pending = others.count
+        func done() {
+            pending -= 1
+            if pending == 0 { dlog("verdict=zoom_all level=\(lv) pages=\(others.count) dashboard=\(dashboard) page_zoom=\(fallback)") }
+        }
+        if others.isEmpty { dlog("verdict=zoom_all level=\(lv) pages=0"); return }
+        for p in others {
+            p.webView.evaluateJavaScript("typeof _applyZoom === 'function' ? (_zoomLevel = \(lv), _applyZoom(), 'dashboard') : 'none'") { r, _ in
+                if (r as? String) == "dashboard" { dashboard += 1 } else { p.webView.pageZoom = CGFloat(lv) / 100; fallback += 1 }
+                done()
+            }
         }
     }
     @objc func zoomIn(_ sender: Any?) { zoom("zoomIn") { $0.pageZoom = min(3, $0.pageZoom + 0.1) } }
@@ -1675,6 +1738,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if item.action == #selector(toggleNotifications(_:)) { item.state = (config.notifications ?? true) ? .on : .off }
         if item.action == #selector(toggleDockBadge(_:)) { item.state = (config.dockBadge ?? true) ? .on : .off }
         if item.action == #selector(toggleSnap(_:)) { item.state = snapEnabled ? .on : .off }
+        if item.action == #selector(toggleZoomAllWindows(_:)) { item.state = zoomAllWindows ? .on : .off }
         // Window > Panes acts on a window split into panes; elsewhere its keys
         // (⌘1-9 among them) go on to the page.
         let paneActions: [Selector] = [#selector(paneCloseTab(_:)), #selector(paneZoom(_:)), #selector(paneNextTab(_:)),
@@ -1781,6 +1845,7 @@ func buildMenuBar(_ d: AppDelegate) {
     add(view, "Zoom In", #selector(AppDelegate.zoomIn(_:)), "+", target: d)
     add(view, "Zoom Out", #selector(AppDelegate.zoomOut(_:)), "-", target: d)
     add(view, "Actual Size", #selector(AppDelegate.zoomReset(_:)), "0", target: d)
+    add(view, "Zoom All Windows", #selector(AppDelegate.toggleZoomAllWindows(_:)), "", target: d)
     view.addItem(.separator())
     add(view, "Show Tab Bar", #selector(NSWindow.toggleTabBar(_:)), "t", [.command, .shift])
     add(view, "Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift])

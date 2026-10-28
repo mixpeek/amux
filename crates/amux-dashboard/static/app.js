@@ -1476,6 +1476,13 @@ function zoomOut() {
   if (idx > 0) { _zoomLevel = ZOOM_STEPS[idx - 1]; _applyZoom(); }
 }
 function resetZoom() { _zoomLevel = 100; _applyZoom(); }
+// A zoom from the page's own controls (Settings, the keyboard) tells the Mac
+// app, which puts its other windows at this level too (View > Zoom All
+// Windows). The app's menu zoom shares natively, and the app applies a level
+// through _applyZoom, which does not share, so nothing echoes.
+function _zoomShare() {
+  try { window.webkit.messageHandlers.amuxZoom.postMessage(_zoomLevel); } catch (e) {}
+}
 if (_zoomLevel !== 100) _applyZoom();
 // Keyboard shortcuts: Cmd/Ctrl +/- for zoom.
 // In split mode, zooms whichever pane the cursor is over independently.
@@ -1496,6 +1503,7 @@ document.addEventListener('keydown', function(e) {
   if (isPlus) zoomIn();
   else if (isMinus) zoomOut();
   else resetZoom();
+  _zoomShare();
 });
 
 // Connection & offline state
