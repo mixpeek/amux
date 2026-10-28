@@ -792,6 +792,18 @@ pub fn touch_verb_for_session(session: &str) {
                 b.last_verb_at = now;
                 return;
             }
+            // Then the browser this session JOINED. A joiner drives a tab in a
+            // browser another session started, so `started_by` never matches it,
+            // and with more than one browser running the fallback below does not
+            // fire either: the shared browser read as idle while a joiner drove it
+            // and the activity reaper released it mid-task (NetSuite session,
+            // 2026-10-26, "since_verb_s=327" while the joiner was fetching CSVs).
+            if let Some(profile) = joined_profile(session) {
+                if let Some(b) = g.values_mut().find(|b| b.profile == profile) {
+                    b.last_verb_at = now;
+                    return;
+                }
+            }
         }
         // Single-browser fallback: mirrors port_for_session.
         if g.len() == 1 {
@@ -1010,6 +1022,14 @@ pub(crate) fn persisted_last_exit(home: &Path) -> Option<serde_json::Value> {
         o.insert("from_disk".into(), serde_json::json!(true));
     }
     Some(v)
+}
+
+/// Does an already-recorded exit explain the death of `pid`? Same pid and
+/// recorded within the last day. A pid is reused eventually, and a day-old
+/// record about a recycled pid must not mask a real unobserved death.
+pub(crate) fn last_exit_explains(prev: &serde_json::Value, pid: u32, now: i64) -> bool {
+    prev["pid"].as_u64() == Some(pid as u64)
+        && now.saturating_sub(prev["ts"].as_i64().unwrap_or(0)) < 86_400
 }
 
 /// The running-file, as a MAP keyed by profile (AMUX-3828).
@@ -1268,6 +1288,23 @@ async fn adopt_one(home: &Path, v: &serde_json::Value) -> bool {
              no server was watching, most likely killed alongside a server restart; \
              recording last_exit and clearing the file"
         );
+        // A reaper or /stop that killed THIS pid already wrote why. Overwriting
+        // it with "died while the server was down" turned a known activity
+        // reap into a false server-restart story, and two lanes chased the
+        // wrong cause (2026-10-26). Keep the specific record; log that we did.
+        if let Some(prev) = persisted_last_exit(home) {
+            if last_exit_explains(&prev, pid, chrono::Utc::now().timestamp()) {
+                tracing::info!(
+                    pid, port, profile, started_by,
+                    prev_reason = prev["reason"].as_str().unwrap_or(""),
+                    verdict = "adopt_kept_recorded_exit_reason",
+                    "browser: running-file names a dead browser whose exit was already recorded; \
+                     keeping that reason instead of guessing a server restart"
+                );
+                clear_running_for(home, profile);
+                return false;
+            }
+        }
         record_last_exit(
             home,
             serde_json::json!({
@@ -1708,6 +1745,12 @@ pub struct StartedBrowser {
     /// signal — the caller must not treat a mismatch as failure, only as a fact
     /// worth showing. `None` when CDP listed no page tab at all.
     pub launch_url: Option<String>,
+    /// Whether the requested page finished loading before start returned.
+    /// `None` when no page was requested. False comes with `note`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The tail of Chrome's launch stderr, formatted for an error message, or "" if
@@ -2379,9 +2422,7 @@ pub async fn start(
     // observed about:blank in the same second). Bounded: a slow site returns
     // with what it has, and says so.
     let wants_page = !url.is_empty() && url != "about:blank";
-    if wants_page {
-        settle_launch_tab(port, session, url).await;
-    }
+    let settle = if wants_page { Some(settle_launch_tab(port, session, url).await) } else { None };
     let launch_page = cdp_list(port).await.ok().and_then(|tabs| {
         tabs.as_array()
             .and_then(|ts| {
@@ -2455,6 +2496,8 @@ pub async fn start(
         user_data_dir: target.user_data_dir.display().to_string(),
         started_at,
         launch_url,
+        page_ready: settle.as_ref().map(|s| s.settled),
+        note: settle.as_ref().and_then(unsettled_start_note),
     };
     // `child.id()` is None only once the child has been reaped; a browser we
     // just spawned always has one. Refusing here beats persisting pid 0, which
@@ -4429,10 +4472,29 @@ pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<Dri
     }
     JOINED.lock().expect("joined registry poisoned")
         .insert(session.to_string(), Join { profile: profile.to_string(), tab: target_id.clone() });
+    // Joining IS a verb. Without this stamp a browser adopted long ago and joined
+    // a moment ago still carried its old activity clock (2026-10-26: reaped 90s
+    // after a join).
+    touch_verb(profile);
     NATIVE_TARGETS.lock().expect("native targets poisoned").insert(session.to_string(), target_id.clone());
     tracing::info!(session, profile, cdp_port = port, target = %target_id, measured = true, n_considered = 1,
         verdict = "browser_joined", "a session joined the browser already running its profile, in its own tab");
     Ok(DriverPage { cdp_port: port, target_id, ws_url, url: url.to_string(), title: String::new() })
+}
+
+/// Every session currently joined to `profile`'s browser, sorted. The reaper
+/// tells these as well as the owner when it releases the browser: a joiner is
+/// driving a tab in it and is the session most likely to be mid-task.
+pub fn joiners_of(profile: &str) -> Vec<String> {
+    let mut v: Vec<String> = JOINED
+        .lock()
+        .expect("joined registry poisoned")
+        .iter()
+        .filter(|(_, j)| j.profile == profile)
+        .map(|(s, _)| s.clone())
+        .collect();
+    v.sort();
+    v
 }
 
 /// The profile `session` joined, if it is a joiner rather than an owner.
@@ -4581,6 +4643,50 @@ mod multi_browser_tests {
             assert_eq!(profile_for_session("lane").as_deref(), Some("netsuite"), "order {order:?}");
         }
         test_clear_running();
+    }
+
+    /// A joined session's verbs keep the SHARED browser alive. With two
+    /// browsers running, neither the owner match nor the single-browser
+    /// fallback reached a joiner, so the browser it was driving read as idle
+    /// and the activity reaper released it (2026-10-26).
+    #[test]
+    fn a_joiner_stamps_activity_on_the_browser_it_joined() {
+        let _reg = TEST_REGISTRY.blocking_lock();
+        test_clear_running();
+        test_seed_running_port("shared", "owner-lane", 501, 9201);
+        test_seed_running_port("other", "someone-else", 502, 9202);
+        JOINED.lock().unwrap().insert("joiner-lane".into(), Join { profile: "shared".into(), tab: "T1".into() });
+        assert_eq!(joiners_of("shared"), vec!["joiner-lane".to_string()]);
+        assert!(joiners_of("other").is_empty(), "joiners are per profile");
+        touch_verb_for_session("joiner-lane");
+        let stamp = |p: &str| running_all().into_iter().find(|r| r.0 == p).map(|r| r.5).unwrap();
+        assert!(stamp("shared") > 0, "the joined browser must carry the joiner's verb");
+        assert_eq!(stamp("other"), 0, "an unrelated browser must not be stamped");
+        JOINED.lock().unwrap().remove("joiner-lane");
+        test_clear_running();
+    }
+
+    /// The adopt path keeps a recent exit record for the SAME pid instead of
+    /// overwriting it with "died while the server was down", and still
+    /// records an unexplained death (other pid, or a stale record).
+    #[test]
+    fn adopt_keeps_a_recorded_exit_reason_for_the_same_pid() {
+        let now = 1_800_000_000;
+        let prev = serde_json::json!({"ts": now - 30, "pid": 4242, "reason": "stopped", "by": "activity-reaper"});
+        assert!(last_exit_explains(&prev, 4242, now));
+        assert!(!last_exit_explains(&prev, 4243, now), "another pid's record explains nothing");
+        let stale = serde_json::json!({"ts": now - 90_000, "pid": 4242, "reason": "stopped"});
+        assert!(!last_exit_explains(&stale, 4242, now), "a day-old record may be a recycled pid");
+    }
+
+    /// A start whose page never loaded says so to the caller, not only to the log.
+    #[test]
+    fn an_unsettled_start_carries_a_note() {
+        let blank = LaunchSettle { landed: "about:blank".into(), ready_state: String::new(), settled: false, waited_ms: 10_021 };
+        let note = unsettled_start_note(&blank).expect("an unsettled start must carry a note");
+        assert!(note.contains("about:blank") && note.contains("10021ms") && note.contains("run state again"), "{note}");
+        let done = LaunchSettle { landed: "https://x.test/".into(), ready_state: "complete".into(), settled: true, waited_ms: 300 };
+        assert_eq!(unsettled_start_note(&done), None);
     }
 
     #[test]
@@ -5547,7 +5653,16 @@ pub async fn click_grounded(
 /// Wait (bounded) until the launch tab has left about:blank and finished
 /// loading. Logs `browser_start_settle_timeout` when the page is still loading
 /// at the deadline, so a sweep sees starts that return early.
-async fn settle_launch_tab(port: u16, session: &str, url: &str) {
+/// What [`settle_launch_tab`] saw at the end of its wait.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaunchSettle {
+    pub landed: String,
+    pub ready_state: String,
+    pub settled: bool,
+    pub waited_ms: u64,
+}
+
+async fn settle_launch_tab(port: u16, session: &str, url: &str) -> LaunchSettle {
     let budget = std::time::Duration::from_millis(
         std::env::var("AMUX_BROWSER_START_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000),
     );
@@ -5593,7 +5708,8 @@ async fn settle_launch_tab(port: u16, session: &str, url: &str) {
     }
     let ready = if blank(&last_url) { String::new() } else { ready };
     let waited_ms = began.elapsed().as_millis() as u64;
-    if ready == "complete" {
+    let settled = ready == "complete";
+    if settled {
         tracing::info!(session, url, landed = %last_url, waited_ms, measured = true, n_considered = 1,
             verdict = "browser_start_settled", "browser start waited for the requested page to load");
     } else {
@@ -5601,6 +5717,24 @@ async fn settle_launch_tab(port: u16, session: &str, url: &str) {
             verdict = "browser_start_settle_timeout",
             "browser start returned before the requested page finished loading; the first read may see a partial or blank page");
     }
+    LaunchSettle { landed: last_url, ready_state: ready, settled, waited_ms }
+}
+
+/// The caller-facing sentence for a start whose page had not loaded. The
+/// timeout used to reach only the server log, so the worker got `ok: true`,
+/// read `about:blank` and had to discover the gap itself (2026-10-26, four
+/// times in one NetSuite session).
+pub fn unsettled_start_note(s: &LaunchSettle) -> Option<String> {
+    if s.settled {
+        return None;
+    }
+    let landed = if s.landed.is_empty() { "about:blank" } else { s.landed.as_str() };
+    Some(format!(
+        "the requested page had not finished loading after {}ms (tab is on {landed}, readyState {:?}); \
+         run state again before acting, and do not treat this page as the target yet",
+        s.waited_ms,
+        if s.ready_state.is_empty() { "unknown" } else { s.ready_state.as_str() }
+    ))
 }
 
 pub async fn navigate_and_settle(c: &mut CdpClient, url: &str) -> anyhow::Result<Value> {

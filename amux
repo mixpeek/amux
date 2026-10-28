@@ -6036,11 +6036,13 @@ amux browser route shot
 amux browser route action '{"action":"click","selector":"#observed-control"}'
 amux browser route action '{"action":"type","text":"exact text"}'
 amux browser route action '{"action":"input","selector":"#email","text":"exact text"}'
+amux browser route action - <<<'{"action":"type","text":"..."}'   # body on stdin: keeps secrets out of ps
 Click the observed input before typing. type inserts at the caret, so a
 pre-filled field keeps its text: input (or type with "replace":true) replaces
 it. Read back values before submitting. amux browser actions lists every action;
 eval runs JavaScript; download '{"action":"download","url":"..."}' saves a file
 with the profile's sign-in. amux browser hold <profile> --for 2h keeps it open.
+A start whose page has not loaded says page_ready:false with a note; run state again.
 Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
 Verify the intended page effect after each action; ok means dispatch only.
 If the session cannot accomplish the goal:
@@ -6059,6 +6061,9 @@ ROUTE_HELP
       [[ "$verb" == "shot" ]] && verb="screenshot"
       local session="${AMUX_SESSION:-${AMUX_WORKER:-browser-owner}}"
       local body="${1:-}"
+      # `-` reads the JSON body from stdin, so a typed secret never appears in
+      # this process's argv (`ps` shows argv to every user on the host).
+      if [[ "$body" == "-" ]]; then body=$(cat); fi
       [[ -n "$body" ]] || body='{}'
       local payload
       payload=$(VERB="$verb" SESSION="$session" BODY="$body" python3 - <<'PYROUTE'
@@ -6067,7 +6072,10 @@ print(json.dumps({"verb":os.environ["VERB"],"session":os.environ["SESSION"],"bod
 PYROUTE
       ) || die "route body must be JSON"
       local result
-      result=$(_curl -sk -m 2760 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
+      # The payload goes on stdin, never as a curl argument: it carries whatever
+      # the worker types, passwords included, and curl's argv is visible to every
+      # process on the host (NetSuite login, 2026-10-26).
+      result=$(printf '%s' "$payload" | _curl -sk -m 2760 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" --data-binary @- "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
       RESULT="$result" python3 - <<'PYRESULT'
 import os, json, sys
 v=json.loads(os.environ["RESULT"])
@@ -6162,6 +6170,15 @@ amux browser start <profile> [url] [--headed] : launch a profile (headless by de
 amux browser stop [profile]       : stop your browser (attributed to $AMUX_SESSION)
 amux browser status               : what is running, who started it
 amux browser delete <name>        : delete a saved profile
+amux browser for <url>            : the profile to use for a site, and whether it is signed in
+amux browser route start '{"url":"https://..."}'   : open a page to drive (public pages need no profile)
+amux browser route state | shot   : read the page / screenshot it (http(s) incl. localhost; serve a
+                                    local file over http first, file:// is refused)
+amux browser route action '{...}' : click, type, key, scroll, eval ... (amux browser route help)
+
+  A public page that refuses plain HTTP fetches (403, bot wall): try it in a route,
+  which loads it in a real Chrome.
+  To check what a local page looks like, serve it on localhost, route start it and shot.
 
   With no profile: every running amux browser draws a blue bar naming its
   profile, and none is raised. A Chrome window WITHOUT a bar is the human's own.
@@ -6253,7 +6270,7 @@ if not code.startswith("2") or d.get("ok") is False or d.get("error"):
 print(json.dumps(d, indent=2)[:2000])
 PYEOF
       ;;
-    *) die "amux browser: unknown subcommand '$sub' (try: profiles, identify, create, start, stop, status, hold, keepalive, actions, delete, route)" ;;
+    *) die "amux browser: unknown subcommand '$sub' (try: profiles, for, identify, create, start, stop, status, hold, keepalive, actions, delete, route)" ;;
   esac
 }
 
@@ -6759,11 +6776,22 @@ d = json.load(sys.stdin)
 h = d.get('host') or {}
 p = d.get('pressure') or {}
 la = h.get('load_avg') or [None, None, None]
-ncpu = h.get('cpu_count') or 1
-print('Machine  %s: %d cores, %.0f GB RAM, %.0f GB disk free' % (h.get('hostname', '?'), ncpu, h.get('ram_total_mb', 0) / 1024, h.get('disk_free_gb', 0)))
+# A field the server could not measure prints as "unmeasured", never as 0 or 1:
+# "1 cores, 0 GB RAM, memory 0% used" on a busy 4-core Linux box read as headroom.
+U = 'unmeasured'
+ncpu = h.get('cpu_count')
+cores = '%d cores' % ncpu if ncpu else 'cores ' + U
+ram = '%.0f GB RAM' % (h['ram_total_mb'] / 1024) if 'ram_total_mb' in h else 'RAM ' + U
+disk = '%.0f GB disk free' % h['disk_free_gb'] if 'disk_free_gb' in h else 'disk ' + U
+print('Machine  %s: %s, %s, %s' % (h.get('hostname', '?'), cores, ram, disk))
 if la[1] is not None:
-    print('  load    %.1f / %.1f / %.1f  (%.2f per core over 5 min)' % (la[0], la[1], la[2], la[1] / ncpu))
-print('  memory  %.0f%% used   swap %.1f of %.1f GB' % (h.get('ram_percent', 0), h.get('swap_used_mb', 0) / 1024, h.get('swap_total_mb', 0) / 1024))
+    per = '  (%.2f per core over 5 min)' % (la[1] / ncpu) if ncpu else ''
+    print('  load    %.1f / %.1f / %.1f%s' % (la[0], la[1], la[2], per))
+else:
+    print('  load    ' + U)
+mem = '%.0f%% used' % h['ram_percent'] if 'ram_percent' in h else U
+swap = 'swap %.1f of %.1f GB' % (h.get('swap_used_mb', 0) / 1024, h['swap_total_mb'] / 1024) if 'swap_total_mb' in h else 'swap ' + U
+print('  memory  %s   %s' % (mem, swap))
 line = '  level   %s' % p.get('level', 'unknown')
 if p.get('reasons'):
     line += '  (%s)' % '; '.join(p['reasons'])

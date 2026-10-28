@@ -338,6 +338,61 @@ fn resolve_bin(name: &str) -> &str {
     }
 }
 
+/// `/proc/loadavg` -> the three load averages.
+pub(crate) fn parse_proc_loadavg(text: &str) -> Vec<f64> {
+    text.split_whitespace()
+        .take(3)
+        .filter_map(|s| s.parse::<f64>().ok())
+        .map(|v| (v * 100.0).round() / 100.0)
+        .collect()
+}
+
+/// `/proc/meminfo` -> (MemTotal, MemAvailable, SwapTotal, SwapFree) in kB.
+/// MemAvailable is what the kernel says can be handed out without swapping;
+/// "used" is total minus that, the same definition `free` uses.
+pub(crate) fn parse_proc_meminfo(text: &str) -> Option<(u64, u64, u64, u64)> {
+    let mut m = std::collections::HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if let Some(n) = v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()) {
+                m.insert(k.trim(), n);
+            }
+        }
+    }
+    let total = *m.get("MemTotal")?;
+    let avail = m.get("MemAvailable").copied().or_else(|| m.get("MemFree").copied())?;
+    Some((total, avail, *m.get("SwapTotal").unwrap_or(&0), *m.get("SwapFree").unwrap_or(&0)))
+}
+
+fn linux_system_metrics(sys: &mut serde_json::Map<String, serde_json::Value>) {
+    let mb = |kb: u64| (kb as f64 / 1024.0 * 10.0).round() / 10.0;
+    if let Ok(t) = std::fs::read_to_string("/proc/loadavg") {
+        let nums = parse_proc_loadavg(&t);
+        if !nums.is_empty() {
+            sys.insert("load_avg".into(), json!(nums));
+        }
+    }
+    if let Some((total, avail, swap_total, swap_free)) =
+        std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(parse_proc_meminfo)
+    {
+        let used = total.saturating_sub(avail);
+        sys.insert("ram_total_mb".into(), json!(mb(total)));
+        sys.insert("ram_used_mb".into(), json!(mb(used)));
+        sys.insert(
+            "ram_percent".into(),
+            json!(if total > 0 { (used as f64 / total as f64 * 1000.0).round() / 10.0 } else { 0.0 }),
+        );
+        sys.insert("swap_total_mb".into(), json!(mb(swap_total)));
+        sys.insert("swap_used_mb".into(), json!(mb(swap_total.saturating_sub(swap_free))));
+    }
+    if let Some(up) = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|t| t.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()))
+    {
+        sys.insert("uptime_seconds".into(), json!(up as i64));
+    }
+}
+
 pub(crate) fn collect_system_metrics() -> serde_json::Value {
     let hostname = cmd_output("hostname", &[])
         .unwrap_or_default()
@@ -446,6 +501,30 @@ pub(crate) fn collect_system_metrics() -> serde_json::Value {
             }
         }
     }
+
+    // Linux: /proc. Everything above is macOS-only (sysctl/vm_stat), so on a
+    // Linux host this returned no load, no RAM, no swap and no CPU count, and
+    // `amux resources` printed "1 cores, 0 GB RAM, memory 0% used" for a 4-core
+    // 7.7 GB box while `pressure` in the same response said "load 7.9 on 4
+    // cores" (2026-10-26). A gauge that reads empty on half the platforms is
+    // trusted as "plenty of headroom", the worst reading it can give.
+    if cfg!(target_os = "linux") {
+        linux_system_metrics(&mut sys);
+    }
+    if !sys.contains_key("cpu_count") {
+        if let Ok(n) = std::thread::available_parallelism() {
+            sys.insert("cpu_count".into(), json!(n.get()));
+        }
+    }
+    let measured: Vec<&str> = ["load_avg", "cpu_count", "ram_total_mb", "swap_total_mb", "uptime_seconds"]
+        .into_iter()
+        .filter(|k| sys.contains_key(*k))
+        .collect();
+    if measured.len() < 5 {
+        tracing::warn!(os = std::env::consts::OS, measured = ?measured, verdict = "system_metrics_partial",
+            "system metrics: some host fields could not be measured on this platform");
+    }
+    sys.insert("measured_fields".into(), json!(measured));
 
     // Disk, measured on the volume that actually holds the user's data.
     //
@@ -1044,6 +1123,31 @@ mod tests {
     /// data volume was 90% full. The tell is cheap and specific: the system
     /// snapshot is tiny, so a `disk_total_gb` in that range means the reading
     /// came from the wrong volume again.
+    /// Linux hosts report load, RAM, swap and cores from /proc. They used to
+    /// report none of them, and `amux resources` printed "1 cores, 0 GB RAM"
+    /// for a 4-core 7.7 GB box under load 7.9 (2026-10-26).
+    #[test]
+    fn proc_parsers_read_linux_load_and_memory() {
+        assert_eq!(super::parse_proc_loadavg("7.94 6.12 5.03 3/812 99\n"), vec![7.94, 6.12, 5.03]);
+        let mi = "MemTotal:        8041924 kB\nMemFree:          312000 kB\nMemAvailable:    2041924 kB\nSwapTotal:       2097148 kB\nSwapFree:        1048574 kB\n";
+        assert_eq!(super::parse_proc_meminfo(mi), Some((8_041_924, 2_041_924, 2_097_148, 1_048_574)));
+        // An older kernel without MemAvailable falls back to MemFree rather than
+        // reporting nothing.
+        assert_eq!(super::parse_proc_meminfo("MemTotal: 100 kB\nMemFree: 40 kB\n"), Some((100, 40, 0, 0)));
+        assert_eq!(super::parse_proc_meminfo("garbage"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_host_metrics_are_measured() {
+        let sys = super::collect_system_metrics();
+        assert!(sys["cpu_count"].as_u64().unwrap_or(0) >= 1, "{sys}");
+        assert!(sys["ram_total_mb"].as_f64().unwrap_or(0.0) > 0.0, "{sys}");
+        assert_eq!(sys["load_avg"].as_array().map(|a| a.len()), Some(3), "{sys}");
+        let measured: Vec<&str> = sys["measured_fields"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert!(measured.contains(&"ram_total_mb") && measured.contains(&"load_avg"), "{measured:?}");
+    }
+
     #[test]
     fn disk_metrics_measure_the_data_volume_not_the_sealed_system_snapshot() {
         let sys = super::collect_system_metrics();
