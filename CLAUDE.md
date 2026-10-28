@@ -1,7 +1,7 @@
 # amux
 
 - Whenever you fix a bug: 1) fix it at the root cause, 2) make it surface in amux logs so a sweep would catch it.
-- Standing harness rule: if normal project or worker progress needs a manual
+- Standing harness rule: if normal worker progress needs a manual
   override, restart, retry, board-status edit, or file move, treat that need as
   an Amux defect. Implement bounded, logged discovery and recovery, then rerun
   the original lifecycle case. Preserve failed evidence; never bypass budget,
@@ -21,13 +21,6 @@ The Python server was deleted at `792ce1f`. Do not resurrect it.
 Gut-check every feature against `.claude/rules/ethos.md` (8 rules). The core question:
 when the next model is better, does this feature get better with it, or become the ceiling?
 
-## Project checkout ownership
-
-A project owns one worktree and branch under its repository’s `.worktrees` directory.
-All project workers use that checkout; workers and retries must not create their own.
-Serialize task writes and retain task evidence independently. Publish the reviewed
-project result once, then expire its workers and remove only the published checkout.
-
 ## Isolated workers
 
 Isolated means direct owner-to-CLI transport: no board capture or attribution,
@@ -35,7 +28,7 @@ command decomposition, injected prompts, automated schedule/steering, or Amux
 routing, behavioral hooks or MCP. Passive provider lifecycle observation is allowed
 for status only: it must not add context, change permissions, send prompts, or
 trigger boards. Preserve owner input, delivery receipts and message history.
-Explicit owner queuing is transport only. Isolation overrides stale project
+Explicit owner queuing is transport only. Isolation overrides stale worker
 metadata; a restarted raw CLI must not inherit harness routing.
 Three owner-configured exceptions reach isolated workers: their schedules, the
 goal keeper continuing an owner-set Claude Code `/goal` that is not met

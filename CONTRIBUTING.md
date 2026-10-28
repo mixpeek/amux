@@ -12,11 +12,11 @@ Thanks for your interest in amux! The product is a Rust workspace (`crates/`) se
 
 ### Harness recovery rule
 
-If completing ordinary project or worker work requires an operator to override a
-project policy, restart a worker, retry a task, change its board status, or move
-files by hand, treat that intervention as a harness defect. Add a bounded,
-observable discovery and recovery path in Amux, then exercise the original
-failure through the project lifecycle. Preserve failed-attempt evidence and
+If completing ordinary worker work requires an operator to override a policy,
+restart a worker, retry a task, change its board status, or move files by hand,
+treat that intervention as a harness defect. Add a bounded, observable discovery
+and recovery path in Amux, then exercise the original failure through the
+worker lifecycle. Preserve failed-attempt evidence and
 never bypass budget, customer-outbound, or human artifact-review gates. An
 operational problem that the host can resolve must not become a `needs you`
 dependency or a permanent wait.
