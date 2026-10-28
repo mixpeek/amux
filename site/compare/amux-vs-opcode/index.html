@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Opcode (2026): Opcode and Claudia Alternative for Running Claude Code Agents | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Opcode compared: where Claude Code agents run, managing many agents, phone access and price. Opcode (formerly Claudia) is a free AGPL desktop GUI for Claude Code; amux runs a team of agents with an always-on Cloud option.">
+  <meta name="keywords" content="amux vs opcode, opcode alternative, claudia alternative, claudia claude code gui, opcode claude code, claude code desktop app, claude code session manager, run coding agents from phone">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-opcode/">
+  <meta property="og:title" content="amux vs Opcode (2026): Opcode and Claudia Alternative for Running Claude Code Agents">
+  <meta property="og:description" content="amux vs Opcode compared: where Claude Code agents run, managing many agents, phone access and price. Opcode (formerly Claudia) is a free AGPL desktop GUI for Claude Code; amux runs a team of agents with an always-on Cloud option.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-opcode/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Opcode (2026): Opcode and Claudia Alternative for Running Claude Code Agents">
+  <meta name="twitter:description" content="amux vs Opcode compared: where Claude Code agents run, managing many agents, phone access and price. Opcode (formerly Claudia) is a free AGPL desktop GUI for Claude Code; amux runs a team of agents with an always-on Cloud option.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Opcode", "item": "https://amux.io/compare/amux-vs-opcode/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Opcode: Which Should Run Your Claude Code Agents?", "description": "amux vs Opcode compared: where Claude Code agents run, managing many agents, phone access and price. Opcode (formerly Claudia) is a free AGPL desktop GUI for Claude Code; amux runs a team of agents with an always-on Cloud option.", "url": "https://amux.io/compare/amux-vs-opcode/", "datePublished": "2026-10-28", "dateModified": "2026-10-28", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an Opcode alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, for running Claude Code agents. Opcode is a desktop GUI for one developer's Claude Code sessions, with custom background agents, checkpoints and a cost dashboard. amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared task board with self-healing and phone apps, and offers an always-on amux Cloud server."}}, {"@type": "Question", "name": "Is Opcode the same as Claudia?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Claudia, the Claude Code desktop GUI from Asterisk, is now Opcode. The getAsterisk/claudia repository redirects to winfunc/opcode on GitHub."}}, {"@type": "Question", "name": "Does Opcode have a phone app?", "acceptedAnswer": {"@type": "Answer", "text": "No. Opcode is a desktop app for macOS and Linux, and Windows from source. amux has a native iPhone and iPad app and an installable web app for Android and any browser."}}, {"@type": "Question", "name": "Can Opcode keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "No. Opcode runs sessions and background agents as processes on your computer and has no hosted option. amux Cloud gives you a dedicated always-on server at yourname.amux.io from $39/mo, so agents keep working while your laptop sleeps."}}, {"@type": "Question", "name": "Is Opcode free and open source?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Opcode is free and licensed AGPL-3.0, and it uses your own Claude Code subscription or API key. amux is free to self-host under MIT + Commons Clause; amux Cloud starts at $39/mo."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Opcode</span></div>
+
+    <h1>amux vs Opcode: Which Should Run Your Claude Code Agents?</h1>
+    <p class="subtitle">A desktop GUI for Claude Code against a control plane for a team of agents, compared on where the agents run, managing many at once, phone access and price. Updated October 2026.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> pick <a href="#opcode">Opcode</a> (formerly Claudia) if you want a free, open-source desktop window onto Claude Code: browse and resume past sessions, build custom agents that run in the background, track token cost, manage MCP servers and roll a session back to any checkpoint. Pick <a href="#amux">amux</a> if you want to run an AI engineering team: many Claude Code, Codex and Gemini CLI agents on one task board that recover from crashes on their own, steered from your phone, with the option of an always-on <a href="/cloud/">amux Cloud</a> server so the work continues while your laptop is closed.
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-opcode">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-opcode" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
+    </div>
+
+    <h2 id="what">What are amux and Opcode?</h2>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors and self-heals dozens of parallel Claude Code, Codex or Gemini CLI sessions, with a built-in kanban board, notes, CRM, email, browser automation and a scheduler. It is one Rust binary plus SQLite, open source under MIT + Commons Clause, and you can self-host it or rent an always-on server from amux Cloud.</p>
+    <p><strong><a href="https://github.com/winfunc/opcode" target="_blank" rel="noopener">Opcode</a></strong> calls itself "a powerful GUI app and Toolkit for Claude Code". It is a desktop app built with Tauri 2 (Rust and TypeScript) that reads your <code>~/.claude/projects</code> folder and adds a visual layer on top: a project and session browser, custom agents, a usage dashboard, an MCP server manager, checkpoints and a CLAUDE.md editor. It was first released as Claudia by Asterisk; the old <code>getAsterisk/claudia</code> and <code>getAsterisk/opcode</code> repositories now redirect to <code>winfunc/opcode</code>. It is AGPL-3.0 licensed with about 22,400 GitHub stars. The latest release is v0.2.0 from August 31, 2025, and the last code change landed in October 2025.</p>
+
+    <h2 id="table">amux vs Opcode comparison table</h2>
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:150px;"></th><th>amux</th><th>Opcode</th></tr></thead>
+        <tbody>
+          <tr><td>Best for</td><td>Running a team of agents on shared work, from a dashboard or phone</td><td>A visual desktop window onto your own Claude Code sessions</td></tr>
+          <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Claude Code only (choose among Claude models)</td></tr>
+          <tr><td>Apps</td><td>Web dashboard, iPhone and iPad app, Mac app; Android through the installable web app</td><td>Desktop app: macOS and Linux builds; Windows 10 and 11 from source</td></tr>
+          <tr><td>Phone access</td><td>Yes: native iOS app with every agent's live terminal, the board and controls</td><td>No phone app</td></tr>
+          <tr><td>Keeps working when your laptop sleeps</td><td>Yes on amux Cloud or any always-on machine you self-host on</td><td>Agents run as processes on your computer</td></tr>
+          <tr><td>Managed hosting</td><td>amux Cloud: your own dedicated server at yourname.amux.io from $39/mo</td><td>None</td></tr>
+          <tr><td>Custom agents</td><td>Workers, each its own Claude Code, Codex or Gemini CLI session in its own working directory</td><td>CC Agents with a system prompt, model and file and network permissions, run in the background</td></tr>
+          <tr><td>Task board</td><td>Kanban board agents claim tasks from, with inter-agent messages and shared memory</td><td>None; a project and session browser</td></tr>
+          <tr><td>Crash recovery</td><td>Restarts crashed sessions, compacts context, replays the last message</td><td>Resume past sessions; restore any checkpoint</td></tr>
+          <tr><td>Checkpoints</td><td>No session checkpoints; agents commit their work to git</td><td>Visual timeline with checkpoints, forks and a diff viewer</td></tr>
+          <tr><td>Cost tracking</td><td>Token spend per session in the dashboard</td><td>Usage dashboard by model, project and date, with export</td></tr>
+          <tr><td>Business tools</td><td>CRM, email (Gmail API), browser automation, notes, scheduler</td><td>Not part of Opcode; MCP server manager for tools</td></tr>
+          <tr><td>Telemetry</td><td>None from the self-hosted server</td><td>None, per its README</td></tr>
+          <tr><td>License</td><td>MIT + Commons Clause</td><td>AGPL-3.0</td></tr>
+          <tr><td>Price</td><td>Free to self-host; Cloud Solo $39, Team $69, Max $129 per month</td><td>Free; bring your own Claude Code subscription or API key</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:0.82rem;color:var(--fg-mute);">Opcode details from its <a href="https://github.com/winfunc/opcode" target="_blank" rel="noopener">README</a>, <a href="https://github.com/winfunc/opcode/releases" target="_blank" rel="noopener">releases</a> and <a href="https://opcode.sh/" target="_blank" rel="noopener">opcode.sh</a>, checked October 28, 2026. GitHub stars in October 2026: Opcode about 22,400, amux about 548.</p>
+
+    <h2 id="where">Where do the agents run?</h2>
+    <p>With <strong>Opcode</strong>, everything runs on your computer. The app reads Claude Code's own project folder, starts sessions and background agents as local processes, and keeps all data on your machine. That is good for privacy, and it means the agents stop when the computer sleeps or the app closes. Opcode has no hosted option.</p>
+    <p>With <strong>amux</strong>, you can self-host on any Mac or Linux machine with <code>curl -fsSL https://amux.io/install.sh | bash</code>, or let <a href="/cloud/">amux Cloud</a> provision a dedicated server at <code>yourname.amux.io</code> in about three minutes. You sign in with your own Claude, ChatGPT or Gemini account or an API key, and we run the box. Agents keep working after you close the laptop, and you check in from the phone.</p>
+
+    <h2 id="team">Which is better for running many agents at once?</h2>
+    <p>Opcode is built for one developer working closely with Claude Code. You pick a project, resume or start a session, and keep a library of purpose-built agents you can launch in the background. Its standout features are the visual timeline, where you can checkpoint a session, fork it and diff any two points, and the usage dashboard that breaks cost down by model and project. It has no shared task list, so coordinating several agents on one codebase is up to you.</p>
+    <p>amux is built around the team. Each agent is a worker on the dashboard, work lives on a shared kanban board that agents claim tasks from, agents can message each other, and a watchdog restarts any session that crashes or runs out of context and replays its last message. That makes amux a good fit for leaving a software project, or a small business, running overnight and checking it from your phone in the morning.</p>
+
+    <h2 id="phone">Can you run them from your phone?</h2>
+    <p>Opcode is a desktop app with no phone app. amux has a native <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iPhone and iPad app</a> and a web app you can install on Android or any browser. The phone shows every agent with its live terminal, the task board, and controls to answer, approve, restart or reassign.</p>
+
+    <h2 id="maintenance">Is Opcode still maintained?</h2>
+    <p>Judge from the repository. As of October 28, 2026, the newest release is v0.2.0 (August 31, 2025), the most recent code commit is from October 13, 2025, and later commits only touch the README. The repository is not archived and has about 338 open issues. If you need fixes for new Claude Code versions, check the commit history before you commit to it. amux ships changes to main most days; see the <a href="/changelog/">changelog</a>.</p>
+
+    <h2 id="cost">How much do amux and Opcode cost?</h2>
+    <p>Opcode is free and open source under AGPL-3.0, and it uses the Claude Code you already pay for. amux is free to self-host; amux Cloud costs $39/mo for Solo (4 vCPU, 8 GB), $69/mo for Team (8 vCPU, 16 GB) and $129/mo for Max (16 vCPU, 32 GB), with the server included.</p>
+    <p>For freelancers and agencies running agents across several client repos, <a href="/start/?plan=team&amp;source=amux-vs-opcode">Cloud Team</a> gives the agents enough memory to work on several projects in parallel without a machine on your desk.</p>
+
+    <h2 id="choose">When should you choose amux or Opcode?</h2>
+    <h3 id="opcode">Choose Opcode if</h3>
+    <ul>
+      <li>You use only Claude Code and want a desktop GUI for browsing, resuming and searching your sessions.</li>
+      <li>You want checkpoints you can fork and diff, and a cost dashboard by model and project.</li>
+      <li>You want custom agents with their own file and network permissions running in the background on your machine.</li>
+      <li>You prefer everything local with no telemetry, and an AGPL-3.0 license is fine for you.</li>
+    </ul>
+    <h3 id="amux">Choose amux if</h3>
+    <ul>
+      <li>You run more than a few agents and want them on one board, claiming tasks and recovering from crashes on their own.</li>
+      <li>You manage the work from your phone more than at a desk.</li>
+      <li>You want agents that keep working with your laptop closed: <a href="/start/?source=amux-vs-opcode">amux Cloud</a> from $39/mo, or any always-on machine.</li>
+      <li>You use Codex or Gemini CLI alongside Claude Code.</li>
+      <li>You want CRM, email, browser automation and a scheduler in the same place as your agents.</li>
+    </ul>
+    <p>Related: <a href="/compare/amux-vs-nimbalyst/">amux vs Nimbalyst</a>, <a href="/compare/amux-vs-claude-squad/">amux vs Claude Squad</a>, <a href="/compare/amux-vs-sculptor/">amux vs Sculptor</a>, <a href="/compare/amux-vs-paradev/">amux vs Paradev</a>, <a href="/guides/best-claude-code-session-managers-2026/">best Claude Code session managers</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a>.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <h3>Is amux an Opcode alternative?</h3>
+    <p>Yes, for running Claude Code agents. Opcode is a desktop GUI for one developer's Claude Code sessions, with custom background agents, checkpoints and a cost dashboard. amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared task board with self-healing and phone apps, and offers an always-on amux Cloud server.</p>
+    <h3>Is Opcode the same as Claudia?</h3>
+    <p>Yes. Claudia, the Claude Code desktop GUI from Asterisk, is now Opcode. The getAsterisk/claudia repository redirects to winfunc/opcode on GitHub.</p>
+    <h3>Does Opcode have a phone app?</h3>
+    <p>No. Opcode is a desktop app for macOS and Linux, and Windows from source. amux has a native iPhone and iPad app and an installable web app for Android and any browser.</p>
+    <h3>Can Opcode keep agents running when my laptop is closed?</h3>
+    <p>No. Opcode runs sessions and background agents as processes on your computer and has no hosted option. amux Cloud gives you a dedicated always-on server at <code>yourname.amux.io</code> from $39/mo, so agents keep working while your laptop sleeps.</p>
+    <h3>Is Opcode free and open source?</h3>
+    <p>Yes. Opcode is free and licensed AGPL-3.0, and it uses your own Claude Code subscription or API key. amux is free to self-host under MIT + Commons Clause; amux Cloud starts at $39/mo.</p>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-opcode">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-opcode" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
+    </div>
+  </main>
+
+
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        <a href="/">amux</a> &middot;
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
+        <a href="/docs/">Docs</a> &middot;
+        <a href="/guides/">Guides</a> &middot;
+        <a href="/demos/">Demos</a> &middot;
+        <a href="/compare/">Compare</a> &middot;
+        <a href="/blog/">Blog</a> &middot;
+        <a href="/pricing/">Pricing</a> &middot;
+        <a href="/privacy/">Privacy</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>
