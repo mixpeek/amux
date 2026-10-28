@@ -380,8 +380,20 @@ pub(crate) fn materialize_missing(
 /// Skills amux itself ships, from the repo's `skills/` (Ethan, 2026-10-24:
 /// "a skill that is baked into amux which can be used for anybody"). Every
 /// install gets them as Claude Code commands without copying a file by hand.
-pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] =
-    &[("amux-contribute", include_str!("../../../../skills/amux-contribute.md"))];
+///
+/// Ethan, 2026-10-27: "add these skills to amux core": slop, iterate, codex,
+/// muse, imessage, pr-merge, e2e-test, and the new worker-audit.
+pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] = &[
+    ("amux-contribute", include_str!("../../../../skills/amux-contribute.md")),
+    ("slop", include_str!("../../../../skills/slop.md")),
+    ("iterate", include_str!("../../../../skills/iterate.md")),
+    ("codex", include_str!("../../../../skills/codex.md")),
+    ("muse", include_str!("../../../../skills/muse.md")),
+    ("imessage", include_str!("../../../../skills/imessage.md")),
+    ("pr-merge", include_str!("../../../../skills/pr-merge.md")),
+    ("e2e-test", include_str!("../../../../skills/e2e-test.md")),
+    ("worker-audit", include_str!("../../../../skills/worker-audit.md")),
+];
 
 /// The frontmatter line that lets amux keep a shipped command current. A user
 /// who edits their copy deletes it, and from then on the copy is theirs.
@@ -750,6 +762,17 @@ mod write_tests {
         assert_eq!(install_shipped(&dir, &[("s", v1)]), (0, 1), "marker removed: the copy is the user's");
         assert_eq!(std::fs::read_to_string(dir.join("s.md")).unwrap(), "---\ndescription: mine\n---\nmine");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The core set the owner asked for ships, each from its own skills/ file.
+    #[test]
+    fn the_core_skills_ship() {
+        let names: Vec<&str> = SHIPPED_COMMANDS.iter().map(|(n, _)| *n).collect();
+        for want in ["slop", "iterate", "codex", "muse", "imessage", "pr-merge", "e2e-test", "worker-audit"] {
+            assert!(names.contains(&want), "{want} is not shipped: {names:?}");
+        }
+        let audit = SHIPPED_COMMANDS.iter().find(|(n, _)| *n == "worker-audit").unwrap().1;
+        assert!(audit.contains("workers=") && audit.contains("READ-ONLY"), "worker-audit takes workers= and stays read-only");
     }
 
     /// The shipped copy carries the marker and a description, or it would be

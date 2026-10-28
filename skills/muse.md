@@ -2,6 +2,7 @@
 description: Send a command to Ethan's Muse (its main chat), e.g. /muse check my calendar for tomorrow. Muse runs it with its full conversation context and sends the result back to this worker. Use when asked to send, relay or hand something to Muse. Scripts: muse-send "<command>" and muse-reply <id> "<reply>".
 argument-hint: <command for Muse>
 allowed-tools: Bash
+amux-managed: true
 ---
 
 # Send to Muse

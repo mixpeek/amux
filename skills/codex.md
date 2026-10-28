@@ -2,6 +2,7 @@
 description: Work with Codex threads (Desktop app, CLI, exec, cloud). Read, list, search and monitor them (what is Codex doing, read a thread, what commands ran, what changed since, find the thread about X), send a message to a chat by name, or start a new named thread, e.g. /codex what is running, /codex read #mxp onboarding flow, /codex #mxp onboarding flow <message>, /codex new thread <name>. Scripts: ~/.amux/scripts/codex-skill.py (read-only, JSON), codex-send.py <chat> -, codex-new.py <name> - (message on stdin).
 argument-hint: <question about Codex work> | <chat name> [message] | new thread <name>
 allowed-tools: Bash
+amux-managed: true
 ---
 
 # Codex threads: observe, send, start
