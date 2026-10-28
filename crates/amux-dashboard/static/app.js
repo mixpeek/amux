@@ -54916,8 +54916,11 @@ toggleSettings = function() {
 // A place is recorded once navigation SETTLES, so the transient states of
 // one action (close the card, switch the tab, open the worker) are one step.
 // Each move is beaconed as kind=nav so a dead Back shows in server-rs.log.
-const _nav = { list: [], pos: -1, restoring: false, timer: 0, suppressHash: false };
-const _NAV_MAX = 50;
+// Browser history entries store an ABSOLUTE index (base + position). When the
+// list is capped and its oldest place dropped, base moves instead of every
+// stored index going stale (land review F1, 2026-10-28).
+const _nav = { list: [], pos: -1, base: 0, restoring: false, timer: 0, suppressHash: false };
+let _NAV_MAX = 50;   // let, so a test can lower the cap
 
 function _navEnabled() { return !(window._peekSplitChild || window._peekEmbed); }
 
@@ -54971,11 +54974,12 @@ function _navNote() {
   if (_navSame(cur, _nav.list[_nav.pos])) { _nav.list[_nav.pos] = cur; _navRender(); return; }
   _nav.list = _nav.list.slice(0, _nav.pos + 1);
   _nav.list.push(cur);
-  if (_nav.list.length > _NAV_MAX) _nav.list.shift();
+  const first = _nav.list.length === 1 && _nav.base === 0;
+  if (_nav.list.length > _NAV_MAX) { _nav.list.shift(); _nav.base++; }
   _nav.pos = _nav.list.length - 1;
   try {
-    if (_nav.pos === 0) history.replaceState(Object.assign({}, history.state, { amuxNav: 0 }), '', location.href);
-    else history.pushState({ amuxNav: _nav.pos }, '', location.href);
+    if (first) history.replaceState(Object.assign({}, history.state, { amuxNav: 0 }), '', location.href);
+    else history.pushState({ amuxNav: _nav.base + _nav.pos }, '', location.href);
   } catch (e) {}
   _navRender();
 }
@@ -55030,7 +55034,8 @@ window.addEventListener('popstate', e => {
   if (st.amuxPresent) return;   // the presentation's own entry (_presentOpen)
   // An entry whose state another writer replaced has no index; the only way
   // onto it from here is one step back.
-  let to = typeof st.amuxNav === 'number' ? st.amuxNav : _nav.pos - 1;
+  // An entry older than the kept list lands on the oldest place still kept.
+  let to = typeof st.amuxNav === 'number' ? st.amuxNav - _nav.base : _nav.pos - 1;
   to = Math.max(0, Math.min(_nav.list.length - 1, to));
   if (to === _nav.pos) return;
   const from = _nav.pos;

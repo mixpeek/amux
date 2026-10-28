@@ -6,6 +6,7 @@ import {join} from 'node:path';
 declare const _nav: any;
 declare const activeView: string;
 declare const _HK_IS_MAC: boolean;
+declare let _NAV_MAX: number;
 
 // Ethan, 2026-10-28: "create some kind of back functionality that doesnt take
 // up a lot of real estate ... so i can go back to a previous page i had in
@@ -22,9 +23,8 @@ test.beforeEach(async ({page}) => {
 
 const view = (page: Page) => page.evaluate(() => activeView);
 async function go(page: Page, v: string) {
-  const before = await page.evaluate(() => _nav.pos);
   await page.evaluate(x => (window as any).switchView(x), v);
-  await page.waitForFunction(b => _nav.pos === b + 1, before);
+  await page.waitForFunction(x => !_nav.restoring && _nav.list[_nav.pos] && _nav.list[_nav.pos].id === x, v);
 }
 
 test('back returns to the previous tab, and the button shows only when there is one', async ({page}) => {
@@ -85,4 +85,17 @@ test('Mod+[ and the browser\'s own Back go back too', async ({page}) => {
   await go(page, 'calendar');
   await page.goBack();
   await expect.poll(() => view(page)).toBe('board');
+});
+
+// Land review F1: past the cap the oldest place is dropped, and Back must
+// still land on the right place (the stored browser indices did not shift).
+test('back still lands on the right place after the oldest places are dropped', async ({page}) => {
+  await page.evaluate(() => { _NAV_MAX = 3; });
+  for (const v of ['board', 'scheduler', 'calendar', 'files', 'messages']) await go(page, v);
+  expect(await page.evaluate(() => _nav.list.map((p: any) => p.id))).toEqual(['calendar', 'files', 'messages']);
+  await page.evaluate(() => (window as any).navBack());
+  await expect.poll(() => view(page)).toBe('files');
+  await page.evaluate(() => (window as any).navBack());
+  await expect.poll(() => view(page)).toBe('calendar');
+  await expect(page.locator('#nav-back-btn')).toBeHidden();
 });
