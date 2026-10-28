@@ -36,8 +36,9 @@ may merge, and you post your own reviews (closed loop).
    identity: `env -u GH_TOKEN -u GITHUB_TOKEN gh ...` (esteininger). The App
    token cannot.
    Recipe and pitfalls: memory `upstream-pr-landing-recipe`.
-2. Skip a PR whose head commit and contributor comments are unchanged since
-   your last verdict in the log: it is waiting on the contributor. For the
+2. Skip an outside contributor's PR whose head commit and comments are
+   unchanged since your last verdict in the log: it is waiting on them. Never
+   skip your own sandbox PR that is still blocked (step 4). For the
    rest, read the diff (`gh pr diff N`) before deciding anything.
    - A fork's CI waits in `action_required`. Approve the run
      (`gh api -X POST repos/mixpeek/amux/actions/runs/<id>/approve`) only
@@ -60,13 +61,28 @@ may merge, and you post your own reviews (closed loop).
      is Ethan's: list the options and leave it.
    - A PR touching a fleet-wide path (the `amux` CLI, `runtime_jobs`, the
      launch path, `spawn_periodic`) needs your full suite run before merge.
-4. Tell the contributor, as the admin identity: `gh pr review N
+4. **Your own sandbox PRs** (opened by esteininger from a
+   `contrib/amux-sandbox-*` branch through `/amux-contribute`): nobody reads
+   their comments, so a comment leaves them open forever (2026-10-28: #395,
+   #396 and #397 sat 13 hours on blockers of a few lines each). Fix the
+   blocker yourself, keeping the author line and dropping any Claude
+   trailer:
+   - Rebase onto main and resolve conflicts.
+   - Fix the failing test or fixture, or add the missing registry row.
+   - Drop an unrelated hunk that breaks CI.
+
+   Then push the fixed commit to the PR's own branch (`git push
+   --force-with-lease`), so GitHub CI runs it instead of this Mac. The
+   watcher wakes you when CI finishes, and you merge it green. Say in the
+   log what you changed. A blocker that needs a design decision is Ethan's:
+   list it in your final message.
+5. Tell an outside contributor, as the admin identity: `gh pr review N
    --request-changes --body-file F` for a blocker, `gh pr comment N` for a
    question, and a short thank-you comment on a merge or a close. Name the
    file and line, say what breaks, and offer a way to fix it. Read the PR's
    comments first and post at most one review per head commit. Run the
    anti-slop pass on the text. Put the posted URL in the log.
-5. Append a block to `docs/pr-handling/<YYYY-MM>.md` with one line per PR:
+6. Append a block to `docs/pr-handling/<YYYY-MM>.md` with one line per PR:
    number, verdict, the evidence (commands and results), and any draft.
    Commit it with `Amux-Request: MSG-97357`, then land it on
    main with fetch, rebase and push.
