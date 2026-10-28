@@ -67138,11 +67138,13 @@ function _cvFindName(conv) {
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
+  // Not knowing which address is yours (no list yet, no sign-in) names both:
+  // guessing the first named the owner (messages-view-retained, 2026-10-28).
   if (conv && conv.indexOf('p:') === 0) {
-    const me = (_cloudEmail || _localMemberEmail || '').toLowerCase();
+    const me = String((L.me && L.me.email) || _cloudEmail || _localMemberEmail || '').toLowerCase();
     const emails = conv.slice(2).split('|');
-    const other = emails.find(e => e.toLowerCase() !== me) || emails[0];
-    return String(other).split('@')[0];
+    const others = me ? emails.filter(e => e.toLowerCase() !== me) : emails;
+    return (others.length ? others : emails).map(e => String(e).split('@')[0]).join(', ');
   }
   return conv || '';
 }
