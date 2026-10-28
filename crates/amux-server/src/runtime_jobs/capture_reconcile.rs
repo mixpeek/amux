@@ -32,6 +32,22 @@
 //!    names `MSG-<n>` (the "Structure request" contract says exactly that:
 //!    reconcile into canonical task ids and link them).
 //!
+//! # A split request closes card by card
+//!
+//! Intake can split one message into several cards (MSG-96581 became
+//! MI-5988..5991, four independent outcomes). Every one of them carries the
+//! same `command MSG-<n>:` line, so a citation used to close them all: one
+//! board note on MI-5988 with its sha closed MI-5989..5991 as done with work
+//! that had not shipped, and when mvs-infra reopened them, its own note
+//! re-closed them a minute later (2026-10-28). When a message has more than
+//! one capture card, a citation closes only the cards it is ON (the note's
+//! card) or NAMES by id. Naming none closes none, logged as
+//! `capture_reconcile_split_unnamed` with the ids so the lane can see why.
+//!
+//! A card a lane reopened after this job closed it stays open: its log
+//! already holds a `capture-reconcile: MSG-<n>` close, and the lane's reopen
+//! is the later judgement (`capture_reconcile_reopen_kept`).
+//!
 //! Never without evidence: every close writes the sha or the closing card into
 //! `evidence` and the card log. Epics are skipped because
 //! `board_drive::complete_finished_epics` already owns their completion.
@@ -157,6 +173,47 @@ pub(crate) fn sha_tokens(text: &str) -> Vec<String> {
     out
 }
 
+/// Card ids named in `text` (`MI-5988`, `AMUX-6470`): an uppercase prefix,
+/// a dash and digits, word-bounded. `MSG-<n>` is a message, never a card.
+pub(crate) fn card_ids_in(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for tok in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        let Some((prefix, num)) = tok.rsplit_once('-') else { continue };
+        if prefix == "MSG"
+            || prefix.is_empty()
+            || num.is_empty()
+            || !num.chars().all(|c| c.is_ascii_digit())
+            || !prefix.starts_with(|c: char| c.is_ascii_uppercase())
+            || !prefix.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        {
+            continue;
+        }
+        out.insert(tok.to_string());
+    }
+    out
+}
+
+/// Which of a message's cards a citation is about: the card a note was
+/// written on, and any card ids its text names. Only consulted when the
+/// message was split into more than one card.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Target {
+    pub on_card: Option<String>,
+    pub named: BTreeSet<String>,
+}
+
+impl Target {
+    pub(crate) fn of(text: &str, on_card: Option<&str>) -> Self {
+        Target {
+            on_card: on_card.filter(|c| !c.is_empty()).map(str::to_string),
+            named: card_ids_in(text),
+        }
+    }
+    fn covers(&self, card: &str) -> bool {
+        self.on_card.as_deref() == Some(card) || self.named.contains(card)
+    }
+}
+
 /// Is this an auto-captured intake card? Both shapes the harness has produced:
 /// semantic intake (`source='command'`, `creator='command-lifecycle'`) and the
 /// older raw prompt capture (`source='capture'`, `creator='amux'`).
@@ -277,6 +334,31 @@ pub(crate) fn capture_cards_for_msg(
     Ok(out)
 }
 
+/// How many capture cards, in any status, intake linked to `msg`. More than
+/// one means the request was split, and a citation must name its card.
+pub(crate) fn capture_cards_total(conn: &Connection, msg: i64) -> rusqlite::Result<usize> {
+    let pattern = format!("%command MSG-{msg}:%");
+    let mut ids: BTreeSet<String> = conn
+        .prepare("SELECT id FROM issues WHERE deleted IS NULL AND log LIKE ?1")?
+        .query_map([&pattern], |r| r.get::<_, String>(0))?
+        .flatten()
+        .collect();
+    if let Ok(Some(id)) = conn.query_row("SELECT card_id FROM cmd_history WHERE id=?1", [msg], |r| {
+        r.get::<_, Option<String>>(0)
+    }) {
+        ids.insert(id);
+    }
+    Ok(ids.len())
+}
+
+/// Did this job close `row` for `msg` before? Then it is open now only
+/// because its lane reopened it.
+pub(crate) fn reopened_after_reconcile(row: &bs::IssueRow, msg: i64) -> bool {
+    row.log
+        .as_deref()
+        .is_some_and(|l| l.contains(&format!("capture-reconcile: MSG-{msg} ")))
+}
+
 /// Close one capture card as done with `proof`. Runs inside a write
 /// transaction; re-reads the card so a racing close is a no-op.
 fn close_in_txn(
@@ -331,18 +413,20 @@ fn close_in_txn(
     }
 }
 
-/// Close every open capture card for `msg` owned by a lane in `lanes` (or any
-/// lane when `lanes` is None) with `proof`. Returns the ids closed.
+/// Close the open capture cards for `msg` owned by a lane in `lanes` (or any
+/// lane when `lanes` is None) with `proof`. When intake split `msg` into
+/// several cards, only the ones `target` covers. Returns the ids closed.
 pub(crate) async fn reconcile(
     state: &AppState,
     msg: i64,
     lanes: Option<&BTreeSet<String>>,
     exclude: Option<&str>,
     proof: Proof,
+    target: &Target,
 ) -> Vec<String> {
-    let candidates = match state
+    let (candidates, total) = match state
         .store
-        .read_async(move |conn| Ok(capture_cards_for_msg(conn, msg)?))
+        .read_async(move |conn| Ok((capture_cards_for_msg(conn, msg)?, capture_cards_total(conn, msg)?)))
         .await
     {
         Ok(v) => v,
@@ -351,6 +435,31 @@ pub(crate) async fn reconcile(
                 verdict = "capture_reconcile_unmeasured", "capture reconcile: store unreadable");
             return vec![];
         }
+    };
+    let (candidates, kept): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|r| !reopened_after_reconcile(r, msg));
+    for row in &kept {
+        if crate::log_dedupe::first_this_bucket(
+            &format!("capture-reconcile-reopen:{}:{msg}", row.id),
+            crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+        ) {
+            tracing::info!(card = %row.id, msg, session = ?row.session, measured = true, n_considered = 1,
+                verdict = "capture_reconcile_reopen_kept",
+                "capture card left open: its lane reopened it after this job closed it");
+        }
+    }
+    let candidates: Vec<_> = if total > 1 {
+        let (hit, missed): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|r| target.covers(&r.id));
+        if hit.is_empty() && !missed.is_empty() {
+            let ids: Vec<&str> = missed.iter().map(|r| r.id.as_str()).collect();
+            tracing::info!(msg, cards = ?ids, split_into = total, proof = %proof.render(msg),
+                measured = true, n_considered = missed.len(), verdict = "capture_reconcile_split_unnamed",
+                "capture reconcile: MSG was split into several cards and the citation names none of them; nothing closed");
+        }
+        hit
+    } else {
+        candidates
     };
     let mut closed = Vec::new();
     for row in candidates {
@@ -458,7 +567,13 @@ fn lane_has_open_captures(conn: &Connection, lane: &str) -> bool {
 
 /// Path 2: a board note or a turn-end message from `author` naming MSG ids and
 /// a sha. The sha must be landed in the author's checkout.
-pub(crate) async fn on_text(state: &AppState, author: &str, text: &str, source: &'static str) {
+pub(crate) async fn on_text(
+    state: &AppState,
+    author: &str,
+    text: &str,
+    source: &'static str,
+    on_card: Option<&str>,
+) {
     let msgs = msg_ids_in(text);
     if msgs.is_empty() || author.is_empty() {
         return;
@@ -496,6 +611,7 @@ pub(crate) async fn on_text(state: &AppState, author: &str, text: &str, source: 
         return;
     };
     let lanes: BTreeSet<String> = [author.to_string()].into_iter().collect();
+    let target = Target::of(text, on_card);
     for msg in msgs {
         reconcile(
             state,
@@ -507,6 +623,7 @@ pub(crate) async fn on_text(state: &AppState, author: &str, text: &str, source: 
                 source,
                 author: author.to_string(),
             },
+            &target,
         )
         .await;
     }
@@ -534,7 +651,7 @@ where
         .await
         .unwrap_or_default();
     if text.contains("MSG-") {
-        on_text(state, lane, &text, "turn-end message").await;
+        on_text(state, lane, &text, "turn-end message", None).await;
     }
 }
 
@@ -583,6 +700,10 @@ pub(crate) async fn on_card_done(state: &AppState, card: &str) {
         return;
     }
     let lanes: BTreeSet<String> = [lane].into_iter().collect();
+    let target = Target::of(
+        &format!("{}\n{}\n{}", row.title, row.desc, row.evidence.as_deref().unwrap_or("")),
+        None,
+    );
     for msg in msgs {
         reconcile(
             state,
@@ -594,6 +715,7 @@ pub(crate) async fn on_card_done(state: &AppState, card: &str) {
                 status: row.status.clone(),
                 evidence: row.evidence.clone().unwrap_or_default(),
             },
+            &target,
         )
         .await;
     }
@@ -731,7 +853,8 @@ async fn reconcile_from_commits(state: &AppState) -> (usize, usize, bool) {
         let Some(msg) = msg_ids_in(&token).into_iter().next() else {
             continue;
         };
-        closed += reconcile(state, msg, None, None, Proof::Commit { sha, subject, repo })
+        let target = Target::of(&subject, None);
+        closed += reconcile(state, msg, None, None, Proof::Commit { sha, subject, repo }, &target)
             .await
             .len();
     }
@@ -950,6 +1073,7 @@ mod tests {
                 subject: "feat: request table (MSG-69187)".into(),
                 repo: "/repo".into(),
             },
+            &Target::default(),
         )
         .await;
         assert_eq!(closed, vec!["TP-35".to_string()]);
@@ -972,6 +1096,7 @@ mod tests {
                 subject: "x".into(),
                 repo: "/r".into(),
             },
+            &Target::default(),
         )
         .await;
         assert!(again.is_empty());
@@ -993,6 +1118,7 @@ mod tests {
                 source: "board note",
                 author: "lane".into(),
             },
+            &Target::default(),
         )
         .await;
         assert!(
@@ -1042,9 +1168,64 @@ mod tests {
             .await
             .unwrap();
         on_card_done(&st, "PRIMI-280").await;
+        // MSG-68754 was split into two cards, so citing the message alone
+        // proves neither of them (2026-10-28, MI-5988..5991).
+        assert_eq!(row(&st, "PRIMI-271").status, "todo", "a split request needs the card named");
+        st.store
+            .write_async(|conn| {
+                conn.execute(
+                    "INSERT INTO issues (id,title,\"desc\",status,session,created,updated,archived,source,creator,type,evidence) \
+                     VALUES ('PRIMI-281','Pilot follow-up','Structured from MSG-68754 into PRIMI-271','done','primis',0,0,0,NULL,'primis','code','sent')",
+                    [],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        on_card_done(&st, "PRIMI-281").await;
         let r = row(&st, "PRIMI-271");
         assert_eq!(r.status, "done");
-        assert!(r.evidence.unwrap_or_default().contains("PRIMI-280"));
+        assert!(r.evidence.unwrap_or_default().contains("PRIMI-281"));
+    }
+
+    #[test]
+    fn card_ids_are_read_and_a_msg_id_is_not_one() {
+        let ids = card_ids_in("profile in MI-5988 (MSG-96581), see AMUX-6470; not mi-1, X-, MSG-2");
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec!["AMUX-6470".to_string(), "MI-5988".to_string()]);
+    }
+
+    /// The 2026-10-28 shape: MSG-96581 split into four cards, a citation on
+    /// one. Only that card closes; naming none closes none; a card the lane
+    /// reopened after a close stays open.
+    #[tokio::test]
+    async fn a_split_request_closes_only_the_card_the_citation_is_on_or_names() {
+        let (st, _d) = state();
+        for id in ["MI-5988", "MI-5989", "MI-5990", "MI-5991"] {
+            seed(&st, id, "mvs-infra", 96581, 0, "code").await;
+        }
+        let note = |sha: &str| Proof::Note { sha: sha.into(), source: "board note", author: "mvs-infra".into() };
+        let unnamed = reconcile(&st, 96581, None, None, note("a423420b1bc"), &Target::of("MSG-96581 a423420b1bc", None)).await;
+        assert!(unnamed.is_empty(), "a citation naming no card closed {unnamed:?}");
+        let on = reconcile(&st, 96581, None, None, note("a423420b1bc"),
+            &Target::of("profile landed, MSG-96581 a423420b1bc", Some("MI-5988"))).await;
+        assert_eq!(on, vec!["MI-5988".to_string()]);
+        for id in ["MI-5989", "MI-5990", "MI-5991"] {
+            assert_eq!(row(&st, id).status, "todo", "{id} closed by a citation on MI-5988");
+        }
+        let named = reconcile(&st, 96581, None, None, note("b1c2d3e4f"), &Target::of("MI-5990 done, MSG-96581", None)).await;
+        assert_eq!(named, vec!["MI-5990".to_string()]);
+        // MI-5988 reopened by its lane: a fresh citation on it does not re-close it.
+        st.store
+            .write_async(|conn| {
+                conn.execute("UPDATE issues SET status='todo' WHERE id='MI-5988'", [])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let again = reconcile(&st, 96581, None, None, note("a423420b1bc"),
+            &Target::of("reopened: MSG-96581 a423420b1bc", Some("MI-5988"))).await;
+        assert!(again.is_empty(), "a reopened card was closed again: {again:?}");
+        assert_eq!(row(&st, "MI-5988").status, "todo");
     }
 
     /// Pre-fix shape: a note naming the MSG id but no sha closes nothing.
@@ -1057,6 +1238,7 @@ mod tests {
             "mhc-test-lane",
             "done with MSG-5, shipped",
             "board note",
+            None,
         )
         .await;
         assert_eq!(row(&st, "MHC-930").status, "todo");
@@ -1066,6 +1248,7 @@ mod tests {
             "mhc-test-lane",
             "MSG-5 landed in abc1234ff",
             "board note",
+            None,
         )
         .await;
         assert_eq!(row(&st, "MHC-930").status, "todo");

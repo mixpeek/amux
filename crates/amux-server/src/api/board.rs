@@ -15424,7 +15424,7 @@ pub async fn patch_item(
                 crate::db::interactions::spawn(async move {
                     if note.contains("MSG-") {
                         crate::runtime_jobs::capture_reconcile::on_text(
-                            &st, &author, &note, "board note",
+                            &st, &author, &note, "board note", Some(&card),
                         )
                         .await;
                     }
