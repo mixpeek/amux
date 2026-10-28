@@ -13,6 +13,12 @@
 //! - `GET  /api/social/posts` — the ledger, each post with its window snapshots.
 //! - `GET  /api/social/posts/{id}` — one post.
 //! - `GET  /api/social/posts/{id}/metrics` — a live read, not stored.
+//! - `GET  /api/social/queue` — posts waiting for their publish time, and what
+//!   became of them; `POST /api/social/queue/{id}/cancel` and `/reschedule`.
+//!
+//! `POST /api/social/posts` with `scheduled_at`, or with several `platforms`,
+//! queues instead of publishing now (api/social_publish.rs). Each platform is a
+//! [`Publisher`](super::social_publish::Publisher).
 //!
 //! The `social-metrics` runtime job stores one snapshot per post per window
 //! once the window has passed. A failed read is stored with `measured: false`
@@ -28,6 +34,7 @@
 //! API project private; the reply reports the privacy the platform applied, not
 //! the one asked for.
 
+use super::social_publish::{self, BoxFut, Draft, Failure, Publisher, Published};
 use super::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -50,6 +57,7 @@ const MAX_UPLOAD_BYTES: u64 = 1 << 30;
 /// built" from "broken".
 const PLATFORMS: &[(&str, &str, &str)] = &[
     ("youtube", "built", "google-youtube connector. Uploads stay private until Google's YouTube API audit passes."),
+    ("devto", "built", "devto connector (DEVTO_API_KEY). Articles are saved as drafts until AMUX_SOCIAL_PUBLIC=1."),
     ("instagram", "not_built", "Graph API content publishing: @amux_io as a Business account linked to a Facebook Page, and a Meta app with publishing approved."),
     ("tiktok", "not_built", "Content Posting API: posts are visible only to the account until TikTok audits the app."),
     ("x", "not_built", "API v2 posting needs a paid tier, which is the owner's decision."),
@@ -65,6 +73,7 @@ type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 #[derive(Clone)]
 pub struct SocialCtx {
     pub youtube_api: String,
+    pub devto_api: String,
     pub youtube_upload: String,
     pub youtube_analytics: String,
     pub token: TokenSource,
@@ -77,6 +86,7 @@ impl SocialCtx {
     pub fn live() -> Self {
         SocialCtx {
             youtube_api: "https://www.googleapis.com/youtube/v3".into(),
+            devto_api: "https://dev.to/api".into(),
             youtube_upload: "https://www.googleapis.com/upload/youtube/v3".into(),
             youtube_analytics: "https://youtubeanalytics.googleapis.com/v2".into(),
             token: Arc::new(|state, headers, account| {
@@ -102,6 +112,7 @@ impl SocialCtx {
             env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         SocialCtx {
             youtube_api: format!("{origin}/youtube/v3"),
+            devto_api: format!("{origin}/devto/api"),
             youtube_upload: format!("{origin}/upload/youtube/v3"),
             youtube_analytics: format!("{origin}/v2"),
             token: Arc::new(move |_, _, _| {
@@ -125,18 +136,21 @@ pub fn routes_with(ctx: SocialCtx) -> Router<AppState> {
         .route("/posts/track", axum::routing::post(track))
         .route("/posts/{id}", axum::routing::get(one))
         .route("/posts/{id}/metrics", axum::routing::get(live_metrics))
+        .route("/queue", axum::routing::get(super::social_publish::list))
+        .route("/queue/{id}/cancel", axum::routing::post(super::social_publish::cancel))
+        .route("/queue/{id}/reschedule", axum::routing::post(super::social_publish::reschedule))
         .layer(Extension(Arc::new(ctx)))
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-fn err(code: StatusCode, msg: impl Into<String>) -> Response {
+pub(crate) fn err(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(json!({"ok": false, "error": msg.into()}))).into_response()
 }
 
-fn env_val(ctx: &SocialCtx, key: &str) -> Option<String> {
+pub(crate) fn env_val(ctx: &SocialCtx, key: &str) -> Option<String> {
     (ctx.env)(key)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -144,7 +158,7 @@ fn env_val(ctx: &SocialCtx, key: &str) -> Option<String> {
 
 /// The account a platform posts as: the request's, else
 /// `AMUX_SOCIAL_<PLATFORM>_ACCOUNT` from server.env.
-fn account_for(ctx: &SocialCtx, platform: &str, requested: Option<&str>) -> Option<String> {
+pub(crate) fn account_for(ctx: &SocialCtx, platform: &str, requested: Option<&str>) -> Option<String> {
     requested
         .map(str::trim)
         .filter(|a| !a.is_empty())
@@ -152,7 +166,18 @@ fn account_for(ctx: &SocialCtx, platform: &str, requested: Option<&str>) -> Opti
         .or_else(|| env_val(ctx, &format!("AMUX_SOCIAL_{}_ACCOUNT", platform.to_ascii_uppercase())))
 }
 
-fn caller(headers: &HeaderMap) -> String {
+/// A platform credential for an account, from the connector's env key: the
+/// account's own `<KEY>_<ACCOUNT>` (non-alphanumerics as `_`, upper case),
+/// else the connector's `<KEY>`. Values live in server.env, never a repo.
+pub(crate) fn credential(ctx: &SocialCtx, key: &str, account: &str) -> Option<String> {
+    let slug: String = account.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
+    (!slug.is_empty())
+        .then(|| env_val(ctx, &format!("{key}_{slug}")))
+        .flatten()
+        .or_else(|| env_val(ctx, key))
+}
+
+pub(crate) fn caller(headers: &HeaderMap) -> String {
     headers
         .get("x-amux-session")
         .and_then(|v| v.to_str().ok())
@@ -179,6 +204,7 @@ async fn discover(Extension(ctx): Extension<Arc<SocialCtx>>) -> Response {
         "public_posting_switch": "AMUX_SOCIAL_PUBLIC=1 in server.env (owner)",
         "windows": WINDOWS.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
         "post": "POST /api/social/posts {platform, file, caption, title?, privacy?, tags?, account?}",
+        "queue": "POST /api/social/posts {platforms: [...], scheduled_at: epoch|RFC 3339|YYYY-MM-DDTHH:MM, ...}; GET /api/social/queue; POST /api/social/queue/{id}/cancel; POST /api/social/queue/{id}/reschedule {scheduled_at, force?}",
         "track": "POST /api/social/posts/track {platform, post_id, posted_at?, url?, caption?, account?}",
     }))
     .into_response()
@@ -186,9 +212,17 @@ async fn discover(Extension(ctx): Extension<Arc<SocialCtx>>) -> Response {
 
 #[derive(Deserialize)]
 struct PublishBody {
+    #[serde(default)]
     platform: String,
+    /// Several platforms in one call: one queued row each, sharing a group_id.
+    #[serde(default)]
+    platforms: Vec<String>,
+    /// Queue for this time instead of publishing now.
+    #[serde(default)]
+    scheduled_at: Option<Value>,
     #[serde(default)]
     account: Option<String>,
+    #[serde(default)]
     file: String,
     #[serde(default)]
     caption: String,
@@ -226,101 +260,177 @@ async fn publish(
     headers: HeaderMap,
     Json(body): Json<PublishBody>,
 ) -> Response {
-    if body.platform != "youtube" {
-        return not_built(&body.platform);
+    let mut targets = body.platforms.clone();
+    if targets.is_empty() && !body.platform.is_empty() {
+        targets.push(body.platform.clone());
     }
-    let Some(account) = account_for(&ctx, "youtube", body.account.as_deref()) else {
-        return err(StatusCode::BAD_REQUEST, "name an account, or set AMUX_SOCIAL_YOUTUBE_ACCOUNT in server.env");
+    if targets.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "name a platform (or platforms)");
+    }
+    let drafts: Vec<Draft> = targets
+        .iter()
+        .map(|p| Draft {
+            platform: p.clone(),
+            account: account_for(&ctx, p, body.account.as_deref()).unwrap_or_default(),
+            file: body.file.clone(),
+            caption: body.caption.clone(),
+            title: body.title.clone(),
+            privacy: body.privacy.clone(),
+            tags: body.tags.clone(),
+        })
+        .collect();
+    if body.scheduled_at.is_some() || body.platforms.len() > 1 {
+        let when = match body.scheduled_at.as_ref().map(social_publish::parse_when).unwrap_or_else(|| Ok(now())) {
+            Ok(w) => w,
+            Err(e) => return err(StatusCode::BAD_REQUEST, e),
+        };
+        return social_publish::enqueue(&state, &ctx, &headers, drafts, when).await;
+    }
+    let draft = &drafts[0];
+    let Some(publisher) = social_publish::publisher(&draft.platform) else {
+        return not_built(&draft.platform);
     };
-    let path = std::path::Path::new(&body.file);
-    let meta = match std::fs::metadata(path) {
-        Ok(m) if m.is_file() => m,
-        _ => return err(StatusCode::BAD_REQUEST, format!("no such file: {}", body.file)),
-    };
-    let mime = mime_for(&body.file);
-    if !mime.starts_with("video/") {
-        return err(StatusCode::BAD_REQUEST, "YouTube's API uploads videos only; image posts are not in its API");
+    if let Err(f) = publisher.check(&ctx, draft) {
+        return f.response();
     }
-    if meta.len() > MAX_UPLOAD_BYTES {
-        return err(StatusCode::PAYLOAD_TOO_LARGE, format!("{} bytes is over the {MAX_UPLOAD_BYTES}-byte upload cap", meta.len()));
-    }
-    let title = youtube_title(body.title.as_deref(), &body.caption);
-    if title.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "a YouTube video needs a title or a caption");
-    }
-    let requested = body.privacy.clone().unwrap_or_else(|| "public".into());
-    if !matches!(requested.as_str(), "public" | "unlisted" | "private") {
-        return err(StatusCode::BAD_REQUEST, "privacy is public, unlisted or private");
-    }
-    let public_ok = env_val(&ctx, "AMUX_SOCIAL_PUBLIC").as_deref() == Some("1");
-    let sent_privacy = if requested == "private" || public_ok { requested.clone() } else { "private".to_string() };
-    let token = match (ctx.token)(state.clone(), headers.clone(), account.clone()).await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(platform = "youtube", %account, verdict = "social_token_unavailable", "no bearer for the posting account");
-            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "no YouTube token for this account", "token": e}))).into_response();
-        }
-    };
-    let bytes = match tokio::fs::read(path).await {
-        Ok(b) => b,
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("read {}: {e}", body.file)),
-    };
-    let snippet = json!({
-        "snippet": {"title": title, "description": body.caption.chars().take(5000).collect::<String>(), "tags": body.tags, "categoryId": "28"},
-        "status": {"privacyStatus": sent_privacy, "selfDeclaredMadeForKids": false},
-    });
     let started = std::time::Instant::now();
-    let video = match youtube_upload(&ctx, &token, &snippet, mime, bytes).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(platform = "youtube", %account, verdict = "social_upload_failed", error = %e, "upload failed");
-            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e}))).into_response();
-        }
+    let posted = match publisher.publish(&ctx, &state, headers.clone(), draft).await {
+        Ok(p) => p,
+        Err(f) => return f.response(),
     };
-    let Some(post_id) = video["id"].as_str().map(String::from) else {
-        return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "YouTube answered without a video id"}))).into_response();
-    };
-    let applied = video["status"]["privacyStatus"].as_str().unwrap_or(&sent_privacy).to_string();
-    let url = format!("https://www.youtube.com/watch?v={post_id}");
     let row = PostRow {
-        platform: "youtube".into(),
-        account: account.clone(),
-        post_id: post_id.clone(),
-        url: url.clone(),
-        caption: body.caption.clone(),
-        title: title.clone(),
-        visibility: applied.clone(),
-        file: body.file.clone(),
+        platform: draft.platform.clone(),
+        account: draft.account.clone(),
+        post_id: posted.post_id.clone(),
+        url: posted.url.clone(),
+        caption: draft.caption.clone(),
+        title: posted.title.clone(),
+        visibility: posted.visibility.clone(),
+        file: draft.file.clone(),
         session: caller(&headers),
         origin: "api".into(),
         posted_at: now(),
     };
+    let (post_id, url) = (posted.post_id.clone(), posted.url.clone());
     let id = match insert_post(&state, row).await {
         Ok(id) => id,
         Err(e) => {
-            // The video exists; say so rather than letting a retry post it twice.
-            tracing::error!(platform = "youtube", %post_id, verdict = "social_post_unrecorded", error = %e, "posted but not recorded");
+            // The post exists; say so rather than letting a retry post it twice.
+            tracing::error!(platform = %draft.platform, %post_id, verdict = "social_post_unrecorded", error = %e, "posted but not recorded");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "posted": true, "post_id": post_id, "url": url, "error": format!("posted, but the ledger write failed: {e}")}))).into_response();
         }
     };
-    let mut notes = Vec::new();
-    if sent_privacy != requested {
-        notes.push("asked for public, sent private: AMUX_SOCIAL_PUBLIC is not 1".to_string());
-    }
-    if applied != sent_privacy {
-        notes.push(format!("YouTube applied {applied} instead of {sent_privacy}; an unaudited API project's uploads are locked private until Google's audit passes"));
-    }
-    tracing::info!(platform = "youtube", %account, %post_id, privacy = %applied, bytes = meta.len(),
+    tracing::info!(platform = %draft.platform, account = %draft.account, %post_id, visibility = %posted.visibility,
         elapsed_ms = started.elapsed().as_millis() as u64, session = %caller(&headers), verdict = "social_posted", "social post published");
-    (StatusCode::CREATED, Json(json!({
-        "ok": true, "id": id, "platform": "youtube", "post_id": post_id, "url": url,
-        "privacy_requested": requested, "privacy_status": applied, "notes": notes,
-    }))).into_response()
+    let mut reply = json!({"ok": true, "id": id, "platform": draft.platform, "post_id": post_id, "url": url, "notes": posted.notes});
+    if let Value::Object(extra) = posted.extra {
+        for (k, v) in extra {
+            reply[k] = v;
+        }
+    }
+    (StatusCode::CREATED, Json(reply)).into_response()
+}
+
+/// YouTube: resumable upload through the `google-youtube` connector.
+pub struct YouTube;
+
+impl Publisher for YouTube {
+    fn platform(&self) -> &'static str {
+        "youtube"
+    }
+
+    fn check(&self, _ctx: &SocialCtx, d: &Draft) -> Result<(), Failure> {
+        if d.account.is_empty() {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, "name an account, or set AMUX_SOCIAL_YOUTUBE_ACCOUNT in server.env"));
+        }
+        let meta = match std::fs::metadata(&d.file) {
+            Ok(m) if m.is_file() => m,
+            _ => return Err(Failure::refused(StatusCode::BAD_REQUEST, format!("no such file: {}", d.file))),
+        };
+        if !mime_for(&d.file).starts_with("video/") {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, "YouTube's API uploads videos only; image posts are not in its API"));
+        }
+        if meta.len() > MAX_UPLOAD_BYTES {
+            return Err(Failure::refused(StatusCode::PAYLOAD_TOO_LARGE, format!("{} bytes is over the {MAX_UPLOAD_BYTES}-byte upload cap", meta.len())));
+        }
+        if youtube_title(d.title.as_deref(), &d.caption).is_empty() {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, "a YouTube video needs a title or a caption"));
+        }
+        if !matches!(d.privacy.as_deref().unwrap_or("public"), "public" | "unlisted" | "private") {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, "privacy is public, unlisted or private"));
+        }
+        Ok(())
+    }
+
+    fn publish<'a>(&'a self, ctx: &'a SocialCtx, state: &'a AppState, headers: HeaderMap, d: &'a Draft)
+        -> BoxFut<'a, Result<Published, Failure>> {
+        Box::pin(async move {
+            let account = d.account.clone();
+            let mime = mime_for(&d.file);
+            let title = youtube_title(d.title.as_deref(), &d.caption);
+            let requested = d.privacy.clone().unwrap_or_else(|| "public".into());
+            let public_ok = env_val(ctx, "AMUX_SOCIAL_PUBLIC").as_deref() == Some("1");
+            let sent_privacy = if requested == "private" || public_ok { requested.clone() } else { "private".to_string() };
+            let token = match (ctx.token)(state.clone(), headers, account.clone()).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(platform = "youtube", %account, verdict = "social_token_unavailable", "no bearer for the posting account");
+                    return Err(Failure::retry("no YouTube token for this account").with(json!({"token": e})));
+                }
+            };
+            let bytes = tokio::fs::read(&d.file)
+                .await
+                .map_err(|e| Failure::refused(StatusCode::BAD_REQUEST, format!("read {}: {e}", d.file)))?;
+            let len = bytes.len();
+            let snippet = json!({
+                "snippet": {"title": title, "description": d.caption.chars().take(5000).collect::<String>(), "tags": d.tags, "categoryId": "28"},
+                "status": {"privacyStatus": sent_privacy, "selfDeclaredMadeForKids": false},
+            });
+            let video = youtube_upload(ctx, &token, &snippet, mime, bytes).await.inspect_err(|f| {
+                tracing::warn!(platform = "youtube", %account, verdict = "social_upload_failed", error = %f.error, "upload failed");
+            })?;
+            let Some(post_id) = video["id"].as_str().map(String::from) else {
+                return Err(Failure::uncertain("YouTube answered without a video id"));
+            };
+            let applied = video["status"]["privacyStatus"].as_str().unwrap_or(&sent_privacy).to_string();
+            let mut notes = Vec::new();
+            if sent_privacy != requested {
+                notes.push("asked for public, sent private: AMUX_SOCIAL_PUBLIC is not 1".to_string());
+            }
+            if applied != sent_privacy {
+                notes.push(format!("YouTube applied {applied} instead of {sent_privacy}; an unaudited API project's uploads are locked private until Google's audit passes"));
+            }
+            tracing::debug!(platform = "youtube", bytes = len, "youtube upload sent");
+            Ok(Published {
+                url: format!("https://www.youtube.com/watch?v={post_id}"),
+                post_id,
+                visibility: applied.clone(),
+                title,
+                notes,
+                extra: json!({"privacy_requested": requested, "privacy_status": applied}),
+            })
+        })
+    }
+
+    fn metrics<'a>(&'a self, ctx: &'a SocialCtx, state: &'a AppState, headers: HeaderMap, post: &'a Value)
+        -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move {
+            let account = post["account"].as_str().filter(|a| !a.is_empty()).map(String::from)
+                .or_else(|| account_for(ctx, "youtube", None))
+                .ok_or("the post has no account and AMUX_SOCIAL_YOUTUBE_ACCOUNT is unset")?;
+            let token = (ctx.token)(state.clone(), headers, account)
+                .await
+                .map_err(|e| format!("no YouTube token: {e}"))?;
+            youtube_metrics(ctx, &token, post["post_id"].as_str().unwrap_or(""), post["posted_at"].as_i64().unwrap_or(0)).await
+        })
+    }
 }
 
 /// YouTube's resumable upload: open a session with the metadata, then send the
-/// bytes to the URL it returns. Returns the video resource.
-async fn youtube_upload(ctx: &SocialCtx, token: &str, meta: &Value, mime: &str, bytes: Vec<u8>) -> Result<Value, String> {
+/// bytes to the URL it returns. Returns the video resource. Opening a session
+/// creates no video, so its failures are retryable; once the bytes are sent,
+/// an unanswered request may have created one.
+async fn youtube_upload(ctx: &SocialCtx, token: &str, meta: &Value, mime: &str, bytes: Vec<u8>) -> Result<Value, Failure> {
     let open = ctx
         .http
         .post(format!("{}/videos?uploadType=resumable&part=snippet,status", ctx.youtube_upload))
@@ -330,13 +440,18 @@ async fn youtube_upload(ctx: &SocialCtx, token: &str, meta: &Value, mime: &str, 
         .json(meta)
         .send()
         .await
-        .map_err(|e| format!("open upload session: {e}"))?;
+        .map_err(|e| Failure::retry(format!("open upload session: {e}")))?;
     let status = open.status();
     let location = open.headers().get("location").and_then(|v| v.to_str().ok()).map(String::from);
     if !status.is_success() {
-        return Err(format!("open upload session: HTTP {status}: {}", google_error(open.text().await.unwrap_or_default())));
+        let msg = format!("open upload session: HTTP {status}: {}", google_error(open.text().await.unwrap_or_default()));
+        return Err(if status.is_client_error() && status.as_u16() != 429 && status.as_u16() != 401 {
+            Failure::refused(StatusCode::BAD_GATEWAY, msg)
+        } else {
+            Failure::retry(msg)
+        });
     }
-    let location = location.ok_or("upload session opened without a Location header")?;
+    let location = location.ok_or_else(|| Failure::retry("upload session opened without a Location header"))?;
     let sent = ctx
         .http
         .put(&location)
@@ -345,13 +460,14 @@ async fn youtube_upload(ctx: &SocialCtx, token: &str, meta: &Value, mime: &str, 
         .body(bytes)
         .send()
         .await
-        .map_err(|e| format!("send video bytes: {e}"))?;
+        .map_err(|e| Failure::from_send("send video bytes", &e))?;
     let status = sent.status();
     let text = sent.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("send video bytes: HTTP {status}: {}", google_error(text)));
+        let msg = format!("send video bytes: HTTP {status}: {}", google_error(text));
+        return Err(if status.is_server_error() || status.as_u16() == 429 { Failure::retry(msg) } else { Failure::refused(StatusCode::BAD_GATEWAY, msg) });
     }
-    serde_json::from_str(&text).map_err(|e| format!("upload reply was not JSON: {e}"))
+    serde_json::from_str(&text).map_err(|e| Failure::uncertain(format!("upload reply was not JSON: {e}")))
 }
 
 /// Google's error message out of an error body, or the body cut short.
@@ -362,28 +478,28 @@ fn google_error(body: String) -> String {
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
-fn not_built(platform: &str) -> Response {
+pub(crate) fn not_built(platform: &str) -> Response {
     match PLATFORMS.iter().find(|(id, _, _)| *id == platform) {
         Some((_, _, gate)) => (StatusCode::NOT_IMPLEMENTED, Json(json!({"ok": false, "error": format!("{platform} posting is not built yet"), "gate": gate}))).into_response(),
-        None => err(StatusCode::BAD_REQUEST, format!("unknown platform {platform:?}; one of youtube, instagram, tiktok, x, linkedin")),
+        None => err(StatusCode::BAD_REQUEST, format!("unknown platform {platform:?}; one of {}", PLATFORMS.iter().map(|p| p.0).collect::<Vec<_>>().join(", "))),
     }
 }
 
-struct PostRow {
-    platform: String,
-    account: String,
-    post_id: String,
-    url: String,
-    caption: String,
-    title: String,
-    visibility: String,
-    file: String,
-    session: String,
-    origin: String,
-    posted_at: i64,
+pub(crate) struct PostRow {
+    pub platform: String,
+    pub account: String,
+    pub post_id: String,
+    pub url: String,
+    pub caption: String,
+    pub title: String,
+    pub visibility: String,
+    pub file: String,
+    pub session: String,
+    pub origin: String,
+    pub posted_at: i64,
 }
 
-async fn insert_post(state: &AppState, r: PostRow) -> anyhow::Result<i64> {
+pub(crate) async fn insert_post(state: &AppState, r: PostRow) -> anyhow::Result<i64> {
     let (platform, post_id) = (r.platform.clone(), r.post_id.clone());
     state
         .store
@@ -451,7 +567,7 @@ async fn track(
     };
     match insert_post(&state, row).await {
         Ok(id) => (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "platform": b.platform, "post_id": post_id,
-            "measured_by": if b.platform == "youtube" { "social-metrics job at 24h, 72h, 7d" } else { "nothing yet: this platform's connector is not built" }}))).into_response(),
+            "measured_by": if social_publish::publisher(&b.platform).is_some() { "social-metrics job at 24h, 72h, 7d" } else { "nothing yet: this platform's connector is not built" }}))).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -557,16 +673,10 @@ async fn live_metrics(
 /// Current reach and engagement for a stored post, read from the platform.
 pub async fn fetch_metrics(ctx: &SocialCtx, state: &AppState, headers: HeaderMap, post: &Value) -> Result<Value, String> {
     let platform = post["platform"].as_str().unwrap_or("");
-    if platform != "youtube" {
-        return Err(format!("{platform} metrics are not built yet"));
+    match social_publish::publisher(platform) {
+        Some(p) => p.metrics(ctx, state, headers, post).await,
+        None => Err(format!("{platform} metrics are not built yet")),
     }
-    let account = post["account"].as_str().filter(|a| !a.is_empty()).map(String::from)
-        .or_else(|| account_for(ctx, "youtube", None))
-        .ok_or("the post has no account and AMUX_SOCIAL_YOUTUBE_ACCOUNT is unset")?;
-    let token = (ctx.token)(state.clone(), headers, account)
-        .await
-        .map_err(|e| format!("no YouTube token: {e}"))?;
-    youtube_metrics(ctx, &token, post["post_id"].as_str().unwrap_or(""), post["posted_at"].as_i64().unwrap_or(0)).await
 }
 
 async fn get_json(ctx: &SocialCtx, token: &str, url: &str) -> Result<Value, String> {
@@ -629,8 +739,12 @@ async fn youtube_metrics(ctx: &SocialCtx, token: &str, video: &str, posted_at: i
 /// `(post row, window)`. Unmeasured rows are retried up to `max_attempts`.
 pub fn due_windows(conn: &rusqlite::Connection, at: i64, max_attempts: i64) -> rusqlite::Result<Vec<(i64, &'static str)>> {
     let mut out = Vec::new();
-    let mut st = conn.prepare("SELECT id, posted_at FROM social_posts WHERE platform = 'youtube'")?;
-    let posts: Vec<(i64, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.flatten().collect();
+    let marks = vec!["?"; social_publish::PUBLISHERS.len()].join(", ");
+    let mut st = conn.prepare(&format!("SELECT id, posted_at FROM social_posts WHERE platform IN ({marks})"))?;
+    let posts: Vec<(i64, i64)> = st
+        .query_map(rusqlite::params_from_iter(social_publish::PUBLISHERS), |r| Ok((r.get(0)?, r.get(1)?)))?
+        .flatten()
+        .collect();
     for (id, posted_at) in posts {
         for (w, secs) in WINDOWS {
             if at < posted_at + secs {

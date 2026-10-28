@@ -294,6 +294,21 @@ const REGISTRY: &[Provider] = &[
         docs: "",
         test_url: "",
     },
+    // Social publishing (api/social_devto.rs). Another account's key is
+    // DEVTO_API_KEY_<ACCOUNT>, declared as a custom connector.
+    Provider {
+        id: "devto",
+        label: "dev.to",
+        category: "Social",
+        auth: Auth::ApiKey {
+            key_env: "DEVTO_API_KEY",
+        },
+        setup_note: "dev.to -> Settings -> Extensions -> DEV Community API Keys: generate a key and paste it. Articles are saved as drafts until AMUX_SOCIAL_PUBLIC=1.",
+        docs: "https://developers.forem.com/api/v1",
+        // Forem reads the key from an api-key header, not a bearer, so the
+        // bearer Test would report a working key as broken.
+        test_url: "",
+    },
 ];
 
 fn provider(id: &str) -> Option<&'static Provider> {

@@ -530,6 +530,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         "discord",
         "telegram",
         "mattermost",
+        "devto",
     ];
     let (_, list) = rig
         .call(reqwest::Method::GET, "/api/connectors", json!({}), false)
@@ -582,6 +583,17 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         }
     }
     println!("PASS chat bridge connectors: keys pasted together, never echoed, key-only auth, no token, honest untested");
+    // dev.to (api/social_devto.rs): one key, read from an api-key header, so
+    // the bearer Test cannot judge it and says untested.
+    assert_eq!(rig.post("/api/connectors/devto/credentials", json!({"DEVTO_API_KEY": "matrix-devto"})).await.0, 200);
+    let (_, list) = rig.call(reqwest::Method::GET, "/api/connectors", json!({}), false).await;
+    let row = list["connectors"].as_array().unwrap().iter().find(|c| c["id"] == "devto").unwrap().clone();
+    assert!(!row.to_string().contains("matrix-devto"), "devto: a pasted key is never echoed");
+    assert_eq!(rig.post("/api/connectors/devto/auth", json!({})).await.1["auth"], "apikey");
+    assert_eq!(rig.post("/api/connectors/devto/token", json!({})).await.0, 400, "devto: no token to mint");
+    let (_, t) = rig.post("/api/connectors/devto/test", json!({})).await;
+    assert_eq!((t["status"].clone(), t["measured"].clone()), (json!("untested"), json!(false)), "devto: {t}");
+    println!("PASS devto: key saved, never echoed, key-only auth, no token, honest untested");
     for (id, key, value) in [
         ("granola", "GRANOLA_API_KEY", "matrix-api-key"),
         ("telegram", "TELEGRAM_BOT_TOKEN", "matrix-bot"),
@@ -864,7 +876,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
             200
         );
     }
-    for id in [&ids[1..7], &ids[ids.len() - 1..]].concat() {
+    for id in [&ids[1..7], &["mattermost"][..]].concat() {
         rig.scope(id, "beth@example.test", true).await;
         let (status, token) = rig
             .call(
@@ -991,7 +1003,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
     );
 
     for id in ids {
-        if id == "whatsapp" || id == "discord" {
+        if id == "whatsapp" || id == "discord" || id == "devto" {
             // No test endpoint: the keys surviving SIGKILL is what "untested"
             // (not "needs_credentials") proves here.
             assert_eq!(
@@ -1037,7 +1049,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         .unwrap()
         .revoked
         .push("beth@example.test".into());
-    for id in [&ids[1..7], &ids[ids.len() - 1..]].concat() {
+    for id in [&ids[1..7], &["mattermost"][..]].concat() {
         let (_, v) = rig
             .post(&format!("/api/connectors/{id}/test"), json!({}))
             .await;
@@ -1091,7 +1103,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
     );
     for id in ids {
         let (_, t) = rig.post(&format!("/api/connectors/{id}/test"), json!({})).await;
-        if id == "whatsapp" || id == "discord" {
+        if id == "whatsapp" || id == "discord" || id == "devto" {
             assert_eq!(t["status"], "untested", "{id}: keys kept, no test endpoint");
         } else {
             assert_eq!(t["ok"], true, "{id}: {t}");

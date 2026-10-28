@@ -136,6 +136,7 @@ pub mod ids {
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
     pub const SOCIAL_METRICS: &str = "social-metrics";
+    pub const SOCIAL_PUBLISH: &str = "social-publish";
     pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
@@ -203,6 +204,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
     ids::SOCIAL_METRICS,
+    ids::SOCIAL_PUBLISH,
     ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
@@ -866,6 +868,14 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_SOCIAL_METRICS_SECS", effect: "pass interval in seconds (default 600, 0 disables)", off: Some("0") }],
         pref: None,
         detail: Some("/api/social/posts"),
+    },
+    Doc {
+        id: ids::SOCIAL_PUBLISH,
+        name: "Social publish",
+        purpose: "Publishes queued social posts when their time comes. A failure that reached nothing is retried up to three times, then marked failed with its error; a send that got no answer is marked uncertain and never sent again on its own.",
+        env: &[EnvControl { var: "AMUX_SOCIAL_PUBLISH_SECS", effect: "pass interval in seconds (default 30, 0 disables)", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/social/queue"),
     },
     Doc {
         id: ids::BROWSER_LOGIN_SYNC,

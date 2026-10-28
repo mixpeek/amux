@@ -2,8 +2,10 @@
 
 amux posts to social platforms and reads each post's results back, so amux-gtm
 can run the closed loop in amux-GTM `internal/gtm/amux/PLAN.md` without Buffer.
-Code: `crates/amux-server/src/api/social.rs`, the `social-metrics` runtime job,
-and `amux social` in the CLI.
+Code: `crates/amux-server/src/api/social.rs` (routes, YouTube),
+`social_publish.rs` (the publisher interface and the queue), `social_devto.rs`,
+the `social-publish` and `social-metrics` runtime jobs, and `amux social` in
+the CLI.
 
 ## What each platform needs
 
@@ -14,6 +16,7 @@ and `amux social` in the CLI.
 | 3 | TikTok | not built (AA-44) | Content Posting API. Posts are visible only to the account until TikTok audits the app |
 | 4 | X | not built (AA-45) | API v2 posting needs a paid tier. Pricing and sign-up are Ethan's |
 | 5 | LinkedIn | not built (AA-46) | Community Management API approval and an amux company page |
+| 6 | dev.to | built | A dev.to API key in the `devto` connector. Articles stay drafts until `AMUX_SOCIAL_PUBLIC=1` |
 
 `GET /api/social` reports the same table live.
 
@@ -34,6 +37,47 @@ for and the privacy the platform applied. The `social-metrics` job stores one
 snapshot per post at 24h, 72h and 7d (`GET /api/social/posts`). A failed read
 is stored with `measured: false` and its error, then retried.
 
+### Queue a post for later, or for several platforms
+
+```bash
+amux social queue youtube,devto clip.mp4 --at 2026-11-01T09:00 --title "8 agents" --caption-stdin <<'EOF'
+Queue tasks at night, wake up to merged PRs.
+EOF
+amux social ls --queued                  # every queued row: status, platform, time, tries, url or error
+amux social cancel <id>
+amux social reschedule <id> now          # or a time; a failed post is retried this way
+```
+
+`POST /api/social/posts` with `scheduled_at` (epoch seconds, `now`, RFC 3339 or
+local `YYYY-MM-DDTHH:MM`), or with several `platforms`, queues instead of
+publishing. Each platform gets one row and they share a `group_id`. Every row
+is checked when it is queued, so a bad draft is refused then and nothing is
+half-queued. The `social-publish` job (every 30s) publishes rows that are due:
+
+- `posted`: the row carries the `post_id`, the URL and the ledger row, and the
+  post is measured at 24h, 72h and 7d like any other.
+- A failure that reached nothing (the platform was down, rate limits) is
+  retried after 1 and then 4 minutes, then marked `failed` with its error.
+- `uncertain`: the request was sent and no answer came back, or the server
+  stopped mid-post. The post may be live, so it is never sent again on its
+  own. Check the platform, then `cancel` it or `reschedule <id> now --force`.
+
+### Adding a platform
+
+A platform is one `Publisher` (`social_publish.rs`): `check` (no network, run at
+queue time), `publish` (returns the post id and URL, and says whether a failure
+is retryable, refused, or uncertain), and `metrics`. Write it in its own module,
+list it in `publisher()` and `PUBLISHERS`, add its row to `PLATFORMS`, and the
+queue, the CLI and the metrics windows use it.
+
+### Credentials
+
+Each platform's key is a connector credential in server.env, never in a repo.
+The connector's key is the default account's; another account's is the same
+name with the account appended (`DEVTO_API_KEY_HELLO_AMUX_IO` for account
+`hello@amux.io`), declared as a custom connector in the Connectors tab. A new
+account is a credential, not code.
+
 YouTube metrics: views, likes and comments come live from the Data API.
 Shares, watch minutes, average view duration and subscribers gained come from
 the Analytics API, which lags one to three days, so an early snapshot reports
@@ -49,6 +93,8 @@ figure.
 | `GOOGLE_SA_KEY_FILE_AMUX_IO` | The service-account key delegated in the amux.io Workspace (the amux-gmail account) |
 | `AMUX_SOCIAL_PUBLIC` | `1` lets a post go public. Unset, a post asking for public is uploaded private and the reply says so. Owner's switch |
 | `AMUX_SOCIAL_METRICS_SECS` | Snapshot pass interval, default 600, `0` disables |
+| `AMUX_SOCIAL_PUBLISH_SECS` | Queue pass interval, default 30, `0` disables |
+| `DEVTO_API_KEY` | The dev.to key (set it in the Connectors tab) |
 
 A Google user grant for hello@amux.io expires within hours under the amux.io
 session policy, so YouTube uses domain-wide delegation, like Cloud mail.

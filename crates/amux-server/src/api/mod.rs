@@ -83,6 +83,8 @@ pub mod journal;
 pub mod launch_context;
 pub mod layout_presets;
 pub mod social;
+pub mod social_devto;
+pub mod social_publish;
 pub mod log_search;
 pub mod lookup;
 pub mod location;

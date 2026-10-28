@@ -50,6 +50,7 @@ pub mod board_hygiene;
 pub mod browser_login_sync;
 pub mod connector_maintenance;
 pub mod social_metrics;
+pub mod social_publish;
 pub mod browser_reaper;
 pub mod search_ingest;
 pub mod computer_reaper;

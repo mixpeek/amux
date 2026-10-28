@@ -6688,6 +6688,9 @@ ${BOLD}Coordination:${RESET}
   amux social post youtube <file> --caption-stdin [--title T] [--privacy P]
                                  Publish a video; prints the post id. Results land at 24h, 72h, 7d
   amux social track|ls|stats     Measure a post made elsewhere, list posts, read one post live
+  amux social queue youtube,devto <file> --at 2026-11-01T09:00 --title T --caption-stdin
+                                 Queue for later: one row per platform, published by the social-publish job
+  amux social ls --queued | cancel <id> | reschedule <id> <TIME|now> [--force]
 
 ${BOLD}Info:${RESET}
   amux ls                        List all workers with status and previews
@@ -11170,12 +11173,18 @@ cmd_social() {
   case "$sub" in
     status|"")
       _curl -sk "$AMUX_API/api/social" | python3 -m json.tool ;;
-    post)
+    post|queue)
+      # `queue` with no arguments lists the queue; with arguments it is `post`
+      # with a publish time (--at, default now). Several platforms are one
+      # comma-separated argument: one queued row each, sharing a group id.
+      if [[ "$sub" == queue && $# -eq 0 ]]; then cmd_social ls --queued; return; fi
       local platform="${1:-}" file="${2:-}"; shift 2 2>/dev/null || true
-      [[ -n "$platform" && -n "$file" ]] || die "Usage: amux social post <platform> <file> [--title T] [--privacy public|unlisted|private] [--tag T]... [--account A] (--caption-stdin | --caption TEXT)"
-      local title="" privacy="" account="" caption="" tags=()
+      [[ -n "$platform" && -n "$file" ]] || die "Usage: amux social $sub <platform[,platform...]> <file> [--at TIME] [--title T] [--privacy public|unlisted|private] [--tag T]... [--account A] (--caption-stdin | --caption TEXT)"
+      local title="" privacy="" account="" caption="" at="" tags=()
+      [[ "$sub" == queue ]] && at="now"
       while [[ $# -gt 0 ]]; do
         case "$1" in
+          --at) at="${2:-}"; shift 2 ;;
           --title) title="${2:-}"; shift 2 ;;
           --privacy) privacy="${2:-}"; shift 2 ;;
           --account) account="${2:-}"; shift 2 ;;
@@ -11186,10 +11195,13 @@ cmd_social() {
         esac
       done
       [[ "$file" == /* ]] || file="$PWD/$file"
-      P="$platform" F="$file" T="$title" V="$privacy" A="$account" C="$caption" G="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 -c '
+      P="$platform" F="$file" T="$title" V="$privacy" A="$account" C="$caption" W="$at" G="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 -c '
 import json, os
-b = {"platform": os.environ["P"], "file": os.environ["F"], "caption": os.environ["C"]}
-for k, e in (("title", "T"), ("privacy", "V"), ("account", "A")):
+ps = [p for p in os.environ["P"].split(",") if p]
+b = {"file": os.environ["F"], "caption": os.environ["C"]}
+if len(ps) > 1: b["platforms"] = ps
+else: b["platform"] = ps[0]
+for k, e in (("title", "T"), ("privacy", "V"), ("account", "A"), ("scheduled_at", "W")):
     if os.environ[e]: b[k] = os.environ[e]
 b["tags"] = [t for t in os.environ["G"].splitlines() if t]
 print(json.dumps(b))' | _curl -sk --max-time 900 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts" | python3 -m json.tool ;;
@@ -11213,6 +11225,17 @@ if os.environ["U"]: b["url"] = os.environ["U"]
 if os.environ["A"]: b["account"] = os.environ["A"]
 print(json.dumps(b))' | _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/posts/track" | python3 -m json.tool ;;
     ls)
+      if [[ "${1:-}" == --queued || "${1:-}" == --queue ]]; then
+        local st="${2:-}"
+        _curl -sk "$AMUX_API/api/social/queue?status=${st:-all}" | python3 -c '
+import json, sys, time
+d = json.load(sys.stdin)
+for r in d.get("queue", []):
+    when = time.strftime("%m-%d %H:%M", time.localtime(r["scheduled_at"]))
+    tail = r.get("url") or r.get("error") or r.get("title") or r.get("file") or ""
+    print("%-5s %-10s %-9s %-11s %s  try %s  %s" % (r["id"], r["status"], r["platform"], when, r["group_id"][-8:], r["attempts"], tail))
+print("%d queued post(s)" % len(d.get("queue", [])))' ; return
+      fi
       _curl -sk "$AMUX_API/api/social/posts${1:+?platform=$1}" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -11224,7 +11247,16 @@ print("%d post(s)" % len(d.get("posts", [])))' ;;
     stats)
       [[ -n "${1:-}" ]] || die "Usage: amux social stats <id>"
       _curl -sk "$AMUX_API/api/social/posts/$1/metrics" | python3 -m json.tool ;;
-    *) die "Usage: amux social [status|post|track|ls|stats]" ;;
+    cancel)
+      [[ -n "${1:-}" ]] || die "Usage: amux social cancel <queue id>"
+      _curl -sk -X POST -H "X-Amux-Session: $me" "$AMUX_API/api/social/queue/$1/cancel" | python3 -m json.tool ;;
+    reschedule)
+      [[ -n "${1:-}" && -n "${2:-}" ]] || die "Usage: amux social reschedule <queue id> <TIME|now> [--force]   (--force re-sends a post marked uncertain, which may already be live)"
+      local force=false; [[ "${3:-}" == --force ]] && force=true
+      I="$2" Fz="$force" python3 -c '
+import json, os
+print(json.dumps({"scheduled_at": os.environ["I"], "force": os.environ["Fz"] == "true"}))' | _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $me" -d @- "$AMUX_API/api/social/queue/$1/reschedule" | python3 -m json.tool ;;
+    *) die "Usage: amux social [status|post|queue|track|ls [--queued]|stats|cancel|reschedule]" ;;
   esac
 }
 
