@@ -66529,7 +66529,9 @@ function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); 
 // backwards, and a post was fetched but never drawn (CI, 2026-10-27). A poll
 // asked for during another runs once after it.
 async function _cvPoll(full) {
-  if (_cv.polling) { _cv.pollAgain = _cv.pollAgain || (full ? 'full' : 'inc'); return; }
+  // A full request wins over a queued incremental one (switching conversations
+  // mid-poll must reload the page, has_more included).
+  if (_cv.polling) { _cv.pollAgain = full ? 'full' : (_cv.pollAgain || 'inc'); return; }
   _cv.polling = true;
   try { await _cvPollOnce(full); } finally {
     _cv.polling = false;
