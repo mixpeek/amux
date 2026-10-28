@@ -289,7 +289,14 @@ def gate_tree(name, suffix=""):
 def checkout(repo, tree, ref):
     if not os.path.isdir(os.path.join(tree, ".git")) and not os.path.isfile(os.path.join(tree, ".git")):
         os.makedirs(os.path.dirname(tree), exist_ok=True)
-        git(repo, "worktree", "add", "-q", "--detach", tree, ref, timeout=600)
+        # -f: a cleanup that deleted this folder left git's registration of it
+        # behind, and a plain add refused ("missing but already registered
+        # worktree"), so the gate errored before checking anything
+        # (2026-10-28). -f overrides only for this path.
+        listed = sh(["git", "-C", repo, "worktree", "list", "--porcelain"]).stdout
+        if ("worktree " + os.path.realpath(tree)) in listed or ("worktree " + tree) in listed:
+            print("land gate: its scratch checkout %s had been deleted; re-created it" % tree, file=sys.stderr)
+        git(repo, "worktree", "add", "-f", "-q", "--detach", tree, ref, timeout=600)
     git(tree, "reset", "-q", "--hard", ref, timeout=600)
     git(tree, "clean", "-fdq", "-e", "node_modules", "-e", "target", timeout=600)
 
@@ -516,7 +523,14 @@ def playwright(tree, specs, timeout=E2E_TIMEOUT_S):
         walk(s, [])
     stats = data.get("stats", {})
     if not res["expected"] and not res["unexpected"] and not res["flaky"]:
-        return None, "playwright ran no tests: %s" % json.dumps(stats), time.time() - t0
+        # Say WHY: a run of zero tests is usually a web server that never came
+        # up or a config error, and the stats alone ("expected": 0) said
+        # neither (2026-10-28: 358 s, no tests, no reason).
+        errs = [((e.get("message") or "") + " " + (e.get("location", {}) or {}).get("file", "")).strip()
+                for e in data.get("errors", [])][:3]
+        tail = (r.stderr or r.stdout or "")[-800:]
+        return None, "playwright ran no tests: %s%s%s" % (json.dumps(stats), (" errors: " + " | ".join(errs)) if errs else "",
+                                                          (" output: " + tail) if not errs and tail.strip() else ""), time.time() - t0
     return res, stats, time.time() - t0
 
 

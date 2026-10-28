@@ -68,6 +68,32 @@ class Approvals(http.server.BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "card": "AMUX-T1", "link": "/#land-approve=" + body.get("patch_id", "")})
 
 
+def deleted_scratch_checkout(tmp):
+    """The gate's scratch checkout deleted from disk (a cleanup) while git still
+    lists it: the gate re-creates it instead of erroring."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import land_gate
+    repo = os.path.join(tmp, "wt-repo")
+    os.makedirs(repo)
+    g = lambda *a: subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null", *a],
+                                  capture_output=True, text=True)
+    g("init", "-q")
+    with open(os.path.join(repo, "a.txt"), "w") as f:
+        f.write("a\n")
+    g("add", ".")
+    g("commit", "-qm", "a")
+    tree = os.path.join(tmp, "wt-scratch")
+    land_gate.checkout(repo, tree, "HEAD")
+    shutil.rmtree(tree)
+    try:
+        land_gate.checkout(repo, tree, "HEAD")
+        ok = os.path.isfile(os.path.join(tree, "a.txt"))
+    except Exception as e:  # the old behaviour: "missing but already registered worktree"
+        ok = False
+        print("   ", e)
+    check("a deleted scratch checkout git still lists is re-created, not an error", ok, True)
+
+
 def main():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Approvals)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -269,6 +295,7 @@ def main():
 
     static_readers(tmp)
     review_convergence(tmp)
+    deleted_scratch_checkout(tmp)
     shutil.rmtree(tmp, ignore_errors=True)
     print("\nland gate: %d passed, %d failed" % (passed, failed))
     return 1 if failed else 0
