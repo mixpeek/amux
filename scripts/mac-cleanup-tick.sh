@@ -144,6 +144,18 @@ CHURN_SAMPLE_CMD=${AMUX_CLEANUP_CHURN_SAMPLE_CMD:-${CHURN_FSWATCH:+churn_fswatch
 # Seam: prints "<gb> <cpu_pct>" for fseventsd, or nothing when it is not running.
 # The suites stub it so the live daemon cannot decide a test (as PRESSURE_CMD does).
 FSEVENTSD_CMD=${AMUX_CLEANUP_FSEVENTSD_CMD:-fseventsd_reading}
+# RESTART A BLOATED fseventsd ITSELF (Mac memory RCA 20261027-180101). fseventsd
+# keeps every byte it grows for its whole life: 7.8G -> 30G in one day on this
+# Mac, 21G of it compressed, and the only way back is a restart (launchd brings
+# it straight back; no reboot). Three escalations in a row asked the owner to
+# run it by hand. Over FSEVENTSD_RESTART_GB the tick runs it, at most once per
+# FSEVENTSD_RESTART_COOLDOWN_H, through `sudo -n`, so it needs one sudoers line
+# from the owner (printed when missing) and never prompts. Off with
+# AMUX_CLEANUP_FSEVENTSD_RESTART_GB=0.
+FSEVENTSD_RESTART_GB=${AMUX_CLEANUP_FSEVENTSD_RESTART_GB:-12}
+FSEVENTSD_RESTART_COOLDOWN_H=${AMUX_CLEANUP_FSEVENTSD_RESTART_COOLDOWN_H:-6}
+FSEVENTSD_RESTART_CMD=${AMUX_CLEANUP_FSEVENTSD_RESTART_CMD:-sudo -n /usr/bin/killall fseventsd}
+FSEVENTSD_SUDOERS_LINE="$(id -un 2>/dev/null || echo "$USER") ALL=(root) NOPASSWD: /usr/bin/killall fseventsd"
 # A spin is escalated once per fseventsd process. The same pid still spinning
 # is the owner's restart still pending, so the next escalation waits for a new
 # pid or this many hours (RCA fseventsd 20261021-195930: pid 34409 re-asked 6h
@@ -903,6 +915,46 @@ lima_disks_report() { # <lima_root> [show_kb]
 
 needs_reboot() { # <fseventsd_gb> <threshold>
   awk -v f="$1" -v t="$2" 'BEGIN{ exit !(f+0 >= t+0) }'
+}
+
+# Restart fseventsd when it holds over FSEVENTSD_RESTART_GB. Prints one verdict
+# line and returns 0 only when the restart ran. Sets FSE_RESTART_NEEDS_SUDOERS
+# when sudo refused, so the escalation can carry the one line that fixes it.
+fseventsd_try_restart() { # <gb> <dry:0|1>
+  FSE_RESTART_NEEDS_SUDOERS=0
+  [ "${FSEVENTSD_RESTART_GB:-0}" != 0 ] || return 1
+  needs_reboot "$1" "$FSEVENTSD_RESTART_GB" || return 1
+  local last now; now=$(date +%s); last=$(state_get "$STATE_DIR/state" fseventsd_restarted_at || true)
+  if [ -n "$last" ] && [ $(( now - last )) -lt $(( FSEVENTSD_RESTART_COOLDOWN_H * 3600 )) ]; then
+    echo "mac-cleanup:   fseventsd ${1}G: restarted $(( (now - last) / 60 ))m ago, next restart allowed after ${FSEVENTSD_RESTART_COOLDOWN_H}h (verdict=fseventsd_restart_cooldown)"
+    return 1
+  fi
+  # Suites that run the whole tick turn the live probes off so a test can never
+  # stop a real process; the real restart honours that (a test's fake runs).
+  if [ "${HEALTH_PROBES:-on}" = off ] && [ "$FSEVENTSD_RESTART_CMD" = "sudo -n /usr/bin/killall fseventsd" ]; then
+    echo "mac-cleanup:   fseventsd ${1}G: live probes are off, the real restart is not run (verdict=fseventsd_restart_probes_off)"
+    return 1
+  fi
+  if [ "${2:-0}" = 1 ]; then
+    echo "mac-cleanup:   fseventsd ${1}G is over ${FSEVENTSD_RESTART_GB}G: would restart it (dry run) (verdict=fseventsd_restart_dry)"
+    return 1
+  fi
+  local out rc=0
+  out=$($FSEVENTSD_RESTART_CMD 2>&1) || rc=$?
+  if [ "$rc" = 0 ]; then
+    state_put "$STATE_DIR/state" "fseventsd_restarted_at=$now"
+    sleep "${AMUX_CLEANUP_FSEVENTSD_RESTART_SETTLE_S:-3}"
+    local after; after=$($FSEVENTSD_CMD 2>/dev/null); after=${after%% *}
+    echo "mac-cleanup:   fseventsd held ${1}G (over ${FSEVENTSD_RESTART_GB}G): restarted it, launchd brought it back at ${after:-?}G (verdict=fseventsd_restarted measured=true)"
+    return 0
+  fi
+  if printf '%s' "$out" | grep -qi 'password\|sudo\|not allowed\|a terminal is required'; then
+    FSE_RESTART_NEEDS_SUDOERS=1
+    echo "mac-cleanup:   fseventsd ${1}G is over ${FSEVENTSD_RESTART_GB}G but the tick may not restart it: sudo refused. One line from the owner lets it (sudo visudo -f /etc/sudoers.d/amux-fseventsd): $FSEVENTSD_SUDOERS_LINE (verdict=fseventsd_restart_needs_sudoers)"
+  else
+    echo "mac-cleanup:   fseventsd ${1}G: restart failed rc=$rc: ${out:0:200} (verdict=fseventsd_restart_failed)"
+  fi
+  return 1
 }
 
 # Footprint strings from `top` ("1296M", "27G", "512K") into GB.
@@ -3490,6 +3542,10 @@ if [ -n "$fse_reading" ]; then
     fse_hot=0
     echo "mac-cleanup: fseventsd ${fse_cpu:-?}% CPU after this tick's own deletions, ${fse_pre_cpu:-?}% before them: the burst is this tick's, not a constraint (verdict=fseventsd_burst_self_inflicted)"
   fi
+  if [ "$fse_hot" = 1 ] && fseventsd_try_restart "$fse_gb" "$DRY"; then
+    fse_hot=0
+    reported=$((reported+1))
+  fi
   if [ "$fse_hot" = 1 ]; then
     echo "mac-cleanup: fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU and is SIP-protected; the feed and the owner's remedy follow"
     # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
@@ -3549,6 +3605,7 @@ if [ -n "$fse_reading" ]; then
     else
       echo "mac-cleanup:   fseventsd remedy: stop the churn, then the owner runs sudo killall fseventsd to return its memory (launchd restarts it; no reboot)"
       fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then sudo killall fseventsd returns its memory (launchd restarts it, no reboot). Top feed: $fse_top"
+      [ "${FSE_RESTART_NEEDS_SUDOERS:-0}" = 1 ] && fse_verdict="$fse_verdict. The tick restarts it itself once the owner adds: $FSEVENTSD_SUDOERS_LINE"
     fi
   else
     echo "mac-cleanup: fseventsd ${fse_gb}G ${fse_cpu:-?}% CPU, under the ${FSEVENTSD_REBOOT_GB}G/${FSEVENTSD_CPU_PCT}% thresholds"

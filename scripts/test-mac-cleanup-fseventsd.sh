@@ -159,6 +159,35 @@ else
   echo "  skip (the end-to-end tick needs macOS)"
 fi
 
+echo "6. a bloated fseventsd is restarted by the tick itself, once per cooldown, and a sudo refusal names the line that fixes it"
+RS="$FIX/restart"; mkdir -p "$RS"
+restart_try() { # <gb> <cmd> [dry]
+  ( STATE_DIR="$RS"; FSEVENTSD_RESTART_GB=12; FSEVENTSD_RESTART_COOLDOWN_H=6; FSEVENTSD_RESTART_CMD="$2"
+    FSEVENTSD_CMD="echo 2.0 5"; AMUX_CLEANUP_FSEVENTSD_RESTART_SETTLE_S=0
+    if fseventsd_try_restart "$1" "${3:-0}"; then echo "RC=0"; else echo "RC=1"; fi; echo "SUDOERS=$FSE_RESTART_NEEDS_SUDOERS" )
+}
+out=$(restart_try 8.0 "touch $RS/ran-under")
+check "under the threshold: nothing runs"               "no"  "$([ -e "$RS/ran-under" ] && echo yes || echo no)"
+check "and it is not a restart"                         "yes" "$(has "$out" 'RC=1')"
+out=$(restart_try 30.0 "touch $RS/ran-dry" 1)
+check "a dry run only says it would"                    "yes" "$(has "$out" 'verdict=fseventsd_restart_dry')"
+check "and runs nothing"                                "no"  "$([ -e "$RS/ran-dry" ] && echo yes || echo no)"
+out=$(restart_try 30.0 "touch $RS/ran")
+check "over the threshold: the restart runs"            "yes" "$([ -e "$RS/ran" ] && echo yes || echo no)"
+check "it reports before and after"                     "yes" "$(has "$out" 'held 30.0G.*back at 2.0G (verdict=fseventsd_restarted')"
+check "and returns success so it is not escalated"      "yes" "$(has "$out" 'RC=0')"
+rm -f "$RS/ran"; out=$(restart_try 30.0 "touch $RS/ran")
+check "inside the cooldown it does not run again"       "no"  "$([ -e "$RS/ran" ] && echo yes || echo no)"
+check "and says when it may"                            "yes" "$(has "$out" 'verdict=fseventsd_restart_cooldown')"
+rm -f "$RS/state"; printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' > "$RS/nosudo"; chmod +x "$RS/nosudo"
+out=$(restart_try 30.0 "$RS/nosudo")
+check "a sudo refusal is not a restart"                 "yes" "$(has "$out" 'RC=1')"
+check "it prints the sudoers line"                      "yes" "$(has "$out" 'NOPASSWD: /usr/bin/killall fseventsd (verdict=fseventsd_restart_needs_sudoers)')"
+check "and flags it for the escalation"                 "yes" "$(has "$out" 'SUDOERS=1')"
+out=$( STATE_DIR="$RS"; FSEVENTSD_RESTART_GB=12; FSEVENTSD_RESTART_COOLDOWN_H=6; FSEVENTSD_RESTART_CMD="sudo -n /usr/bin/killall fseventsd"; HEALTH_PROBES=off
+  rm -f "$RS/state"; fseventsd_try_restart 30.0 0; echo "RC=$?" )
+check "with live probes off the real restart never runs" "yes" "$(has "$out" 'verdict=fseventsd_restart_probes_off')"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-fseventsd — all checks passed"; exit 0; fi
 echo "mac-cleanup-fseventsd: $fails check(s) FAILED"; exit 1
