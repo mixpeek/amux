@@ -10636,6 +10636,10 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .office-panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-weight: 600; font-size: var(--fs-md); border-bottom: 1px solid var(--border); }
 .office-panel-close { display: none; min-width: 44px; min-height: 44px; }
 .office-panel-list { overflow: auto; flex: 1; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+/* A flex column shrinks its children to fit before it scrolls, so fifteen long
+   speaker notes were squeezed to 44px each and their text ran over the next
+   slide (Ethan, 2026-10-28). Items keep their height; the list scrolls. */
+.office-panel-list > * { flex-shrink: 0; }
 .office-panel-group { font-size: var(--fs-sm); color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-top: var(--space-2); }
 .office-item { text-align: left; display: block; width: 100%; border: 1px solid var(--border); border-left: 3px solid var(--yellow); border-radius: var(--radius-md); background: var(--bg); color: var(--text); padding: var(--space-2) var(--space-2-5); font: inherit; cursor: pointer; min-height: 44px; }
 .office-item:hover, .office-item.active { border-color: var(--accent); }

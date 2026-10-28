@@ -107,3 +107,30 @@ test('an Excel cell comment shows as a native note and in the panel, and an edit
   }, path);
   expect(saved).toContain('Revised after the November quote.');
 });
+
+// Ethan, 2026-10-28: "speaker notes in pptx view is fucked". With fifteen long
+// notes the panel's flex column shrank every item to its 44px floor and the
+// text ran over the next slide's heading. Items keep their height and the
+// list scrolls.
+test('many long speaker notes each keep their own height and the list scrolls', async ({page}) => {
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any)._officeCommentsMount === 'function');
+  const r = await page.evaluate(() => {
+    const host = document.createElement('div');
+    host.style.cssText = 'display:flex;height:420px;width:700px;position:fixed;top:0;left:0;z-index:9999';
+    document.body.appendChild(host);
+    const text = 'Thanks for making time. Three things today: where round two landed against your criteria, how we would fit your stack, and the commercial shape. '.repeat(3);
+    const items = Array.from({length: 15}, (_, i) => ({kind: 'note', group: 'Slide ' + (i + 1), text}));
+    (window as any)._officeCommentsMount(host, items, null, {format: 'pptx'});
+    const list = host.querySelector('.office-panel-list') as HTMLElement;
+    const els = Array.from(host.querySelectorAll('.office-panel-list > *')) as HTMLElement[];
+    const overflowing = els.filter(e => e.scrollHeight > e.clientHeight + 1).length;
+    let overlaps = 0;
+    for (let i = 1; i < els.length; i++) if (els[i].getBoundingClientRect().top < els[i - 1].getBoundingClientRect().bottom - 1) overlaps++;
+    return {n: els.length, overflowing, overlaps, scrolls: list.scrollHeight > list.clientHeight};
+  });
+  expect(r.n).toBe(30);
+  expect(r.overflowing).toBe(0);
+  expect(r.overlaps).toBe(0);
+  expect(r.scrolls).toBe(true);
+});
