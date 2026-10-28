@@ -567,6 +567,9 @@ async fn async_main() {
             tracing::info!(resumed = n, measured = true, "interrupted-start resume pass complete");
             let r = crate::api::session_verbs::resume_interrupted_recycles(&state).await;
             tracing::info!(resumed = r, measured = true, "interrupted-recycle resume pass complete");
+            // A release that changes the instructions every worker gets
+            // reaches the running ones too, not only their next start.
+            crate::api::session_verbs::refresh_changed_worker_contexts(&state).await;
         });
     }
     // Chat workers have no tmux to outlive this exec(): report turns it cut

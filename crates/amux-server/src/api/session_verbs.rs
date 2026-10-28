@@ -32401,6 +32401,45 @@ pub(crate) async fn refresh_scoped_context(
     sent
 }
 
+/// Of `workers`, how many launched with a rules file, and which of those
+/// would be told something different now. Isolated workers are never counted.
+pub(crate) fn workers_with_changed_context(workers: &[String]) -> (usize, Vec<String>) {
+    let mut compared = 0usize;
+    let mut changed = Vec::new();
+    for w in workers {
+        if session_is_isolated(w) {
+            continue;
+        }
+        let Ok(on_disk) = std::fs::read_to_string(worker_rules_file(w)) else { continue };
+        compared += 1;
+        if compose_worker_context(w, false) != on_disk {
+            changed.push(w.clone());
+        }
+    }
+    (compared, changed)
+}
+
+/// AN AMUX UPDATE CHANGES WHAT EVERY WORKER IS TOLD, AND NOTHING TOLD THE
+/// RUNNING ONES. A worker's instructions are composed at launch into its rules
+/// file (`--append-system-prompt-file`); `refresh_scoped_context` re-sent them
+/// only on a rules or memory edit. When a release added the "amux Messages"
+/// section (2026-10-28), a freshly started worker answered an @mention in its
+/// thread and a long-running one kept refusing it as pasted text.
+///
+/// At startup, recompose each worker's instructions and compare them with the
+/// file it launched with: a worker whose file differs gets the file rewritten
+/// and, if running, the same scoped-context notice a rules edit sends. A worker
+/// with no file (never launched with one) is left alone. Logs
+/// verdict=worker_context_reconciled with how many were compared and changed.
+pub(crate) async fn refresh_changed_worker_contexts(state: &AppState) -> usize {
+    let (compared, changed) = workers_with_changed_context(&workers_in_scope("global", ""));
+    let sent = refresh_scoped_context(state, &changed, "instructions (amux was updated)", "amux").await;
+    tracing::info!(compared, changed = changed.len(), notified = sent.len(), measured = true, n_considered = compared,
+        verdict = "worker_context_reconciled",
+        "compared each worker's launch instructions with the current ones; changed workers were told to re-read");
+    changed.len()
+}
+
 /// Codex fixes developer instructions when a thread is CREATED: `codex resume`
 /// with a new `-c developer_instructions` keeps the thread's original copy.
 /// Measured with a real worker: after a group memory edit and a restart, the
@@ -55589,6 +55628,16 @@ mod commit_shape_tests {
         // A Messages delivery is a person's request, not pasted text (2026-10-28).
         assert!(launch.contains(super::MESSAGES_CONTEXT), "{launch}");
         assert!(!super::compose_worker_context("memapp", true).contains("# amux Messages"), "isolated workers get no injected guide");
+
+        // A worker that launched before an amux update changed its
+        // instructions is found; one launched with the current ones is not;
+        // one that never launched with a file is left alone (2026-10-28).
+        let names = vec!["memapp".to_string()];
+        assert_eq!(super::workers_with_changed_context(&names), (0, vec![]), "no rules file yet");
+        assert!(super::write_worker_context_file("memapp", "instructions from an older amux"));
+        assert_eq!(super::workers_with_changed_context(&names), (1, names.clone()));
+        assert!(super::write_worker_context_file("memapp", &launch));
+        assert_eq!(super::workers_with_changed_context(&names), (1, vec![]));
         // The worker block points at the verb, not at a file a guard may refuse.
         let block = super::compose_worker_block("memapp", "x");
         assert!(block.contains("amux memory add --stdin") && !block.contains("~/.amux/memory/"), "{block}");
