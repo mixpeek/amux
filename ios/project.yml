@@ -145,6 +145,8 @@ targets:
       - path: AmuxApp/Sources/AmuxStore.swift
       - path: AmuxApp/Sources/LocationHistory.swift
       - path: AmuxApp/Sources/DeepLink.swift
+      # The native recorder's shared core, tested on the iOS runtime (RecorderCoreTests).
+      - path: ../desktop/amux-recorder-core.swift
 
   # UI tests that drive the SYSTEM SHARE SHEET from another app (AMUX-4990).
   #

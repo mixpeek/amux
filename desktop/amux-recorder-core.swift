@@ -33,12 +33,16 @@ import CryptoKit
 import Foundation
 #if os(macOS)
 import AppKit
+import AudioToolbox
+import CoreAudio
 #endif
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
 
 let recorderSampleRate: Double = 48_000
+/// How long an expected gap's reason waits for the gap (see `pendingSetMs`).
+let recorderPendingReasonMs: Int64 = 5000
 let recorderSegmentSeconds: Double = Double(ProcessInfo.processInfo.environment["AMUX_RECORDER_SEGMENT_S"] ?? "") ?? 10
 /// A buffer starting this long after the last one ended is a gap.
 let recorderGapSlackMs: Int64 = 250
@@ -67,6 +71,10 @@ struct RecManifest: Codable {
     var id: String; var started_at: Int64; var tz_offset_min: Int; var device: String
     var tracks: [String]; var state: String; var segments: [RecSegment]; var gaps: [RecGap]
     var ended_at: Int64?; var recovered: Bool; var session_open: Bool; var error: String?
+    /// Finish calls the server answered "finishing" (202): it holds the audio
+    /// and retries assembly itself, so the app backs off instead of asking
+    /// every 5 s forever (2026-10-28). Optional: older manifests decode.
+    var finish_tries: Int?; var next_finish_at: Int64?
 }
 
 func recorderSpoolRoot() -> URL {
@@ -162,7 +170,12 @@ final class TrackWriter {
 
     /// Mark the reason for the next gap (sleep, device_change, paused); the
     /// gap itself is measured from the buffers around it.
-    func expectGap(_ why: String) { queue.async { self.pendingReason = why } }
+    func expectGap(_ why: String) { queue.async { self.pendingReason = why; self.pendingSetMs = nowMs() } }
+    /// When the expected reason was set. It is kept until a gap uses it, or
+    /// for `recorderPendingReasonMs`: audio already in flight when a call
+    /// began arrived contiguously and wiped the label, so the silence after
+    /// it was filed as "dropped" (iOS runtime test, 2026-10-28).
+    var pendingSetMs: Int64 = 0
 
     private func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         if buffer.format == outFormat { return buffer }
@@ -205,12 +218,13 @@ final class TrackWriter {
             onGap?(g)
             // A gap ends the segment, so segments stay contiguous inside.
             closeSegment()
+            pendingReason = nil
         } else if lastEndMs > 0 && gapMs <= recorderGapSlackMs {
             // Contiguous: the segment timeline follows the audio, not delivery jitter.
             startMs = lastEndMs
             startExactMs = lastEndExactMs
         }
-        pendingReason = nil
+        if pendingReason != nil, nowMs() - pendingSetMs > recorderPendingReasonMs { pendingReason = nil }
         if file == nil { openSegment(startMs: startMs) }
         guard file != nil else { return }
         // No local reference to the file: closeSegment() must hold the last
@@ -277,6 +291,40 @@ protocol RecSource: AnyObject {
     func stop()
 }
 
+#if os(macOS)
+/// Every audio input on this Mac, by name, with its CoreAudio id.
+func recorderInputDevices() -> [(name: String, id: AudioDeviceID)] {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+    var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
+    return ids.compactMap { id in
+        var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioObjectPropertyScopeInput,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var n: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &n) == noErr, n > 0 else { return nil }
+        var nameAddr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal,
+                                                  mElement: kAudioObjectPropertyElementMain)
+        var name: Unmanaged<CFString>?
+        var ns = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &ns, &name) == noErr, let cf = name?.takeRetainedValue() else { return nil }
+        return (cf as String, id)
+    }
+}
+
+/// The microphone the person chose (Record tab), else the system default.
+/// `AMUX_RECORDER_INPUT_DEVICE` names one for tests: a loopback input that
+/// real speech is played into, so the real capture path runs on real audio
+/// without recording the room.
+func recorderChosenInput() -> String? {
+    let env = ProcessInfo.processInfo.environment["AMUX_RECORDER_INPUT_DEVICE"]
+    let v = (env?.isEmpty == false ? env : UserDefaults.standard.string(forKey: "recorderInputDevice")) ?? ""
+    return v.isEmpty ? nil : v
+}
+#endif
+
 /// The microphone, through AVAudioEngine. A device change or a wake restarts
 /// the engine; the writer measures the gap.
 final class MicSource: RecSource {
@@ -284,10 +332,49 @@ final class MicSource: RecSource {
     let writer: TrackWriter
     var engine = AVAudioEngine()
     var observer: NSObjectProtocol?
+    /// When this source last switched the engine to the chosen input. The
+    /// switch itself posts a configuration change; taken for a device change,
+    /// it restarted the engine, which switched again, four times a second, and
+    /// nothing was recorded (2026-10-28).
+    var switchedAt: Date?
+    /// Set by the tap: a microphone that delivers nothing at all (no
+    /// permission for this build, a dead device) is said, never recorded as
+    /// silence nobody notices (2026-10-28: a rebuilt app ran two minutes with
+    /// zero segments and no error).
+    var buffersSeen = 0
     init(writer: TrackWriter) { self.writer = writer }
 
     func start() throws {
+        #if os(macOS)
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .denied, .restricted:
+            throw NSError(domain: "amux.recorder", code: 4, userInfo: [NSLocalizedDescriptionKey:
+                "the microphone is off for amux: allow it in System Settings, Privacy & Security, Microphone"])
+        case .notDetermined:
+            // Asks once; the answer is kept for every later build (the app's
+            // signing requirement is its bundle id, build-desktop.sh).
+            AVCaptureDevice.requestAccess(for: .audio) { ok in
+                NSLog("amux-recorder: verdict=recorder_mic_permission granted=%d", ok ? 1 : 0)
+            }
+        default: break
+        }
+        #endif
         let input = engine.inputNode
+        #if os(macOS)
+        if let want = recorderChosenInput() {
+            guard let dev = recorderInputDevices().first(where: { $0.name == want }), let unit = input.audioUnit else {
+                throw NSError(domain: "amux.recorder", code: 2, userInfo: [NSLocalizedDescriptionKey: "the microphone \(want) is not connected"])
+            }
+            var id = dev.id
+            let st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+            if st != noErr {
+                throw NSError(domain: "amux.recorder", code: 3, userInfo: [NSLocalizedDescriptionKey: "could not switch to the microphone \(want) (\(st))"])
+            }
+            switchedAt = Date()
+            NSLog("amux-recorder: verdict=recorder_input_device device=%@", want)
+        }
+        #endif
         let fmt = input.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
             throw NSError(domain: "amux.recorder", code: 1, userInfo: [NSLocalizedDescriptionKey: "no microphone input is available"])
@@ -295,15 +382,43 @@ final class MicSource: RecSource {
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, when in
             let src = when.isSampleTimeValid ? Double(when.sampleTime) / fmt.sampleRate * 1000 : nil
+            self?.buffersSeen += 1
             self?.writer.append(buf, arrivedMs: nowMs(), sourceMs: src)
         }
         engine.prepare()
         try engine.start()
+        let seenAtStart = buffersSeen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self = self, self.engine.isRunning, self.buffersSeen == seenAtStart else { return }
+            let why = "the microphone gives no audio. If amux was just updated, allow it again in System Settings, Privacy & Security, Microphone"
+            NSLog("amux-recorder: verdict=recorder_no_input track=mic error=%@", why)
+            self.writer.onError?(why)
+        }
         if observer == nil {
             observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-                self?.restart(why: "device_change")
+                guard let self = self else { return }
+                if let t = self.switchedAt, Date().timeIntervalSince(t) < 2 {
+                    NSLog("amux-recorder: verdict=recorder_own_switch_ignored track=mic running=%d", self.engine.isRunning ? 1 : 0)
+                    if !self.engine.isRunning { self.rearm() }
+                    return
+                }
+                self.restart(why: "device_change")
             }
         }
+    }
+
+    /// The tap again at the input's current format, and start: no device switch.
+    func rearm() {
+        let input = engine.inputNode
+        let fmt = input.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0 else { restart(why: "device_change"); return }
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, when in
+            let src = when.isSampleTimeValid ? Double(when.sampleTime) / fmt.sampleRate * 1000 : nil
+            self?.writer.append(buf, arrivedMs: nowMs(), sourceMs: src)
+        }
+        engine.prepare()
+        do { try engine.start() } catch { restart(why: "device_change") }
     }
 
     func restart(why: String) {
@@ -495,6 +610,10 @@ final class NativeRecorder {
             s["levels"] = writers.mapValues { Double($0.level) }
         }
         s["spooled"] = spooledIDs().count
+        #if os(macOS)
+        s["inputs"] = recorderInputDevices().map { $0.name }
+        s["input"] = recorderChosenInput() ?? ""
+        #endif
         if let e = lastError { s["error"] = e }
         return s
     }
@@ -798,6 +917,7 @@ final class NativeRecorder {
             }
         }
         guard !live, m.state == "stopped" else { return }
+        if let next = m.next_finish_at, nowMs() < next { return }
         var last: [String: Int] = [:]
         for t in m.tracks { if let mx = m.segments.filter({ $0.track == t }).map({ $0.seq }).max() { last[t] = mx } }
         let gaps = m.gaps.map { ["track": $0.track, "at_ms": $0.at_ms, "dur_ms": $0.dur_ms, "why": $0.why] as [String: Any] }
@@ -806,6 +926,16 @@ final class NativeRecorder {
         if (200..<300).contains(st), (obj?["state"] as? String) == "finished" {
             NSLog("amux-recorder: verdict=recorder_filed id=%@ file=%@", m.id, ((obj?["recording"] as? [String: Any])?["file"] as? String) ?? "")
             try? FileManager.default.removeItem(at: d)
+        } else if (200..<300).contains(st), (obj?["state"] as? String) == "empty" {
+            // Nothing was captured, and the server says so on its side too.
+            NSLog("amux-recorder: verdict=recorder_empty id=%@ error=%@", m.id, (obj?["error"] as? String) ?? "")
+            try? FileManager.default.removeItem(at: d)
+        } else if st == 202 {
+            let n = (m.finish_tries ?? 0) + 1
+            m.finish_tries = n
+            m.next_finish_at = nowMs() + Int64(min(300, 5 << min(n, 6))) * 1000
+            save(m)
+            NSLog("amux-recorder: verdict=recorder_finish_pending id=%@ tries=%d error=%@", m.id, n, (obj?["error"] as? String) ?? "")
         } else if st == 409, let missing = obj?["missing"] as? [String: [Int]] {
             for (t, seqs) in missing { for i in m.segments.indices where m.segments[i].track == t && seqs.contains(m.segments[i].seq) { m.segments[i].uploaded = false } }
             save(m)

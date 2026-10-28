@@ -135,7 +135,13 @@ echo "  Built from ${COMMIT:-an unknown commit}"
 
 # Ad-hoc sign so macOS keeps the microphone and notification permissions
 # across rebuilds of the same bundle id.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 && echo "  Signed (ad hoc)" || echo "  !! codesign failed; permissions may be asked again"
+# Ad hoc, with the bundle id as the designated requirement. macOS keys the
+# microphone and Screen Recording grants on the requirement it saw, and an ad
+# hoc signature's default one is the binary's hash: every rebuild silently
+# lost both grants and asked again (2026-10-28). The id stays the same build
+# to build, so a grant given once carries over.
+codesign --force --deep --sign - -r='designated => identifier "com.amux.desktop"' "$APP" >/dev/null 2>&1 \
+  && echo "  Signed (ad hoc, requirement: identifier com.amux.desktop)" || echo "  !! codesign failed; permissions may be asked again"
 
 # Install to /Applications if requested or by default on build
 # AMUX_DESKTOP_NO_INSTALL=1 leaves the bundle in the repo root (CI zips it).

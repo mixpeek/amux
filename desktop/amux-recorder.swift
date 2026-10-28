@@ -133,6 +133,8 @@ extension AppDelegate {
         case "settings":
             if let m = d["meeting"] as? String, ["off", "ask", "auto"].contains(m) { meetingMode = m }
             if let sys = d["system"] as? Bool { meetingSystemAudio = sys }
+            // The microphone to record from; "" is the system default.
+            if let inp = d["input"] as? String { UserDefaults.standard.set(inp, forKey: "recorderInputDevice") }
         default: break
         }
         pushRecorderStatus(to: [c])
