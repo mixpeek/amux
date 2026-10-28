@@ -305,6 +305,23 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
     }
 }
 
+/// A worker a PERSON @mentioned in a direct message may read and answer that
+/// one thread, and nothing else of the conversation. `root` is any post id; it
+/// is resolved to its thread's root.
+fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &str) -> bool {
+    if !matches!(conv, Conv::People(..)) {
+        return false;
+    }
+    conn.query_row(
+        "SELECT 1 FROM conversation_posts WHERE conv=?1 AND author_key LIKE 'person:%' AND mentions LIKE ?3 \
+         AND (id=(SELECT COALESCE(parent_id, id) FROM conversation_posts WHERE id=?2 AND conv=?1) \
+           OR parent_id=(SELECT COALESCE(parent_id, id) FROM conversation_posts WHERE id=?2 AND conv=?1)) LIMIT 1",
+        rusqlite::params![conv.key(), root, format!("%\"worker:{worker}\"%")],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 fn may_read(who: &Who, conv: &Conv, lanes: &[Lane]) -> bool {
     // A channel exists only for a real group (or #general). Without this a
     // workspace-wide member could post to any `g:<typo>` and create a
@@ -647,11 +664,15 @@ async fn posts(
         Err(m) => return err(StatusCode::FORBIDDEN, m),
     };
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
-    if !may_read(&me, &conv, &lanes) {
+    let q = qs(&raw);
+    let invited = |t: Option<i64>| match (&me, t) {
+        (Who::Worker { name, .. }, Some(t)) => state.store.read().is_ok_and(|c| worker_invited(&c, &conv, t, name)),
+        _ => false,
+    };
+    if !may_read(&me, &conv, &lanes) && !invited(q.get("thread").and_then(|v| v.parse().ok())) {
         return err(StatusCode::FORBIDDEN, "not a conversation you can read");
     }
     seen(&me.key());
-    let q = qs(&raw);
     let after: i64 = q.get("after").and_then(|v| v.parse().ok()).unwrap_or(0);
     // Older history, a page at a time (scrolling up).
     let before: i64 = q.get("before").and_then(|v| v.parse().ok()).unwrap_or(i64::MAX);
@@ -843,36 +864,30 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
     let (opening, place) = match conv {
         Conv::Group(g) => (format!("{author} mentioned you in #{g} (amux Messages):"), format!("#{g}")),
         Conv::Worker(_) => (format!("{author} wrote to you in your amux Messages thread:"), "your thread".to_string()),
-        Conv::People(..) => (format!("{author} wrote to you in amux Messages:"), "that conversation".to_string()),
+        // A direct message: the answer goes in the thread under the post that
+        // asked, where both people read it (Ethan, 2026-10-28: "@ workers to
+        // get them to do work ... and it does the thread shit inline").
+        Conv::People(..) => (format!("{author} mentioned you in a direct message (amux Messages):"), "that message's thread".to_string()),
     };
     format!(
         "{opening}\n\n{body}\n\nThis is addressed to you: act on it now. Your answer must be posted to {place}, \
          because that is where {author} is reading (this pane is not). Post it with:\n\
-         amux post {} <<'EOF'\n<your answer>\nEOF",
+         amux post '{}' <<'EOF'\n<your answer>\nEOF",
         conv.key()
     )
 }
 
 /// What one mentioned worker receives, and where its answer will be: `here`
-/// (the conversation), `thread` (its own thread, for a direct message) or
-/// `pane` (an isolated worker: the owner's words only, no injected
+/// (the conversation; in a channel or a direct message, the thread under the
+/// post that asked) or `pane` (an isolated worker: the owner's words only, no injected
 /// instructions, so its answer stays in its terminal).
-fn delivery_for(conv: &Conv, author: &str, body: &str, worker: &str, isolated: bool) -> (String, &'static str) {
+fn delivery_for(conv: &Conv, author: &str, body: &str, isolated: bool) -> (String, &'static str) {
     if isolated {
         let place = match conv {
             Conv::Group(g) => format!("#{g}"),
             _ => "a direct message".to_string(),
         };
         return (format!("{author} (amux Messages, {place}): {body}"), "pane");
-    }
-    if let Conv::People(..) = conv {
-        let thread = Conv::Worker(worker.to_string());
-        return (format!(
-            "{author} mentioned you in a direct message (amux Messages):\n\n{body}\n\nThis is addressed to you: act on it now. \
-             Your answer must be posted to your amux Messages thread, where {author} can read it (this pane is not). Post it with:\n\
-             amux post {} <<'EOF'\n<your answer>\nEOF",
-            thread.key()
-        ), "thread");
     }
     (delivery_text(conv, author, body), "here")
 }
@@ -911,10 +926,16 @@ async fn create_post(
     // can read it too. A worker never writes into two people's private DM.
     let (conv, dm_to) = route_worker_dm(&me, conv);
     let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
-    if !may_read(&me, &conv, &lanes) {
+    let thread_hint = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.get("parent_id").and_then(Value::as_i64))
+        .or_else(|| headers.get("x-amux-thread").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()));
+    let invited = match (&me, thread_hint) {
+        (Who::Worker { name, .. }, Some(t)) => state.store.read().is_ok_and(|c| worker_invited(&c, &conv, t, name)),
+        _ => false,
+    };
+    if !may_read(&me, &conv, &lanes) && !invited {
         if let (Who::Worker { .. }, Conv::People(..)) = (&me, &conv) {
-            return err(StatusCode::FORBIDDEN, "a worker cannot post in two people's direct message; \
-                write to one person with p:<email> and it goes in your thread, from you");
+            return err(StatusCode::FORBIDDEN, "a worker posts in two people's direct message only in a thread where a person \
+                @mentioned it (amux post 'p:a|b' --thread <id>); to write to one person use p:<email>, which goes in your thread");
         }
         return err(StatusCode::FORBIDDEN, "not a conversation you can post in");
     }
@@ -1123,13 +1144,13 @@ pub(crate) async fn post_inner(
             let mut outcomes = Vec::new();
             for w in targets {
                 let isolated = iso.contains(&w);
-                let (mut text, reply) = delivery_for(&conv2, &author, &text_body, &w, isolated);
+                let (mut text, reply) = delivery_for(&conv2, &author, &text_body, isolated);
                 // In a channel, the answer goes in a thread under the post that
                 // asked (Slack's way); a reply stays in its thread.
-                let thread_root = parent.or(if matches!(conv2, Conv::Group(_)) { Some(id) } else { None });
+                let thread_root = parent.or(if matches!(conv2, Conv::Group(_) | Conv::People(..)) { Some(id) } else { None });
                 if let (Some(root), false) = (thread_root, isolated) {
                     let k = conv2.key();
-                    text = text.replace(&format!("amux post {k} <<'EOF'"), &format!("amux post {k} --thread {root} <<'EOF'"));
+                    text = text.replace(&format!("amux post '{k}' <<'EOF'"), &format!("amux post '{k}' --thread {root} <<'EOF'"));
                 }
                 if !isolated && !context.is_empty() {
                     text = format!("Recent messages in {} before this one:\n{}\n\n{text}", conv2.key(), context.join("\n"));
@@ -1258,8 +1279,9 @@ fn conv_of_prompt(prompt: &str) -> Option<(String, Option<i64>)> {
     let i = prompt.rfind("amux post ")?;
     let rest = &prompt[i + "amux post ".len()..];
     let key: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    let key = key.trim_matches('\'');
     let thread = rest.split_once("--thread ").and_then(|(_, t)| t.split_whitespace().next()).and_then(|t| t.parse().ok());
-    Conv::parse(&key).map(|c| (c.key(), thread))
+    Conv::parse(key).map(|c| (c.key(), thread))
 }
 
 /// From the turn-end hook: a worker whose turn began with a Messages post and
@@ -1866,17 +1888,49 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_mentioned_in_a_dm_reads_and_answers_only_that_thread() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE conversation_posts (id INTEGER PRIMARY KEY, conv TEXT, author_key TEXT, mentions TEXT, parent_id INTEGER);").unwrap();
+        let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
+        let k = dm.key();
+        let add = |id: i64, author: &str, mentions: &str, parent: Option<i64>| {
+            c.execute("INSERT INTO conversation_posts VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, k, author, mentions, parent]).unwrap();
+        };
+        add(1, "person:ethan@x.com", r#"["worker:ed"]"#, None); // asked ed
+        add(2, "worker:ed", "[]", Some(1));                        // ed's answer
+        add(3, "person:doron@z.com", "[]", None);                  // an unrelated message
+        add(4, "worker:ed", r#"["worker:mallory"]"#, None);         // a worker cannot invite another
+        assert!(worker_invited(&c, &dm, 1, "ed"));
+        assert!(worker_invited(&c, &dm, 2, "ed"), "a reply id resolves to its thread");
+        assert!(!worker_invited(&c, &dm, 3, "ed"), "another thread of the same DM");
+        assert!(!worker_invited(&c, &dm, 1, "other"), "a worker nobody mentioned");
+        assert!(!worker_invited(&c, &dm, 4, "mallory"), "only a person's mention invites");
+        assert!(!worker_invited(&c, &Conv::Group("wexus".into()), 1, "ed"), "channels use group access");
+        assert!(!worker_invited(&c, &dm, 99, "ed"));
+    }
+
+    #[test]
+    fn the_reply_recipe_round_trips_a_dm_key_and_its_thread() {
+        let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
+        let t = delivery_text(&dm, "ethan", "@ed get me customer A's reply")
+            .replace(&format!("amux post '{}' <<", dm.key()), &format!("amux post '{}' --thread 7 <<", dm.key()));
+        assert_eq!(conv_of_prompt(&t), Some((dm.key(), Some(7))));
+        let g = delivery_text(&Conv::Group("wexus".into()), "ethan", "@ed run");
+        assert_eq!(conv_of_prompt(&g), Some(("g:wexus".to_string(), None)));
+    }
+
+    #[test]
     fn an_isolated_worker_gets_the_owners_words_and_a_dm_answer_goes_to_the_thread() {
         let dm = Conv::People("doron@z.com".into(), "ethan@x.com".into());
-        let (t, reply) = delivery_for(&dm, "ethan", "@amux-helper make an mdai", "amux-helper", true);
+        let (t, reply) = delivery_for(&dm, "ethan", "@amux-helper make an mdai", true);
         assert_eq!(reply, "pane");
         assert_eq!(t, "ethan (amux Messages, a direct message): @amux-helper make an mdai");
         assert!(!t.contains("amux post"), "no injected instructions into an isolated worker");
-        let (t, reply) = delivery_for(&dm, "ethan", "@ed run it", "ed", false);
-        assert_eq!(reply, "thread");
-        assert!(t.contains("amux post w:ed <<'EOF'"), "{t}");
+        let (t, reply) = delivery_for(&dm, "ethan", "@ed run it", false);
+        assert_eq!(reply, "here", "a DM answer goes in the thread under the post that asked");
+        assert!(t.contains("amux post 'p:doron@z.com|ethan@x.com' <<'EOF'"), "{t}");
         assert!(!t.contains('$'), "{t}");
-        let (_, reply) = delivery_for(&Conv::Group("wexus".into()), "ethan", "@ed run", "ed", false);
+        let (_, reply) = delivery_for(&Conv::Group("wexus".into()), "ethan", "@ed run", false);
         assert_eq!(reply, "here");
     }
 
@@ -1970,7 +2024,7 @@ mod tests {
         assert!(t.starts_with("elliot mentioned you in #wexus"), "{t}");
         assert!(t.contains("\n\n@ed run 10/11\n\n"));
         assert!(t.contains("addressed to you"), "a worker must read it as its own task");
-        assert!(t.contains("amux post g:wexus <<'EOF'"));
+        assert!(t.contains("amux post 'g:wexus' <<'EOF'"));
         // Claude Code asks before running a command with unverifiable
         // variables, so the reply recipe must not contain any.
         assert!(!t.contains('$'), "{t}");

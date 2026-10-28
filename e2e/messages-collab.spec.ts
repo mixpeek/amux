@@ -214,6 +214,8 @@ test('a voice note: the mic records, the audio is attached, and it plays in the 
     };
   });
   await openMessages(page);
+  // The worker input's ⋮ menu holds the mic, as it holds Dictate in a worker's composer.
+  await page.locator('#cv-more-btn').click();
   await page.locator('#cv-mic').click();
   await expect(page.locator('#cv-voice-main')).toContainText('Recording');
   await page.waitForTimeout(2500);

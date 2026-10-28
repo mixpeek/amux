@@ -292,6 +292,7 @@
       <div class="header-add-menu" id="add-menu">
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openOutcome()"><span class="mi">&#x2728;</span> Describe what you want</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openCreate()"><span class="mi">&#x2795;</span> New worker</div>
+        <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();_cvNewMessage()"><span class="mi">&#x270E;</span> New message</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>
         <div class="card-menu-sep"></div>
@@ -2104,6 +2105,7 @@
       <button type="button" class="cv-me" id="cv-me" onclick="document.getElementById('cv-me-file').click()" aria-label="Change your picture" title="Your picture (click to change)"></button>
       <input type="file" id="cv-me-file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" onchange="_cvSetAvatar(_cvMeKey(), this.files[0]); this.value=''">
       <span class="cv-side-title">Messages</span>
+      <button type="button" class="btn cv-new-btn" id="cv-new-btn" onclick="_cvNewMessage()" aria-label="New message" title="New message">&#x270E;</button>
       <button type="button" class="cv-side-toggle" id="cv-side-toggle" onclick="_cvToggleSide()" aria-expanded="true" aria-controls="cv-side" title="Collapse the sidebar">&#xAB;</button>
     </div>
     <div class="cv-search"><input class="input" id="cv-search" type="search" placeholder="Search messages…" autocomplete="off"
@@ -2129,14 +2131,29 @@
     <div id="cv-posts" class="cv-posts" aria-live="polite" onscroll="_cvOnScroll(this)"></div>
     <div id="cv-typing" class="cv-typing"></div>
     <div class="peek-attach-bar card-attach-bar cv-attach-bar" id="card-attach-__messages__"></div>
+    <!-- THE WORKER INPUT'S COMPONENTS (Ethan, 2026-10-28: "the input should be the
+         same input components as here worker input"): the same .send-input box
+         with its resize grip, the same ⋮ menu (attach, dictate) and a Send
+         button, plus Messages' @ picker and voice notes. -->
     <div class="cv-compose" id="cv-compose">
-      <div id="cv-ac" class="cv-ac" role="listbox"></div>
-      <button type="button" class="btn cv-attach" onclick="document.getElementById('cv-file').click()" aria-label="Attach files" title="Attach files">&#x1F4CE;</button>
+      <div class="ac-wrap peek-composer-input">
+        <div id="cv-ac" class="cv-ac" role="listbox"></div>
+        <textarea id="cv-input" class="send-input" rows="1" placeholder="Message" aria-label="Message"
+          autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
+          oninput="autoGrow(this);_cvOnInput(this)" onkeydown="_cvOnKey(event)" onpaste="_cvPaste(event)"></textarea>
+        <div class="composer-grip" id="cv-composer-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to resize the message box (double-click to reset)" title="Drag to resize · double-click to reset"></div>
+      </div>
       <input type="file" id="cv-file" multiple style="display:none" onchange="_cvAttach(this.files); this.value=''">
-      <textarea id="cv-input" class="input" rows="1" placeholder="Message"
-        oninput="_cvOnInput(this)" onkeydown="_cvOnKey(event)" onpaste="_cvPaste(event)"></textarea>
-      <button type="button" class="btn cv-mic" id="cv-mic" onclick="_cvVoiceToggle('main')" aria-label="Record a voice note" title="Record: the words are typed for you, and the audio is attached (remove either before sending)">&#x1F3A4;</button>
-      <button class="btn primary cv-send" id="cv-send" onclick="_cvSend()" aria-label="Send">&#x27A4;</button>
+      <div class="peek-more-wrap">
+        <button type="button" class="peek-attach-btn" id="cv-more-btn" title="Attach / dictate" aria-label="More: attach, dictate, voice note" onclick="_cvMoreToggle(event, 'cv-more-menu')">&#x22EE;</button>
+        <div class="peek-more-menu" id="cv-more-menu">
+          <button type="button" onclick="_cvMoreClose();document.getElementById('cv-file').click()">&#128206; Attach file</button>
+          <button type="button" onclick="_cvMoreClose();_cvDictate('cv-input')">&#127908; Dictate</button>
+          <button type="button" id="cv-mic" onclick="_cvMoreClose();_cvVoiceToggle('main')" title="The words are typed for you, and the audio is attached (remove either before sending)">&#x1F399; Voice note</button>
+          <button type="button" class="peek-more-danger" onclick="_cvMoreClose();_cvClearInput('main')" title="Clear the message box and any staged attachments">&#x1F5D1; Clear input</button>
+        </div>
+      </div>
+      <div class="send-split cv-send-split"><button class="btn primary send-split-main" id="cv-send" onclick="_cvSend()" aria-label="Send">Send</button></div>
     </div>
     <div class="cv-voice-bar" id="cv-voice-main" hidden></div>
     <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
@@ -2150,11 +2167,22 @@
     </header>
     <div id="cv-thread-posts" class="cv-posts"></div>
     <div class="cv-compose">
-      <textarea id="cv-thread-input" class="input" rows="1" placeholder="Reply in the thread"
-        oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,160)+'px'"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_cvSendThread()}"></textarea>
-      <button type="button" class="btn cv-mic" onclick="_cvVoiceToggle('thread')" aria-label="Record a voice reply">&#x1F3A4;</button>
-      <button class="btn primary cv-send" id="cv-thread-send" onclick="_cvSendThread()" aria-label="Reply">&#x27A4;</button>
+      <div class="ac-wrap peek-composer-input">
+        <textarea id="cv-thread-input" class="send-input" rows="1" placeholder="Reply in the thread" aria-label="Reply in the thread"
+          autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
+          oninput="autoGrow(this)"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_cvSendThread()}"></textarea>
+        <div class="composer-grip" id="cv-thread-composer-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to resize the reply box (double-click to reset)" title="Drag to resize · double-click to reset"></div>
+      </div>
+      <div class="peek-more-wrap">
+        <button type="button" class="peek-attach-btn" title="Dictate / voice reply" aria-label="More: dictate, voice reply" onclick="_cvMoreToggle(event, 'cv-thread-more-menu')">&#x22EE;</button>
+        <div class="peek-more-menu" id="cv-thread-more-menu">
+          <button type="button" onclick="_cvMoreClose();_cvDictate('cv-thread-input')">&#127908; Dictate</button>
+          <button type="button" class="cv-mic" onclick="_cvMoreClose();_cvVoiceToggle('thread')">&#x1F399; Voice reply</button>
+          <button type="button" class="peek-more-danger" onclick="_cvMoreClose();_cvClearInput('thread')">&#x1F5D1; Clear input</button>
+        </div>
+      </div>
+      <div class="send-split cv-send-split"><button class="btn primary send-split-main" id="cv-thread-send" onclick="_cvSendThread()" aria-label="Reply">Send</button></div>
     </div>
     <div class="cv-voice-bar" id="cv-voice-thread" hidden></div>
   </aside>

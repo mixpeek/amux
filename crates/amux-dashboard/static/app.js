@@ -34356,6 +34356,10 @@ function _connDrawerRender() {
     if (c.auth === 'oauth2' && c.oauth) {
       h += '<div class="cx-sec">Redirect URI</div><div class="cx-code"><code>' + esc(c.oauth.redirect_uri) + '</code>'
         + '<button class="btn cx-mini" onclick="_copyTextWithToast(\'' + escJs(c.oauth.redirect_uri) + '\',\'Redirect URI copied\')">Copy</button></div>';
+      // Where the ID and secret come from: a cloud owner had nothing on this tab saying so (2026-10-28).
+      h += '<div class="cx-dim cx-small">' + (_connIsGoogle(c)
+        ? 'Create an OAuth client of type <b>Web application</b> in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud credentials ↗</a>, add this URI under Authorized redirect URIs, then paste its ID and secret above.'
+        : 'Add this URI as a redirect URI on the provider\'s OAuth app, then paste its ID and secret above.') + '</div>';
     }
     if (c.token_endpoint) h += '<div class="cx-sec">Worker token endpoint</div><div class="cx-code"><code>' + esc(c.token_endpoint) + '</code></div>';
     const scopeRow = (id) => '<div class="cx-actions">'
@@ -66718,6 +66722,47 @@ function _cvItem(conv, ico, label, u, m, extra) {
     '<span class="cv-lbl">' + esc(label) + '</span>' + (extra || '') +
     (m ? '<span class="cv-badge cv-badge-red">' + m + '</span>' : (u ? '<span class="cv-badge">' + u + '</span>' : '')) + '</button>';
 }
+// NEW MESSAGE (Ethan, 2026-10-28: "i want to be able to create/add messages").
+// One picker over everything you can write to: channels, people and workers.
+// Picking opens that conversation with whatever you had typed still in the box.
+const _cvNew = { items: [], shown: [], pick: null };
+function _cvNewCandidates() {
+  const L = _cv.list || {};
+  return [
+    ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + c.name, kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
+    ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
+  ];
+}
+function _cvNewFilter(q) {
+  q = String(q || '').trim().toLowerCase().replace(/^[@#]/, '');
+  _cvNew.shown = _cvNew.items.filter(c => !q || c.label.toLowerCase().replace(/^#/, '').includes(q));
+  const box = document.getElementById('cv-new-list'); if (!box) return;
+  box.innerHTML = _cvNew.shown.slice(0, 40).map((c, i) => '<button type="button" class="cv-item' + (i === 0 && q ? ' active' : '') + '" onclick="_cvNewPick(' + i + ')">'
+    + c.ico + '<span class="cv-lbl">' + esc(c.label) + '</span><small class="cv-new-kind">' + c.kind + '</small></button>').join('')
+    || '<div class="cv-empty">Nobody you can write to matches</div>';
+}
+function _cvNewPick(i) {
+  const c = _cvNew.shown[i]; if (!c) return;
+  _cvNew.pick = c.conv;
+  _modalClose(true);
+}
+async function _cvNewMessage() {
+  if (!_cvViewOn()) switchView('messages');
+  if (!_cv.list) await _cvLoadList();
+  _cvNew.items = _cvNewCandidates(); _cvNew.pick = null;
+  const shown = showFormModal('New message',
+    '<input id="cv-new-to" class="dict-modal-input" placeholder="To: a channel, person or worker" autocomplete="off" style="width:100%"'
+    + ' oninput="_cvNewFilter(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();_cvNewPick(0)}">'
+    + '<div id="cv-new-list" class="cv-nav cv-new-list"></div>', 'Open');
+  _cvNewFilter('');
+  setTimeout(() => document.getElementById('cv-new-to')?.focus(), 30);
+  const ok = await shown;
+  const conv = _cvNew.pick || (ok ? (_cvNew.shown[0] || {}).conv : null);
+  if (!conv) return;
+  _cvSelect(conv);
+  setTimeout(() => document.getElementById('cv-input')?.focus(), 60);
+}
 function _cvRenderSide() {
   const L = _cv.list; if (!L) return;
   const t = L.totals || {};
@@ -67390,7 +67435,6 @@ function _cvAcCandidates(q) {
   return [...ppl, ...wks].filter(c => c.handle.toLowerCase().startsWith(q) || c.label.toLowerCase().includes(q)).slice(0, 8);
 }
 function _cvOnInput(el) {
-  el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px';
   const upto = el.value.slice(0, el.selectionStart); const m = upto.match(/(^|\s)@([\w.\-]*)$/);
   const ac = document.getElementById('cv-ac');
   if (m) {
@@ -67424,6 +67468,29 @@ function _cvOnKey(e) {
 // (the card sink, keyed for this composer), and ride the post as @path refs.
 const _CV_FILES = '__messages__';
 function _cvAttach(files) { for (const f of (files || [])) _enqueueUpload(f, _cardSink(_CV_FILES)); }
+// The worker input's pieces, wired to the Messages boxes: the resize grip (its
+// own saved height), the ⋮ menu, dictation into whichever box asked, and Clear.
+_composerGripInit('cv-composer-grip', 'cv-input', 'amux_cv_composer_h');
+_composerGripInit('cv-thread-composer-grip', 'cv-thread-input', 'amux_cv_thread_composer_h');
+function _cvMoreToggle(e, id) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById(id); if (!m) return;
+  const willOpen = !m.classList.contains('open');
+  _cvMoreClose();
+  m.classList.toggle('open', willOpen);
+  if (willOpen) setTimeout(() => document.addEventListener('click', _cvMoreClose, { once: true }), 0);
+}
+function _cvMoreClose() { document.querySelectorAll('#messages-view .peek-more-menu.open').forEach(m => m.classList.remove('open')); }
+function _cvDictate(id) {
+  const el = document.getElementById(id); if (!el) return;
+  try { _hkDictate(el); } catch (e) { showToast('Dictation unavailable: ' + e.message, 'error'); }
+}
+function _cvClearInput(where) {
+  const el = document.getElementById(where === 'main' ? 'cv-input' : 'cv-thread-input');
+  if (el) { el.value = ''; el.style.height = ''; autoGrow(el); el.focus(); }
+  if (where === 'main') { _clearCardFiles(_CV_FILES); _cv.ac.open = false; document.getElementById('cv-ac').classList.remove('open'); }
+  _cvVoiceClear(where);
+}
 function _cvPaste(e) {
   const files = [...((e.clipboardData && e.clipboardData.files) || [])];
   if (!files.length) return;

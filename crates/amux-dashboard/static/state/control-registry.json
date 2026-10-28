@@ -1062,8 +1062,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvClearInput": {
+      "kind": "command._cvClearInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvDelete": {
       "kind": "command._cvDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvDictate": {
+      "kind": "command._cvDictate",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1082,6 +1094,12 @@
     },
     "_cvMarkRead": {
       "kind": "command._cvMarkRead",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvNewMessage": {
+      "kind": "command._cvNewMessage",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

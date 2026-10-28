@@ -8989,6 +8989,12 @@ body.light #fc-container { color-scheme: light; }
   padding:var(--space-3) var(--space-2) calc(var(--space-3) + env(safe-area-inset-bottom)); gap:var(--space-0-5); }
 .cv-side-head { display:flex; align-items:center; padding:var(--space-0-5) var(--space-2) var(--space-2); }
 .cv-side-title { font-weight:700; font-size:var(--fs-3xl); }
+.cv-new-btn { margin-left:auto; min-width:36px; min-height:36px; padding:0; font-size:var(--fs-xl); }
+.cv-new-btn + .cv-side-toggle { margin-left:var(--space-1); }
+#messages-view.cv-side-folded .cv-new-btn { display:none; }
+.cv-new-list { max-height:min(50vh, 360px); overflow-y:auto; margin-top:var(--space-2); }
+.cv-new-kind { margin-left:auto; color:var(--dim); font-size:var(--fs-2xs); }
+@media (max-width: 600px) { .cv-new-btn { min-width:44px; min-height:44px; } }
 .cv-search { padding:0 var(--space-1) var(--space-2); }
 .cv-search .input { width:100%; box-sizing:border-box; }
 .cv-nav { display:flex; flex-direction:column; gap:1px; }
@@ -9035,7 +9041,6 @@ button.cv-sec:hover { color:var(--text); }
 #messages-view { height:calc(100dvh - var(--mv-top, 160px)); overflow:hidden; }
 #cv-pane { flex:1; min-width:0; min-height:0; flex-direction:column; overflow:hidden; }
 #cv-pane.card-drop-over { outline:2px dashed var(--accent); outline-offset:-6px; }
-.cv-attach { min-width:44px; min-height:44px; padding:0; font-size:var(--fs-3xl); }
 .cv-attach-bar { padding:0 var(--space-4); flex-shrink:0; }
 .cv-post.pending { opacity:0.65; }
 .cv-post-tag { font-size:var(--fs-3xs); padding:1px var(--space-1-5); border-radius:var(--radius-xl); border:1px solid var(--border); color:var(--dim); }
@@ -9082,9 +9087,12 @@ button.cv-sec:hover { color:var(--text); }
 .cv-deliv span.bad { color:var(--red); border-color:color-mix(in srgb, color-mix(in srgb, var(--red) 93%, var(--card)) 45%, transparent); }
 .cv-typing { min-height:18px; padding:0 var(--space-4); font-size:var(--fs-sm); color:var(--dim); }
 .cv-compose { position:relative; display:flex; gap:var(--space-2); align-items:flex-end; padding:var(--space-1-5) var(--space-4) var(--space-1); flex-shrink:0; }
-.cv-compose textarea { flex:1; resize:none; font-family:inherit; max-height:160px; min-height:44px; box-sizing:border-box;
-  font-size:var(--fs-xl); line-height:1.4; }
-.cv-send { min-width:44px; min-height:44px; }
+/* The worker input's box, menu and Send (index.html #cv-compose); only the row layout is Messages'. */
+.cv-compose .peek-composer-input { flex:1; min-width:0; position:relative; }
+.cv-compose .send-input { display:block; width:100%; box-sizing:border-box; }
+.cv-compose > .peek-more-wrap { align-self:flex-end; }
+.cv-compose .peek-attach-btn { width:44px; height:44px; justify-content:center; }
+.cv-compose .cv-send-split .send-split-main { border-radius:var(--radius-lg); padding-right:var(--space-3); min-height:44px; }
 .cv-hint { display:flex; gap:var(--space-4); padding:0 var(--space-4) calc(var(--space-2) + env(safe-area-inset-bottom));
   font-size:var(--fs-2xs); color:var(--dim); flex-wrap:wrap; }
 .cv-ac { display:none; position:absolute; left:16px; bottom:100%; z-index:50; min-width:220px; max-width:calc(100% - 32px);
