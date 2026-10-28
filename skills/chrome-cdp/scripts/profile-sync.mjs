@@ -181,7 +181,10 @@ function cookieParam(c) {
 }
 
 export async function importInto(CDPClass, profile, cap) {
-  const running = () => (api('GET', '/api/browser/status').browsers || []).find(b => b.profile === profile && b.cdp_port);
+  // Importing cookies is not something a route verb can do, so this asks for
+  // the (logged, proxied) CDP port with that reason (cdp_proxy.rs).
+  const reason = encodeURIComponent('profile-sync: importing Chrome cookies into an amux profile; no route verb sets cookies');
+  const running = () => (api('GET', `/api/browser/status?cdp_reason=${reason}`).browsers || []).find(b => b.profile === profile && b.cdp_port);
   let b = running();
   let started = false;
   if (!b) {

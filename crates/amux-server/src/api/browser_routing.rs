@@ -356,10 +356,18 @@ async fn request(
     let response = request_inner(State(state.clone()), headers, Json(r)).await;
     let (parts, b) = response.into_parts();
     let bytes = axum::body::to_bytes(b, 256 << 20).await.unwrap_or_default();
-    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let mut v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let event = route_audit_event(&verb, &body, &v, parts.status, started.elapsed().as_millis() as u64);
     super::browser::record_browser_event(&state, Some(&session), &session, &format!("route.{verb}"), event).await;
-    Response::from_parts(parts, axum::body::Body::from(bytes))
+    if v.is_null() {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    // A route hands back the CDP port of the browser it drove; the raw port
+    // is withheld unless the caller says why the route cannot do the job.
+    let why = body.get("cdp_reason").and_then(Value::as_str);
+    super::cdp_proxy::gate(&state, &session, why, &mut v,
+        &[("/cdp_port", "/profile"), ("/route/cdp_port", "/route/profile"), ("/state/cdp_port", "/state/profile")]).await;
+    (parts.status, Json(v)).into_response()
 }
 
 /// The audit record for one route call. Pure, so redaction is testable.

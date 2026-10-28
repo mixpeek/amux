@@ -32,6 +32,7 @@ pub mod browser;
 pub mod browser_import;
 pub mod audit;
 pub mod browser_routing;
+pub mod cdp_proxy;
 pub mod browser_scope;
 pub mod calendar;
 pub mod channels;

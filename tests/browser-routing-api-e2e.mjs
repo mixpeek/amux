@@ -38,7 +38,7 @@ writeFileSync(join(home,'sessions',sessions[0]+'.env'),'AMUX_BROWSER_PROFILES_AL
 writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
 writeFileSync(join(home,'sessions',sessions[3]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
 writeFileSync(join(home,'sessions','routing-api-refusal.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
-const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body},session);
+const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body:{cdp_reason:'e2e: verifying browser state from outside the route',...body}},session);
 const wait=async(fn)=>{const end=Date.now()+15000;do{if(await fn())return;await new Promise(r=>setTimeout(r,100));}while(Date.now()<end);throw Error('acceptance observation timed out');};
 async function perform(session,name){
   await wait(async()=>JSON.stringify(await route(session,'state')).includes('Authenticated API proof'));

@@ -83,10 +83,24 @@ function amuxCdpPort() {
   } catch {
     base = (process.env.AMUX_URL || 'https://localhost:8824').trim();
   }
+  // CDP ONLY WHEN A ROUTE CANNOT DO IT (Ethan, 2026-10-27: "i prefer using
+  // amux browser and only cdp if we cannot accomplish"). amux withholds the
+  // port unless you say why `amux browser route` cannot do this job, and the
+  // port it then gives is a logged proxy, so the reason and every command you
+  // send are on the worker's audit trail (`amux audit <worker>`).
+  const reason = (process.env.AMUX_CDP_REASON || '').trim();
+  if (reason.length < 12) {
+    throw new Error(
+      `AMUX_PROFILE=${want}: drive this browser with \`amux browser route\` (state, shot, action) first.\n` +
+      `If a route cannot do the job, say why and run again:\n` +
+      `  AMUX_CDP_REASON="<why the route cannot do it>" AMUX_PROFILE=${want} node cdp.mjs ...`);
+  }
   let body;
   try {
     // -k: the server uses a self-signed cert, as every recipe in this repo does.
-    body = execFileSync('curl', ['-sk', '--max-time', '5', `${base}/api/browser/status`],
+    body = execFileSync('curl', ['-sk', '--max-time', '5', '-G', `${base}/api/browser/status`,
+                                 '--data-urlencode', `cdp_reason=${reason}`,
+                                 '-H', `X-Amux-Session: ${process.env.AMUX_SESSION || ''}`],
                         { encoding: 'utf8' });
   } catch (e) {
     throw new Error(`AMUX_PROFILE=${want}: could not reach amux at ${base} (${e.message})`);
@@ -114,7 +128,7 @@ function amuxCdpPort() {
       `Running profiles: ${available}. Refusing to drive a different saved login.`);
   }
   if (!selected.cdp_port) {
-    throw new Error(`AMUX_PROFILE=${want}: the matching browser reported no cdp_port`);
+    throw new Error(`AMUX_PROFILE=${want}: the matching browser reported no cdp_port${st.cdp ? ` (${st.cdp})` : ''}`);
   }
   return Number(selected.cdp_port);
 }
