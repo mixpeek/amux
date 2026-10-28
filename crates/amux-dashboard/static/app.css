@@ -10743,6 +10743,7 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .file-office .office-slides { padding: var(--space-3) var(--space-2); display: block; }
 .file-office .office-slides .pptx-preview-wrapper { height: auto !important; overflow: visible !important; background: transparent !important; }
 .file-office .office-slides .pptx-preview-slide-wrapper { margin: 0 auto var(--space-3) !important; box-shadow: var(--shadow-md); }
+.file-office .office-empty { padding:var(--space-6) var(--space-4); color:var(--dim); text-align:center; line-height:1.5; }
 .office-flash { outline: 3px solid var(--accent); outline-offset: 2px; transition: outline-color 1.6s ease; }
 .office-panel { width: 320px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--card); color: var(--text); min-height: 0; }
 .file-xlsx-editor.office-has-panel { flex-direction: row; }

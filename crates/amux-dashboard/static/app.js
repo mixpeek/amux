@@ -29551,9 +29551,30 @@ async function _pptxRender(buf, zip, doc) {
   const host = doc.parentElement;
   const docked = list.length && !window.matchMedia('(max-width: 900px)').matches;
   const width = Math.max(280, Math.min(1100, (host.clientWidth || 960) - (docked ? 320 : 0) - 24));
+  // A deck can list parts it does not contain (one export named 15 slide
+  // masters and shipped one). PowerPoint shrugs; pptx-preview throws on the
+  // first missing part inside its own try, keeps nothing, and drew a blank
+  // panel beside a full notes list (owner, 2026-10-28). Those listings are
+  // dropped from a copy before it is drawn, and the repair is reported.
+  let feed = buf;
+  const ct = await read('[Content_Types].xml');
+  const absent = [...ct.matchAll(/<Override\b[^>]*\bPartName="([^"]+)"[^>]*\/>/g)].filter(m => !zip.file(m[1].replace(/^\//, '')));
+  if (absent.length) {
+    zip.file('[Content_Types].xml', absent.reduce((x, m) => x.replace(m[0], ''), ct));
+    feed = await zip.generateAsync({ type: 'arraybuffer' });
+    try { window._clientDebug && window._clientDebug('office-pptx-repaired', { measured: true, n_considered: absent.length,
+      verdict: 'pptx_missing_parts_dropped', parts: absent.slice(0, 5).map(m => m[1]) }); } catch (e) {}
+  }
   const viewer = window.pptxPreview.init(doc, { width, height: Math.round(width * 0.75), mode: 'list' });
-  await viewer.preview(buf);
+  await viewer.preview(feed);
   const slideEls = () => [...doc.querySelectorAll('.pptx-preview-slide-wrapper')];
+  if (!slideEls().length && order.length) {
+    // Never a blank panel: say the slides could not be drawn, and where to see them.
+    doc.innerHTML = '<div class="office-empty">' + order.length + ' slide' + (order.length === 1 ? '' : 's')
+      + ' in this deck could not be drawn here. Present shows them from its PDF export, and the notes are beside this.</div>';
+    try { window._clientDebug && window._clientDebug('office-pptx-blank', { measured: true, n_considered: order.length,
+      verdict: 'pptx_slides_not_drawn', repaired: absent.length }); } catch (e) {}
+  }
   return { list, pick: it => _officeFlash(slideEls()[it.slide]) };
 }
 

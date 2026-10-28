@@ -2,6 +2,7 @@ import {test, expect, Page} from './fixtures';
 import {mkdtemp, copyFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {execFileSync} from 'node:child_process';
 declare const _xlsxEd: any;
 declare const _xlsxSave: any;
 
@@ -79,6 +80,33 @@ test('a PowerPoint deck shows its slides with each slide\'s speaker notes and co
   await expect(items.nth(2)).toContainText('Swap this chart for the October numbers.');
   await items.nth(2).click();
   await expect(doc.locator('.office-flash')).toContainText('October results');
+});
+
+// Owner, 2026-10-28: a real deck showed its notes beside a blank slide area.
+// It listed 14 slide masters it did not contain; pptx-preview stops on the
+// first missing part inside its own try and draws nothing. The viewer drops
+// those listings from a copy before drawing it.
+test('a deck that lists parts it does not contain still shows its slides', async ({page}) => {
+  test.setTimeout(90_000);
+  const dir = await mkdtemp(join(tmpdir(), 'amux-office-'));
+  const broken = join(dir, 'deck-missing-parts.pptx');
+  execFileSync('python3', ['-c', `
+import sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as b:
+    for i in a.infolist():
+        data = a.read(i.filename)
+        if i.filename == '[Content_Types].xml':
+            extra = ''.join('<Override PartName="/ppt/slideMasters/slideMaster%d.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' % n for n in range(7, 10))
+            data = data.replace(b'</Types>', extra.encode() + b'</Types>')
+        b.writestr(i, data)
+`, join(FIX, 'deck.pptx'), broken]);
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openFilePreview === 'function');
+  await page.evaluate(p => (window as any).openFilePreview(p), broken);
+  const doc = page.locator('#file-body .office-doc');
+  await expect(doc).toContainText('Retrieval at scale', {timeout: 30000});
+  await expect(doc.locator('.pptx-preview-slide-wrapper')).toHaveCount(2);
 });
 
 test('an Excel cell comment shows as a native note and in the panel, and an edited note is saved into the file', async ({page}) => {
