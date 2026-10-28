@@ -1629,6 +1629,17 @@ fn parse_list_sessions_line(l: &str) -> Option<(&str, Option<i64>, Option<i64>)>
 /// native provider is tool work. This avoids treating the provider process's
 /// mere existence as activity while keeping a long-running cargo/browser child
 /// authoritative when rollout writes are naturally quiet.
+/// The key the process-tree results are stored under: the WORKER name, which
+/// is what every reader looks them up by (`derive_status_explain(name)`,
+/// `status_projection(name)`). `list-panes` reports the tmux session
+/// (`amux-<worker>`), and keying by that meant `claude_waiting_shells`,
+/// `provider_child_activity` and `background_jobs` never matched a live lane:
+/// after f16b6445c went live, 0 of 203 rows had a job while amux-helper read
+/// background_shell (2026-10-28).
+fn pane_root_key(tmux_session: &str) -> String {
+    tmux_session.strip_prefix("amux-").unwrap_or(tmux_session).to_string()
+}
+
 /// One background job a Claude lane started: a Bash-tool shell under its
 /// `claude` process (MSG-99658: tubescience-parity read idle for 16 minutes
 /// while `bash etl_rest2.sh` ran for 1h02m, and the status said nothing about
@@ -2152,7 +2163,7 @@ impl FleetSignals {
                     continue;
                 }
                 seen.insert(sess.to_string());
-                pane_roots.push((sess.to_string(), pid.trim().to_string()));
+                pane_roots.push((pane_root_key(sess), pid.trim().to_string()));
                 let cmd = cmd.trim().trim_start_matches('-');
                 if !SHELLS.contains(&cmd) {
                     any_live.insert(sess.to_string());
@@ -10838,6 +10849,13 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert!(!w.contains("busy"), "a shell running ffmpeg is work");
         let none = vec![("x".to_string(), "300".to_string())];
         assert!(super::claude_lanes_with_only_waiting_shells(&none, "300 1 S /bin/sh\n301 300 S claude\n").is_empty(), "no shells: nothing to discount");
+    }
+
+    #[test]
+    fn process_tree_results_are_keyed_by_worker_name_not_tmux_session() {
+        assert_eq!(super::pane_root_key("amux-tubescience-parity"), "tubescience-parity");
+        assert_eq!(super::pane_root_key("amux-amux-helper"), "amux-helper");
+        assert_eq!(super::pane_root_key("plain"), "plain");
     }
 
     /// MSG-99658: tubescience-parity read idle while `bash etl_rest2.sh` ran
