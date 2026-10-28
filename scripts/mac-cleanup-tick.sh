@@ -141,6 +141,13 @@ CHURN_SAMPLE_ROOTS=${AMUX_CLEANUP_CHURN_SAMPLE_ROOTS:-$HOME:/private/tmp:/privat
 CHURN_FSWATCH=$(command -v fswatch 2>/dev/null || { [ -x /opt/homebrew/bin/fswatch ] && echo /opt/homebrew/bin/fswatch; } || { [ -x /usr/local/bin/fswatch ] && echo /usr/local/bin/fswatch; } || true)
 CHURN_SAMPLE_CMD=${AMUX_CLEANUP_CHURN_SAMPLE_CMD:-${CHURN_FSWATCH:+churn_fswatch}}
 [ "$CHURN_SAMPLE_CMD" = off ] && CHURN_SAMPLE_CMD=""
+# The sample reads FSEvents from fseventsd, the daemon it is measuring, so a
+# wedged fseventsd reads as a quiet disk (RCA 20261028-133155: pid 347 at 100%
+# CPU holding 51G delivered 0 of 500 files written during a sample). A control:
+# write CHURN_CONTROL_N files under the state dir while sampling and require the
+# sample to see one. auto = on for the real fswatch sampler; 1 forces it on.
+CHURN_CONTROL=${AMUX_CLEANUP_CHURN_CONTROL:-auto}
+CHURN_CONTROL_N=20
 # Seam: prints "<gb> <cpu_pct>" for fseventsd, or nothing when it is not running.
 # The suites stub it so the live daemon cannot decide a test (as PRESSURE_CMD does).
 FSEVENTSD_CMD=${AMUX_CLEANUP_FSEVENTSD_CMD:-fseventsd_reading}
@@ -1039,18 +1046,42 @@ find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
 churn_fswatch() { # <seconds>: every path FSEvents reports under CHURN_SAMPLE_ROOTS
   local -a roots
   IFS=':' read -r -a roots <<< "$CHURN_SAMPLE_ROOTS"
-  { perl -e 'alarm shift; exec @ARGV' "$1" "$CHURN_FSWATCH" -r -m fsevents_monitor ${roots[@]+"${roots[@]}"} 2>/dev/null; } 2>/dev/null || true
+  # Stopped with SIGINT, not SIGALRM: fswatch writes through a block buffer when
+  # its output is not a terminal, and only a clean exit flushes it, so an alarm
+  # dropped the tail of every sample.
+  "$CHURN_FSWATCH" -r -m fsevents_monitor ${roots[@]+"${roots[@]}"} 2>/dev/null &
+  local p=$!
+  sleep "$1"; kill -INT "$p" 2>/dev/null; wait "$p" 2>/dev/null || true
 }
 
 # Print "<count> <dir>" for the directories with at least <min_events> FSEvents in
 # a <seconds> sample, grouped by the changed path's parent, busiest first, at most
 # three. Same contract as churn_census; a sample always covers every root, so it
-# sets CHURN_COMPLETE=yes.
+# sets CHURN_COMPLETE=yes. With the control on it also sets CHURN_DELIVERED to
+# yes or no: whether fseventsd delivered any of the control files written during
+# the sample. no means the empty or short list is fseventsd's silence, not a
+# quiet disk. The control's own events are not counted.
 churn_sample() { # <seconds> <min_events>
-  CHURN_COMPLETE=yes
-  $CHURN_SAMPLE_CMD "$1" 2>/dev/null \
+  CHURN_COMPLETE=yes; CHURN_DELIVERED=unknown
+  local ctl="" w="" raw
+  if [ "$CHURN_CONTROL" = 1 ] || { [ "$CHURN_CONTROL" = auto ] && [ "$CHURN_SAMPLE_CMD" = churn_fswatch ]; }; then
+    ctl="$STATE_DIR/fsevents-control"; mkdir -p "$ctl" 2>/dev/null || ctl=""
+  fi
+  raw=$(mktemp "${TMPDIR:-/tmp}/churn-raw.XXXXXX")
+  if [ -n "$ctl" ]; then
+    ( sleep 2; i=0; while [ "$i" -lt "$CHURN_CONTROL_N" ]; do echo "$i" > "$ctl/c$i"; i=$((i+1)); done ) &
+    w=$!
+  fi
+  CHURN_CONTROL_DIR="$ctl" $CHURN_SAMPLE_CMD "$1" > "$raw" 2>/dev/null
+  [ -n "$w" ] && wait "$w" 2>/dev/null
+  if [ -n "$ctl" ]; then
+    if grep -qF "$ctl/" "$raw"; then CHURN_DELIVERED=yes; else CHURN_DELIVERED=no; fi
+    rm -rf -- "${ctl:?}"
+  fi
+  { grep -vF "${ctl:-/nonexistent-churn-control}/" "$raw" || true; } \
     | awk '{ sub(/\/[^\/]*$/, ""); if ($0 != "") c[$0]++ } END { for (k in c) print c[k], k }' \
     | awk -v m="$2" '$1 >= m' | sort -rn | head -3
+  rm -f -- "$raw"
 }
 
 churn_census() { # <colon-roots> <minutes> <budget_s> <min_files>
@@ -3581,7 +3612,15 @@ if [ -n "$fse_reading" ]; then
       churn_census "$CHURN_ROOTS" "$CHURN_MIN" "$CHURN_BUDGET_S" "$CHURN_FILES" > "$churn_f"
     fi
     churn=$(cat "$churn_f"); rm -f -- "${churn_f:?}"
-    if [ -n "$churn" ]; then
+    if [ "${CHURN_DELIVERED:-unknown}" = no ]; then
+      # The sample cannot see the feed: fseventsd delivered none of the control
+      # files, so whatever it did report is a fraction of the churn and an empty
+      # list is its silence. The daemon is wedged or far behind either way, and
+      # a restart is the remedy that needs no measurement of the feed.
+      fse_top="not measured: fseventsd delivered 0 of ${CHURN_CONTROL_N} control files written during the ${churn_s}s sample, so it is wedged or far behind and the sample cannot see the feed"
+      echo "mac-cleanup:   fseventsd feed: $fse_top (verdict=fseventsd_not_delivering)"
+      fse_spin=1; fse_wedged=1
+    elif [ -n "$churn" ]; then
       printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n $churn_unit under $d"; done
       fse_top=$(printf '%s\n' "$churn" | head -1 | { read -r n d; echo "$n $churn_top_unit under $d"; })
     elif [ "$churn_measured" = 0 ]; then
@@ -3617,6 +3656,9 @@ if [ -n "$fse_reading" ]; then
        && { [ "${fse_spin:-0}" = 1 ] || [ "$fse_feed_n" -lt $(( churn_floor * FSEVENTSD_CHURN_NEW_X )) ]; }; then
       echo "mac-cleanup:   fseventsd pid $fse_pid (${fse_gb}G) is the process the last fseventsd escalation named $(( ($(date +%s) - fse_esc_at) / 60 ))m ago and it is still hot$( [ "${fse_spin:-0}" = 1 ] || echo ", with churn under ${FSEVENTSD_CHURN_NEW_X}x the floor"): the owner's restart is pending (sudo killall fseventsd, which also returns its memory); not escalated again until a new pid, churn over ${FSEVENTSD_CHURN_NEW_X}x the floor, or ${FSEVENTSD_SPIN_REMIND_H}h (verdict=fseventsd_spin_owner_pending)"
       reported=$((reported+1))
+    elif [ "${fse_wedged:-0}" = 1 ]; then
+      fse_verdict="fseventsd at ${fse_cpu:-?}% CPU holding ${fse_gb}G is not delivering file events ($fse_top): the owner restarts it with sudo killall fseventsd (launchd brings it back, no reboot), then the next tick can measure the feed"
+      [ "${FSE_RESTART_NEEDS_SUDOERS:-0}" = 1 ] && fse_verdict="$fse_verdict. The tick restarts it itself once the owner adds: $FSEVENTSD_SUDOERS_LINE"
     elif [ "${fse_spin:-0}" = 1 ]; then
       fse_verdict="fseventsd at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_CPU_PCT}%) holding ${fse_gb}G with no file churn to feed it ($fse_top): a stuck fseventsd thread, not a writer; the owner restarts it with sudo killall fseventsd (launchd brings it back, no reboot)"
     else

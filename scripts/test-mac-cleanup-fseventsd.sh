@@ -90,6 +90,40 @@ check "a directory under the floor is not named"         "no"  "$(has "$out" "Li
 check "off forces the census"                            "" "$(AMUX_CLEANUP_LIB_ONLY=1 AMUX_CLEANUP_CHURN_SAMPLE_CMD=off bash -c '. "$0" && printf %s "$CHURN_SAMPLE_CMD"' "$TICK")"
 check "the sampler gets the window"                      "20"  "$(cat "$FIX/samp.secs")"
 check "a sample says complete"                           "yes" "$CHURN_COMPLETE"
+
+echo "3f. a sample that cannot see its own control files says fseventsd is not delivering (RCA fseventsd 20261028-133155)"
+# pid 347 at 100% CPU holding 51G delivered 0 of 500 files written during a
+# sample, so a wedged fseventsd read as a quiet disk.
+SEES="$FIX/sees.sh"; { echo '#!/bin/bash'; echo 'sleep 3; ls "$CHURN_CONTROL_DIR" | sed "s|^|$CHURN_CONTROL_DIR/|"'
+  echo 'for i in $(seq 1 60); do echo "/Users/x/Dev/cust/runs/eng-R-A/bodies/f$i.resp.txt"; done'; } > "$SEES"; chmod +x "$SEES"
+BLIND="$FIX/blind.sh"; printf '#!/bin/bash\nsleep 3\n' > "$BLIND"; chmod +x "$BLIND"
+mkdir -p "$FIX/state"
+STATE_DIR="$FIX/state" CHURN_CONTROL=1 CHURN_SAMPLE_CMD="$SEES"
+churn_sample 3 2 > "$FIX/s.out"
+check "a sampler that sees the control: delivered"      "yes" "$CHURN_DELIVERED"
+check "and the control's own events are not counted"   "60 /Users/x/Dev/cust/runs/eng-R-A/bodies" "$(cat "$FIX/s.out")"
+check "and the control files are removed"              "no"  "$([ -e "$FIX/state/fsevents-control" ] && echo yes || echo no)"
+CHURN_SAMPLE_CMD="$BLIND"
+churn_sample 3 2 > "$FIX/s.out"
+check "a sampler that sees nothing: not delivered"     "no"  "$CHURN_DELIVERED"
+CHURN_CONTROL=auto CHURN_SAMPLE_CMD="$BLIND"
+churn_sample 1 2 > "$FIX/s.out"
+check "auto leaves a test sampler alone"               "unknown" "$CHURN_DELIVERED"
+CHURN_CONTROL=auto STATE_DIR="$FIX/tick"
+
+echo "3g. the fswatch sampler flushes its output when the window closes"
+# fswatch block-buffers when piped; SIGALRM killed it with the buffer unwritten.
+FAKEFW="$FIX/fakefw.py"
+cat > "$FAKEFW" <<'PY'
+#!/usr/bin/env python3
+# Prints five paths into a block buffer, then waits; only a clean exit flushes it.
+import time
+for i in range(5):
+    print("/a/b/f%d" % i)
+time.sleep(60)
+PY
+chmod +x "$FAKEFW"
+check "every line the sampler printed arrives"         "5"   "$(CHURN_FSWATCH="$FAKEFW" CHURN_SAMPLE_ROOTS=/a churn_fswatch 1 | grep -c '^/a/b/f')"
 if [ "$(uname)" = Darwin ]; then
   rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
   out=$(AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 30 120")
