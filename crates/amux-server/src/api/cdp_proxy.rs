@@ -291,7 +291,7 @@ mod tests {
 
         let ev = command_audit(r#"{"id":2,"method":"Runtime.evaluate","params":{"expression":"document.cookie + 'private'"}}"#).unwrap();
         let s = ev.1.unwrap().to_string();
-        assert!(!s.contains("cookie") && s.contains("\"expression_chars\":26"), "{s}");
+        assert!(!s.contains("cookie") && s.contains("\"expression_chars\":27"), "{s}");
 
         let typed = command_audit(r#"{"id":3,"method":"Input.insertText","params":{"text":"hunter2pw"}}"#).unwrap().1.unwrap();
         assert_eq!(typed["typed_chars"], 9);
