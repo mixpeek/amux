@@ -103,9 +103,17 @@ export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
 # 70% of the host's RAM (never above 12 GB), with swap up to half the cap. The
 # sandbox's deploy build of amux-server peaks at 4.3-5.8 GB (budget log), so
 # 5.4 GB of RAM plus 2.7 GB of swap fits it and still leaves 2.3 GB of RAM for
-# the server and workers. On systemd the cap is a cgroup limit on
-# the build's own scope (MemoryMax), so the kernel stops the build instead of
-# swapping the server and every worker out from under it. AMUX_CARGO_HOST_MB
+# the server and workers.
+#
+# On systemd the kernel enforces it on the build's own scope, at 85% of the
+# host rather than the 70% budget. At 70% (MemoryMax until 2026-10-28) the
+# sandbox's deploy build failed every time for a day: the final link of
+# amux-server is ONE rustc process at 5.5 GB anon RSS, the cgroup OOM-killed it
+# at 5.4 GB (kernel log, task=rustc), and the box stayed on an old build.
+# MemoryHigh was tried instead and is wrong here: it throttles rather than
+# kills, so a runaway build crawls until the hour-long timeout. Above the
+# line the build is killed, and it is the kernel's first choice under host
+# pressure anyway (cargo-budget.py sets its oom_score_adj to 900). AMUX_CARGO_HOST_MB
 # stands in for the measured size (tests, and hosts that cannot report one).
 _host_mb="${AMUX_CARGO_HOST_MB:-}"
 if [ -z "$_host_mb" ]; then
@@ -217,14 +225,16 @@ if [ -d /run/systemd/system ]; then
     # The budget's sampled RSS check can overshoot between probes; the cgroup
     # cannot. Swap is held to half the cap: room for a deploy build's peak,
     # bounded so a capped build cannot thrash the disk everyone pages from.
-    _scope_limits=(-p "MemoryMax=${AMUX_CARGO_MAX_RSS_MB}M"
+    _scope_max=$(( _host_mb > 0 ? _host_mb * 85 / 100 : AMUX_CARGO_MAX_RSS_MB ))
+    [ "$_scope_max" -ge "$AMUX_CARGO_MAX_RSS_MB" ] || _scope_max=$AMUX_CARGO_MAX_RSS_MB
+    _scope_limits=(-p "MemoryMax=${_scope_max}M"
                    -p "MemorySwapMax=$(( AMUX_CARGO_MAX_RSS_MB / 2 ))M")
     # With the kernel holding RAM to the cap, the budget's sampled check is
     # only a backstop. It sums RSS over the build's processes, which counts
     # shared pages twice (the deploy build has read 5.8 GB that way), so at
     # the same number it would stop builds the cgroup lets finish.
-    echo "safe-cargo.sh: kernel cap ${AMUX_CARGO_MAX_RSS_MB} MB RAM + $(( AMUX_CARGO_MAX_RSS_MB / 2 )) MB swap" \
-         "on the build scope (verdict=cargo_scope_capped)" >&2
+    echo "safe-cargo.sh: kernel stops the build at ${_scope_max} MB RAM + $(( AMUX_CARGO_MAX_RSS_MB / 2 )) MB swap" \
+         "(verdict=cargo_scope_capped)" >&2
     export AMUX_CARGO_MAX_RSS_MB=$(( AMUX_CARGO_MAX_RSS_MB * 3 / 2 ))
   fi
   CMD=(systemd-run --user --scope --quiet ${_scope_limits[@]+"${_scope_limits[@]}"}

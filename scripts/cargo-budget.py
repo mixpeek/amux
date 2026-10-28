@@ -369,6 +369,12 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
         # WHAT WAS ACTUALLY ENFORCED, beside the result (ethos rule 4). A green
         # run with every probe broken and a green run with every probe working
         # used to print the same line.
+        oom = scope_oom_kills()
+        if oom:
+            emit('cargo_oom_killed', measured=True, n_considered=1, verdict='cargo_oom_killed',
+                 oom_kills=oom, peak_rss_bytes=peak, exit_code=proc.returncode,
+                 note='the kernel killed a build process at this build scope\'s memory limit; '
+                      'the failure below is that kill, not the code')
         emit('cargo_budget_finished',
              measured=considered > 0 and not unenforced, n_considered=considered,
              elapsed_s=round(time.monotonic() - started, 2), peak_rss_bytes=peak,
@@ -378,12 +384,27 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
              unenforced=sorted(unenforced), probe_failures=probe_failures,
              never_measured=sorted(l for l in PROBED_LIMITS
                                    if l not in measured_limits and l not in unenforced),
-             exit_code=proc.returncode)
+             exit_code=proc.returncode, oom_kills=oom)
         return proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
     finally:
         stop_group(proc)
         for sig, handler in prior.items():
             signal.signal(sig, handler)
+
+
+def scope_oom_kills():
+    """Processes the kernel OOM-killed in this build's own cgroup (Linux, v2),
+    or None where that cannot be read. A rustc killed at the scope's limit makes
+    cargo exit 101 like any compile error; on 2026-10-28 a day of sandbox deploy
+    builds failed that way and the builder's log never said why."""
+    try:
+        with open('/proc/self/cgroup') as f:
+            line = next(l for l in f if l.startswith('0::'))
+        with open('/sys/fs/cgroup' + line[3:].strip() + '/memory.events') as f:
+            events = dict(l.split() for l in f if l.strip())
+        return int(events.get('oom_kill', 0))
+    except (OSError, StopIteration, ValueError):
+        return None
 
 
 def main():
