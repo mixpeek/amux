@@ -70,7 +70,7 @@
 //! lane that moved the card it was nudged about gets the next one immediately
 //! instead of waiting out a cooldown it already earned its way past.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -4804,6 +4804,29 @@ fn done_card_count(conn: &Connection, session: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// The lanes AMUX_MAX_CONCURRENT_ACTIVE counts: a live `doing` card. Deleted
+/// and archived cards were counted too, so the fleet read "49 workers already
+/// active (cap 10)" and dispatch stopped for every lane, including owner
+/// commands staged on forced-adherence lanes (2026-10-28, MSG-99658).
+pub(crate) fn concurrent_active_lanes(conn: &Connection) -> BTreeSet<String> {
+    let Ok(mut st) = conn.prepare(
+        "SELECT DISTINCT session FROM issues WHERE status = 'doing' AND session IS NOT NULL AND session != '' \
+         AND deleted IS NULL AND COALESCE(archived, 0) = 0",
+    ) else {
+        return BTreeSet::new();
+    };
+    st.query_map([], |r| r.get::<_, String>(0))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
+/// The cap limits how many lanes are active, not the work inside a lane that
+/// already is: an active lane is never skipped, and a new one is only while
+/// the count is at the cap. `max` 0 turns the cap off.
+pub(crate) fn concurrent_cap_blocks(lane: &str, active: &BTreeSet<String>, max: u64) -> bool {
+    max > 0 && !active.contains(lane) && active.len() as u64 >= max
+}
+
 /// Build the batched verify-nudge prompt.
 fn verify_nudge_text(cards: &[(String, String, String)], total: i64) -> String {
     let mut lines: Vec<String> = cards
@@ -7084,21 +7107,18 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // backoff BEFORE sending, so a mid-lane skip would advance it for nothing.
     let lanes = if crate::runtime_jobs::host_guard::admit_automation("board-dispatch") { fleet.lanes() } else { Vec::new() };
     let max_concurrent = crate::runtime_jobs::worker_resources::max_concurrent();
-    let mut concurrent_active = 0u64;
+    let mut active_lanes = BTreeSet::new();
     if max_concurrent > 0 {
         if let Ok(conn) = state.store.read() {
-            concurrent_active = conn.query_row(
-                "SELECT COUNT(DISTINCT session) FROM issues WHERE status = 'doing' AND session IS NOT NULL AND session != ''",
-                [], |r| r.get::<_, i64>(0),
-            ).unwrap_or(0) as u64;
+            active_lanes = concurrent_active_lanes(&conn);
         }
     }
     for lane in lanes {
-        if max_concurrent > 0 && concurrent_active >= max_concurrent {
+        if concurrent_cap_blocks(&lane, &active_lanes, max_concurrent) {
             let trace = LaneTrace::skip(
                 &lane,
                 "concurrent-cap",
-                format!("{concurrent_active} workers already active (cap {max_concurrent})"),
+                format!("{} workers already active (cap {max_concurrent})", active_lanes.len()),
             );
             report.lanes.push(trace);
             continue;
@@ -7107,7 +7127,7 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
         match trace.outcome.as_str() {
             "assigned" => {
                 report.assigned += 1;
-                concurrent_active += 1;
+                active_lanes.insert(lane.clone());
             }
             "skipped" => {}
             _ => report.nudged += 1,
@@ -18714,5 +18734,43 @@ mod owner_stop_tests {
         assert!(!super::owner_stopped(&conn, "lane-b"), "started again after the stop");
         assert!(!super::owner_stopped(&conn, "lane-c"), "a non-owner stop is recovered as before");
         assert!(!super::owner_stopped(&conn, "never-seen"));
+    }
+}
+
+#[cfg(test)]
+mod concurrent_cap_tests {
+    use super::*;
+
+    /// MSG-99658: deleted and archived `doing` cards counted as active lanes,
+    /// and at the cap even an already-active lane was skipped.
+    #[test]
+    fn the_cap_counts_live_doing_lanes_and_never_skips_an_active_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
+        store
+            .write(|conn| {
+                for (id, session, status, archived, deleted) in [
+                    ("C-1", "live", "doing", 0, None),
+                    ("C-2", "archived-lane", "doing", 1, None),
+                    ("C-3", "deleted-lane", "doing", 0, Some(1i64)),
+                    ("C-4", "todo-lane", "todo", 0, None),
+                ] {
+                    conn.execute(
+                        "INSERT INTO issues (id,title,status,session,created,updated,archived,deleted) VALUES (?1,'t',?2,?3,0,0,?4,?5)",
+                        rusqlite::params![id, status, session, archived, deleted],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let conn = store.read().unwrap();
+        let active = concurrent_active_lanes(&conn);
+        assert_eq!(active.into_iter().collect::<Vec<_>>(), vec!["live".to_string()]);
+
+        let full: BTreeSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
+        assert!(!concurrent_cap_blocks("a", &full, 2), "an already-active lane keeps working at the cap");
+        assert!(concurrent_cap_blocks("c", &full, 2), "a new lane waits while the cap is full");
+        assert!(!concurrent_cap_blocks("c", &full, 3), "below the cap a new lane may start");
+        assert!(!concurrent_cap_blocks("c", &full, 0), "0 turns the cap off");
     }
 }

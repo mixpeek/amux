@@ -12937,6 +12937,24 @@ pub(crate) fn is_board_guard(guard: &str) -> bool {
 }
 
 /// `Some(reason)` when `guard` is board automation and `name` has the board off.
+/// Does an owner's send wait for the board dispatcher instead of going to the
+/// worker? Only when the lane stages commands (`eligible`) and the sender did
+/// not ask for no board (MSG-99658).
+pub(crate) fn owner_send_staged(owner: bool, skip_board: bool, eligible: impl FnOnce() -> bool) -> bool {
+    owner && !skip_board && eligible()
+}
+
+#[cfg(test)]
+mod owner_send_staged_tests {
+    #[test]
+    fn no_board_sends_directly_even_on_a_staging_lane() {
+        assert!(super::owner_send_staged(true, false, || true), "a staging lane stages an owner command");
+        assert!(!super::owner_send_staged(true, true, || true), "no_board goes straight to the worker");
+        assert!(!super::owner_send_staged(false, false, || true), "only owner sends are staged");
+        assert!(!super::owner_send_staged(true, false, || false), "a lane that does not stage delivers");
+    }
+}
+
 pub(crate) fn board_off_refusal(name: &str, guard: &str) -> Option<&'static str> {
     // Isolation has its own, stricter rules and its own refusal text.
     if !is_board_guard(guard) || session_is_isolated(name) || !crate::api::board_lifecycle::board_unused(name) {
@@ -30510,9 +30528,21 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     }
     // A command is a durable request before it is execution. Sending its raw
     // text first raced the planner and invited a second, worker-created board.
-    if matches!(send_origin, SendOrigin::Owner)
-        && super::board_lifecycle::stage_owner_command(name, &orig_text)
-    {
+    //
+    // NOT when the sender asked for no board (`--no-board`, {"no_board": true},
+    // a [no-board] prefix). Staging ignored it: three forced-adherence lanes
+    // answered "accepted into board lifecycle" and delivered nothing for over
+    // an hour while the dispatcher sat at its fleet cap, and no_board made no
+    // difference (2026-10-28, MSG-99658). The sender's explicit choice goes
+    // straight to the worker, logged so a sweep can count it.
+    let stage = owner_send_staged(matches!(send_origin, SendOrigin::Owner), skip_board, || {
+        super::board_lifecycle::stage_owner_command(name, &orig_text)
+    });
+    if !stage && skip_board && matches!(send_origin, SendOrigin::Owner) {
+        tracing::info!(session = name, measured = true, n_considered = 1, verdict = "command_staging_skipped_no_board",
+            "owner command delivered directly: the sender asked for no board, so it is not staged for the dispatcher");
+    }
+    if stage {
         let actor = member_actor.as_deref().unwrap_or("");
         let id = cmd_hist_record_with_id(
             state,
