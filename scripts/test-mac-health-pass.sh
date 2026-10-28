@@ -6,12 +6,18 @@ HERE=$(cd "$(dirname "$0")" && pwd); S="$HERE/mac-health-pass.sh"
 FIX=$(mktemp -d); trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expected '$2', got '$3'"; fails=$((fails+1)); fi; }
-run() { local rc=0; MAC_HEALTH_LOG="$FIX/tick.last" MAC_HEALTH_MAX_AGE_MIN=120 bash "$S" > "$FIX/out" 2>&1 || rc=$?; echo "$rc"; }
+run() { local rc=0; MAC_HEALTH_LOCK="$FIX/lock" MAC_HEALTH_LOG="$FIX/tick.last" MAC_HEALTH_MAX_AGE_MIN=120 bash "$S" > "$FIX/out" 2>&1 || rc=$?; echo "$rc"; }
 
 check "no tick yet fails" 1 "$(run)"
 printf 'mac-cleanup: disk 80G\nmac-cleanup: constraint memory kernel pressure 2 after the purge arm — escalated to amux\n' > "$FIX/tick.last"
 check "a tick that did not finish fails" 1 "$(run)"
 check "and says so" yes "$(grep -q 'did not finish' "$FIX/out" && echo yes || echo no)"
+mkdir -p "$FIX/lock"; echo $$ > "$FIX/lock/pid"
+check "a tick still running is not a failure" 0 "$(run)"
+check "and says it is running" yes "$(grep -q 'running now' "$FIX/out" && echo yes || echo no)"
+echo 999999 > "$FIX/lock/pid"
+check "a dead lock holder is a run that did not finish" 1 "$(run)"
+rm -rf "$FIX/lock"
 printf 'mac-cleanup: constraint disk free 83.4G is under the 150G floor — escalation suppressed\nmac-cleanup: constraint memory kernel pressure 2 after the purge arm — escalated to amux (x)\nmac-cleanup: done elapsed=1s constraints=2\n' > "$FIX/tick.last"
 check "a finished tick passes even with constraints" 0 "$(run)"
 check "its first line names each floor still exceeded" "Still over a floor, already escalated to its owner: disk free 83.4G is under the 150G floor; memory kernel pressure 2 after the purge arm" "$(head -1 "$FIX/out" | sed 's/^Ran [0-9:]* and cleaned up\. //')"

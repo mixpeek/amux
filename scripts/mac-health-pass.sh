@@ -11,11 +11,20 @@
 # re-running a cleanup cannot fix it, so it is reported here and not failed on.
 set -uo pipefail
 LOG=${MAC_HEALTH_LOG:-$HOME/.amux/logs/mac-cleanup-tick.last}
+LOCK=${MAC_HEALTH_LOCK:-$HOME/.amux/logs/mac-cleanup/tick.lock}
 MAX_AGE_MIN=${MAC_HEALTH_MAX_AGE_MIN:-120}
 if [ ! -f "$LOG" ]; then echo "No health check has run yet ($LOG is missing)."; exit 1; fi
 now=$(date +%s); mtime=$(stat -f %m "$LOG" 2>/dev/null || stat -c %Y "$LOG")
 age_min=$(( (now - mtime) / 60 ))
 at=$(date -r "$mtime" '+%H:%M' 2>/dev/null || date -d "@$mtime" '+%H:%M')
+# A tick writes its log as it goes, so mid-run there is no done line yet. A
+# run in progress (its lock's pid alive) is not a failure; a killed run
+# leaves no live pid and fails below at the next check.
+lock_pid=$(cat "$LOCK/pid" 2>/dev/null || true)
+if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+  echo "A health check is running now (started $at); its result is read when it finishes."
+  exit 0
+fi
 done_line=$(grep -a '^mac-cleanup: done ' "$LOG" | tail -1)
 if [ -z "$done_line" ]; then
   echo "The check at $at did not finish (no 'mac-cleanup: done' line); it is run again."
