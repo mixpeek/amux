@@ -1098,6 +1098,12 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // Social posts (0134): api/social.rs now() is chrono timestamp(), epoch seconds.
     ("social_posts", "posted_at", false),
     ("social_post_metrics", "fetched_at", false),
+    // The posting queue (0138): social_publish.rs uses the same social::now().
+    ("social_queue", "scheduled_at", false),
+    ("social_queue", "next_attempt_at", false),
+    ("social_queue", "claimed_at", false),
+    ("social_queue", "created_at", false),
+    ("social_queue", "updated_at", false),
     // Map store (0128): map_store::now() is epoch seconds as f64.
     ("map_meta", "updated_at", false),
     ("map_pins", "created_at", false),

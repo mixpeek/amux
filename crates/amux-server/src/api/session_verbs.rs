@@ -3776,6 +3776,10 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
         RenameDisposition::KeepForAudit("a post records which worker published it at the time"),
     ),
     (
+        "social_queue",
+        RenameDisposition::KeepForAudit("a queued post records which worker asked for it at the time"),
+    ),
+    (
         "worker_resource_samples",
         RenameDisposition::KeepForAudit("a sample is a dated measurement of the processes under that name"),
     ),

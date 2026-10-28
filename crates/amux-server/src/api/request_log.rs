@@ -2890,6 +2890,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/social/posts/{id}/metrics",
         methods: &["GET"],
     },
+    // The posting queue (api/social_publish.rs).
+    RouteEntry {
+        path: "/api/social/queue",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/social/queue/{id}/cancel",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/social/queue/{id}/reschedule",
+        methods: &["POST"],
+    },
     // -- New Worker / Connect modals (api/worker_create.rs, AMUX-2871)
     RouteEntry {
         path: "/api/templates",
