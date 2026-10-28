@@ -67565,16 +67565,13 @@ function _cvRenderHead(sel, d) {
 // text in #amux). The body used to be esc() plus its own path regex, which
 // required a space before the slash, so the `@path` every attachment rides on
 // never matched. It now goes through the worker Chat tab's pipeline:
-// renderMarkdown (sanitized) then _linkifyPaths, the peek/chat path linkifier.
+// renderMarkdown (sanitized) then _cvLinkPaths below.
 // Only absolute and ~/ paths link here: a channel has no working folder, so the
 // peek's cwd (whichever worker was opened last) must not resolve a relative one.
 // An image path also gets a thumbnail that opens the viewer.
 function _cvBodyHtml(p) {
   const body = String(p.body || '');
-  const savedDir = peekSessionDir;
-  let h;
-  try { peekSessionDir = ''; h = _linkifyPaths(renderMarkdown(body, '')); }
-  finally { peekSessionDir = savedDir; }
+  let h = _cvLinkPaths(renderMarkdown(body, ''));
   const me = _cvMeKey();
   const names = {};
   (p.mentions || []).forEach(k => { const n = k.replace(/^(person|worker):/, ''); names[n.split('@')[0].toLowerCase()] = k; });
@@ -67594,6 +67591,81 @@ function _cvBodyHtml(p) {
       + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
   }
   return h;
+}
+// PATHS IN A POST ARE LINKS (AA-51, Ethan 2026-10-28). _linkifyPaths needs a
+// file extension, so a folder such as /home/amux/wexus/runs/x/for-elliot was
+// plain text, and it stops at a space, so a worker's
+// `/home/.../Coeur Wine Co - AR Reconciliation.xlsx` was not linked at all.
+// Here an absolute or ~/ path links with or without an extension. A path with
+// spaces links whole when it is the entire inline code span or its own line;
+// in running prose it ends at whitespace. Fenced code blocks, URLs and
+// existing links are left alone. The link is the shared .file-link span, so
+// the right-click menu works on it too.
+const _CV_PATH_PROSE = /(^|[\s(\[>"'`,;=])(@?)((?:~\/|\/)(?:[\w.@%+-]+\/)+[\w.@%+-]*)(:\d+)?/g;
+const _CV_PATH_WHOLE = /^(@?)((?:~\/|\/)[^\s/][^\n<>"`]*\/[^\n<>"`]*?)$/;
+function _cvPathSpan(path, shown) {
+  const cls = /\.md$/i.test(path) ? 'md-link' : 'file-link';
+  return '<span class="' + cls + '" data-path="' + esc(path) + '" title="Open ' + esc(path) + '" '
+    + 'onclick="event.preventDefault();event.stopPropagation();_cvOpenPath(this.dataset.path)">' + esc(shown) + '</span>';
+}
+function _cvLinkProse(text) {
+  let out = '', last = 0;
+  text.replace(_CV_PATH_PROSE, (m, pre, at, path, line, off) => {
+    let p = path, tail = '';
+    const punct = p.match(/[.,]+$/);
+    if (punct) { tail = punct[0]; p = p.slice(0, -tail.length); }
+    if (p.replace(/^~/, '').split('/').filter(Boolean).length < 2) return m;
+    out += esc(text.slice(last, off)) + esc(pre + at) + _cvPathSpan(p, p + (line || '')) + esc(tail);
+    last = off + m.length;
+    return m;
+  });
+  return out + esc(text.slice(last));
+}
+function _cvLinkPaths(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+  const block = el => !el || /^(P|LI|DIV|TD|TH|BLOCKQUOTE|H[1-6])$/.test(el.nodeName);
+  for (const n of nodes) {
+    const par = n.parentElement;
+    if (!n.nodeValue.trim() || (par && par.closest('pre, a, .file-link, .md-link'))) continue;
+    // A code span's whole text, or a line with nothing else on it, may hold spaces.
+    const wholeCode = par && par.nodeName === 'CODE' && par.childNodes.length === 1;
+    const lines = n.nodeValue.split('\n');
+    const html2 = lines.map((ln, i) => {
+      const first = i === 0, lastLine = i === lines.length - 1;
+      const own = wholeCode || ((!first || !n.previousSibling && block(par) || (n.previousSibling && n.previousSibling.nodeName === 'BR'))
+        && (!lastLine || !n.nextSibling && block(par) || (n.nextSibling && n.nextSibling.nodeName === 'BR')));
+      const w = own && ln.trim().length < 1024 && ln.trim().match(_CV_PATH_WHOLE);
+      // On a bare line it must also end like a file or folder, so a sentence
+      // that starts with a path is not swallowed whole.
+      if (w && /\s/.test(w[2]) && (wholeCode || /(\.[A-Za-z0-9]{1,8}|\/)$/.test(w[2]))) {
+        const lead = ln.slice(0, ln.indexOf(ln.trim()));
+        return esc(lead) + esc(w[1]) + _cvPathSpan(w[2], w[2]) + esc(ln.slice(lead.length + ln.trim().length));
+      }
+      return _cvLinkProse(ln);
+    }).join('\n');
+    if (html2 === esc(n.nodeValue)) continue;
+    const f = document.createElement('template');
+    f.innerHTML = html2;
+    n.replaceWith(f.content);
+  }
+  return t.innerHTML;
+}
+// A file opens in the viewer, a folder in the Files view at that folder.
+// Without an extension the server's listing decides which it is.
+async function _cvOpenPath(p) {
+  if (window.getSelection && String(window.getSelection()) !== '') return;  // a drag-select is not a click
+  const name = p.split('/').pop();
+  if (name && /\.[A-Za-z0-9]{1,8}$/.test(name)) return openFilePreview(p);
+  const dir = p.length > 1 ? p.replace(/\/+$/, '') : p;
+  try {
+    const d = await (await fetch(API + '/api/ls?path=' + encodeURIComponent(dir), { headers: _authHeaders() })).json();
+    if (d && !d.error) return openExplore(dir, null);
+  } catch (e) {}
+  openFilePreview(dir);
 }
 function _cvDelivHtml(p) {
   const want = (p.mentions || []).filter(m => m.indexOf('worker:') === 0).map(m => m.slice(7));
@@ -67935,8 +68007,11 @@ async function _cvLoadWorkerHistory(sel) {
     if (_cv.sel !== sel || !Array.isArray(rows)) return;
     _cv.history = rows.filter(h => h && h.text && !/\(From amux Messages\. To reply|\bamux post [gpw]:\S+ <<'EOF'/.test(h.text)).map(h => ({
       id: 'h' + h.id, conv: sel, history: true, ts: h.ts || 0, body: _msgStripPrefix(h.text),
-      author_key: h.type === 'session' && h.origin ? 'worker:' + h.origin : 'person:' + (h.origin || 'owner'),
-      author_name: h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner')),
+      // The server names the author the way a post is keyed (history.rs
+      // put_author), so a member's page send is the same person as their
+      // Messages posts (AA-53). The fallback is for a server older than that.
+      author_key: h.author_key || (h.type === 'session' && h.origin ? 'worker:' + h.origin : 'person:' + (h.origin || 'owner')),
+      author_name: h.author_name || (h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner'))),
       tag: h.type === 'schedule' ? 'scheduled' : h.type === 'session' ? 'from a worker' : 'sent from its page',
       mentions: [], deliveries: [] }));
     _cvRenderPosts(true);

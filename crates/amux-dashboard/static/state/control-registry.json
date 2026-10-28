@@ -1122,6 +1122,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvOpenPath": {
+      "kind": "command._cvOpenPath",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvOpenThreadOrScroll": {
       "kind": "command._cvOpenThreadOrScroll",
       "feedback_required": true,

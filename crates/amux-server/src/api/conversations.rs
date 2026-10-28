@@ -234,6 +234,89 @@ fn people(conn: &rusqlite::Connection, include_owner: bool) -> Vec<Person> {
     out
 }
 
+// ---- message history rows as thread authors --------------------------------
+
+/// Who a message-history row is, keyed the way a post is keyed.
+///
+/// A worker's thread merges in that worker's message history (what reached it
+/// from its own page). The dashboard used to build the author from the raw
+/// `origin` stamp, so a member's send from the worker page read as
+/// `person:member:ethan@mixpeek.com` with an "M" initial, while the same
+/// person's post in Messages is `person:ethan@mixpeek.com` (who() strips the
+/// `member:` prefix) with their name and picture (AA-53, 2026-10-28). This is
+/// the one mapping, computed when history is read, so stored rows render right.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryAuthor {
+    pub key: String,
+    pub name: String,
+    /// person, worker, schedule, harness, or unresolved.
+    pub verdict: &'static str,
+}
+
+/// Invited members' display names by email, as Messages shows them.
+pub(crate) fn member_names(conn: &rusqlite::Connection) -> HashMap<String, String> {
+    people(conn, false).into_iter().map(|p| (p.email, p.name)).collect()
+}
+
+fn looks_like_email(s: &str) -> bool {
+    let mut parts = s.splitn(2, '@');
+    let (a, b) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    !a.is_empty() && b.contains('.') && !s.chars().any(|c| c.is_whitespace() || c == ':')
+}
+
+pub(crate) fn history_author(mtype: &str, origin: &str, names: &HashMap<String, String>) -> HistoryAuthor {
+    let t = mtype.trim().to_ascii_lowercase();
+    let o = origin.trim();
+    let person = |email: &str| {
+        let e = email.trim().to_ascii_lowercase();
+        let name = names.get(&e).cloned().unwrap_or_else(|| display_for(&e, ""));
+        HistoryAuthor { key: format!("person:{e}"), name, verdict: "person" }
+    };
+    if t == "session" && !o.is_empty() {
+        // A worker's Chat companion sends as `<worker>@chat`.
+        let base = o.strip_suffix("@chat").unwrap_or(o);
+        return HistoryAuthor { key: format!("worker:{base}"), name: base.to_string(), verdict: "worker" };
+    }
+    if t == "schedule" {
+        return HistoryAuthor { key: "schedule:scheduler".into(), name: "scheduler".into(), verdict: "schedule" };
+    }
+    // A verified local member (org.rs stamps `member:<email>`).
+    if let Some(email) = o.strip_prefix("member:").filter(|e| looks_like_email(e)) {
+        return person(email);
+    }
+    match super::history::msg_kind(&t) {
+        "human" | "chat" => {
+            if o.is_empty() || (t == "chat" && o == "chat-companion") || o == "owner" {
+                return HistoryAuthor { key: "person:owner".into(), name: "owner".into(), verdict: "person" };
+            }
+            // A cloud gateway user is stamped with their email.
+            if looks_like_email(o) {
+                return person(o);
+            }
+        }
+        "amux" => {
+            let n = if o.is_empty() { "amux" } else { o };
+            return HistoryAuthor { key: format!("harness:{n}"), name: n.to_string(), verdict: "harness" };
+        }
+        _ => {}
+    }
+    note_unresolved_author(&t, o);
+    let n = if o.is_empty() { "unknown" } else { o };
+    HistoryAuthor { key: format!("origin:{n}"), name: n.to_string(), verdict: "unresolved" }
+}
+
+/// One WARN per distinct (type, origin) per process, so a sweep sees each
+/// stamp Messages could not put a person or worker to, without a line per row.
+fn note_unresolved_author(mtype: &str, origin: &str) {
+    static SEEN: OnceLock<Mutex<BTreeSet<(String, String)>>> = OnceLock::new();
+    let k = (mtype.to_string(), origin.to_string());
+    let fresh = SEEN.get_or_init(|| Mutex::new(BTreeSet::new())).lock().map(|mut s| s.insert(k)).unwrap_or(false);
+    if fresh {
+        tracing::warn!(verdict = "history_author_unresolved", r#type = %mtype, origin = %origin,
+            "Messages could not resolve a message-history origin to a person or worker; it shows the raw origin");
+    }
+}
+
 fn owner_has_posted(conn: &rusqlite::Connection) -> bool {
     conn.query_row(
         "SELECT 1 FROM conversation_posts WHERE author_key='person:owner' LIMIT 1",
@@ -2158,6 +2241,28 @@ mod tests {
         assert!(worker_chain_capped(&[w("a"), w("b"), w("a"), w("b")]));
         assert!(!worker_chain_capped(&[w("a"), w("b"), "person:owner".into(), w("b")]), "a person resets it");
         assert!(!worker_chain_capped(&[w("a"), w("b")]), "short chains deliver");
+    }
+
+    #[test]
+    fn a_page_send_by_a_member_is_the_same_person_as_their_messages_post() {
+        let names: HashMap<String, String> = [("ethan@mixpeek.com".to_string(), "Ethan".to_string())].into();
+        let a = history_author("user", "member:Ethan@mixpeek.com", &names);
+        // The key a direct post by the same caller gets from who().
+        let direct = person("ethan@mixpeek.com", MemberScope::Global).key();
+        assert_eq!(a.key, direct);
+        assert_eq!((a.name.as_str(), a.verdict), ("Ethan", "person"));
+        // A member with no name reads as their email's local part, as in Messages.
+        let d = history_author("steering", "member:dorongreenspan@gmail.com", &names);
+        assert_eq!((d.key.as_str(), d.name.as_str()), ("person:dorongreenspan@gmail.com", "dorongreenspan"));
+        assert_eq!(history_author("user", "", &names).key, "person:owner");
+        assert_eq!(history_author("chat", "chat-companion", &names).key, "person:owner");
+        assert_eq!(history_author("user", "hello@amux.io", &names).key, "person:hello@amux.io");
+        assert_eq!(history_author("session", "mxp-gs12@chat", &names).key, "worker:mxp-gs12");
+        assert_eq!(history_author("schedule", "[SCHED-1] x", &names).verdict, "schedule");
+        assert_eq!(history_author("pickup", "board-drive", &names).key, "harness:board-drive");
+        let u = history_author("user", "pane", &names);
+        assert_eq!((u.key.as_str(), u.verdict), ("origin:pane", "unresolved"));
+        assert!(!u.key.starts_with("person:"), "an unknown stamp must not read as a person");
     }
 
     #[test]

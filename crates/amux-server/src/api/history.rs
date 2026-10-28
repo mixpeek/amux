@@ -196,6 +196,7 @@ async fn get_history_item(
         if let Some(d) = rows.first_mut() {
             let mtype = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
             d["kind"] = json!(msg_kind(&mtype));
+            put_author(d, &mtype, &super::conversations::member_names(&conn));
             // The RECORDED delivery wins over the type inference: an owner's
             // queued message is type=user, delivery=queued (MSG-68866 read
             // queued:false while it sat in the queue).
@@ -484,6 +485,17 @@ pub(crate) fn sender_sql() -> String {
         human = quoted(&HUMAN_TYPES),
         amux = quoted(&AMUX_TYPES),
     )
+}
+
+/// The row's author as a Messages post names one (`author_key`,
+/// `author_name`, `author_verdict`), so a worker's thread shows a page send
+/// as the same person who posts in Messages (AA-53).
+fn put_author(d: &mut Value, mtype: &str, names: &std::collections::HashMap<String, String>) {
+    let origin = d.get("origin").and_then(Value::as_str).unwrap_or("").to_string();
+    let a = super::conversations::history_author(mtype, &origin, names);
+    d["author_key"] = json!(a.key);
+    d["author_name"] = json!(a.name);
+    d["author_verdict"] = json!(a.verdict);
 }
 
 /// The kind filter as one SQL predicate, shared by the list and the sender
@@ -1105,6 +1117,7 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                 .map(|p| p as &dyn rusqlite::types::ToSql)
                 .collect();
             let mut rows = super::calendar::query_rows_json(&conn, &sql, &refs)?;
+            let names = super::conversations::member_names(&conn);
             for d in &mut rows {
                 let mtype = d
                     .get("type")
@@ -1112,6 +1125,7 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                     .unwrap_or("")
                     .to_string();
                 d["kind"] = json!(msg_kind(&mtype));
+                put_author(d, &mtype, &names);
                 let rec = d.get("delivery").and_then(Value::as_str).unwrap_or("") == "queued";
                 d["queued"] = json!(msg_is_queued(&mtype) || rec);
                 // `delivery` is the RECORDED fact; `queued` above is the inference
@@ -2619,6 +2633,34 @@ mod tests {
 
         let (_, one) = send(&app, "GET", "/api/history/1", None).await;
         assert_eq!(one["sender"], json!("owner"), "the single-message lookup carries it too");
+    }
+
+    /// AA-53: a member's send from a worker's page carries the author key and
+    /// name a Messages post by the same person has, not the raw stamp.
+    #[tokio::test]
+    async fn a_member_page_send_carries_the_person_key_and_name() {
+        let (app, state, _dir) = app_with_state();
+        state
+            .store
+            .write_async(|conn| {
+                conn.execute("INSERT INTO org_members (id,email,name,role,joined_at) VALUES ('m1','ethan@mixpeek.com','Ethan','member',1)", [])?;
+                conn.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('page send','user','w',1000,'member:ethan@mixpeek.com')", [])?;
+                conn.execute("INSERT INTO cmd_history (text, type, session, ts, origin) VALUES ('typed in pane','user','w',1001,'pane')", [])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let (_, all) = send(&app, "GET", "/api/history", None).await;
+        let rows = all.as_array().unwrap();
+        let page = rows.iter().find(|r| r["text"] == "page send").expect("page send row");
+        assert_eq!(page["author_key"], json!("person:ethan@mixpeek.com"));
+        assert_eq!(page["author_name"], json!("Ethan"));
+        assert_eq!(page["author_verdict"], json!("person"));
+        let pane = rows.iter().find(|r| r["text"] == "typed in pane").expect("pane row");
+        assert_eq!(pane["author_verdict"], json!("unresolved"), "an unknown stamp says so");
+        let id = page["id"].as_i64().unwrap();
+        let (_, one) = send(&app, "GET", &format!("/api/history/{id}"), None).await;
+        assert_eq!(one["author_key"], json!("person:ethan@mixpeek.com"), "the single lookup agrees");
     }
 
     /// The filter's options come from the DATA, so the UI can only offer a
