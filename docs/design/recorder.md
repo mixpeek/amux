@@ -152,7 +152,22 @@ cannot click that prompt. The real microphone and system-audio paths compile
 and are wired; their first run needs the owner to grant the two permissions.
 
 The long-recording run (`desktop/test/recorder-long.py`, 2 h 5 min, real
-time) is recorded below when it finishes.
+time, two tracks), three times on 2026-10-27:
+
+| Run | Build | Gaps | Lost | File for recording | CPU mean / max | RSS max |
+|---|---|---|---|---|---|---|
+| 1 | first cut | 8 (false: delivery jitter read as gaps) | 0 | 11133 s for 7514 s | 0.79% / 4.8% | 110 MB |
+| 2 | source-clock gaps | 0 | 0 | 13903 s for 7506 s (old assembly) | 1.12% / 3.2% | 113 MB |
+| 3 | both fixes | 0 | 0 | 7503.9 s for 7504.0 s | 1.46% / 6.2% | 113 MB |
+
+Run 1 found both bugs. Gap detection read delivery time, so a late buffer
+looked like lost audio; it reads the source clock now (sample time, sample
+buffer PTS). Assembly let ffmpeg's concat demuxer time each raw ADTS piece,
+and with no duration in the stream it guessed one from the bitrate (18.5 s
+for a 10 s piece, 140 s for one that opens quietly); every piece now carries
+the manifest's duration. The Mac writer also summed whole-ms buffer
+durations, running start_ms 50 ms a segment behind the audio; it keeps the
+timeline in exact milliseconds. At most two segments ever waited for upload.
 
 ## Limits
 

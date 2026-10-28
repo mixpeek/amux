@@ -6,6 +6,10 @@
 import { test, expect, Page, APIRequestContext } from './fixtures';
 
 const CONV = 'g:general';
+// Every test here posts in #general (a channel needs a real group), and the
+// history test adds 120 posts: run in parallel they re-render each other's
+// posts out from under a click. One at a time.
+test.describe.configure({ mode: 'serial' });
 
 async function token(page: Page): Promise<string> {
   return page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
@@ -54,7 +58,10 @@ test('send, live, react, edit, thread, delete: the whole collaboration loop', as
   await expect(post(page, `hello ${tag}`)).toBeVisible();
   const sendMs = Date.now() - t0;
 
-  // Someone else's post arrives live (SSE), no reload, no click.
+  // Someone else's post arrives live (SSE), no reload, no click. Wait for the
+  // stream first: a post made before it opens is caught up on connect, which
+  // is a different path from the one this measures.
+  await page.waitForFunction(() => (window as any).eval('_liveSSE') === true, null, { timeout: 15000 });
   const t1 = Date.now();
   await api(request, tok, 'POST', `/api/conversations/${CONV}/posts`, { body: `from elsewhere ${tag}` });
   await expect(post(page, `from elsewhere ${tag}`)).toBeVisible({ timeout: 8000 });

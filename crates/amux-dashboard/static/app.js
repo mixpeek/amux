@@ -51093,6 +51093,9 @@ function connectSSE() {
       setTimeout(_runDeltaSync, 200);
       _stateSync.catchUp().catch(error => _interactionDiagnostic({verdict:'sync_catchup_failed', error:String(error), measured:true, n_considered:1}));
       setTimeout(() => { fetchSessions(); fetchBoard(); }, 250);
+      // And the open conversation: a post made before the stream (re)opened
+      // has no event coming, and with SSE live Messages polls only every 15 s.
+      if (typeof _cvViewOn === 'function' && _cvViewOn()) setTimeout(() => _cvPoll(false), 250);
     }
     try {
       const msg = JSON.parse(e.data);
@@ -66520,7 +66523,20 @@ function _cvFit() {
 }
 window.addEventListener('resize', () => { if (_cvViewOn()) _cvFit(); });
 function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+// One poll at a time. Posts arriving together each asked for an incremental
+// poll; overlapping ones answered out of order, a stale page moved lastId
+// backwards, and a post was fetched but never drawn (CI, 2026-10-27). A poll
+// asked for during another runs once after it.
 async function _cvPoll(full) {
+  if (_cv.polling) { _cv.pollAgain = _cv.pollAgain || (full ? 'full' : 'inc'); return; }
+  _cv.polling = true;
+  try { await _cvPollOnce(full); } finally {
+    _cv.polling = false;
+    const again = _cv.pollAgain; _cv.pollAgain = null;
+    if (again) _cvPoll(again === 'full');
+  }
+}
+async function _cvPollOnce(full) {
   const sel = _cv.sel; if (!sel || sel[0] === '@') return;
   let d;
   try {
@@ -66541,12 +66557,18 @@ async function _cvPoll(full) {
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
   if (full) _cv.posts = d.posts || [];
-  else if ((d.posts || []).length) _cv.posts = _cv.posts.concat(d.posts);
+  else if ((d.posts || []).length) {
+    // Merged by id and kept in order; the optimistic pending posts stay last.
+    const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
+    for (const np of d.posts) byId.set(np.id, np);
+    _cv.posts = [...byId.values()].sort((a, b) => a.id - b.id).concat(_cv.posts.filter(p => typeof p.id !== 'number'));
+  }
   // Deliveries are written back after a post lands: refresh recent ones that are still pending.
   const pending = _cv.posts.filter(p => (p.mentions || []).some(m => m.indexOf('worker:') === 0) && !(p.deliveries || []).length && Date.now() - p.ts < 120000);
   if (!full && pending.length) { try { const r2 = await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?after=' + (pending[0].id - 1) + '&limit=200'); const d2 = await r2.json(); (d2.posts || []).forEach(np => { const i = _cv.posts.findIndex(p => p.id === np.id); if (i >= 0) _cv.posts[i] = np; }); } catch (e) {} }
-  const grew = _cv.posts.length && _cv.posts[_cv.posts.length - 1].id !== _cv.lastId;
-  if (_cv.posts.length) _cv.lastId = _cv.posts[_cv.posts.length - 1].id;
+  const top = _cv.posts.reduce((m, p) => typeof p.id === 'number' && p.id > m ? p.id : m, 0);
+  const grew = !!top && top !== _cv.lastId;
+  if (top) _cv.lastId = Math.max(full ? 0 : _cv.lastId, top);
   _cvRenderHead(sel, d);
   if (full || grew || pending.length) _cvRenderPosts(full || grew);
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length

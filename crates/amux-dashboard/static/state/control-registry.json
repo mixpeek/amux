@@ -1122,6 +1122,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvPollOnce": {
+      "kind": "command._cvPollOnce",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvReact": {
       "kind": "command._cvReact",
       "feedback_required": true,
