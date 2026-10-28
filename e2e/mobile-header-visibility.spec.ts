@@ -59,8 +59,8 @@ test('header badge, controls and text tabs fit both themes from phone through de
   await expect.poll(()=>page.evaluate(`(${widest})(),_headerLayoutCheck()`)).toEqual([]);
   await expect.poll(()=>page.evaluate(`(${widest})(),(()=>{const r=document.querySelector('#notif-btn').getBoundingClientRect(),b=document.querySelector('#notif-badge').getBoundingClientRect();return b.left>=r.left-0.1&&b.right<=r.right+0.1;})()`)).toBe(true);
   if(width===375){
-   // The FOURTH visible tab, not #tab-calendar: the Projects tab now leads
-   // the strip (cbf4d384), so Calendar is no longer the fourth and scrolls.
+   // The FOURTH visible tab, whichever it is: the strip's order changes over
+   // time (the Projects tab led it from cbf4d384 until it was removed).
    const fit=await page.evaluate(()=>{const strip=document.querySelector('.tab-bar')!.getBoundingClientRect();const tabs=[...document.querySelectorAll<HTMLElement>('.tab-bar [id^="tab-"]')].filter(t=>t.offsetParent!==null&&getComputedStyle(t).display!=='none');const t=tabs[3];return t?{id:t.id,right:t.getBoundingClientRect().right,limit:strip.right}:null;});
    expect(fit,'at least four tabs are visible').not.toBeNull();
    expect(fit!.right,`${fit!.id} must fit inside the strip`).toBeLessThanOrEqual(fit!.limit);

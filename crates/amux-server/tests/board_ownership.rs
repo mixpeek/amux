@@ -298,7 +298,7 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
             assert_eq!(
                 bs::foreign_dependencies(
                     conn,
-                    &bs::BoardOwner::new(None, Some("owner")),
+                    &bs::BoardOwner::new(Some("owner")),
                     &[peer_id.into()]
                 )
                 .unwrap()
@@ -308,7 +308,7 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
             assert_eq!(
                 bs::foreign_dependencies(
                     conn,
-                    &bs::BoardOwner::new(None, None),
+                    &bs::BoardOwner::new(None),
                     &[local_id.into()]
                 )
                 .unwrap()
@@ -317,7 +317,7 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
             );
             assert!(bs::foreign_dependencies(
                 conn,
-                &bs::BoardOwner::new(None, None),
+                &bs::BoardOwner::new(None),
                 &[peer_id.into()]
             )
             .unwrap()
@@ -325,7 +325,7 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
             assert_eq!(
                 bs::foreign_dependencies(
                     conn,
-                    &bs::BoardOwner::new(None, None),
+                    &bs::BoardOwner::new(None),
                     &["MISSING-999".into()]
                 )
                 .unwrap()

@@ -92,9 +92,9 @@ async fn a_worktree_create_writes_the_variable_the_start_path_reads() {
         "an unchecked worktree box must reach the env as an explicit opt-out:\n{env}"
     );
 
-    // Project executors record a repository-local worktree. The worker API
-    // must expose the same path the project uses, not the individual-worker
-    // default under AMUX_HOME/worktrees.
+    // Fan-out workers record a repository-local worktree. The worker API
+    // must expose that recorded path, not the individual-worker default
+    // under AMUX_HOME/worktrees.
     let repository = home.path().join("repository");
     let checkout = repository.join(".worktrees/wt-lane");
     std::fs::create_dir_all(&checkout).unwrap();

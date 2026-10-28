@@ -225,7 +225,7 @@ fn doing_card(state: &AppState, lane: &str) -> Option<String> {
     use rusqlite::OptionalExtension;
     let conn = state.store.read().ok()?;
     conn.query_row(
-        "SELECT id FROM legacy_execution_issues WHERE session = ?1 AND deleted IS NULL \
+        "SELECT id FROM issues WHERE session = ?1 AND deleted IS NULL \
          AND COALESCE(archived,0) = 0 AND status = 'doing' ORDER BY updated DESC LIMIT 1",
         [lane],
         |r| r.get::<_, String>(0),

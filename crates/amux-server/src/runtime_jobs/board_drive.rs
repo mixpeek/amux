@@ -513,7 +513,7 @@ fn nudge_unheeded_cap() -> i64 {
 /// again on the same cadence would be punishing a response we asked for.
 fn lane_board_mark(conn: &Connection, lane: &str) -> i64 {
     conn.query_row(
-        "SELECT COALESCE(MAX(updated),0) FROM legacy_execution_issues AS issues WHERE session=?1 \
+        "SELECT COALESCE(MAX(updated),0) FROM issues WHERE session=?1 \
          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
         rusqlite::params![lane],
         |r| r.get(0),
@@ -1341,11 +1341,6 @@ fn reminder_identity(lane: &str, text: &str, row: &bs::IssueRow, started: f64) -
 }
 
 impl LiveFleet {
-    pub(crate) async fn snapshot(state: AppState) -> Self {
-        let signals = crate::api::session_verbs::boundary_signals(&state, None).await;
-        Self { state, signals }
-    }
-
     /// A durable queue insert is the work-delivery commitment. Check liveness
     /// again after a wake so a vanished worker causes claim compensation rather
     /// than a false `doing` card.
@@ -1897,7 +1892,7 @@ fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
     };
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {dw}{delegated}",
+            "SELECT COUNT(*) FROM issues i WHERE {dw}{delegated}",
             dw = dispatchable_where()
         ),
         rusqlite::params![session, fresh_cut, reclaim_cut],
@@ -1908,7 +1903,7 @@ fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
 
 fn open_card_count(conn: &Connection, session: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+        "SELECT COUNT(*) FROM issues WHERE session=?1 AND deleted IS NULL \
          AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent'",
         rusqlite::params![session],
         |r| r.get(0),
@@ -2051,7 +2046,7 @@ fn holds_execution_slot(conn: &Connection, row: &bs::IssueRow) -> bool {
 
 fn open_execution_count(conn: &Connection, session: &str) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
-        "SELECT id FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+        "SELECT id FROM issues WHERE session=?1 AND deleted IS NULL \
         AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent'",
     )?;
     let ids = stmt
@@ -2076,7 +2071,7 @@ pub(crate) fn wip_holding_ids(
 ) -> rusqlite::Result<Vec<String>> {
     let result = (|| {
         let mut stmt = conn.prepare(
-            "SELECT id FROM legacy_execution_issues AS issues WHERE session=?1 AND status='doing' \
+            "SELECT id FROM issues WHERE session=?1 AND status='doing' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 \
              AND (?2 IS NULL OR id<>?2) ORDER BY id",
         )?;
@@ -2137,7 +2132,7 @@ fn self_owned_backlog_blockers(
             type DepRow = (String, Option<String>, Option<String>, Option<i64>);
             let row: Option<DepRow> = conn
                 .query_row(
-                    "SELECT status, session, source_ref, last_verified_at FROM legacy_execution_issues AS issues WHERE id=?1 AND deleted IS NULL",
+                    "SELECT status, session, source_ref, last_verified_at FROM issues WHERE id=?1 AND deleted IS NULL",
                     rusqlite::params![d],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -2252,7 +2247,7 @@ pub(crate) fn done_wip_cap_in(home: &std::path::Path, session: &str, process_val
 /// The lane's done cards, oldest first: (id, title).
 pub(crate) fn lane_done_cards(conn: &Connection, session: &str) -> Vec<(String, String)> {
     conn.prepare(
-        "SELECT id, COALESCE(title,'') FROM legacy_execution_issues AS issues \
+        "SELECT id, COALESCE(title,'') FROM issues \
          WHERE session=?1 AND status='done' AND COALESCE(archived,0)=0 AND deleted IS NULL \
          ORDER BY COALESCE(entered_state_at, updated) ASC",
     )
@@ -2351,7 +2346,7 @@ pub fn dispatch_backlog_when_idle(session: &str) -> bool {
 fn backlog_by_type_count(conn: &Connection, session: &str) -> usize {
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='backlog' \
+            "SELECT COUNT(*) FROM issues i WHERE i.session=?1 AND i.status='backlog' \
                AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
                AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
                AND NOT {}",
@@ -2381,7 +2376,7 @@ fn drainable_backlog_rows(
     let verified_cut = (now as i64) - SOURCE_REF_STALE_S;
     let candidates = conn
         .prepare(&format!(
-            "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='backlog' \
+            "SELECT i.id FROM issues i WHERE i.session=?1 AND i.status='backlog' \
            AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
            AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
            AND NOT {CAPTURE} \
@@ -2583,7 +2578,7 @@ fn promote_blocked_self_owned_deps(conn: &Connection, session: &str, now: f64) -
     let reclaim_cut = now - reclaim_cooldown_s();
     let ids: Vec<String> = conn
         .prepare(&format!(
-            "SELECT i.id FROM legacy_execution_issues i WHERE {dw} ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC",
+            "SELECT i.id FROM issues i WHERE {dw} ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC",
             dw = dispatchable_where()
         ))
         .and_then(|mut st| {
@@ -2984,7 +2979,7 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
     let due_total = cands.len();
     let mut todo_depth: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(session,''), COUNT(*) FROM legacy_execution_issues \
+        "SELECT COALESCE(session,''), COUNT(*) FROM issues \
          WHERE status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0 \
          GROUP BY COALESCE(session,'')",
     ) {
@@ -3098,7 +3093,7 @@ fn epic_completion_candidates_at(
 ) -> Vec<(String, Vec<(String, String)>)> {
     let epic_ids = conn
         .prepare(
-            "SELECT id FROM legacy_execution_issues AS issues WHERE type='epic' AND deleted IS NULL \
+            "SELECT id FROM issues WHERE type='epic' AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status NOT IN ('done','verified','discarded','quarantined') \
              ORDER BY created,id",
         )
@@ -3112,7 +3107,7 @@ fn epic_completion_candidates_at(
         .filter_map(|epic| {
             let mut children = conn
                 .prepare(
-                    "SELECT id,status FROM legacy_execution_issues AS issues WHERE epic=?1 AND deleted IS NULL \
+                    "SELECT id,status FROM issues WHERE epic=?1 AND deleted IS NULL \
                      AND COALESCE(archived,0)=0 ORDER BY created,id",
                 )
                 .and_then(|mut stmt| {
@@ -3145,7 +3140,7 @@ fn epic_completion_candidates_at(
                 if read_role(owner).get("CC_ORCHESTRATOR").is_some_and(|v| v == "1") {
                     owners.insert(owner.to_string());
                 }
-                let mut stmt = conn.prepare("SELECT DISTINCT session FROM legacy_execution_issues AS issues WHERE epic=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND session IS NOT NULL").ok()?;
+                let mut stmt = conn.prepare("SELECT DISTINCT session FROM issues WHERE epic=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND session IS NOT NULL").ok()?;
                 let assigned = stmt.query_map([&epic], |r| r.get::<_,String>(0)).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok()?;
                 for name in assigned {
                     let env = read_role(&name);
@@ -3155,7 +3150,7 @@ fn epic_completion_candidates_at(
                 }
             }
             for owner in owners {
-                let mut stmt = conn.prepare("SELECT id,status,COALESCE(type,'code') FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND COALESCE(type,'code')!='epic' ORDER BY created,id").ok()?;
+                let mut stmt = conn.prepare("SELECT id,status,COALESCE(type,'code') FROM issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND COALESCE(type,'code')!='epic' ORDER BY created,id").ok()?;
                 let work = stmt.query_map([&owner], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok()?;
                 for (id, status, kind) in work {
                     if !bs::execution_is_terminal(&status, &kind) { return None; }
@@ -3347,7 +3342,6 @@ pub struct EphemeralReaperReport {
     pub measured: bool,
     pub n_considered: usize,
     pub reaped_done: usize,
-    pub reaped_parked: usize,
     pub errors: usize,
 }
 
@@ -3393,7 +3387,6 @@ pub(crate) async fn reap_ephemeral_workers<F: Fleet>(
             Ok(crate::fanout_retirement::Outcome::NeedsIntegration) => {
                 crate::fanout_workspace::queue_integration(state, &name).await;
             }
-            Ok(crate::fanout_retirement::Outcome::ReviewHeld) => report.reaped_parked += 1,
             Ok(crate::fanout_retirement::Outcome::Deferred) => {}
             Err(error) => {
                 report.errors += 1;
@@ -4123,7 +4116,7 @@ fn tag_severity(tags: &[String]) -> i64 {
 /// the human fleet, until now.
 fn count_dependents(conn: &Connection, id: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
+        "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
          AND status NOT IN ('done','verified','discarded') \
          AND depends_on LIKE '%\"' || ?1 || '\"%'",
         rusqlite::params![id],
@@ -4151,7 +4144,7 @@ fn pickup_score(row: &bs::IssueRow, now: f64, dependents: i64, drag: i64) -> i64
 /// an aged-out queue is legible instead of reading as an empty one (AMUX-3779).
 fn stale_gate_excluded_todos(conn: &Connection, session: &str, fresh_cut: i64) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='todo' \
+        "SELECT COUNT(*) FROM issues i WHERE i.session=?1 AND i.status='todo' \
          AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
          AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
          AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
@@ -4351,7 +4344,7 @@ pub fn select_pickup_with(
                 // the 256-card scoring window before its pin boost applies; then
                 // oldest-first so a deep queue never drops the oldest before it
                 // can score.
-                "SELECT i.id FROM legacy_execution_issues i WHERE {dw} \
+                "SELECT i.id FROM issues i WHERE {dw} \
                  ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC LIMIT 256",
                 dw = dispatchable_where()
             ))
@@ -4393,7 +4386,7 @@ pub fn select_pickup_with(
         scored.into_iter().map(|(_, _, id)| id).collect()
     } else {
         conn.prepare(&format!(
-            "SELECT i.id FROM legacy_execution_issues i WHERE {dw} \
+            "SELECT i.id FROM issues i WHERE {dw} \
              ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC LIMIT 16",
             dw = dispatchable_where()
         ))
@@ -4782,7 +4775,7 @@ fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, Stri
             }
         }
         let mut stmt = conn.prepare(&format!(
-            "SELECT id,title,COALESCE(type,'code') FROM legacy_execution_issues AS issues WHERE session=?1 AND status='done' \
+            "SELECT id,title,COALESCE(type,'code') FROM issues WHERE session=?1 AND status='done' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {} ORDER BY updated ASC,id ASC",
             unverifiable_types_sql(), needs_human_sql()))?;
         let rows = stmt.query_map([session], |r| {
@@ -4820,7 +4813,7 @@ fn done_card_count(conn: &Connection, session: &str) -> i64 {
     // they diverge the prompt states a total its own list cannot account for.
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='done' \
+            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='done' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {}",
             unverifiable_types_sql(),
             needs_human_sql()
@@ -4891,7 +4884,7 @@ fn stale_backlog_candidates(
 ) -> Vec<(String, String, i64)> {
     let cutoff = now - BACKLOG_STALE_AGE_S;
     conn.prepare(
-        "SELECT id, title, created FROM legacy_execution_issues \
+        "SELECT id, title, created FROM issues \
          WHERE session=?1 AND status='backlog' AND deleted IS NULL \
          AND COALESCE(archived,0)=0 AND owner_type='agent' \
          AND created < ?2 \
@@ -4918,7 +4911,7 @@ fn backlog_nudge_population(
 ) -> rusqlite::Result<Vec<(String, String, i64)>> {
     let result = (|| {
         let considered: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
+            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
             [session], |row| row.get(0),
         )?;
@@ -5006,7 +4999,7 @@ fn backlog_drain_text(cards: &[(String, String, i64)], drainable: i64) -> String
 fn stale_backlog_count(conn: &Connection, session: &str, now: i64) -> i64 {
     let cutoff = now - BACKLOG_STALE_AGE_S;
     conn.query_row(
-        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
+        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
          AND created < ?2",
         rusqlite::params![session, cutoff],
@@ -5126,7 +5119,7 @@ fn outstanding_work(
     let query = |status: &str| -> (i64, Vec<(String, String)>) {
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status=?2 \
+                "SELECT COUNT(*) FROM issues WHERE session=?1 AND status=?2 \
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                 rusqlite::params![session, status],
                 |r| r.get(0),
@@ -5134,7 +5127,7 @@ fn outstanding_work(
             .unwrap_or(0);
         let cards: Vec<(String, String)> = conn
             .prepare(
-                "SELECT id, title FROM legacy_execution_issues AS issues WHERE session=?1 AND status=?2 \
+                "SELECT id, title FROM issues WHERE session=?1 AND status=?2 \
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
                  ORDER BY updated DESC LIMIT 8",
             )
@@ -5153,7 +5146,7 @@ fn outstanding_work(
     // counts are small (the reporting lane's own worst case was 7).
     let all_blocked: Vec<(String, String)> = conn
         .prepare(
-            "SELECT id, title FROM legacy_execution_issues AS issues WHERE session=?1 AND status='blocked' \
+            "SELECT id, title FROM issues WHERE session=?1 AND status='blocked' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
              ORDER BY updated DESC",
         )
@@ -5166,7 +5159,7 @@ fn outstanding_work(
         .unwrap_or_default();
     let lookup = |id: &str| -> CardLink {
         conn.query_row(
-            "SELECT status, COALESCE(depends_on,'') FROM legacy_execution_issues AS issues WHERE id=?1 AND deleted IS NULL",
+            "SELECT status, COALESCE(depends_on,'') FROM issues WHERE id=?1 AND deleted IS NULL",
             rusqlite::params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
@@ -5191,7 +5184,7 @@ fn outstanding_work(
         .map(|(id, title)| {
             let rv = conn
                 .query_row(
-                    "SELECT COALESCE(reviewer,'') FROM legacy_execution_issues AS issues WHERE id=?1",
+                    "SELECT COALESCE(reviewer,'') FROM issues WHERE id=?1",
                     rusqlite::params![id],
                     |r| r.get::<_, String>(0),
                 )
@@ -5446,7 +5439,7 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
     // undispatchable with nothing saying so.
     let (qn, qoldest): (i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(MIN(updated),0) FROM legacy_execution_issues AS issues WHERE session=?1 \
+            "SELECT COUNT(*), COALESCE(MIN(updated),0) FROM issues WHERE session=?1 \
              AND status='todo' AND owner_type='agent' AND deleted IS NULL \
              AND COALESCE(archived,0)=0",
             rusqlite::params![session],
@@ -5683,7 +5676,7 @@ fn unnudged_capture_cleanup(conn: &Connection, session: &str) -> Option<String> 
     // Filter disposed/structured receipts before LIMIT. Looking at only the
     // newest 40 first let already-asked receipts hide all older pending intake.
     let sql = format!(
-        "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 \
+        "SELECT i.id FROM issues i WHERE i.session=?1 \
          AND i.status IN ('doing','todo','backlog') AND i.source IN ('capture','orchestrator') \
          AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 AND i.owner_type='agent' \
          AND COALESCE(i.type,'') != 'epic' AND {} \
@@ -5735,7 +5728,7 @@ pub fn select_advance_with(
             let moved = match (&last_card, &last_status) {
                 (Some(card), Some(prev)) => conn
                     .query_row(
-                        "SELECT status FROM legacy_execution_issues AS issues WHERE id=?1",
+                        "SELECT status FROM issues WHERE id=?1",
                         rusqlite::params![card],
                         |r| r.get::<_, String>(0),
                     )
@@ -5799,7 +5792,7 @@ pub fn select_advance_with(
             // ask and the alternative is not firing at all.
             "SELECT i.id, i.title, COALESCE(i.archived,0), \
                     COALESCE(MIN(t.added_at), i.updated) AS asked_at \
-             FROM legacy_execution_issues i LEFT JOIN issue_tags t \
+             FROM issues i LEFT JOIN issue_tags t \
                   ON t.issue_id = i.id AND lower(t.tag) LIKE 'needs:you%' \
              WHERE i.session=?1 AND i.deleted IS NULL AND i.owner_type='agent' \
              AND (t.tag IS NOT NULL OR i.status='needsyou') \
@@ -5831,7 +5824,7 @@ pub fn select_advance_with(
     // siblings. At most one delivery is accepted per lane/tick.
     let mut cands: Vec<(String, String)> = conn
         .prepare(
-            "SELECT id, status FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT id, status FROM issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent' \
              AND NOT (COALESCE(type,'')='epic' AND status='doing') \
              ORDER BY CASE status WHEN 'doing' THEN 0 ELSE 1 END, updated DESC, id ASC",
@@ -6411,7 +6404,7 @@ fn advance_card(
     let gate_next_s = bs::db_status_spelling(gate_next);
     let queued: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT COUNT(*) FROM issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('todo','backlog') AND owner_type='agent'",
             rusqlite::params![session],
             |r| r.get(0),
@@ -6431,7 +6424,7 @@ fn advance_card(
     // for this reason and a clause would be inventing a problem.
     let unpickable: i64 = if bs::continuation_required(Some(session)) {
         conn.prepare(
-            "SELECT COALESCE(next_action,'') FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT COALESCE(next_action,'') FROM issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('todo','backlog') AND owner_type='agent'",
         )
         .and_then(|mut stmt| {
@@ -6703,8 +6696,7 @@ fn needsyou_renag_text(
 /// not a display exemption: `backlog` is the durable state for work that cannot
 /// run, and the existing dependency/revisit machinery is what brings it back.
 fn legacy_blocked_doing(conn: &rusqlite::Connection, row: &bs::IssueRow) -> bool {
-    row.project_group.is_none()
-        && row.status == "doing"
+    row.status == "doing"
         && row.owner_type == "agent"
         && row.archived == 0
         && !is_dormant_type(&row.item_type)
@@ -7482,7 +7474,7 @@ fn blocker_recoveries_with_policy(
 ) -> rusqlite::Result<Vec<BlockerRecovery>> {
     use sha2::{Digest, Sha256};
     let mut stmt = conn.prepare(&format!(
-        "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 AND i.owner_type='agent' \
+        "SELECT i.id FROM issues i WHERE i.session=?1 AND i.owner_type='agent' \
          AND i.status IN ('todo','backlog','blocked','doing','needsyou','needs_you') AND i.deleted IS NULL \
          AND COALESCE(i.archived,0)=0 AND COALESCE(i.type,'') NOT IN ('epic','watch','tripwire') \
          AND NOT {capture} AND COALESCE(i.source,'')<>'capture' \
@@ -7624,12 +7616,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     if fleet.is_isolated(lane) {
         hand_off_isolated(state, fleet, lane).await;
     }
-    if crate::api::session_verbs::parse_env(lane)
-        .get("CC_PROJECT")
-        .is_some()
-    {
-        return LaneTrace::skip(lane, "project-managed", "project planner owns execution");
-    }
+    crate::api::session_verbs::note_project_env_ignored(
+        lane,
+        &crate::api::session_verbs::parse_env(lane),
+    );
     let lane_lock = lane_drive_lock(state, lane);
     let _lane_guard = lane_lock.lock().await;
     // COUNT THE BACKLOG BEFORE THE GATES, ALWAYS. Found by reading this
@@ -8154,7 +8144,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // would be a worse trade than an occasionally-stale nudge.
             let rev: Option<i64> = state.store.read().ok().and_then(|c| {
                 c.query_row(
-                    "SELECT rev FROM legacy_execution_issues AS issues WHERE id=?1",
+                    "SELECT rev FROM issues WHERE id=?1",
                     rusqlite::params![&card],
                     |r| r.get(0),
                 )
@@ -8302,7 +8292,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 );
                 let rev: Option<i64> = state.store.read().ok().and_then(|c| {
                     c.query_row(
-                        "SELECT rev FROM legacy_execution_issues AS issues WHERE id=?1",
+                        "SELECT rev FROM issues WHERE id=?1",
                         rusqlite::params![&oldest],
                         |r| r.get(0),
                     )
@@ -8814,7 +8804,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 let stale_count = stale_backlog_count(&conn, lane, now_i);
                 let total_backlog: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
+                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
                          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                         rusqlite::params![lane],
                         |r| r.get(0),
@@ -8822,7 +8812,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     .unwrap_or(0);
                 let doing_count: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='doing' \
+                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='doing' \
                          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                         rusqlite::params![lane],
                         |r| r.get(0),
@@ -9254,7 +9244,7 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
     let now = now_f64() as i64;
     let held = state.store.read().ok().and_then(|conn| {
         conn.query_row(
-            "SELECT id FROM legacy_execution_issues AS issues WHERE status='doing' AND deleted IS NULL AND COALESCE(archived,0)=0 \
+            "SELECT id FROM issues WHERE status='doing' AND deleted IS NULL AND COALESCE(archived,0)=0 \
              AND (lease_owner=?1 OR (lease_owner IS NULL AND session=?1)) \
              ORDER BY COALESCE(lease_acquired_at, updated) DESC LIMIT 1",
             [lane],
@@ -9439,7 +9429,7 @@ pub(crate) async fn claim_card_from_outcome(
             let Some(row) = bs::get_issue(conn, &card_s)? else {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             };
-            if row.project_group.is_some() || row.status != from {
+            if row.status != from {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             }
             let blockers = deps_blocking(conn, &row);
@@ -9773,7 +9763,7 @@ fn fleet_queue_shape(conn: &Connection) -> Value {
     let mut by_status = serde_json::Map::new();
     let mut total = 0i64;
     if let Ok(mut st) = conn.prepare(&format!(
-        "SELECT status, COUNT(*) FROM legacy_execution_issues AS issues WHERE status IN {OPEN} \
+        "SELECT status, COUNT(*) FROM issues WHERE status IN {OPEN} \
          AND deleted IS NULL AND COALESCE(archived,0)=0 GROUP BY status"
     )) {
         if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
@@ -9786,7 +9776,7 @@ fn fleet_queue_shape(conn: &Connection) -> Value {
     // Reuse the exact per-lane predicate; a raw Todo count is not a ready count.
     let now = now_f64();
     let lanes: Vec<String> = conn
-        .prepare("SELECT DISTINCT session FROM legacy_execution_issues AS issues WHERE session IS NOT NULL AND session <> '' AND status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0")
+        .prepare("SELECT DISTINCT session FROM issues WHERE session IS NOT NULL AND session <> '' AND status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0")
         .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()))
         .unwrap_or_default();
     let dispatchable: i64 = lanes
@@ -9799,10 +9789,10 @@ fn fleet_queue_shape(conn: &Connection) -> Value {
     let needsyou_median_age_d: Option<f64> = conn
         .query_row(
             "SELECT (strftime('%s','now') - COALESCE(updated, created)) / 86400.0 \
-             FROM legacy_execution_issues AS issues WHERE status='needsyou' AND deleted IS NULL \
+             FROM issues WHERE status='needsyou' AND deleted IS NULL \
                AND COALESCE(archived,0)=0 \
              ORDER BY COALESCE(updated, created) DESC \
-             LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM legacy_execution_issues AS issues WHERE status='needsyou' \
+             LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM issues WHERE status='needsyou' \
                              AND deleted IS NULL AND COALESCE(archived,0)=0)",
             [],
             |r| r.get(0),
@@ -9896,11 +9886,11 @@ fn capture_shell_cost(conn: &rusqlite::Connection) -> Value {
     // selects nothing any more" from "nobody delegated this week", and
     // `captured_envelopes` beside it can.
     let envelopes = q(&format!(
-        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {}",
+        "SELECT COUNT(*) FROM issues i WHERE {}",
         bs::capture_envelope_sql()
     ));
     let delegations = q(&format!(
-        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {}",
+        "SELECT COUNT(*) FROM issues i WHERE {}",
         bs::capture_delegation_row_sql()
     ));
     json!({
@@ -13651,22 +13641,6 @@ mod tests {
             0,
             "the stale blocked claim must not be resumed or advertised current"
         );
-    }
-
-    #[tokio::test]
-    async fn project_output_wait_never_enters_legacy_normalization() {
-        let (_dir, state, store) = drive_state();
-        drive_card(&store, "PROJECT-WAIT", "doing", "agent", "code");
-        store.write(|c| {c.execute("UPDATE issues SET project_group='sample',depends_on='[\"MISSING\"]',execution_state='{\"stage\":\"waiting\",\"wait_category\":\"required_outputs\"}' WHERE id='PROJECT-WAIT'",[])?;Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
-        {
-            let c = store.read().unwrap();
-            let row = bs::get_issue(&c, "PROJECT-WAIT").unwrap().unwrap();
-            assert!(!legacy_blocked_doing(&c, &row));
-        }
-        assert_eq!(normalize_blocked_doing(&state).await, 0);
-        assert_eq!(normalize_blocked_doing(&state).await, 0);
-        assert_eq!(drive_status(&store, "PROJECT-WAIT"), "doing");
-        assert_eq!(drive_events(&store, "task.blocked_normalized"), 0);
     }
 
     #[tokio::test]

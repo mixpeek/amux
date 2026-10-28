@@ -113,7 +113,6 @@ pub mod pinned;
 pub mod planning;
 pub mod policy;
 pub mod prefs;
-pub mod projects;
 pub mod py_proxy;
 pub mod reclaim;
 pub(crate) mod reclaim_owner;
@@ -377,7 +376,6 @@ pub fn router_with_connector_transport(
         // CC_TAGS env files, config from the shared group_config table
         // (api/groups.rs). Both spellings, matching python's alias.
         .nest("/api/groups", groups::routes())
-        .nest("/api/projects", projects::routes())
         .nest("/api/tags", groups::tags_routes())
         .nest("/api/journal", journal::routes())
         // CRM: a PORT of the python contract, not a new feature — the schema and

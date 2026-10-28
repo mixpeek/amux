@@ -754,6 +754,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0138_social_queue",
         sql: include_str!("../../migrations/0138_social_queue.sql"),
     },
+    Migration {
+        version: 139,
+        name: "0139_remove_projects",
+        sql: include_str!("../../migrations/0139_remove_projects.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -1330,14 +1335,16 @@ mod tests {
         }
     }
 
+    /// Either 0082/0083 history converges, and 0139 then removes the project
+    /// columns while keeping what the main line still uses.
     fn assert_reconciled_project_schema(conn: &Connection) {
-        for (table, column) in [
-            ("group_config", "execution_policy"),
-            ("group_config", "execution_rev"),
-            ("issues", "project_group"),
-            ("issues", "execution_state"),
-            ("cmd_history", "project_group"),
-            ("steering_queue", "sender"),
+        for (table, column, want) in [
+            ("group_config", "execution_policy", false),
+            ("group_config", "execution_rev", false),
+            ("issues", "project_group", false),
+            ("issues", "execution_state", false),
+            ("cmd_history", "project_group", false),
+            ("steering_queue", "sender", true),
         ] {
             let present: bool = conn
                 .query_row(
@@ -1348,8 +1355,16 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert!(present, "missing {table}.{column}");
+            assert_eq!(present, want, "{table}.{column}");
         }
+        let view: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='legacy_execution_issues')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!view, "the project view is dropped with its column");
         let nudge: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_drive_nudge_budget')",
@@ -1364,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn current_main_history_upgrades_to_project_schema() {
+    fn current_main_history_upgrades_through_the_project_removal() {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_history_through(&conn, 82);
         apply_all(&mut conn).unwrap();

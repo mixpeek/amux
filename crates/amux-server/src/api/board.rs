@@ -5068,7 +5068,7 @@ fn body_str_list(v: &Value) -> Result<Vec<String>, String> {
 fn foreign_dependency_refusal(deps: &[(String, String)]) -> Value {
     tracing::warn!(marker="cross_board_dependency_refused", dependencies=?deps,
         measured=true, n_considered=deps.len(), "foreign task cannot gate a self-contained board");
-    json!({"code":"cross_board_dependency_forbidden", "error":"dependencies must share the same project or legacy worker board",
+    json!({"code":"cross_board_dependency_forbidden", "error":"dependencies must share the same worker board",
         "dependencies":deps.iter().map(|(id,session)|json!({"id":id,"session":session})).collect::<Vec<_>>(),
         "how_to_fix":"keep the required outcome on your own board and own its missing components; reference existing peer artifacts in the description or evidence instead of depends_on. Do not relocate a peer wait into source_ref, blocked_on, next_action or gate text: keep the actual prerequisite on this board and implement it here. Preserve real access, spend and customer-outbound restrictions."})
 }
@@ -6388,7 +6388,7 @@ pub async fn create_item(
         .write_async(move |conn| {
             let foreign = bs::foreign_dependencies(
                 conn,
-                &bs::BoardOwner::new(None, new.session.as_deref()),
+                &bs::BoardOwner::new(new.session.as_deref()),
                 &new.depends_on,
             )?;
             if !foreign.is_empty() {
@@ -9354,10 +9354,6 @@ fn ensure_owner_doing_claim(
     source: &str,
     from: &str,
 ) -> rusqlite::Result<bool> {
-    if row.project_group.is_some() {
-        return Ok(false);
-    }
-
     if row.status != "doing" || row.session.as_deref() != Some(actor) {
         return Ok(false);
     }
@@ -11105,9 +11101,6 @@ pub async fn patch_item(
             let Some(row) = bs::get_issue(conn, &id_w)? else {
                 return finish(&slot_w, PatchOut::NotFound, no_write());
             };
-            if let Some(project)=row.project_group.as_deref() {
-                return finish(&slot_w,PatchOut::Refused(StatusCode::CONFLICT,json!({"error":"project-owned tasks use the project lifecycle","project":project,"how_to_fix":"submit a project command to refine requirements; executors use the claim-bound report endpoint"})),no_write());
-            }
 
 
             // Optimistic concurrency: expect_rev checks the PYTHON counter.
@@ -12226,14 +12219,6 @@ pub async fn patch_item(
                 if !foreign.is_empty() {
                     return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT,
                         foreign_dependency_refusal(&foreign)), no_write());
-                }
-            }
-            if map.contains_key("depends_on") {
-                if let Some(project) = next.project_group.as_deref() {
-                    if let Err(e) = crate::project_execution::graph::validate(conn, project, &row.id, &next.depends_on, "board_edit") {
-                        return finish(&slot_w, PatchOut::Refused(StatusCode::BAD_REQUEST,
-                            json!({"error": e.to_string(), "code": format!("dependency_{}", e.code())})), no_write());
-                    }
                 }
             }
             if bs::BoardOwner::of(&next) != bs::BoardOwner::of(&row) {

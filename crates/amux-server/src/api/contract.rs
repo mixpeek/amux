@@ -933,7 +933,7 @@ async fn run_verification(state: &AppState, card: &str, lane: &str) {
     let timeout = lane_setting(&home, lane, "AMUX_CONTRACT_VERIFY_TIMEOUT_S")
         .and_then(|v| v.trim().trim_matches('"').parse::<u64>().ok())
         .unwrap_or(DEFAULT_TIMEOUT_S)
-        .clamp(1, amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS);
+        .clamp(1, crate::fanout_workspace::MAX_VERIFICATION_TIMEOUT_SECS);
     let result = verify(state, card, lane, Duration::from_secs(timeout)).await;
     finish(state, card, lane, result).await;
 }

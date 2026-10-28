@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # DESKT-55. `amux start` must not create a worktree for a start it hands to the
 # server. On 2026-09-25 the CLI made eight detached 3.6 GB worktrees under
-# ~/.amux/worktrees for project workers (px-bucket-objects-gs3-*): it ran
+# ~/.amux/worktrees for workers whose start the server owned: it ran
 # `git worktree add --detach $CC_HOME/worktrees/<name> HEAD` for CC_WORKTREE=1,
-# then delegated the start to the server, which owns project checkouts and
-# refused ("held for human artifact review"). Nothing used or removed them.
+# then delegated the start to the server, which refused. Nothing used or
+# removed them.
 #
 # This drives the REAL `amux start` (not an extracted paraphrase): a fixture repo,
 # a hermetic CC_HOME, a fake tmux that reports nothing running, and a server URL
@@ -38,7 +38,7 @@ chmod +x "$TMP/bin/tmux"
 
 export CC_HOME="$TMP/home"
 mkdir -p "$CC_HOME/sessions"
-register() { # <name> <provider> <project> <ephemeral>
+register() { # <name> <provider> <stale CC_PROJECT> <ephemeral>
   {
     printf 'CC_DIR="%s"\n' "$repo"
     printf 'CC_WORKTREE="1"\n'
@@ -59,21 +59,17 @@ check "server_owns_start() exists in the CLI" "yes" "$([[ -s "$TMP/fn.sh" ]] && 
 # shellcheck source=/dev/null
 source "$TMP/fn.sh"
 yn() { if "$@"; then echo yes; else echo no; fi; }
-check "codex is server-owned"                 "yes" "$(yn server_owns_start codex "" "")"
-check "gemini is server-owned"                "yes" "$(yn server_owns_start gemini "" "")"
-check "a claude project worker is server-owned"   "yes" "$(yn server_owns_start claude demo "")"
-check "a claude ephemeral worker is server-owned" "yes" "$(yn server_owns_start claude "" 1)"
-check "a plain claude worker is NOT server-owned" "no"  "$(yn server_owns_start claude "" "")"
-check "CC_EPHEMERAL=0 does not count"             "no"  "$(yn server_owns_start claude "" 0)"
+check "codex is server-owned"                 "yes" "$(yn server_owns_start codex "")"
+check "gemini is server-owned"                "yes" "$(yn server_owns_start gemini "")"
+check "a claude ephemeral worker is server-owned" "yes" "$(yn server_owns_start claude 1)"
+check "a plain claude worker is NOT server-owned" "no"  "$(yn server_owns_start claude "")"
+check "CC_EPHEMERAL=0 does not count"             "no"  "$(yn server_owns_start claude 0)"
 
 echo "2. the real start: no worktree for a start the server owns"
-register px-demo claude demo ""
-out=$(start px-demo)
-check "a project worker's start leaves no CLI worktree"   "no" "$(has_wt px-demo)"
-check "and it went to the server (which could not answer)" "yes" "$([[ "$out" == *"server unreachable"* ]] && echo yes || echo no)"
 register eph-demo claude "" 1
-start eph-demo >/dev/null
+out=$(start eph-demo)
 check "an ephemeral worker's start leaves no CLI worktree" "no" "$(has_wt eph-demo)"
+check "and it went to the server (which could not answer)" "yes" "$([[ "$out" == *"server unreachable"* ]] && echo yes || echo no)"
 register cx-demo codex "" ""
 start cx-demo >/dev/null
 check "a codex worker's start leaves no CLI worktree"     "no" "$(has_wt cx-demo)"
@@ -83,6 +79,10 @@ echo "3. control: a plain claude worker still gets its CLI worktree"
 register plain claude "" ""
 out=$(start plain)
 check "the CLI-launched worker has its worktree" "yes" "$(has_wt plain)"
+# Projects were removed: a stale CC_PROJECT no longer hands the start away.
+register stale-px claude demo ""
+start stale-px >/dev/null
+check "a stale CC_PROJECT worker is CLI-launched like any plain worker" "yes" "$(has_wt stale-px)"
 [[ "$(has_wt plain)" == yes ]] || echo "    start output: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
 
 echo

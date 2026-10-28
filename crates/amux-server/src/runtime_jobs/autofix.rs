@@ -10280,8 +10280,8 @@ mod tests {
     #[test]
     fn one_unhealthy_job_still_gets_its_own_named_card() {
         let issue = crate::runtime_jobs::registry::HealthIssue {
-            id: "project-execution".into(),
-            name: "Project execution".into(),
+            id: "task-titles".into(),
+            name: "Task titles".into(),
             status: "stalled",
             interval_s: Some(10.0),
             ticks: 23,
@@ -10292,8 +10292,8 @@ mod tests {
         };
         let f = super::system_job_findings(&[issue], 1_788_000_000.0);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].signature, "silent|system-job|project-execution");
-        assert_eq!(f[0].title, "System job project-execution is stalled");
+        assert_eq!(f[0].signature, "silent|system-job|task-titles");
+        assert_eq!(f[0].title, "System job task-titles is stalled");
     }
 
     /// A group where nothing reported an age must SAY the togetherness is

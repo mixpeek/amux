@@ -707,10 +707,10 @@ test('MDAI chat: a stuck chat in the offline outbox is dropped at load, other pe
   await page.evaluate(() => localStorage.setItem('amux_offline_queue', JSON.stringify([
     { id: 'stuck-chat', url: '/api/files/mdai/chat', options: { method: 'POST', body: '{"path":"/x.mdai","message":"m"}' }, timestamp: Date.now() - 660_000,
       state: 'pending', error: '409: This node changed on disk since you opened it. Reload, then send your message again.' },
-    { id: 'keep-closeout', url: '/api/projects/p1/closeout', options: { method: 'POST', body: '{}' }, timestamp: Date.now(), state: 'pending' },
+    { id: 'keep-blocked', url: '/api/board', options: { method: 'POST', body: '{"title":"held"}' }, timestamp: Date.now(), state: 'blocked' },
   ])));
   await page.reload();
-  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]').map((q: any) => q.id).join(','))).toBe('keep-closeout');
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]').map((q: any) => q.id).join(','))).toBe('keep-blocked');
 });
 
 // A loopback stand-in for the Messages API. A chat-edit prompt gets a tagged

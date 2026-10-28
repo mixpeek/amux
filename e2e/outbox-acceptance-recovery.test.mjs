@@ -7,7 +7,6 @@ const source=fs.readFileSync(process.env.AMUX_OUTBOX_SOURCE || 'crates/amux-dash
 function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert(a>=0 && b>a, start);return source.slice(a,b);}
 const run=section('function _outboxMessageProgress(', 'async function _syncOneDraft(');
 const helpers=source.includes('function _outboxMessageId(') ? section('function _outboxMessageId(', '// Queue modal') : '';
-const reviewAction=section('const _outboxManualAction =', '\n');
 // AMUX-4844. THE SANDBOX IS HAND-MAINTAINED, SO MAKE ITS GAPS SAY SO.
 //
 // This file does not load app.js. It slices it by text markers and evaluates
@@ -60,7 +59,7 @@ function harness(queue,replies,transport=null){
   _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});if(transport)return transport(url,opts);const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
   _apiErrText:async r=>(await r.json()).error,_ownerMentionHeaders:(u,b,h)=>h,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},
   _outboxDiagnostic:(kind,data)=>signals.push({kind,...data}),amuxTrack(){},updateConnectionStatus(){},fetchSessions(){},fetchBoard(){},showToast(){},setTimeout:(f,ms)=>timers.push(ms),clearTimeout(){},_writeError:'',_syncRetryTimer:null,_syncBackoffMs:0,_SYNC_MIN_MS:2000,_SYNC_MAX_MS:60000});
- const evaluated=reviewAction+'\n'+section('function _validateMessageAcknowledgement(', 'function _localMessageRequest(')+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
+ const evaluated=section('function _validateMessageAcknowledgement(', 'function _localMessageRequest(')+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
  installMissingStubs(evaluated,ctx);
  vm.runInContext(evaluated,ctx);
  return {queue,requests,patches,signals,timers,beacons,peekNudges,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
@@ -233,11 +232,6 @@ test('worker startup races retry automatically, but authorization refusals do no
  await h.drain();assert.equal(h.queue.length,0);
  const denied=harness([pending()],[{status:403,body:{error:'not authorized'}}]);
  await denied.drain();assert.equal(denied.queue[0].state,'blocked');await denied.drain();assert.equal(denied.requests.length,1);
-});
-
-test('retained project draft and approval operations never replay automatically',async()=>{
- const h=harness([pending({url:'/api/projects/draft'}),pending({id:'approve',url:'/api/projects/sample/acceptance/approve'})],[]);
- await h.drain();assert.equal(h.requests.length,0);assert.equal(h.queue.length,2);
 });
 
 

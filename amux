@@ -449,7 +449,7 @@ load_session() {
   # restore (2026-09-25 17:50) inside ~/.amux/worktrees/amux instead of its
   # repo. Drop inherited values of the keys that pick the checkout and lifecycle.
   local _k _dropped=""
-  for _k in CC_WORKTREE CC_WORKTREE_REPO CC_PROJECT CC_EPHEMERAL CC_DIR CC_PROVIDER; do
+  for _k in CC_WORKTREE CC_WORKTREE_REPO CC_EPHEMERAL CC_DIR CC_PROVIDER; do
     if [[ -n "${!_k+x}" ]]; then _dropped+=" $_k=${!_k}"; unset "$_k"; fi
   done
   # shellcheck disable=SC1090
@@ -560,16 +560,15 @@ need_herdr() {
 
 # Does the SERVER own this worker's start, and with it the worker's workspace?
 # True for the providers whose launch is delegated (AMUX-3164), and for every
-# project or ephemeral worker whatever its provider: the server gives those the
-# project's single checkout or a <repo>/.worktrees/<name> fan-out workspace and
-# enforces the project's start permit. Both `cmd_start` branches read this one
-# function, so the CLI can never create a worktree for a start it hands away
-# (DESKT-55: 8 detached 3.6 GB worktrees under ~/.amux/worktrees, made by
-# `amux start` for project workers whose server-side start was then refused,
+# ephemeral worker whatever its provider: the server gives those a
+# <repo>/.worktrees/<name> fan-out workspace. Both `cmd_start` branches read
+# this one function, so the CLI can never create a worktree for a start it
+# hands away (DESKT-55: 8 detached 3.6 GB worktrees under ~/.amux/worktrees,
+# made by `amux start` for workers whose server-side start was then refused,
 # and never used or removed).
-server_owns_start() { # <provider> <CC_PROJECT> <CC_EPHEMERAL>
+server_owns_start() { # <provider> <CC_EPHEMERAL>
   case "$1" in codex|ollama|gemini|muse|opencode) return 0 ;; esac
-  [[ -n "${2:-}" || "${3:-}" == "1" ]]
+  [[ "${2:-}" == "1" ]]
 }
 
 _start_via_api() {
@@ -1117,7 +1116,7 @@ cmd_start() {
     fi
   fi
   if ! $dry_run && [[ "${CC_WORKTREE:-}" == "1" ]] && ! $_claude_via_server \
-     && ! server_owns_start "$_provider" "${CC_PROJECT:-}" "${CC_EPHEMERAL:-}" \
+     && ! server_owns_start "$_provider" "${CC_EPHEMERAL:-}" \
      && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     worktree_dir="$CC_HOME/worktrees/$name"
     if [[ -d "$worktree_dir" ]]; then
@@ -1168,7 +1167,7 @@ cmd_start() {
   # builder below and launched `claude --model sonnet --continue` -- the WRONG AGENT, silently,
   # because the fallback is a default rather than a failure. The server-side arm was correct the
   # whole time; only this door was. Observed live before the fix (muse-hooks-probe).
-  if $_claude_via_server || server_owns_start "$_provider" "${CC_PROJECT:-}" "${CC_EPHEMERAL:-}"; then
+  if $_claude_via_server || server_owns_start "$_provider" "${CC_EPHEMERAL:-}"; then
     if $dry_run; then
       echo "${BOLD}$name${RESET} ($_provider — started via server API: POST /api/sessions/$name/start; the server owns the provider→binary map and the provider-specific setup)"
       return

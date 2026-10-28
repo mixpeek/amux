@@ -225,13 +225,10 @@ pub(crate) fn workspace_workdirs(
                 env.with_extension("env.reaped")
             };
             let settings = crate::config::parse_env_file(&env);
-            let project_owned = settings.get("CC_PROJECT").is_some_and(|project| {
-                crate::project_execution::checkout::belongs_to(home, project, &w)
-            });
             let worker_owned = w.path
                 == crate::fanout_workspace::expected_path(&w.repo, name).to_string_lossy()
                 && w.branch == format!("amux/fanout/{name}");
-            if !(project_owned || worker_owned)
+            if !worker_owned
                 || !Path::new(&w.repo).is_absolute()
                 || w.base.len() != 40
                 || !w.base.bytes().all(|b| b.is_ascii_hexdigit())
@@ -756,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_workspace_owners_survive_retirement_and_recover_exact_unowned_rows() {
+    async fn workspace_owners_survive_retirement_and_recover_exact_unowned_rows() {
         let home = tempfile::tempdir().unwrap();
         let sessions = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();

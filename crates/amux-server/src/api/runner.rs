@@ -527,12 +527,12 @@ fn dependency_component(conn: &Connection, hub: &str, root: &str, cap: usize) ->
             if seen.contains(&n) {
                 continue;
             }
-            let owner: Option<(Option<String>, Option<String>)> = conn
-                .query_row("SELECT project_group, session FROM issues WHERE id = ?1 AND deleted IS NULL", [&n],
-                    |r| Ok((r.get(0)?, r.get(1)?)))
+            let owner: Option<Option<String>> = conn
+                .query_row("SELECT session FROM issues WHERE id = ?1 AND deleted IS NULL", [&n],
+                    |r| r.get(0))
                 .optional()?;
             match owner {
-                Some((None, Some(s))) if s == hub => {}
+                Some(Some(s)) if s == hub => {}
                 _ => return Ok(Err(n)),
             }
             seen.push(n.clone());
@@ -573,7 +573,7 @@ pub fn take_group(conn: &Connection, hub: &str, root: &str, root_status: String,
     }
     conn.execute_batch("SAVEPOINT a2_group")?;
     let res = (|| -> rusqlite::Result<bool> {
-        let owner = crate::db::board_store::BoardOwner::new(None, Some(lane));
+        let owner = crate::db::board_store::BoardOwner::new(Some(lane));
         let changes: Vec<(String, crate::db::board_store::BoardOwner)> = members.iter().map(|m| (m.clone(), owner.clone())).collect();
         crate::db::board_store::validate_owner_changes(conn, &changes)?;
         let stamp = chrono::Local::now().format("%H:%M");
@@ -843,8 +843,8 @@ pub enum Plan {
 
 fn shared_hub_board(hub: &str, lane: &str) -> bool {
     use crate::db::board_store::BoardOwner;
-    let owner = BoardOwner::new(None, Some(hub));
-    matches!(owner, BoardOwner::Orchestration(_)) && owner == BoardOwner::new(None, Some(lane))
+    let owner = BoardOwner::new(Some(hub));
+    matches!(owner, BoardOwner::Orchestration(_)) && owner == BoardOwner::new(Some(lane))
 }
 
 /// claim_pool_card's search without its writes: is there anything this lane

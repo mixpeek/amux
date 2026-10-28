@@ -41,7 +41,6 @@ pub mod memory;
 pub mod message;
 pub mod orchestrator;
 pub mod policy;
-pub mod project;
 pub mod protocol;
 pub mod provider;
 pub mod provider_fleet;

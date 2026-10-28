@@ -48,7 +48,7 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_DELIVERY_STEAL_MS', '_outboxManualAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase', '_outboxOwned', '_OUTBOX_SETTLED_KEY']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_DELIVERY_STEAL_MS', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS', '_OUTBOX_DECIDE_AFTER_MS', '_OUTBOX_STALE_SEND_MS', '_SYNC_STALL_MS', '_SYNC_LOCK_STEAL_MS', '_syncPhase', '_outboxOwned', '_OUTBOX_SETTLED_KEY']) vm.runInContext(declaration(name), ctx);
   for (const name of ['_outboxDeliveryLock', '_syncSetPhase', '_syncLockRequest', '_upqListBounded', '_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_lockRequest', '_outboxLock', '_outboxSettledRead', '_outboxRestoreOwned', '_outboxOwnedMissing', '_mutateQueue', '_outboxViewsRefresh', '_outboxQueueable', '_outboxMessageId', '_outboxMessageProgress', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names, '_outboxIsMessage', '_outboxNeedsDecision', '_outboxMarkDecision', '_outboxSettleDecisions']) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
@@ -945,38 +945,6 @@ test('Stop deduplication preserves a later Stop after Start and separate worker 
   assert.deepEqual(Array.from(ctx.offlineQueue, q => q.url), ['/api/sessions/a/stop', '/api/sessions/b/stop', '/api/sessions/a/start', '/api/sessions/a/stop']);
 });
 
-
-test('project overview distinguishes a held task from failed whole-project acceptance', () => {
-  const ctx = vm.createContext({});
-  vm.runInContext(code('_projectOutcomeVerdict'), ctx);
-  const acceptance = {state:'pending', criteria:[{verifier:{type:'human'}}]};
-  const parent = {phase:'waiting',execution_plan:{waiting_reason:'required_output:CHILD',waiting_label:'Waiting on CHILD'}};
-  const child = {phase:'working'};
-  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'running');
-  child.phase = 'waiting';
-  child.execution_plan = {waiting_reason:'executor_returned_without_result',waiting_label:'Missing report after attempt'};
-  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'running');
-  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[child]}).tone,'review');
-  acceptance.criteria.push({verifier:{type:'command'},result:{state:'failed'}});
-  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'failed');
-});
-
-test('project workers have their own group and group actions target only eligible members', () => {
-  const ctx=vm.createContext({searchQuery:'',sessions:[
-    {name:'project-running',project:'mixpeek',lifecycle:'active',running:true},
-    {name:'project-paused',project:'mixpeek',lifecycle:'paused',running:false},
-    {name:'review-only',project:'',lifecycle:'review',running:false},
-    {name:'personal',project:'',lifecycle:'active',running:true},
-  ],_expiredWorkerInventory:new Map([['project-expired',{name:'project-expired',project:'mixpeek',lifecycle:'expired'}]]),boardItems:[],
-    _workerListFilterPass:()=>true});  // no tag/provider/model filter active
-  for(const name of ['_workerGroupMembers','_workerGroupActionNames','_workerActionEligible']) vm.runInContext(code(name),ctx);
-  assert.deepEqual(Array.from(ctx._workerGroupMembers('project'),s=>s.name).sort(),['project-expired','project-paused','project-running']);
-  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','pause')),['project-running']);
-  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','resume')).sort(),['project-expired','project-paused']);
-  assert.deepEqual(Array.from(ctx._workerGroupMembers('review'),s=>s.name),['review-only']);
-  ctx.searchQuery='paused';
-  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','resume')),['project-paused']);
-});
 
 test('local settings never probe the gateway-only billing route', async () => {
   const nodes = new Map(['settings-billing-section','settings-billing-info','settings-billing-sep'].map(id=>[id,{style:{display:''}}]));

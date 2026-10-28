@@ -110,13 +110,6 @@ pub fn advance(
         return Ok(Err(AdvanceRefusal::ArchivedImmutable));
     }
 
-    if row.project_group.is_some() && actor != "command-lifecycle" {
-        return Ok(Err(AdvanceRefusal::InvalidTransition {
-            from: row.status.clone(),
-            to: destination.to_string(),
-            reason: "project planner owns this task lifecycle".into(),
-        }));
-    }
     // Orchestration contract (AH-374): the one transition engine holds rule 2
     // and 3 for every caller, not only the PATCH route. Before this, bulk
     // moves, /api/verify, the orchestrator runtime and capture reconcile could

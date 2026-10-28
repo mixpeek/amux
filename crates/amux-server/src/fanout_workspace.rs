@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Upper bound for one candidate verification command.
+pub const MAX_VERIFICATION_TIMEOUT_SECS: u64 = 3600;
+/// Timeout for a candidate verification command when the caller names none.
+pub const DEFAULT_VERIFICATION_TIMEOUT_SECS: u64 = 600;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub repo: String,
@@ -19,25 +24,8 @@ pub(crate) fn same_repository(left: &str, right: &str) -> bool {
         (Ok(left), Ok(right)) if left == right)
 }
 
-pub(crate) fn status_without_harness_receipts(raw: &str) -> String {
-    raw.lines()
-        .filter(|line| {
-            let path = line.get(3..).unwrap_or(line).trim();
-            !matches!(
-                path,
-                ".amux/project-report.json" | ".amux/project-wait.json" | ".amux/project-required-outputs.json" | ".amux/project-lead.json"
-            ) && !path.ends_with(" -> .amux/project-report.json")
-                && !path.ends_with(" -> .amux/project-wait.json")
-                && !path.ends_with(" -> .amux/project-lead.json")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub(crate) async fn project_clean_status(repo: &str) -> Result<String, String> {
-    git(repo, &["status", "--porcelain", "--untracked-files=all"])
-        .await
-        .map(|raw| status_without_harness_receipts(&raw))
+pub(crate) async fn clean_status(repo: &str) -> Result<String, String> {
+    git(repo, &["status", "--porcelain", "--untracked-files=all"]).await
 }
 
 pub(crate) async fn git(repo: &str, args: &[&str]) -> Result<String, String> {
@@ -117,7 +105,7 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
     ensure_named(home, name, configured_repo, &format!("amux/fanout/{name}")).await
 }
 
-/// A project owns its branch independently of worker attempt identities.
+/// Create or adopt a worker workspace on an explicit branch.
 pub(crate) async fn ensure_named(home: &Path, name: &str, configured_repo: &str, branch: &str) -> Result<Workspace, String> {
     if !crate::api::session_verbs::valid_session_name(name) {
         return Err("invalid worker name".into());
@@ -537,7 +525,7 @@ where
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     if !(Duration::from_secs(1)
-        ..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS))
+        ..=Duration::from_secs(MAX_VERIFICATION_TIMEOUT_SECS))
         .contains(&timeout)
     {
         return Err("verification timeout must be 1..3600 seconds".into());
@@ -552,7 +540,7 @@ where
     permit()?;
     cleanup().await?;
     let head = git(candidate, &["rev-parse", "HEAD"]).await?;
-    if !project_clean_status(candidate).await?.is_empty() {
+    if !clean_status(candidate).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
     }
     let tool_path = verification_tool_path(permit).await?;
@@ -586,7 +574,7 @@ where
             ));
         }
         if git(candidate, &["rev-parse", "HEAD"]).await? != head
-            || !project_clean_status(candidate).await?.is_empty()
+            || !clean_status(candidate).await?.is_empty()
         {
             return Err("verification changed the reported worktree".into());
         }
@@ -602,7 +590,7 @@ pub async fn integrate<F: Fn() -> Result<(), String>>(
     integrate_checks(
         workspace,
         &[verification],
-        Duration::from_secs(amux_core::project::verification_timeout_default()),
+        Duration::from_secs(DEFAULT_VERIFICATION_TIMEOUT_SECS),
         permit,
     )
     .await
@@ -639,7 +627,7 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
     permit: &F,
 ) -> Result<Option<String>, String> {
     permit()?;
-    if !project_clean_status(&workspace.path).await?.is_empty() {
+    if !clean_status(&workspace.path).await?.is_empty() {
         return Err("Commit and verify the remaining workspace changes before integration".into());
     }
     git(&workspace.repo, &["fetch", "origin", "main"]).await?;
@@ -709,12 +697,12 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         // hooks remain enabled, including the repository's pre-push gates.
         verify_commands(workspace,&candidate,verification,timeout,permit).await?;
         if git(&candidate,&["rev-parse","HEAD"]).await?!=merged
-            || !project_clean_status(&candidate).await?.is_empty() {
+            || !clean_status(&candidate).await?.is_empty() {
             return Err("Validation modified the candidate; commit the required changes in the worker workspace".into());
         }
         permit()?;
         if git(&workspace.path,&["rev-parse","HEAD"]).await?!=head
-            || !project_clean_status(&workspace.path).await?.is_empty() {
+            || !clean_status(&workspace.path).await?.is_empty() {
             return Err("Worker workspace changed during validation; integration deferred".into());
         }
         // Detect a stale parent BEFORE an expensive pre-push hook. A remote
@@ -925,7 +913,7 @@ pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
     if record["head"].as_str() != Some(head.as_str()) {
         return Err("The integration receipt covers an older worktree head; integrate the current commit first".into());
     }
-    if !project_clean_status(&workspace.path).await?.is_empty() {
+    if !clean_status(&workspace.path).await?.is_empty() {
         return Err("The worktree has uncommitted changes; preserve, commit and integrate them before verification".into());
     }
     Ok(())
@@ -933,8 +921,7 @@ pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
 
 fn ready_board(state: &crate::api::AppState, name: &str) -> Result<(String, String, i64), String> {
     let env = crate::api::session_verbs::parse_env(name);
-    if env.get("CC_PROJECT").is_some()
-        || env.get("CC_EPHEMERAL") != Some("1")
+    if env.get("CC_EPHEMERAL") != Some("1")
         || env.get("CC_PAUSED") == Some("1")
         || env.get("CC_ARCHIVED") == Some("1")
         || env.get("CC_ISOLATED") == Some("1")
@@ -1131,8 +1118,7 @@ pub async fn adopt_at_boundary(state: &crate::api::AppState, name: &str) {
     let _op = lock.lock().await;
     let home = crate::config::amux_home();
     let env = crate::api::session_verbs::parse_env(name);
-    if env.get("CC_PROJECT").is_some()
-        || env.get("CC_EPHEMERAL") != Some("1")
+    if env.get("CC_EPHEMERAL") != Some("1")
         || env.get("CC_PAUSED") == Some("1")
         || env.get("CC_ARCHIVED") == Some("1")
         || env.get("CC_ISOLATED") == Some("1")
@@ -1684,7 +1670,7 @@ mod tests {
         assert!(board_snapshot(&c, "child").is_err());
     }
     #[tokio::test]
-    async fn project_verification_source_and_merged_use_distinct_per_command_timeouts() {
+    async fn candidate_verification_source_and_merged_use_distinct_per_command_timeouts() {
         let (d, w) = fixture().await;
         commit(&w, "done.txt", "done\n").await;
         let log = d.path().join("checked-paths");
@@ -1748,7 +1734,7 @@ mod tests {
             },
         ).await.unwrap();
         assert_eq!(std::fs::read_to_string(&archive).unwrap(), "measured\n");
-        assert!(project_clean_status(&candidate).await.unwrap().is_empty());
+        assert!(clean_status(&candidate).await.unwrap().is_empty());
 
         let error = verify_commands_with_cleanup(
             &workspace, &candidate, &["printf 'unapproved\\n' > source-edit.txt"],
@@ -1757,7 +1743,7 @@ mod tests {
         assert_eq!(error, "verification changed the reported worktree");
     }
     #[tokio::test]
-    async fn project_verification_timeout_kills_children_in_both_candidate_phases() {
+    async fn candidate_verification_timeout_kills_children_in_both_candidate_phases() {
         for merged in [false, true] {
             let (d, w) = fixture().await;
             commit(&w, "done.txt", "done\n").await;
@@ -1820,31 +1806,13 @@ mod tests {
         assert!(output.contains("assertion-failed"));
     }
     #[tokio::test]
-    async fn project_verification_profile_keeps_checkout_and_command_as_separate_arguments() {
+    async fn candidate_verification_profile_keeps_checkout_and_command_as_separate_arguments() {
         let d=tempfile::tempdir().unwrap();let path=d.path().join("candidate with ' quote");std::fs::create_dir(&path).unwrap();
         let mut process=verification_process("/usr/bin:/bin",path.to_str().unwrap(),"pwd; printf '%s' 'literal $not_expanded'");
         let out=process.output().await.unwrap();assert!(out.status.success());
         let text=String::from_utf8_lossy(&out.stdout);let lines=text.lines().collect::<Vec<_>>();
         assert_eq!(std::fs::canonicalize(lines[0]).unwrap(),std::fs::canonicalize(&path).unwrap());
         assert_eq!(lines[1],"literal $not_expanded");
-    }
-
-    #[test]
-    fn project_status_ignores_only_durable_harness_receipt() {
-        let raw = "\
-?? .amux/project-report.json
-?? .amux/notes.json
- M src/lib.rs
-R  old-report.md -> .amux/project-report.json
-A  artifacts/project-report.json
-";
-        assert_eq!(
-            status_without_harness_receipts(raw),
-            "\
-?? .amux/notes.json
- M src/lib.rs
-A  artifacts/project-report.json"
-        );
     }
 
     #[test]

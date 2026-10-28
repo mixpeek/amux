@@ -2059,15 +2059,10 @@ mod storage_maintenance_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("history-index.db")).unwrap();
         let c = store.read().unwrap();
-        for (query, index) in [
-            ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM steering_history WHERE queued_at>=0", "idx_steering_history_queued_at"),
-            ("EXPLAIN QUERY PLAN SELECT acceptance_criteria FROM issues WHERE project_group='fixture'", "idx_issues_project_history"),
-            ("EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM issues WHERE project_group='fixture' AND source='original')", "idx_issues_project_history"),
-        ] {
-            let plan = c.prepare(query).unwrap().query_map([], |r| r.get::<_,String>(3)).unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("; ");
-            assert!(plan.contains(index) && plan.contains("COVERING INDEX"), "{plan}");
-        }
+        let (query, index) = ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM steering_history WHERE queued_at>=0", "idx_steering_history_queued_at");
+        let plan = c.prepare(query).unwrap().query_map([], |r| r.get::<_,String>(3)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("; ");
+        assert!(plan.contains(index) && plan.contains("COVERING INDEX"), "{plan}");
     }
 
     #[test]
