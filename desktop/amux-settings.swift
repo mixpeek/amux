@@ -20,9 +20,22 @@ struct SavedPin: Codable {
 /// before names were kept) what its link shows.
 func savedTabName(_ w: SavedWindow) -> String {
     let own = savedPageName(url: w.url, title: w.title)
-    // A window split into panes (amux-panes.swift) is named by every pane.
+    // A window split into panes (amux-panes.swift) is named by every pane, and
+    // a pane by each of its tabs ("amux-admin + amux-app | amux-app + desktop"),
+    // so the list shows everything Open will put back.
     guard let g = w.grid, !g.panes.isEmpty else { return own }
-    return ([own] + g.panes.map { savedPageName(url: $0.url, title: $0.title) }).joined(separator: " | ")
+    func pane(_ url: String, _ title: String?, _ tabs: [SavedTab]?) -> String {
+        ([savedPageName(url: url, title: title) + savedSubtab(url)] + (tabs ?? []).map { savedPageName(url: $0.url, title: $0.title) + savedSubtab($0.url) })
+            .joined(separator: " + ")
+    }
+    return ([pane(w.url, w.title, g.hostTabs)] + g.panes.map { pane($0.url, $0.title, $0.tabs) }).joined(separator: " | ")
+}
+
+/// A worker shown on another of its tabs than Terminal: " (Chat)".
+func savedSubtab(_ url: String) -> String {
+    guard let r = url.range(of: "#"), url[r.upperBound...].hasPrefix("peek=") else { return "" }
+    let t = url[r.upperBound...].split(separator: "&").first { $0.hasPrefix("tab=") }.map { String($0.dropFirst(4)) } ?? ""
+    return t.isEmpty || t == "terminal" ? "" : " (" + t.prefix(1).uppercased() + t.dropFirst() + ")"
 }
 
 func savedPageName(url: String, title: String?) -> String {
@@ -31,6 +44,39 @@ func savedPageName(url: String, title: String?) -> String {
     let h = String(url[r.upperBound...]).split(separator: "&").first.map(String.init) ?? ""
     let v = h.split(separator: "=", maxSplits: 1).last.map(String.init) ?? h
     return v.removingPercentEncoding ?? v
+}
+
+/// A workspace change waiting for the server: save (replace or add), delete,
+/// or rename. Replayed on the server's list, so it merges with other Macs'.
+struct WorkspaceOp: Codable {
+    var kind: String
+    var name: String
+    var newName: String? = nil
+    var layout: Layout? = nil
+
+    func apply(to list: inout [Layout]) {
+        switch kind {
+        case "save":
+            guard let l = layout else { return }
+            if let i = list.firstIndex(where: { $0.name == name }) { list[i] = l } else { list.append(l) }
+        case "delete":
+            list.removeAll { $0.name == name }
+        case "rename":
+            guard let n = newName, list.contains(where: { $0.name == name }) else { return }
+            list.removeAll { $0.name == n }
+            if let i = list.firstIndex(where: { $0.name == name }) { list[i].name = n }
+        default:
+            break
+        }
+    }
+}
+
+/// The server's copy of every saved workspace (prefs key desktop_workspaces).
+struct ServerWorkspaces: Codable {
+    var schema: Int
+    var layouts: [Layout]
+    var savedBy: String?
+    var savedAt: Double
 }
 
 struct Layout: Codable {
@@ -65,18 +111,13 @@ extension AppDelegate {
             NSLog("amux-desktop: verdict=layout_saved name=%@ windows=%d pins=%d shows=%@", trimmed, windows.count, l.pins?.count ?? 0,
                   self.workspaceWindows(l).joined(separator: " | "))
             self.rebuildLayoutsMenu()
-            done?()
+            self.syncWorkspaces(.init(kind: "save", name: trimmed, layout: l)) { _ in done?() }
         }
     }
 
     /// Replace the open windows and pins with the workspace's.
     func openLayout(named name: String) {
         var cfg = loadConfig()
-        if let cur = cfg.activeWorkspace, cur != name, var ls = cfg.layouts, let i = ls.firstIndex(where: { $0.name == cur }) {
-            ls[i].windows = snapshotNow()
-            ls[i].pins = snapshotPins()
-            cfg.layouts = ls
-        }
         guard let l = (cfg.layouts ?? []).first(where: { $0.name == name }) else { return }
         cfg.activeWorkspace = name
         saveConfig(cfg)
@@ -103,6 +144,7 @@ extension AppDelegate {
         saveConfig(c)
         config = c
         rebuildLayoutsMenu()
+        syncWorkspaces(.init(kind: "delete", name: name))
     }
 
     func renameLayout(_ old: String, to new: String) {
@@ -117,6 +159,115 @@ extension AppDelegate {
         saveConfig(c)
         config = c
         rebuildLayoutsMenu()
+        syncWorkspaces(.init(kind: "rename", name: old, newName: n))
+    }
+
+    // ── Saved on the server ──
+    // Workspaces live in the server's prefs under one key, so they outlast this
+    // Mac and appear on the next one (owner, 2026-10-28: "i want it saved on the
+    // server"). The server's list is the record: a change is applied to a fresh
+    // read of it, then sent back, so two Macs saving keep each other's. This
+    // Mac's file is the copy used while the server cannot be reached; a change
+    // made then is marked and sent at the next sync.
+    /// nil when this copy must not touch the server's: one started with its own
+    /// config (the desktop tests) syncs only to a key it names, so a test never
+    /// writes over the owner's workspaces.
+    var workspacesKey: String? {
+        let env = ProcessInfo.processInfo.environment
+        let k = env["AMUX_DESKTOP_WORKSPACES_KEY"] ?? ""
+        if !k.isEmpty { return k }
+        return (env["AMUX_DESKTOP_CONFIG"] ?? "").isEmpty ? "desktop_workspaces" : nil
+    }
+
+    /// Records a change (if any) as pending, then syncs: reads the server's
+    /// list, replays every pending change on it in order, keeps the result here
+    /// and sends it. A pending change is dropped only once the server has
+    /// confirmed a list that includes it, so neither a crash nor a lost
+    /// connection loses it, and a Mac coming back online adds its changes to
+    /// the other Macs' workspaces instead of replacing them.
+    func syncWorkspaces(_ op: WorkspaceOp? = nil, _ done: ((Bool) -> Void)? = nil) {
+        guard let key = workspacesKey else {
+            NSLog("amux-desktop: verdict=workspaces_sync_off reason=private_config measured=false")
+            done?(false)
+            return
+        }
+        if let op = op {
+            var c = loadConfig()
+            c.workspacesPending = (c.workspacesPending ?? []) + [op]
+            saveConfig(c)
+            config = c
+        }
+        if workspacesSyncBusy {
+            workspacesSyncWaiting.append { reached in done?(reached) }
+            return
+        }
+        workspacesSyncBusy = true
+        let finish: (Bool) -> Void = { [weak self] reached in
+            done?(reached)
+            guard let self = self else { return }
+            self.workspacesSyncBusy = false
+            let waiting = self.workspacesSyncWaiting
+            self.workspacesSyncWaiting = []
+            // Everyone who waited is served by one more sync, which also
+            // carries any change recorded while this one ran.
+            if !waiting.isEmpty { self.syncWorkspaces { r in waiting.forEach { $0(r) } } }
+        }
+        api("/api/prefs?key=" + (key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? key)) { [weak self] obj in
+            guard let self = self else { return }
+            var c = loadConfig()
+            let pending = c.workspacesPending ?? []
+            guard let reply = obj as? [String: Any], reply["key"] as? String == key else {
+                NSLog("amux-desktop: verdict=workspaces_server_unreachable measured=false key=%@ local=%d pending=%d", key, (c.layouts ?? []).count, pending.count)
+                finish(false)
+                return
+            }
+            let raw = (reply["value"] as? String) ?? ""
+            let remote = raw.isEmpty ? nil : (try? JSONDecoder().decode(ServerWorkspaces.self, from: Data(raw.utf8)))?.layouts
+            if !raw.isEmpty, remote == nil {
+                // Unreadable (a newer app's format, or damaged): left as it is.
+                NSLog("amux-desktop: verdict=workspaces_server_unreadable key=%@ bytes=%d pending=%d", key, raw.utf8.count, pending.count)
+                finish(true)
+                return
+            }
+            // The first sync to an empty server uploads this Mac's list.
+            var list = remote ?? (c.layouts ?? [])
+            // A Mac's first sync also keeps the workspaces only it has.
+            let first = c.workspacesSyncedOnce != true
+            if first, remote != nil {
+                for l in c.layouts ?? [] where !list.contains(where: { $0.name == l.name }) { list.append(l) }
+            }
+            for p in pending { p.apply(to: &list) }
+            let source = remote == nil ? "local_first_upload" : "server"
+            c.layouts = list
+            saveConfig(c)
+            self.config = c
+            self.rebuildLayoutsMenu()
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.sortedKeys]
+            let same = remote.flatMap { try? enc.encode($0) } == (try? enc.encode(list))
+            let doc = ServerWorkspaces(schema: 1, layouts: list, savedBy: Host.current().localizedName, savedAt: Date().timeIntervalSince1970)
+            func confirmed() {
+                // Only the changes this list carried; any recorded since stay.
+                var c2 = loadConfig()
+                let left = Array((c2.workspacesPending ?? []).dropFirst(pending.count))
+                c2.workspacesPending = left.isEmpty ? nil : left
+                c2.workspacesSyncedOnce = true
+                saveConfig(c2)
+                self.config = c2
+            }
+            guard !same, let data = try? enc.encode(doc), let text = String(data: data, encoding: .utf8) else {
+                confirmed()
+                NSLog("amux-desktop: verdict=workspaces_synced key=%@ source=%@ layouts=%d applied=%d sent=0", key, source, list.count, pending.count)
+                finish(true)
+                return
+            }
+            self.api("/api/prefs", method: "POST", body: ["key": key, "value": text]) { r in
+                let ok = (r as? [String: Any])?["ok"] as? Bool == true
+                if ok { confirmed() }
+                NSLog("amux-desktop: verdict=%@ key=%@ source=%@ layouts=%d applied=%d bytes=%d", ok ? "workspaces_synced" : "workspaces_send_failed", key, source, list.count, pending.count, data.count)
+                finish(ok)
+            }
+        }
     }
 
     /// What launch opens: the last windows (default), a saved layout, or one window.
@@ -137,7 +288,7 @@ extension AppDelegate {
         var n = existing.count + 1
         while existing.contains("Workspace \(n)") { n += 1 }
         guard let name = askText(title: "Save Workspace",
-                                 message: "Saves every open amux window (what it shows, where it sits, its display and Desktop) and the floating pins. A name that already exists is replaced.",
+                                 message: "Saves every open amux window: its tabs, how each is split into panes and every pane's tabs, what each one shows, where the window sits (display and Desktop), and the floating pins. It is kept on the server, so it also reaches your other Macs. A name that already exists is replaced.",
                                  value: "Workspace \(n)", ok: "Save") else { return }
         saveLayout(named: name)
     }
@@ -226,6 +377,12 @@ extension AppDelegate {
         // Opening Settings checks too, at most every 10 minutes.
         let u = Updater.shared
         if u.state == .idle || (u.state != .checking && u.state != .installing && -(u.checkedAt?.timeIntervalSinceNow ?? -1e9) > 600) { u.check() }
+        // Workspaces another Mac saved show up here: the list redraws when the
+        // server's copy differs from this Mac's.
+        let before = (try? JSONEncoder().encode(loadConfig().layouts ?? [])) ?? Data()
+        syncWorkspaces { [weak self] _ in
+            if (try? JSONEncoder().encode(loadConfig().layouts ?? [])) != before { self?.settings?.reload() }
+        }
     }
 
     @objc func checkForUpdates(_ sender: Any?) {

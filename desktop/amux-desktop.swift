@@ -116,6 +116,12 @@ struct Config: Codable {
     var openAtLogin: Bool?
     // The workspace open now; switching away saves where you left it.
     var activeWorkspace: String?
+    // Added 2026-10-28: workspace changes made here that the server has not
+    // confirmed yet, in order. Each sync replays them on the server's list.
+    var workspacesPending: [WorkspaceOp]?
+    // Set once a sync has reached the server; until then this Mac's own
+    // workspaces are merged into the server's list rather than replaced by it.
+    var workspacesSyncedOnce: Bool?
     // false while the app runs; still false at launch means it did not quit cleanly.
     var cleanExit: Bool?
     // View > Zoom All Windows (2026-10-28). Unset means on.
@@ -631,6 +637,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // fall back to the default server (Ethan, 2026-10-26).
         if let u = webView.url, u.scheme == "https" || u.scheme == "http" { lastServerURL = u }
         app?.loadNextDeferred(after: self)
+        // The first dashboard page carries the token the server's copy of the
+        // workspaces needs; until one sync reaches it, each page load tries again.
+        if let a = app, a.workspacesSync == .never, a.workspacesKey != nil, webView.url.map(a.isServerURL) ?? false {
+            a.workspacesSync = .running
+            a.syncWorkspaces { [weak a] reached in a?.workspacesSync = reached ? .reached : .never }
+        }
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -1051,12 +1063,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 guard let self = self, !self.terminating, !self.restoring else { return }
                 var c = loadConfig().merging(windows: windows)
                 c.cleanExit = false
-                // The open workspace keeps where you left it.
-                if let name = c.activeWorkspace, var ls = c.layouts, let i = ls.firstIndex(where: { $0.name == name }) {
-                    ls[i].windows = windows
-                    ls[i].pins = self.snapshotPins()
-                    c.layouts = ls
-                }
+                // A saved workspace changes only on Save or Update. Copying the
+                // live windows into the open one made Open return to whatever
+                // was on screen, never to what was saved (owner, 2026-10-28).
                 self.config = c
                 saveConfig(c)
             }
@@ -1072,11 +1081,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             self.terminating = true
             var c = loadConfig().merging(windows: windows)
             c.cleanExit = true
-            if let name = c.activeWorkspace, var ls = c.layouts, let i = ls.firstIndex(where: { $0.name == name }) {
-                ls[i].windows = windows
-                ls[i].pins = self.snapshotPins()
-                c.layouts = ls
-            }
             self.config = c
             saveConfig(c)
             NSLog("amux-desktop: verdict=windows_saved_on_quit n=%d", windows.count)
@@ -1331,6 +1335,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // a minute from one laptop, so pins and the badge never loaded).
     var apiToken: String?
     var unauthorized = UnauthorizedBackoff()
+    enum WorkspacesSync { case never, running, reached }
+    var workspacesSync = WorkspacesSync.never
+    // One sync at a time: a second waits, so two never read the same server
+    // list and overwrite each other's change.
+    var workspacesSyncBusy = false
+    var workspacesSyncWaiting: [(Bool) -> Void] = []
 
     func withAPIToken(_ go: @escaping (String?) -> Void) {
         if let t = apiToken { go(t); return }
@@ -1342,7 +1352,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
     }
 
-    func api(_ path: String, method: String = "GET", _ done: @escaping (Any?) -> Void) {
+    func api(_ path: String, method: String = "GET", body: Any? = nil, _ done: @escaping (Any?) -> Void) {
         guard let s = serverURL, let url = URL(string: normalized(s.absoluteString) + path) else { done(nil); return }
         withAPIToken { [weak self] token in
             // A poll that would repeat a refused call waits out the backoff;
@@ -1352,6 +1362,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             req.httpMethod = method
             req.timeoutInterval = 8
             if let token = token { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+            if let b = body, let data = try? JSONSerialization.data(withJSONObject: b) {
+                req.httpBody = data
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
             let session = URLSession(configuration: .ephemeral, delegate: InsecureDelegate(), delegateQueue: nil)
             session.dataTask(with: req) { data, resp, _ in
                 let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
