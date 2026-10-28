@@ -5745,8 +5745,6 @@
   .gp-send .chips { margin-bottom: var(--space-2); }
   /* send row inside workspace panes — same as session cards */
   .gp-send .send-row { gap: var(--space-2); }
-  #tab-grid { display: none; }
-  @media (min-width: 769px) { #tab-grid { display: block; } }
 
   /* Notes view */
   #notes-view { height: calc(100vh - 110px); }

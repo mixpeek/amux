@@ -6060,11 +6060,21 @@ window.fetch = async function(input, init) {
   if (url.origin === location.origin && url.pathname.startsWith('/api/') && method === 'GET' && !_internalRead && _stateFeedback.source()) {
     const receipt = _interactionAccept(url.href, init);
     _interactionSet(receipt.id, {phase:'sending', feedback:{message:'Loading'}});
-    try {
-      const response = await _origFetch(input, init);
-      await _interactionAcknowledge(receipt.id, response);
-      return response;
-    } catch (error) { _interactionFail(receipt.id, error, false); throw error; }
+    let response;
+    try { response = await _origFetch(input, init); }
+    catch (error) { _interactionFail(receipt.id, error, false); throw error; }
+    // A read returns its response NOW; its receipt is bookkeeping and is
+    // recorded beside it. Awaited, it held the response hostage: in the Mac
+    // app IndexedDB stalled (idb-reopened, attachment-save-stalled), and
+    // Pages stayed on "Loading..." with both reads answered 200 (owner,
+    // 2026-10-28). acknowledge() takes its clone before its first await.
+    const t0 = Date.now();
+    _interactionAcknowledge(receipt.id, response).then(() => {
+      if (Date.now() - t0 > 5000) _interactionDiagnostic({verdict:'interaction_ack_slow', path:url.pathname,
+        ms:Date.now() - t0, measured:true, n_considered:1});
+    }, error => _interactionDiagnostic({verdict:'interaction_ack_failed', path:url.pathname,
+      error:String(error && error.message || error), measured:true, n_considered:1}));
+    return response;
   }
   if (url.origin !== location.origin || !url.pathname.startsWith('/api/') ||
       !_OUTBOX_METHODS[method] || url.pathname === '/api/client-debug') return _origFetch(input, init);
@@ -17619,7 +17629,15 @@ function openPeek(name, opts) {
   peekCmdOpen = true;
   document.getElementById('peek-cmd-row').classList.add('open');
   document.getElementById('peek-cmd-toggle').innerHTML = '&#x25BC; Send command';
-  if (draft) setTimeout(() => document.getElementById('peek-cmd-input').focus({ preventScroll: true }), 50);
+  // Opening a worker puts you in its input, ready to type (owner, 2026-10-28).
+  // With a mouse or trackpad only: on a phone it would raise the keyboard
+  // over the terminal, so there it waits for a draft or a tap. An open that
+  // brings a search keeps the search box.
+  const _focusOnOpen = draft || (!prefillQuery && window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+  if (_focusOnOpen) setTimeout(() => {
+    const el = document.getElementById('peek-cmd-input');
+    if (el && el.offsetParent !== null && _peekComposerShown === name) el.focus({ preventScroll: true });
+  }, 50);
   document.getElementById('peek-title').textContent = name;
   const _peekSess = sessions.find(s => s.name === name);
   const _peekTask = _peekSess && _peekSess.task_name;
@@ -49885,7 +49903,7 @@ function enterGridMode() {
   // Live tab ids only — 'email'/'notes'/'crm' were removed with their views
   // and getElementById on them was a silent no-op kept alive by the ?. guard.
   ['workers','board','calendar','scheduler','files','logs'].forEach(t => document.getElementById('tab-' + t)?.classList.remove('active'));
-  document.getElementById('tab-grid').classList.add('active');
+  document.getElementById('tab-grid')?.classList.add('active');
   _renderGridChips();
   _wsRenderProfileBar();
   _wsRestoreProfilesFromIdb(); // async, no-op if localStorage is already populated
@@ -49953,7 +49971,7 @@ function exitGridMode() {
     document.querySelector('.tab-bar-outer')?.style.setProperty('display', '');
   }
   gv.classList.remove('active');
-  document.getElementById('tab-grid').classList.remove('active');
+  document.getElementById('tab-grid')?.classList.remove('active');
   document.getElementById('tab-' + (activeView || 'workers')).classList.add('active');
 }
 
@@ -56019,9 +56037,6 @@ async function pullFromRemote(btn) {
       { target: '#tab-board', targetFallback: '.tab-bar-outer', pos: 'bottom',
         title: 'The board is the source of truth',
         body: 'Tasks live on a shared kanban. Agents claim work atomically (no duplicates), and status gates keep them honest — “done” requires evidence, “verified” requires proof it works in production.' },
-      { target: '#tab-grid', targetFallback: '.tab-bar-outer', pos: 'bottom',
-        title: 'Watch everything at once',
-        body: 'The Workspace grid shows every terminal side-by-side — drag, resize, save layouts. Mission control for a dozen agents.' },
       { target: '#filters-btn', targetFallback: '.tab-bar-outer', pos: 'bottom',
         title: 'Slice the fleet',
         body: 'Filter workers by model or provider, and flip on log search to grep INSIDE every agent\u2019s terminal output at once — “which agent touched the billing code?” is one search.' }
@@ -71747,7 +71762,6 @@ function _cmdkActions() {
     { title: 'New scratchpad note', sub: 'Scratchpad', run: () => { switchView('scratchpad'); _scratchpadNewNote(); } },
     { title: 'Settings', sub: 'Dashboard settings', run: () => toggleSettings() },
     { title: 'Toggle light / dark mode', sub: 'Theme', run: () => toggleTheme() },
-    { title: 'Grid view', sub: 'Every worker terminal at once', run: () => enterGridMode() },
   ].map((a, i) => ({ kind: 'action', id: 'action-' + i, body: a.sub, ...a }));
 }
 
