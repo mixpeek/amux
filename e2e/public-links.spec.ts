@@ -1,4 +1,4 @@
-// The Pages tab's three kinds (static_files/public_links.rs): an app inside
+// The Apps tab's three kinds (static_files/public_links.rs): an app inside
 // amux for the owner, the app shared publicly, and a public folder. The real
 // server and a real loopback app; everything is made and removed in the UI,
 // and the public links are opened with no amux credentials.
@@ -10,9 +10,9 @@ import * as os from 'os';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
 
-test('Pages provisions an app and a file inside amux, a public app and a public folder', async ({ page, playwright }, testInfo) => {
+test('Apps provisions an app and a file inside amux, a public app and a public folder', async ({ page, playwright }, testInfo) => {
   const app = http.createServer((req, res) => {
-    // Like mtp-demo's sign-in page: an app that forbids framing still shows in Pages.
+    // Like mtp-demo's sign-in page: an app that forbids framing still shows in Apps.
     res.writeHead(200, { 'Content-Type': 'text/html', 'X-Frame-Options': 'SAMEORIGIN' });
     res.end(`<h1>shared app</h1><p id="cookie">${(req.headers.cookie || '').replace(/</g, '')}</p>`);
   });
@@ -40,7 +40,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
     await page.goto('/?_token=' + encodeURIComponent(token));
     await page.waitForURL(/_fresh=1/, { timeout: 20000 });
-    await page.goto('/#view=pages');
+    await page.goto('/#view=apps');
     for (const h of ['Inside amux', 'Public apps', 'Public files']) await expect(page.getByRole('heading', { name: h })).toBeVisible();
 
     // 1. Inside amux: listed, and opens in the amux UI.
@@ -62,13 +62,14 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     const spent = await anon.get(frameSrc!, { maxRedirects: 0 });
     expect(spent.status()).toBe(403);
     await expect(page.locator('#pages-page-actions')).toBeHidden();
-    await page.getByRole('button', { name: 'Back to all pages' }).click();
-    // A worker's localhost link lands on that Pages entry; /proxy/ is gone.
+    await page.getByRole('button', { name: 'Back to all apps' }).click();
+    // A worker's localhost link lands on that Apps entry; /proxy/ is gone. The
+    // older #view=pages address (in links workers already sent) still works.
     await page.goto(`/#view=pages&add-internal=${port}`);
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('shared app');
     const gone = await anon.get(`${base()}/proxy/${port}/`);
     expect(await gone.text()).not.toContain('shared app');
-    await page.getByRole('button', { name: 'Back to all pages' }).click();
+    await page.getByRole('button', { name: 'Back to all apps' }).click();
 
     // 1b. A file inside amux, added by path: shown in the amux UI with no
     // server started, and only that file.
@@ -83,7 +84,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     await expect(deck.frameLocator('.pub-preview iframe').locator('h1')).toHaveText('the deck');
     await deck.click();
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('the deck');
-    await page.getByRole('button', { name: 'Back to all pages' }).click();
+    await page.getByRole('button', { name: 'Back to all apps' }).click();
 
     // A plain-text file shows on the frame's white backing under a dark system
     // theme: Chrome drew it in light text on white, a blank page (sandbox,
@@ -102,7 +103,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     await notesCard.click();
     await expect(page.frameLocator('.pub-app-frame').locator('body')).toContainText('plain notes');
     await expect(page.locator('.pub-app-frame')).toHaveCSS('color-scheme', 'light');
-    await page.getByRole('button', { name: 'Back to all pages' }).click();
+    await page.getByRole('button', { name: 'Back to all apps' }).click();
     await page.evaluate(() => (window as any).themeActivate('amux-light'));
 
     // 2. A public app: anyone, no amux credential reaches it, and its card
@@ -163,14 +164,14 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
     expect(await (await anon.get(upUrl + `${upName}.txt`)).text()).toBe('uploaded and shared');
 
     // 5. A link a worker asks for (the bearer alone, no person) waits for
-    // approval in Pages and serves nobody until approved here.
+    // approval in Apps and serves nobody until approved here.
     const asked = await anon.post(`${base()}/api/page-links`, { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
       data: { kind: 'file', path: dir, title: `asked ${tag}` } });
     expect(asked.status()).toBe(201);
     const askedLink = await asked.json();
     expect(askedLink.pending).toBe(true);
     expect((await anon.get(new URL(askedLink.path, base()).toString())).status()).toBe(404);
-    await page.goto('/#view=pages');
+    await page.goto('/#view=apps');
     const pending = page.locator('#pub-files .pub-file', { hasText: `asked ${tag}` });
     await expect(pending).toContainText('Waiting for your approval');
     await pending.getByRole('button', { name: 'Approve' }).click();
@@ -213,7 +214,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
       expect((await anon.get(url)).status()).toBe(404);
     }
     for (const row of [inside, stopped]) {
-      await viaMenu(row, 'Remove from Pages');
+      await viaMenu(row, 'Remove from Apps');
       await modalBtn('Remove').click();
       await expect(row).toHaveCount(0);
     }
@@ -227,7 +228,7 @@ test('Pages provisions an app and a file inside amux, a public app and a public 
 });
 
 // Ethan, 2026-10-28: "Not approved: only the owner, signed in to the dashboard,
-// can approve a Pages link" on his own click. A browser on this Mac gets the
+// can approve an Apps link" on his own click. A browser on this Mac gets the
 // owner bearer in the page and never the owner-session cookie approval takes,
 // unless it went through ?_token= first (the test above does; the owner does
 // not). Approve now signs in once with the page's token and retries.
@@ -249,7 +250,7 @@ test('the owner approves a pending link from a plain page load, with no sign-in 
     // The bearer alone (a worker's kind of caller) is still refused.
     const self = await anon.post(`${base}/api/page-links/${link.id}/approve`, { headers: { Authorization: 'Bearer ' + token } });
     expect(self.status()).toBe(403);
-    await page.goto('/#view=pages');
+    await page.goto('/#view=apps');
     const pending = page.locator('#pub-files .pub-file', { hasText: title });
     await expect(pending).toContainText('Waiting for your approval');
     await pending.getByRole('button', { name: 'Approve' }).click();

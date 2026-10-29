@@ -281,7 +281,7 @@ fn contract(name: &str, dir: &Path, instructions: &str) -> String {
     format!(
         "# Page: {name}\n\n\
 This folder is an amux page. You are its worker: you build it and you are its backend.\n\n\
-- `index.html` is the page. It is served at `/pages/{name}` and in the dashboard's Pages tab,\n  \
+- `index.html` is the page. It is served at `/pages/{name}` and in the dashboard's Apps tab,\n  \
 inside a sandboxed frame: keep it one self-contained file (inline CSS and JavaScript). External\n  \
 links and CDNs work; relative files do not (use `amux.file(path)` for those).\n\
 - `page.db` is its SQLite database ({db}). Read and write it with `sqlite3 page.db`.\n  \

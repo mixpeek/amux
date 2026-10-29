@@ -118,7 +118,7 @@ class App:
 
 frame = "{{80, 80}, {1100, 760}}"
 grid = {"tree": "r0.500(0,1)", "panes": [{"url": url + "/#view=calendar", "title": "Calendar",
-                                         "tabs": [{"url": url + "/#view=pages", "title": "Pages"}], "active": 1}]}
+                                         "tabs": [{"url": url + "/#view=apps", "title": "Apps"}], "active": 1}]}
 base = {"connections": [{"name": "localhost", "url": url}], "lastUrl": url, "cleanExit": True, "launch": "last"}
 apps = []
 try:
@@ -138,7 +138,7 @@ try:
     check("the workspace is on the server", names == ["E2E"], f"server={srv and names}")
     w = next((x for x in (srv or {}).get("layouts", [{}])[0].get("windows", []) if x.get("grid")), {})
     check("the server copy has the panes and the pane tabs",
-          (w.get("grid") or {}).get("tree") == "r0.500(0,1)" and [t["url"].rsplit("=", 1)[-1] for t in (w["grid"]["panes"][0].get("tabs") or [])] == ["pages"]
+          (w.get("grid") or {}).get("tree") == "r0.500(0,1)" and [t["url"].rsplit("=", 1)[-1] for t in (w["grid"]["panes"][0].get("tabs") or [])] == ["apps"]
           and w["grid"]["panes"][0].get("active") == 1, json.dumps(w)[:600])
     check("the sync is logged", "verdict=workspaces_synced key=" + KEY in a.text(), a.text()[-600:])
 

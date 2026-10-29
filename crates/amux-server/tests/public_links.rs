@@ -159,7 +159,7 @@ async fn an_internal_app_is_never_public_and_a_shared_folder_stays_inside_itself
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let link: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(link["public"], false);
-    assert_eq!(link["path"], format!("/#view=pages&open={}", link["id"].as_str().unwrap()));
+    assert_eq!(link["path"], format!("/#view=apps&open={}", link["id"].as_str().unwrap()));
     let id = link["id"].as_str().unwrap();
     let (st, _, _) = call("GET", &format!("/pub/{id}/"), false, None, None).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "an internal app opened publicly");

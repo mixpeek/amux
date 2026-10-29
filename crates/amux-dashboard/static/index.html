@@ -779,7 +779,7 @@
   <button id="tab-scratchpad" onclick="switchView('scratchpad')"><span class="tab-ico">📝</span><span class="tab-lbl">Scratchpad</span></button>
   <button id="tab-record" onclick="switchView('record')"><span class="tab-ico">🎙</span><span class="tab-lbl">Record</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
-  <button id="tab-pages" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Pages</span></button>
+  <button id="tab-pages" title="Apps: apps with a backend, and files shared outside amux" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Apps</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
@@ -1884,19 +1884,20 @@
      button/cards still exist for muscle memory and now just call
      switchView('disk'); #reclaim-content itself and every _reclaim* function
      are unchanged. -->
-<!-- Pages view (api/pages.rs): HTML apps whose backend is a worker and a
-     database. The open page is mounted by pages-host.js in a sandboxed frame. -->
+<!-- Apps view (internal id 'pages', api/pages.rs): apps with a backend, inside
+     amux or public, and files shared outside amux. HTML apps whose backend is
+     a worker and a database live here too. The open page is mounted by pages-host.js in a sandboxed frame. -->
 <div id="pages-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <div id="pages-list-wrap" class="pages-list-wrap">
     <div class="pages-top">
-      <div class="pages-top-text"><h1 class="pages-h1">Pages</h1><p class="ui-help">Three ways to share and run apps on this machine.</p></div>
-      <input id="pages-search" class="input pages-search" type="search" placeholder="Search pages, apps, or files&hellip;"
-        aria-label="Search pages, apps, or files" autocomplete="off" oninput="_pagesFilter(this.value)">
+      <div class="pages-top-text"><h1 class="pages-h1">Apps</h1><p class="ui-help">Apps with a backend, inside amux or public, and files shared outside amux.</p></div>
+      <input id="pages-search" class="input pages-search" type="search" placeholder="Search apps or files&hellip;"
+        aria-label="Search apps or files" autocomplete="off" oninput="_pagesFilter(this.value)">
     </div>
     <section class="pages-sec pages-sec-inside" aria-labelledby="pages-h-inside">
       <div class="pages-head"><span class="pages-icon" aria-hidden="true">&#x25A4;</span>
-        <div class="pages-head-text"><h2 id="pages-h-inside">Inside amux</h2><p class="ui-help">Pages (HTML apps whose backend is a worker and a database) and apps running on this machine. Only you, signed in.</p></div>
-        <span class="pages-head-actions"><button class="btn primary" onclick="_pagesNew()">+ New page</button>
+        <div class="pages-head-text"><h2 id="pages-h-inside">Inside amux</h2><p class="ui-help">HTML apps whose backend is a worker and a database, and apps running on this machine. Only you, signed in.</p></div>
+        <span class="pages-head-actions"><button class="btn primary" onclick="_pagesNew()">+ New HTML app</button>
         <button class="btn" onclick="_pubNew('internal')">+ Add app</button></span></div>
       <div class="pages-grid"><div id="pages-list" class="pages-list"></div><div id="pub-internal" class="pub-cards"></div></div>
     </section>
@@ -1915,7 +1916,7 @@
   </div>
   <div id="pages-open" class="pages-open" style="display:none;">
     <div class="pages-bar">
-      <button class="btn" onclick="_pagesClose()" aria-label="Back to all pages">&#x2039; Pages</button>
+      <button class="btn" onclick="_pagesClose()" aria-label="Back to all apps">&#x2039; Apps</button>
       <b id="pages-title" class="pages-title"></b>
       <span id="pages-status" class="ui-help pages-status" role="status" aria-live="polite"></span>
       <span class="pages-bar-actions">

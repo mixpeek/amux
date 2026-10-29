@@ -8,7 +8,7 @@
 // file signature, because the worker writes page.db with the sqlite3 CLI and
 // the server never sees those writes.
 //
-// Used by the dashboard's Pages tab and by the standalone /pages/<name>.
+// Used by the dashboard's Apps tab (internal id 'pages') and by the standalone /pages/<name>.
 (function () {
   'use strict';
   if (window.AmuxPages) return;

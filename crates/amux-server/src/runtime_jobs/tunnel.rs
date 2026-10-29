@@ -7,7 +7,7 @@
 //!
 //! The general mode that published any local port (the Proxies tab,
 //! `amux tunnel start <port>`, `AMUX_TUNNEL_PORT`) was retired with
-//! `/proxy` (MSG-95893): Pages is the one way to make a local app reachable.
+//! `/proxy` (MSG-95893): the Apps tab is the one way to make a local app reachable.
 //! The HTTP surface lives in `api/tunnel.rs`.
 //!
 //! THREE THINGS CARRY THE WEIGHT:
@@ -567,7 +567,7 @@ async fn run(token: String, gw: String, target_base: String, generation: u64) {
 pub async fn maybe_boot_start() -> &'static str {
     if std::env::var("AMUX_TUNNEL_PORT").is_ok_and(|v| !v.trim().is_empty()) {
         tracing::warn!(verdict = "retired_tunnel_port_ignored",
-            "tunnel: AMUX_TUNNEL_PORT is set but publishing a local port is retired; use Pages");
+            "tunnel: AMUX_TUNNEL_PORT is set but publishing a local port is retired; use the Apps tab");
     }
     if !configured() {
         return "no token";

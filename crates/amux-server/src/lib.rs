@@ -1188,7 +1188,7 @@ async fn async_main() {
             .unwrap_or(0);
         if saved > 0 {
             tracing::info!(saved, verdict = "retired_proxies_data_present",
-                "proxies: the Proxies tab is retired; its saved rows are kept on disk and no longer read (use Pages)");
+                "proxies: the Proxies tab is retired; its saved rows are kept on disk and no longer read (use the Apps tab)");
         }
     });
 

@@ -4,12 +4,12 @@
 //! it shares the owner's cookies, can read the dashboard page, and can script a
 //! window it opens (red-team, 2026-10-25). So the server binds a second
 //! listener, `AMUX_APPS_PORT` (default: the amux port + 1), whose router serves
-//! nothing but `/app/<id>/...`: an app a person added to Pages, relayed from its
+//! nothing but `/app/<id>/...`: an app a person added to the Apps tab, relayed from its
 //! loopback port (app_relay.rs). On an amux Cloud server Caddy exposes it as
 //! `https://<domain>:8443`; `AMUX_APPS_URL` names that address.
 //!
 //! The dashboard's sign-in does not reach that origin. Opening an app from
-//! Pages asks the dashboard origin for a one-time handoff
+//! The Apps tab asks the dashboard origin for a one-time handoff
 //! (`POST /api/page-links/<id>/open`, a signed-in person only); the apps origin
 //! trades the 60-second, single-use token for a cookie scoped to that one app
 //! (`amux_app_<id>`, HttpOnly, Path=/app/<id>/), held in memory here. Only a
@@ -188,13 +188,13 @@ pub(crate) fn parse_app(uri: &Uri) -> Option<(String, String, Option<String>)> {
 
 async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Response {
     let Some((id, tail, token)) = parse_app(&uri) else { return StatusCode::NOT_FOUND.into_response() };
-    let open_from_pages = "<p>Open this app from the Pages tab in amux. A link to it works only for the \
-        signed-in owner, through Pages.</p>";
+    let open_from_pages = "<p>Open this app from the Apps tab in amux. A link to it works only for the \
+        signed-in owner, through the Apps tab.</p>";
     if !public_links::valid_id(&id) {
         return refuse(StatusCode::NOT_FOUND, "Not an app", open_from_pages, "malformed_id", &id);
     }
     let Some(link): Option<Link> = public_links::approved_internal(&id) else {
-        return refuse(StatusCode::NOT_FOUND, "This app is not in Pages", open_from_pages, "not_approved", &id);
+        return refuse(StatusCode::NOT_FOUND, "This app is not in Apps", open_from_pages, "not_approved", &id);
     };
     let is_file = !link.path.is_empty();
     if !is_file && public_links::refused_port(link.port).is_some() {
@@ -203,13 +203,13 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
     if let Some(t) = token {
         if !take_token(&t, &id) {
             return refuse(StatusCode::FORBIDDEN, "This link was used already",
-                "<p>An app link from Pages works once, for a minute. Open the app from the Pages tab again.</p>", "token_spent", &id);
+                "<p>An app link from the Apps tab works once, for a minute. Open the app from the Apps tab again.</p>", "token_spent", &id);
         }
         let Some(session) = new_session(&id) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         tracing::info!(id = %id, measured = true, n_considered = 1, verdict = "app_origin_session_started",
-            "an app inside amux was opened from Pages");
+            "an app inside amux was opened from the Apps tab");
         let mut r = (StatusCode::SEE_OTHER, [(header::LOCATION, format!("/app/{id}{tail}"))]).into_response();
         let cookie = format!("amux_app_{id}={session}; Path=/app/{id}/; Max-Age={}; HttpOnly; Secure; SameSite=Lax", SESSION_TTL.as_secs());
         if let Ok(v) = HeaderValue::from_str(&cookie) {
@@ -219,7 +219,7 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
         return r;
     }
     if !has_session(&id, &headers) {
-        return refuse(StatusCode::FORBIDDEN, "Open this app from Pages", open_from_pages, "no_session", &id);
+        return refuse(StatusCode::FORBIDDEN, "Open this app from the Apps tab", open_from_pages, "no_session", &id);
     }
     if is_file {
         if uri.path() == format!("/app/{id}") {
@@ -256,7 +256,7 @@ fn dashboard_origins(headers: &HeaderMap, uri: &Uri) -> Vec<String> {
 
 /// Pages shows an app in a frame on the dashboard's origin, a different port
 /// from this one. An app that forbids framing (`X-Frame-Options: SAMEORIGIN`,
-/// or a CSP `frame-ancestors`) rendered as a blank box in Pages (sandbox,
+/// or a CSP `frame-ancestors`) rendered as a blank box in the Apps tab (sandbox,
 /// 2026-10-26: mtp-demo's sign-in page). The owner chose to open it inside
 /// amux, so the dashboard may frame it, and nothing else may.
 fn frameable_by_dashboard(mut r: Response, headers: &HeaderMap, uri: &Uri, id: &str) -> Response {
@@ -346,7 +346,7 @@ mod tests {
         // HTTP/2: no Host header, the authority is in the URI (the e2e browser).
         let u = Uri::from_static("https://sandbox.example:8443/app/x/");
         let r = frameable_by_dashboard(r, &HeaderMap::new(), &u, "x");
-        assert!(r.headers().get(header::X_FRAME_OPTIONS).is_none(), "X-Frame-Options kept: Pages shows a blank box");
+        assert!(r.headers().get(header::X_FRAME_OPTIONS).is_none(), "X-Frame-Options kept: the Apps tab shows a blank box");
         let csp: Vec<&str> = r.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok()).collect();
         assert!(csp.contains(&"default-src 'self'"), "the app's own policy was dropped: {csp:?}");
         assert!(!csp.iter().any(|c| c.contains("'none'")), "the app's frame-ancestors kept: {csp:?}");

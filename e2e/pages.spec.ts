@@ -1,5 +1,5 @@
-// Pages (api/pages.rs, pages-host.js): an HTML app whose backend is a worker
-// and its own SQLite file, in the Pages tab and at /pages/<name>.
+// HTML apps (api/pages.rs, pages-host.js): an app whose backend is a worker
+// and its own SQLite file, in the Apps tab and at /pages/<name>.
 //
 // The fixture is a small lead list with the shapes a real page needs: rows
 // read from page.db, a button that saves, a form that asks the worker, and
@@ -90,8 +90,8 @@ test('a page reads and saves its own database, asks its worker, and cannot reach
     expect(attach.status()).toBe(400);
     expect(await attach.text()).toContain('too many attached');
 
-    // The Pages tab lists it and mounts the same page.
-    await page.goto('/#view=pages');
+    // The Apps tab lists it and mounts the same page.
+    await page.goto('/#view=apps');
     const row = page.locator(`.pages-row[data-page="${name}"]`);
     await expect(row).toBeVisible();
     await expect(row).toContainText('Lead list');

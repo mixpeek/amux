@@ -69,7 +69,7 @@
       {"@type": "DefinedTerm", "name": "Notes", "description": "Server-side markdown documents. The analog of the team wiki."},
       {"@type": "DefinedTerm", "name": "Files", "description": "A remote file explorer with previews for every format. The analog of the shared drive."},
       {"@type": "DefinedTerm", "name": "Commits", "description": "Each session's git commit history, stamped with the session that authored it. The analog of a signed deliverables log."},
-      {"@type": "DefinedTerm", "name": "Pages", "description": "Links to one local app or file, shared inside amux or with anyone who has the link, each approved by the owner and revocable. The analog of a guest pass to a single room."}
+      {"@type": "DefinedTerm", "name": "Apps", "description": "Links to one local app or file, shared inside amux or with anyone who has the link, each approved by the owner and revocable. The analog of a guest pass to a single room."}
     ]
   }
   </script>
@@ -159,7 +159,7 @@
         <tr><td>Files</td><td>The shared drive</td><td>Remote explorer with previews — code, PDFs, even ebooks.</td></tr>
         <tr><td>Commits</td><td>The signed deliverables log</td><td>Each session's shipped git work, stamped with who did it.</td></tr>
         <tr><td>Browser</td><td>Assistant with the passwords</td><td>Shared automated browser with saved logins agents can drive.</td></tr>
-        <tr><td>Pages</td><td>Guest passes</td><td>Links into one local app or file, approved by you and revocable.</td></tr>
+        <tr><td>Apps</td><td>Guest passes</td><td>Links into one local app or file, approved by you and revocable.</td></tr>
         <tr><td>Cost</td><td>Payroll + budget report</td><td>Dollar cost per task, per agent, per model, per day.</td></tr>
         <tr><td>Memory</td><td>Institutional knowledge</td><td>Per-project facts every session starts already knowing.</td></tr>
         <tr><td>People</td><td>The rolodex</td><td>CRM of contacts and interactions your agents can use.</td></tr>
@@ -525,13 +525,13 @@
       <figcaption>The Commits tab: what this agent actually shipped, each item signed with the session that authored it.</figcaption>
     </figure>
 
-    <h2 id="pages">What are Pages? Guest passes to one room</h2>
-    <p><strong>Definition:</strong> a page is a link to one local app (a dev server on a port) or one file or folder. You share it inside amux for yourself, or by link with anyone, using the Pages tab or <code>amux publish</code>. Anything an agent adds stays pending until you approve it, and you can revoke a link at any time. Visitors reach that one app, nothing else on your machine.</p>
+    <h2 id="pages">What is the Apps tab? Guest passes to one room</h2>
+    <p><strong>Definition:</strong> an app here is a link to one local app (a dev server on a port) or one file or folder. You share it inside amux for yourself, or by link with anyone, using the Apps tab or <code>amux publish</code>. Anything an agent adds stays pending until you approve it, and you can revoke a link at any time. Visitors reach that one app, nothing else on your machine.</p>
     <div class="mm-analogy"><strong>Analogy:</strong> a guest pass. You don't hand a client keys to the building — you badge them into the one demo room. "Here's the staging link" becomes safe: the pass opens exactly one door, and you can revoke it any time.</div>
     <figure class="mm-fig">
-      <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux Pages tab: local apps shared by link">
+      <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux Apps tab: local apps shared by link">
         <rect width="720" height="210" fill="#0d1117"/>
-        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Pages</text>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Apps</text>
         <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= guest passes, one door each</text>
         <g>
           <rect x="24" y="52" width="672" height="48" rx="8" fill="#161b22" stroke="#30363d"/>
@@ -549,7 +549,7 @@
         </g>
         <text x="24" y="192" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Each pass opens exactly one internal service — hand out the link, revoke it when the visit is over.</text>
       </svg>
-      <figcaption>Pages: one local app, one door, approved by you and revocable. Visitors never see the rest of the building.</figcaption>
+      <figcaption>Apps: one local app, one door, approved by you and revocable. Visitors never see the rest of the building.</figcaption>
     </figure>
 
     <h2 id="standup">What are /standup and /handoff? — team rituals</h2>

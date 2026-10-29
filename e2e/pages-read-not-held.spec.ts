@@ -1,12 +1,12 @@
 // A read made during a click returns as soon as the server answers, whatever
 // happens to its receipt. In the Mac app IndexedDB stalled (idb-reopened,
 // attachment-save-stalled), the receipt bookkeeping never finished, and the
-// Pages tab sat on "Loading..." with /api/pages and /api/page-links both
+// Pages tab (now Apps) sat on "Loading..." with /api/pages and /api/page-links both
 // answered 200 (owner, 2026-10-28). Here the receipt step is made to hang
 // forever, the stall, and the tab must still fill in.
 import { test, expect } from './fixtures';
 
-test('Pages loads on a click even when the interaction receipt never completes', async ({ page }) => {
+test('Apps loads on a click even when the interaction receipt never completes', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/#view=sessions');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function');

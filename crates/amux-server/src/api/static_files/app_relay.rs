@@ -6,7 +6,7 @@
 //! never reach the app, nor may the app set amux's cookies.
 //!
 //! This replaced `/proxy/<port>/` (removed 2026-10-25, Ethan: "remove the
-//! proxies"): an app is opened from the Pages tab, on its own origin.
+//! proxies"): an app is opened from the Apps tab, on its own origin.
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};

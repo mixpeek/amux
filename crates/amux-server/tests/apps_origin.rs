@@ -124,7 +124,7 @@ async fn an_app_opens_on_its_own_origin_only_from_pages_and_only_itself() {
     // Without the handoff or a cookie: nothing.
     let (st, _, _, body) = app_get(&format!("/app/{A}/"), None).await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
-    assert!(body.contains("Pages"), "{body}");
+    assert!(body.contains("Apps tab"), "{body}");
 
     // The token is traded for a cookie bound to this app, once.
     let (st, loc, set, _) = app_get(path, None).await;
@@ -177,12 +177,12 @@ async fn the_dashboard_no_longer_serves_proxy_links() {
     assert!(!String::from_utf8_lossy(&body).contains("internal app"), "/proxy/ relayed an app");
 }
 
-/// A file inside amux, added to Pages by the owner: one HTML file with no
+/// A file inside amux, added to the Apps tab by the owner: one HTML file with no
 /// server started, and only that file. Before this a worker served a whole
 /// folder with `python3 -m http.server` to show one deck (sandbox rothco,
 /// 2026-10-26), which listed its build scripts beside it.
 ///
-/// A worker may not put a file for the owner in Pages (Ethan, 2026-10-28: "it
+/// A worker may not put a file for the owner in the Apps tab (Ethan, 2026-10-28: "it
 /// is making page apps for just files"): it is refused with the file's link in
 /// amux's file viewer, which is what it should hand over instead.
 #[tokio::test]
@@ -219,7 +219,7 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
         .await
         .unwrap();
     let listed = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
-    assert!(!listed.contains("deck.html"), "a refused file was still added to Pages: {listed}");
+    assert!(!listed.contains("deck.html"), "a refused file was still added to Apps: {listed}");
 
     let res = dashboard().oneshot(make(true)).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
@@ -238,7 +238,7 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let csp: Vec<String> = res.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect();
-    assert!(res.headers().get(header::X_FRAME_OPTIONS).is_none(), "Pages could not frame it");
+    assert!(res.headers().get(header::X_FRAME_OPTIONS).is_none(), "the Apps tab could not frame it");
     assert!(csp.iter().any(|c| c.starts_with("frame-ancestors https://apps.test:")), "anyone may frame it: {csp:?}");
     let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
     assert!(body.contains("the deck"), "{body}");

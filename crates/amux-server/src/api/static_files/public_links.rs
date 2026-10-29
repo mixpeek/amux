@@ -1,9 +1,10 @@
-//! What the Pages tab provisions besides Pages themselves, one store, three
+//! What the Apps tab (formerly Pages; internal id `pages`) provisions besides
+//! worker-backed HTML apps (api/pages.rs), one store, three
 //! kinds (Ethan, 2026-10-25: "pages = internal apps, external apps, external
 //! facing files", proxies consolidated into it):
 //!
 //! - `internal`: an app on a port, for the signed-in owner only. Opened inside
-//!   the amux UI from Pages, served on the apps origin at `/app/<id>/`
+//!   the amux UI from the Apps tab, served on the apps origin at `/app/<id>/`
 //!   (apps_origin.rs), never on the dashboard's own origin.
 //! - `app`: the same, public: `/pub/<id>/`, anyone with the link, no amux
 //!   sign-in, until turned off.
@@ -288,26 +289,26 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     } else {
         "This amux's address is not known yet (AMUX_PUBLIC_URL in server.env sets it; otherwise it is \
          learned the first time the owner opens the dashboard). Give the owner the path, such as \
-         /#view=pages, and say the address is unknown. Do not guess it from an IP address."
+         /#view=apps, and say the address is unknown. Do not guess it from an IP address."
             .to_string()
     };
     format!(
         "{address}\n\n\
-         A file for the owner (a workbook, a report, a deck, an HTML page) is not a Page. Name each file \
+         A file for the owner (a workbook, a report, a deck, an HTML page) is not an App. Name each file \
          by its absolute path, one per file, never a folder: amux shows the path as a link that opens in \
          its file viewer, signed in, with nothing to approve. Give the web link, {base}/f/<absolute path>, \
          only when the owner asks for a link (to copy, send or open outside amux). Never start a web \
          server (such as `python3 -m http.server`) to show files.\n\n\
-         Pages holds apps with a backend (a server, inside amux or outside it) and files shared outside \
-         amux. Use it only when the owner asks for one of those:\n\
+         The Apps tab holds apps with a backend (a server, inside amux or outside it) and files shared \
+         outside amux. Use it only when the owner asks for one of those:\n\
          - An app for the owner, inside amux: `amux publish --internal <port> [title]`. Its link is \
-         {base}/#view=pages&open=<id>, with the id `amux publish` prints. Never hand the owner localhost \
-         or a port. A Page is {base}/pages/<name>.\n\
+         {base}/#view=apps&open=<id>, with the id `amux publish` prints. Never hand the owner localhost \
+         or a port. An HTML app whose backend is a worker is {base}/pages/<name>.\n\
          - An app for anyone with the link (no amux sign-in): `amux publish <port> [title]`, which prints \
          {base}/pub/<id>/.\n\
          - A file or folder for anyone with the link: `amux publish --file <absolute path> [title]`. Never \
          link a file as {base}/api/file/...: that needs the owner's sign-in.\n\
-         Anything you add stays pending until the owner approves it in Pages; tell them it is waiting \
+         Anything you add stays pending until the owner approves it in the Apps tab; tell them it is waiting \
          there. Never try to approve it yourself.\n\
          `amux publish --list` lists them and `amux publish --revoke <id>` turns one off.\n\n\
          Build demos and documents as files in your workspace and link them as above. Never \
@@ -318,9 +319,11 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
 
 fn link_json(home: &Path, l: &Link) -> Value {
     let base = public_url(home);
-    // An app inside amux is reached through its Pages entry, which opens it on
-    // the apps origin with a one-time handoff; there is no direct link to it.
-    let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/#view=pages&open={}", l.id) };
+    // An app inside amux is reached through its Apps tab entry, which opens it
+    // on the apps origin with a one-time handoff; there is no direct link to it.
+    // #view=apps is the Apps tab's address; the dashboard still accepts the
+    // older #view=pages that earlier links carry.
+    let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/#view=apps&open={}", l.id) };
     json!({
         "id": l.id, "kind": l.kind, "port": l.port, "file": l.path, "title": l.title,
         "created_by": l.created_by, "created_at": l.created_at,
@@ -448,9 +451,9 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
             if kind == "internal" && person_of(&state, &headers).is_none() {
                 let link = file_link(&crate::config::amux_home(), &canon.to_string_lossy());
                 tracing::warn!(created_by = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).unwrap_or("-"),
-                    measured = true, n_considered = 1, verdict = "pages_internal_file_refused", "file for the owner sent to Pages");
+                    measured = true, n_considered = 1, verdict = "pages_internal_file_refused", "file for the owner sent to Apps");
                 return (StatusCode::BAD_REQUEST, Json(json!({
-                    "error": format!("a file for the owner is not a Page: Pages holds apps with a backend and files shared outside amux. \
+                    "error": format!("a file for the owner is not an App: the Apps tab holds apps with a backend and files shared outside amux. \
                         Give the owner {link}, which opens it in amux's file viewer with nothing to approve."),
                     "code": "file_not_a_page", "file_link": link,
                 }))).into_response();
@@ -487,7 +490,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     tracing::warn!(id = %link.id, kind = %kind, port, created_by = %created_by, by_person = person.is_some(), listening,
         public = link.is_public(), pending = link.is_pending(),
         measured = true, n_considered = 1, verdict = "public_link_created",
-        "Pages link created; a public one asked for by a worker serves nobody until the owner approves it in Pages");
+        "Apps link created; a public one asked for by a worker serves nobody until the owner approves it in Apps");
     let mut out = link_json(&home, &link);
     out["listening"] = json!(listening);
     (StatusCode::CREATED, Json(out)).into_response()
@@ -508,7 +511,7 @@ pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, Ax
     let who = person_of(&state, &headers)
         .or_else(|| headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::to_string))
         .unwrap_or_else(|| "unknown".into());
-    tracing::warn!(id = %id, by = %who, measured = true, n_considered = 1, verdict = "public_link_revoked", "Pages link removed");
+    tracing::warn!(id = %id, by = %who, measured = true, n_considered = 1, verdict = "public_link_revoked", "Apps link removed");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -518,7 +521,7 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
     let Some(person) = person_of(&state, &headers) else {
         tracing::warn!(id = %id, measured = true, n_considered = 1, verdict = "public_link_approve_refused",
             "a public link approval came from something other than a signed-in person");
-        return bad(StatusCode::FORBIDDEN, "only the owner, signed in to the dashboard, can approve a Pages link");
+        return bad(StatusCode::FORBIDDEN, "only the owner, signed in to the dashboard, can approve an Apps link");
     };
     let home = crate::config::amux_home();
     let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -532,7 +535,7 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
         return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
     }
     tracing::warn!(id = %id, by = %person, measured = true, n_considered = 1, verdict = "public_link_approved",
-        "a Pages link was approved (a public one now opens for anyone with it)");
+        "an Apps link was approved (a public one now opens for anyone with it)");
     Json(out).into_response()
 }
 

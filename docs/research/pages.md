@@ -2,6 +2,12 @@
 
 Status: built (v1), 2026-10-21. See [What v1 built](#what-v1-built) below.
 
+Renamed 2026-10-29: the dashboard tab is now **Apps** (Ethan: it holds apps
+with a backend, inside amux or public, and files shared outside amux, used only
+when asked for). Its address is `#view=apps`; `#view=pages` still opens it. The
+API paths (`/api/pages`, `/api/page-links`, `/pages/<name>`, `/pub/<id>`) and the
+internal view id `pages` are unchanged.
+
 Asked by Ethan: a global **Pages** tab, "like apps
 but powered by an LLM (worker?) + db (amux db) and maybe anything else", scored
 against three tests:
@@ -43,7 +49,7 @@ when.
    schedules, groups, budgets, boundaries and approvals all come with the worker
    already. Creating a page means creating a worker with `worker_type = page`.
 
-2. **The Pages tab.** It lists `page` workers. Opening one shows `index.html` in
+2. **The Apps tab (was Pages).** It lists `page` workers. Opening one shows `index.html` in
    a sandboxed iframe, with the worker's chat beside it ("add a chart of
    signups by week", "this number is wrong"). It is the same chat every worker
    has.
@@ -246,14 +252,14 @@ These are the owner's calls:
 ## What v1 built
 
 Asked by Ethan the same day: build it, with a real proposal page as the
-criteria, in the Pages tab and at `<amux_url>/pages/<name>`, behind whatever
+criteria, in the Apps tab and at `<amux_url>/pages/<name>`, behind whatever
 sign-in the server has.
 
 | Piece | Where |
 |---|---|
 | Page folder, database, asks wake, snapshots, standalone URL | `crates/amux-server/src/api/pages.rs` |
 | Sandboxed frame and the `amux` bridge, shared by the tab and the URL | `crates/amux-dashboard/static/pages-host.js` |
-| Pages tab | `crates/amux-dashboard/static/app.js` (`_pages*`), `index.html` (`#pages-view`) |
+| Apps tab | `crates/amux-dashboard/static/app.js` (`_pages*`), `index.html` (`#pages-view`) |
 | Browser test | `e2e/pages.spec.ts` |
 
 Routes:

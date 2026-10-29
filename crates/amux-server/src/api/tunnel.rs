@@ -6,7 +6,7 @@
 //!
 //! Publishing an arbitrary local port through this route is retired with the
 //! Proxies tab and `/proxy` (MSG-95893). A start without `mcp` answers 410
-//! and names Pages, so an old caller learns where the feature went.
+//! and names the Apps tab, so an old caller learns where the feature went.
 //!
 //! HISTORY, because the shape of this file is the argument. The routes were
 //! never mounted while the callers stayed, so `GET /api/tunnel/status` 404'd
@@ -73,13 +73,13 @@ fn status_body() -> Value {
 }
 
 /// What a start without `mcp` answers: the general relay is gone.
-const RETIRED: &str = "publishing a local port is retired: add the app on the Pages tab instead";
+const RETIRED: &str = "publishing a local port is retired: add the app on the Apps tab instead";
 
 async fn start(State(_state): State<AppState>, body: Option<Json<Value>>) -> Response {
     let mcp = body.as_ref().and_then(|Json(b)| b.get("mcp")).and_then(Value::as_bool).unwrap_or(false);
     if !mcp {
-        tracing::info!(verdict = "tunnel_port_start_retired", "tunnel: refused a general start (retired, see Pages)");
-        return (StatusCode::GONE, Json(json!({ "ok": false, "error": RETIRED, "use": "/#view=pages" }))).into_response();
+        tracing::info!(verdict = "tunnel_port_start_retired", "tunnel: refused a general start (retired, see the Apps tab)");
+        return (StatusCode::GONE, Json(json!({ "ok": false, "error": RETIRED, "use": "/#view=apps" }))).into_response();
     }
     let started = tun::start_mcp().await;
     if started.is_ok() {

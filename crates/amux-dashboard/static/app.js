@@ -17856,6 +17856,12 @@ function _savePeekState() {
 // inside those handlers, and replacing the hash there made the handler's
 // `location.hash !== hash` check abandon the open (#issue= links landed on the
 // board with no card, 2026-10-23).
+// The Pages tab was renamed Apps (Ethan, 2026-10-29). Its view id stays
+// 'pages' internally; #view=apps is the canonical address and #view=pages is
+// kept as an alias, because worker messages already carry those links.
+function _viewHashName(view) { return view === 'pages' ? 'apps' : view; }
+function _viewFromHashName(v) { return v === 'apps' ? 'pages' : v; }
+
 function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
   const cur = location.hash;
@@ -17866,7 +17872,9 @@ function _syncUrlHash() {
       hash = '#peek=' + encodeURIComponent(peekSession);
       if (_peekTab && _peekTab !== 'terminal') hash += '&tab=' + encodeURIComponent(_peekTab);
     } else if (activeView && activeView !== 'sessions') {
-      hash = '#view=' + encodeURIComponent(activeView);
+      // The Apps tab keeps the internal view id 'pages' (saved tab order,
+      // hidden tabs and prefs name it), but its address is #view=apps.
+      hash = '#view=' + encodeURIComponent(_viewHashName(activeView));
     }
     history.replaceState(null, '', location.pathname + location.search + hash);
   } catch (_) {}
@@ -18934,14 +18942,14 @@ function _vvTick() {
 })();
 
 // A worker's localhost/127.0.0.1/0.0.0.0 link to an app on this machine opens
-// that app's Pages entry (or offers to add it), which serves it on the apps
+// that app's Apps entry (or offers to add it), which serves it on the apps
 // origin. There is no proxy URL any more (2026-10-25: "remove the proxies").
 function rewriteLocalhostUrls(html) {
   return html.replace(/(https?):\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)(\/[^\s<>"']*)?/g,
     (match, scheme, host, port) => {
       const p = port ? port.slice(1) : '';
       if (!p || p === location.port) return match;  // amux's own port stays as written
-      return location.origin + '/#view=pages&add-internal=' + p;
+      return location.origin + '/#view=apps&add-internal=' + p;
     });
 }
 
@@ -19171,7 +19179,7 @@ function _osc8Resolve(html, urls) {
   if (!urls || !urls.length) return html;
   const href = u => {
     // Localhost URLs go through the same rewrite as every other link in the
-    // peek: to the app's Pages entry, so an OSC-8 link works from a phone or the cloud.
+    // peek: to the app's Apps entry, so an OSC-8 link works from a phone or the cloud.
     const s = rewriteLocalhostUrls(String(u == null ? '' : u).trim());
     if (!/^(?:https?|file):\/\//i.test(s)) return null;
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -39483,8 +39491,10 @@ function _chromeSave() {
 
 function switchView(view) {
   // The Proxies tab is retired (MSG-95893); a saved #view=proxies lands on
-  // Pages, where a local app is now shared.
+  // Apps, where a local app is now shared. 'apps' is the Apps tab's address
+  // name; its internal view id is still 'pages' (see _viewHashName).
   if (view === 'proxies') view = 'pages';
+  view = _viewFromHashName(view);
   // The Projects tab is removed; a saved #view=projects lands on the Board,
   // where new work starts, instead of a blank screen.
   if (view === 'projects') view = 'board';
@@ -55194,10 +55204,13 @@ async function _handleDeeplink(hash) {
   }
   if (hash && hash.startsWith('#view=')) {
     // The view is up to the first '&': the rest are that view's own parameters
-    // (#view=pages&open=<id>, &add-internal=<port>), read by the view itself.
+    // (#view=apps&open=<id>, &add-internal=<port>), read by the view itself.
     let v = decodeURIComponent(hash.slice(6).split('&')[0]);
-    // The Proxies tab is retired (MSG-95893): its old links open Pages.
+    // The Proxies tab is retired (MSG-95893): its old links open Apps.
     if (v === 'proxies') v = 'pages';
+    // #view=apps is the Apps tab; #view=pages, its name before 2026-10-29, is
+    // kept as an alias. Both reach the internal view id 'pages'.
+    v = _viewFromHashName(v);
     // switchView rewrites the hash to #view=<v> before the view reads it, so the
     // view's parameters are handed over here.
     window._viewParams = hash;
@@ -60107,7 +60120,7 @@ let _dbMode = 'data';
 let _dbLimit = 50, _dbOffset = 0, _dbSort = '', _dbDir = 'asc';
 let _sqlSchemaLoaded = false;
 
-// ── Pages (api/pages.rs, pages-host.js, docs/research/pages.md) ──
+// ── Apps tab, internal id 'pages' (api/pages.rs, pages-host.js, docs/research/pages.md) ──
 // An HTML app whose backend is a worker and its own SQLite file. The page
 // runs in a sandboxed frame mounted by pages-host.js, the same host the
 // standalone /pages/<name> uses, so the tab and the link behave alike.
@@ -60129,9 +60142,9 @@ async function _pagesEnter() {
   if (_pagesCur && !deep) return;
   if (_pagesCur) _pagesLeave();
   _pagesList();
-  // Deep links: #view=pages&open=<id> opens an app inside amux; a worker's link
-  // to localhost:<port> arrives as &add-internal=<port>, which opens that app
-  // when it is already in Pages and offers to add it otherwise.
+  // Deep links: #view=apps&open=<id> (or the older #view=pages&open=<id>) opens
+  // an app inside amux; a worker's link to localhost:<port> arrives as
+  // &add-internal=<port>, which opens that app when it is already in Apps and offers to add it otherwise.
   const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
   const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
   await _pubList();
@@ -60140,11 +60153,11 @@ async function _pagesEnter() {
     const port = parseInt(add[1], 10);
     const have = _pubLinks.find(l => l.kind === 'internal' && l.port === port);
     if (have && !have.pending) _pubOpenInternal(have.id);
-    else if (have) showToast('Port ' + port + ' is in Pages, waiting for your approval.');
+    else if (have) showToast('Port ' + port + ' is in Apps, waiting for your approval.');
     else _pubNew('internal', port);
   }
 }
-// The rest of the Pages tab (static_files/public_links.rs): apps on this
+// The rest of the Apps tab, internal id 'pages' (static_files/public_links.rs): apps on this
 // machine for the owner inside amux, the same apps shared publicly, and public
 // files and folders. One list from /api/page-links, three sections.
 async function _pubFetch(path, init) {
@@ -60242,7 +60255,7 @@ function _pubMenu(e, id) {
   m.className = 'card-menu open'; m.id = 'pub-menu'; m.setAttribute('role', 'menu');
   m.innerHTML = item('open', '&#x2197;', internal ? 'Open' : 'Open link')
     + (internal ? '' : item('copy', '&#x2398;', 'Copy link'))
-    + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Pages' : 'Turn off');
+    + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Apps' : 'Turn off');
   m.addEventListener('click', ev => {
     const it = ev.target.closest('[data-act]');
     if (!it) return;
@@ -60379,7 +60392,7 @@ async function _pubNew(kind, prefill) {
   }
   try {
     const l = await _pubFetch('', { method: 'POST', body: JSON.stringify(body) });
-    showToast(kind === 'file' ? 'Public link created' : body.path ? 'Added to Pages' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
+    showToast(kind === 'file' ? 'Public link created' : body.path ? 'Added to Apps' : (l.listening ? (kind === 'internal' ? 'App added' : 'Public link created') : 'Saved. Nothing runs on port ' + body.port + ' yet.'));
     _pubList();
   } catch (e) { showToast('Not saved: ' + e.message); }
 }
@@ -60418,7 +60431,7 @@ async function _pubUploadShare(files, title) {
   _pubList();
   for (const ms of [2000, 6000, 15000]) setTimeout(() => { if (activeView === 'pages' && !_pagesCur) _pubList(); }, ms);
 }
-// An app inside amux: the Pages open view, framed on the apps origin.
+// An app inside amux: the Apps open view, framed on the apps origin.
 // A one-time link that opens app `id` on the apps origin (apps_origin.rs). The
 // app never runs on the dashboard's origin, so it cannot act as the owner.
 async function _pubHandoff(id) {
@@ -60459,9 +60472,9 @@ async function _pubOpenInternal(id) {
 async function _pubRevoke(id) {
   const l = _pubLinks.find(x => x.id === id);
   const internal = l && l.kind === 'internal';
-  const ask = internal ? 'Remove this app from Pages? The app keeps running.' : 'Turn off this public link? Anyone using it loses access.';
+  const ask = internal ? 'Remove this app from Apps? The app keeps running.' : 'Turn off this public link? Anyone using it loses access.';
   if (!(await showConfirm(ask, internal ? 'Remove' : 'Turn off', true))) return;
-  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast(internal ? 'Removed from Pages' : 'Public link turned off'); }
+  try { await _pubFetch('/' + encodeURIComponent(id), { method: 'DELETE' }); showToast(internal ? 'Removed from Apps' : 'Public link turned off'); }
   catch (e) { showToast('Not changed: ' + e.message); }
   _pubList();
 }
@@ -60486,12 +60499,12 @@ async function _pagesList() {
   el.innerHTML = '<div class="ui-help">Loading…</div>';
   let d;
   try { d = await _pagesFetch(''); } catch (e) {
-    el.innerHTML = '<div class="ui-error">Pages could not be loaded: ' + esc(e.message) + '</div>';
+    el.innerHTML = '<div class="ui-error">Apps could not be loaded: ' + esc(e.message) + '</div>';
     return;
   }
   const pages = d.pages || [];
   if (!pages.length) {
-    el.innerHTML = _pagesEmptyBox('&#x1F4C4;', 'Create your first page', 'A page is an HTML app whose backend is a worker and a database: the page saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.');
+    el.innerHTML = _pagesEmptyBox('&#x1F4C4;', 'Create your first HTML app', 'An HTML app here has a worker and a database as its backend: the app saves to its database, and the worker does anything that needs judgment or outside data. Create one, then tell its worker what to build.');
     return;
   }
   const ago = iso => iso ? timeAgo(Date.parse(iso) / 1000) : '';
@@ -60501,17 +60514,17 @@ async function _pagesList() {
       <span class="ui-help pages-row-when">${p.data_updated_at ? 'Data changed ' + esc(ago(p.data_updated_at)) : ''}</span></div>`).join('');
 }
 async function _pagesNew() {
-  const ok = await showFormModal('New page',
+  const ok = await showFormModal('New HTML app',
     '<label class="ui-field">Name<input id="pages-new-name" class="input" placeholder="e.g. lead-research" autocomplete="off" autocapitalize="off" spellcheck="false">'
-    + '<span class="ui-help">Lowercase letters, digits and dashes. The page opens at /pages/&lt;name&gt;.</span></label>'
-    + '<label class="ui-field">What the page is for<textarea id="pages-new-instructions" class="input" rows="4" placeholder="Instructions for its worker, e.g. A CRM for my leads. Enrich a contact when I ask."></textarea></label>'
-    + '<label class="ui-field">HTML (optional)<textarea id="pages-new-html" class="input" rows="5" placeholder="Paste a page, or leave empty and ask the worker to build one."></textarea></label>',
+    + '<span class="ui-help">Lowercase letters, digits and dashes. The app opens at /pages/&lt;name&gt;.</span></label>'
+    + '<label class="ui-field">What the app is for<textarea id="pages-new-instructions" class="input" rows="4" placeholder="Instructions for its worker, e.g. A CRM for my leads. Enrich a contact when I ask."></textarea></label>'
+    + '<label class="ui-field">HTML (optional)<textarea id="pages-new-html" class="input" rows="5" placeholder="Paste the HTML, or leave empty and ask the worker to build one."></textarea></label>',
     'Create');
   if (!ok) return;
   const name = (document.getElementById('pages-new-name')?.value || '').trim().toLowerCase();
   const instructions = document.getElementById('pages-new-instructions')?.value || '';
   const html = document.getElementById('pages-new-html')?.value || '';
-  if (!name) { showToast('Not created: a page needs a name.'); return; }
+  if (!name) { showToast('Not created: an app needs a name.'); return; }
   try {
     const p = await _pagesFetch('', { method: 'POST', body: JSON.stringify({ name, instructions, html }) });
     showToast(p.worker_created ? 'Created ' + name + ' and its worker ' + p.worker : 'Created ' + name + '. Its worker was not created (HTTP ' + p.worker_status + ').');
@@ -60584,7 +60597,7 @@ async function _pagesAsks() {
       <span class="ui-help">${esc(a.created_at || '')}</span></div>
       <div class="pages-ask-text">${esc(a.text || '')}</div>
       ${a.result ? `<div class="ui-help">${esc(a.result)}</div>` : ''}</div>`).join('') + '</div>'
-    : '<p class="ui-help">No asks yet. Page code adds one with amux.ask(text), and the worker is woken for it.</p>';
+    : '<p class="ui-help">No asks yet. App code adds one with amux.ask(text), and the worker is woken for it.</p>';
   showFormModal('Asks · ' + name, body, 'Close');
 }
 async function _pagesVersions() {
@@ -60596,7 +60609,7 @@ async function _pagesVersions() {
   const label = r => ({ 'before-asks': 'Before the worker answered', 'before-html-edit': 'Before an HTML edit',
     'before-restore': 'Before a restore', manual: 'Saved by hand' }[r] || r);
   const when = ts => { const m = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/.exec(ts); return m ? new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString() : ts; };
-  const body = '<p class="ui-help">amux saves the page\'s data and HTML before each delivery to its worker. Restoring saves the current state first, so a restore can be undone.</p>'
+  const body = '<p class="ui-help">amux saves the app\'s data and HTML before each delivery to its worker. Restoring saves the current state first, so a restore can be undone.</p>'
     + '<div class="ui-guide-row"><button class="btn" onclick="_pagesSnapshotNow()">Save a version now</button></div>'
     + (snaps.length ? '<div class="pages-asks">' + snaps.map(s => `<div class="pages-ask pages-version">
         <span><b>${esc(when(s.ts))}</b> <span class="ui-help">${esc(label(s.reason))}</span></span>

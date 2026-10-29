@@ -181,7 +181,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/scope", "uniform per-capability scope read/write — memory/rules/env/gates/status_mode at global/group/worker, python storage shared byte-for-byte (api/scope.rs, AMUX-2608: the family whose cutover emptied PROXIED_FAMILIES)"),
     ("/api/mcp", "MCP registry — list/import/remove (AMUX-2871)"),
     ("/api/sql", "SQL browser — schema/rows/query, read-only unless write:true"),
-    ("/api/pages", "Pages tab: HTML apps backed by a worker and their own SQLite file; sql, ask, version, file, snapshots (api/pages.rs)"),
+    ("/api/pages", "Apps tab: HTML apps backed by a worker and their own SQLite file; sql, ask, version, file, snapshots (api/pages.rs)"),
     ("/api/skills", "skills list + save/delete"),
     ("/api/peek", "peek rendering steps (PEEK_SERVER_STEPS)"),
     ("/api/slash-commands", "slash commands"),

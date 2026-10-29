@@ -6766,7 +6766,7 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}asking anyone to sign in — amux opens a SECOND${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
-${BOLD}Pages links (apps and files, managed in the Pages tab):${RESET}
+${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
   amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
   amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
@@ -7041,41 +7041,42 @@ if d.get("submitted") is False: print("  nothing was submitted")' 2>/dev/null ||
 }
 
 cmd_tunnel() {
-  # Retired with the Proxies tab and /proxy (MSG-95893): Pages is the one way
+  # Retired with the Proxies tab and /proxy (MSG-95893): the Apps tab is the one way
   # to share a local app. The ChatGPT app's connector relay is published from
   # its panel in the dashboard, not here. Exit non-zero so a script that still
   # calls this learns it did nothing.
-  echo "amux tunnel is retired. Share a local app from the Pages tab, or:" >&2
+  echo "amux tunnel is retired. Share a local app from the Apps tab, or:" >&2
   echo "  amux publish --internal PORT [TITLE]   inside amux only" >&2
   echo "  amux publish PORT [TITLE]              anyone with the link" >&2
   return 2
 }
 
 cmd_publish() {
-  # The Pages tab's links (static_files/public_links.rs): an app for the owner
-  # inside amux (--internal), an app for anyone with the link, or a file or
-  # folder for anyone with the link (--file). All listed and removable in Pages.
+  # The Apps tab's links (static_files/public_links.rs; the tab was named
+  # Pages until 2026-10-29): an app for the owner inside amux (--internal), an
+  # app for anyone with the link, or a file or folder for anyone with the link
+  # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local kind=app target title
   case "${1:-}" in
     ""|-h|--help|help)
       cat <<EOF
-${BOLD}amux publish${RESET} — apps and files in the Pages tab
+${BOLD}amux publish${RESET}: apps and files in the Apps tab
 
   amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
 
-Pages holds apps with a backend and files shared outside amux, used only when
-the owner asks for one. A file for the owner is not a Page: name it by its
+The Apps tab holds apps with a backend and files shared outside amux, used only
+when the owner asks for one. A file for the owner is not an App: name it by its
 absolute path, which amux shows as a link to its file viewer. Give the web link
 <amux address>/f/<absolute path> only when the owner asks for a link. Do not
 start a web server for static files: it serves every file beside them.
   amux publish --revoke ID               Remove one (a public link stops working)
 
 Anything a worker adds stays PENDING (a public link serves nobody, an app
-inside amux does not open) until the owner approves it in the Pages tab.
+inside amux does not open) until the owner approves it in the Apps tab.
 EOF
       return 0
       ;;
@@ -7146,12 +7147,12 @@ print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in s
 if not d.get("file") and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
 if d.get("pending"):
-    print("PENDING: it does not open until the owner approves it in the Pages tab. Tell the owner it is waiting there.", file=sys.stderr)
+    print("PENDING: it does not open until the owner approves it in the Apps tab. Tell the owner it is waiting there.", file=sys.stderr)
 elif d.get("public"):
     print("public: anyone with the link can open it.", file=sys.stderr)
 else:
     print("only you, signed in.", file=sys.stderr)
-print("Listed in Pages; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
+print("Listed in the Apps tab; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
 '
 }
 

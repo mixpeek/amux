@@ -306,7 +306,7 @@ A **worker** is one agent lane. A **group** is a label shared by several workers
 
 ## Security
 
-Local-first. Auth is a bearer token minted at `~/.amux/auth_token` (localhost callers are exempt). **Never expose port 8824 to the internet** — use [Tailscale](https://amux.io/guides/remote-access-tailscale/) for phone/remote access, and the Pages tab to share a local app (inside amux on its own origin, or publicly by link). Report vulnerabilities privately per [SECURITY.md](../SECURITY.md).
+Local-first. Auth is a bearer token minted at `~/.amux/auth_token` (localhost callers are exempt). **Never expose port 8824 to the internet**. Use [Tailscale](https://amux.io/guides/remote-access-tailscale/) for phone/remote access, and the Apps tab to share a local app (inside amux on its own origin, or publicly by link). Report vulnerabilities privately per [SECURITY.md](../SECURITY.md).
 
 ---
 
