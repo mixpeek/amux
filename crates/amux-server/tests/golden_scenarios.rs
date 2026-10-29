@@ -783,6 +783,7 @@ async fn golden_dependency_chain() {
         lease_secs: 600,
         wip_limit: 1,
         provider_states: &providers,
+        already_dispatched: &BTreeSet::new(),
     });
     let asg = plan
         .assignments

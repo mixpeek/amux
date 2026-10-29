@@ -265,7 +265,7 @@ mod tests {
     use crate::orchestrator::{plan_tick, PriorityHints, TickInputs, TickPlan};
     use crate::worker::{WorkerCapabilities, WorkerConfig};
     use chrono::TimeZone;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
@@ -340,6 +340,7 @@ mod tests {
             lease_secs: 600,
             wip_limit: 1,
             provider_states: &provider_states,
+            already_dispatched: &BTreeSet::new(),
         })
     }
 
@@ -567,6 +568,7 @@ mod tests {
             lease_secs: 600,
             wip_limit: 1,
             provider_states: &provider_states,
+            already_dispatched: &BTreeSet::new(),
         });
         assert!(
             plan.assignments.is_empty(),

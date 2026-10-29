@@ -17,6 +17,53 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Which ACT an assignment asks for. `attempt` alone does NOT distinguish
+/// them, and that collision was a live defect (2026-10-25): a `done` card is
+/// `Runnable` for its verification turn (`board::disposition`), but the turn
+/// composes the SAME idempotency key as the execution turn that preceded it —
+/// `{task}:{worker}:{attempt}` — because attempts only increment on FAILURE,
+/// and a card that succeeded records none. `commands::enqueue` then deduped
+/// the verification turn against the already-delivered execution command, so
+/// no verification could ever be sent, while the planner re-derived the
+/// assignment every tick and held the worker's WIP slot on it. Measured on
+/// the live fleet: `AMUX-65` sat `done` from 21:36 with its lease refreshed
+/// every 10 minutes, and a card filed at 22:30 behind it was never dispatched.
+pub fn dispatch_act(status: crate::board::TaskStatus) -> &'static str {
+    use crate::board::TaskStatus;
+    match status {
+        TaskStatus::Done => "verify",
+        // Everything else the planner can choose is the work itself. Named
+        // explicitly rather than `_` so a new status is a compile error here:
+        // silently folding a new act into "execute" is how the collision
+        // above would come back.
+        TaskStatus::Backlog
+        | TaskStatus::Todo
+        | TaskStatus::Doing
+        | TaskStatus::Review
+        | TaskStatus::NeedsYou
+        | TaskStatus::Blocked
+        | TaskStatus::Armed
+        | TaskStatus::Verified
+        | TaskStatus::Discarded
+        | TaskStatus::Quarantined => "execute",
+    }
+}
+
+/// The idempotency key for dispatching `task` to `worker` on `attempt`.
+///
+/// ONE key per (card, worker, attempt, ACT). The command queue is idempotent
+/// on this string, so two different acts sharing a key means the second is
+/// never delivered — see [`dispatch_act`].
+pub fn assignment_key(task: &Task, worker: &WorkerId, attempt: u32) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        task.id,
+        worker,
+        attempt,
+        dispatch_act(task.status)
+    )
+}
+
 /// A worker's claim on a task, with an expiry so a dead worker's task
 /// returns to the pool without human intervention (Invariant 9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +132,15 @@ pub struct TickInputs<'a> {
     /// of anything and gates nothing (Invariant 20).
     pub provider_states:
         &'a BTreeMap<crate::provider::ProviderId, crate::provider_fleet::ProviderFleetState>,
+    /// Cards whose exact (card, worker, attempt, act) assignment is ALREADY
+    /// in the command queue. `enqueue` is idempotent on that key, so
+    /// re-deriving one of these mints nothing, delivers nothing, and — before
+    /// this existed — still consumed the worker's WIP slot for the tick,
+    /// starving the cards behind it (the 2026-10-25 wedge). They stay in
+    /// `tasks` because dependency resolution reads them (a `done` dependency
+    /// must still satisfy `depends_on`); they are excluded from CANDIDACY
+    /// only.
+    pub already_dispatched: &'a BTreeSet<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +342,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 disposition(t, inputs.tasks, inputs.gates),
                 TaskDisposition::Runnable
             ) && !leased_tasks.contains(&t.id)
+                && !inputs.already_dispatched.contains(&t.id)
         })
         .collect();
     candidates.sort_by(|a, b| {
@@ -338,7 +395,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             };
             *assigned_this_tick.entry(worker.id()).or_default() += 1;
             plan.assignments.push(WorkAssignment {
-                idempotency_key: format!("{}:{}:{}", task.id, worker.id(), attempt),
+                idempotency_key: assignment_key(task, worker.id(), attempt),
                 task: task.id.clone(),
                 worker: worker.id().clone(),
                 attempt,
@@ -368,6 +425,13 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                     continue;
                 }
                 if leased_tasks.contains(&t.id) {
+                    continue;
+                }
+                // Already in the command queue for this worker: the delivery
+                // is the pump's job, not the planner's. Reporting a stall here
+                // would send the stall-fixer after an assignment that already
+                // exists — it can only mint the same key again.
+                if inputs.already_dispatched.contains(&t.id) {
                     continue;
                 }
                 match disposition(t, inputs.tasks, inputs.gates) {
@@ -424,6 +488,7 @@ mod tests {
     use crate::board::{ItemType, Task, TaskStatus};
     use crate::worker::{Worker, WorkerCapabilities, WorkerConfig, WorkerState};
     use chrono::TimeZone;
+    use std::collections::BTreeSet;
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
@@ -479,6 +544,14 @@ mod tests {
 
     /// Shared empty provider map ('static so the helper below stays
     /// signature-compatible with every existing call site).
+    /// Shared empty "already dispatched" set ('static for the same reason as
+    /// `no_providers`: the helper below RETURNS the inputs, so a temporary
+    /// would dangle).
+    fn no_dispatched() -> &'static BTreeSet<TaskId> {
+        static EMPTY: std::sync::OnceLock<BTreeSet<TaskId>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(BTreeSet::new)
+    }
+
     fn no_providers(
     ) -> &'static BTreeMap<crate::provider::ProviderId, crate::provider_fleet::ProviderFleetState>
     {
@@ -508,6 +581,7 @@ mod tests {
             lease_secs: 600,
             wip_limit: 1,
             provider_states: no_providers(),
+            already_dispatched: no_dispatched(),
         }
     }
 
@@ -521,6 +595,71 @@ mod tests {
         assert_eq!(plan.assignments[0].worker, wid(1));
         assert_eq!(plan.assignments[0].attempt, 1);
         assert!(plan.stalls.is_empty(), "assigned means not stalled");
+    }
+
+    #[test]
+    fn a_done_cards_verification_key_differs_from_its_execution_key() {
+        let mut done = task(1, TaskStatus::Todo, Some(1));
+        let execute = assignment_key(&done, &wid(1), 1);
+        done.status = TaskStatus::Done;
+        let verify = assignment_key(&done, &wid(1), 1);
+        assert_ne!(
+            execute, verify,
+            "the command queue is idempotent on this key: if the verification turn reuses the \
+             execution key it can never be delivered (live: AMUX-65 never verified)"
+        );
+        assert!(execute.ends_with(":execute") && verify.ends_with(":verify"));
+        assert_eq!(
+            dispatch_act(TaskStatus::Done),
+            "verify",
+            "done is Runnable for its verification turn, and that act is what the key names"
+        );
+    }
+
+    #[test]
+    fn an_already_dispatched_card_is_not_a_candidate_and_does_not_stall_report() {
+        // One worker, wip_limit 1, two cards for it. The FIRST is older, so
+        // without an exclusion it wins the slot on every tick — the live shape
+        // where a finished card outranked the new one forever. With its act
+        // already queued it must step aside, and its silence must not read as
+        // a stall (the delivery is the pump's job, not the planner's).
+        let mut first = task(1, TaskStatus::Todo, Some(1));
+        first.created_at = now() - chrono::Duration::hours(5);
+        let tasks = vec![first, task(2, TaskStatus::Todo, Some(1))];
+        let workers = vec![worker(1, WorkerState::Idle { since: now() })];
+        let (h, a) = (BTreeMap::new(), BTreeMap::new());
+        let mut already = BTreeSet::new();
+        already.insert(tid(1));
+        let providers = BTreeMap::new();
+        let plan = plan_tick(&TickInputs {
+            now: now(),
+            tasks: &tasks,
+            workers: &workers,
+            leases: &[],
+            fleet_state: &FleetState::Normal,
+            hints: &h,
+            attempts: &a,
+            gates: &[],
+            lease_secs: 600,
+            wip_limit: 1,
+            provider_states: &providers,
+            already_dispatched: &already,
+        });
+        assert_eq!(
+            plan.assignments.len(),
+            1,
+            "the exclusion frees the budget; it must not also block the second card"
+        );
+        assert_eq!(
+            plan.assignments[0].task,
+            tid(2),
+            "the card whose act is already queued steps aside for the one that can be delivered"
+        );
+        assert!(
+            plan.stalls.iter().all(|s| s.task != tid(1)),
+            "a queued delivery is not a planner stall: {:?}",
+            plan.stalls
+        );
     }
 
     #[test]
@@ -1184,6 +1323,7 @@ mod lease_release_tests {
             lease_secs: 600,
             wip_limit: 1,
             provider_states: &providers,
+            already_dispatched: &BTreeSet::new(),
         });
         assert_eq!(plan.reclaim.len(), 1, "terminal task frees its lease now");
     }

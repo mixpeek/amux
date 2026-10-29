@@ -64,7 +64,7 @@
 //! (migration 0011), hydrated back at registration by backend::bootstrap,
 //! so continuity survives a server restart.
 
-use super::{events, AgentProtocol, AgentState, Prompt, ProtocolError, Result};
+use super::{acp, events, AgentProtocol, AgentState, Prompt, ProtocolError, Result};
 use amux_core::ids::{MessageId, TurnId, WorkerId};
 use amux_core::protocol::{ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent};
 use async_trait::async_trait;
@@ -186,8 +186,11 @@ impl CliProvider {
     /// codex 0.141.0) — see events.rs for the captured output they produce.
     ///
     /// `model` is the worker's configured model (tier alias or full id);
-    /// all three CLIs take `--model`. None = the CLI's own default — never
-    /// invent one here (the model choice is the user's, ethos rule 8).
+    /// all three CLIs take `--model`. Pass `None` and the provider's own
+    /// default applies — never invent one here (the model choice is the user's,
+    /// ethos rule 8). OpenCode's fleet default is resolved one layer up, in
+    /// [`WorkerConfig::effective_model`], so both the `run` and `acp`
+    /// transports get the same answer.
     ///
     /// `resume` is the conversation ref a previous run reported (see the
     /// module docs' continuity section); None = a fresh conversation.
@@ -329,12 +332,49 @@ pub struct WorkerConfig {
     /// script; production leaves it `None` and resolves via PATH).
     pub binary: Option<PathBuf>,
     /// The worker's configured model (`_amux_workers.model`), passed as
-    /// `--model` on every run. None = the CLI's own default.
+    /// `--model` on every run. None = whatever
+    /// [`WorkerConfig::effective_model`] resolves for the provider.
     pub model: Option<String>,
     /// A persisted conversation ref to resume from (hydrated by
     /// backend::bootstrap from `_amux_conversations`). None = start fresh;
     /// the stream's own init line supersedes this the moment a run starts.
     pub conversation: Option<String>,
+}
+
+impl WorkerConfig {
+    /// The model this worker's runs actually ask the CLI for.
+    ///
+    /// The worker's own `model` always wins. Without one, OpenCode is PINNED to
+    /// the fleet default ([`super::default_model`]) instead of falling through
+    /// to the agent's own choice, which was measured answering `503 Endpoint is
+    /// unavailable` on every ACP turn (2026-10-25) — a worker that cannot
+    /// answer a prompt is not a worker. Every other provider still passes
+    /// NOTHING: its default is decided by its own launch arm, and inventing one
+    /// here is the failure [`CliProvider::args`] documents.
+    fn effective_model(&self) -> Option<String> {
+        resolve_model(
+            self.provider,
+            self.model.as_deref(),
+            &super::default_model(),
+        )
+    }
+}
+
+/// [`WorkerConfig::effective_model`] as a pure function, so the rule can be
+/// tested without touching the process environment of every other test.
+fn resolve_model(
+    provider: CliProvider,
+    configured: Option<&str>,
+    opencode_default: &str,
+) -> Option<String> {
+    if let Some(model) = configured.map(str::trim).filter(|m| !m.is_empty()) {
+        return Some(model.to_string());
+    }
+    match provider {
+        CliProvider::OpenCode => Some(opencode_default.trim().to_string())
+            .filter(|m| !m.is_empty()),
+        _ => None,
+    }
 }
 
 struct WorkerShared {
@@ -358,6 +398,10 @@ struct WorkerShared {
     conversation: Mutex<Option<String>>,
     /// Durable home for `conversation` (None in tests without a store).
     sink: Option<Arc<dyn ConversationSink>>,
+    /// The persistent ACP session for an OpenCode worker (M2), created on the
+    /// first turn and reused until the worker is paused/stopped. `None` for
+    /// every other provider, and for OpenCode when the transport is disabled.
+    acp: tokio::sync::Mutex<Option<Arc<acp::AcpSession>>>,
 }
 
 impl WorkerShared {
@@ -381,6 +425,34 @@ pub struct StructuredCliProtocol {
     workers: Mutex<BTreeMap<WorkerId, Arc<WorkerShared>>>,
     /// Shared by every worker registered on this protocol instance.
     sink: Option<Arc<dyn ConversationSink>>,
+    /// Whether OpenCode workers use the persistent ACP transport (M2).
+    /// `None` = the environment decides ([`acp_transport_enabled`]).
+    acp: Option<bool>,
+}
+
+/// How long a worker's ACP session may wait for an ACP turn. Generous — a long
+/// task is legitimate — but bounded, so a wedged agent becomes a visible
+/// failure instead of a forever-pending turn.
+fn acp_turn_timeout() -> std::time::Duration {
+    std::env::var("AMUX_OPENCODE_ACP_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(acp::DEFAULT_TURN_TIMEOUT)
+}
+
+/// Whether OpenCode workers speak ACP. On by default (it is strictly more
+/// capable than the one-shot `run` stream); `AMUX_OPENCODE_ACP=0` returns every
+/// worker to the M1 transport, which is the escape hatch if ACP misbehaves on a
+/// newer CLI.
+pub fn acp_transport_enabled() -> bool {
+    match std::env::var("AMUX_OPENCODE_ACP") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
 }
 
 impl StructuredCliProtocol {
@@ -394,7 +466,25 @@ impl StructuredCliProtocol {
         Self {
             workers: Mutex::new(BTreeMap::new()),
             sink: Some(sink),
+            acp: None,
         }
+    }
+
+    /// Force the OpenCode transport on or off (tests). Production leaves it to
+    /// `AMUX_OPENCODE_ACP`.
+    pub fn with_acp(mut self, enabled: bool) -> Self {
+        self.acp = Some(enabled);
+        self
+    }
+
+    fn acp_enabled(&self) -> bool {
+        self.acp.unwrap_or_else(acp_transport_enabled)
+    }
+
+    /// Whether this worker's turns go over ACP: only OpenCode speaks it, and
+    /// only while the transport is enabled.
+    fn uses_acp(&self, shared: &WorkerShared) -> bool {
+        self.acp_enabled() && shared.config.provider == CliProvider::OpenCode
     }
 
     /// Register a worker. Without registration every call fails with
@@ -403,6 +493,27 @@ impl StructuredCliProtocol {
     pub fn register(&self, worker: WorkerId, config: WorkerConfig) {
         let (tx, _) = broadcast::channel(256);
         let conversation = config.conversation.clone();
+        // The transport is a per-worker decision made ONCE, at registration, and
+        // said out loud: a worker whose turns take a different path than its
+        // peers must not do so silently (ethos rule 4).
+        let transport = if self.acp_enabled() && config.provider == CliProvider::OpenCode {
+            "acp"
+        } else {
+            "run"
+        };
+        tracing::info!(
+            worker = %worker,
+            provider = config.provider.family(),
+            transport,
+            // Which model a worker will actually run, resolved once. Without
+            // this line, "why did this worker answer with a different model
+            // than its row says" is unanswerable from the log.
+            model = config
+                .effective_model()
+                .as_deref()
+                .unwrap_or("(provider default)"),
+            "structured transport selected"
+        );
         self.workers.lock().unwrap().insert(
             worker.clone(),
             Arc::new(WorkerShared {
@@ -416,6 +527,7 @@ impl StructuredCliProtocol {
                 reading: std::sync::atomic::AtomicBool::new(false),
                 conversation: Mutex::new(conversation),
                 sink: self.sink.clone(),
+                acp: tokio::sync::Mutex::new(None),
             }),
         );
     }
@@ -440,6 +552,12 @@ impl StructuredCliProtocol {
     /// The one spawn path for both prompts and idle-time message delivery.
     async fn run_prompt(&self, worker: &WorkerId, text: &str, key: String) -> Result<()> {
         let shared = self.shared(worker)?;
+        // ACP workers take the persistent-session path (M2). The guard below is
+        // shared with the M1 path, so dedupe/paused semantics cannot drift
+        // between the two transports.
+        if self.uses_acp(&shared) {
+            return self.run_acp_prompt(shared, text, key).await;
+        }
 
         // Dedupe + busy-check + spawn under the per-worker key lock so two
         // concurrent sends with the same key cannot both spawn. Nothing in
@@ -471,9 +589,10 @@ impl StructuredCliProtocol {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(cfg.provider.binary()));
             let mut cmd = Command::new(&program);
+            let model = cfg.effective_model();
             cmd.args(
                 cfg.provider
-                    .args(text, cfg.model.as_deref(), resumed_from.as_deref()),
+                    .args(text, model.as_deref(), resumed_from.as_deref()),
             )
             .current_dir(&cfg.cwd)
             .stdin(Stdio::null())
@@ -548,6 +667,200 @@ impl StructuredCliProtocol {
         }));
         tokio::spawn(read_stream(shared, stdout, stderr, turn, resumed_from));
         Ok(())
+    }
+
+    /// The ACP turn path for OpenCode workers (M2). Same contract as the M1
+    /// path — dedupe, paused refusal, busy refusal, `TurnStarted` … — but the
+    /// turn runs inside a long-lived `opencode acp` process, so amux also gets
+    /// tool events, permission asks and token usage.
+    async fn run_acp_prompt(
+        &self,
+        shared: Arc<WorkerShared>,
+        text: &str,
+        key: String,
+    ) -> Result<()> {
+        // The same sync guard the spawn path uses, under the same lock, so two
+        // concurrent sends with one key cannot both run.
+        let turn = {
+            let mut keys = shared.seen_keys.lock().unwrap();
+            if shared.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(ProtocolError::Rejected(format!(
+                    "worker {} is paused",
+                    shared.worker
+                )));
+            }
+            if keys.contains(&key) {
+                return Ok(()); // Invariant 9: redelivery must not double-run.
+            }
+            if matches!(*shared.state.lock().unwrap(), AgentState::Working { .. }) {
+                return Err(ProtocolError::Rejected(format!(
+                    "worker {} has a turn in progress; redeliver at the turn boundary",
+                    shared.worker
+                )));
+            }
+            let turn = TurnId::from_ulid(ulid::Ulid::new());
+            keys.insert(key.clone());
+            shared.set_state(AgentState::Working {
+                turn: Some(turn.clone()),
+                progress: None,
+            });
+            turn
+        };
+
+        shared.emit(WorkerEvent::TraceObserved(TurnTrace {
+            turn_id: turn.clone(),
+            kind: TurnTraceKind::Prompt,
+            content: text.to_string(),
+        }));
+        shared.emit(WorkerEvent::TurnStarted {
+            turn_id: turn.clone(),
+        });
+
+        let session = match self.acp_session(&shared).await {
+            Ok(s) => s,
+            Err(e) => {
+                // The turn never started: un-burn the idempotency key (the M1
+                // rule — a failed spawn must not swallow a redelivery), close
+                // the turn honestly, and leave the worker idle so the queue can
+                // retry at the next boundary.
+                shared.seen_keys.lock().unwrap().remove(&key);
+                tracing::warn!(worker = %shared.worker, error = %e, verdict = "acp_session_unavailable",
+                    "acp session could not be established");
+                shared.emit(WorkerEvent::Failed(Failure {
+                    reason: format!("acp session unavailable: {e}"),
+                    retryable: true,
+                }));
+                shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
+                    turn_id: turn.clone(),
+                    outcome: format!("failed: {e}"),
+                }));
+                shared.set_state(AgentState::Idle);
+                return Err(e);
+            }
+        };
+
+        match session.prompt(text, &turn).await {
+            Ok(result) => {
+                tracing::info!(worker = %shared.worker, turn = %result.turn_id,
+                    outcome = %result.outcome, "acp turn completed");
+                shared.emit(WorkerEvent::TurnCompleted(result));
+                shared.set_state(AgentState::Idle);
+                Ok(())
+            }
+            Err(e) => {
+                // An intentional stop is not a failure (mirrors read_stream's
+                // paused branch): keep the conversation ref, spend no budget.
+                if shared.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                    shared.set_state(AgentState::Paused);
+                    tracing::info!(worker = %shared.worker, verdict = "acp_turn_stopped_by_pause",
+                        "acp turn stopped by worker pause");
+                    return Ok(());
+                }
+                // The turn failed. Whether the SESSION survived decides the
+                // worker's state: a live session is idle again; a dead one is
+                // exited (never a fake Idle, never a silent hang).
+                let dead = session.is_closed();
+                tracing::warn!(worker = %shared.worker, error = %e, session_alive = !dead,
+                    verdict = "acp_turn_failed", "acp turn failed");
+                // ACP delivers a provider error as the prompt request's error
+                // object, so the message — not a typed event — is what carries
+                // "quota"/"rate limit". Keep M1's mapping rather than degrading
+                // a rate limit into a generic failure.
+                let reason = format!("acp turn failed: {e}");
+                if events::is_rate_limit_message(&reason) {
+                    shared.emit(WorkerEvent::RateLimited(amux_core::protocol::RateLimit {
+                        kind: amux_core::protocol::RateLimitKind::Unknown,
+                        reset_at: None,
+                        provider: amux_core::provider::ProviderId::new("opencode"),
+                        raw: Some(reason),
+                    }));
+                } else {
+                    shared.emit(WorkerEvent::Failed(Failure {
+                        reason,
+                        retryable: true,
+                    }));
+                }
+                shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
+                    turn_id: turn.clone(),
+                    outcome: "failed".to_string(),
+                }));
+                if dead {
+                    let mut slot = shared.acp.lock().await;
+                    *slot = None;
+                    shared.emit(WorkerEvent::Exited(ExitStatus {
+                        code: None,
+                        signal: None,
+                    }));
+                    shared.set_state(AgentState::Exited { code: None });
+                } else {
+                    shared.set_state(AgentState::Idle);
+                }
+                // The turn RAN (it reached the agent) and failed: the send was
+                // accepted, exactly as on the M1 path where a run is spawned and
+                // its failure arrives as events. Returning Err here would invite
+                // a redelivery that re-runs work the agent may have half done.
+                Ok(())
+            }
+        }
+    }
+
+    /// The worker's live ACP session, started on first use. Continuity: a
+    /// persisted conversation ref is handed to the handshake, which resumes it
+    /// — or reports it gone, in which case the ref is dropped (memory + sink),
+    /// exactly like the M1 dead-resume rule.
+    async fn acp_session(&self, shared: &Arc<WorkerShared>) -> Result<Arc<acp::AcpSession>> {
+        let mut slot = shared.acp.lock().await;
+        if let Some(session) = slot.as_ref() {
+            if !session.is_closed() {
+                return Ok(session.clone());
+            }
+            *slot = None;
+        }
+        let cfg = &shared.config;
+        let binary = cfg
+            .binary
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(cfg.provider.binary()));
+        let resume = shared.conversation.lock().unwrap().clone();
+        let mut start = acp::AcpStart::new(
+            shared.worker.to_string(),
+            cfg.cwd.clone(),
+            binary,
+            shared.events.clone(),
+        );
+        start.model = cfg.effective_model();
+        start.resume = resume.clone();
+        start.turn_timeout = acp_turn_timeout();
+        let (session, handshake) = acp::AcpSession::spawn(start).await?;
+        tracing::info!(
+            worker = %shared.worker,
+            session = %handshake.session_id,
+            resumed = handshake.resumed,
+            model = handshake.model_applied.as_deref().unwrap_or("(agent default)"),
+            "acp session established"
+        );
+        // Continuity, same shape as the M1 path: the session id is the ref.
+        {
+            let mut cur = shared.conversation.lock().unwrap();
+            *cur = Some(handshake.session_id.clone());
+        }
+        if let Some(sink) = &shared.sink {
+            sink.save(
+                &shared.worker,
+                shared.config.provider.family(),
+                &handshake.session_id,
+            );
+        }
+        if let Some(dead) = &handshake.resume_dropped {
+            tracing::warn!(worker = %shared.worker, conversation = %dead,
+                "acp resume target was gone; dropped the conversation ref");
+            if let Some(sink) = &shared.sink {
+                sink.forget(&shared.worker);
+            }
+        }
+        let session = Arc::new(session);
+        *slot = Some(session.clone());
+        Ok(session)
     }
 }
 
@@ -786,6 +1099,19 @@ impl AgentProtocol for StructuredCliProtocol {
     /// nothing running is Ok — the absence of a turn IS the cancelled state.
     async fn cancel(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
+        // ACP: ask the agent to stop the turn with a `session/cancel`
+        // notification (measured: it is a notification, not a request). The
+        // process stays warm, so the next turn needs no handshake.
+        if self.uses_acp(&shared) {
+            let session = { shared.acp.lock().await.clone() };
+            let Some(session) = session else {
+                return Ok(()); // nothing running
+            };
+            session.cancel()?;
+            tracing::info!(worker = %worker, verdict = "acp_turn_cancelled",
+                "acp turn cancel requested");
+            return Ok(());
+        }
         let pid = shared.child.lock().unwrap().as_ref().and_then(|c| c.id());
         let Some(pid) = pid else {
             return Ok(());
@@ -810,6 +1136,22 @@ impl AgentProtocol for StructuredCliProtocol {
     /// Pause terminates current work and retains the conversation reference.
     async fn pause(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
+        // ACP: cancel the turn and close the process, KEEPING the session id
+        // (the conversation ref) so resume continues the same conversation
+        // with a fresh process. That is the M1 contract, expressed the ACP way.
+        if self.uses_acp(&shared) {
+            shared.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+            shared.set_state(AgentState::Paused);
+            let session = { shared.acp.lock().await.take() };
+            if let Some(session) = session {
+                session.cancel().ok();
+                session.close().await;
+                tracing::info!(worker = %worker, verdict = "acp_session_paused_closed",
+                    conversation = %session.session_id(),
+                    "paused acp worker closed its session (ref retained)");
+            }
+            return Ok(());
+        }
         let pid = {
             let _keys = shared.seen_keys.lock().unwrap();
             shared
@@ -842,6 +1184,14 @@ impl AgentProtocol for StructuredCliProtocol {
 
     async fn resume(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
+        // ACP: pause already closed the session, so there is no process to
+        // wait on — the next turn restarts it from the retained conversation
+        // ref.
+        if self.uses_acp(&shared) {
+            shared.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+            shared.set_state(AgentState::Idle);
+            return Ok(());
+        }
         let _keys = shared.seen_keys.lock().unwrap();
         if shared.reading.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(ProtocolError::Rejected(
@@ -1283,7 +1633,7 @@ mod tests {
             ],
             0,
         );
-        let proto = StructuredCliProtocol::new();
+        let proto = StructuredCliProtocol::new().with_acp(false);
         let w = worker_id("00005");
         proto.register(
             w.clone(),
@@ -1307,6 +1657,179 @@ mod tests {
         assert_eq!(trace_count(&evs), 3, "prompt plus both provider lines");
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
+    }
+
+    /// M2: the same worker, same provider, but the turns run over ACP. This is
+    /// the transport the registry now picks by default for OpenCode (the test
+    /// above pins the opt-out). It proves the three M2 gains that the one-shot
+    /// `run` stream cannot give: a TOOL event with its input, token usage, and
+    /// one process reused across turns.
+    #[tokio::test]
+    async fn an_acp_opencode_worker_streams_tools_and_reuses_one_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = crate::opencode::acp::acp_fixture_script(dir.path(), "fake-opencode-acp");
+        let sink = Arc::new(RecordingSink::default());
+        let proto = StructuredCliProtocol::with_conversation_sink(sink.clone()).with_acp(true);
+        let w = worker_id("0000D");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script),
+                model: Some("opencode-go/deepseek-v4.1-flash".to_string()),
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("acp-1")).await.unwrap();
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+        assert_eq!(
+            lifecycle_kinds(&evs),
+            vec![
+                "turn_started",
+                "tool_used", // the write, named with its path (one event per call)
+                "progress",  // the agent's answer
+                "progress",  // usage_update
+                "progress",  // the prompt result's token total
+                "turn_completed",
+            ],
+            "{evs:?}"
+        );
+        // The tool event names the tool and the file it touched.
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            WorkerEvent::ToolUsed(t) if t.tool == "write"
+                && t.detail.as_deref().is_some_and(|d| d.ends_with("hello.txt"))
+        )), "{evs:?}");
+        // Usage is reported (M1 had no usage surface at all).
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Progress(p) if p.tokens_used == Some(6138)
+        )), "{evs:?}");
+        // The raw frames are kept as trace evidence, as on the M1 path.
+        assert!(trace_count(&evs) >= 6, "{evs:?}");
+        // Continuity rides the SAME sink as the M1 path: the ACP session id is
+        // the conversation ref.
+        assert_eq!(
+            sink.saves
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, family, cref)| (family.as_str(), cref.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("opencode", "ses_fixture")]
+        );
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle);
+
+        // Turn two must NOT spawn a second process: the session is reused.
+        proto.send_prompt(&w, prompt("acp-2")).await.unwrap();
+        let evs2 = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+        assert!(lifecycle_kinds(&evs2).contains(&"turn_completed"), "{evs2:?}");
+        assert_eq!(
+            run_count(dir.path(), "fake-opencode-acp"),
+            1,
+            "one acp process serves every turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_opencode_worker_without_a_model_pins_the_fleet_default() {
+        // The requirement, end to end: a worker that named NO model must still
+        // run a model amux chose, not whatever the agent picked today (measured
+        // 2026-10-25: the agent's own default 503s on every turn). The fixture
+        // records the `session/set_config_option` frame it received.
+        let dir = tempfile::tempdir().unwrap();
+        let script = crate::opencode::acp::acp_fixture_script(dir.path(), "default-model-acp");
+        let proto = StructuredCliProtocol::new().with_acp(true);
+        let w = worker_id("0000E");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script),
+                model: None, // nothing configured: the fleet default applies
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("pin-1")).await.unwrap();
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+        assert!(lifecycle_kinds(&evs).contains(&"turn_completed"), "{evs:?}");
+
+        let recorded =
+            std::fs::read_to_string(dir.path().join("default-model-acp.config")).unwrap_or_default();
+        let expected = crate::opencode::default_model();
+        assert!(
+            recorded.contains(&expected),
+            "the session must be pinned to {expected}, got: {recorded}"
+        );
+        // And it is the fleet constant, not an accident of this box's env.
+        assert_eq!(
+            crate::opencode::DEFAULT_MODEL,
+            "opencode/deepseek-v4.1-flash-free"
+        );
+
+        // A worker that DID name a model keeps it: configuration wins.
+        let script2 = crate::opencode::acp::acp_fixture_script(dir.path(), "own-model-acp");
+        let w2 = worker_id("0000F");
+        proto.register(
+            w2.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: dir.path().to_path_buf(),
+                binary: Some(script2),
+                model: Some("opencode-go/deepseek-v4.1-flash".to_string()),
+                conversation: None,
+            },
+        );
+        let mut rx2 = proto.events(&w2);
+        proto.send_prompt(&w2, prompt("own-1")).await.unwrap();
+        let evs2 = collect_until_terminal(&mut rx2, Duration::from_secs(20)).await;
+        assert!(lifecycle_kinds(&evs2).contains(&"turn_completed"), "{evs2:?}");
+        let recorded2 =
+            std::fs::read_to_string(dir.path().join("own-model-acp.config")).unwrap_or_default();
+        assert!(
+            recorded2.contains("opencode-go/deepseek-v4.1-flash"),
+            "{recorded2}"
+        );
+        assert!(!recorded2.contains(&expected), "the default overrode the worker: {recorded2}");
+    }
+
+    #[test]
+    fn resolve_model_pins_opencode_and_never_invents_one_for_other_providers() {
+        // A blank/whitespace configured model is NO model, not a model named " ".
+        for configured in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_model(CliProvider::OpenCode, configured, "fleet/default"),
+                Some("fleet/default".to_string()),
+                "{configured:?}"
+            );
+        }
+        // Anything configured wins, verbatim.
+        assert_eq!(
+            resolve_model(CliProvider::OpenCode, Some(" opencode-go/x "), "fleet/default"),
+            Some("opencode-go/x".to_string())
+        );
+        // Other providers keep the agent's own default: `args()` is not allowed
+        // to invent a model for them (ethos rule 8).
+        for p in [
+            CliProvider::ClaudeCode,
+            CliProvider::GeminiCli,
+            CliProvider::CodexCli,
+        ] {
+            assert_eq!(resolve_model(p, None, "fleet/default"), None, "{p:?}");
+            assert_eq!(
+                resolve_model(p, Some("haiku"), "fleet/default"),
+                Some("haiku".to_string()),
+                "{p:?}"
+            );
+        }
+        // An empty fleet default is not a model either.
+        assert_eq!(resolve_model(CliProvider::OpenCode, None, "  "), None);
     }
 
     #[tokio::test]

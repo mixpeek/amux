@@ -75,6 +75,8 @@ pub struct BootstrapReport {
     pub spawned: Vec<String>,
     /// worker ids registered with the structured protocol this pass.
     pub registered: Vec<String>,
+    /// owners in `error` restarted because a todo card was waiting (sweep 0; never an owner stop).
+    pub started_stopped_owners: Vec<String>,
     /// backend_refs terminated because their latest session row is ended.
     pub terminated: Vec<String>,
     /// worker ids flipped to Error, with the reason.
@@ -87,6 +89,7 @@ impl BootstrapReport {
             && self.registered.is_empty()
             && self.terminated.is_empty()
             && self.errored.is_empty()
+            && self.started_stopped_owners.is_empty()
     }
 }
 
@@ -209,9 +212,316 @@ impl Bootstrap {
         (CliProvider::from_provider_id(&provider) == Some(cli)).then_some(cref)
     }
 
+    /// Why a per-process warning set is needed here: this loop ticks every
+    /// `AMUX_RS_BOOTSTRAP_SECS` (default 2), so a refusal it reports holds
+    /// true for many passes and must be said once.
+    fn warn_once(key: String) -> bool {
+        static SAID: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+            std::sync::OnceLock::new();
+        let said = SAID.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        match said.lock() {
+            Ok(mut set) => set.insert(key),
+            Err(_) => true,
+        }
+    }
+
+    /// Stopped workers a `todo` card is waiting on.
+    ///
+    /// WHY THIS EXISTS (measured 2026-10-25): `orchestrator::circuit::
+    /// worker_available` counts a `Stopped` worker as available, so a todo card
+    /// owned by one is planned into an ExecuteTask command that waits for a
+    /// process nobody started. Every other spawn in this module begins at
+    /// `Starting`; the only code that produced `Starting` from `Stopped` was
+    /// the HTTP `start_worker`, i.e. a human click. A card assigned to a
+    /// stopped worker therefore waited forever — and, because the planner had
+    /// leased it, so did every other card behind it. Found when a card asking a
+    /// worker to send a Telegram message sat in todo for 20 minutes beside a
+    /// stopped worker with no log line anywhere.
+    ///
+    /// Bounded and level-triggered: only ACTIVE lifecycles, only `Error`, only
+    /// with a todo card owned by the lane, and only while the host passes the
+    /// same admission gate `start_worker` uses (AMUX-3396 — this must not be
+    /// the reason a starved box starts another CLI).
+    ///
+    /// NOT `Stopped`. `stop_worker` writes exactly `WorkerState::Stopped`, and
+    /// the state carries no reason, so a worker the owner stopped on purpose is
+    /// indistinguishable here from one nobody started. Restarting it would undo
+    /// an owner stop on the next tick (review on #391, 2026-10-27). The board
+    /// drive already holds that stop and says so (`owner_stop_held`, lane
+    /// trace `owner-stopped`: "Start it (amux start) to resume board work").
+    /// `Error` is a start that failed, not a decision, so recovering it
+    /// overrides nobody.
+    fn stopped_owners_with_todo(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, String, WorkerState)>> {
+        let conn = self.store.read()?;
+        let mut stmt = conn.prepare(
+            "SELECT w.id, w.display_name, MIN(i.id), w.state
+             FROM _amux_workers w
+             JOIN issues i ON lower(i.session) = lower(w.display_name)
+             WHERE json_extract(w.state, '$.state') = 'error'
+               AND w.lifecycle = 'active'
+               AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0
+               AND i.status = 'todo'
+               -- An `error` worker is offered even WITH a live session row: a
+               -- failed start writes that row (with no pid) BEFORE the spawn
+               -- fails, so a live-row guard hides exactly the worker that needs
+               -- recovery (measured 2026-10-26: PATCH {model} -> session_restart
+               -- -> spawn conflict -> error + live pid-less row -> sweep 0
+               -- silent, forever).
+             GROUP BY w.id, w.display_name, w.state",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, name, card, state_json) = row?;
+            // A state this build cannot parse is not a restart reason: leave it
+            // to the sweep that reports it, never guess.
+            if let Ok(state) = serde_json::from_str::<WorkerState>(&state_json) {
+                out.push((id, name, card, state));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Terminate `amux-wrk_<id>` if a backend still hosts it, and report
+    /// whether it did. The ref is OURS by construction (`backend_ref` is
+    /// id-derived), so terminating it can never touch another instance's work —
+    /// the same ownership rule the reap sweep already relies on.
+    ///
+    /// `reconcile()` is the backend's own census (tmux `list-sessions`), not a
+    /// `ps` guess: absence there is the only evidence that the name is free.
+    async fn free_own_backend_ref(&self, worker_id: &str) -> bool {
+        let Ok(worker) = WorkerId::parse(worker_id) else {
+            return false;
+        };
+        let want = crate::backend::backend_ref(&worker);
+        let mut freed = false;
+        for backend in &self.backends {
+            let hosted = match backend.reconcile().await {
+                Ok(h) => h,
+                // A backend that cannot answer is not evidence that the name is
+                // free; the spawn will report the conflict itself.
+                Err(_) => continue,
+            };
+            if !hosted.iter().any(|s| s.backend_ref == want) {
+                continue;
+            }
+            let proc = ProcessRef {
+                backend_ref: want.clone(),
+                pid: None,
+            };
+            match backend.terminate(&proc).await {
+                Ok(()) => {
+                    tracing::info!(
+                        worker = %worker_id,
+                        backend = backend.name(),
+                        backend_ref = %want,
+                        verdict = "stale_backend_ref_freed",
+                        "terminated this worker's OWN backend process before restarting it — the \
+                         previous stop ended the session row but left the process the name, so the \
+                         spawn would otherwise fail with `already exists` and park the worker"
+                    );
+                    freed = true;
+                }
+                Err(e) => {
+                    if Self::warn_once(format!("stale_backend_ref_failed:{worker_id}")) {
+                        tracing::warn!(
+                            worker = %worker_id,
+                            backend = backend.name(),
+                            backend_ref = %want,
+                            error = %e,
+                            verdict = "stale_backend_ref_not_freed",
+                            "could not terminate the stale backend process; the restart is \
+                             attempted anyway and its own failure will say so"
+                        );
+                    }
+                }
+            }
+        }
+        freed
+    }
+
+    /// Flip a stopped owner to `Starting` with a live session row — exactly the
+    /// write `api::workers::start_worker` performs, so sweep 1 of THIS pass
+    /// spawns and registers it (that sweep runs below, on the same pass).
+    ///
+    /// Not delegated to `start_worker` because that is an axum handler whose
+    /// state lives in `AppState`; the durable shape it writes is small and is
+    /// asserted by `a_stopped_owner_with_a_todo_card_is_discovered_and_restarted`.
+    async fn start_owner(&self, worker_id: String, card: String) -> anyhow::Result<bool> {
+        let worker = WorkerId::parse(&worker_id)
+            .map_err(|e| anyhow::anyhow!("worker id unparseable: {e}"))?;
+        let backend_ref = crate::backend::backend_ref(&worker);
+        let key = worker_id.clone();
+        let write = self
+            .store
+            .write_async(move |conn| {
+                let Some(row) = queries::get_worker(conn, &key)? else {
+                    return Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
+                };
+                // Re-checked under the write lock: a human (or another job) may
+                // have started or paused it between the read and this write.
+                //
+                // Restartable = parked in `error`, whose only live session row
+                // has NO pid: that row is a spawn that never happened (the
+                // failed start wrote it first), so it is ended here rather than
+                // being allowed to block recovery forever. A row WITH a pid
+                // describes a running process and is respected. `Stopped` is
+                // never restarted here: it may be the owner's own stop.
+                let restartable = matches!(row.state, WorkerState::Error { .. });
+                let live = queries::live_session_for(conn, &row.id)?;
+                let stale_live = live.as_ref().filter(|s| s.pid.is_none());
+                if !row.lifecycle.is_drivable()
+                    || !restartable
+                    || (live.is_some() && stale_live.is_none())
+                {
+                    return Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
+                }
+                let ses_id = amux_core::ids::SessionId::from_ulid(ulid::Ulid::new());
+                let now_s = chrono::Utc::now().to_rfc3339();
+                if let Some(stale) = stale_live {
+                    queries::end_session(
+                        conn,
+                        &stale.id,
+                        &amux_core::session::ExitReason::Replaced,
+                        &now_s,
+                    )?;
+                    tracing::info!(
+                        worker = %row.display_name,
+                        session = %stale.id,
+                        verdict = "stale_session_row_replaced",
+                        "ended a live session row with NO pid before restarting: it records a \
+                         spawn that never happened, and leaving it live is what made the \
+                         restart look impossible"
+                    );
+                }
+                queries::insert_session(
+                    conn,
+                    &queries::SessionRow {
+                        id: ses_id.as_str().to_string(),
+                        worker_id: row.id.clone(),
+                        backend: row.backend.clone(),
+                        backend_ref: backend_ref.clone(),
+                        pid: None,
+                        started_at: now_s.clone(),
+                        ended_at: None,
+                        exit_reason: None,
+                    },
+                )?;
+                queries::update_worker_state(conn, &row.id, &WorkerState::Starting, &now_s)?;
+                let mut after = row.clone();
+                after.state = WorkerState::Starting;
+                after.updated_at = now_s;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![PendingEvent {
+                        entity_type: amux_core::revision::EntityType::Worker,
+                        entity_id: row.id.clone(),
+                        mutation: amux_core::revision::MutationKind::StatusChanged {
+                            from: "stopped".into(),
+                            to: "starting".into(),
+                        },
+                        payload: Some(after.snapshot()),
+                    }],
+                })
+            })
+            .await?;
+        if write.applied {
+            tracing::info!(
+                worker = %worker_id,
+                card = %card,
+                verdict = "todo_owner_autostarted",
+                "a todo card was waiting on this stopped worker; restarted it (spawn + protocol \
+                 registration follow in this same pass)"
+            );
+        }
+        Ok(write.applied)
+    }
+
     /// One pass over the store + backends. See module docs for the sweeps.
     pub async fn pass_once(&self) -> anyhow::Result<BootstrapReport> {
         let mut report = BootstrapReport::default();
+
+        // ---- sweep 0: recover an owner a failed start left in `error`, when a todo card waits on it ----
+        //
+        // Runs BEFORE the spawn sweep so the same pass spawns and registers what
+        // it starts. Refusals are named once: this loop ticks every 2s.
+        for (worker_id, display_name, card, state) in self.stopped_owners_with_todo()? {
+            if crate::api::health::admission() == crate::api::health::Admission::Deny {
+                let m = crate::api::health::mem_health();
+                if Self::warn_once(format!("todo_owner_autostart_refused:{worker_id}")) {
+                    tracing::warn!(
+                        worker = %worker_id,
+                        lane = %display_name,
+                        card = %card,
+                        pressure = m.pressure,
+                        swap_used_mb = m.swap_used_mb,
+                        verdict = "todo_owner_autostart_refused",
+                        reason = "host_admission",
+                        "a todo card is waiting on this stopped worker and the host is out of \
+                         memory headroom, so it was NOT started (nothing was stopped; AMUX-3396). \
+                         The card keeps waiting and this refusal is the reason"
+                    );
+                }
+                continue;
+            }
+            // THE NAME MUST BE FREE BEFORE THE SPAWN. A stop ends the SESSION
+            // ROW; the reap sweep only terminates a ref whose LATEST row is
+            // ended, and this sweep then writes a fresh live row — so a
+            // restart can collide with the process that stop never killed
+            // (`tmux session amux-wrk_… already exists`, measured 2026-10-26),
+            // which flips the worker to a terminal `Error` and strands the
+            // card. Terminating the ref is safe by construction: it is the ref
+            // THIS store mints for THIS worker (`backend_ref` is id-derived).
+            let ref_freed = self.free_own_backend_ref(&worker_id).await;
+            // An `error` that no live process explains is a REAL fault: it
+            // stays terminal and visible (`bootstrap: worker errored`), never a
+            // 2-second spawn storm. Only a stale process of our own makes it
+            // restartable.
+            if matches!(state, WorkerState::Error { .. }) && !ref_freed {
+                if Self::warn_once(format!("todo_owner_error_not_restartable:{worker_id}")) {
+                    tracing::warn!(
+                        worker = %worker_id,
+                        lane = %display_name,
+                        card = %card,
+                        verdict = "todo_owner_error_not_restartable",
+                        "a todo card is waiting on a worker parked in `error` with no live \
+                         backend process of its own: this needs a human (or the stop it was \
+                         waiting for), so it was NOT restarted automatically"
+                    );
+                }
+                continue;
+            }
+            if self.start_owner(worker_id.clone(), card).await? {
+                report.started_stopped_owners.push(worker_id.clone());
+                if ref_freed {
+                    // The restart recovered a ref the previous process left
+                    // behind; name it, because the spawn that fails on a stale
+                    // name is otherwise indistinguishable from a provider fault.
+                    report.terminated.push(format!(
+                        "{}: stale backend ref freed before restart",
+                        crate::backend::backend_ref(
+                            &WorkerId::parse(&worker_id)
+                                .map_err(|e| anyhow::anyhow!("worker id unparseable: {e}"))?
+                        )
+                    ));
+                }
+            }
+        }
 
         // ---- sweep 1: spawn Starting workers --------------------------------
         let starting: Vec<(String, String, String, String)> = {
@@ -625,6 +935,254 @@ mod tests {
             registry: Arc::new(crate::provider::default_registry()),
             registrar,
         }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_owner_with_a_todo_card_stays_stopped() {
+        let (store, _dir) = store();
+        // A stopped durable worker owning a todo card: the shape a human
+        // reports as "I created a card and the worker did not pick it up"
+        // (2026-10-25). Nothing started it, because `worker_available` counts
+        // Stopped as available and only the HTTP start produced Starting.
+        let (id, bref) = seed(&store, WorkerState::Stopped, "herdr", "claude", false);
+        let display = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        let insert_card = |card: &str, status: &str, lane: &str| {
+            let (card, status, lane) = (card.to_string(), status.to_string(), lane.to_string());
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO issues (id, title, desc, status, session, creator, created, updated) \
+                         VALUES (?1, 'probe', '', ?2, ?3, 'test', 0, 0)",
+                        params![card, status, lane],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        };
+
+        // An owner stop and a todo card: the card is not a reason to undo the
+        // stop. `stop_worker` writes exactly this state, with no reason
+        // attached, so sweep 0 cannot tell it from "never started" and must
+        // leave it alone; the card is reported as waiting on a stopped owner.
+        insert_card("TST-RESTART", "todo", &display);
+        let boot = bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()));
+        assert!(
+            boot.stopped_owners_with_todo().unwrap().is_empty(),
+            "a stopped owner with a todo card must not be offered for restart"
+        );
+        assert!(
+            !boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap(),
+            "start_owner refuses a Stopped worker even when asked directly"
+        );
+        assert!(matches!(worker_state(&store, &id), WorkerState::Stopped), "the owner's stop holds");
+        let sessions: i64 = {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM _amux_sessions WHERE worker_id = ?1 AND ended_at IS NULL",
+                params![id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(sessions, 0, "no session row was written for a stopped owner");
+        let _ = bref;
+    }
+
+    /// MEASURED 2026-10-26: a stop ends the session ROW, and the reap sweep
+    /// only terminates a ref whose LATEST row is ended — but sweep 0 writes a
+    /// fresh live row before sweep 1 spawns, so the process stop never killed
+    /// keeps the name and the spawn fails with `tmux session … already exists`.
+    /// The worker parks in a terminal `Error` and the card behind it strands.
+    /// Freeing the ref is the missing half of "restart": the name must be free
+    /// before the spawn.
+    #[tokio::test]
+    async fn a_stale_backend_ref_is_freed_before_a_restart_and_only_ours() {
+        let (store, _dir) = store();
+        let (id, bref) = seed(
+            &store,
+            WorkerState::Error {
+                detail: "spawn failed: backend process spawn failed: tmux session                          amux-wrk already exists"
+                    .into(),
+            },
+            "herdr",
+            "claude",
+            false,
+        );
+        let backend = Arc::new(FakeBackend::default());
+        backend.hosted.lock().unwrap().push(bref.clone());
+        let boot = bootstrap(
+            store.clone(),
+            backend.clone(),
+            Arc::new(RecordingRegistrar::default()),
+        );
+
+        assert!(
+            boot.free_own_backend_ref(id.as_str()).await,
+            "the stale ref must be found and terminated"
+        );
+        assert_eq!(
+            backend.terminated.lock().unwrap().clone(),
+            vec![bref.clone()],
+            "exactly this worker's own id-derived ref, nothing else"
+        );
+
+        // The name is free now: nothing to do, and the caller can tell the
+        // difference (that is what makes the Error restartable only ONCE).
+        backend.hosted.lock().unwrap().clear();
+        assert!(!boot.free_own_backend_ref(id.as_str()).await);
+    }
+
+    /// MEASURED 2026-10-26: a failed start writes a LIVE session row with NO
+    /// pid before the spawn fails, so the worker that most needs recovery is
+    /// hidden by "no live row". Discovery must offer it, and `start_owner` must
+    /// end that row (a spawn that never happened) rather than let it block the
+    /// restart forever.
+    #[tokio::test]
+    async fn an_error_owner_with_a_pidless_session_row_is_restartable() {
+        let (store, _dir) = store();
+        let (id, bref) = seed(
+            &store,
+            WorkerState::Error {
+                detail: "spawn failed: tmux session amux-wrk already exists".into(),
+            },
+            "herdr",
+            "claude",
+            false,
+        );
+        let display = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        {
+            let (idw, brefw) = (id.to_string(), bref.clone());
+            store
+                .write(move |conn| {
+                    queries::insert_session(
+                        conn,
+                        &SessionRow {
+                            id: "ses_never_spawned".into(),
+                            worker_id: idw,
+                            backend: "herdr".into(),
+                            backend_ref: brefw,
+                            pid: None,
+                            started_at: chrono::Utc::now().to_rfc3339(),
+                            ended_at: None,
+                            exit_reason: None,
+                        },
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
+        }
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO issues (id, title, desc, status, session, creator, created, updated) \
+                     VALUES ('TST-PIDLESS', 'probe', '', 'todo', ?1, 'test', 0, 0)",
+                    params![display],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        let boot = bootstrap(
+            store.clone(),
+            Arc::new(FakeBackend::default()),
+            Arc::new(RecordingRegistrar::default()),
+        );
+
+        let found = boot.stopped_owners_with_todo().unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the error worker is offered DESPITE its live session row"
+        );
+        assert!(boot
+            .start_owner(id.to_string(), "TST-PIDLESS".into())
+            .await
+            .unwrap());
+        let (live, stale_ended): (i64, bool) = {
+            let conn = store.read().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*), (SELECT ended_at IS NOT NULL FROM _amux_sessions WHERE id='ses_never_spawned')
+                 FROM _amux_sessions WHERE worker_id = ?1 AND ended_at IS NULL",
+                params![id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(live, 1, "exactly one live row after the restart");
+        assert!(
+            stale_ended,
+            "the pid-less row was ended, not left to block the spawn"
+        );
+        assert!(matches!(worker_state(&store, &id), WorkerState::Starting));
+    }
+
+    /// An `error` with no live process of its own is a REAL fault: restarting
+    /// it every 2 seconds is a spawn storm, so discovery must exclude it, and
+    /// the sweep names the reason once instead.
+    #[tokio::test]
+    async fn an_error_owner_with_no_stale_process_is_offered_but_not_restarted() {
+        let (store, _dir) = store();
+        let (id, _bref) = seed(
+            &store,
+            WorkerState::Error {
+                detail: "unknown provider: nope".into(),
+            },
+            "herdr",
+            "claude",
+            false,
+        );
+        let display = {
+            let conn = store.read().unwrap();
+            queries::get_worker(&conn, id.as_str())
+                .unwrap()
+                .unwrap()
+                .display_name
+        };
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO issues (id, title, desc, status, session, creator, created, updated)                      VALUES ('TST-ERR', 'probe', '', 'todo', ?1, 'test', 0, 0)",
+                    params![display],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        let backend = Arc::new(FakeBackend::default());
+        let boot = bootstrap(
+            store.clone(),
+            backend.clone(),
+            Arc::new(RecordingRegistrar::default()),
+        );
+        // Discovery offers it (so the sweep can NAME the situation)...
+        let found = boot.stopped_owners_with_todo().unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(matches!(found[0].3, WorkerState::Error { .. }));
+        // ...but nothing of ours is hosted, so no restart is justified.
+        assert!(!boot.free_own_backend_ref(id.as_str()).await);
+        assert!(backend.terminated.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
