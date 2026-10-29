@@ -613,6 +613,12 @@ pub fn router_with_connector_transport(
             "/api/page-links/{id}/open",
             axum::routing::post(static_files::apps_origin::open),
         )
+        // An HTML file from the Files tab, opened as its folder's website on
+        // the apps origin.
+        .route(
+            "/api/page-links/site-view",
+            axum::routing::post(static_files::apps_origin::site_view),
+        )
         // The address copied links are built on (deep_links.rs).
         .merge(deep_links::routes())
         .layer(axum::middleware::from_fn_with_state(

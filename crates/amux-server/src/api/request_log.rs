@@ -2297,6 +2297,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/page-links/{id}/open",
         methods: &["POST"],
     },
+    RouteEntry {
+        path: "/api/page-links/site-view",
+        methods: &["POST"],
+    },
     // People's pictures (avatars.rs).
     RouteEntry {
         path: "/api/avatars",

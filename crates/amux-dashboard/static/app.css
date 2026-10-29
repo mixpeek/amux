@@ -10427,7 +10427,7 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-open { flex-direction:column; flex:1; min-height:0; gap:var(--space-2); }
 .pages-bar { display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap; }
 .pages-title { font-size:var(--fs-2xl); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:40ch; }
-.pages-status { flex:1; min-width:0; }
+.pages-status { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pages-bar-actions { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-left:auto; }
 .pages-frame { flex:none; min-height:320px; border:1px solid var(--border); border-radius:var(--radius-lg); overflow:hidden; background:var(--on-solid); }
 .pages-frame iframe { width:100%; height:100%; border:0; display:block; }
