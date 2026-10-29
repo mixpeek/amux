@@ -1,5 +1,96 @@
 [
   {
+    "hash": "9bc75e4e4abb94143eee54864f72d9962b2e57c1",
+    "short": "9bc75e4e",
+    "title": "Click an attachment's icon to preview it",
+    "date": "2026-10-29",
+    "type": "feat",
+    "tags": [
+      "attachments",
+      "dashboard",
+      "mobile"
+    ],
+    "description": "The icon on every attachment chip, in the worker input and on a worker card, now opens a preview: an image, video, audio, a PDF or the text of a text file. The preview reads your device's own copy while the upload is still running, so it never waits. Escape, the X or a click outside closes it, and on a phone the icon is a full 44px target."
+  },
+  {
+    "hash": "9c9ede327e83f2cdaf03a11863e07f0e3a67e52d",
+    "short": "9c9ede32",
+    "title": "Start a message from Messages, and @mention a worker to get it working in the thread",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "workers",
+      "team"
+    ],
+    "description": "A pencil button in the Messages sidebar opens one picker over channels, people and workers, and keeps your draft when you pick. A worker you @mention in a direct message now answers in the thread under your post, as it already did in channels, and the rest of the conversation stays private. The message box is the same input you use to talk to a worker."
+  },
+  {
+    "hash": "0f7f6ac3e88947c490909fe73637b6fc2c85cdaf",
+    "short": "0f7f6ac3",
+    "title": "Owners and admins manage channels in Messages",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "team",
+      "permissions"
+    ],
+    "description": "The owner and admins can create a channel, rename it, make it private, archive or restore it, and add or remove people, from Manage channels at the end of the channel list or the settings button in a channel. Everyone else, workers included, is refused, and the buttons are hidden for them."
+  },
+  {
+    "hash": "3f47251f8b78657ea635f192dc2fa572630f40da",
+    "short": "3f47251f",
+    "title": "Recordings transcribe live and can write meeting notes",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "recording",
+      "meetings",
+      "transcription"
+    ],
+    "description": "Live transcription is on by default: each open recording is transcribed in roughly 15-second pieces and saved as it goes, so a crash keeps every word so far, with your voice and the other side labelled You and Them. Opt in to meeting notes and amux writes a title, summary, decisions and action items with owners, followed by your own typed notes, and suggests which workers the meeting concerns."
+  },
+  {
+    "hash": "5297440a694a0d4aa98e202bc6ce03c4dd94e5a9",
+    "short": "5297440a",
+    "title": "A back button and recent places that take no extra row",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "navigation",
+      "dashboard",
+      "mobile"
+    ],
+    "description": "Moving between tabs, workers, cards and files is now part of the browser history, so Back, a phone swipe and Cmd+[ return you to the last place in amux instead of leaving it. A small back arrow appears at the left of the header only when there is somewhere to go, and a long press or right click lists your last 15 places."
+  },
+  {
+    "hash": "8580f3f1b75db36ea5f1a95b0c081094009a673f",
+    "short": "8580f3f1",
+    "title": "Queue social posts for a publish time, one publisher per platform, now with dev.to",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "social",
+      "scheduler",
+      "automation"
+    ],
+    "description": "Workers can queue a post for one or several platforms with a publish time, and amux checks every draft when it is queued so nothing is half-scheduled. A background job publishes due posts, retries a failure that reached nothing, and measures each post at 24 hours, 72 hours and 7 days. dev.to joins the supported platforms, and queued posts can be cancelled or rescheduled."
+  },
+  {
+    "hash": "e44849a1b449f1365a67a2108ed56f3c25ca866e",
+    "short": "e44849a1",
+    "title": "One timeline of everything a worker did in the browser and through its tools",
+    "date": "2026-10-28",
+    "type": "feat",
+    "tags": [
+      "audit",
+      "browser",
+      "observability"
+    ],
+    "description": "Every browser step a worker takes is now logged with the page before and after, whether it loaded, any error and how long it took, with typed text, code and file paths never stored. Claude Code tool calls are recorded too, so you can triage a worker's browser use, tool use and API calls in one timeline."
+  },
+  {
     "hash": "74d568a2492a094484e7d6661aee8604d84e4d89",
     "short": "74d568a2",
     "title": "Pass/fail schedules show a green Passing pill and lead with what the check found",
