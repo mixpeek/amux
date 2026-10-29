@@ -7068,8 +7068,9 @@ ${BOLD}amux publish${RESET} — apps and files in the Pages tab
   amux publish --list                          List them
 
 Pages holds apps with a backend and files shared outside amux, used only when
-the owner asks for one. A file for the owner is not a Page: give them its link,
-<amux address>/f/<absolute path>, which opens in amux's file viewer. Do not
+the owner asks for one. A file for the owner is not a Page: name it by its
+absolute path, which amux shows as a link to its file viewer. Give the web link
+<amux address>/f/<absolute path> only when the owner asks for a link. Do not
 start a web server for static files: it serves every file beside them.
   amux publish --revoke ID               Remove one (a public link stops working)
 

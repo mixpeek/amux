@@ -293,10 +293,11 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     };
     format!(
         "{address}\n\n\
-         A file for the owner (a workbook, a report, a deck, an HTML page) is not a Page. Give each file \
-         its own link, {base}/f/<absolute path>, one per file, never a bare path or a folder: it opens in \
-         amux's file viewer, signed in, with nothing to approve, and it downloads from there. Never start \
-         a web server (such as `python3 -m http.server`) to show files.\n\n\
+         A file for the owner (a workbook, a report, a deck, an HTML page) is not a Page. Name each file \
+         by its absolute path, one per file, never a folder: amux shows the path as a link that opens in \
+         its file viewer, signed in, with nothing to approve. Give the web link, {base}/f/<absolute path>, \
+         only when the owner asks for a link (to copy, send or open outside amux). Never start a web \
+         server (such as `python3 -m http.server`) to show files.\n\n\
          Pages holds apps with a backend (a server, inside amux or outside it) and files shared outside \
          amux. Use it only when the owner asks for one of those:\n\
          - An app for the owner, inside amux: `amux publish --internal <port> [title]`. Its link is \
@@ -762,6 +763,20 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Owner, 2026-10-29: workers handed him <address>/f/<path> web links for
+    // every file "without me explicitly saying so". A file is named by its
+    // path; the web link is for when he asks for one.
+    #[test]
+    fn workers_name_a_file_by_its_path_and_link_it_only_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEARNED_URL_FILE), r#"{"url":"https://desk.example:8824"}"#).unwrap();
+        let g = worker_links_guide(dir.path());
+        assert!(g.contains("Name each file by its absolute path"), "{g}");
+        assert!(g.contains("only when the owner asks for a link"), "{g}");
+        assert!(!g.contains("never a bare path"), "the old rule told workers to link every file: {g}");
+        assert!(g.contains("https://desk.example:8824/f/<absolute path>"), "the link, when asked, is still built on the real address: {g}");
+    }
 
     #[test]
     fn ids_are_random_hex_and_only_that_shape_is_accepted() {
