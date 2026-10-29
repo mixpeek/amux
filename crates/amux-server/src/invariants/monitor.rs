@@ -168,7 +168,16 @@ struct RouteWindow {
     lo: f64,
     last_id: i64,
     groups: std::collections::HashMap<(String, String), RouteAcc>,
+    /// Raw path -> route shape, so each distinct path is normalized once.
+    /// normalize_target_verb scores a path against all ~1,250 routes; the
+    /// chunked boot build sees each raw path once per chunk, ~263k lookups for
+    /// ~30k distinct paths, and that took 106.8 s of a 33-chunk build on
+    /// 3027f2512 while each chunk's SQL took 0.18 s in the sqlite3 shell.
+    shapes: std::collections::HashMap<String, String>,
 }
+/// Past this many remembered paths the memo starts over, so an unbounded set
+/// of distinct paths cannot grow it forever.
+const ROUTE_SHAPES_MAX: usize = 200_000;
 const ROUTE_REBUILD_SECS: f64 = 6.0 * 3600.0;
 const ROUTE_BUILD_CHUNK: i64 = 200_000;
 static ROUTE_WINDOW: std::sync::Mutex<Option<RouteWindow>> = std::sync::Mutex::new(None);
@@ -214,7 +223,17 @@ fn route_fold(
     })?;
     for row in rows {
         let (method, path, [ok, n, c4, c5, c503, c3], last, max_id) = row?;
-        let shape = crate::api::request_log::normalize_target_verb(&path);
+        let shape = match w.shapes.get(&path) {
+            Some(shape) => shape.clone(),
+            None => {
+                if w.shapes.len() >= ROUTE_SHAPES_MAX {
+                    w.shapes.clear();
+                }
+                let shape = crate::api::request_log::normalize_target_verb(&path);
+                w.shapes.insert(path, shape.clone());
+                shape
+            }
+        };
         let e = w.groups.entry((method, shape)).or_default();
         e.ok += sign * ok;
         e.n += sign * n;
@@ -247,7 +266,8 @@ fn route_window(
     let rebuild = cache.as_ref().is_none_or(|w| now - w.built_at >= ROUTE_REBUILD_SECS);
     if rebuild {
         let started = std::time::Instant::now();
-        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default() };
+        let shapes = cache.as_mut().map(|w| std::mem::take(&mut w.shapes)).unwrap_or_default();
+        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), shapes };
         let built = (|| -> rusqlite::Result<i64> {
             let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
                 "SELECT MIN(id), MAX(id) FROM _amux_request_log WHERE ts >= ?1",
@@ -780,6 +800,33 @@ mod f64_roundtrip_wiring_tests {
     /// in `section_timing_tests` stays balanced because the section comment
     /// goes with it, and `checks`'s own unit tests keep passing on a function
     /// nobody calls. An unregistered invariant is silence that reads as health.
+    #[test]
+    fn the_route_window_normalizes_each_raw_path_once() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let now = 2_000_000_000.0;
+        for path in ["/api/board/AMUX-1", "/api/board/AMUX-2", "/api/board/AMUX-1"] {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', ?2, 200)",
+                rusqlite::params![now - 10.0, path],
+            )
+            .unwrap();
+        }
+        let mut cache = None;
+        super::route_window(&mut cache, &conn, now, 1000.0);
+        let w = cache.as_ref().unwrap();
+        // Two distinct raw paths, each remembered with the shape it folds into.
+        assert_eq!(w.shapes.len(), 2, "{:?}", w.shapes);
+        let want = crate::api::request_log::normalize_target_verb("/api/board/AMUX-1");
+        assert_eq!(w.shapes.get("/api/board/AMUX-1"), Some(&want));
+        // A rebuild keeps what it learned.
+        super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0, 1000.0 + super::ROUTE_REBUILD_SECS);
+        assert_eq!(cache.as_ref().unwrap().shapes.len(), 2);
+    }
+
     #[test]
     fn rows_that_age_out_of_the_route_window_leave_it_without_a_rebuild() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
