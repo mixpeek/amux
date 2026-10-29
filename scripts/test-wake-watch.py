@@ -279,6 +279,26 @@ class WakeWatch(unittest.TestCase):
             st = json.load(fh)
         self.assertEqual((st["status"], st["conclusion"], st["measured"]), ("completed", "failure", True))
 
+    def test_a_rerun_fires_only_when_the_current_attempt_completes(self):
+        # 2026-10-29, mixpeek run 40872577418: attempt 1's cached "completed
+        # failure" fired two new watches while attempt 2 was in progress.
+        path = "/repos/o/r/actions/runs/4022"
+        FakeGitHub.runs[path] = {"status": "completed", "conclusion": "failure", "html_url": "u", "name": "rust",
+                                 "run_attempt": 1}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--run", "4022", lane="lane-a")[0], 0)
+        self.assertEqual(self.check(lane="lane-a", advance=61)[0], 10, "attempt 1 concludes for its own watch")
+        FakeGitHub.runs[path] = {"status": "in_progress", "conclusion": None, "html_url": "u", "name": "rust",
+                                 "run_attempt": 2}
+        self.now += 5
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--run", "4022", lane="lane-b")[0], 0)
+        self.assertEqual(self.check(lane="lane-b", advance=1)[0], 0, "the cached attempt 1 must not fire a new watch")
+        self.assertEqual(self.check(lane="lane-b", advance=61)[0], 0, "attempt 2 still in progress")
+        FakeGitHub.runs[path] = {"status": "completed", "conclusion": "success", "html_url": "u", "name": "rust",
+                                 "run_attempt": 2}
+        rc, out, _ = self.check(lane="lane-b", advance=61)
+        self.assertEqual(rc, 10)
+        self.assertIn("attempt 2 completed success", out)
+
     def test_a_sha_with_no_runs_yet_is_pending_never_success(self):
         q = "/repos/o/r/actions/runs?head_sha=abc123&per_page=100"
         FakeGitHub.runs[q] = {"workflow_runs": []}

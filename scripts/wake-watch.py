@@ -300,7 +300,7 @@ def gh_get(path):
 def _run_summary(r):
     return {"id": r.get("id"), "name": r.get("name"), "status": r.get("status"), "conclusion": r.get("conclusion"),
             "url": r.get("html_url"), "head_sha": r.get("head_sha"), "created_at": r.get("created_at"),
-            "path": r.get("path")}
+            "path": r.get("path"), "run_attempt": r.get("run_attempt")}
 
 
 def ci_poll(w):
@@ -315,7 +315,7 @@ def ci_poll(w):
     rec = {"polled_at": now(), "rc": 0 if code == 200 else 1, "http": code}
     if code == 200 and isinstance(d, dict) and w.get("run") and d.get("status"):
         rec.update(measured=True, status=d.get("status"), conclusion=d.get("conclusion"), url=d.get("html_url"),
-                   head_sha=d.get("head_sha"), name=d.get("name"))
+                   head_sha=d.get("head_sha"), name=d.get("name"), run_attempt=d.get("run_attempt"))
     elif code == 200 and isinstance(d, dict) and isinstance(d.get("workflow_runs"), list):
         rec.update(measured=True, runs=[_run_summary(r) for r in d["workflow_runs"]])
     else:
@@ -325,9 +325,18 @@ def ci_poll(w):
     return rec
 
 
+def polled_since(st, w):
+    """True when this shared state was read from GitHub after the watch was
+    registered. A re-run keeps its run id, so state written before then can
+    describe an earlier attempt: on 2026-10-29 two watches on mixpeek run
+    40872577418 fired "completed failure" from attempt 1's cached state while
+    attempt 2 was in progress."""
+    return bool(st) and float(st.get("polled_at", 0)) >= float(w.get("created_at", 0))
+
+
 def ci_state(w, floor):
-    """The shared state for this target, refreshed only if stale and only by
-    the one reader holding the lock."""
+    """The shared state for this target, refreshed only if stale or older
+    than this watch, and only by the one reader holding the lock."""
     d = ci_state_dir(w)
     os.makedirs(d, exist_ok=True)
     path, lock = os.path.join(d, "state.json"), os.path.join(d, "poller")
@@ -336,10 +345,10 @@ def ci_state(w, floor):
             st = json.load(f)
     except (OSError, ValueError):
         st = None
-    if st and now() - float(st.get("polled_at", 0)) < floor:
+    if polled_since(st, w) and now() - float(st.get("polled_at", 0)) < floor:
         return st, "reader"
-    if st and st.get("status") == "completed" and w.get("run"):
-        return st, "reader"  # a concluded run never changes
+    if polled_since(st, w) and st.get("status") == "completed" and w.get("run"):
+        return st, "reader"  # concluded when last read, and read after this watch began
     try:
         os.mkdir(lock)
     except FileExistsError:
@@ -372,11 +381,17 @@ def eval_ci(w):
     if not st.get("measured"):
         w.update(measured=False, why_unmeasured=st.get("why_unmeasured", "unmeasured"), n_considered=0)
         return None
+    if not polled_since(st, w):
+        log("ci_state_predates_watch", repo=w["repo"], key=ci_key(w), id=w.get("id"))
+        w.update(measured=False, why_unmeasured="CI state predates this watch (another poller holds the lock)",
+                 n_considered=0)
+        return None
     if w.get("run"):
         w.update(measured=True, why_unmeasured="", n_considered=1)
         if st.get("status") == "completed":
             return {"conclusion": st.get("conclusion"), "url": st.get("url"),
-                    "detail": "run %s (%s) completed %s" % (w["run"], st.get("name") or "?", st.get("conclusion"))}
+                    "detail": "run %s (%s) attempt %s completed %s" % (w["run"], st.get("name") or "?",
+                                                                       st.get("run_attempt") or "?", st.get("conclusion"))}
         return None
     runs = st.get("runs") or []
     if w.get("workflow"):

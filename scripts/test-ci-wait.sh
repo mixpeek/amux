@@ -6,6 +6,8 @@
 #      one poller only (calls <= polls a single waiter would make, not 3x)
 #   2. a run that concludes failure exits 1
 #   3. GitHub unreadable (gh exits 1 with a 401 body) exits 3 UNMEASURED, never 0
+#   4. a "completed failure" cached before the wait began (an earlier attempt of
+#      a re-run, 2026-10-29) is not the verdict: the wait polls and gets success
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"; AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
 T="$(mktemp -d "${TMPDIR:-/tmp}/ciw.XXXXXX")"; trap 'rm -rf -- "${T:?}"' EXIT
@@ -41,4 +43,10 @@ export CIW_COUNT="$T/c3" CIW_MODE=unreadable
 out="$(bash "$AM" ci wait 103 --repo o/r --poll 1 --timeout 60 --json 2>&1)"; rc=$?
 if [ "$rc" = 3 ] && printf '%s' "$out" | grep -q '"measured": false'; then ok "an unreadable GitHub exits 3 and says measured false"
 else bad "unreadable: rc=$rc out=$out"; fi
+export CIW_COUNT="$T/c4" CIW_MODE=normal CIW_CONCLUSION=success
+mkdir -p "$AMUX_HOME/ci-watch/o_r-104"
+printf '{"polled_at": %s, "rc": 0, "measured": true, "status": "completed", "conclusion": "failure", "url": "u", "run_attempt": 1}' \
+  "$(( $(date +%s) - 300 ))" > "$AMUX_HOME/ci-watch/o_r-104/state.json"
+bash "$AM" ci wait 104 --repo o/r --poll 1 --timeout 60 >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "a conclusion cached before the wait began is re-read, not reported" || bad "stale cached attempt: rc=$rc"
 exit "$fail"

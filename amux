@@ -9523,9 +9523,10 @@ _ci_wait() {
   trap "[ \"\$(cat '$lock/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '$lock'" EXIT
   while :; do
     # Take the poller role when nobody live holds it. A run the shared file
-    # already shows as concluded needs no poller: the previous one finished
-    # and freed the lock, and electing again costs a gh call per late reader.
-    if [ "$role" = reader ] && ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "completed" else 1)' "$state" 2>/dev/null; then
+    # already shows as concluded needs no poller, but only if that was read
+    # after this wait began: a re-run keeps its run id, so an older
+    # "completed" can be the previous attempt (2026-10-29, run 40872577418).
+    if [ "$role" = reader ] && ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("status") == "completed" and d.get("polled_at", 0) >= float(sys.argv[2]) else 1)' "$state" "$start" 2>/dev/null; then
       if mkdir "$lock" 2>/dev/null; then
         echo $$ > "$lock/pid"; role=poller
       else
@@ -9539,7 +9540,7 @@ _ci_wait() {
         tok_env="$("$HOME/.amux/github-app/get-token.sh" --min-remaining 600 --raw 2>/dev/null || true)"
       fi
       out="$(GH_TOKEN="${tok_env:-${GH_TOKEN:-}}" gh api "repos/$repo/actions/runs/$run" \
-             --jq '{status: .status, conclusion: .conclusion, url: .html_url, head_sha: .head_sha, name: .name}' 2>&1)" || rc=$?
+             --jq '{status: .status, conclusion: .conclusion, url: .html_url, head_sha: .head_sha, name: .name, run_attempt: .run_attempt}' 2>&1)" || rc=$?
       polls=$((polls + 1))
       printf '%s %s poll repo=%s run=%s rc=%s\n' "$(date -u +%FT%TZ)" "$me" "$repo" "$run" "$rc" >> "$logf"
       python3 - "$state" "$rc" "$out" <<'PY'
@@ -9560,14 +9561,16 @@ PY
     fi
     # Everyone, poller included, decides from the shared file.
     local verdict
-    verdict="$(python3 - "$state" "$poll" <<'PY'
+    verdict="$(python3 - "$state" "$poll" "$start" <<'PY'
 import json, sys, time
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, ValueError):
     print("pending"); sys.exit()
 fresh = time.time() - d.get("polled_at", 0) <= 3 * float(sys.argv[2]) + 30
-if not d.get("measured"):
+if d.get("polled_at", 0) < float(sys.argv[3]):
+    print("pending")  # read before this wait began: may be an earlier attempt
+elif not d.get("measured"):
     print("unmeasured" if fresh else "pending")
 elif d.get("status") == "completed":
     print("success" if d.get("conclusion") == "success" else "failure")
