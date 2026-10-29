@@ -81,7 +81,7 @@
         "@type": "HowToStep",
         "position": 4,
         "name": "Connect to your server",
-        "text": "Enter your server URL. For remote access over the internet, use Tailscale or a VPN — amux generates a self-signed TLS cert on first boot. For LAN use, connect directly on your local network."
+        "text": "Enter your server URL. For remote access over the internet, use Tailscale: run tailscale cert into ~/.amux/tls/ and amux serves a browser-trusted certificate for your ts.net name. For LAN use, connect directly on your local network."
       },
       {
         "@type": "HowToStep",
@@ -143,7 +143,7 @@
         "name": "Can I access my amux server from anywhere, not just my local network?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes, with a VPN or Tailscale. amux generates a self-signed TLS cert and runs HTTPS on port 8824. For remote access, set up Tailscale (free for personal use) on the server machine and your phone — you get a private DNS name and end-to-end encryption without port-forwarding. See the amux remote access guide for step-by-step setup."
+          "text": "Yes, with Tailscale or a VPN. amux runs HTTPS on port 8824 and, after you run tailscale cert into ~/.amux/tls/, serves a browser-trusted certificate for your ts.net name. For remote access, set up Tailscale (free for personal use) on the server machine and your phone — you get a private DNS name and end-to-end encryption without port-forwarding. See the amux remote access guide for step-by-step setup."
         }
       },
       {
@@ -268,11 +268,11 @@
     <h2>Remote Access: Connect from Anywhere</h2>
     <p>By default amux runs on your local network. To access your agent fleet from anywhere — from a café, on a flight, from a different country — you need secure remote access. The recommended approach is <strong>Tailscale</strong>:</p>
     <ol>
-      <li>Install Tailscale on the machine running amux: <code>brew install tailscale && tailscale up</code></li>
+      <li>Install Tailscale on the machine running amux: <code>tailscale up</code> (install from tailscale.com/download)</li>
       <li>Install Tailscale on your phone (iOS/Android app)</li>
       <li>Your server gets a stable <code>*.ts.net</code> DNS name. Use that in the amux app or PWA: <code>https://myserver.tailnet-name.ts.net:8824</code></li>
     </ol>
-    <p>amux generates a self-signed TLS certificate on first boot. Mobile browsers will show a certificate warning for self-signed certs — tap "Advanced" and "Proceed" to accept it for your private server. The iOS app handles self-signed certs transparently.</p>
+    <p>Then run <code>tailscale cert</code> on the server into <code>~/.amux/tls/</code> and restart amux. amux serves that browser-trusted certificate for your ts.net name, so neither the browser nor the iOS app shows a certificate warning. Do not click past certificate warnings for a server reached over the internet.</p>
     <p>See the full <a href="/guides/remote-access-tailscale/">remote access guide</a> for Tailscale setup, DNS configuration, and optional reverse-proxy options.</p>
 
     <h2>Steering: Send Instructions Without Interrupting Your Agents</h2>

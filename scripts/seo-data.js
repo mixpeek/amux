@@ -1,12 +1,10 @@
 // SEO page data for amux.io — all 100 pages
 // Each entry: { slug, title, description, keywords, content (HTML), schema? }
 
-const INSTALL = `<pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre>`;
+const INSTALL = `<pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>`;
 
-const CTA = `<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p>${INSTALL}<a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>`;
+const CTA = `<div class="cta-box"><h3>Get started with amux</h3><p>Run Claude Code, Codex and Gemini CLI agents in parallel. One Rust binary on macOS or Linux. MIT + Commons Clause.</p>${INSTALL}<a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>`;
 
 function comparisonTable(rows) {
   return `<table><thead><tr><th>Feature</th><th>amux</th><th>${rows[0][0]}</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('')}</tbody></table>`;
@@ -172,7 +170,7 @@ ${comparisonTable([
 ['OpenHands','Agent count','Unlimited parallel tmux sessions','Typically single agent'],
 ['OpenHands','Self-healing','Auto-compact, restart, unstick','Relies on sandbox isolation'],
 ['OpenHands','Dashboard','Built-in web UI with peek/board','Web UI for single agent'],
-['OpenHands','Dependencies','Python 3 + tmux only','Docker required'],
+['OpenHands','Dependencies','One Rust binary + tmux','Docker required'],
 ['OpenHands','Model lock-in','Claude Code specific','Multi-provider'],
 ])}
 <h2>When to choose amux</h2>
@@ -298,7 +296,7 @@ ${CTA}`
 <h2>Key differences</h2>
 ${comparisonTable([
 ['sandboxed.sh','Isolation','Direct machine access (tmux)','Linux workspace containers'],
-['sandboxed.sh','Setup','Python 3 + tmux','Docker + infrastructure'],
+['sandboxed.sh','Setup','One Rust binary + tmux','Docker + infrastructure'],
 ['sandboxed.sh','Agent type','Claude Code CLI','Multi-provider agents'],
 ['sandboxed.sh','Self-healing','Built-in watchdog','Container restart'],
 ['sandboxed.sh','Mobile','PWA (works offline)','iOS native app'],

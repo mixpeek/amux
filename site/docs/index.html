@@ -638,16 +638,15 @@ curl -sk -X POST -F "file=@local.txt" https://localhost:8824/api/fs/upload</code
 
 <h2 id="auth">Authentication</h2>
 
-<p>By default, the dashboard has no authentication (all endpoints are public). To enable auth:</p>
+<p>amux mints a bearer token at <code>~/.amux/auth_token</code> on first run. Requests from localhost are exempt; every other request needs the token, and requests from other websites are refused.</p>
 
-<pre><code># Generate a token
-python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.amux/auth_token
+<pre><code># Read the token on the server
+cat ~/.amux/auth_token
 
-# The server reads this file on startup
-# All API requests now require: Authorization: Bearer &lt;token&gt;
-# Or the ?token=&lt;token&gt; query parameter</code></pre>
+# Use it from another machine
+curl -H "Authorization: Bearer &lt;token&gt;" https://&lt;host&gt;:8824/api/sessions</code></pre>
 
-<p>When auth is enabled, the dashboard prompts for the token on first visit and stores it in local storage.</p>
+<p>The dashboard asks for the token the first time you open it from another device. Never expose port 8824 to the public internet; reach it over <a href="/guides/remote-access-tailscale/">Tailscale</a> instead.</p>
 
 <h2 id="tls">TLS &amp; HTTPS</h2>
 
@@ -659,7 +658,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.amux/auth_tok
 <li>iOS PWA installation</li>
 </ul>
 
-<p>If you have <strong>Tailscale</strong> installed, amux automatically uses your Tailscale certificate for trusted HTTPS &mdash; no certificate warnings on any device on your tailnet.</p>
+<p>With <strong>Tailscale</strong>, run <code>tailscale cert</code> into <code>~/.amux/tls/</code> and restart amux: it then serves the browser-trusted certificate for your ts.net name, so devices on your tailnet see no certificate warning. Steps are in the <a href="/guides/remote-access-tailscale/">Tailscale guide</a>.</p>
 
 <p>To disable TLS: <code>amux serve --no-tls</code></p>
 

@@ -407,7 +407,7 @@ amux serve
     <p>No. dmux is terminal-only. amux provides a full web dashboard at <code>https://localhost:8824</code> with mobile PWA support.</p>
 
     <h3>Does amux support Codex CLI and Gemini CLI like dmux does?</h3>
-    <p>amux is primarily designed for Claude Code. You can register sessions running other CLIs, but the self-healing watchdog and token tracking are Claude-specific. dmux has first-class multi-CLI support out of the box.</p>
+    <p>Yes. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models side by side, and you can switch a worker's model or provider while it runs. dmux also supports several CLIs out of the box.</p>
 
     <h3>Is dmux open source?</h3>
     <p>Yes, dmux is MIT licensed. amux is MIT + Commons Clause: free to use, modify and self-host, but you cannot sell amux itself. amux is a single Rust binary. dmux is a Node/TypeScript CLI.</p>
