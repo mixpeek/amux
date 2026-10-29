@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Open Session (2026): Self-Hosted Coding Agents for Teams | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Open Session compared on iPhone and Mac apps, web and PWA, self-hosting, Tailscale, supported agents, license and price. Open Session is Tella&#x27;s MIT-licensed team workspace for coding agents; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.">
+  <meta name="keywords" content="amux vs open session, open session alternative, opensession.com, tellahq opensession, self-hosted coding agents for teams, coding agents tailscale, claude code iphone app">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-open-session/">
+  <meta property="og:title" content="amux vs Open Session (2026): Self-Hosted Coding Agents for Teams">
+  <meta property="og:description" content="amux vs Open Session compared on iPhone and Mac apps, web and PWA, self-hosting, Tailscale, supported agents, license and price. Open Session is Tella&#x27;s MIT-licensed team workspace for coding agents; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-open-session/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Open Session (2026): Self-Hosted Coding Agents for Teams">
+  <meta name="twitter:description" content="amux vs Open Session compared on iPhone and Mac apps, web and PWA, self-hosting, Tailscale, supported agents, license and price. Open Session is Tella&#x27;s MIT-licensed team workspace for coding agents; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Open Session", "item": "https://amux.io/compare/amux-vs-open-session/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Open Session: Self-Hosted Control Rooms for Coding Agents", "description": "amux vs Open Session compared on iPhone and Mac apps, web and PWA, self-hosting, Tailscale, supported agents, license and price. Open Session is Tella's MIT-licensed team workspace for coding agents; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.", "url": "https://amux.io/compare/amux-vs-open-session/", "datePublished": "2026-10-29", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS, iPadOS, Web", "description": "The agent control plane: run Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents in parallel on a shared task board, from a web dashboard, PWA, iPhone and iPad app or Mac app, self-hosted or on amux Cloud.", "license": "https://github.com/mixpeek/amux/blob/main/LICENSE", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Open Session", "url": "https://www.opensession.com/", "applicationCategory": "DeveloperApplication", "operatingSystem": "Web, macOS, Windows", "license": "https://github.com/tellahq/opensession/blob/main/LICENSE"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an Open Session alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both are self-hosted servers for running coding agents that you can reach from a browser or phone. Open Session focuses on team intake from Slack, Linear, Plain and GitHub and on reviewing sessions as pull requests. amux focuses on running a fleet of agents on a shared task board, with native iPhone, iPad and Mac apps and an optional amux Cloud server."}}, {"@type": "Question", "name": "Does Open Session have an iPhone app?", "acceptedAnswer": {"@type": "Answer", "text": "Its repository contains a native Swift app for iOS and macOS that you build with Xcode and an Apple developer account, and it supports installing the web UI as a PWA. An App Store listing is not stated on its site. amux has a native iPhone and iPad app on the App Store."}}, {"@type": "Question", "name": "Do Open Session and amux work over Tailscale?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Open Session's installer has a --tailscale option that adds Tailscale and Caddy for HTTPS. amux serves a browser-trusted certificate from tailscale cert at https://host.tailnet.ts.net:8824 and can optionally sign in your own devices or tailnet members by Tailscale identity."}}, {"@type": "Question", "name": "Which agents does Open Session support?", "acceptedAnswer": {"@type": "Answer", "text": "Open Session runs every turn on the Pi engine, using Claude subscription accounts through the claude CLI, ChatGPT subscription accounts through the codex CLI, and configured API-key providers. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models."}}, {"@type": "Question", "name": "Is Open Session free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is MIT licensed and its site marks it free to access. A hosted or paid plan is not stated on its site. amux is free to self-host, and amux Cloud starts at $39/mo."}}, {"@type": "Question", "name": "What license is amux under?", "acceptedAnswer": {"@type": "Answer", "text": "MIT + Commons Clause. You can use, modify and self-host amux for free, including at work and for commercial work you build with it. The Commons Clause forbids selling amux itself, meaning offering to others for a fee a product or service whose value comes entirely or substantially from amux. By the OSI definition, that makes amux source-available software. Open Session uses the MIT license, which has no such restriction."}}]}</script>
+  <link rel="stylesheet" href="/nav.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Open Session</span></div>
+
+    <h1>amux vs Open Session: Self-Hosted Control Rooms for Coding Agents</h1>
+    <p class="subtitle">Two self-hosted ways to run coding agents and reach them from your phone, compared on apps, hosting, Tailscale, agents, license and price. Checked October 29, 2026.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> pick <a href="#other">Open Session</a> if your team wants a shared, MIT-licensed agent server with Slack, Linear, Plain and GitHub intake, pull-request review, git worktrees and optional cloud sandboxes, and you are happy to use its web app or PWA (its native iOS and macOS app is built from source). Pick <a href="#amux">amux</a> if you want a published iPhone and iPad app and Mac app, a shared board where many Claude Code, Codex, Gemini CLI, OpenCode or Ollama agents claim tasks, documented Tailscale HTTPS, and the option of an always-on <a href="/cloud/">amux Cloud</a> server.
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-open-session">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+    </div>
+
+    <h2 id="what">What are amux and Open Session?</h2>
+    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and restarts them after crashes and usage limits. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
+    <p><strong><a href="https://www.opensession.com/" target="_blank" rel="noopener">Open Session</a></strong> describes itself as "your team's control room for coding agents" and "the open-source workspace for teams running coding agents together on their own infrastructure." The site lists Tella as the organization behind it. Its <a href="https://github.com/tellahq/opensession" target="_blank" rel="noopener">README</a> calls it a self-hosted agent-infrastructure server: a web UI plus Slack, Linear, Plain and GitHub agents, driving coding sessions through the Pi engine in git worktrees on your own box or in isolated sandboxes, with support for multiple Codex and Claude subscriptions and model APIs. It is MIT licensed. On October 29, 2026 the repository had 404 stars; it was created on June 8, 2026 and last pushed on October 29, 2026.</p>
+
+    <h2 id="table">amux vs Open Session comparison table</h2>
+    <p>The rows follow the requirements people search for: an iPhone app, a Mac app, a browser UI, self-hosting, Tailscale remote access, several agent providers and a shared board. Where Open Session's own site, README or license did not say, the cell reads "not stated on their site".</p>
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:150px;"></th><th>amux</th><th>Open Session</th></tr></thead>
+        <tbody>
+          <tr><td>What it is</td><td>The agent control plane: runs and supervises a team of coding agents from a dashboard or your phone</td><td>A self-hosted team workspace for coding agents with Slack, Linear, Plain and GitHub intake and pull-request review</td></tr>
+          <tr><td>iPhone and iPad</td><td>Native iPhone and iPad app (<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">App Store</a>, one app for both)</td><td>Native Swift app for iOS and macOS in the repo, built with Xcode and an Apple developer account; the repo has TestFlight workflows. An App Store listing is not stated on their site. The PWA works on iPhone, with push notifications when installed over HTTPS</td></tr>
+          <tr><td>Mac app</td><td>Native macOS app (macOS 12+, Apple silicon and Intel; <a href="https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.dmg">DMG</a>, not notarized yet)</td><td>An Electron desktop shell (macOS arm64 DMG and ZIP builds) and the native Swift macOS target</td></tr>
+          <tr><td>Web and PWA</td><td>Web dashboard, installable as a PWA on Android and any browser</td><td>Web UI served by the server; installable as a PWA. Also a Chrome extension that sends page context to a session</td></tr>
+          <tr><td>Other platforms</td><td>Server runs on macOS and Linux; Android through the PWA</td><td>Server on Linux, macOS, or Windows inside WSL2. Android app: not stated on their site</td></tr>
+          <tr><td>Self-hosting</td><td>Free on your own Mac or Linux machine: one Rust binary with SQLite, agents run as real CLI sessions in tmux</td><td>Yes. One-line installer sets up a per-user service at http://127.0.0.1:3850; optional sandboxes on Daytona or Boat</td></tr>
+          <tr><td>Managed hosting</td><td>amux Cloud: your own dedicated always-on server at yourname.amux.io, Solo $39, Team $69, Max $129 per month</td><td>A hosted plan is not stated on their site</td></tr>
+          <tr><td>Tailscale and remote access</td><td>Documented: <code>tailscale cert</code> gives a browser-trusted HTTPS address at https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824; optional sign-in by Tailscale identity; Cloud servers can join your tailnet. No public ports</td><td>Yes. The installer's <code>--tailscale</code> option adds Tailscale, Caddy and a certificate helper; <code>--cloudflare</code> uses Cloudflare Tunnel. Sign-in is opt-in (GitHub), and the README advises keeping the server on Tailscale or a private network</td></tr>
+          <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models side by side; switch a worker's model or provider while it runs</td><td>Every turn runs on the Pi engine. Anthropic models through Claude subscription accounts (the claude CLI), OpenAI models through ChatGPT subscription accounts (the codex CLI), plus API-key providers</td></tr>
+          <tr><td>Shared board and coordination</td><td>Shared task board with atomic claiming, so two agents never take the same task; agent-to-agent messages</td><td>Projects, workspaces, chats, automations and goals (per its CONCEPTS.md); multiplayer team presence. A task board with claiming is not stated on their site</td></tr>
+          <tr><td>License</td><td>MIT + Commons Clause (<a href="https://github.com/mixpeek/amux/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a>): free to use, modify and self-host, including commercially; you may not sell amux itself</td><td>MIT</td></tr>
+          <tr><td>Price</td><td>Free to self-host; amux Cloud Solo $39, Team $69, Max $129 per month</td><td>Free (the site marks it free to access). Paid plans: not stated on their site</td></tr>
+          <tr><td>Project</td><td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>, made by Mixpeek</td><td><a href="https://github.com/tellahq/opensession" target="_blank" rel="noopener">github.com/tellahq/opensession</a>, 404 stars, created 2026-06-08, last push 2026-10-29</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:0.82rem;color:var(--fg-mute);">Open Session details from the sources listed at the end of this page, checked October 29, 2026. GitHub figures come from the GitHub API on the same day.</p>
+
+    <h2 id="apps">Which has an iPhone app and a Mac app?</h2>
+    <p>Open Session lists five front ends in its <a href="https://github.com/tellahq/opensession/blob/main/CLIENTS.md" target="_blank" rel="noopener">CLIENTS.md</a>: the web UI, a PWA, a macOS Electron shell, a native Swift app with iOS and macOS targets, and a Chrome extension. Only the web UI is required. The Swift app needs Xcode and an Apple developer account to run on a device, and the repo carries TestFlight workflows for distributors. We did not find an App Store listing on its site. The PWA is the no-build phone option, and iOS push notifications need the installed PWA on an HTTPS origin.</p>
+    <p>amux publishes one native app for iPhone and iPad on the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">App Store</a> and a native Mac app as a DMG (macOS 12+, Apple silicon and Intel, not notarized yet). The web dashboard installs as a PWA on Android and any browser. Every app connects to your own amux server or your amux Cloud address.</p>
+
+    <h2 id="tailscale">Self-hosting and Tailscale</h2>
+    <p>Both are built to run on a machine you control. Open Session's installer runs on Linux, macOS or WSL2, and <code>--tailscale</code> sets up Tailscale with Caddy for HTTPS. Its README is direct about the trust model: authentication is opt-in, by default the server trusts everyone who can reach its address, and it recommends staying on Tailscale, a private network or an SSH tunnel even with GitHub sign-in on.</p>
+    <p>amux installs with <code>curl -fsSL https://amux.io/install.sh | bash</code> on macOS or Linux and needs tmux 3.2+ and one agent CLI. Callers other than localhost need a bearer token. For Tailscale, run <code>tailscale cert</code> for the server's ts.net name and restart amux: it then serves a browser-trusted certificate at <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code>, which you add as a connection in the iOS or Mac app. Two optional switches let your own devices, or invited tailnet members, sign in by Tailscale identity. amux Cloud servers can join your tailnet from the dashboard. Neither needs public ports.</p>
+
+    <h2 id="team">Running a team of agents</h2>
+    <p>Open Session is shaped around team intake and review: requests arrive from Slack, Linear, Plain or GitHub, each session gets a git worktree or an isolated sandbox, and the team reviews diffs and pull requests together. amux is shaped around a standing fleet: agents claim tasks from a shared board, message each other, run on schedules and loops, and recover on their own from crashes and usage limits, while you steer and approve from your phone.</p>
+
+    <h2 id="choose">When should you choose amux or Open Session?</h2>
+    <h3 id="other">Choose Open Session if</h3>
+    <ul>
+      <li>Your team wants agents started from Slack, Linear, Plain or GitHub and reviewed as pull requests.</li>
+      <li>You want per-session sandboxes on Daytona or Boat.</li>
+      <li>You need a plain MIT license with no Commons Clause.</li>
+      <li>You are happy to use the web app or PWA, or to build the native Swift app yourself.</li>
+    </ul>
+    <h3 id="amux">Choose amux if</h3>
+    <ul>
+      <li>You want a published iPhone and iPad app and a Mac app that connect to your own server.</li>
+      <li>You run Gemini CLI, OpenCode or Ollama-backed local models next to Claude Code and Codex.</li>
+      <li>You want many agents claiming work from one shared board, with messages, schedules and self-healing restarts.</li>
+      <li>You want an always-on server without running one: <a href="/start/?source=amux-vs-open-session">amux Cloud</a> from $39/mo.</li>
+    </ul>
+    <p>Related: <a href="/compare/amux-vs-paseo/">amux vs Paseo</a>, <a href="/compare/amux-vs-conductor/">amux vs Conductor</a>, <a href="/guides/best-phone-apps-for-coding-agents-2026/">best phone apps to control coding agents</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a></p>
+
+    <h2 id="faq">FAQ</h2>
+    <h3>Is amux an Open Session alternative?</h3>
+    <p>Yes. Both are self-hosted servers for running coding agents that you can reach from a browser or phone. Open Session focuses on team intake from Slack, Linear, Plain and GitHub and on reviewing sessions as pull requests. amux focuses on running a fleet of agents on a shared task board, with native iPhone, iPad and Mac apps and an optional amux Cloud server.</p>
+    <h3>Does Open Session have an iPhone app?</h3>
+    <p>Its repository contains a native Swift app for iOS and macOS that you build with Xcode and an Apple developer account, and it supports installing the web UI as a PWA. An App Store listing is not stated on its site. amux has a native iPhone and iPad app on the App Store.</p>
+    <h3>Do Open Session and amux work over Tailscale?</h3>
+    <p>Yes. Open Session&#x27;s installer has a --tailscale option that adds Tailscale and Caddy for HTTPS. amux serves a browser-trusted certificate from tailscale cert at https://host.tailnet.ts.net:8824 and can optionally sign in your own devices or tailnet members by Tailscale identity.</p>
+    <h3>Which agents does Open Session support?</h3>
+    <p>Open Session runs every turn on the Pi engine, using Claude subscription accounts through the claude CLI, ChatGPT subscription accounts through the codex CLI, and configured API-key providers. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models.</p>
+    <h3>Is Open Session free?</h3>
+    <p>Yes. It is MIT licensed and its site marks it free to access. A hosted or paid plan is not stated on its site. amux is free to self-host, and amux Cloud starts at $39/mo.</p>
+    <h3>What license is amux under?</h3>
+    <p>MIT + Commons Clause. You can use, modify and self-host amux for free, including at work and for commercial work you build with it. The Commons Clause forbids selling amux itself, meaning offering to others for a fee a product or service whose value comes entirely or substantially from amux. By the OSI definition, that makes amux source-available software. Open Session uses the MIT license, which has no such restriction.</p>
+
+    <h2 id="sources">Sources</h2>
+    <p>Open Session, checked 2026-10-29:</p>
+    <ul>
+      <li><a href="https://www.opensession.com/" target="_blank" rel="noopener">Open Session homepage</a></li>
+      <li><a href="https://github.com/tellahq/opensession" target="_blank" rel="noopener">Open Session repository and README</a></li>
+      <li><a href="https://github.com/tellahq/opensession/blob/main/LICENSE" target="_blank" rel="noopener">Open Session LICENSE (MIT)</a></li>
+      <li><a href="https://github.com/tellahq/opensession/blob/main/CLIENTS.md" target="_blank" rel="noopener">Open Session CLIENTS.md (web, PWA, Electron, Swift app, Chrome extension)</a></li>
+      <li><a href="https://github.com/tellahq/opensession/blob/main/docs/setup/README.md" target="_blank" rel="noopener">Open Session setup overview (engine, requirements, trust model)</a></li>
+    </ul>
+    <p>amux: facts from the amux repository at origin/main, checked 2026-10-29:</p>
+    <ul>
+      <li><a href="https://github.com/mixpeek/amux/blob/main/LICENSE" target="_blank" rel="noopener">amux repository and LICENSE (MIT + Commons Clause)</a></li>
+      <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux for iPhone and iPad on the App Store</a></li>
+      <li><a href="https://amux.io/start/" target="_blank" rel="noopener">amux Cloud plans</a></li>
+    </ul>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from the web app, the iPhone and iPad app or the Mac app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-open-session">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+    </div>
+  </main>
+      <li><a href="https://paseo.sh/download" target="_blank" rel="noopener">Paseo downloads (desktop, App Store, Google Play, web app)</a></li>
+      <li><a href="https://paseo.sh/docs/supported-providers" target="_blank" rel="noopener">Paseo supported providers</a></li>
+      <li><a href="https://paseo.sh/hub" target="_blank" rel="noopener">Paseo Hub plans</a></li>
+      <li><a href="https://paseo.sh/docs/security" target="_blank" rel="noopener">Paseo security docs</a></li>
+    </ul>
+    <p>amux: facts from the amux repository at origin/main, checked 2026-10-29:</p>
+    <ul>
+      <li><a href="https://github.com/mixpeek/amux/blob/main/LICENSE" target="_blank" rel="noopener">amux repository and LICENSE (MIT + Commons Clause)</a></li>
+      <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux for iPhone and iPad on the App Store</a></li>
+      <li><a href="https://amux.io/start/" target="_blank" rel="noopener">amux Cloud plans</a></li>
+    </ul>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-paseo">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-paseo" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo for agents across several client projects.</p>
+    </div>
+  </main>
+
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        <a href="/">amux</a> &middot;
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
+        <a href="/docs/">Docs</a> &middot;
+        <a href="/guides/">Guides</a> &middot;
+        <a href="/demos/">Demos</a> &middot;
+        <a href="/compare/">Compare</a> &middot;
+        <a href="/blog/">Blog</a> &middot;
+        <a href="/pricing/">Pricing</a> &middot;
+        <a href="/privacy/">Privacy</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>
