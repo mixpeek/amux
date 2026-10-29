@@ -63,8 +63,12 @@ async function installSpeechStubs(page: Page) {
       const u = current = queue.shift();
       w.__spoken.push(u.text); w.__spokenAt.push(Date.now());
       u.onstart && u.onstart({});
-      u.__t = setTimeout(() => { if (current === u) current = null; u.onend && u.onend({}); next(); }, 600);
+      // __holdSpeech keeps an utterance going until it is cancelled, so a
+      // barge-in can be tested against a voice that is still talking.
+      if (!w.__holdSpeech) finish(u);
     };
+    const finish = (u: any) => { u.__t = setTimeout(() => { if (current === u) current = null; u.onend && u.onend({}); next(); }, 600); };
+    w.__releaseSpeech = () => { w.__holdSpeech = false; if (current) finish(current); };
     const synth = {
       speaking: false, pending: false, paused: false, onvoiceschanged: null,
       getVoices: () => [], addEventListener() {}, removeEventListener() {},
@@ -218,13 +222,18 @@ test('Converse (browser fallback): streamed chat replies are spoken as they arri
     expect(firstSpokenAt, 'speech started before the full reply had arrived').toBeLessThan(chat.state.doneReleasedAt);
     await expect(page.locator('#vx-live')).toContainText(REPLY_B.trim(), { timeout: 10_000 });
     await expect.poll(() => page.evaluate(() => (window as any).__spoken as string[]), { timeout: 10_000 }).toContain(REPLY_B.trim());
-    // Barge-in: talking over the voice stops it.
+    // Barge-in: talking over the voice stops it. The voice is held mid-sentence:
+    // with each utterance ending on its own after 600ms, a slow poll on a busy CI
+    // runner saw the reply start only after it had finished, so there was nothing
+    // left to interrupt and nothing was cancelled (CI 40863746278).
     const cancelledBefore = await page.evaluate(() => (window as any).__cancelled as number);
+    await page.evaluate(() => { (window as any).__holdSpeech = true; });
     await page.evaluate(() => (window as any).__say('And what about the tests?'));
     await expect.poll(() => chat.state.sends.length, { timeout: 10_000 }).toBe(2);
     await expect.poll(() => page.evaluate(() => (window as any).__spoken.length as number), { timeout: 10_000 }).toBeGreaterThan(2);
     await page.evaluate(() => (window as any).__say('Never mind.'));
     await expect.poll(() => page.evaluate(() => (window as any).__cancelled as number)).toBeGreaterThan(cancelledBefore);
+    await page.evaluate(() => (window as any).__releaseSpeech());
     await page.waitForTimeout(3500);
     await page.locator('#vx-call').click();
     await expect(page.locator('#vx-call-lbl')).toHaveText('Start');
