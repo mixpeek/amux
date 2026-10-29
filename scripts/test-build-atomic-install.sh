@@ -48,6 +48,11 @@ EOF
 chmod +x "$FAKE_HOME/.cargo/bin/install" "$FAKE_HOME/.cargo/bin/mv"
 export TRACE
 
+# No server runs here, so two parts of the builder that talk to one are off:
+# the post-install health wait would roll the new build back after 300 s
+# (AMUX_ACTIVATION_ROLLBACK, 3fcc7cf91; main checks red on bf1494a6b, run
+# 40971800624), and on a Mac with amux running, a live shell schedule run
+# deferred the install (AMUX_RS_RUNS_URL points the check at nothing).
 printf '#!/bin/sh\nprintf old-build\\n\n' > "$INSTALL"
 chmod 0755 "$INSTALL"
 
@@ -59,6 +64,8 @@ AMUX_RS_BUILD_LOG="$TMP/build.log" \
 AMUX_RS_BUILD_LOCK="$TMP/build.lock" \
 AMUX_RS_BUILD_PROVENANCE="$TMP/provenance.json" \
 AMUX_RS_ACTIVATION_REF=HEAD \
+AMUX_ACTIVATION_ROLLBACK=0 \
+AMUX_RS_RUNS_URL=http://127.0.0.1:9/ \
 AMUX_BUILD_MIN_FREE_GB=0 \
 AMUX_BUILD_DEBUG_MAX_GB=999999 \
   bash "$BUILDER"
