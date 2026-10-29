@@ -10786,6 +10786,15 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-status { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-1) var(--space-3); border-top: 1px solid var(--border);
   font-size: var(--fs-sm); color: var(--dim); flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; flex-shrink: 0; }
 .mdx-dirty.on { color: var(--orange); font-weight: 600; }
+/* Two people changed the same lines (app.js _fileConflictBar): one row, the
+   choices beside the sentence. */
+.file-conflict { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; overflow-x: auto;
+  padding: var(--space-1-5) var(--space-2); margin-bottom: var(--space-2); border: 1px solid var(--orange);
+  border-radius: var(--radius-md); background: color-mix(in srgb, var(--orange) 12%, transparent); font-size: var(--fs-md); }
+.file-conflict[hidden] { display: none; }
+.file-conflict > span { flex: 1 1 auto; min-width: 0; }
+.file-conflict .btn { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 600px) { .file-conflict .btn { min-height: 44px; } }
 .mdx-indent select { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 
 /* Rendered: the preview reads as a page, not the terminal-coloured raw view. */

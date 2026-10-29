@@ -619,6 +619,8 @@ async fn view(req: Request) -> Response {
             "path": pystr(&p), "content": content,
             "is_markdown": is_md, "is_csv": is_csv, "is_html": is_html,
             "truncated": truncated, "total_chars": total_chars,
+            // The version this content is, sent back with a save.
+            "etag": current_etag(&p),
         }),
     )
 }
@@ -903,8 +905,20 @@ async fn put_file(req: Request) -> Response {
 const BINARY_WRITABLE_EXTS: &[&str] = &[".xlsx"];
 
 /// The same ETag GET /api/file/raw serves for this path, or None when absent.
+/// The file's version, for a save to say which one it edited. mtime+size alone
+/// cannot tell two saves in the same second of the same length apart, which
+/// two people editing one note do (owner, 2026-10-29: "proper collision
+/// reconciliation ... for multiple users in a workspace"), so a text-sized
+/// file adds a hash of its bytes.
 fn current_etag(p: &std::path::Path) -> Option<String> {
     let meta = std::fs::metadata(p).ok().filter(|m| m.is_file())?;
+    if meta.len() <= 4 * 1024 * 1024 {
+        if let Ok(bytes) = std::fs::read(p) {
+            use sha2::Digest;
+            let h = sha2::Sha256::digest(&bytes);
+            return Some(format!("\"{}-{}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\"", mtime_secs(&meta), meta.len(), h[0], h[1], h[2], h[3], h[4], h[5]));
+        }
+    }
     Some(format!("\"{}-{}\"", mtime_secs(&meta), meta.len()))
 }
 
@@ -1214,8 +1228,10 @@ async fn raw(req: Request) -> Response {
     };
     let mime = raw_mime(&py_suffix(&p));
     let file_size = meta.len();
-    // ETag from mtime+size (py:68097) — If-None-Match short-circuits to 304.
-    let etag = format!("\"{}-{}\"", mtime_secs(&meta), file_size);
+    // ETag from mtime+size (py:68097), plus a content hash for a text-sized
+    // file — If-None-Match short-circuits to 304. The same value a save checks
+    // (current_etag): the spreadsheet and Draw editors save with this header.
+    let etag = current_etag(&p).unwrap_or_else(|| format!("\"{}-{}\"", mtime_secs(&meta), file_size));
     if req
         .headers()
         .get("if-none-match")
@@ -2604,8 +2620,7 @@ pub(crate) mod tests {
         let p = dir.path().join("clip.mp4");
         let payload: Vec<u8> = (0u8..=99).collect();
         std::fs::write(&p, &payload).unwrap();
-        let meta = std::fs::metadata(&p).unwrap();
-        let etag = format!("\"{}-{}\"", mtime_secs(&meta), 100);
+        let etag = super::current_etag(&p).unwrap();
         let uri = format!("/api/file/raw?path={}", enc(p.to_str().unwrap()));
 
         // Bounded range.

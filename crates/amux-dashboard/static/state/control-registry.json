@@ -1878,6 +1878,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileConflictResolve": {
+      "kind": "command._fileConflictResolve",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileCtxMenu": {
       "kind": "command._fileCtxMenu",
       "feedback_required": true,
@@ -1904,6 +1910,12 @@
     },
     "_filePinOverlay": {
       "kind": "command._filePinOverlay",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileReconcile": {
+      "kind": "command._fileReconcile",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2996,6 +3008,12 @@
     },
     "_mdxCopy": {
       "kind": "command._mdxCopy",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxFollow": {
+      "kind": "command._mdxFollow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

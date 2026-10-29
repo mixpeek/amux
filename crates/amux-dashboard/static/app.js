@@ -30029,7 +30029,7 @@ function _fileBindAnchors(container) {
 // textarea Save, ⌘S and the unsaved-changes guard read) and #file-body (the
 // preview Find, Read Aloud, read position and links use) move into the panes
 // for a markdown file and back for anything else.
-const _mdx = { path: null, mode: 'preview', tab: 'preview', loaded: false, timer: 0, histFor: null, against: null, base: '' };
+const _mdx = { path: null, mode: 'preview', tab: 'preview', loaded: false, timer: 0, histFor: null, against: null, base: '', opened: null, autosave: 0 };
 const _MDX_MODES = ['edit', 'preview', 'split'];
 
 function _mdxEls() {
@@ -30071,6 +30071,7 @@ function _mdxShow(data, mode) {
     ta.setSelectionRange(0, 0);
     ta.scrollTop = 0;
     _mdx.base = ta.value;
+    _mdx.opened = ta.value;
     _mdx.path = data.path;
     _mdx.loaded = true;
     _mdx.against = null;
@@ -30283,13 +30284,52 @@ function _mdxStatus() {
   const save = document.getElementById('file-save-btn');
   if (save) save.style.display = _fileEditable(_fileData) && (_mdx.mode !== 'preview' || dirty) ? '' : 'none';
 }
-// Every change to the source: highlight now, the preview a beat later.
+// Every change to the source: highlight now, the preview a beat later, and a
+// save once typing pauses (owner, 2026-10-29: "make sure edits are saved as
+// they happen"). Not a new note (it is named on its first save) and not while
+// a conflict waits on a choice.
+const _MDX_AUTOSAVE_MS = 1000;
 function _mdxChanged() {
   _mdxHighlight();
   _mdxStatus();
   clearTimeout(_mdx.timer);
   _mdx.timer = setTimeout(() => { if (_mdx.tab === 'diff') _mdxRenderDiff(); else _mdxRenderPreview(); }, 150);
+  clearTimeout(_mdx.autosave);
+  _mdx.autosave = setTimeout(_mdxAutosave, _MDX_AUTOSAVE_MS);
 }
+function _mdxAutosave() {
+  clearTimeout(_mdx.autosave);
+  if (!_mdxActive() || !_fileData || _fileData._isNew || _fileData.conflict || !_fileEditable(_fileData) || !_fileEditDirty()) return;
+  _fileSave();
+}
+// Another person's (or a worker's) save shows up while this copy has nothing
+// unsaved: the file is checked every few seconds while it is open and in view,
+// at the cost of a 304. With unsaved edits it is left alone: the next save
+// merges.
+const _MDX_FOLLOW_MS = 4000;
+async function _mdxFollow() {
+  if (!_mdxActive() || document.hidden || !_fileData || !_fileData.etag || _fileData._isNew || _fileData.conflict || _fileEditDirty()) return;
+  const path = _fileData.path, had = _fileData.etag;
+  let r;
+  try { r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders({ 'If-None-Match': had }), cache: 'no-store' }); } catch (e) { return; }
+  if (!r || r.status !== 200 || !_fileData || _fileData.path !== path || _fileData.etag !== had || _fileEditDirty()) return;
+  const text = await r.text(), etag = r.headers.get('etag');
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || text === ta.value) { if (etag) _fileData.etag = etag; return; }
+  const at = ta.selectionStart;
+  ta.value = text;
+  try { ta.setSelectionRange(Math.min(at, text.length), Math.min(at, text.length)); } catch (e) {}
+  _fileData.content = text;
+  _mdx.opened = text;
+  if (etag) _fileData.etag = etag;
+  _mdxHighlight(); _mdxStatus(); _mdxRenderPreview();
+  const d = document.getElementById('mdx-dirty');
+  if (d) d.textContent = 'Updated';
+  try { window._clientDebug?.('file-collab', { verdict: 'file_followed', measured: true, n_considered: 1 }); } catch (_) {}
+}
+setInterval(_mdxFollow, _MDX_FOLLOW_MS);
+// Leaving the page or hiding it saves what is pending, rather than waiting.
+document.addEventListener('visibilitychange', () => { if (document.hidden && _mdx.autosave) _mdxAutosave(); });
 
 // ── Editing commands ──
 function _mdxIndent() { return parseInt(localStorage.getItem('amux_mdx_indent') || '2', 10) === 4 ? 4 : 2; }
@@ -30455,8 +30495,11 @@ function _mdxDiffLines(a, b) {
 function _mdxRenderDiff() {
   const alt = document.getElementById('mdx-alt'), ta = document.getElementById('file-edit-ta');
   if (!alt || !ta || !_fileData) return;
-  const base = _mdx.against ? _mdx.against.content : (_fileData.content || '');
-  const what = _mdx.against ? 'commit ' + esc(_mdx.against.short) + ' (' + esc(_mdx.against.subject) + ')' : 'the saved file';
+  // With autosave the saved file is the text shown, so Diff compares with the
+  // file as it was opened (or as it last arrived from elsewhere).
+  const base = _mdx.against ? _mdx.against.content : (_mdx.opened != null ? _mdx.opened : (_fileData.content || ''));
+  const what = _mdx.against ? (_mdx.against.label ? esc(_mdx.against.label) : 'commit ' + esc(_mdx.against.short) + ' (' + esc(_mdx.against.subject) + ')')
+    : (_mdx.opened != null ? 'the file as you opened it' : 'the saved file');
   const rows = _mdxDiffLines(base, ta.value);
   const add = rows.filter(r => r[0] === '+').length, del = rows.filter(r => r[0] === '-').length;
   let h = '<div class="mdx-diff-head">' + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b> against ' + what
@@ -32378,6 +32421,118 @@ function _fileSave() {
   _fileSaveChain = (_fileSaveChain || Promise.resolve()).catch(() => {}).then(_fileSaveOnce).finally(() => { _fileSaveWaiting--; });
   return _fileSaveChain;
 }
+// ── Two people, one file (owner, 2026-10-29) ──
+// A save refused because the file changed since it was loaded is merged, line
+// by line, three ways: the text it was loaded as (_fileData.content), the text
+// being saved, and the file now. Edits to different lines merge and save on
+// their own. Edits to the same lines are a conflict: nothing is overwritten,
+// autosave stops, and a bar offers Keep mine, Take theirs and the differences.
+function _merge3(base, mine, theirs) {
+  if (mine === theirs || theirs === base) return { clean: true, text: mine };
+  if (mine === base) return { clean: true, text: theirs };
+  const B = base.split('\n');
+  const hunks = x => {
+    const out = []; let i = 0, cur = null;
+    for (const r of _mdxDiffLines(base, x)) {
+      if (r[0] === ' ') { if (cur) { out.push(cur); cur = null; } i++; continue; }
+      if (!cur) cur = { s: i, e: i, lines: [] };
+      if (r[0] === '-') { i++; cur.e = i; } else cur.lines.push(r[3]);
+    }
+    if (cur) out.push(cur);
+    return out;
+  };
+  const ha = hunks(mine), hb = hunks(theirs), out = [];
+  let pos = 0, ia = 0, ib = 0;
+  const same = (a, b) => a.s === b.s && a.e === b.e && a.lines.join('\n') === b.lines.join('\n');
+  const clash = (a, b) => (a.s < b.e && b.s < a.e) || a.s === b.s;
+  while (ia < ha.length || ib < hb.length) {
+    const a = ha[ia], b = hb[ib];
+    let h;
+    if (a && b && clash(a, b)) {
+      if (!same(a, b)) return { clean: false, text: mine };
+      h = a; ia++; ib++;
+    } else if (a && (!b || a.s < b.s)) { h = a; ia++; } else { h = b; ib++; }
+    out.push(...B.slice(pos, h.s), ...h.lines);
+    pos = h.e;
+  }
+  out.push(...B.slice(pos));
+  return { clean: true, text: out.join('\n') };
+}
+async function _fileReconcile(mine) {
+  const path = _fileData && _fileData.path;
+  if (!path) return;
+  let now = null;
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(path), { headers: _authHeaders(), cache: 'no-store' });
+    if (r.ok) now = await r.json();
+  } catch (e) {}
+  if (!now || typeof now.content !== 'string' || !_fileData || _fileData.path !== path) {
+    showToast('This file changed elsewhere and could not be read; your edits are kept unsaved');
+    return;
+  }
+  const ta = document.getElementById('file-edit-ta');
+  const m = _merge3(_fileData.content || '', mine, now.content);
+  try { window._clientDebug?.('file-collab', { verdict: m.clean ? 'file_merged' : 'file_conflict', measured: true, n_considered: 1 }); } catch (_) {}
+  // The file now is the base from here on.
+  _fileData.content = now.content;
+  _fileData.etag = now.etag || null;
+  if (m.clean) {
+    if (ta && ta.value === mine) {
+      const at = ta.selectionStart, line = mine.slice(0, at).split('\n').length - 1, col = at - mine.lastIndexOf('\n', at - 1) - 1;
+      ta.value = m.text;
+      const L = m.text.split('\n'); let off = 0;
+      for (let k = 0; k < Math.min(line, L.length - 1); k++) off += L[k].length + 1;
+      const c = off + Math.min(col, (L[Math.min(line, L.length - 1)] || '').length);
+      try { ta.setSelectionRange(c, c); } catch (e) {}
+      if (_mdxActive()) _mdxChanged();
+    }
+    showToast('Merged with changes made elsewhere');
+    _fileSave();
+    return;
+  }
+  _fileData.conflict = { theirs: now.content };
+  _fileConflictBar(true);
+}
+function _fileConflictBar(on) {
+  let bar = document.getElementById('file-conflict');
+  if (!on) { if (bar) bar.hidden = true; return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'file-conflict';
+    bar.className = 'file-conflict';
+    bar.setAttribute('role', 'alert');
+    bar.innerHTML = '<span>Someone else changed the same lines while you edited. Nothing was overwritten.</span>'
+      + '<button type="button" class="btn" onclick="_fileConflictResolve(\'diff\')">Show their version</button>'
+      + '<button type="button" class="btn" onclick="_fileConflictResolve(\'theirs\')">Take theirs</button>'
+      + '<button type="button" class="btn btn-primary" onclick="_fileConflictResolve(\'mine\')">Keep mine</button>';
+    const ov = document.getElementById('file-overlay');
+    const host = document.getElementById('mdx') || ov;
+    if (host && host.parentNode) host.parentNode.insertBefore(bar, host); else if (ov) ov.appendChild(bar);
+  }
+  bar.hidden = false;
+}
+function _fileConflictResolve(how) {
+  const c = _fileData && _fileData.conflict, ta = document.getElementById('file-edit-ta');
+  if (!c || !ta) { _fileConflictBar(false); return; }
+  if (how === 'diff') {
+    if (_mdxActive()) {
+      _mdx.against = { label: 'their version', content: c.theirs };
+      if (_mdx.mode === 'edit') _mdxSetMode(_mdxWide() ? 'split' : 'preview', false);
+      _mdxSetTab('diff');
+    }
+    return;
+  }
+  delete _fileData.conflict;
+  _fileConflictBar(false);
+  try { window._clientDebug?.('file-collab', { verdict: 'file_conflict_' + how, measured: true, n_considered: 1 }); } catch (_) {}
+  if (how === 'theirs') {
+    ta.value = c.theirs;
+    if (_mdxActive()) _mdxChanged();
+    return;
+  }
+  _fileSave();   // mine, over the version just read
+}
+
 async function _fileSaveOnce() {
   if (_xlsxEd) { await _xlsxSave(); return; }
   if (!_fileEditable(_fileData)) return;
@@ -32411,11 +32566,21 @@ async function _fileSaveOnce() {
         }
       } catch (e) { sent = false; }
     }
+    // The version this text was edited from, so a save never replaces a newer
+    // one (owner, 2026-10-29: "proper collision reconcilation etc. handled for
+    // multiple users in a workspace"). Without it the last save won silently.
+    let refused = null;
     if (!sent) r = await apiCall(API + '/api/file', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: _fileData.path, content})
+      body: JSON.stringify({path: _fileData.path, content, expected_etag: _fileData.etag || undefined}),
+      _onRefused: (status, body) => { refused = { status, body }; }
     });
+    if (!r && refused && refused.status === 409 && refused.body && refused.body.code === 'file_changed') {
+      btn.textContent = 'Save'; btn.classList.remove('saving');
+      await _fileReconcile(content);
+      return;
+    }
     if (!r) {  // offline-queued (or error) — reflect locally; the PUT replays on reconnect
       _fileData.content = content;
       btn.textContent = online ? 'Error' : 'Queued';
@@ -32426,6 +32591,7 @@ async function _fileSaveOnce() {
     const d = await r.json();
     if (d.ok) {
       _fileData.content = content;
+      if (d.etag) _fileData.etag = d.etag;
       if (_fileData._isNew) {
         _fileData._isNew = false;
         // Auto-name from first line if this was an auto-named scratchpad note
