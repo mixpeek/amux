@@ -7813,9 +7813,14 @@ fn fault_identity(signature: &str) -> Option<&str> {
     // so one open card suppresses the next fire's refile; the epoch exists only
     // so a NEW episode after that card is judged is a new signature rather than
     // being swallowed by `already_filed` forever.
+    // AF-992: the system-job rollup (`silent|system-job|ROLLUP|<job ids>`) is
+    // keyed on its job set like the two latency rollups and was never listed,
+    // so each change in which jobs were unhealthy filed another card: 88 open
+    // "N system jobs unhealthy at once" cards by 2026-10-29, all one fault.
     if !(signature.starts_with("5xx|")
         || signature.starts_with("latency|outlier|")
         || signature.starts_with("latency|p95|")
+        || signature.starts_with("silent|system-job|ROLLUP|")
         || signature.starts_with("silent|schedule-errors|")
         || signature.starts_with("ci|"))
     {
@@ -11361,6 +11366,20 @@ mod tests {
             fault_identity(r1),
             fault_identity("latency|outlier|GET|/api/board|1787585028"),
             "a rollup and a single-endpoint outlier are different faults"
+        );
+
+        // AF-992: so does the system-job rollup. Real signatures from
+        // 2026-10-29's server-rs.log, two of the 88 open cards it filed.
+        let j1 = "silent|system-job|ROLLUP|autofix,board-drive,invariants-monitor,orchestrator-runtime,status-history,telegram-relay";
+        let j2 = "silent|system-job|ROLLUP|autofix,board-drive,invariants-monitor,message-capture,needs-input-auto,\
+                  orchestrator-runtime,status-history,steer-deliver,token-ledger,worker-resources";
+        assert_eq!(fault_identity(j1), Some("silent|system-job|ROLLUP"));
+        assert_eq!(fault_identity(j1), fault_identity(j2), "one stalled runtime, not a card per job set");
+        add("AMUX-6590", &format!("autofix:{j1}"), "todo");
+        assert_eq!(
+            open_card_for_fault(&conn, j2).as_deref(),
+            Some("AMUX-6590"),
+            "an open system-job rollup suppresses a rollup over a different job set"
         );
 
         // AMUX-4648: the p95 rollup gets the same treatment. These are the real
