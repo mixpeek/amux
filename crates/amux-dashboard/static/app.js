@@ -11523,23 +11523,27 @@ function closeAddMenu() {
 }
 
 // ── Describe what you want (Ethan, 2026-10-18) ──
-// One box: describe the outcome. Everything else is a default under a closed
-// "Defaults and constraints" section, remembered in prefs (outcome_defaults)
-// so the next one needs only the description. The worker starts on
-// `/goal <outcome + constraints>`: Claude Code's own evaluator decides when it
-// is done, the goal keeper keeps it going until then, and the dashboard (and
-// the goal keeper's push) say when it is met. Nothing here calls a model: the
-// name and description are computed from the text, and the worker does the
-// judging.
+// One box: describe the outcome, and attach a recording or files if the
+// outcome lives in them. Everything else is a default under a closed
+// "Defaults and constraints" section, remembered in prefs (outcome_defaults).
+// The server (POST /api/outcome/plan) names the worker and picks the
+// directory and groups the fleet already uses for this work, reading the
+// text and the attachments (a recording is transcribed and the transcript
+// saved beside it). It starts as a plain first prompt, not a /goal (Ethan,
+// 2026-10-29: "it shouldn't create a goal"; `need-worker-behave-crm` in
+// /home/amux was the computed name and the remembered directory).
 const _OUTCOME_DEFAULT_CONSTRAINTS = 'Do not spend money or contact anyone outside the company. '
   + 'Ask before deleting or overwriting data you did not create. Commit finished work. '
   + 'When only steps that need the owner remain, stop and list them.';
 const _OUTCOME_STOP = new Set(['a','an','the','and','or','to','of','for','in','on','with','my','our','me','i','we',
-  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by']);
+  'it','is','be','that','this','so','can','please','want','would','like','make','some','new','into','from','at','by',
+  // the request's scaffolding, not its subject (the server's fallback_name drops the same words)
+  'need','needs','worker','workers','agent','behave','behaves','act','acts','as','wanna','gonna','able','dedicated',
+  'help','helps','create','build','set','up','you','your','something','lets']);
 
 function _outcomeName(text, taken) {
   const words = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !_OUTCOME_STOP.has(w));
-  let base = words.slice(0, 4).join('-').slice(0, 32).replace(/-+$/, '') || 'outcome';
+  let base = words.slice(0, 3).join('-').slice(0, 24).replace(/-+$/, '') || 'outcome';
   let name = base, n = 2;
   while (taken.has(name)) name = base + '-' + n++;
   return name;
@@ -11565,10 +11569,9 @@ async function _outcomeDefaults() {
   } catch (_) { /* offline: the cached copy stands */ }
   return {
     group: d.group ?? ((typeof activeTag === 'string' && activeTag) ? activeTag : ''),
-    dir: d.dir || ((_filesCwd && _filesCwd !== '/') ? _filesCwd : ''),
+    dir: d.dir || '',
     provider: d.provider || 'claude',
     model: d.model || '',
-    goal: d.goal !== false,
     isolated: d.isolated !== false,
     constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
   };
@@ -11582,21 +11585,26 @@ async function openOutcome() {
     <textarea id="outcome-text" class="input outcome-text" rows="4"
       placeholder="e.g. Add a dark mode toggle to settings and ship it"
       onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
+    <div class="outcome-files">
+      <button type="button" class="btn" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
+      <input type="file" id="outcome-file" multiple hidden onchange="_outcomeAttach(this.files);this.value=''">
+      <div id="outcome-file-list" class="ui-help" aria-live="polite"></div>
+    </div>
     <details class="outcome-settings">
       <summary>Defaults and constraints</summary>
       <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
       <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
-      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="~/Dev/project"></label>
+      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="Chosen from your description"></label>
       <label class="outcome-field">Provider<select id="outcome-provider" class="input">
         ${['claude', 'codex', 'gemini'].map(p => `<option value="${p}"${p === d.provider ? ' selected' : ''}>${p}</option>`).join('')}
       </select></label>
       <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
       <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
-      ${chk('outcome-goal', d.goal, 'Keep going until done (/goal, Claude)')}
       ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
       ${chk('outcome-remember', true, 'Remember these as my defaults')}
     </details>
   </div>`;
+  _outcomeFiles = [];
   const shown = showFormModal('Describe what you want', html, 'Start');
   setTimeout(() => document.getElementById('outcome-text')?.focus(), 30);
   const ok = await shown;
@@ -11606,24 +11614,66 @@ async function openOutcome() {
   if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
   if (!ok || !text) return;
   const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
-    model: v('outcome-model'), goal: on('outcome-goal'), isolated: on('outcome-isolated'),
+    model: v('outcome-model'), isolated: on('outcome-isolated'),
     constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  const files = await _outcomeFilesReady();
+  if (files === null) { showToast('Not started: an attachment did not upload. Your description is kept.'); return; }
   if (on('outcome-remember')) {
     const val = JSON.stringify(cfg);
     localStorage.setItem('amux_outcome_defaults', val);
     fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({ key: 'outcome_defaults', value: val }) }).catch(() => {});
   }
-  await _outcomeStart(text, cfg);
+  await _outcomeStart(text, cfg, files);
 }
-async function _outcomeStart(text, cfg) {
-  const name = _outcomeName(text, new Set((sessions || []).map(s => s.name)));
-  const goal = cfg.goal && cfg.provider === 'claude';
-  const body = { name, dir: cfg.dir || (window._cloudEmail ? '/root' : ''), creator: _getDeviceName(),
-    desc: _outcomeDesc(text), prompt: _outcomePrompt(text, cfg.constraints || '', goal) };
+// Attachments upload as soon as they are picked (the same upload API voice
+// notes use), so Start only waits for the ones still in flight.
+let _outcomeFiles = [];
+function _outcomeAttach(list) {
+  for (const file of list || []) {
+    const it = { name: file.name, path: '', failed: false };
+    it.done = _cvUploadVoice(file).then(p => { it.path = p; it.failed = !p; _outcomeRenderFiles(); return p; });
+    _outcomeFiles.push(it);
+  }
+  _outcomeRenderFiles();
+}
+function _outcomeRenderFiles() {
+  const el = document.getElementById('outcome-file-list');
+  if (!el) return;
+  el.innerHTML = _outcomeFiles.map((f, i) => '<span class="outcome-file">' + esc(f.name)
+    + (f.failed ? ' (did not upload)' : f.path ? '' : ' (uploading)')
+    + ' <button type="button" class="btn" aria-label="Remove ' + esc(f.name) + '" onclick="_outcomeFiles.splice(' + i + ',1);_outcomeRenderFiles()">&times;</button></span>').join(' ');
+}
+async function _outcomeFilesReady() {
+  const paths = await Promise.all(_outcomeFiles.map(f => f.done));
+  return paths.some(p => !p) ? null : paths;
+}
+// The server reads the text and attachments and picks the name, directory
+// and groups. If it cannot answer, the computed name stands and the worker
+// starts where the dialog says.
+async function _outcomePlan(text, files) {
+  try {
+    const r = await fetch(API + '/api/outcome/plan', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({ text, files }) });
+    if (r.ok) return await r.json();
+  } catch (_) {}
+  return null;
+}
+async function _outcomeStart(text, cfg, files) {
+  files = files || [];
+  showToast('Reading your description' + (files.length ? ' and attachments' : '') + '...');
+  const plan = await _outcomePlan(text, files);
+  const name = plan?.name || _outcomeName(text, new Set((sessions || []).map(s => s.name)));
+  const dir = cfg.dir || plan?.dir || (window._cloudEmail ? '/root' : '');
+  const context = (plan?.attachments || []).map(a => a.transcript
+    ? a.path + ' (recording; transcript at ' + a.transcript + ')' : a.path);
+  for (const p of files) if (!context.some(c => c.startsWith(p))) context.push(p);
+  const ask = text + (context.length ? '\n\nRead these first, they are part of the request: ' + context.join('; ') : '');
+  const body = { name, dir, creator: _getDeviceName(),
+    desc: plan?.desc || _outcomeDesc(text), prompt: _outcomePrompt(ask, cfg.constraints || '', false) };
   if (cfg.provider !== 'claude') body.provider = cfg.provider;
   if (cfg.model) body.model = cfg.model;
-  const groups = _createGroupsFrom(cfg.group);
+  const groups = _createGroupsFrom(cfg.group || (plan?.groups || []).join(','));
   if (groups.length) body.tags = groups;
   if (cfg.isolated) body.isolated = true;
   if (_yoloDefault) body.yolo = true;
@@ -11645,8 +11695,7 @@ async function _outcomeStart(text, cfg) {
     return;
   }
   localStorage.removeItem('amux_outcome_draft');
-  showToast(goal ? 'Started ' + name + ': it keeps going until done and tells you when it is'
-                 : 'Started ' + name);
+  showToast('Started ' + name + (dir ? ' in ' + dir : ''));
   await fetchSessions();
   document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }

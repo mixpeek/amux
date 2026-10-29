@@ -2870,6 +2870,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/outcome/plan",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/tmux-sessions",
         methods: &["GET"],
     },
