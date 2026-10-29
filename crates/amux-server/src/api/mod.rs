@@ -16,6 +16,7 @@ pub mod bridge;
 pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
+pub(crate) mod send_profile;
 pub mod prompt_block;
 pub mod land_approvals;
 pub mod land_queue;
@@ -650,6 +651,7 @@ pub fn router_with_connector_transport(
         // until now. Public like its debug siblings (lane names and timings).
         .route("/api/debug/scan", axum::routing::get(health::debug_scan))
         .route("/api/debug/sse", axum::routing::get(debug_sse))
+        .route("/api/debug/send-profile", axum::routing::get(send_profile::debug_send_profile))
         .route(
             "/api/debug/downtime",
             axum::routing::get(health::debug_downtime),

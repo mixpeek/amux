@@ -307,7 +307,7 @@ impl RequestLogger {
 
 /// `AMUX_REQLOG_RETAIN_DAYS`: process env wins, then server.env, then 14 —
 /// the same precedence config.rs gives every other knob.
-fn retain_days_config() -> f64 {
+pub(crate) fn retain_days_config() -> f64 {
     if let Some(d) = std::env::var("AMUX_REQLOG_RETAIN_DAYS")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
@@ -1390,6 +1390,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/debug/sse",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/debug/send-profile",
         methods: &["GET"],
     },
     RouteEntry {

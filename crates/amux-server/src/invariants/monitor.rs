@@ -137,15 +137,20 @@ fn newest(current: Option<f64>, incoming: Option<f64>) -> Option<f64> {
     }
 }
 
-/// Section 1a's per-route totals over the last ROUTE_WINDOW_DAYS, kept between
-/// passes. Hog RCA 20261029-134000: recomputing them every pass grouped the
-/// whole 14-day request log (6.8M rows, 29,951 method+path groups, 8.4 CPU
-/// seconds in the sqlite3 shell) and took 16.6 s of a 24 s pass, every 30 s,
-/// while the server sat at 836% CPU. Now a full build happens every
-/// ROUTE_REBUILD_SECS and each pass in between folds in only the rows added
-/// since (by `id`, which only grows), so a new 5xx still shows within one pass.
-/// Rows that age out of the window, or that log retention deletes, leave at the
-/// next rebuild.
+/// Section 1a's per-route totals over the request log's recent window, kept
+/// between passes. Hog RCA 20261029-134000: regrouping the whole 14-day log
+/// every pass (6.8M rows, 29,951 method+path groups) took 16.6 s of a 24 s
+/// pass, every 30 s, with the server at 836% CPU. 5671d2e96 rebuilt it every 10
+/// minutes instead, and that single query grew to 116-118 s once the server was
+/// busy: one read that long also stops SQLite checkpointing its WAL.
+///
+/// Now it is a sliding window. Each pass folds in the rows added since the last
+/// one (by `id`, which only grows) and takes out the rows that aged out of the
+/// window (a `ts` slice, from the index). The window ends a day short of the
+/// log's retention, so a row leaves it before retention deletes it and its
+/// subtraction always finds it. A full build runs at boot and every
+/// ROUTE_REBUILD_SECS as a resync, in id ranges of ROUTE_BUILD_CHUNK rows, so
+/// no single read holds the log for long.
 #[derive(Default)]
 struct RouteAcc {
     ok: i64,
@@ -159,24 +164,32 @@ struct RouteAcc {
 }
 struct RouteWindow {
     built_at: f64,
+    /// The window's start the totals are taken from.
+    lo: f64,
     last_id: i64,
     groups: std::collections::HashMap<(String, String), RouteAcc>,
 }
-const ROUTE_WINDOW_DAYS: f64 = 14.0;
-const ROUTE_REBUILD_SECS: f64 = 600.0;
+const ROUTE_REBUILD_SECS: f64 = 6.0 * 3600.0;
+const ROUTE_BUILD_CHUNK: i64 = 200_000;
 static ROUTE_WINDOW: std::sync::Mutex<Option<RouteWindow>> = std::sync::Mutex::new(None);
 
+/// One day short of the request log's retention (at most 14 days).
+fn route_window_secs() -> f64 {
+    (crate::api::request_log::retain_days_config().min(14.0) - 1.0).max(1.0) * 86400.0
+}
+
 /// Fold `(method, raw path)` aggregates for the rows `where_sql` selects into
-/// `w`, by route shape. TWO-STAGE AGGREGATION, deliberately: the grouping key
-/// is `normalize_target_verb`, a Rust function, so SQL collapses to (method,
-/// raw path) and Rust folds those into shapes. 503 is summed apart from the
-/// rest of the 5xx band (AMUX-4545) and 3xx counts as the route answering
-/// (AMUX-4753).
+/// `w` by route shape, added (`sign` 1) or taken out (-1). TWO-STAGE
+/// AGGREGATION, deliberately: the grouping key is `normalize_target_verb`, a
+/// Rust function, so SQL collapses to (method, raw path) and Rust folds those
+/// into shapes. 503 is summed apart from the rest of the 5xx band (AMUX-4545)
+/// and 3xx counts as the route answering (AMUX-4753).
 fn route_fold(
     conn: &rusqlite::Connection,
     where_sql: &str,
-    param: &dyn rusqlite::ToSql,
+    params: &[&dyn rusqlite::ToSql],
     w: &mut RouteWindow,
+    sign: i64,
 ) -> rusqlite::Result<()> {
     let sql = format!(
         "SELECT method, path, \
@@ -190,7 +203,7 @@ fn route_fold(
          FROM _amux_request_log WHERE {where_sql} GROUP BY method, path"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([param], |r| {
+    let rows = stmt.query_map(params, |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -203,39 +216,65 @@ fn route_fold(
         let (method, path, [ok, n, c4, c5, c503, c3], last, max_id) = row?;
         let shape = crate::api::request_log::normalize_target_verb(&path);
         let e = w.groups.entry((method, shape)).or_default();
-        e.ok += ok;
-        e.n += n;
-        e.redirect += c3;
-        e.client_err += c4;
-        e.server_err += c5;
-        e.unavailable += c503;
-        e.last_seen = newest(e.last_seen, last);
-        w.last_id = w.last_id.max(max_id);
+        e.ok += sign * ok;
+        e.n += sign * n;
+        e.redirect += sign * c3;
+        e.client_err += sign * c4;
+        e.server_err += sign * c5;
+        e.unavailable += sign * c503;
+        if sign > 0 {
+            e.last_seen = newest(e.last_seen, last);
+            w.last_id = w.last_id.max(max_id);
+        }
+    }
+    if sign < 0 {
+        w.groups.retain(|_, a| a.n > 0);
     }
     Ok(())
 }
 
-/// Section 1a's route rows, from `cache` (rebuilt when it is missing or older
-/// than ROUTE_REBUILD_SECS, otherwise brought up to date with the rows added
-/// since its last pass). A failed build keeps the previous window.
+/// Section 1a's route rows for the `window_secs` before `now`, from `cache`:
+/// built in id chunks when missing or older than ROUTE_REBUILD_SECS, otherwise
+/// slid forward (new rows in, aged rows out). A failed build keeps the
+/// previous window.
 fn route_window(
     cache: &mut Option<RouteWindow>,
     conn: &rusqlite::Connection,
     now: f64,
+    window_secs: f64,
 ) -> Vec<checks::RouteOutcomeRow> {
+    let lo = now - window_secs;
     let rebuild = cache.as_ref().is_none_or(|w| now - w.built_at >= ROUTE_REBUILD_SECS);
     if rebuild {
         let started = std::time::Instant::now();
-        let mut w = RouteWindow { built_at: now, last_id: 0, groups: Default::default() };
-        match route_fold(conn, "ts >= ?1", &(now - ROUTE_WINDOW_DAYS * 86400.0), &mut w) {
-            Ok(()) => {
+        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default() };
+        let built = (|| -> rusqlite::Result<i64> {
+            let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
+                "SELECT MIN(id), MAX(id) FROM _amux_request_log WHERE ts >= ?1",
+                [lo],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let (Some(first), Some(last)) = (first, last) else { return Ok(0) };
+            let mut chunks = 0;
+            let mut from = first;
+            while from <= last {
+                let to = from + ROUTE_BUILD_CHUNK;
+                route_fold(conn, "id >= ?1 AND id < ?2 AND ts >= ?3", &[&from, &to, &lo], &mut w, 1)?;
+                from = to;
+                chunks += 1;
+            }
+            w.last_id = w.last_id.max(last);
+            Ok(chunks)
+        })();
+        match built {
+            Ok(chunks) => {
                 let ms = started.elapsed().as_millis() as u64;
                 if ms > 5000 {
-                    tracing::warn!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
-                        verdict = "route_window_rebuild_slow", "section 1a rebuilt its 14-day route window slowly");
+                    tracing::warn!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuild_slow", "section 1a rebuilt its route window slowly");
                 } else {
-                    tracing::info!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
-                        verdict = "route_window_rebuilt", "section 1a rebuilt its 14-day route window");
+                    tracing::info!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuilt", "section 1a rebuilt its route window");
                 }
                 *cache = Some(w);
             }
@@ -244,9 +283,17 @@ fn route_window(
         }
     } else if let Some(w) = cache.as_mut() {
         let since_id = w.last_id;
-        if let Err(e) = route_fold(conn, "id > ?1", &since_id, w) {
+        if let Err(e) = route_fold(conn, "id > ?1", &[&since_id], w, 1) {
             tracing::warn!(error = %e, measured = false, n_considered = 0,
                 verdict = "route_window_update_failed", "section 1a could not read new request-log rows");
+        }
+        if lo > w.lo {
+            let (old_lo, last) = (w.lo, w.last_id);
+            match route_fold(conn, "ts >= ?1 AND ts < ?2 AND id <= ?3", &[&old_lo, &lo, &last], w, -1) {
+                Ok(()) => w.lo = lo,
+                Err(e) => tracing::warn!(error = %e, measured = false, n_considered = 0,
+                    verdict = "route_window_age_out_failed", "section 1a could not take aged rows out of its window"),
+            }
         }
     }
     let Some(w) = cache.as_ref() else { return Vec::new() };
@@ -301,7 +348,7 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
         Ok(conn) => {
             let groups = {
                 let mut cache = ROUTE_WINDOW.lock().unwrap_or_else(|p| p.into_inner());
-                route_window(&mut cache, &conn, crate::config::now_f64())
+                route_window(&mut cache, &conn, crate::config::now_f64(), route_window_secs())
             };
             out.extend(checks::mounted_routes_answer(&groups, &mounted));
         }
@@ -734,6 +781,31 @@ mod f64_roundtrip_wiring_tests {
     /// goes with it, and `checks`'s own unit tests keep passing on a function
     /// nobody calls. An unregistered invariant is silence that reads as health.
     #[test]
+    fn rows_that_age_out_of_the_route_window_leave_it_without_a_rebuild() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let now = 2_000_000_000.0;
+        for (ts, status) in [(now - 900.0, 500), (now - 100.0, 200)] {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', '/api/board', ?2)",
+                rusqlite::params![ts, status],
+            )
+            .unwrap();
+        }
+        let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let mut cache = None;
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now, 1000.0)), (2, 1));
+        // 200 s later the 900 s-old 500 is past a 1000 s window: it leaves on
+        // this pass, with no rebuild.
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 200.0, 1000.0)), (1, 0), "an aged-out row stayed in the window");
+        // Later still the other row leaves too, and its group is dropped.
+        assert!(super::route_window(&mut cache, &conn, now + 1000.0, 1000.0).is_empty());
+    }
+
+    #[test]
     fn the_route_window_folds_new_rows_between_rebuilds_instead_of_rescanning() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -752,15 +824,15 @@ mod f64_roundtrip_wiring_tests {
         add(now - 90.0, 500);
         let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         let mut cache = None;
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now)), (2, 1));
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now, 14.0 * 86400.0)), (2, 1));
         // A new failure shows on the next pass.
         add(now + 10.0, 503);
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 30.0)), (3, 2));
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 30.0, 14.0 * 86400.0)), (3, 2));
         // Between rebuilds the old rows are not read again: deleting one changes
         // nothing until the window is rebuilt.
         conn.execute("DELETE FROM _amux_request_log WHERE ts = ?1", [now - 100.0]).unwrap();
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 60.0)), (3, 2), "a pass between rebuilds rescanned the window");
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0)), (2, 2), "the rebuild drops what left the log");
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 60.0, 14.0 * 86400.0)), (3, 2), "a pass between rebuilds rescanned the window");
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0, 14.0 * 86400.0)), (2, 2), "the rebuild drops what left the log");
     }
 
     #[test]
@@ -3031,7 +3103,7 @@ async fn served_commit_check() -> Vec<InvariantResult> {
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
     let output = tokio::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,etime=,command="])
+        .args(["-axww", "-o", "pid=,ppid=,etime=,command="])
         .output()
         .await;
     match output {
@@ -3050,7 +3122,16 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                 // two were previously the same verdict.
                 let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
                 let rest = rest.trim_start();
+                let (ppid, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let rest = rest.trim_start();
                 let (etime, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                // The executable's NAME only (AMUX-6586), so a seconds-old
+                // carrier can be traced to whatever launched it.
+                let exe = rest
+                    .split_whitespace()
+                    .next()
+                    .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+                    .unwrap_or_default();
                 let age_s = crate::runtime_jobs::mac_health::parse_etime(etime);
                 for token in rest.split_whitespace() {
                     let Some((key, value)) = token.split_once('=') else {
@@ -3060,6 +3141,7 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                     // Identifier shape alone matched `jsonwebtoken`, an npm
                     // package whose name uppercases to contain TOKEN.
                     if checks::argv_key_is_env_shaped(key)
+                        && !checks::argv_value_is_expansion(value)
                         && !crate::backend::tmux::env_pair_is_argv_safe(key, value)
                     {
                         found.push(checks::ArgvSecret {
@@ -3068,6 +3150,8 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                             // LENGTH, never the value.
                             value_len: value.len(),
                             age_s,
+                            exe: exe.clone(),
+                            ppid: ppid.to_string(),
                         });
                     }
                 }

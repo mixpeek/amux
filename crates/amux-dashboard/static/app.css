@@ -2027,6 +2027,8 @@
     display: none;
   }
   .ac-list.open { display: block; }
+  /* At the caret in a tall textarea (app.js _atPlaceAtCaret): a floating box. */
+  .ac-list.ac-at-caret { border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); z-index: 40; }
   .ac-list.slash-ac {
     top: auto; bottom: 100%; border-top: 1px solid var(--border); border-bottom: none;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 220px;
@@ -8934,6 +8936,9 @@ body.light #fc-container { color-scheme: light; }
 #messages-view.cv-side-folded .cv-new-btn { display:none; }
 .cv-new-list { max-height:min(50vh, 360px); overflow-y:auto; margin-top:var(--space-2); }
 .cv-new-kind { margin-left:auto; color:var(--dim); font-size:var(--fs-2xs); }
+/* Where unread messages start when a conversation opens (app.js _cvRestoreScroll). */
+.cv-unread-line { display:flex; align-items:center; gap:var(--space-2); margin:var(--space-2) 0; color:var(--red); font-size:var(--fs-2xs); font-weight:700; text-transform:uppercase; }
+.cv-unread-line::before, .cv-unread-line::after { content:''; flex:1; border-top:1px solid color-mix(in srgb, var(--red) 55%, transparent); }
 /* Any avatar opens where that person is (app.js _whoOpen). */
 [data-who] { cursor:pointer; }
 .who-modal { display:flex; flex-direction:column; gap:var(--space-2); min-width:min(320px, 80vw); text-align:left; }

@@ -14,6 +14,7 @@ pub mod adapter;
 pub mod bootstrap;
 pub mod herdr;
 pub mod tmux;
+pub mod tmux_ctl;
 pub mod tmux_health;
 
 use amux_core::ids::WorkerId;

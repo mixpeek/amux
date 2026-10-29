@@ -23963,6 +23963,44 @@ function _atGenPick(i) {
   cur.dd.classList.remove('open');
   inp.focus();
 }
+// Where the caret is in a textarea, in px from the textarea's top-left
+// (scroll applied): a mirror div with the same box and font, the text up to
+// the caret, and a marker after it.
+function _caretXY(ta) {
+  const cs = getComputedStyle(ta), m = document.createElement('div');
+  for (const k of ['boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
+    'borderBottomWidth', 'borderLeftWidth', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'tabSize', 'textIndent', 'wordSpacing'])
+    m.style[k] = cs[k];
+  Object.assign(m.style, { position: 'absolute', visibility: 'hidden', top: '0', left: '-9999px', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', overflow: 'hidden' });
+  m.textContent = ta.value.slice(0, ta.selectionStart);
+  const mark = document.createElement('span');
+  mark.textContent = '\u200b';
+  m.appendChild(mark);
+  document.body.appendChild(m);
+  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 18;
+  const out = { x: mark.offsetLeft - ta.scrollLeft, y: mark.offsetTop - ta.scrollTop, h: lh };
+  m.remove();
+  return out;
+}
+// In a tall textarea (the markdown editor) the list opens at the caret, not
+// under the whole box, where the status bar covered it (owner, 2026-10-29,
+// MSG-100765: "this should autocomplete dropdown the worker"). Above the line
+// when there is no room below. A one-line input keeps the dropdown.
+function _atPlaceAtCaret(inp, dd) {
+  const reset = () => { dd.style.top = dd.style.left = dd.style.right = dd.style.bottom = dd.style.width = ''; dd.classList.remove('ac-at-caret'); };
+  if (inp.tagName !== 'TEXTAREA') return reset();
+  const c = _caretXY(inp);
+  if (inp.clientHeight < c.h * 4) return reset();
+  const wrap = dd.parentElement, wr = wrap.getBoundingClientRect(), ir = inp.getBoundingClientRect();
+  const w = Math.min(360, wr.width - 8);
+  const x = Math.max(4, Math.min(ir.left - wr.left + c.x, wr.width - w - 4));
+  const below = ir.top - wr.top + c.y + c.h;
+  dd.classList.add('ac-at-caret');
+  dd.style.width = w + 'px'; dd.style.left = x + 'px'; dd.style.right = 'auto';
+  const room = wr.height - below, need = Math.min(dd.scrollHeight || 180, 180);
+  if (room >= need || below < need) { dd.style.top = below + 'px'; dd.style.bottom = 'auto'; }
+  else { dd.style.top = 'auto'; dd.style.bottom = (wr.height - (below - c.h)) + 'px'; }
+}
 function _atAttach(inp) {
   if (!inp || inp._atWired) return;
   inp._atWired = true;
@@ -23978,6 +24016,7 @@ function _atAttach(inp) {
     _atGenCur = { inp, dd };
     sel = -1;
     if (!_atRender(inp, dd, '_atGenPick')) dd.classList.remove('open');
+    else _atPlaceAtCaret(inp, dd);
   });
   inp.addEventListener('keydown', (e) => {
     if (!dd.classList.contains('open')) return;
@@ -67264,6 +67303,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
+  _cv.restoreScroll = true; _cv.unreadFrom = null;
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
@@ -67323,6 +67363,13 @@ async function _cvPollOnce(full) {
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
   if (full) _cv.posts = d.posts || [];
+  // The first post someone else wrote after your read mark, captured before
+  // this load marks the conversation read (_cvMarkRead below).
+  if (full && _cv.restoreScroll) {
+    const lr = Number(d.last_read || 0), me = _cvMeKey();
+    const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
+    _cv.unreadFrom = first ? first.id : null;
+  }
   else if ((d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
@@ -67713,6 +67760,7 @@ async function _cvOpenThreadOrScroll(conv, id) {
 }
 // ── Older history: scrolling to the top loads the page before it ──
 async function _cvOnScroll(box) {
+  if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
   const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
@@ -67844,17 +67892,54 @@ function _cvRenderPosts(scroll) {
     .concat(_cv.pending.filter(q => q.conv === _cv.sel).map(q => ({ ...q, id: 'q' + q.ts, pending: true,
       author_key: _cvMeKey(), author_name: (_cv.list && _cv.list.me && _cv.list.me.name) || 'you', mentions: [], deliveries: [] })));
   if (!all.length) {
+    _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
       : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
-  for (const p of all) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  for (const p of all) {
+    const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; }
+    if (_cv.unreadFrom && p.id === _cv.unreadFrom) html += '<div class="cv-unread-line" role="separator"><span>New</span></div>';
+    html += _cvPostHtml(p, false);
+  }
   _cvEditBeforeRender();
   box.innerHTML = html;
   _cvEditAfterRender(box);
+  if (_cv.restoreScroll) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
   if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+}
+// WHERE YOU LEFT OFF (Ethan, 2026-10-29: "when i open messages it should scroll
+// to where i left off"). Opening a conversation goes, in order, to the first
+// message someone else sent since your last read (under a "New" line), else to
+// the post you were reading when you scrolled up and left, else the end. The
+// place is kept per conversation in this browser (amux_cv_pos).
+function _cvPositions() { try { return JSON.parse(localStorage.getItem('amux_cv_pos') || '{}'); } catch (e) { return {}; } }
+function _cvRestoreScroll(box) {
+  const pos = _cvPositions()[_cv.sel];
+  const at = id => box.querySelector('.cv-post[data-id="' + CSS.escape(String(id)) + '"]');
+  const unread = _cv.unreadFrom && at(_cv.unreadFrom);
+  if (unread) { box.scrollTop += unread.getBoundingClientRect().top - box.getBoundingClientRect().top - 48; return; }
+  const el = pos && !pos.bottom && at(pos.id);
+  if (el) { box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - (pos.off || 0); return; }
+  box.scrollTop = box.scrollHeight;
+}
+let _cvPosT = 0;
+function _cvSavePosition(box) {
+  clearTimeout(_cvPosT);
+  _cvPosT = setTimeout(() => {
+    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+    const top = box.getBoundingClientRect().top;
+    const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+    const all = _cvPositions();
+    all[sel] = { id: el ? el.dataset.id : null, off: el ? Math.round(el.getBoundingClientRect().top - top) : 0,
+      bottom: box.scrollHeight - box.scrollTop - box.clientHeight < 80, at: Date.now() };
+    // Keep the 200 most recent conversations.
+    const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
+    for (const k of keys.slice(200)) delete all[k];
+    try { localStorage.setItem('amux_cv_pos', JSON.stringify(all)); } catch (e) {}
+  }, 300);
 }
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
@@ -72079,6 +72164,37 @@ function _cmdkRun(i) {
   // rank and tier let a sweep see people opening things far down the list,
   // which is what a ranking regression looks like from outside.
   try { amuxTrack('palette_open', { kind: r.kind, rank: i, tier: r.tier || 0, match: r.match || (_cmdk.q.trim() ? '' : 'start'), measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
+  // In the Mac app, a worker or a tab already open in another tab or pane is
+  // brought forward instead (owner, 2026-10-29, MSG-100765: "if i do cmd + k
+  // and select something for which a tab is already open it goes to that
+  // tab"). The app answers within a moment; with no answer (an older app) or
+  // no such tab, it opens here as before.
+  const place = r.kind === 'worker' ? '#peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? '#view=' + _viewHashName(r.id) : '';
+  if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
+  _cmdkOpen(r);
+}
+const _cmdkFocusWaits = {};
+function _cmdkFocusElsewhere(hash, otherwise) {
+  const h = typeof _nativePaneBridge === 'function' && _nativePaneBridge();
+  if (!h) return false;
+  const token = Math.random().toString(36).slice(2, 10);
+  const done = found => {
+    if (!_cmdkFocusWaits[token]) return;
+    clearTimeout(_cmdkFocusWaits[token]); delete _cmdkFocusWaits[token]; delete _cmdkFocusWaits[token + ':cb'];
+    try { amuxTrack('palette_focus', { found: found ? 1 : 0, measured: true, n_considered: 1 }); } catch (e) {}
+    if (!found) otherwise();
+  };
+  _cmdkFocusWaits[token] = setTimeout(() => done(false), 700);
+  _cmdkFocusWaits[token + ':cb'] = done;
+  try { h.postMessage({ op: 'focus', hash, token }); } catch (e) { done(false); }
+  return true;
+}
+function _cmdkFocusAck(token, found) {
+  const cb = _cmdkFocusWaits[token + ':cb'];
+  delete _cmdkFocusWaits[token + ':cb'];
+  if (cb) cb(!!found);
+}
+function _cmdkOpen(r) {
   switch (r.kind) {
     case 'worker': openPeek(r.id); break;
     case 'view': switchView(r.id); break;

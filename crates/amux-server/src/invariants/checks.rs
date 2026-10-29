@@ -3154,6 +3154,22 @@ pub struct ArgvSecret {
     /// incident or a habit worth changing. AMUX-4946's original harm was
     /// measured at 3d22h precisely because the carrier outlived everything.
     pub age_s: Option<u64>,
+    /// The carrier's executable name and its parent pid (AMUX-6586). The
+    /// verdict kept only a pid, and the carriers are often seconds old, so
+    /// 8 credentials in one 5 s process (2026-10-29 13:40Z) could not be
+    /// traced to whatever launched it. Names only; never an argument.
+    pub exe: String,
+    pub ppid: String,
+}
+
+/// Is this argv value a shell expansion rather than a value? (AMUX-6586)
+///
+/// `ssh host 'PLANE_KEY=$(cat plane.key) cmd'` puts the text `$(cat` in the
+/// local argv; the remote shell expands it, so no secret is here. Split on
+/// whitespace, such a value starts with `$` or a backtick. It flagged 104 of
+/// the 171 failures on 2026-10-29 as two "credentials" of length 5 and 6.
+pub fn argv_value_is_expansion(value: &str) -> bool {
+    value.starts_with('$') || value.starts_with('`')
 }
 
 /// Does this argv key have the SHAPE of an environment variable? (AMUX-4964)
@@ -3212,12 +3228,12 @@ pub fn no_secrets_in_process_argv(
     pids.dedup();
     let who: Vec<String> = found
         .iter()
-        .map(|f| match f.age_s {
-            Some(a) => format!(
-                "pid {} {} (len {}, alive {}s)",
-                f.pid, f.key, f.value_len, a
-            ),
-            None => format!("pid {} {} (len {}, age unknown)", f.pid, f.key, f.value_len),
+        .map(|f| {
+            let what = if f.exe.is_empty() { String::new() } else { format!(", {} under pid {}", f.exe, f.ppid) };
+            match f.age_s {
+                Some(a) => format!("pid {} {} (len {}, alive {}s{what})", f.pid, f.key, f.value_len, a),
+                None => format!("pid {} {} (len {}, age unknown{what})", f.pid, f.key, f.value_len),
+            }
         })
         .collect();
     vec![InvariantResult::fail(
@@ -3239,7 +3255,8 @@ pub fn no_secrets_in_process_argv(
         "n_considered": n_considered,
         "measured": true,
         "keys": found.iter().map(|f| json!({
-            "pid": f.pid, "key": f.key, "value_len": f.value_len, "age_s": f.age_s}))
+            "pid": f.pid, "key": f.key, "value_len": f.value_len, "age_s": f.age_s,
+            "exe": f.exe, "ppid": f.ppid}))
             .collect::<Vec<_>>(),
         "max_age_s": found.iter().filter_map(|f| f.age_s).max(),
     }))]
@@ -9341,6 +9358,12 @@ pub struct UnrecordedScheduleOutcome {
 /// genuinely stopped within one and a half turns.
 const OVERDUE_CADENCE_NUM: i64 = 3;
 const OVERDUE_CADENCE_DEN: i64 = 2;
+/// The least slack any schedule gets past its owed fire (AMUX-6582). Half a
+/// cadence is 30 s for an every-1m schedule, below the scheduler's own
+/// dispatch jitter: on 2026-10-29 the every-1m wake-watch schedules ran with
+/// gaps of 60 to 128 s, every run ok, and were reported silent 44 times in 6 h.
+/// A cadence of 4 min or more already has at least this much.
+const OVERDUE_MIN_SLACK_S: i64 = 120;
 
 impl UnrecordedScheduleOutcome {
     /// Is this tick genuinely missing, as opposed to waiting for its next fire?
@@ -9580,8 +9603,9 @@ impl EnabledScheduleClock {
         match self.cadence_s {
             Some(c) if c > 0 => {
                 let owed = self.first_due_s.unwrap_or(c).max(0);
-                let slack = c.saturating_mul(OVERDUE_CADENCE_NUM - OVERDUE_CADENCE_DEN)
-                    / OVERDUE_CADENCE_DEN;
+                let slack = (c.saturating_mul(OVERDUE_CADENCE_NUM - OVERDUE_CADENCE_DEN)
+                    / OVERDUE_CADENCE_DEN)
+                    .max(OVERDUE_MIN_SLACK_S);
                 self.silent_s > owed.saturating_add(slack)
             }
             _ => false,
@@ -9795,6 +9819,16 @@ mod enabled_schedule_firing_tests {
         }
     }
     const UP: i64 = 86_400;
+
+    /// AMUX-6582: an every-1m schedule running with the scheduler's real gaps
+    /// (60-128 s) is firing; one silent for 4 min is not.
+    #[test]
+    fn a_minute_schedule_is_not_silent_inside_scheduler_jitter() {
+        assert!(!clock("W", Some(60), 128, false).is_past_deadline(), "a 128 s gap is jitter");
+        assert!(!clock("W", Some(60), 180, false).is_past_deadline(), "the floor: owed 60 s + 120 s");
+        assert!(clock("W", Some(60), 240, false).is_past_deadline(), "4 min silent on a 1 min cadence has stopped");
+        assert!(clock("F", Some(300), 451, false).is_past_deadline(), "5 min cadences keep their 3/2 bound");
+    }
 
     #[test]
     fn on_time_schedules_pass_with_counts() {
@@ -11298,6 +11332,8 @@ mod argv_secret_invariant_tests {
             key: "OPENAI_API_KEY".into(),
             value_len: 51,
             age_s: Some(340_800),
+            exe: "docker".into(),
+            ppid: "77".into(),
         };
         let r = no_secrets_in_process_argv(&[long], 900);
         let msg = format!("{:?}", r[0]);
@@ -11306,6 +11342,18 @@ mod argv_secret_invariant_tests {
             "age must be in the message: {msg}"
         );
         assert_eq!(r[0].evidence["max_age_s"], serde_json::json!(340_800));
+        assert!(msg.contains("docker under pid 77"), "the carrier is named: {msg}");
+    }
+
+    /// AMUX-6586: a shell expansion in argv is not a credential.
+    #[test]
+    fn a_shell_expansion_is_not_a_credential_value() {
+        for v in ["$(cat", "$PLANE_TOKEN", "${KEY}", "`cat"] {
+            assert!(argv_value_is_expansion(v), "{v}");
+        }
+        for v in ["sk-abc123", "x$y", "0123456789abcdef"] {
+            assert!(!argv_value_is_expansion(v), "{v}");
+        }
     }
 
     /// And an unknown age must say so rather than read as zero.
@@ -11316,6 +11364,8 @@ mod argv_secret_invariant_tests {
             key: "MIXPEEK_API_KEY".into(),
             value_len: 7,
             age_s: None,
+            exe: String::new(),
+            ppid: String::new(),
         };
         let r = no_secrets_in_process_argv(&[unknown], 900);
         let msg = format!("{:?}", r[0]);
@@ -11332,6 +11382,8 @@ mod argv_secret_invariant_tests {
             key: key.into(),
             value_len: len,
             age_s: None,
+            exe: String::new(),
+            ppid: String::new(),
         }
     }
 

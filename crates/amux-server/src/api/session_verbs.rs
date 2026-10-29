@@ -1367,8 +1367,13 @@ pub(crate) async fn run_cmd(
     }
 }
 
+/// Every tmux command here goes through the control connection when it can
+/// (`backend::tmux_ctl`), and inside a send is added to its profile.
 async fn tmux(args: &[&str]) -> Option<std::process::Output> {
-    run_cmd("tmux", args, OP_TIMEOUT).await
+    let t = std::time::Instant::now();
+    let (out, control) = crate::backend::tmux_ctl::run_traced(args, OP_TIMEOUT).await;
+    crate::api::send_profile::note_tmux(args.first().copied().unwrap_or(""), t.elapsed().as_micros() as u64, control);
+    out
 }
 
 /// Workers with a live tmux session (`amux-<name>`), by worker name. The
@@ -1529,6 +1534,7 @@ pub(crate) fn empty_composer_verdict(now: f64, grace_until: f64, redelivered_at:
 }
 
 async fn sleep_ms(ms: u64) {
+    crate::api::send_profile::note_sleep(ms);
     tokio::time::sleep(Duration::from_millis(ms)).await;
 }
 
@@ -13610,6 +13616,20 @@ async fn send_text_inner_bound(
     delivery: Option<&str>,
     queue_id: &mut Option<String>,
 ) -> (bool, String) {
+    // Profiled (owner, 2026-10-29): GET /api/debug/send-profile and the
+    // `send_profile` / `send_slow` log lines say where each send's time went.
+    crate::api::send_profile::profiled(name, text.chars().count(),
+        send_text_inner_bound_body(state, name, text, mode, delivery, queue_id)).await
+}
+
+async fn send_text_inner_bound_body(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    mode: SendMode,
+    delivery: Option<&str>,
+    queue_id: &mut Option<String>,
+) -> (bool, String) {
     // Serialise per lane. Taken before any pane state is read, because the
     // decisions below (is it generating? is a picker up?) are read-then-act on
     // the same composer this is about to clear.
@@ -13617,6 +13637,7 @@ async fn send_text_inner_bound(
     let waited = std::time::Instant::now();
     let _send_guard = lock.lock().await;
     let waited_ms = waited.elapsed().as_millis();
+    crate::api::send_profile::mark("lane_lock");
     if waited_ms > 250 {
         // Countable: a sweep can see how often two producers aim at one lane.
         tracing::info!(
@@ -14405,6 +14426,7 @@ async fn send_text_inner_bound(
             );
         }
     }
+    crate::api::send_profile::mark("prechecks");
     if from_steering {
         let draft_frame = tmux_capture(name, 15).await;
         if composer_state(&draft_frame).typed().is_some() {
@@ -14446,6 +14468,7 @@ async fn send_text_inner_bound(
     // 2026-09-24, MSG-68711 "i dont see it @/Users/.../x.png"): the cursor ends
     // on the mention, Claude Code offers the completion, and the Enter below
     // accepts it instead of submitting. The owner had to press Enter again.
+    crate::api::send_profile::mark("cleared");
     // One trailing space closes the picker; the submitted turn is trimmed.
     let staged = close_trailing_mention(&text);
     if staged.len() != text.len() {
@@ -14513,6 +14536,7 @@ async fn send_text_inner_bound(
         tracing::debug!(session = %name, paste_settle_ms = settle_ms, verdict = "multiline_paste_settle",
             "multi-line paste: waiting before Enter so the paste is folded first");
     }
+    crate::api::send_profile::mark("typed");
     sleep_ms(settle_ms).await;
     // Only reachable if picker-shaped text was TYPED, which `use_paste` now
     // prevents. Kept as a belt-and-braces closer rather than deleted: if a
@@ -14531,6 +14555,7 @@ async fn send_text_inner_bound(
         sleep_ms(60).await;
     }
     send_key(name, "Enter").await;
+    crate::api::send_profile::mark("entered");
     // ------------------------------------------------------------------
     // THE EVIDENCE GATE (AMUX-2629). Everything above proves only that bytes
     // reached the pty. "sent" is a claim about Claude Code's state, so it is
@@ -14559,6 +14584,7 @@ async fn send_text_inner_bound(
     // launch-videos at 21:30:36Z. So no retry and no idle watcher for them.
     let is_slash = is_slash_command(&text);
     let (first, retried) = verify_submitted(name, &text, sent_at, !generating && !is_slash).await;
+    crate::api::send_profile::mark("verified");
     if is_slash {
         // The verifier reads "stuck" whenever it never saw the composer come
         // back empty. A panel (/btw, /status) HIDES the composer, so that read
@@ -21943,7 +21969,7 @@ mod rate_limit_hold_tests {
         assert!(!owner_passes_rate_limit_hold(SendOrigin::Owner, true), "the steering drain waits for the reset");
         assert!(!owner_passes_rate_limit_hold(SendOrigin::Automation, false), "peers and schedules are held");
         let src = include_str!("session_verbs.rs");
-        let body = &src[src.find("async fn send_text_inner_bound(").unwrap()..];
+        let body = &src[src.find("async fn send_text_inner_bound_body(").unwrap()..];
         assert!(body.contains("if owner_passes_rate_limit_hold(origin, from_steering) {"), "the send path uses the rule");
     }
 
@@ -21953,7 +21979,7 @@ mod rate_limit_hold_tests {
     #[test]
     fn the_send_path_checks_the_hold_before_its_first_keystroke() {
         let src = include_str!("session_verbs.rs");
-        let body = &src[src.find("async fn send_text_inner_bound(").unwrap()..];
+        let body = &src[src.find("async fn send_text_inner_bound_body(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let hold = body.find("rate_limit_hold_for(name,").expect("send path must call the hold");
         let esc = body.find("send_key(name, \"Escape\").await;\n            esc_at").unwrap();

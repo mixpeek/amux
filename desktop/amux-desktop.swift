@@ -529,6 +529,15 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         }
         if message.name == "amuxPane" {
             let d = message.body as? [String: Any]
+            // ⌘K on a place already open in another tab or pane: that one
+            // comes forward instead of this page opening it again (owner,
+            // 2026-10-29, MSG-100765). The page waits for the answer.
+            if (d?["op"] as? String) == "focus", let hash = d?["hash"] as? String, let token = d?["token"] as? String {
+                let found = app?.focusOpenPage(hash: hash, asker: self) ?? false
+                let t = token.filter { $0.isLetter || $0.isNumber }
+                webView.evaluateJavaScript("typeof _cmdkFocusAck === 'function' && _cmdkFocusAck('\(t)', \(found))", completionHandler: nil)
+                return
+            }
             guard (d?["op"] as? String) == "split" else { return }
             // Only a page on this tab's own server; anything else splits the
             // page this tab is showing.
@@ -1740,6 +1749,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if w.isMiniaturized { w.deminiaturize(nil) }
         newTab(nextTo: c, hash: hash)
         dlog("verdict=notification_opened where=new_tab why=\(why) hash=\(hash)")
+    }
+
+    /// The place a page address names: "peek=<worker>" or "view=<tab>",
+    /// without the rest (which tab of a worker, scroll and so on).
+    static func placeKey(_ fragment: String) -> String {
+        let f = fragment.hasPrefix("#") ? String(fragment.dropFirst()) : fragment
+        return String(f.split(separator: "&").first ?? "")
+    }
+    /// Brings forward the tab or pane, other than `asker`, already showing the
+    /// place `hash` names, selecting it in its pane and its window in its tab
+    /// group. False when no page shows it.
+    func focusOpenPage(hash: String, asker: DashboardWindowController) -> Bool {
+        let want = AppDelegate.placeKey(hash)
+        guard want.hasPrefix("peek=") || want.hasPrefix("view=") else { return false }
+        guard let c = controllers.first(where: { $0 !== asker && AppDelegate.placeKey($0.webView.url?.fragment ?? "") == want }) else {
+            dlog("verdict=palette_focus_none place=\(want)")
+            return false
+        }
+        let root = c.rootHost
+        if let g = c.paneHost?.grid, let id = g.id(of: c) {
+            g.select(c, in: id)
+            g.focus(id)
+        }
+        if let w = root.window {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.tabGroup?.selectedWindow = w
+            w.makeKeyAndOrderFront(nil)
+        }
+        dlog("verdict=palette_focus_existing place=\(want) pane=\(c.paneHost != nil ? 1 : 0)")
+        return true
     }
 
     /// Open a dashboard hash in the key window, or a new one.

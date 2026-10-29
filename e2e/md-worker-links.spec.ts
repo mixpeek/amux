@@ -68,3 +68,28 @@ test('Edit and Raw show the tag as text, and Edit offers workers after @', async
   });
   await expect(page.locator('#file-body .md-worker-link')).toHaveCount(2);
 });
+
+// Owner, 2026-10-29 (MSG-100765): "this should autocomplete dropdown the
+// worker". Typed partway down the editor, the list opened under the whole
+// box, behind the status bar. It opens at the caret, on top, and Enter takes it.
+test('the worker list opens at the caret in the editor, on top, and Enter takes it', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => (window as any).setFileViewMode('edit'));
+  const ta = page.locator('#file-edit-ta');
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(8, 8); });
+  await page.keyboard.type(' contract, comments @md-t');
+  const list = page.locator('#file-edit-wrap .ac-list.open');
+  await expect(list).toBeVisible();
+  const r = await page.evaluate(() => {
+    const l = document.querySelector('#file-edit-wrap .ac-list.open') as HTMLElement;
+    const b = l.getBoundingClientRect(), t = document.getElementById('file-edit-ta')!.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.left + 10, b.top + 10);
+    return { onTop: !!hit && l.contains(hit), inside: b.top >= t.top && b.bottom <= t.bottom + 1, nearTop: b.top - t.top < 120 };
+  });
+  expect(r.onTop, 'nothing covers the list').toBe(true);
+  expect(r.inside, 'inside the editor').toBe(true);
+  expect(r.nearTop, 'by the caret (line 3), not at the bottom').toBe(true);
+  await page.screenshot({ path: test.info().outputPath('md-at-caret.png') });
+  await page.keyboard.press('Enter');
+  await expect(ta).toHaveValue(new RegExp('comments @' + W + ' '));
+});
