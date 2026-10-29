@@ -7096,14 +7096,23 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     };
     // A blocked card cannot be current Doing state. Normalize first so every
     // later predicate in this tick reads the same durable lifecycle truth.
+    // AF-1006: name the phase that holds the thread. board-drive logged
+    // 2122 runtime_job_blocking_poll on 2026-10-29 and nothing said which of
+    // these phases it was; the orchestrator's TickSections already answers
+    // that for its own tick (AMUX-4955) and warns only when the tick is slow.
+    let mut sections = crate::orchestrator::runtime::TickSections::new();
     report.normalized_blocked_doing = normalize_blocked_doing(state).await;
+    sections.mark("normalize_blocked_doing");
     // RR-0052: reclaim expired leases before dispatch, so a dead worker's WIP
     // slot is free for the pickup below in this same tick.
     report.lease_reaper = reclaim_expired_leases(state, fleet).await;
+    sections.mark("lease_reaper");
     // Complete root epics before dispatch so the Messages chip and the board
     // agree that a command is finished as soon as all of its leaves are.
     report.completed_epics = complete_finished_epics(state).await;
+    sections.mark("complete_epics");
     report.ephemeral_reaper = reap_ephemeral_workers(state, fleet).await;
+    sections.mark("ephemeral_reaper");
     // DRIVE TO VERIFIED, BEFORE DISPATCH. A card parked in `backlog` on a
     // `depends_on` dependency re-activates to `todo` the moment every dependency
     // reaches a terminal status, so a "do B after A" command completes instead
@@ -7111,13 +7120,16 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // dependency clearing does not care which lane is at a boundary), and FIRST
     // so a freshly promoted card is dispatchable in this same tick's lane loop.
     let (promoted, held_on_trigger) = promote_ready_backlog(state).await;
+    sections.mark("promote_ready_backlog");
     // The revisit arm runs in the same pre-lane-loop position as the deps arm,
     // so a card whose date arrived this tick is dispatchable in this tick.
     let (promoted_due, revisit_due_total) = promote_due_backlog(state).await;
+    sections.mark("promote_due_backlog");
     report.promoted = promoted;
     report.held_on_trigger = held_on_trigger;
     report.promoted_due = promoted_due;
     report.unblocked_blocked = unblock_resolved_blocked(state).await;
+    sections.mark("unblock_resolved");
     report.revisit_due_total = revisit_due_total;
     // HOST GUARD: the reconcilers above are cheap board writes and keep
     // running; the lane loop is what hands out work and wakes workers, so it
@@ -7132,6 +7144,7 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
             active_lanes = concurrent_active_lanes(&conn);
         }
     }
+    sections.mark("lanes_and_cap");
     for lane in lanes {
         if concurrent_cap_blocks(&lane, &active_lanes, max_concurrent) {
             let trace = LaneTrace::skip(
@@ -7153,9 +7166,11 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
         }
         report.lanes.push(trace);
     }
+    sections.mark("lane_loop");
     if let Ok(conn) = state.store.read() {
         crate::runtime_jobs::board_drain::warn_losing_lanes(&conn, now_f64() as i64);
     }
+    sections.mark("warn_losing_lanes");
     report.finished_at = now_f64();
     // THE FLEET NUMBER, IN THE LOGS, EVERY TICK (AMUX-3758). A lane going idle
     // on a full board produces a different local reason per lane — wip-cap,
@@ -7198,6 +7213,8 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
             );
         }
     }
+    sections.mark("queue_shape");
+    sections.report("board-drive");
     publish(&report);
     report
 }

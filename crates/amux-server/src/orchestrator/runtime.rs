@@ -177,14 +177,14 @@ fn agent_accepts_boundary_delivery(
 /// Reports only when the tick is actually slow. A per-tick line at this
 /// frequency would be its own noise, and the sections of a fast tick are not a
 /// question anyone is asking.
-struct TickSections {
+pub(crate) struct TickSections {
     marks: Vec<(&'static str, std::time::Duration)>,
     last: std::time::Instant,
     started: std::time::Instant,
 }
 
 impl TickSections {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let now = std::time::Instant::now();
         Self {
             marks: Vec::new(),
@@ -193,7 +193,7 @@ impl TickSections {
         }
     }
 
-    fn mark(&mut self, name: &'static str) {
+    pub(crate) fn mark(&mut self, name: &'static str) {
         let now = std::time::Instant::now();
         self.marks.push((name, now.duration_since(self.last)));
         self.last = now;
@@ -226,7 +226,7 @@ impl TickSections {
         (worst, breakdown.join(" "))
     }
 
-    fn report(mut self, job: &'static str) {
+    pub(crate) fn report(mut self, job: &'static str) {
         let total = self.started.elapsed();
         if total.as_millis() < Self::slow_ms() {
             return;
