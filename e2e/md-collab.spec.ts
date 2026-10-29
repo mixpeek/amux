@@ -116,3 +116,33 @@ test('two saves in the same second with the same length are told apart', async (
   await expect(page.locator('#file-conflict')).toBeVisible({ timeout: 10000 });
   expect(readFileSync(f, 'utf8')).toContain('LINE ONE');
 });
+
+// Land review F1/F3: typing while the merge reads the file must not drop the
+// merge and then overwrite the other change on the next save.
+test('typing while a merge reads the file loses neither side', async ({ page }) => {
+  const f = freshFile();
+  await open(page, f);
+  // The merge's read of the file, held for a moment (the open already read it).
+  await page.route(/\/api\/file\?path=/, async route => { await new Promise(r => setTimeout(r, 1500)); await route.continue(); });
+  writeFileSync(f, SRC.replace('line four', 'line four (theirs)'));
+  await typeAtLine(page, 2, 'MINE ');
+  // The save is refused and the merge starts reading; type more meanwhile.
+  await page.waitForTimeout(1300);
+  await typeAtLine(page, 3, 'MORE ');
+  await expect.poll(() => readFileSync(f, 'utf8'), { timeout: 15000 })
+    .toBe(SRC.replace('line one', 'MINE line one').replace('line two', 'MORE line two').replace('line four', 'line four (theirs)'));
+  await expect(page.locator('#file-edit-ta')).toHaveValue(/MINE line one\nMORE line two[\s\S]*line four \(theirs\)/);
+});
+
+test('after a conflict, Diff compares with the file as opened again', async ({ page }) => {
+  const f = freshFile();
+  await open(page, f);
+  writeFileSync(f, SRC.replace('line one', 'THEIRS line one'));
+  await typeAtLine(page, 2, 'MINE ');
+  const bar = page.locator('#file-conflict');
+  await expect(bar).toBeVisible({ timeout: 10000 });
+  await bar.getByRole('button', { name: 'Show their version' }).click();
+  await expect(page.locator('.mdx-diff-head')).toContainText('their version');
+  await bar.getByRole('button', { name: 'Keep mine' }).click();
+  await expect(page.locator('.mdx-diff-head')).not.toContainText('their version');
+});

@@ -32471,14 +32471,18 @@ async function _fileReconcile(mine) {
     return;
   }
   const ta = document.getElementById('file-edit-ta');
-  const m = _merge3(_fileData.content || '', mine, now.content);
+  // Merged with what the editor holds NOW: typing while the file was read
+  // must not drop the merge and then overwrite their change on the next save
+  // (land review F1, F3).
+  const cur = ta ? ta.value : mine;
+  const m = _merge3(_fileData.content || '', cur, now.content);
   try { window._clientDebug?.('file-collab', { verdict: m.clean ? 'file_merged' : 'file_conflict', measured: true, n_considered: 1 }); } catch (_) {}
   // The file now is the base from here on.
   _fileData.content = now.content;
   _fileData.etag = now.etag || null;
   if (m.clean) {
-    if (ta && ta.value === mine) {
-      const at = ta.selectionStart, line = mine.slice(0, at).split('\n').length - 1, col = at - mine.lastIndexOf('\n', at - 1) - 1;
+    if (ta && m.text !== cur) {
+      const at = ta.selectionStart, line = cur.slice(0, at).split('\n').length - 1, col = at - cur.lastIndexOf('\n', at - 1) - 1;
       ta.value = m.text;
       const L = m.text.split('\n'); let off = 0;
       for (let k = 0; k < Math.min(line, L.length - 1); k++) off += L[k].length + 1;
@@ -32524,6 +32528,11 @@ function _fileConflictResolve(how) {
   }
   delete _fileData.conflict;
   _fileConflictBar(false);
+  // Diff goes back to the file as opened, not "their version" (land review F2).
+  if (typeof _mdx !== 'undefined' && _mdx.against && _mdx.against.label === 'their version') {
+    _mdx.against = null;
+    if (_mdx.tab === 'diff') _mdxRenderDiff();
+  }
   try { window._clientDebug?.('file-collab', { verdict: 'file_conflict_' + how, measured: true, n_considered: 1 }); } catch (_) {}
   if (how === 'theirs') {
     ta.value = c.theirs;
