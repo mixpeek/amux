@@ -1,4 +1,5 @@
 import {test, expect} from './fixtures';
+import {cleanup} from './teardown';
 import {mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -47,6 +48,6 @@ test('a link to this amux opens here, not in a new tab', async ({page, context})
     expect(await popup, 'an outside link opens a new tab').toBeTruthy();
     expect(page.url()).toBe(before);
   } finally {
-    await rm(dir, {recursive: true, force: true});
+    await cleanup('remove the temp folder', () => rm(dir, {recursive: true, force: true}));
   }
 });
