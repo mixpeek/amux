@@ -693,6 +693,14 @@ pub(crate) mod test_env {
         /// The fixture home, so Drop can ask its `server.env` which keys this
         /// guard's window could have exported.
         home: std::path::PathBuf,
+        /// HOME as it stood when the guard was taken (AMUX-6455). Three tests
+        /// repoint HOME at their tempdir inside the guard (claude_home and `~`
+        /// expansion read it), and the scoped restore below covers only the
+        /// fixture's server.env keys, so HOME stayed on a deleted tempdir and
+        /// the next test to read it failed: public_links'
+        /// a_shared_folder_serves_only_what_is_inside_it_and_visible, every
+        /// rust-nightly-deep run since 10-14.
+        prev_home: Option<String>,
         _g: MutexGuard<'static, ()>,
     }
 
@@ -741,8 +749,10 @@ pub(crate) mod test_env {
         // this job.
         let snapshot: Vec<(String, String)> = std::env::vars().collect();
         let prev = std::env::var("AMUX_HOME").ok();
+        let prev_home = std::env::var("HOME").ok();
         std::env::set_var("AMUX_HOME", path);
         HomeGuard {
+            prev_home,
             prev,
             prev_leaky,
             snapshot,
@@ -789,6 +799,12 @@ pub(crate) mod test_env {
             match &self.prev {
                 Some(v) => std::env::set_var("AMUX_HOME", v),
                 None => std::env::remove_var("AMUX_HOME"),
+            }
+            if std::env::var("HOME").ok() != self.prev_home {
+                match &self.prev_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
             }
             for (k, was) in &self.prev_leaky {
                 match was {
@@ -880,6 +896,23 @@ pub(crate) mod test_env {
     /// `AMUX_URGENT_PUSH`. On CI there is no server.env, the loop body never
     /// runs, and the floor assertions still hold — which is honest, because
     /// with no server.env there is nothing to leak and CI never saw the flake.
+    /// AMUX-6455: a test that repoints HOME inside the guard must not leave it
+    /// on its tempdir, or the next HOME reader gets a deleted directory.
+    #[test]
+    fn the_guard_puts_home_back() {
+        let before = {
+            let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::var("HOME").ok()
+        };
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let _home = set_home(dir.path());
+            std::env::set_var("HOME", dir.path());
+        }
+        let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(std::env::var("HOME").ok(), before, "HOME is restored when the guard drops");
+    }
+
     #[test]
     fn a_temp_home_clears_every_key_the_machine_could_leak() {
         let keys = leaky_keys();
