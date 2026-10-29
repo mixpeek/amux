@@ -176,6 +176,43 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response
     }
 }
 
+/// One projection shared by every caller for `PROJECTION_TTL` (AF-1000).
+///
+/// Every open dashboard fetches this every 15 s for its expired-worker list,
+/// and one call reads every worker's env file and git state plus a 29k-row
+/// board projection on a pooled read connection (0.8 to 3 s). With no sharing,
+/// calls from several dashboards overlapped: eight ran at once on 2026-10-29
+/// 17:07:05Z, the read pool saturated (read_pool_slow_acquire), and twenty
+/// runtime jobs that wait on it stopped ticking together for about 70 s. The
+/// lock is held while computing, so concurrent callers wait on a blocking
+/// thread instead of each taking a pool connection, and reuse the answer.
+const PROJECTION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+type Projected = Option<(String, std::time::Instant, Value)>;
+static PROJECTION: std::sync::Mutex<Projected> = std::sync::Mutex::new(None);
+
+fn shared_projection(
+    slot: &std::sync::Mutex<Projected>,
+    key: &str,
+    compute: impl FnOnce() -> Result<Value, Box<Response>>,
+) -> Response {
+    let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, at, v)) = held.as_ref() {
+        if k == key && at.elapsed() < PROJECTION_TTL {
+            let mut v = v.clone();
+            v["served_from_cache_ms"] = json!(at.elapsed().as_millis() as u64);
+            return Json(v).into_response();
+        }
+    }
+    match compute() {
+        Ok(v) => {
+            *held = Some((key.to_string(), std::time::Instant::now(), v.clone()));
+            Json(v).into_response()
+        }
+        Err(resp) => *resp,
+    }
+}
+
 fn list_blocking(state: &AppState, headers: &HeaderMap) -> Response {
     let allowed = org::local_member_scope(headers)
         .filter(|s| !s.is_global())
@@ -184,11 +221,26 @@ fn list_blocking(state: &AppState, headers: &HeaderMap) -> Response {
                 .into_iter()
                 .collect::<HashSet<_>>()
         });
-    let workers = match inventory(&crate::config::amux_home(), allowed.as_ref()) {
+    // Keyed by the store as well as the member scope, so two stores in one
+    // process (tests, a reopened store) never read each other's answer.
+    let scope = match &allowed {
+        None => "*".to_string(),
+        Some(names) => {
+            let mut v: Vec<&String> = names.iter().collect();
+            v.sort();
+            v.into_iter().cloned().collect::<Vec<_>>().join(",")
+        }
+    };
+    let key = format!("{:p}|{scope}", std::sync::Arc::as_ptr(&state.store));
+    shared_projection(&PROJECTION, &key, || compute_list(state, allowed.as_ref()))
+}
+
+fn compute_list(state: &AppState, allowed: Option<&HashSet<String>>) -> Result<Value, Box<Response>> {
+    let workers = match inventory(&crate::config::amux_home(), allowed) {
         Ok(workers) => workers,
         Err(e) => {
             tracing::warn!(verdict="orchestration_inventory_failed",error=%e,"could not measure fan-out inventory");
-            return (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"measured":false,"n_considered":0,"error":"Could not read fan-out inventory"}))).into_response();
+            return Err(Box::new((StatusCode::SERVICE_UNAVAILABLE,Json(json!({"measured":false,"n_considered":0,"error":"Could not read fan-out inventory"}))).into_response()));
         }
     };
     let tracked_workers: HashSet<_> = workers
@@ -199,7 +251,7 @@ fn list_blocking(state: &AppState, headers: &HeaderMap) -> Response {
     let result = state
         .store
         .read()
-        .and_then(|conn| Ok(project(&conn, &tracked_workers, allowed.as_ref())?));
+        .and_then(|conn| Ok(project(&conn, &tracked_workers, allowed)?));
     match result {
         Ok(mut v) => {
             v["ephemeral_workers"] = json!(workers
@@ -208,11 +260,11 @@ fn list_blocking(state: &AppState, headers: &HeaderMap) -> Response {
                 .filter_map(|w| w["name"].as_str())
                 .collect::<Vec<_>>());
             v["workers"] = json!(workers);
-            Json(v).into_response()
+            Ok(v)
         }
         Err(e) => {
             tracing::warn!(verdict="orchestration_projection_failed",error=%e,"orchestration board projection failed");
-            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured":false,"n_considered":0,"error":"Could not read orchestration boards"}))).into_response()
+            Err(Box::new((StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured":false,"n_considered":0,"error":"Could not read orchestration boards"}))).into_response()))
         }
     }
 }
@@ -220,6 +272,51 @@ fn list_blocking(state: &AppState, headers: &HeaderMap) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AF-1000: overlapping callers share one projection instead of each
+    /// taking a read connection for the 0.8-3 s it costs.
+    #[test]
+    fn concurrent_callers_share_one_projection_and_reuse_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let slot: &'static std::sync::Mutex<Projected> = Box::leak(Box::new(std::sync::Mutex::new(None)));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let runs = runs.clone();
+                std::thread::spawn(move || {
+                    shared_projection(slot, "*", || {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        Ok(json!({"measured": true}))
+                    })
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().status(), StatusCode::OK);
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "eight overlapping callers, one projection");
+        let again = shared_projection(slot, "*", || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({}))
+        });
+        assert_eq!(again.status(), StatusCode::OK);
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "reused inside the TTL");
+        let scoped = shared_projection(slot, "member-a", || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({}))
+        });
+        assert_eq!(scoped.status(), StatusCode::OK);
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "another member scope gets its own projection");
+        // A failure is returned and not cached.
+        let _ = shared_projection(slot, "member-b", || Err(Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response())));
+        let _ = shared_projection(slot, "member-b", || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({}))
+        });
+        assert_eq!(runs.load(Ordering::SeqCst), 3, "a failed projection is not reused");
+    }
     #[test]
     fn projection_includes_full_child_board_and_does_not_return_history_prose() {
         let c = crate::db::migrate::test_memdb();
