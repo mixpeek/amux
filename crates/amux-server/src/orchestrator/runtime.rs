@@ -875,9 +875,11 @@ impl Runtime {
     /// - the owner is `Stopped`: the planner still counts it as available
     ///   (`worker_available` accepts Stopped), so a command queues and waits
     ///   for a process that is not running. The bounded recovery is the
-    ///   bootstrap `todo_owner_autostart` sweep; this line is the trace that
-    ///   says the wait was real, and names the admission gate that can refuse
-    ///   the restart.
+    ///   bootstrap `todo_owner_autostart` sweep, which restarts a `Stopped`
+    ///   worker its owner did NOT stop; an owner stop (a `session.stopped` from
+    ///   `api-stop` with no start after it) is held on purpose, so the only way
+    ///   forward there is a start (`amux start`). This line is the trace that
+    ///   says the wait was real, and which of the two it is.
     ///
     /// A card owned by a name with no durable row is a FLEET lane, not this
     /// module's business (board_drive owns those), so it is deliberately not
@@ -926,9 +928,10 @@ impl Runtime {
             let (reason, detail) = match by_id.get(owner) {
                 Some(w) if matches!(w.state, WorkerState::Stopped) => (
                     "owner_stopped",
-                    "the owning worker is stopped: its command queues and waits for the \
-                     bootstrap todo_owner_autostart sweep, which the host-admission gate can \
-                     refuse",
+                    "the owning worker is stopped. If its owner stopped it on purpose \
+                     (session.stopped from api-stop, no start after it) the bootstrap sweep \
+                     leaves that decision alone: start it (amux start) to resume board work. \
+                     Otherwise the sweep restarts it, unless the host-admission gate refuses",
                 ),
                 Some(_) => continue,
                 None => match stopped_or_gone.get(&owner.to_string()) {
