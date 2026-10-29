@@ -137,6 +137,135 @@ fn newest(current: Option<f64>, incoming: Option<f64>) -> Option<f64> {
     }
 }
 
+/// Section 1a's per-route totals over the last ROUTE_WINDOW_DAYS, kept between
+/// passes. Hog RCA 20261029-134000: recomputing them every pass grouped the
+/// whole 14-day request log (6.8M rows, 29,951 method+path groups, 8.4 CPU
+/// seconds in the sqlite3 shell) and took 16.6 s of a 24 s pass, every 30 s,
+/// while the server sat at 836% CPU. Now a full build happens every
+/// ROUTE_REBUILD_SECS and each pass in between folds in only the rows added
+/// since (by `id`, which only grows), so a new 5xx still shows within one pass.
+/// Rows that age out of the window, or that log retention deletes, leave at the
+/// next rebuild.
+#[derive(Default)]
+struct RouteAcc {
+    ok: i64,
+    n: i64,
+    redirect: i64,
+    client_err: i64,
+    server_err: i64,
+    unavailable: i64,
+    /// Newest `ts` in the group, so a finding can say how old it is (AMUX-4753).
+    last_seen: Option<f64>,
+}
+struct RouteWindow {
+    built_at: f64,
+    last_id: i64,
+    groups: std::collections::HashMap<(String, String), RouteAcc>,
+}
+const ROUTE_WINDOW_DAYS: f64 = 14.0;
+const ROUTE_REBUILD_SECS: f64 = 600.0;
+static ROUTE_WINDOW: std::sync::Mutex<Option<RouteWindow>> = std::sync::Mutex::new(None);
+
+/// Fold `(method, raw path)` aggregates for the rows `where_sql` selects into
+/// `w`, by route shape. TWO-STAGE AGGREGATION, deliberately: the grouping key
+/// is `normalize_target_verb`, a Rust function, so SQL collapses to (method,
+/// raw path) and Rust folds those into shapes. 503 is summed apart from the
+/// rest of the 5xx band (AMUX-4545) and 3xx counts as the route answering
+/// (AMUX-4753).
+fn route_fold(
+    conn: &rusqlite::Connection,
+    where_sql: &str,
+    param: &dyn rusqlite::ToSql,
+    w: &mut RouteWindow,
+) -> rusqlite::Result<()> {
+    let sql = format!(
+        "SELECT method, path, \
+                SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), \
+                COUNT(*), \
+                SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status = 503 THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status >= 300 AND status < 400 THEN 1 ELSE 0 END), \
+                MAX(ts), MAX(id) \
+         FROM _amux_request_log WHERE {where_sql} GROUP BY method, path"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([param], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            [r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?],
+            r.get::<_, Option<f64>>(8)?,
+            r.get::<_, i64>(9)?,
+        ))
+    })?;
+    for row in rows {
+        let (method, path, [ok, n, c4, c5, c503, c3], last, max_id) = row?;
+        let shape = crate::api::request_log::normalize_target_verb(&path);
+        let e = w.groups.entry((method, shape)).or_default();
+        e.ok += ok;
+        e.n += n;
+        e.redirect += c3;
+        e.client_err += c4;
+        e.server_err += c5;
+        e.unavailable += c503;
+        e.last_seen = newest(e.last_seen, last);
+        w.last_id = w.last_id.max(max_id);
+    }
+    Ok(())
+}
+
+/// Section 1a's route rows, from `cache` (rebuilt when it is missing or older
+/// than ROUTE_REBUILD_SECS, otherwise brought up to date with the rows added
+/// since its last pass). A failed build keeps the previous window.
+fn route_window(
+    cache: &mut Option<RouteWindow>,
+    conn: &rusqlite::Connection,
+    now: f64,
+) -> Vec<checks::RouteOutcomeRow> {
+    let rebuild = cache.as_ref().is_none_or(|w| now - w.built_at >= ROUTE_REBUILD_SECS);
+    if rebuild {
+        let started = std::time::Instant::now();
+        let mut w = RouteWindow { built_at: now, last_id: 0, groups: Default::default() };
+        match route_fold(conn, "ts >= ?1", &(now - ROUTE_WINDOW_DAYS * 86400.0), &mut w) {
+            Ok(()) => {
+                let ms = started.elapsed().as_millis() as u64;
+                if ms > 5000 {
+                    tracing::warn!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuild_slow", "section 1a rebuilt its 14-day route window slowly");
+                } else {
+                    tracing::info!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuilt", "section 1a rebuilt its 14-day route window");
+                }
+                *cache = Some(w);
+            }
+            Err(e) => tracing::warn!(error = %e, measured = false, n_considered = 0,
+                verdict = "route_window_rebuild_failed", "section 1a could not read the request log; keeping the previous window"),
+        }
+    } else if let Some(w) = cache.as_mut() {
+        let since_id = w.last_id;
+        if let Err(e) = route_fold(conn, "id > ?1", &since_id, w) {
+            tracing::warn!(error = %e, measured = false, n_considered = 0,
+                verdict = "route_window_update_failed", "section 1a could not read new request-log rows");
+        }
+    }
+    let Some(w) = cache.as_ref() else { return Vec::new() };
+    w.groups
+        .iter()
+        .map(|((method, shape), a)| checks::RouteOutcomeRow {
+            method: method.clone(),
+            shape: shape.clone(),
+            n: a.n,
+            ok: a.ok,
+            redirect: a.redirect,
+            client_err: a.client_err,
+            server_err: a.server_err,
+            unavailable: a.unavailable,
+            last_seen: a.last_seen,
+        })
+        .collect()
+}
+
 pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     let mut out = Vec::new();
     let mut tm = SectionTimer::new();
@@ -170,88 +299,10 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             "store unreadable",
         )),
         Ok(conn) => {
-            let since = crate::config::now_f64() - 14.0 * 86400.0;
-            // NAMED FIELDS, not a 5-tuple. clippy::type_complexity refuses the
-            // tuple, and it is right for a second reason: five bare i64s
-            // accumulated positionally (`e.0 += ok; e.1 += n; ...`) is a
-            // transposition waiting to happen, and a swapped pair here would
-            // surface as a wrong verdict rather than as a compile error.
-            #[derive(Default)]
-            struct Acc {
-                ok: i64,
-                n: i64,
-                redirect: i64,
-                client_err: i64,
-                server_err: i64,
-                unavailable: i64,
-                /// Newest `ts` in the group, so a finding can say how old it is
-                /// (AMUX-4753). `None` until a row contributes one.
-                last_seen: Option<f64>,
-            }
-            let mut acc: std::collections::HashMap<(String, String), Acc> =
-                std::collections::HashMap::new();
-            // 503 is summed APART from the rest of the 5xx band, because it is
-            // the only status a handler picks to say "something I depend on is
-            // not there" and `status >= 500` cannot be un-mixed afterwards
-            // (AMUX-4545).
-            // 3xx is summed too (AMUX-4753): a redirect is the route ANSWERING,
-            // and `ok` alone cannot say so. MAX(ts) rides along so a finding can
-            // publish how old it is — without it a burst early in this 14-day
-            // window is indistinguishable from a route failing right now.
-            let rows = conn
-                .prepare(
-                    "SELECT method, path, \
-                            SUM(CASE WHEN status >= 200 AND status < 300 THEN 1 ELSE 0 END), \
-                            COUNT(*), \
-                            SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END), \
-                            SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END), \
-                            SUM(CASE WHEN status = 503 THEN 1 ELSE 0 END), \
-                            SUM(CASE WHEN status >= 300 AND status < 400 THEN 1 ELSE 0 END), \
-                            MAX(ts) \
-                     FROM _amux_request_log WHERE ts >= ?1 GROUP BY method, path",
-                )
-                .and_then(|mut stmt| {
-                    stmt.query_map([since], |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, i64>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                            r.get::<_, i64>(6)?,
-                            r.get::<_, i64>(7)?,
-                            r.get::<_, Option<f64>>(8)?,
-                        ))
-                    })
-                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-                })
-                .unwrap_or_default();
-            for (method, path, ok, n, c4, c5, c503, c3, last) in rows {
-                let shape = crate::api::request_log::normalize_target_verb(&path);
-                let e = acc.entry((method, shape)).or_default();
-                e.ok += ok;
-                e.n += n;
-                e.redirect += c3;
-                e.client_err += c4;
-                e.server_err += c5;
-                e.unavailable += c503;
-                e.last_seen = newest(e.last_seen, last);
-            }
-            let groups: Vec<checks::RouteOutcomeRow> = acc
-                .into_iter()
-                .map(|((method, shape), a)| checks::RouteOutcomeRow {
-                    method,
-                    shape,
-                    n: a.n,
-                    ok: a.ok,
-                    redirect: a.redirect,
-                    client_err: a.client_err,
-                    server_err: a.server_err,
-                    unavailable: a.unavailable,
-                    last_seen: a.last_seen,
-                })
-                .collect();
+            let groups = {
+                let mut cache = ROUTE_WINDOW.lock().unwrap_or_else(|p| p.into_inner());
+                route_window(&mut cache, &conn, crate::config::now_f64())
+            };
             out.extend(checks::mounted_routes_answer(&groups, &mounted));
         }
     }
@@ -682,6 +733,36 @@ mod f64_roundtrip_wiring_tests {
     /// in `section_timing_tests` stays balanced because the section comment
     /// goes with it, and `checks`'s own unit tests keep passing on a function
     /// nobody calls. An unregistered invariant is silence that reads as health.
+    #[test]
+    fn the_route_window_folds_new_rows_between_rebuilds_instead_of_rescanning() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let add = |ts: f64, status: i64| {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', '/api/board', ?2)",
+                rusqlite::params![ts, status],
+            )
+            .unwrap();
+        };
+        let now = 2_000_000_000.0;
+        add(now - 100.0, 200);
+        add(now - 90.0, 500);
+        let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let mut cache = None;
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now)), (2, 1));
+        // A new failure shows on the next pass.
+        add(now + 10.0, 503);
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 30.0)), (3, 2));
+        // Between rebuilds the old rows are not read again: deleting one changes
+        // nothing until the window is rebuilt.
+        conn.execute("DELETE FROM _amux_request_log WHERE ts = ?1", [now - 100.0]).unwrap();
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 60.0)), (3, 2), "a pass between rebuilds rescanned the window");
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0)), (2, 2), "the rebuild drops what left the log");
+    }
+
     #[test]
     fn the_f64_roundtrip_check_is_actually_called_by_evaluate_all() {
         let src = include_str!("monitor.rs");
