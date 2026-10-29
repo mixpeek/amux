@@ -172,6 +172,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/git-branches", "existing branches for the create modal's chip row (api/worker_create.rs)"),
     ("/api/worktree-profiles", "sparse worktree profiles from the repo's scripts/worktree.sh, for the create modal (api/worker_create.rs, AMUX-5341)"),
     ("/api/suggest-branch", "branch-name suggestions; deterministic with no goal text, helper CLI with one (api/worker_create.rs)"),
+    ("/api/outcome/plan", "name, directory and groups for a described outcome, from its text and attachments (api/outcome_plan.rs)"),
     ("/api/tmux-sessions", "tmux sessions amux does not already own, for Connect (api/worker_create.rs)"),
     ("/api/iterm2", "open iTerm2 panes, for Connect-a-pane (api/worker_create.rs)"),
     ("/api/saved-messages", "peek composer's reusable snippets, per worker (api/saved_messages.rs, AMUX-2871)"),
