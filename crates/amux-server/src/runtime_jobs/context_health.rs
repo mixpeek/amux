@@ -124,7 +124,16 @@ mod tests {
     /// set nobody can name.
     #[test]
     fn tick_counts_partition_the_census() {
+        // A fixed fleet (AF-1007): against the live one the census and the tick
+        // each walk 200+ lanes at different moments and need not agree.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for lane in ["census-a", "census-b"] {
+            std::fs::write(home.path().join(format!("sessions/{lane}.env")), "CC_DIR=/tmp\n").unwrap();
+        }
+        let _home = crate::api::settings::test_env::set_home(home.path());
         let census = generation_census();
+        assert_eq!(census.len(), 2, "the fixture fleet, not this machine's: {census:?}");
         let (measured, unmeasurable, over) = tick();
         assert_eq!(
             (measured + unmeasurable) as usize,

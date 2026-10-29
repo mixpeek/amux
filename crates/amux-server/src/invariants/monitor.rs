@@ -1088,9 +1088,18 @@ fn schedule_kind_check(state: &AppState) -> Vec<InvariantResult> {
 /// while its other gaps are one, and taking a narrow gap there would call a
 /// perfectly healthy Saturday overdue.
 fn cadence_seconds(expr: &str) -> Option<i64> {
+    cadence_seconds_at(expr, chrono::Local::now())
+}
+
+/// `cadence_seconds` from a given moment. The widest of the next eight gaps
+/// is wall-clock, so a daily schedule measured across the end of daylight
+/// saving reads 25 h (90000 s): true, harmless for an overdue bound, and the
+/// reason the tests pin a clock (AF-1007: they failed every year in the week
+/// before the first Sunday of November).
+fn cadence_seconds_at(expr: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
     use crate::runtime_jobs::scheduler::ScheduleExpr;
     let parsed = ScheduleExpr::parse(expr).ok()?;
-    let mut at = chrono::Local::now();
+    let mut at = now;
     let mut widest = 0i64;
     for _ in 0..8 {
         let Some(next) = parsed.next_run_after(at) else {
@@ -4928,7 +4937,13 @@ mod section_timing_tests {
 /// during normal recovery, too large and a dead schedule never surfaces.
 #[cfg(test)]
 mod cadence_seconds_tests {
-    use super::cadence_seconds;
+    /// A mid-July noon: eight runs of any shape here stay clear of a
+    /// daylight-saving change in every zone that has one.
+    fn cadence_seconds(expr: &str) -> Option<i64> {
+        use chrono::TimeZone;
+        let july = chrono::Local.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).single().expect("unambiguous");
+        super::cadence_seconds_at(expr, july)
+    }
 
     /// The shapes the live fleet actually runs, with the periods measured off
     /// `schedule_runs` on 2026-09-19: every-15m recovered in 14-15m, every-30m

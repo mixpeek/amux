@@ -294,6 +294,10 @@ mod tests {
 
     #[test]
     fn max_concurrent_defaults_to_zero() {
+        // A temp home clears every key the machine's server.env could have
+        // leaked into this process (AF-1007: this Mac sets it to 60).
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
         assert_eq!(max_concurrent_active(), 0);
     }
 

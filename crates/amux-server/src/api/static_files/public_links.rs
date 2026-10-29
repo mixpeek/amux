@@ -773,6 +773,9 @@ mod tests {
     #[test]
     fn workers_name_a_file_by_its_path_and_link_it_only_when_asked() {
         let dir = tempfile::tempdir().unwrap();
+        // AMUX_PUBLIC_URL from this machine's server.env would win over the
+        // fixture's learned URL (AF-1007); the guard clears it.
+        let _home = crate::api::settings::test_env::set_home(dir.path());
         std::fs::write(dir.path().join(LEARNED_URL_FILE), r#"{"url":"https://desk.example:8824"}"#).unwrap();
         let g = worker_links_guide(dir.path());
         assert!(g.contains("Name each file by its absolute path"), "{g}");

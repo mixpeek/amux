@@ -13374,6 +13374,10 @@ mod tests {
     /// to reproduce the finding before reading a word of prose.
     #[tokio::test]
     async fn the_card_carries_the_evidence() {
+        // Without a temp home the owner check reads this machine's real
+        // amux.env, whose board is off, and reroutes the card (AF-1007).
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
         let (st, _d) = state();
         let now = unix_now();
         for i in 0..6 {
