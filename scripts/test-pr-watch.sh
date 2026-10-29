@@ -25,6 +25,8 @@ import http.server, sys, os
 d = sys.argv[1]
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
+        if os.path.exists(os.path.join(d, "slow")):
+            import time; time.sleep(3)
         code = int(open(os.path.join(d, "code")).read()) if os.path.exists(os.path.join(d, "code")) else 200
         open(os.path.join(d, "hits"), "a").write(self.path + "\n")
         self.send_response(code); self.end_headers(); self.wfile.write(b"{}")
@@ -86,6 +88,14 @@ rc=0; bash scripts/pr-watch.sh >/dev/null 2>&1 || rc=$?
 check "  and exits non-zero, so the schedule records a failure" "$rc" "1"
 rm "$tmp/code"
 check "  and is retried next tick" "$(run)" "verdict=woke"
+
+# A server slower than the timeout: a refused wake with curl's exit code, never a silent exit.
+pr 391 slow1 handler:c1 pedro:c2
+touch "$tmp/slow"
+rc=0; out=$(PR_WATCH_CURL_TIMEOUT=1 bash scripts/pr-watch.sh 2>&1) || rc=$?
+check "a server timeout is a refused wake that names curl's exit" "$(echo "$out" | grep -o 'curl exit 28.*verdict=wake_refused')" "curl exit 28) verdict=wake_refused"
+check "  and exits non-zero" "$rc" "1"
+rm "$tmp/slow"
 
 touch "$tmp/fail"
 check "a failed read is unmeasured, never quiet" "$(run)" "verdict=unmeasured"

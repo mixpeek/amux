@@ -19,6 +19,7 @@
 #   PR_WATCH_STATE    default ~/.amux/state/pr-watch.fingerprint
 #   PR_WATCH_GH       gh binary, for tests
 #   PR_WATCH_URL      amux base URL, default `amux url`
+#   PR_WATCH_CURL_TIMEOUT  seconds to wait for the server to start the handler (60)
 #   PR_WATCH_SELF     the login the handler comments as (default esteininger).
 #                     Its own comments are left out of the fingerprint, so a
 #                     review the handler posts does not wake it again; a
@@ -73,8 +74,13 @@ if [ "$fp" = "$prev" ]; then
 fi
 
 url=${PR_WATCH_URL:-$(amux url)}
-code=$(curl -sk --max-time 30 -o /dev/null -w '%{http_code}' -X POST \
-  -H "X-Amux-Session: ${AMUX_SESSION:-pr-watch}" "$url/api/schedules/$handler/run")
+# A slow server times curl out (exit 28 on 2026-10-29 08:33, which under set -e
+# ended the run before any verdict line). Any curl failure is a refused wake,
+# said with curl's own exit code.
+curl_rc=0
+code=$(curl -sk --max-time "${PR_WATCH_CURL_TIMEOUT:-60}" -o /dev/null -w '%{http_code}' -X POST \
+  -H "X-Amux-Session: ${AMUX_SESSION:-pr-watch}" "$url/api/schedules/$handler/run") || curl_rc=$?
+[ "$curl_rc" -ne 0 ] && code="000, curl exit $curl_rc"
 case "$code" in
   2??)
     mkdir -p "$(dirname "$state")"
