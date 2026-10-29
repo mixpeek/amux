@@ -60,7 +60,7 @@
 
     <p><strong>Bolt.new</strong> (from StackBlitz) is a browser-based AI coding environment. You describe what you want; it generates a full-stack app in a WebContainer sandbox, with a live preview, Figma integration, and instant deployment. No local environment needed. Code stays in the cloud.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously against your local codebase, coordinated via a shared kanban board, with a web dashboard and a native iOS app. Single Rust binary, MIT licensed, zero external runtime dependencies beyond tmux.</p>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously against your local codebase, coordinated via a shared kanban board, with a web dashboard and a native iOS app. Single Rust binary, MIT + Commons Clause, zero external runtime dependencies beyond tmux.</p>
 
     <h2 id="oct-2026">What's new in amux (October 2026)</h2>
     <p>Since the August 2026 version of this comparison, amux shipped several major features relevant to teams that use both Bolt.new and amux in their workflow:</p>
@@ -94,7 +94,7 @@
           <tr><td>Local file &amp; database access</td><td>Full — runs native commands, reads any file</td><td>No — sandboxed WebContainer only</td></tr>
           <tr><td>Data privacy</td><td>Local only, code never leaves your machine</td><td>Code runs in cloud sandbox</td></tr>
           <tr><td>Cost</td><td>Free (API tokens only, no platform fee)</td><td>Free tier + $20/month Pro + Team plans</td></tr>
-          <tr><td>Open source</td><td>Yes, MIT licensed (GitHub)</td><td>Bolt.diy is open source; Bolt.new is not</td></tr>
+          <tr><td>Open source</td><td>Yes, MIT + Commons Clause (GitHub)</td><td>Bolt.diy is open source; Bolt.new is not</td></tr>
           <tr><td>Mobile management</td><td>Native iOS app + PWA</td><td>Browser only, mobile-friendly UI</td></tr>
           <tr><td>Built-in kanban board</td><td>Yes — atomic task claiming, agents self-assign</td><td>No</td></tr>
           <tr><td>AI runtime support</td><td>Claude Code, Codex CLI, Gemini CLI</td><td>Claude Sonnet (primary), others via Bolt.diy</td></tr>
@@ -163,7 +163,7 @@
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is an open-source control plane for AI coding agents — self-healing, phone-first, MIT licensed, single compiled binary. 525+ stars on GitHub.</p>
+      <p>amux is an open-source control plane for AI coding agents — self-healing, phone-first, MIT + Commons Clause, single compiled binary. 525+ stars on GitHub.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux start myproject

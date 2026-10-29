@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs Amazon Q Developer — Self-Hosted Fleet vs AWS-Locked Agent</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux is the open-source, self-hosted alternative to Amazon Q Developer. Run parallel fleets of Claude Code, Codex, and Gemini CLI agents on your own infrastructure — no AWS lock-in, MIT licensed, mobile dashboard included.">
+  <meta name="description" content="amux is the open-source, self-hosted alternative to Amazon Q Developer. Run parallel fleets of Claude Code, Codex, and Gemini CLI agents on your own infrastructure — no AWS lock-in, MIT + Commons Clause, mobile dashboard included.">
   <meta name="keywords" content="amux vs amazon q developer, amazon q developer alternative, amazon q developer self-hosted, amazon q developer open source alternative, claude code vs amazon q">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-amazon-q-developer/">
   <meta property="og:title" content="amux vs Amazon Q Developer — Self-Hosted Fleet vs AWS-Locked Agent">
-  <meta property="og:description" content="amux is the open-source, self-hosted alternative to Amazon Q Developer. Run parallel fleets of Claude Code, Codex, and Gemini CLI agents on your own infrastructure — no AWS lock-in, MIT licensed.">
+  <meta property="og:description" content="amux is the open-source, self-hosted alternative to Amazon Q Developer. Run parallel fleets of Claude Code, Codex, and Gemini CLI agents on your own infrastructure — no AWS lock-in, MIT + Commons Clause.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-amazon-q-developer/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -69,7 +69,7 @@
         "name": "What is the best self-hosted alternative to Amazon Q Developer?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is the most complete self-hosted alternative for teams who want fleet-scale AI coding agent capabilities without cloud vendor dependency. It runs Claude Code, Codex CLI, and Gemini CLI on your own machine or server under an MIT license. The full feature set — kanban board, self-healing watchdog, mobile dashboard (iOS app), shared fleet view, and scheduled overnight runs — runs entirely on your infrastructure."
+          "text": "amux is the most complete self-hosted alternative for teams who want fleet-scale AI coding agent capabilities without cloud vendor dependency. It runs Claude Code, Codex CLI, and Gemini CLI on your own machine or server under the MIT + Commons Clause license. The full feature set — kanban board, self-healing watchdog, mobile dashboard (iOS app), shared fleet view, and scheduled overnight runs — runs entirely on your infrastructure."
         }
       },
       {
@@ -85,7 +85,7 @@
         "name": "Which is better for enterprise teams, amux or Amazon Q Developer?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Depends on the enterprise constraint. Amazon Q Developer offers AWS-native compliance (SOC2, ISO27001) and IAM-based access control out of the box — low procurement friction for AWS shops. amux offers data residency guarantees (code never leaves your infrastructure), model choice, MIT licensing with no per-seat fees, and parallel fleet execution that Amazon Q does not match. For orgs that cannot send code to third-party clouds, amux is the clear choice. For orgs already in AWS IAM governance looking for AI IDE integration, Amazon Q is lower setup cost."
+          "text": "Depends on the enterprise constraint. Amazon Q Developer offers AWS-native compliance (SOC2, ISO27001) and IAM-based access control out of the box — low procurement friction for AWS shops. amux offers data residency guarantees (code never leaves your infrastructure), model choice, MIT + Commons Clause licensing with no per-seat fees, and parallel fleet execution that Amazon Q does not match. For orgs that cannot send code to third-party clouds, amux is the clear choice. For orgs already in AWS IAM governance looking for AI IDE integration, Amazon Q is lower setup cost."
         }
       }
     ]
@@ -124,7 +124,7 @@
 
     <p><strong>Amazon Q Developer</strong> is AWS's AI coding product. It provides IDE-level inline suggestions, an agentic mode for multi-step development tasks, a CLI tool, and deep integration with AWS services like CloudFormation, Lambda, and CodeCatalyst. It runs entirely on AWS infrastructure and is available via a free tier or Pro subscription ($19/month). It is proprietary and AWS-specific.</p>
 
-    <p><strong>amux</strong> is an open-source control plane that runs parallel fleets of Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google) agents on your own machine or server. It is model-agnostic, cloud-provider neutral, and ships with a kanban board, self-healing watchdog, mobile dashboard (iOS app), and shared fleet view. MIT licensed, no subscription.</p>
+    <p><strong>amux</strong> is an open-source control plane that runs parallel fleets of Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google) agents on your own machine or server. It is model-agnostic, cloud-provider neutral, and ships with a kanban board, self-healing watchdog, mobile dashboard (iOS app), and shared fleet view. MIT + Commons Clause, no subscription.</p>
 
     <p>The core tradeoff: Amazon Q is optimized for AWS-ecosystem integration with low setup friction. amux is optimized for parallel fleet execution, full data control, and model flexibility — without requiring AWS.</p>
 
@@ -140,7 +140,7 @@
         <tr><td>AWS integration</td><td>Model-agnostic, any cloud or no cloud</td><td>Native CloudFormation, Lambda, IAM</td></tr>
         <tr><td>Data residency</td><td>Code stays on your machine</td><td>Processed through AWS</td></tr>
         <tr><td>Self-hosting</td><td>Yes — runs on any machine or VM</td><td>No — AWS-hosted only</td></tr>
-        <tr><td>Open source</td><td>MIT license</td><td>Proprietary</td></tr>
+        <tr><td>Open source</td><td>MIT + Commons Clause</td><td>Proprietary</td></tr>
         <tr><td>Board / task tracking</td><td>Built-in kanban board, fleet-wide</td><td>No task board</td></tr>
         <tr><td>Mobile monitoring</td><td>iOS app + PWA, push notifications</td><td>No native mobile app</td></tr>
         <tr><td>Overnight / unattended runs</td><td>Self-healing watchdog, auto-restart</td><td>Not designed for unattended fleet runs</td></tr>
@@ -184,7 +184,7 @@
     <p>Yes. amux runs on any local codebase regardless of where it deploys. Edit CloudFormation, write Lambda handlers, update IaC — all locally, through your normal git workflow. No AWS dependency for the orchestration layer.</p>
 
     <h3>What is the best self-hosted alternative to Amazon Q Developer?</h3>
-    <p>amux is the most complete self-hosted option. MIT licensed, runs on your own machine or server, supports Claude Code, Codex, and Gemini CLI, and includes a full fleet management layer — kanban board, self-healing watchdog, iOS app, scheduled overnight runs. Zero AWS dependency. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub →</a></p>
+    <p>amux is the most complete self-hosted option. MIT + Commons Clause, runs on your own machine or server, supports Claude Code, Codex, and Gemini CLI, and includes a full fleet management layer — kanban board, self-healing watchdog, iOS app, scheduled overnight runs. Zero AWS dependency. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub →</a></p>
 
     <h3>How does Amazon Q Developer differ from Claude Code?</h3>
     <p>Amazon Q is AWS's proprietary product running on AWS infrastructure using Amazon's models. Claude Code is Anthropic's open terminal-first coding agent using Claude. amux is the fleet orchestration layer for Claude Code (and Codex, Gemini) — parallel sessions, shared board, self-healing, mobile dashboard. Claude Code and Amazon Q compete at the single-agent level; amux operates above that.</p>
@@ -194,7 +194,7 @@
 
     <div class="cta-box">
       <h3>Self-hosted fleet orchestration — no AWS required</h3>
-      <p>amux runs Claude Code, Codex, and Gemini CLI agents in parallel on your own infrastructure. MIT licensed, free to self-host. Kanban board, mobile dashboard, self-healing, and scheduled overnight runs — all on your machine.</p>
+      <p>amux runs Claude Code, Codex, and Gemini CLI agents in parallel on your own infrastructure. MIT + Commons Clause, free to self-host. Kanban board, mobile dashboard, self-healing, and scheduled overnight runs — all on your machine.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

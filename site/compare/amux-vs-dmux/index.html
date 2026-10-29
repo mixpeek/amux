@@ -204,7 +204,7 @@
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.6rem;">License</td>
-          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT + Commons Clause</td>
           <td style="padding:0.6rem;color:var(--green);">MIT</td>
         </tr>
         <tr>
@@ -410,7 +410,7 @@ amux serve
     <p>amux is primarily designed for Claude Code. You can register sessions running other CLIs, but the self-healing watchdog and token tracking are Claude-specific. dmux has first-class multi-CLI support out of the box.</p>
 
     <h3>Is dmux open source?</h3>
-    <p>Yes, both are MIT-licensed. amux is a single Rust binary. dmux is a Node/TypeScript CLI.</p>
+    <p>Yes, dmux is MIT licensed. amux is MIT + Commons Clause: free to use, modify and self-host, but you cannot sell amux itself. amux is a single Rust binary. dmux is a Node/TypeScript CLI.</p>
 
     <h3>Which is more reliable for overnight runs?</h3>
     <p>amux, by a wide margin. The self-healing watchdog handles crashes, context overflows, and stuck sessions automatically. dmux has no equivalent &mdash; if an agent dies overnight, it stays dead until you restart it manually.</p>
