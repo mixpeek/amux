@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Splits inside tabs, four levels of tabs (owner, 2026-10-29: "i want to have
+"""Splits inside tabs, six levels of tabs (owner, 2026-10-29: "i want to have
 more nested tab capabilities, so i have top level 2nd level i want 3rd and 4th
 so i can create panes within panes etc.").
 
@@ -8,13 +8,14 @@ so i can create panes within panes etc.").
 A second copy of the app with its own config opens a window split into two
 panes (Board | Calendar). Then, as the pane header's "Split this tab" does:
   - Calendar's tab becomes a split of its own (level 3), then a pane inside
-    that is split again (level 4); a fifth level is refused and logged;
+    that is split again, down to level 6; a seventh level is refused and
+    logged; each split runs along its pane's longer side;
   - the window's own first pane (the host's page) is split too;
   - the window and the parent strip are named by the panes inside;
   - it saves into a workspace with every level, and comes back after a relaunch;
   - closing a split tab closes the pages inside it.
 """
-import json, os, signal, subprocess, sys, tempfile, time
+import json, os, re, signal, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "Amux.app")
@@ -93,7 +94,7 @@ def win():
 
 
 json.dump({"connections": [{"name": "localhost", "url": url}], "lastUrl": url, "cleanExit": True, "launch": "last",
-           "windows": [{"url": url + "/#view=board", "frame": "{{60, 60}, {1400, 900}}",
+           "windows": [{"url": url + "/#view=board", "frame": "{{40, 40}, {2440, 1300}}",
                         "grid": {"tree": "r0.500(0,1)", "panes": [{"url": url + "/#view=calendar", "title": "Calendar"}]}}]}, open(CFG, "w"))
 try:
     start()
@@ -106,7 +107,7 @@ try:
     w = win()
     n1 = (w.get("pane_nested") or [None, None])[1]
     check("a pane's tab splits into panes of its own (level 3)",
-          bool(n1) and n1["grid"] == "r0.500(0,1)" and n1["pane_tabs"] == [["Calendar"], ["Calendar"]] and n1["depth"] == 1, json.dumps(n1))
+          bool(n1) and re.match(r"[rc]0\.50\d\(0,1\)$", n1["grid"]) and n1["pane_tabs"] == [["Calendar"], ["Calendar"]] and n1["depth"] == 1, json.dumps(n1))
     check("each of its panes is drawn", bool(n1) and all(n1["pane_shown"]), json.dumps(n1))
     check("the window's own panes are still two", w["grid"] == "r0.500(0,1)", w["grid"])
     check("the parent strip names the split tab by its panes", w["pane_tabs"][1] == ["Calendar | Calendar"], json.dumps(w["pane_tabs"]))
@@ -119,19 +120,39 @@ try:
     n1 = w["pane_nested"][1]
     n11 = (n1.get("nested") or [None, None])[1]
     check("a pane inside a split tab splits again (level 4)",
-          bool(n11) and n11["grid"] == "r0.500(0,1)" and n11["depth"] == 2 and all(n11["pane_shown"]), json.dumps(n11))
-    check("level 4 offers no deeper split", bool(n11) and n11["can_nest"] == [False, False], json.dumps(n11))
+          bool(n11) and re.match(r"[rc]0\.50\d\(0,1\)$", n11["grid"]) and n11["depth"] == 2 and all(n11["pane_shown"]), json.dumps(n11))
+    # Levels 5 and 6.
+    send("amux://test/pane-nest?at=1.1.1", 4)
+    send("amux://test/pane-nest?at=1.1.1.1", 4)
+    settle()
+    w = win()
+    def at(w, path):
+        n = {"nested": w["pane_nested"]}
+        for i in path:
+            n = (n.get("nested") or [])[i] if n else None
+            if n is None:
+                return None
+        return n
+    n5, n6 = at(w, [1, 1, 1]), at(w, [1, 1, 1, 1])
+    check("level 5 and level 6 split too", bool(n5) and bool(n6) and n5["depth"] == 3 and n6["depth"] == 4 and all(n6["pane_shown"]),
+          json.dumps(w["pane_nested"])[:500])
+    check("each split runs along its pane's longer side",
+          bool(n1) and bool(n11) and bool(n5) and len({n1["grid"][0], n11["grid"][0], n5["grid"][0]}) == 2, f'{n1 and n1["grid"]} {n11 and n11["grid"]} {n5 and n5["grid"]}')
+    check("level 6 offers no deeper split", bool(n6) and n6["can_nest"] == [False, False], json.dumps(n6))
     before = log().count("verdict=pane_nest_refused")
-    send("amux://test/pane-nest?at=1.1.0", 2)
-    check("a fifth level is refused and logged", log().count("verdict=pane_nest_refused") == before + 1 and win()["pane_nested"][1]["nested"][1]["nested"] == [None, None],
+    send("amux://test/pane-nest?at=1.1.1.1.0", 2)
+    check("a seventh level is refused and logged", log().count("verdict=pane_nest_refused") == before + 1 and (at(win(), [1, 1, 1, 1]) or {}).get("nested") == [None, None],
           log()[-400:])
+    if os.environ.get("NEST_SHOT"):
+        wid = win()["number"]
+        sh("/usr/sbin/screencapture", "-x", "-o", "-l", str(wid), os.environ["NEST_SHOT"])
 
     # The window's own first pane (its host's page) splits too.
     send("amux://test/pane-nest?at=0", 4)
     settle()
     w = win()
     n0 = w["pane_nested"][0]
-    check("the window's own first pane splits too", bool(n0) and n0["grid"].startswith("r0.50") and n0["pane_tabs"] == [["Board"], ["Board"]],
+    check("the window's own first pane splits too", bool(n0) and re.match(r"[rc]0\.50\d\(0,1\)$", n0["grid"]) and n0["pane_tabs"] == [["Board"], ["Board"]],
           json.dumps(w.get("pane_nested"))[:400])
     n1 = (w.get("pane_nested") or [None, None])[1] or {}
     check("and nothing else moved", (n1.get("nested") or [None, None])[1] is not None and w["grid"] == "r0.500(0,1)", json.dumps(w)[:400])
@@ -146,7 +167,7 @@ try:
             subs += [t.get("split") for t in p_.get("tabs") or []]
         return max([d] + [depth_of(s, d + 1) for s in subs if s])
     g0 = next((x["grid"] for x in ws.get("windows", []) if x.get("grid")), {})
-    check("the workspace saves every level", depth_of(g0) == 3, json.dumps(g0)[:600])
+    check("the workspace saves every level", depth_of(g0) == 5, json.dumps(g0)[:600])
     shape = lambda w: (w["grid"], w["pane_tabs"], json.dumps(w["pane_nested"], sort_keys=True))
     want = shape(win())
     stop()
@@ -160,7 +181,7 @@ try:
     send("amux://test/pane-tab-close?i=1&t=0", 3)
     w = win()
     after = len(state()["pages"])
-    check("closing a split tab closes its pages", (w is None or len(w["pane_tabs"]) == 1) and after == pages - 3, f"pages {pages} -> {after}, {json.dumps(w and w.get('pane_tabs'))}")
+    check("closing a split tab closes its pages", (w is None or len(w["pane_tabs"]) == 1) and after == pages - 5, f"pages {pages} -> {after}, {json.dumps(w and w.get('pane_tabs'))}")
     shot = os.path.join(TMP, "nested.png")
 finally:
     if p and p.poll() is None:

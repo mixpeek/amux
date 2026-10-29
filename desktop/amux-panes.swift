@@ -29,12 +29,13 @@ import WebKit
 // SPLITS INSIDE TABS (owner, 2026-10-29: "i have top level 2nd level i want
 // 3rd and 4th so i can create panes within panes"). A pane's tab can be split
 // too ("Split this tab", the pane header's button): that page hosts a grid of
-// its own, drawn in its pane, whose panes have their own tabs. Tabs nest four
-// deep: the window's tabs, a split's pane tabs, and two levels of splits
-// inside those (`maxSplitDepth`). Each grid keeps the rules above (up to
+// its own, drawn in its pane, whose panes have their own tabs. Tabs nest six
+// deep (owner, 2026-10-29: "show me a screenshot of 6 layers nested"): the
+// window's tabs, a split's pane tabs, and four levels of splits inside those
+// (`maxSplitDepth`). Each grid keeps the rules above (up to
 // `maxPanes` panes, one focused); the innermost focused pane is the one the
 // menus, ⌘T and the Globe key act on.
-let maxSplitDepth = 2   // the deepest host of a split inside a tab (a window is 0)
+let maxSplitDepth = 4   // the deepest host of a split inside a tab (a window is 0): six levels of tabs
 
 final class PaneGrid {
     var tree: PaneTree
@@ -765,7 +766,10 @@ extension AppDelegate {
         let n = DashboardWindowController(app: self, frame: up.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
         if let u = c.webView.url { n.load(u) } else { n.showConnectPage() }
-        let ok = dockPane(n, into: c, at: nil, edge: .right, zone: "split_tab")
+        // Along the pane's longer side, so splits inside splits stay readable.
+        let size = g.views[id]?.bounds.size ?? .zero
+        let edge: PaneEdge = size.width >= size.height ? .right : .bottom
+        let ok = dockPane(n, into: c, at: nil, edge: edge, zone: "split_tab")
         dlog("verdict=\(ok ? "pane_tab_split" : "pane_tab_split_refused") depth=\(c.depth + 1) panes=\(c.grid?.tree.leaves.count ?? 1)")
         if !ok { n.window?.close() }
         saveWindowsSoon()
