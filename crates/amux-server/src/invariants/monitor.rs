@@ -3103,7 +3103,7 @@ async fn served_commit_check() -> Vec<InvariantResult> {
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
     let output = tokio::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,etime=,command="])
+        .args(["-axww", "-o", "pid=,ppid=,etime=,command="])
         .output()
         .await;
     match output {
@@ -3122,7 +3122,16 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                 // two were previously the same verdict.
                 let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
                 let rest = rest.trim_start();
+                let (ppid, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let rest = rest.trim_start();
                 let (etime, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                // The executable's NAME only (AMUX-6586), so a seconds-old
+                // carrier can be traced to whatever launched it.
+                let exe = rest
+                    .split_whitespace()
+                    .next()
+                    .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+                    .unwrap_or_default();
                 let age_s = crate::runtime_jobs::mac_health::parse_etime(etime);
                 for token in rest.split_whitespace() {
                     let Some((key, value)) = token.split_once('=') else {
@@ -3132,6 +3141,7 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                     // Identifier shape alone matched `jsonwebtoken`, an npm
                     // package whose name uppercases to contain TOKEN.
                     if checks::argv_key_is_env_shaped(key)
+                        && !checks::argv_value_is_expansion(value)
                         && !crate::backend::tmux::env_pair_is_argv_safe(key, value)
                     {
                         found.push(checks::ArgvSecret {
@@ -3140,6 +3150,8 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                             // LENGTH, never the value.
                             value_len: value.len(),
                             age_s,
+                            exe: exe.clone(),
+                            ppid: ppid.to_string(),
                         });
                     }
                 }
