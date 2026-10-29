@@ -6684,6 +6684,10 @@ ${BOLD}Coordination:${RESET}
   amux watch add file --path P [--regex R] | add ci --repo O/R --run ID
                                  Wake YOUR lane once when a file lands or a CI run concludes
   amux watch ls | rm <ID>        Your watches, measured or not; remove one
+  amux wake <when> --stdin       Wake YOUR lane once later ('20m', 'in 2 hours'): ScheduleWakeup
+  amux wake --every 5m --stdin   Recurring prompt (/loop); --when '<check>' fires when it exits 0
+  amux wake --list | --cancel <ID>
+                                 Your schedules; remove one. amux wake help has the Claude table
   amux social post youtube <file> --caption-stdin [--title T] [--privacy P]
                                  Publish a video; prints the post id. Results land at 24h, 72h, 7d
   amux social track|ls|stats     Measure a post made elsewhere, list posts, read one post live
@@ -9482,6 +9486,180 @@ cmd_ci() {
 # or a CI run concludes (docs/wake-watch.md). Runs scripts/wake-watch.py from
 # origin/main of the amux checkout (committed bytes, not a peer's draft), and
 # falls back to the working tree with a WARN when origin has no copy yet.
+# amux wake: the amux scheduler as Claude Code's ScheduleWakeup and /loop.
+# One verb over /api/schedules, always kind tmux (a prompt to this lane),
+# always attributed with X-Amux-Session. The prompt is read from --stdin or
+# --file (or one quoted argument) and never evaluated by a shell.
+_wake_help() {
+  cat <<EOF
+${BOLD}amux wake${RESET}: wake YOUR lane later with a prompt (the amux scheduler)
+
+  amux wake <when> --stdin             Once, at <when>: '20m', '+90s', '1h30m', 'in 2 hours',
+                                       or 'YYYY-MM-DDTHH:MM'. Rounded UP to the minute.
+  amux wake --every <expr> --stdin     Recurring: 'every 5m' or '5m', 'daily at 09:00', cron.
+          [--max-runs N] [--until T]   Bound it. Each fire is a full model turn.
+  amux wake --when '<shell check>' --stdin
+          [--check-every 2m] [--until T] [--keep]
+                                       Run the check every --check-every (default 2m); deliver
+                                       the prompt when it exits 0, then stop (--keep: every
+                                       time it passes). --until defaults to 24h from now so a
+                                       condition that never comes true stops polling.
+  amux wake --list                     Your enabled schedules: id, kind, next run, cadence
+  amux wake --cancel <ID>              Delete one
+
+  --title T sets the title (default: the start of the prompt). --file PATH reads the
+  prompt from a file. A busy lane gets the prompt at its next turn boundary.
+  A failing check wakes nobody and costs nothing; Run now in the dashboard skips it.
+
+  Claude Code tool          amux
+  ScheduleWakeup(N, p)      amux wake Ns --stdin
+  /loop 5m p                amux wake --every 5m --stdin
+  self-paced loop           end each turn with: amux wake <next delay> --stdin
+  Monitor until-loop        amux wake --when '<check>' --stdin
+  file or CI run done       amux watch add file|ci ...
+EOF
+}
+
+cmd_wake() {
+  local AMUX_API="${AMUX_API:-$(cmd_url)}"
+  local me="${AMUX_SESSION:-}"
+  local every="" cond="" check_every="2m" until="" max_runs="" keep=0 title="" prompt="" have_prompt=0 list=0 cancel=""
+  local -a pos=()
+  [[ $# -eq 0 ]] && { _wake_help; return 0; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      help|-h|--help) _wake_help; return 0 ;;
+      --list|-l|list|ls) list=1; shift ;;
+      --cancel|cancel|rm) [[ -n "${2:-}" ]] || die "usage: amux wake --cancel <SCHED-ID>"; cancel="$2"; shift 2 ;;
+      --every) [[ -n "${2:-}" ]] || die "amux wake: --every needs an expression"; every="$2"; shift 2 ;;
+      --when) [[ -n "${2:-}" ]] || die "amux wake: --when needs a shell check"; cond="$2"; shift 2 ;;
+      --check-every) [[ -n "${2:-}" ]] || die "amux wake: --check-every needs an interval"; check_every="$2"; shift 2 ;;
+      --until) [[ -n "${2:-}" ]] || die "amux wake: --until needs a time"; until="$2"; shift 2 ;;
+      --max-runs) [[ "${2:-}" =~ ^[0-9]+$ ]] || die "amux wake: --max-runs needs a number"; max_runs="$2"; shift 2 ;;
+      --keep) keep=1; shift ;;
+      --title) [[ -n "${2:-}" ]] || die "amux wake: --title needs text"; title="$2"; shift 2 ;;
+      --stdin|-) prompt="$(cat)"; have_prompt=1; shift ;;
+      --file) [[ -r "${2:-}" ]] || die "amux wake: cannot read ${2:-<missing path>}"; prompt="$(cat -- "$2")"; have_prompt=1; shift 2 ;;
+      -*) die "amux wake: unknown flag $1 (amux wake help)" ;;
+      *) pos+=("$1"); shift ;;
+    esac
+  done
+
+  if [[ "$list" == 1 ]]; then
+    [[ -n "$me" ]] || die "amux wake --list: AMUX_SESSION is not set"
+    local out code
+    out="$(mktemp "${TMPDIR:-/tmp}/amux-wake.XXXXXX")" || die "amux wake: mktemp failed"
+    code=$(_curl -sk -m 20 -o "$out" -w '%{http_code}' -G --data-urlencode "session=$me" "$AMUX_API/api/schedules" 2>/dev/null || echo 000)
+    code="${code:0:3}"
+    if [[ "$code" != 2* ]]; then rm -f "$out"; die "amux wake --list: server answered HTTP $code"; fi
+    python3 -c '
+import json, sys
+rows = [r for r in json.load(open(sys.argv[1])) if r.get("enabled") and not r.get("deleted")]
+if not rows:
+    print("no enabled schedules for " + sys.argv[2])
+for r in rows:
+    cadence = r.get("schedule_expr") or ("once" if r.get("sched_type") == "once" else r.get("sched_type") or "")
+    when = ("  when: " + r["when"]) if r.get("when") else ""
+    print("%s  %-5s  next %s  %s  %s%s" % (r["id"], r.get("kind") or "tmux", r.get("next_run") or "-", cadence, r.get("title") or "", when))
+' "$out" "$me"
+    local rc=$?; rm -f "$out"; return $rc
+  fi
+
+  if [[ -n "$cancel" ]]; then
+    local out code
+    out="$(mktemp "${TMPDIR:-/tmp}/amux-wake.XXXXXX")" || die "amux wake: mktemp failed"
+    code=$(_curl -sk -m 20 -o "$out" -w '%{http_code}' -X DELETE -H "X-Amux-Session: $me" "$AMUX_API/api/schedules/$cancel" 2>/dev/null || echo 000)
+    code="${code:0:3}"
+    if [[ "$code" != 2* ]]; then
+      local why; why=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("error",""))
+except Exception: pass' "$out" 2>/dev/null)
+      rm -f "$out"; die "amux wake --cancel $cancel: HTTP $code${why:+: $why}"
+    fi
+    rm -f "$out"; echo "cancelled $cancel"; return 0
+  fi
+
+  [[ -n "$me" ]] || die "amux wake: AMUX_SESSION is not set, so there is no lane to wake"
+  [[ -n "$every" && -n "$cond" ]] && die "amux wake: --every and --when are exclusive (--when uses --check-every)"
+  local when=""
+  if [[ -z "$every" && -z "$cond" ]]; then
+    [[ ${#pos[@]} -gt 0 ]] || die "usage: amux wake <when> --stdin   (amux wake help)"
+    when="${pos[0]}"; pos=("${pos[@]:1}")
+    # `amux wake in 20m` arrives as two words.
+    if [[ "$when" == "in" && ${#pos[@]} -gt 0 ]]; then when="in ${pos[0]}"; pos=("${pos[@]:1}"); fi
+    [[ -n "$max_runs" ]] && die "amux wake: --max-runs applies to --every"
+  fi
+  if [[ "$have_prompt" == 0 ]]; then
+    [[ ${#pos[@]} -eq 1 ]] || die "amux wake: give the prompt with --stdin or --file (or as ONE quoted argument)"
+    prompt="${pos[0]}"
+  elif [[ ${#pos[@]} -gt 0 ]]; then
+    die "amux wake: unexpected argument(s) beside --stdin/--file: ${pos[*]}"
+  fi
+  [[ -n "${prompt//[[:space:]]/}" ]] || die "amux wake: the prompt is empty"
+  if [[ -n "$cond" && -z "$until" ]]; then until="24h"; fi
+
+  local body out code
+  body=$(W_SESSION="$me" W_PROMPT="$prompt" W_TITLE="$title" W_WHEN="$when" W_EVERY="$every" W_COND="$cond" \
+    W_CHECK_EVERY="$check_every" W_UNTIL="$until" W_MAX="$max_runs" W_KEEP="$keep" python3 -c '
+import json, os, re
+e = os.environ
+prompt = e["W_PROMPT"]
+title = e["W_TITLE"] or ("wake: " + " ".join(prompt.split())[:60])
+d = {"title": title, "session": e["W_SESSION"], "command": prompt, "kind": "tmux"}
+def expr(x):
+    x = x.strip()
+    return "every " + x if re.fullmatch(r"\d+\s*[mhd]", x) else x
+if e["W_COND"]:
+    d["schedule_expr"] = expr(e["W_CHECK_EVERY"])
+    d["when"] = e["W_COND"]
+    d["when_once"] = e["W_KEEP"] != "1"
+elif e["W_EVERY"]:
+    d["schedule_expr"] = expr(e["W_EVERY"])
+else:
+    d["once"] = e["W_WHEN"]
+if e["W_UNTIL"]:
+    d["until"] = e["W_UNTIL"]
+if e["W_MAX"]:
+    d["max_runs"] = int(e["W_MAX"])
+print(json.dumps(d))') || die "amux wake: could not build the request"
+  out="$(mktemp "${TMPDIR:-/tmp}/amux-wake.XXXXXX")" || die "amux wake: mktemp failed"
+  code=$(printf '%s' "$body" | _curl -sk -m 20 -o "$out" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Session: $me" --data-binary @- "$AMUX_API/api/schedules" 2>/dev/null || echo 000)
+  code="${code:0:3}"
+  python3 -c '
+import json, sys
+path, code = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(path))
+except Exception:
+    d = {}
+if not code.startswith("2"):
+    msg = d.get("error") or ("the server did not answer" if code == "000" else "no error text in the reply")
+    extra = d.get("detail") or ""
+    acc = d.get("accepted")
+    sys.stderr.write("amux wake: refused (HTTP %s): %s%s\n" % (code, msg, (" (" + extra + ")") if extra and extra != msg else ""))
+    if isinstance(acc, dict) and "once" in acc:
+        sys.stderr.write("  once accepts: " + acc["once"] + "\n")
+    sys.exit(1)
+if not d.get("id"):
+    sys.stderr.write("amux wake: HTTP %s but no schedule id in the reply\n" % code)
+    sys.exit(1)
+nxt = d.get("next_run") or "?"
+if d.get("when"):
+    print("%s checks `%s` on %s, first at %s, until %s; %s" % (d["id"], d["when"], d.get("schedule_expr"), nxt, d.get("until") or "-",
+          "fires once when it exits 0" if d.get("when_once", True) else "fires every time it exits 0"))
+elif d.get("schedule_expr"):
+    b = []
+    if d.get("max_runs"): b.append("max %s runs" % d["max_runs"])
+    if d.get("until"): b.append("until %s" % d["until"])
+    print("%s %s, next %s%s" % (d["id"], d["schedule_expr"], nxt, (" (" + ", ".join(b) + ")") if b else ""))
+else:
+    print("%s fires once at %s" % (d["id"], nxt))
+print("  cancel: amux wake --cancel %s" % d["id"])
+' "$out" "$code"
+  local rc=$?; rm -f "$out"; return $rc
+}
+
 cmd_watch() {
   local repo="${AMUX_REPO_DIR:-$HOME/Dev/amux}" tmp rc
   case "${1:-}" in ''|-h|--help|help) set -- --help ;; esac
@@ -11393,6 +11571,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     explain)          shift; cmd_explain "$@" ;;
     ci)               shift; cmd_ci "$@" ;;
     watch)            shift; cmd_watch "$@" ;;
+    wake)             shift; cmd_wake "$@" ;;
     sync-checkout)    shift; cmd_sync_checkout "$@" ;;
     publish)          shift; cmd_publish "$@" ;;
     contribute)       shift; cmd_contribute "$@" ;;

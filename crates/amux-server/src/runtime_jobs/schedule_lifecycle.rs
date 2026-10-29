@@ -42,7 +42,7 @@
 //! `schedule_disable_notified`, `schedule_disable_notice_skipped`,
 //! `schedule_run_interrupted`, `schedule_run_credential_expired`.
 
-use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime, Timelike};
 use rusqlite::Connection;
 
 use super::scheduler::{fmt_minute, insert_audit, parse_minute, resolve_local, DurableSchedule, ScheduleExpr};
@@ -56,11 +56,26 @@ pub const HARNESS_BY: &str = "harness:scheduler";
 /// (`%Y-%m-%dT%H:%M`, the same clock `next_run` uses).
 ///
 /// Accepts RFC 3339 (converted to local), `YYYY-MM-DDTHH:MM[:SS]`,
-/// `YYYY-MM-DD HH:MM[:SS]` (local), and a bare `YYYY-MM-DD` (local midnight).
+/// `YYYY-MM-DD HH:MM[:SS]` (local), a bare `YYYY-MM-DD` (local midnight), and a
+/// time relative to now (`in 20m`, `+20m`, `90s`, `1h30m`, `in 2 hours`; see
+/// [`parse_relative`]). Run times are whole minutes, so a relative time is
+/// rounded UP to the next minute: `in 90s` at 10:00:20 is 10:02.
 pub fn parse_when(raw: &str) -> Result<String, String> {
+    parse_when_at(raw, Local::now())
+}
+
+/// [`parse_when`] against an injected clock, for tests.
+pub fn parse_when_at(raw: &str, now: DateTime<Local>) -> Result<String, String> {
     let s = raw.trim();
     if s.is_empty() {
         return Err("empty datetime".into());
+    }
+    if let Some(d) = parse_relative(s)? {
+        let at = now + d;
+        // Round up: a minute-resolution clock must not fire before the delay.
+        let floor = at.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(at);
+        let up = if floor < at { floor + ChronoDuration::minutes(1) } else { floor };
+        return Ok(fmt_minute(up));
     }
     if let Ok(t) = DateTime::parse_from_rfc3339(s) {
         return Ok(fmt_minute(t.with_timezone(&Local)));
@@ -76,8 +91,68 @@ pub fn parse_when(raw: &str) -> Result<String, String> {
         }
     }
     Err(format!(
-        "unparseable datetime {s:?}: use YYYY-MM-DDTHH:MM (local time) or RFC 3339"
+        "unparseable datetime {s:?}: use YYYY-MM-DDTHH:MM (local time), RFC 3339, or a delay \
+         like 'in 20m', '+90s', '1h30m', 'in 2 hours'"
     ))
+}
+
+/// Longest relative delay accepted: one year.
+const RELATIVE_MAX_S: i64 = 366 * 86_400;
+
+/// A delay relative to now: an optional `in ` or `+`, then one or more
+/// `<number><unit>` groups (spaces allowed). Units: s/sec/second, m/min/minute,
+/// h/hr/hour, d/day, each with an optional plural `s`.
+///
+/// `Ok(None)` means "this is not a relative time" (try the absolute forms);
+/// `Err` means it looked relative and was wrong (a bare number, an unknown
+/// unit, zero), which is worth saying rather than falling through to
+/// "unparseable datetime".
+pub fn parse_relative(raw: &str) -> Result<Option<ChronoDuration>, String> {
+    let s = raw.trim().to_ascii_lowercase();
+    let (body, marked) = if let Some(r) = s.strip_prefix('+') {
+        (r.trim_start().to_string(), true)
+    } else if let Some(r) = s.strip_prefix("in ") {
+        (r.trim_start().to_string(), true)
+    } else {
+        (s.clone(), false)
+    };
+    // A date (2026-10-21) starts with four digits and a dash; leave it alone.
+    let datelike = body.contains(['-', ':']);
+    if body.is_empty() || !body.starts_with(|c: char| c.is_ascii_digit()) || (datelike && !marked) {
+        return if marked { Err(format!("{raw:?}: expected a delay like 'in 20m' or '+1h30m'")) } else { Ok(None) };
+    }
+    let mut total: i64 = 0;
+    let mut rest = body.as_str();
+    let mut groups = 0;
+    while !rest.is_empty() {
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 {
+            return Err(format!("{raw:?}: expected a number at {rest:?}"));
+        }
+        let n: i64 = rest[..digits].parse().map_err(|_| format!("{raw:?}: number too large"))?;
+        rest = rest[digits..].trim_start();
+        let ulen = rest.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+        let unit = &rest[..ulen];
+        let secs = match unit {
+            "s" | "sec" | "secs" | "second" | "seconds" => 1,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
+            "d" | "day" | "days" => 86_400,
+            "" => return Err(format!("{raw:?}: {n} needs a unit (s, m, h or d)")),
+            other => return Err(format!("{raw:?}: unknown unit {other:?} (use s, m, h or d)")),
+        };
+        total = total.saturating_add(n.saturating_mul(secs));
+        rest = rest[ulen..].trim_start();
+        rest = rest.strip_prefix("and ").map(str::trim_start).unwrap_or(rest);
+        groups += 1;
+    }
+    if groups == 0 || total <= 0 {
+        return Err(format!("{raw:?}: a delay must be more than zero"));
+    }
+    if total > RELATIVE_MAX_S {
+        return Err(format!("{raw:?}: a delay may be at most 366 days; use an absolute date"));
+    }
+    Ok(Some(ChronoDuration::seconds(total)))
 }
 
 /// A 5-field cron whose minute, hour, day of month and month are single
@@ -480,6 +555,37 @@ mod tests {
         assert_eq!(rfc.len(), 16, "RFC 3339 converts to the local minute format: {rfc}");
         assert!(parse_when("next tuesday").is_err());
         assert!(parse_when("  ").is_err());
+    }
+
+    #[test]
+    fn parse_when_accepts_a_delay_and_rounds_it_up_to_the_minute() {
+        let now = resolve_local(NaiveDateTime::parse_from_str("2026-10-29T10:00:20", "%Y-%m-%dT%H:%M:%S").unwrap()).unwrap();
+        let at = |s: &str| parse_when_at(s, now).unwrap();
+        assert_eq!(at("in 20m"), "2026-10-29T10:21", "10:20:20 rounds up to 10:21");
+        assert_eq!(at("+20m"), "2026-10-29T10:21");
+        assert_eq!(at("20m"), "2026-10-29T10:21");
+        assert_eq!(at("90s"), "2026-10-29T10:02", "10:01:50 rounds up to 10:02");
+        assert_eq!(at("40s"), "2026-10-29T10:01");
+        assert_eq!(at("2h"), "2026-10-29T12:01");
+        assert_eq!(at("1h30m"), "2026-10-29T11:31");
+        assert_eq!(at("1h 30m"), "2026-10-29T11:31");
+        assert_eq!(at("in 2 hours"), "2026-10-29T12:01");
+        assert_eq!(at("in 1 hour and 5 minutes"), "2026-10-29T11:06");
+        assert_eq!(at("10 min"), "2026-10-29T10:11");
+        assert_eq!(at("3hr"), "2026-10-29T13:01");
+        assert_eq!(at("1d"), "2026-10-30T10:01");
+        assert_eq!(at("IN 5M"), "2026-10-29T10:06");
+        // On a whole minute, nothing to round.
+        let whole = resolve_local(NaiveDateTime::parse_from_str("2026-10-29T10:00:00", "%Y-%m-%dT%H:%M:%S").unwrap()).unwrap();
+        assert_eq!(parse_when_at("5m", whole).unwrap(), "2026-10-29T10:05");
+        // Absolute forms still parse as before.
+        assert_eq!(at("2026-10-21T09:05"), "2026-10-21T09:05");
+        assert_eq!(at("2026-10-21"), "2026-10-21T00:00");
+        for bad in ["in 20", "+", "20 fortnights", "0m", "in 0s", "in soon", "5m x", "400d", "+2026-10-21"] {
+            let e = parse_when_at(bad, now).unwrap_err();
+            assert!(!e.is_empty(), "{bad} is refused");
+        }
+        assert!(parse_when_at("in 20", now).unwrap_err().contains("needs a unit"));
     }
 
     #[test]

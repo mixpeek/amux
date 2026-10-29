@@ -151,6 +151,10 @@ fn classify_raw(outcome: &RunOutcome) -> Verdict {
         RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::GATE_PREFIX) => {
             Verdict::Neutral
         }
+        // A fire skipped because its wake condition (`when`) is not met yet.
+        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::WHEN_PREFIX) => {
+            Verdict::Neutral
+        }
         RunOutcome::Refused { reason } => Verdict::Fail(Failure {
             kind: "refused",
             exit_code: None,
@@ -1014,6 +1018,13 @@ mod tests {
             classify(&RunOutcome::Refused { reason: "schedule PAUSED: the plan window is 80% used".into() }),
             Verdict::Neutral,
             "the background reserve is not a failure"
+        );
+        assert_eq!(
+            classify(&RunOutcome::Refused {
+                reason: super::super::schedule_wake::when_reason("test -f /x", Some(1), false, "")
+            }),
+            Verdict::Neutral,
+            "a wake condition that is not met yet is not a failure"
         );
         assert!(matches!(classify(&RunOutcome::Failed { reason: "timed out after 600s".into() }), Verdict::Fail(_)));
     }

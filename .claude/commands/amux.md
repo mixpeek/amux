@@ -136,7 +136,23 @@ curl -sk $AMUX_URL/api/schedules/runs | python3 -m json.tool
 curl -sk -X POST $AMUX_URL/api/schedules/SCHED_ID/run
 ```
 
-**Fields:** `title`, `session` (target session name), `command` (text sent to session), `kind` (`tmux`), `sched_type` (`once`|`recurring`), `schedule_expr` (cron: `min hour dom month dow`), `run_at` (ISO datetime for one-time), `watch` (0/1 — watch output after send), `watch_timeout` (seconds), `done_pattern` (regex to detect completion), `done_action` (`disable`|`reschedule`)
+**Fields:** `title`, `session` (target session name), `command` (text sent to session), `kind` (`tmux`), `sched_type` (`once`|`recurring`), `schedule_expr` (cron: `min hour dom month dow`), `run_at` (ISO datetime for one-time), `watch` (0/1: watch output after send), `watch_timeout` (seconds), `done_pattern` (regex to detect completion), `done_action` (`disable`|`reschedule`), `once` (fire one time: a local `YYYY-MM-DDTHH:MM`, RFC 3339, or a delay like `in 20m`, `+90s`, `1h30m`; delays round UP to the next minute), `when` (a shell check run before each scheduled fire of a tmux schedule: exit 0 delivers, anything else skips the fire without spending `max_runs`), `when_once` (default true: disable after the first fire whose check passed).
+
+### Wake yourself later: `amux wake`
+
+Use this instead of Claude Code's ScheduleWakeup, `/loop` and Monitor until-loops.
+It creates a tmux schedule for `$AMUX_SESSION`; the prompt is read from stdin and never shell-evaluated.
+
+| Claude tool | amux equivalent |
+|---|---|
+| `ScheduleWakeup(1200, prompt)` | `amux wake 20m --stdin` |
+| `/loop 5m prompt` | `amux wake --every 5m --stdin` |
+| self-paced loop | end each turn with `amux wake <next delay> --stdin` |
+| Monitor until-loop, "wake me when X" | `amux wake --when '<check>' --stdin` (checks every 2m, fires once, stops after 24h unless `--until`) |
+| wake on a file or CI run | `amux watch add file\|ci ...` |
+| list / cancel wakeups | `amux wake --list`, `amux wake --cancel SCHED-N` |
+
+A busy worker gets the prompt at its next turn boundary. A `when` check that fails wakes nobody and costs nothing; Run now in the dashboard skips the check. `amux wake help` has the flags.
 
 ---
 

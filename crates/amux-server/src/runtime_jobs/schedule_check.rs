@@ -143,14 +143,30 @@ pub fn verdict_for(exit_code: Option<i32>, timed_out: bool) -> Verdict {
 
 /// Run `check` as the schedule's owner, bounded by [`timeout_s`].
 pub async fn run_check(check: &str, owner: &str) -> CheckResult {
+    run_bounded(check, owner, timeout_s(), false).await
+}
+
+/// Run `check` as `owner` for at most `secs`. `with_token` also gives it the
+/// owner's worker run token, the environment a shell schedule run gets.
+pub async fn run_bounded(check: &str, owner: &str, secs: u64, with_token: bool) -> CheckResult {
     let mut cmd = super::scheduler::shell_schedule_command(check);
     if owner.is_empty() {
         cmd.env_remove("AMUX_SESSION");
     } else {
         cmd.env("AMUX_SESSION", owner);
     }
+    // Held until the child exits; dropping it removes the token file.
+    let _run_token = (with_token && !owner.is_empty())
+        .then(|| crate::api::worker_identity::mint_run(&crate::config::amux_home(), owner))
+        .flatten();
+    if with_token {
+        match &_run_token {
+            Some(t) => cmd.env(crate::api::worker_identity::TOKEN_ENV, &t.value),
+            None => cmd.env_remove(crate::api::worker_identity::TOKEN_ENV),
+        };
+    }
     cmd.kill_on_drop(true).stdin(std::process::Stdio::null());
-    let ran = tokio::time::timeout(Duration::from_secs(timeout_s()), cmd.output()).await;
+    let ran = tokio::time::timeout(Duration::from_secs(secs), cmd.output()).await;
     match ran {
         Err(_) => CheckResult { verdict: Verdict::Fail, exit_code: None, timed_out: true, tail: String::new() },
         Ok(Err(e)) => CheckResult {

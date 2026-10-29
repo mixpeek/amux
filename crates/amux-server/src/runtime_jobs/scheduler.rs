@@ -1016,9 +1016,10 @@ impl RetryPolicy {
 /// The seven fields whose changes are audited into `schedule_audit`
 /// (mirrors Python's `_AUDIT_FIELDS` exactly, so both servers' trails agree
 /// on what counts as an auditable mutation).
-pub const AUDIT_FIELDS: [&str; 8] = [
+pub const AUDIT_FIELDS: [&str; 9] = [
     "enabled",
     "pass_check",
+    "when_check",
     "session",
     "command",
     "schedule_expr",
@@ -1225,7 +1226,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 37] = [
+    const COLS: [&str; 39] = [
         "id",
         "title",
         "session",
@@ -1265,6 +1266,9 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "pass_check",
         "pass_state",
         "pass_next_at",
+        // 0141 wake condition (schedule_wake.rs).
+        "when_check",
+        "when_once",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -1284,7 +1288,7 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
 
 /// Full-row UPDATE with Python's PATCH column list.
 pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<usize> {
-    const COLS: [&str; 30] = [
+    const COLS: [&str; 32] = [
         "title",
         "session",
         "command",
@@ -1318,11 +1322,15 @@ pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "disabled_reason",
         // 0135. The sweep's state columns are written by schedule_check.rs.
         "pass_check",
+        // 0141 wake condition. `when_once` is NOT NULL: a row built without
+        // it keeps its stored value (COALESCE below).
+        "when_check",
+        "when_once",
     ];
     let sets: Vec<String> = COLS
         .iter()
         .enumerate()
-        .map(|(i, c)| format!("{c}=?{}", i + 1))
+        .map(|(i, c)| if *c == "when_once" { format!("{c}=COALESCE(?{}, {c})", i + 1) } else { format!("{c}=?{}", i + 1) })
         .collect();
     let sql = format!(
         "UPDATE schedules SET {} WHERE id=?{}",
@@ -3156,10 +3164,31 @@ async fn fire_one(
     };
 
     // ---- DELIVER (outside the write lock) ----
+    // WAKE CONDITION (`when`, schedule_wake.rs): a tmux schedule's shell check
+    // runs once per scheduled fire, before any delivery or gate. A failing
+    // check skips the fire; it is not a delivery attempt, so it spends no
+    // max_runs and wakes nobody. Run now never reaches here, so it skips it.
+    let when_check = super::schedule_wake::when_check_of(&claim.sched);
+    let when_skip: Option<String> = match &when_check {
+        Some(c) => super::schedule_wake::when_gate(&claim.sched, c).await.err(),
+        None => None,
+    };
     let mut outcomes: Vec<RunOutcome> = Vec::with_capacity(claim.notes.len());
     for _ in 0..claim.notes.len() {
-        outcomes.push(deliverer.deliver(&claim.sched, "cron-rs").await);
+        outcomes.push(match &when_skip {
+            Some(reason) => RunOutcome::Refused { reason: reason.clone() },
+            None => deliverer.deliver(&claim.sched, "cron-rs").await,
+        });
     }
+    let when_skipped_all = when_skip.is_some();
+    // The check passed and the prompt is delivered or pending: a `when_once`
+    // schedule has done its job.
+    let when_met_once = when_check.is_some()
+        && !when_skipped_all
+        && claim.sched.i64_field("when_once", 1) != 0
+        && outcomes.iter().any(|o| matches!(o, RunOutcome::Delivered { .. } | RunOutcome::Queued { .. }));
+    let bounds_before = super::schedule_lifecycle::Bounds::of(&claim.sched);
+    let is_once_row = claim.sched.str_field("sched_type") == "once";
 
     // ---- RECORD what actually happened ----
     let sid = claim.sched.id().to_string();
@@ -3232,6 +3261,47 @@ async fn fire_one(
                     rusqlite::params![occurrences_n, sid],
                 )?;
             }
+            // A fire skipped by its wake condition is not a fire: its run rows
+            // read `skipped` (not counted as failures), it gives its max_runs
+            // count back, and a recurring row the claim ended only because
+            // that count reached max_runs is re-armed. Only cron_runs and the
+            // bound end are touched: the reserve retry logic does not apply.
+            if when_skipped_all {
+                for id in &run_ids {
+                    conn.execute(
+                        "UPDATE schedule_runs SET status='skipped', delivery='skipped' WHERE id=?1",
+                        [id],
+                    )?;
+                }
+                conn.execute(
+                    "UPDATE schedules SET cron_runs = MAX(0, COALESCE(cron_runs,0) - ?1) WHERE id=?2",
+                    rusqlite::params![occurrences_n, sid],
+                )?;
+                if ended_by_claim && !is_once_row {
+                    let next: String = conn
+                        .query_row("SELECT COALESCE(next_run,'') FROM schedules WHERE id=?1", [&sid], |r| r.get(0))
+                        .unwrap_or_default();
+                    if bounds_before.end_reason(Some(&next)).is_none() {
+                        let changed = conn.execute(
+                            "UPDATE schedules SET enabled=1, disabled_reason=NULL WHERE id=?1 AND enabled=0 AND deleted IS NULL AND version=?2 AND command=?3 AND session=?4",
+                            rusqlite::params![sid, expected_version, expected_command, expected_session])?;
+                        if changed > 0 {
+                            insert_audit(conn, &sid, "enabled", "0", "1", "wake-condition-rs", "")?;
+                        }
+                    }
+                }
+            }
+            if when_met_once {
+                let changed = conn.execute(
+                    "UPDATE schedules SET enabled=0, updated=?1, disabled_reason=?2 WHERE id=?3 AND enabled=1",
+                    rusqlite::params![now_ts, format!("wake condition met: delivered at {}", fmt_minute(Local::now())), sid],
+                )?;
+                if changed > 0 {
+                    insert_audit(conn, &sid, "enabled", "1", "0", "wake-condition-rs", "")?;
+                }
+                tracing::info!(schedule = %sid, verdict = "schedule_when_disabled", measured = true, n_considered = 1,
+                    "wake condition met and the prompt delivered; when_once schedule disabled");
+            }
             let retry_at = fmt_minute(retry_target);
             let mut retried = false;
             if retry_once {
@@ -3277,9 +3347,10 @@ async fn fire_one(
             // schedule object itself — not the run history — can see a
             // refusal/failure without last_run masquerading as health.
             if let Some(last_outcome) = outcomes.last() {
+                let status = if when_skipped_all { "skipped" } else { last_outcome.status() };
                 conn.execute(
                     "UPDATE schedules SET last_delivery=?1, last_refusal_reason=?2 WHERE id=?3",
-                    rusqlite::params![last_outcome.status(), last_outcome.refusal_reason(), sid],
+                    rusqlite::params![status, last_outcome.refusal_reason(), sid],
                 )?;
             }
             Ok(WriteOutcome {
@@ -3290,6 +3361,12 @@ async fn fire_one(
         .await?;
     // An empty outcome set still warns — nothing was delivered because nothing
     // was attempted, which is the same silence from a reader's side.
+    // A wake-condition skip is a deliberate no-op: no "nothing was delivered"
+    // warning (it would fire every check interval), no failure notice and no
+    // pass-check scheduling. `schedule_when_skipped` already logged it.
+    if when_skipped_all {
+        return Ok(true);
+    }
     if all_lost {
         // Loud, because it is the AMUX-2647 shape: the schedule fired and the
         // command did not reach anyone. It is on the run row too, but a fleet
@@ -3669,6 +3746,102 @@ mod tests {
         exec(&store, format!("UPDATE schedules SET next_run='{due}', enabled=1 WHERE id='MAX'"));
         assert!(!fire_one(&store, &ok, "MAX", now, MissedRunPolicy::Skip).await.unwrap());
         assert_eq!(ok.calls(), 2, "a spent max_runs ends the row at claim instead of firing");
+    }
+
+    fn run_statuses(store: &SharedStore, id: &str) -> Vec<String> {
+        let conn = store.read().unwrap();
+        let mut st = conn.prepare("SELECT status FROM schedule_runs WHERE schedule_id=?1 ORDER BY id").unwrap();
+        st.query_map([id], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// `when` (0141): a failing wake condition skips the fire. Nothing is
+    /// delivered, the run reads `skipped` (not a failure), and the fire gives
+    /// its max_runs count back, so a max_runs 1 row the claim ended is re-armed.
+    #[tokio::test]
+    async fn a_failing_wake_condition_skips_the_fire_and_spends_no_run() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let due = fmt_minute(now - ChronoDuration::minutes(1));
+        let mut row = make_row("WHEN", "lane", Some("every 2m"), &due);
+        row.set("max_runs", Value::from(1));
+        row.set("when_check", Value::from("echo not yet; exit 3"));
+        put_row(&store, row);
+        let ok = StubDeliverer::confirmed();
+        for _ in 0..2 {
+            exec(&store, format!("UPDATE schedules SET next_run='{due}' WHERE id='WHEN'"));
+            assert!(fire_one(&store, &ok, "WHEN", now, MissedRunPolicy::Skip).await.unwrap());
+        }
+        assert_eq!(ok.calls(), 0, "a failing check delivers nothing");
+        let (en, runs, why, _) = lifecycle_cols(&store, "WHEN");
+        assert!(en, "max_runs 1 is not spent by a skipped fire: {why}");
+        assert_eq!(runs, 0);
+        assert_eq!(run_statuses(&store, "WHEN"), vec!["skipped", "skipped"]);
+        let s = get_schedule(&store.read().unwrap(), "WHEN").unwrap().unwrap();
+        assert_eq!(s.str_field("last_delivery"), "skipped");
+        let reason = s.str_field("last_refusal_reason").to_string();
+        assert!(reason.starts_with(super::super::schedule_wake::WHEN_PREFIX) && reason.contains("exited 3"), "{reason}");
+        let streak = s.i64_field("failure_streak", 0);
+        assert_eq!(streak, 0, "a skip is not a failure");
+
+        // The condition comes true: one delivery, then the row ends.
+        exec(&store, format!("UPDATE schedules SET next_run='{due}', when_check='true' WHERE id='WHEN'"));
+        assert!(fire_one(&store, &ok, "WHEN", now, MissedRunPolicy::Skip).await.unwrap());
+        assert_eq!(ok.calls(), 1);
+        let (en, runs, why, _) = lifecycle_cols(&store, "WHEN");
+        assert!(!en && runs == 1, "delivered once: enabled={en} cron_runs={runs}");
+        assert!(why.starts_with("wake condition met: delivered at") || why.contains("max_runs"), "{why}");
+        assert_eq!(run_statuses(&store, "WHEN").last().map(String::as_str), Some("delivered"));
+    }
+
+    #[tokio::test]
+    async fn a_passing_wake_condition_delivers_once_and_disables_the_row() {
+        let (store, _dir) = store();
+        let now = Local::now();
+        let due = fmt_minute(now - ChronoDuration::minutes(1));
+        let mut row = make_row("MET", "lane", Some("every 2m"), &due);
+        row.set("when_check", Value::from("test \"$AMUX_SESSION\" = lane"));
+        put_row(&store, row);
+        let ok = StubDeliverer::confirmed();
+        assert!(fire_one(&store, &ok, "MET", now, MissedRunPolicy::Skip).await.unwrap());
+        assert_eq!(ok.calls(), 1, "the check ran as the owner and passed");
+        let (en, _, why, _) = lifecycle_cols(&store, "MET");
+        assert!(!en, "when_once (the default) disables after the delivery");
+        assert!(why.starts_with("wake condition met: delivered at"), "{why}");
+        let audit: i64 = store.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM schedule_audit WHERE schedule_id='MET' AND source='wake-condition-rs' AND field='enabled'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(audit, 1);
+        // Re-armed by hand, it does not fire again: it is disabled.
+        assert!(!fire_one(&store, &ok, "MET", now, MissedRunPolicy::Skip).await.unwrap());
+
+        // when_once off: it keeps firing while the check passes.
+        let mut keep = make_row("KEEP", "lane", Some("every 2m"), &due);
+        keep.set("when_check", Value::from("true"));
+        keep.set("when_once", Value::from(0));
+        put_row(&store, keep);
+        assert!(fire_one(&store, &ok, "KEEP", now, MissedRunPolicy::Skip).await.unwrap());
+        assert!(lifecycle_cols(&store, "KEEP").0, "when_once=0 stays enabled");
+
+        // A check that passes but whose delivery is refused does not end it.
+        let mut held = make_row("HELD", "lane", Some("every 2m"), &due);
+        held.set("when_check", Value::from("true"));
+        put_row(&store, held);
+        let refused = StubDeliverer::new(reserve_refusal());
+        fire_one(&store, &refused, "HELD", now, MissedRunPolicy::Skip).await.unwrap();
+        assert_eq!(refused.calls(), 1);
+        assert!(lifecycle_cols(&store, "HELD").0, "nothing was delivered, so the wake is still pending");
+    }
+
+    #[test]
+    fn a_shell_schedule_has_no_wake_condition() {
+        let mut row = make_row("SH", "lane", Some("every 2m"), "2026-01-01T00:00");
+        row.set("when_check", Value::from("true"));
+        assert_eq!(super::super::schedule_wake::when_check_of(&row).as_deref(), Some("true"));
+        row.set("kind", Value::from("shell"));
+        assert_eq!(super::super::schedule_wake::when_check_of(&row), None);
+        row.set("kind", Value::from("tmux"));
+        row.set("when_check", Value::from("  "));
+        assert_eq!(super::super::schedule_wake::when_check_of(&row), None);
     }
 
     #[tokio::test]

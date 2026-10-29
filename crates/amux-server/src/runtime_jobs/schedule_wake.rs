@@ -26,6 +26,18 @@
 //!    and sent in full on the first fire and whenever it changes; while it is
 //!    unchanged a fire sends its first sentence plus the path. Verdicts
 //!    `schedule_brief_full` and `schedule_brief_pointer`.
+//!
+//! # Wake conditions (`when`, migration 0141)
+//!
+//! A tmux schedule may carry `when_check`, a shell command run before each
+//! SCHEDULED fire (Claude Code's "wake me when X finishes"). Exit 0 delivers
+//! the prompt. Anything else, or no exit within [`WHEN_TIMEOUT_S`], skips the
+//! fire: the run row reads `skipped` with a [`WHEN_PREFIX`] note, the failure
+//! router treats it as neutral, and the fire gives its `max_runs` count back.
+//! With `when_once` (the default) the schedule disables itself after the
+//! first fire whose check passed and that delivered or queued. A manual Run
+//! now does not run the check: the human asked, as with the goal gate.
+//! Verdicts `schedule_when_skipped` and `schedule_when_met`.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +45,54 @@ use super::goal_keeper;
 use super::scheduler::DurableSchedule;
 
 pub const GATE_PREFIX: &str = "goal wake gate:";
+/// The refusal prefix of a fire skipped because its wake condition failed.
+pub const WHEN_PREFIX: &str = "wake condition:";
+/// Seconds a wake condition may run before the fire is skipped.
+pub const WHEN_TIMEOUT_S: u64 = 60;
+
+/// The wake condition of a schedule, or `None` when it has none or is a
+/// shell schedule (whose command can test the condition itself).
+pub fn when_check_of(sched: &DurableSchedule) -> Option<String> {
+    if sched.str_field("kind") == "shell" {
+        return None;
+    }
+    let c = sched.str_field("when_check").trim();
+    (!c.is_empty()).then(|| c.to_string())
+}
+
+/// Run the wake condition as the schedule's owner (AMUX_SESSION and a worker
+/// run token, the shell-run environment). `Ok(())` = deliver; `Err(reason)`
+/// carries [`WHEN_PREFIX`] and how the check ended.
+pub async fn when_gate(sched: &DurableSchedule, check: &str) -> Result<(), String> {
+    let owner = sched.str_field("session").trim().to_string();
+    let r = super::schedule_check::run_bounded(check, &owner, WHEN_TIMEOUT_S, true).await;
+    if r.exit_code == Some(0) && !r.timed_out {
+        tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
+            verdict = "schedule_when_met", exit_code = 0, measured = true, n_considered = 1,
+            "wake condition passed; delivering the scheduled prompt");
+        return Ok(());
+    }
+    let reason = when_reason(check, r.exit_code, r.timed_out, &r.tail);
+    tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
+        verdict = "schedule_when_skipped", exit_code = ?r.exit_code, timed_out = r.timed_out,
+        measured = true, n_considered = 1, "{reason}");
+    Err(reason)
+}
+
+/// The skip reason, pure.
+pub fn when_reason(check: &str, exit_code: Option<i32>, timed_out: bool, tail: &str) -> String {
+    let how = match (timed_out, exit_code) {
+        (true, _) => format!("timed out after {WHEN_TIMEOUT_S}s"),
+        (false, Some(c)) => format!("exited {c}"),
+        (false, None) => "could not run".to_string(),
+    };
+    let short: String = check.chars().take(120).collect();
+    let last = tail.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.chars().take(160).collect::<String>());
+    match last {
+        Some(l) => format!("{WHEN_PREFIX} `{short}` {how} ({l}); fire skipped"),
+        None => format!("{WHEN_PREFIX} `{short}` {how}; fire skipped"),
+    }
+}
 
 /// Does this schedule exist to keep a worker going on its `/goal`?
 pub fn is_goal_continuation(title: &str, command: &str) -> bool {
@@ -213,6 +273,16 @@ mod tests {
         ));
         assert!(!is_goal_continuation("GS-12 BOTTLENECK SWEEP", "find the slowest row and fix it"));
         assert!(!is_goal_continuation("daily digest", "summarise /goal progress for Ethan"));
+    }
+
+    #[test]
+    fn a_when_reason_names_the_check_and_how_it_ended() {
+        let r = when_reason("test -f /tmp/done", Some(1), false, "");
+        assert!(r.starts_with(WHEN_PREFIX) && r.contains("exited 1") && r.contains("test -f /tmp/done"), "{r}");
+        let t = when_reason("sleep 99", None, true, "");
+        assert!(t.contains("timed out after 60s"), "{t}");
+        let o = when_reason("gh run view", Some(2), false, "a\nnot finished\n");
+        assert!(o.contains("(not finished)"), "{o}");
     }
 
     #[test]
