@@ -2552,10 +2552,15 @@ mod tests {
         assert_eq!(mentionable_workers(&global, &Conv::Group(GENERAL.into()), &lanes).len(), 2);
         // In a channel: its own workers first, then any other the person can reach.
         assert_eq!(mentionable_workers(&global, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string(), "ed".to_string()]);
-        assert_eq!(mentionable_workers(&elliot, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string(), "ed".to_string()],
-            "elliot reaches ed through wexus, so may bring ed into #mtp");
+        // 0f7f6ac3e (AA-52): a channel grants its conversation, not its workers.
+        // elliot's scope (wexus) does not cover #mtp and he was not added to it,
+        // so #mtp's own worker is not his to mention; ed, whom he reaches
+        // through wexus, still is.
+        assert_eq!(mentionable_workers(&elliot, &Conv::Group("mtp".into()), &lanes), vec!["ed".to_string()],
+            "elliot reaches ed through wexus, not #mtp's own worker");
         let scoped = person("w@y.com", MemberScope::Worker("other".into()));
-        assert_eq!(mentionable_workers(&scoped, &Conv::Group("wexus".into()), &lanes), vec!["ed".to_string(), "other".to_string()]);
+        // Same rule: a person scoped to one worker gets that worker, not #wexus's own.
+        assert_eq!(mentionable_workers(&scoped, &Conv::Group("wexus".into()), &lanes), vec!["other".to_string()]);
         let ed = Who::Worker { name: "ed".into(), groups: ["wexus".to_string()].into() };
         assert_eq!(mentionable_workers(&ed, &Conv::Group("mtp".into()), &lanes), vec!["other".to_string()], "a worker stays inside the group");
     }
