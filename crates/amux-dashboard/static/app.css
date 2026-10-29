@@ -10684,6 +10684,14 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-thread-line .cv-av { width:18px; height:18px; flex-basis:18px; font-size:var(--fs-3xs); }
 .cv-thread-last { color:var(--dim); font-weight:400; }
 .cv-edited { font-size:var(--fs-3xs); color:var(--dim); }
+/* Pinned messages: the tag on a pinned post, the header count, the list. */
+.cv-post-pinned { font-size:var(--fs-3xs); color:var(--dim); }
+.cv-pins-btn { flex:none; white-space:nowrap; min-height:44px; }
+.cv-pins-list { display:flex; flex-direction:column; gap:var(--space-1-5); max-height:60vh; overflow-y:auto; }
+.cv-pin-item { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-1); text-align:left; width:100%; white-space:normal; min-height:44px; }
+.cv-pin-who { font-weight:600; }
+.cv-pin-when { font-weight:400; color:var(--dim); font-size:var(--fs-3xs); }
+.cv-pin-body { color:var(--text); overflow-wrap:anywhere; }
 .cv-deleted { color:var(--dim); font-style:italic; font-size:var(--fs-lg); }
 .cv-edit { width:100%; min-height:60px; font:inherit; box-sizing:border-box; }
 .cv-edit-acts { display:flex; gap:var(--space-1-5); justify-content:flex-end; margin-top:var(--space-1); }

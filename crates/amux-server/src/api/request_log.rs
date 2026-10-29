@@ -3057,6 +3057,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/conversations/{conv}/typing", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/posts/{id}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/conversations/posts/{id}/reactions", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/posts/{id}/pin", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/unfurl", methods: &["GET"] },
     RouteEntry { path: "/api/conversations/channels", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/conversations/channels/{name}", methods: &["PATCH"] },

@@ -1176,6 +1176,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvPin": {
+      "kind": "command._cvPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvPoll": {
       "kind": "command._cvPoll",
       "feedback_required": true,
@@ -1232,6 +1238,12 @@
     },
     "_cvSetAvatar": {
       "kind": "command._cvSetAvatar",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvShowPins": {
+      "kind": "command._cvShowPins",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
