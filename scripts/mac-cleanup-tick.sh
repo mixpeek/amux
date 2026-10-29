@@ -321,6 +321,12 @@ VM_IMAGE_PRUNE_AGE=${AMUX_CLEANUP_VM_IMAGE_PRUNE_AGE:-6h}
 # land precheck had to kill), while the host fell toward 100 GB free.
 USER_TMP_ROOT=${AMUX_CLEANUP_USER_TMP_ROOT:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}")}
 USER_TMP_IDLE_MIN=${AMUX_CLEANUP_USER_TMP_IDLE_MIN:-1440}
+# The same dir holds the Rust tempfile crate's .tmpXXXXXX dirs. 57 amux test
+# helpers leaked theirs (std::mem::forget) until test_tempdirs::keep: 11,735
+# dirs, 29 GB, ~400 more an hour (disk RCA 20261029-103955). Tests that are
+# killed still leave them. One whose holder-lock names a live pid is kept, and
+# at most this many go per tick.
+USER_TMP_MAX=${AMUX_CLEANUP_USER_TMP_MAX:-3000}
 # Workers with workspace isolation get TMPDIR=~/.amux/tmp/<worker>, outside the
 # per-user temp dir above, so nothing reaped them: 101 GB in 13,336 entries
 # idle over 12 h on 2026-10-04 with the disk at 57 GB free.
@@ -3052,7 +3058,7 @@ reap_lane_tmp() { # <dry:0|1>
 }
 
 reap_user_tmp() { # <dry:0|1>
-  local dry=$1 root="${USER_TMP_ROOT%/}" d b n=0 kb=0 k inuse
+  local dry=$1 root="${USER_TMP_ROOT%/}" d b n=0 kb=0 k inuse nr=0 krs=0 nlive=0 capped=0 pid lk max=${USER_TMP_MAX:-3000}
   [ -d "$root" ] || { echo "mac-cleanup: user tmp: no $root"; return 0; }
   # Resolved here, not only at the top: the suites run this function on its own.
   local raw lsof_bin=${LSOF_BIN:-${AMUX_CLEANUP_LSOF_BIN:-$(command -v lsof 2>/dev/null || echo /usr/sbin/lsof)}}
@@ -3062,18 +3068,35 @@ reap_user_tmp() { # <dry:0|1>
     echo "mac-cleanup: user tmp: WARN in-use directories UNMEASURED ($lsof_bin gave nothing), reaped nothing this tick (verdict=user_tmp_cwd_unmeasured)"
     return 0
   fi
-  inuse=$(printf '%s\n' "$raw" | grep -oE '/tmp\.[A-Za-z0-9]+' | sort -u)
+  inuse=$(printf '%s\n' "$raw" | grep -oE '/\.?tmp[.A-Za-z0-9]+' | sort -u)
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     b=${d##*/}
     printf '%s\n' "$inuse" | grep -qx "/$b" && continue
+    if [ "$((n + nr))" -ge "$max" ]; then capped=1; break; fi
+    case $b in
+      .tmp*)
+        # A test still running holds its store: keep the dir while that pid lives.
+        pid=
+        for lk in "$d"/*.holder-lock; do
+          [ -f "$lk" ] || continue
+          pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$lk" 2>/dev/null | head -1)
+          [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && break
+          pid=
+        done
+        if [ -n "$pid" ]; then nlive=$((nlive+1)); continue; fi
+        k=$(du -sk "$d" 2>/dev/null | cut -f1)
+        if [ "$dry" = 1 ]; then nr=$((nr+1)); krs=$((krs+${k:-0})); continue; fi
+        rm -rf -- "${root:?}/${b:?}" 2>/dev/null && { nr=$((nr+1)); krs=$((krs+${k:-0})); }
+        continue ;;
+    esac
     k=$(du -sk "$d" 2>/dev/null | cut -f1)
     if [ "$dry" = 1 ]; then n=$((n+1)); kb=$((kb+${k:-0})); continue; fi
     rm -rf -- "${root:?}/${b:?}" 2>/dev/null && { n=$((n+1)); kb=$((kb+${k:-0})); }
   done <<EOF
-$(find "$root" -maxdepth 1 -name 'tmp.*' -type d -mmin +"$USER_TMP_IDLE_MIN" 2>/dev/null)
+$(find "$root" -maxdepth 1 \( -name 'tmp.*' -o -name '.tmp*' \) -type d -mmin +"$USER_TMP_IDLE_MIN" 2>/dev/null)
 EOF
-  echo "mac-cleanup: user tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n tmp.* dir(s) idle over ${USER_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root)"
+  echo "mac-cleanup: user tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n tmp.* dir(s) idle over ${USER_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}'), and $nr .tmp* test dir(s), $(awk -v k="$krs" 'BEGIN{printf "%.1fG", k/1048576}') ($root)$([ "$nlive" -gt 0 ] && echo "; kept $nlive whose holder-lock pid is alive")$([ "$capped" = 1 ] && echo "; capped at $max this tick, the rest next tick") (verdict=user_tmp_reaped)"
 }
 
 # Over <cap> of build cache in docker context <ctx>, prune cache unused for
