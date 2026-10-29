@@ -255,14 +255,28 @@ pub async fn discord_poll_once(state: &crate::api::AppState) -> Result<usize, St
     Ok(n)
 }
 
+/// The wait between two Discord reads, which is also the cadence the loop
+/// declares to the job registry (AMUX-6479). It declared 5 s and slept 30 s
+/// with no bot token (and 30 s more after a failed read), so the registry's
+/// stall bound (2.5 x 5 + 15 = 27.5 s) read every late sample as stalled and
+/// autofix filed "System job bridge-discord is stalled" on a healthy idle loop.
+/// Same rule as telegram_poll's `poll_cadence`: one value, used for both.
+fn discord_wait(configured: bool, failed: bool) -> Duration {
+    Duration::from_secs(if configured && !failed { 5 } else { 30 })
+}
+
 pub async fn run_discord(state: crate::api::AppState) {
     loop {
-        crate::runtime_jobs::registry::tick_every(crate::runtime_jobs::registry::ids::BRIDGE_DISCORD, Duration::from_secs(5));
-        if let Err(e) = discord_poll_once(&state).await {
-            tracing::warn!(error = %e, verdict = "bridge_discord_poll_failed", "bridge: reading Discord channels failed");
-            tokio::time::sleep(Duration::from_secs(30)).await;
-        }
-        tokio::time::sleep(Duration::from_secs(if setting("DISCORD_BOT_TOKEN").is_some() { 4 } else { 30 })).await;
+        let failed = match discord_poll_once(&state).await {
+            Ok(_) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, verdict = "bridge_discord_poll_failed", "bridge: reading Discord channels failed");
+                true
+            }
+        };
+        let wait = discord_wait(setting("DISCORD_BOT_TOKEN").is_some(), failed);
+        crate::runtime_jobs::registry::tick_every(crate::runtime_jobs::registry::ids::BRIDGE_DISCORD, wait);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -274,6 +288,18 @@ pub fn spawn_discord(state: crate::api::AppState) -> tokio::task::JoinHandle<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AMUX-6479: every wait the loop can take stays inside the registry's
+    /// stall bound for the interval it declares, which is the same value.
+    #[test]
+    fn the_discord_loop_declares_the_wait_it_keeps() {
+        for (configured, failed) in [(false, false), (true, false), (true, true), (false, true)] {
+            let w = discord_wait(configured, failed).as_secs_f64();
+            assert!(w < crate::runtime_jobs::registry::stall_after_s(w), "{configured} {failed}: {w}s");
+        }
+        assert_eq!(discord_wait(false, false).as_secs(), 30, "an unconfigured connector idles at 30 s");
+        assert_eq!(discord_wait(true, false).as_secs(), 5);
+    }
 
     #[test]
     fn whatsapp_payloads_parse_to_direct_and_group_messages() {
