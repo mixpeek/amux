@@ -870,6 +870,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkOpen": {
+      "kind": "command._cmdkOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkQueryServer": {
       "kind": "command._cmdkQueryServer",
       "feedback_required": true,

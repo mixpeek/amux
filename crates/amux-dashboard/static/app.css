@@ -2027,6 +2027,8 @@
     display: none;
   }
   .ac-list.open { display: block; }
+  /* At the caret in a tall textarea (app.js _atPlaceAtCaret): a floating box. */
+  .ac-list.ac-at-caret { border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); z-index: 40; }
   .ac-list.slash-ac {
     top: auto; bottom: 100%; border-top: 1px solid var(--border); border-bottom: none;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 220px;

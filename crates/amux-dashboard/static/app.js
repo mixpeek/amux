@@ -23963,6 +23963,44 @@ function _atGenPick(i) {
   cur.dd.classList.remove('open');
   inp.focus();
 }
+// Where the caret is in a textarea, in px from the textarea's top-left
+// (scroll applied): a mirror div with the same box and font, the text up to
+// the caret, and a marker after it.
+function _caretXY(ta) {
+  const cs = getComputedStyle(ta), m = document.createElement('div');
+  for (const k of ['boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
+    'borderBottomWidth', 'borderLeftWidth', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'tabSize', 'textIndent', 'wordSpacing'])
+    m.style[k] = cs[k];
+  Object.assign(m.style, { position: 'absolute', visibility: 'hidden', top: '0', left: '-9999px', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', overflow: 'hidden' });
+  m.textContent = ta.value.slice(0, ta.selectionStart);
+  const mark = document.createElement('span');
+  mark.textContent = '\u200b';
+  m.appendChild(mark);
+  document.body.appendChild(m);
+  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 18;
+  const out = { x: mark.offsetLeft - ta.scrollLeft, y: mark.offsetTop - ta.scrollTop, h: lh };
+  m.remove();
+  return out;
+}
+// In a tall textarea (the markdown editor) the list opens at the caret, not
+// under the whole box, where the status bar covered it (owner, 2026-10-29,
+// MSG-100765: "this should autocomplete dropdown the worker"). Above the line
+// when there is no room below. A one-line input keeps the dropdown.
+function _atPlaceAtCaret(inp, dd) {
+  const reset = () => { dd.style.top = dd.style.left = dd.style.right = dd.style.bottom = dd.style.width = ''; dd.classList.remove('ac-at-caret'); };
+  if (inp.tagName !== 'TEXTAREA') return reset();
+  const c = _caretXY(inp);
+  if (inp.clientHeight < c.h * 4) return reset();
+  const wrap = dd.parentElement, wr = wrap.getBoundingClientRect(), ir = inp.getBoundingClientRect();
+  const w = Math.min(360, wr.width - 8);
+  const x = Math.max(4, Math.min(ir.left - wr.left + c.x, wr.width - w - 4));
+  const below = ir.top - wr.top + c.y + c.h;
+  dd.classList.add('ac-at-caret');
+  dd.style.width = w + 'px'; dd.style.left = x + 'px'; dd.style.right = 'auto';
+  const room = wr.height - below, need = Math.min(dd.scrollHeight || 180, 180);
+  if (room >= need || below < need) { dd.style.top = below + 'px'; dd.style.bottom = 'auto'; }
+  else { dd.style.top = 'auto'; dd.style.bottom = (wr.height - (below - c.h)) + 'px'; }
+}
 function _atAttach(inp) {
   if (!inp || inp._atWired) return;
   inp._atWired = true;
@@ -23978,6 +24016,7 @@ function _atAttach(inp) {
     _atGenCur = { inp, dd };
     sel = -1;
     if (!_atRender(inp, dd, '_atGenPick')) dd.classList.remove('open');
+    else _atPlaceAtCaret(inp, dd);
   });
   inp.addEventListener('keydown', (e) => {
     if (!dd.classList.contains('open')) return;
@@ -72125,6 +72164,37 @@ function _cmdkRun(i) {
   // rank and tier let a sweep see people opening things far down the list,
   // which is what a ranking regression looks like from outside.
   try { amuxTrack('palette_open', { kind: r.kind, rank: i, tier: r.tier || 0, match: r.match || (_cmdk.q.trim() ? '' : 'start'), measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
+  // In the Mac app, a worker or a tab already open in another tab or pane is
+  // brought forward instead (owner, 2026-10-29, MSG-100765: "if i do cmd + k
+  // and select something for which a tab is already open it goes to that
+  // tab"). The app answers within a moment; with no answer (an older app) or
+  // no such tab, it opens here as before.
+  const place = r.kind === 'worker' ? '#peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? '#view=' + _viewHashName(r.id) : '';
+  if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
+  _cmdkOpen(r);
+}
+const _cmdkFocusWaits = {};
+function _cmdkFocusElsewhere(hash, otherwise) {
+  const h = typeof _nativePaneBridge === 'function' && _nativePaneBridge();
+  if (!h) return false;
+  const token = Math.random().toString(36).slice(2, 10);
+  const done = found => {
+    if (!_cmdkFocusWaits[token]) return;
+    clearTimeout(_cmdkFocusWaits[token]); delete _cmdkFocusWaits[token]; delete _cmdkFocusWaits[token + ':cb'];
+    try { amuxTrack('palette_focus', { found: found ? 1 : 0, measured: true, n_considered: 1 }); } catch (e) {}
+    if (!found) otherwise();
+  };
+  _cmdkFocusWaits[token] = setTimeout(() => done(false), 700);
+  _cmdkFocusWaits[token + ':cb'] = done;
+  try { h.postMessage({ op: 'focus', hash, token }); } catch (e) { done(false); }
+  return true;
+}
+function _cmdkFocusAck(token, found) {
+  const cb = _cmdkFocusWaits[token + ':cb'];
+  delete _cmdkFocusWaits[token + ':cb'];
+  if (cb) cb(!!found);
+}
+function _cmdkOpen(r) {
   switch (r.kind) {
     case 'worker': openPeek(r.id); break;
     case 'view': switchView(r.id); break;
