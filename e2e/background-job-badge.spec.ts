@@ -22,10 +22,14 @@ async function prepare(page: Page) {
   await expect(page.locator('#cards .card[data-session]')).toHaveCount(workers.length);
 }
 
-test('a background job is named on the worker card with its age', async ({ page }) => {
+// The badge is a status name with the job's age; the job's command line
+// (a label like "cd /Users/... && VAR=... python3 ...") is only in the tooltip
+// (Ethan, 2026-10-28: "these status names are wrong").
+test('a background job shows as a status with its age, and the tooltip names the job', async ({ page }) => {
   await prepare(page);
   const badge = page.locator('#cards .card[data-session="etl-lane"] .status-badge.background');
-  await expect(badge).toHaveText('etl_rest2.sh 1h02m +1');
+  await expect(badge).toHaveText('background job 1h02m +1');
+  await expect(badge).not.toContainText('etl_rest2');
   const tip = await badge.getAttribute('title');
   expect(tip).toContain('etl_rest2.sh (1h02m)');
   expect(tip).toContain('cargo build (5m)');

@@ -8036,11 +8036,14 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
     + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">unknown ▾</button>';
   else if (s.running && s.status === 'active' && s.activity === 'api_retry') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
   else if (s.running && s.status === 'active' && s.activity === 'background_shell') {
-    // Name the job and its age (MSG-99658: "idle" for 16 minutes while
-    // etl_rest2.sh ran for 1h02m). The tooltip lists every job.
+    // A status name and the job's age (MSG-99658: "idle" for 16 minutes while
+    // etl_rest2.sh ran for 1h02m). The badge never shows the job's command: a
+    // label is the whole command line ("cd /Users/... && AMUX_RESOURCES_ACK=..."),
+    // which read as a status name in capitals (Ethan, 2026-10-28: "these status
+    // names are wrong"). The tooltip and the status detail name every job.
     const jobs = (s.background_jobs || []).filter(j => !j.waiting);
     const lead = jobs[0];
-    const text = lead ? esc(lead.label) + ' ' + _bgJobAge(lead.elapsed_s) + (jobs.length > 1 ? ' +' + (jobs.length - 1) : '') : 'background job';
+    const text = 'background job' + (lead ? ' ' + _bgJobAge(lead.elapsed_s) + (jobs.length > 1 ? ' +' + (jobs.length - 1) : '') : '');
     const tip = 'The turn is finished; a background job it started is still running. The agent resumes on its own when that ends.'
       + (jobs.length ? ' ' + jobs.map(j => j.label + ' (' + _bgJobAge(j.elapsed_s) + ')').join(', ') : '');
     badge = '<span class="status-badge background" title="' + esc(tip) + '">' + text + '</span>';
