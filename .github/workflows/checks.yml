@@ -903,6 +903,9 @@ jobs:
           # persistent listener loss makes the external watchdog reload only the
           # exact configured launch agent.
           ./scripts/test-build-atomic-install.sh
+          # AMUX-6530: a long deploy build logs a heartbeat, and the heartbeat
+          # can neither outlive the build nor abort it under set -e.
+          ./scripts/test-build-heartbeat.sh
           # Cloud follows main's tip without the CI wait: an activation that does
           # not come up healthy is put back and held.
           ./scripts/test-build-activation-rollback.sh

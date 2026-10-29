@@ -40,6 +40,7 @@ cleanup() {
   [ -n "${BUILD_OUT:-}" ] && rm -f "$BUILD_OUT"
   [ -n "${INSTALL_TMP:-}" ] && rm -f "$INSTALL_TMP"
   [ -n "${LOCK_HELD:-}" ] && rm -rf "$LOCK"
+  [ -n "${HB_PID:-}" ] && { kill "$HB_PID" 2>/dev/null || true; }
   return 0   # a falsey last test must not make the trap itself fail under set -e
 }
 trap cleanup EXIT
@@ -804,6 +805,17 @@ fi
   DEPLOY_NICE="${AMUX_DEPLOY_NICE:-10}"
   DEPLOY_T0=$(date +%s)
   echo "== deploy build settings incremental=1 jobs=$DEPLOY_JOBS nice=$DEPLOY_NICE load=$(/usr/sbin/sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+  # A HEARTBEAT WHILE CARGO RUNS (AMUX-6530). The build writes to $BUILD_OUT,
+  # so a long one left this log silent: on 2026-10-28 a 21-minute build under
+  # load 70 read as a dead builder (deploy.builder_is_ticking, 600 s budget),
+  # 1171 failures since 09-20. One line per AMUX_BUILD_HEARTBEAT_S while the
+  # build runs; the loop also exits on its own if this script is gone.
+  _builder_pid=$$
+  ( while sleep "${AMUX_BUILD_HEARTBEAT_S:-60}"; do
+      kill -0 "$_builder_pid" 2>/dev/null || exit 0
+      echo "== deploy build running elapsed_s=$(( $(date +%s) - DEPLOY_T0 )) verdict=deploy_build_running"
+    done ) &
+  HB_PID=$!
   BUILD_OK=0
   if [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
     if "$REPO/scripts/rust-remote-build.sh" "$WORK" \
@@ -832,6 +844,9 @@ fi
   # make `[ -x ... ]` true even after a genuine failure, silently
   # re-installing old code and reporting success — the exact "wrong answer,
   # not wrong-looking" shape ethos rule 4 exists to catch.
+  # Under set -e: a heartbeat that already exited makes `kill` fail, and
+  # `wait` on a killed one returns 143. Either would abort the deploy itself.
+  kill "$HB_PID" 2>/dev/null || true; wait "$HB_PID" 2>/dev/null || true; HB_PID=
   DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_T0 ))
   echo "== deploy build elapsed_s=$DEPLOY_ELAPSED ok=$BUILD_OK jobs=$DEPLOY_JOBS"
   # A slow build is the regression this block exists to prevent, and nothing
