@@ -169,6 +169,13 @@ FSEVENTSD_SUDOERS_LINE="$(id -un 2>/dev/null || echo "$USER") ALL=(root) NOPASSW
 # after 20261021-135901 with nothing new and nothing a lane could do).
 FSEVENTSD_PID_CMD=${AMUX_CLEANUP_FSEVENTSD_PID_CMD:-pgrep -x fseventsd}
 FSEVENTSD_SPIN_REMIND_H=${AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H:-24}
+# A memory constraint whose holder is an fseventsd already escalated and waiting
+# on the owner's restart is the same ask again: memory RCAs 20261028-081710,
+# 20261029-003047 and 20261029-063250 each named fseventsd (43G, 65G, 68G) and
+# the one owner step, six hours apart, while the fseventsd class itself said
+# "owner pending, not escalated again". At or over this size, fseventsd counts
+# as the holder and memory waits with it.
+MEM_FSE_HOLDER_GB=${AMUX_CLEANUP_MEM_FSE_HOLDER_GB:-8}
 # Churn this many times the floor on an already-escalated pid is a new cause and
 # escalates; less is ordinary work on top of the same stuck process (RCA
 # fseventsd 20261022-075928: 228 events in 20s from cargo builds, floor 134,
@@ -3655,7 +3662,7 @@ if [ -n "$fse_reading" ]; then
        && [ $(( $(date +%s) - ${fse_esc_at:-0} )) -lt $(( FSEVENTSD_SPIN_REMIND_H * 3600 )) ] \
        && { [ "${fse_spin:-0}" = 1 ] || [ "$fse_feed_n" -lt $(( churn_floor * FSEVENTSD_CHURN_NEW_X )) ]; }; then
       echo "mac-cleanup:   fseventsd pid $fse_pid (${fse_gb}G) is the process the last fseventsd escalation named $(( ($(date +%s) - fse_esc_at) / 60 ))m ago and it is still hot$( [ "${fse_spin:-0}" = 1 ] || echo ", with churn under ${FSEVENTSD_CHURN_NEW_X}x the floor"): the owner's restart is pending (sudo killall fseventsd, which also returns its memory); not escalated again until a new pid, churn over ${FSEVENTSD_CHURN_NEW_X}x the floor, or ${FSEVENTSD_SPIN_REMIND_H}h (verdict=fseventsd_spin_owner_pending)"
-      reported=$((reported+1))
+      reported=$((reported+1)); fse_owner_pending=1
     elif [ "${fse_wedged:-0}" = 1 ]; then
       fse_verdict="fseventsd at ${fse_cpu:-?}% CPU holding ${fse_gb}G is not delivering file events ($fse_top): the owner restarts it with sudo killall fseventsd (launchd brings it back, no reboot), then the next tick can measure the feed"
       [ "${FSE_RESTART_NEEDS_SUDOERS:-0}" = 1 ] && fse_verdict="$fse_verdict. The tick restarts it itself once the owner adds: $FSEVENTSD_SUDOERS_LINE"
@@ -3813,6 +3820,11 @@ else
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi
+    if [ "$cls" = memory ] && [ "${fse_owner_pending:-0}" = 1 ] \
+       && awk -v g="${fse_gb:-0}" -v t="$MEM_FSE_HOLDER_GB" 'BEGIN{exit !(g+0 >= t+0)}'; then
+      echo "mac-cleanup: constraint $v — not escalated: macOS fseventsd holds ${fse_gb}G and its restart is already with the owner (sudo killall fseventsd, or the sudoers line that lets this tick do it); escalating memory again names the same holder and the same step (verdict=memory_owner_pending_fseventsd)"
+      continue
+    fi
     if ! escalation_due "$STATE" "$cls" "$now" "$ESCALATE_COOLDOWN_H"; then
       echo "mac-cleanup: constraint $v — escalation suppressed (last $cls escalation under ${ESCALATE_COOLDOWN_H}h ago)"; continue
     fi

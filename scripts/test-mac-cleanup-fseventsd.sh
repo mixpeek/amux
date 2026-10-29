@@ -176,6 +176,18 @@ if [ "$(uname)" = Darwin ]; then
   out=$(AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
   check "past the reminder window the same pid escalates" "3" "$(fse_sent)"
 
+  echo "3c2. memory waits with an fseventsd already with the owner (memory RCAs 20261028-081710, 20261029-003047, 20261029-063250)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log"
+  mem_sent() { grep -c 'Mac memory constraint' "$FIX/sent.log" 2>/dev/null || true; }
+  hot() { TICK_REC="$REC3" AMUX_CLEANUP_FSEVENTSD_PID_CMD="echo $1" AMUX_CLEANUP_ESCALATE_COOLDOWN_H=0 AMUX_CLEANUP_PRESSURE_CMD="echo 2" AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo $2 99"; }
+  out=$(hot 34409 30)
+  check "the first tick escalates memory"                "1" "$(mem_sent)"
+  out=$(hot 34409 30)
+  check "a 30G fseventsd with its restart pending holds memory's escalation" "yes" "$(has "$out" 'verdict=memory_owner_pending_fseventsd')"
+  check "and no second memory escalation goes out"       "1" "$(mem_sent)"
+  out=$(hot 34409 0.81)
+  check "a small fseventsd is not the holder: memory escalates" "2" "$(mem_sent)"
+
   echo "3d. the escalated pid with ordinary churn stays the owner's; heavy churn is a new cause (RCA fseventsd 20261022-075928)"
   # Cargo builds wrote 228 events in 20s on top of the stuck pid 34409 (14G),
   # and the tick re-escalated it as "stop the churn".
