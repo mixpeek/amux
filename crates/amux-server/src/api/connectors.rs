@@ -2306,7 +2306,10 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
     if committed.is_err() {
         tracing::warn!(connector=id,verdict="connector_test_record_not_durable", "live test history was not committed; existing receipt retained");
     }
-    if !ok {
+    // The same line the list draws: an untested or needs_credentials answer
+    // tried nothing. Upkeep records dev.to's "untested" every pass, and this
+    // WARN called each one a failed live test (deploy check of 559eede40).
+    if test_failed(result) {
         tracing::warn!(
             connector = id,
             status,
@@ -2319,18 +2322,24 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
     }
 }
 
+/// Whether a recorded test result is a failure the list reports. A "needs_*"
+/// answer is not a failed test (nothing was tried), and neither is
+/// "untested": a connector with no test endpoint (dev.to, which reads its key
+/// from a header the bearer test cannot send) tried nothing.
+pub(crate) fn test_failed(t: &Value) -> bool {
+    let ok = t.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let st = t.get("status").and_then(Value::as_str).unwrap_or("");
+    !ok && !st.starts_with("needs_credentials") && st != "untested"
+}
+
 /// What the list should say given the computed status and the last test: a
-/// connector whose last real test failed reads "error" with that test's own
-/// words. A "needs_*" answer is not a failed test (nothing was tried), and
-/// neither is "untested": a connector with no test endpoint (dev.to, which
-/// reads its key from a header the bearer test cannot send) tried nothing.
+/// connector whose last real test failed (test_failed) reads "error" with that
+/// test's own words.
 pub(crate) fn status_after_test(computed: &str, last: Option<&Value>) -> (String, Option<String>) {
     let Some(t) = last else {
         return (computed.to_string(), None);
     };
-    let ok = t.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    let st = t.get("status").and_then(Value::as_str).unwrap_or("");
-    if computed == "connected" && !ok && !st.starts_with("needs_credentials") && st != "untested" {
+    if computed == "connected" && test_failed(t) {
         let detail = t
             .get("detail")
             .and_then(Value::as_str)
@@ -5478,6 +5487,15 @@ mod connector_maintenance_regressions {
             assert_eq!(http.calls.load(Ordering::SeqCst), 1, "disconnect must never be resurrected by upkeep");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), grant.to_string());
         }
+    }
+
+    #[test]
+    fn the_failure_warn_and_the_list_agree_on_what_failed() {
+        // record_test's WARN and status_after_test read one predicate.
+        assert!(!test_failed(&json!({"ok":false,"status":"untested"})), "untested tried nothing");
+        assert!(!test_failed(&json!({"ok":false,"status":"needs_credentials"})));
+        assert!(!test_failed(&json!({"ok":true,"status":"connected"})));
+        assert!(test_failed(&json!({"ok":false,"status":"error","detail":"provider rejected"})));
     }
 
     #[tokio::test]
