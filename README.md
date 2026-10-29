@@ -16,7 +16,7 @@ curl -fsSL https://amux.io/install.sh | bash
 
 Then open **https://localhost:8824**. It clones amux to `~/Dev/amux`, asks before installing anything (Rust, tmux), and keeps your data in `~/.amux`.
 
-You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI). Runs on macOS and Linux. Prefer to read first? `git clone https://github.com/mixpeek/amux && cd amux && ./install.sh` does the same thing.
+You need tmux 3.2+ and at least one agent CLI (Claude Code, Codex or Gemini CLI). Runs on macOS and Linux. To reach it from your phone or another computer without opening a port, put it on your [Tailscale](https://amux.io/guides/remote-access-tailscale/) tailnet: amux serves the tailnet's HTTPS certificate, and the iPhone, iPad and Mac apps connect to that address. Prefer to read first? `git clone https://github.com/mixpeek/amux && cd amux && ./install.sh` does the same thing.
 
 ## amux Cloud
 
@@ -70,5 +70,8 @@ Local-first: one Rust binary and SQLite on your own machine.
 - [Getting started](https://amux.io/guides/getting-started/) · [Docs](https://amux.io/docs/) · [How amux compares](https://amux.io/compare/)
 - [Self-hosting reference](docs/self-hosting.md): commands, Linux services, architecture, CLI, config, macOS permissions, security
 - [Contributing](CONTRIBUTING.md) · [Roadmap (#46)](https://github.com/mixpeek/amux/issues/46) · [Security policy](SECURITY.md)
+- [FAQ](https://amux.io/faq/) · [Remote access with Tailscale](https://amux.io/guides/remote-access-tailscale/) · [License](LICENSE): MIT + Commons Clause (free to use, modify and self-host; selling amux itself is not allowed)
+
+This project (amux.io, github.com/mixpeek/amux) is not affiliated with amux.sh or github.com/andyrewlee/amux.
 
 If amux saves you time, a ⭐ helps others find it.
