@@ -32703,10 +32703,11 @@ function _filesBookmarkOpen(path, type) {
 }
 
 function _filesRenderBookmarks() {
-  const lbl = document.getElementById('files-bm-label');
-  if (lbl) lbl.textContent = _exploreSession ? (_exploreSession + ':') : 'Quick:';
   const addBtn = document.getElementById('files-bm-add');
-  if (addBtn) addBtn.title = _exploreSession ? ('Add current folder to ' + _exploreSession + ' shortcuts') : 'Bookmark current folder';
+  if (addBtn) {
+    addBtn.title = _exploreSession ? 'Pin this folder for ' + _exploreSession + ', a group, or all workers' : 'Pin this folder for all workers';
+    addBtn.setAttribute('aria-label', addBtn.title);
+  }
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
   const bm = _filesGetBookmarks();
@@ -32769,6 +32770,39 @@ async function _filesAddBookmarkPath(path, type) {
 }
 
 function _filesAddBookmark() { _filesAddBookmarkPath(_filesPath || '/', 'dir'); }
+
+// "Pin for <scope>" items, nearest scope first: the worker, each of its
+// groups, every worker. On the Files tab there is one scope (every worker),
+// so a single item. Used by the ⋯ menu and the shortcuts row's + (Ethan,
+// 2026-10-29: "update how we pin file shortcuts for workers, groups and
+// global").
+function _filesPinItems(popup, path, type) {
+  const item = (text, act) => {
+    const b = document.createElement('button');
+    b.className = 'explore-menu-item';
+    b.textContent = text;
+    b.onclick = () => { popup.remove(); act(); };
+    popup.appendChild(b);
+  };
+  if (!_exploreSession) { item('Pin for all workers', () => _filesAddBookmarkPath(path, type)); return; }
+  item('Pin for ' + _exploreSession, () => _filesAddBookmarkPath(path, type));
+  for (const g of (_filesBmGroupsFor[_exploreSession] || [])) {
+    item('Pin for group ' + g, () => _filesAddBookmarkTo(_filesBmGroupKey(g), 'group ' + g, path, type));
+  }
+  item('Pin for all workers', () => _filesAddBookmarkTo('files_bookmarks', 'all workers', path, type));
+}
+// The shortcuts row's +: pins the folder on screen. On the Files tab it pins
+// straight away; in a worker's view it asks which scope.
+async function _filesPinMenu(btn) {
+  if (!_exploreSession) { _filesAddBookmark(); return; }
+  await _filesBmGroups(_exploreSession);
+  document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
+  const popup = document.createElement('div');
+  popup.className = 'explore-menu-popup';
+  popup.id = 'files-pin-menu';
+  _filesPinItems(popup, _filesPath || '/', 'dir');
+  _filesMenuPlace(popup, btn);
+}
 
 // ── Library view: a folder of ebooks → flat, searchable, faceted cover grid ──
 let _libData = null;         // last /api/library payload
@@ -37169,29 +37203,7 @@ function _showFilesMenu(path, btn, type) {
   linkItem.textContent = 'Copy link';
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
-  // Add shortcut — scoped to the session (if browsing a session's files) or the
-  // Files-tab quick bar otherwise. Works for both files and folders.
-  const bmItem = document.createElement('button');
-  bmItem.className = 'explore-menu-item';
-  bmItem.textContent = _exploreSession ? ('Add shortcut · ' + _exploreSession) : 'Add shortcut';
-  bmItem.onclick = () => { popup.remove(); _filesAddBookmarkPath(path, type); };
-  popup.appendChild(bmItem);
-  // From a worker's view, the same shortcut can go to one of its groups or to
-  // every worker (the Files tab's global bar).
-  if (_exploreSession) {
-    for (const g of (_filesBmGroupsFor[_exploreSession] || [])) {
-      const gi = document.createElement('button');
-      gi.className = 'explore-menu-item';
-      gi.textContent = 'Add shortcut · group ' + g;
-      gi.onclick = () => { popup.remove(); _filesAddBookmarkTo(_filesBmGroupKey(g), 'group ' + g, path, type); };
-      popup.appendChild(gi);
-    }
-    const all = document.createElement('button');
-    all.className = 'explore-menu-item';
-    all.textContent = 'Add shortcut · all workers';
-    all.onclick = () => { popup.remove(); _filesAddBookmarkTo('files_bookmarks', 'all workers', path, type); };
-    popup.appendChild(all);
-  }
+  _filesPinItems(popup, path, type);
   // Connect to a .mdai node: make THIS file/folder a source of a chosen computed
   // node. Picks from the GLOBAL list of .mdai files (GET /api/files/mdai) and POSTs
   // /connect; the target gets a default edge prompt, editable in the node view after.
@@ -37246,6 +37258,11 @@ function _showFilesMenu(path, btn, type) {
     } catch(e) { showToast('Delete error: ' + e.message); }
   };
   popup.appendChild(delItem);
+  _filesMenuPlace(popup, btn);
+}
+// Open a files menu popup beside `btn`, clamped on screen, closed by a press
+// outside it. Shared by the ⋯ menu and the shortcuts row's +.
+function _filesMenuPlace(popup, btn) {
   document.body.appendChild(popup);
   const r = _cssRect(btn);
   const pw = popup.offsetWidth || 160;

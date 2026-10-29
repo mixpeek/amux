@@ -1250,9 +1250,8 @@
   </div>
   <!-- Quick-access bookmarks -->
   <div id="files-bookmarks" style="padding:var(--space-1) var(--space-2-5);border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:var(--space-1-5);overflow-x:auto;scrollbar-width:none;align-items:center;">
-    <span id="files-bm-label" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
     <div id="files-bookmarks-list" style="display:flex;gap:var(--space-1);flex-wrap:nowrap;"></div>
-    <button id="files-bm-add" onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-1-5);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
+    <button id="files-bm-add" onclick="_filesPinMenu(this)" style="background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-1-5);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
     <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:var(--shade);border:none;border-radius:var(--radius-sm);font-size:var(--fs-xs);font-weight:600;padding:var(--space-0-5) var(--space-2);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>
   </div>
   <!-- Search: name filter by default; Contents = ripgrep FTS (AMUX-2420) -->
@@ -3354,6 +3353,7 @@
   <!-- Tab bar -->
   <div class="peek-tabs" onwheel="_peekTabsWheel(event)">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
+    <button class="peek-tab" id="peek-tab-files" onclick="peekSession&&_browseWorkerFiles(peekSession,'peek-tab')" title="Open this worker's directory in Files (the same as clicking its path)"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-chat" onclick="setPeekTab('chat')" title="Chat about this worker's work: ask its status in plain language and direct it"><span class="tab-ico">&#128172;</span><span class="tab-lbl">Chat</span></button>
     <button class="peek-tab" id="peek-tab-converse" onclick="setPeekTab('converse')" title="Talk with this worker hands-free by voice; every conversation is logged to replay and expires automatically"><span class="tab-ico">&#x1F399;</span><span class="tab-lbl">Converse</span></button>

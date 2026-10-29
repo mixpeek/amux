@@ -1962,6 +1962,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_filesPinItems": {
+      "kind": "command._filesPinItems",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_filesPinMenu": {
+      "kind": "command._filesPinMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filesRemoveBookmark": {
       "kind": "command._filesRemoveBookmark",
       "feedback_required": true,
