@@ -20,8 +20,8 @@ test.describe.configure({ timeout: 90_000 });
 // started from Amux Light, whose dark text failed contrast on the new dark
 // background and nothing was previewed (CI 40857350630, mobile, twice). These
 // tests set their themes themselves; keep the other spec's out.
-test.beforeEach(async ({ context }) => {
-  await context.route(/\/api\/prefs$/, async (route) => {
+test.beforeEach(async ({ page }) => {
+  await page.route(/\/api\/prefs$/, async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     const res = await route.fetch();
     const prefs = await res.json();
