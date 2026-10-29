@@ -424,6 +424,21 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 // GET /api/file — viewer payload (py:67956-68067) · PUT — write-back
 // ---------------------------------------------------------------------------
 
+/// A filesystem error as the status it really is (AMUX-6437). Every read and
+/// write here answered 500, so an OS refusal ("Permission denied (os error
+/// 13)" on a file the server user cannot read) read as amux failing and
+/// autofix filed it as a server fault. Permission denied is 403 and a file
+/// that vanished between the stat and the read is 404; anything else is
+/// still a 500.
+fn io_fail(e: &std::io::Error) -> Response {
+    let code = match e.kind() {
+        std::io::ErrorKind::PermissionDenied => 403,
+        std::io::ErrorKind::NotFound => 404,
+        _ => 500,
+    };
+    j(code, json!({"error": e.to_string()}))
+}
+
 async fn file_root(state: State<AppState>, req: Request) -> Response {
     let _ = state; // reserved: keeps the handler signature uniform in this router
     match *req.method() {
@@ -476,7 +491,7 @@ async fn view(req: Request) -> Response {
         if sz <= img_inline_max() {
             let bytes = match std::fs::read(&p) {
                 Ok(b) => b,
-                Err(e) => return j(500, json!({"error": e.to_string()})),
+                Err(e) => return io_fail(&e),
             };
             out["data_url"] = json!(format!("data:{mime};base64,{}", B64.encode(&bytes)));
         } else {
@@ -497,7 +512,7 @@ async fn view(req: Request) -> Response {
         if sz <= 10_000_000 {
             let raw = match std::fs::read(&p) {
                 Ok(b) => b,
-                Err(e) => return j(500, json!({"error": e.to_string()})),
+                Err(e) => return io_fail(&e),
             };
             out["data_url"] = json!(format!("data:application/pdf;base64,{}", B64.encode(&raw)));
         }
@@ -590,7 +605,7 @@ async fn view(req: Request) -> Response {
     // per-sequence — divergence only inside already-mangled bytes.
     let raw = match std::fs::read(&p) {
         Ok(b) => b,
-        Err(e) => return j(500, json!({"error": e.to_string()})),
+        Err(e) => return io_fail(&e),
     };
     let mut content = String::from_utf8_lossy(&raw).into_owned();
     let is_md = matches!(ext.as_str(), ".md" | ".markdown" | ".mdx");
@@ -831,7 +846,7 @@ async fn put_file(req: Request) -> Response {
     }
     if let Some(parent) = p.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return j(500, json!({"error": e.to_string()}));
+            return io_fail(&e);
         }
     }
     // A save based on an older copy must not overwrite a newer one. The
@@ -879,7 +894,7 @@ async fn put_file(req: Request) -> Response {
             200,
             json!({"ok": true, "path": pystr(&p), "etag": current_etag(&p).unwrap_or_default()}),
         ),
-        Err(e) => j(500, json!({"error": e.to_string()})),
+        Err(e) => io_fail(&e),
     }
 }
 
@@ -1003,7 +1018,7 @@ async fn vtt(method: Method, RawQuery(q): RawQuery) -> Response {
     };
     let raw = match raw {
         Ok(b) => b,
-        Err(e) => return j(500, json!({"error": e.to_string()})),
+        Err(e) => return io_fail(&e),
     };
     let srt_text = String::from_utf8_lossy(&raw);
     static TS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -1306,7 +1321,7 @@ async fn raw(req: Request) -> Response {
         if file_size <= INMEM_MAX {
             match std::fs::read(&p) {
                 Ok(bytes) => b.body(Body::from(bytes)).expect("200 response"),
-                Err(e) => j(500, json!({ "error": e.to_string() })),
+                Err(e) => io_fail(&e),
             }
         } else {
             b.body(stream_file(p, 0, file_size)).expect("200 response")
@@ -2812,6 +2827,29 @@ pub(crate) mod tests {
         let (_, v) = get(&app, &format!("/api/file?path={}", enc(w.to_str().unwrap()))).await;
         assert_eq!(v["stream"]["hls_checked"], false);
         assert!(v.get("hls_url").is_none());
+    }
+
+    /// AMUX-6437: a file the server user cannot read is refused with 403,
+    /// not reported as a 500 server fault.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_file_is_403_not_500() {
+        use std::os::unix::fs::PermissionsExt;
+        let app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("locked.txt");
+        std::fs::write(&p, "secret").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&p).is_ok() {
+            // Running as root: the OS grants the read, so there is no refusal to observe.
+            return;
+        }
+        let (status, v) = get(&app, &format!("/api/file?path={}", enc(p.to_str().unwrap()))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
+        assert!(v["error"].as_str().unwrap_or("").contains("Permission denied"), "{v}");
+        let (status, _) = get(&app, &format!("/api/file/raw?path={}", enc(p.to_str().unwrap()))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "/raw too");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     #[tokio::test]
