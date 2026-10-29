@@ -329,7 +329,7 @@ final class PaneView: NSView {
     func dragged(to p: NSPoint, tab i: Int?) {
         guard let c = tab(i), let app = c.app else { return }
         if let t = app.paneDropTarget(at: p, moving: c), !isNoop(t, c) {
-            app.snapPreview.showFront(t.preview)
+            app.snapPreview.showFront(t.preview, label: t.label)
         } else {
             app.snapPreview.hide()
         }
@@ -476,6 +476,36 @@ struct PaneDropTarget {
     let edge: PaneEdge
     let name: String
     let preview: NSRect
+    /// Which level of panes the drop lands in: 2 is the window's own panes,
+    /// 3 the panes of a split inside one of them, and so on (tabs are level 1).
+    var level: Int = 2
+    /// What the outline says while you drag: the level and the pane.
+    var label: String = ""
+}
+
+/// One level of panes under the pointer during a drag.
+struct PaneLevel {
+    let host: DashboardWindowController
+    let paneId: Int?
+    let rect: NSRect
+    let full: Bool
+    let name: String
+}
+
+/// How deep each edge band reaches: one level per band, from the pane's edge in.
+let paneLevelBand: CGFloat = 14
+
+/// "Level 3 · right of Calendar": what the drop outline says.
+func paneDropLabel(edge: PaneEdge, level: Int, pane: String) -> String {
+    let where_: String
+    switch edge {
+    case .center: where_ = "a tab in"
+    case .left: where_ = "left of"
+    case .right: where_ = "right of"
+    case .top: where_ = "above"
+    case .bottom: where_ = "below"
+    }
+    return "Level \(level) · \(where_) \(pane.isEmpty ? "this pane" : pane)"
 }
 
 enum PaneDestination {
@@ -536,29 +566,63 @@ extension AppDelegate {
               let host = amuxWindow(at: p, excluding: excluding), let w = host.window, !w.styleMask.contains(.fullScreen) else { return nil }
         let content = w.convertToScreen(w.contentLayoutRect)
         guard content.contains(p) else { return nil }
-        var paneId: Int? = nil
-        var rect = content
-        var full = false
+        // Every level of panes under the pointer, the window's own first: a
+        // tab that is a split of its own is looked into, down to the innermost pane.
+        var chain: [PaneLevel] = []
         var into = host
-        // The innermost pane under the pointer: a tab that is a split of its
-        // own is looked into, down to the pane the drop lands in.
         while let g = into.grid {
             // A split adds a pane unless the tab moving is its pane's only tab.
             let samePane = moving.flatMap { g.id(of: $0) }
             let freesOne = samePane.map { g.tabs($0).count == 1 } ?? false
-            full = g.tree.leaves.count >= maxPanes && !freesOne
             guard let hit = g.paneFrames().first(where: { $0.frame.contains(p) }) else { return nil }
-            paneId = hit.id
-            rect = hit.frame
+            let name = g.members[hit.id].map { g.label($0) } ?? ""
+            chain.append(PaneLevel(host: into, paneId: hit.id, rect: hit.frame, full: g.tree.leaves.count >= maxPanes && !freesOne, name: name))
             if let m = g.members[hit.id], m !== g.host, m !== moving, let sub = m.grid, !sub.paneFrames().isEmpty {
                 into = m
                 continue
             }
             break
         }
-        guard rect.width > 0, rect.height > 0 else { return nil }
-        let d = paneDropEdge(u: (p.x - rect.minX) / rect.width, v: (p.y - rect.minY) / rect.height, width: rect.width, height: rect.height, full: full)
-        return PaneDropTarget(host: into, paneId: paneId, edge: d.edge, name: d.name, preview: paneDropRect(rect, edge: d.edge).integral)
+        guard let inner = chain.last ?? (into.grid == nil ? PaneLevel(host: host, paneId: nil, rect: content, full: false, name: host.pageTitle) : nil),
+              inner.rect.width > 0, inner.rect.height > 0 else { return nil }
+        // Owner, 2026-10-29: "i want the snap to grid thing to be able to
+        // recognize and understand where im dragging and what level in the
+        // panes / layers im dragging to". Near an edge the inner pane shares
+        // with the panes around it, each band of `paneLevelBand` reaches one
+        // level further out: the band right at the edge is the outermost.
+        if let out = outerLevelDrop(p, chain: chain) {
+            return out
+        }
+        let r = inner.rect
+        let d = paneDropEdge(u: (p.x - r.minX) / r.width, v: (p.y - r.minY) / r.height, width: r.width, height: r.height, full: inner.full)
+        let level = chain.isEmpty ? 2 : chain.count + 1
+        return PaneDropTarget(host: inner.host, paneId: inner.paneId, edge: d.edge, name: d.name, preview: paneDropRect(r, edge: d.edge).integral,
+                              level: level, label: paneDropLabel(edge: d.edge, level: level, pane: inner.name))
+    }
+
+    /// The drop at `p` onto an outer level, when `p` is in one of the edge
+    /// bands of the innermost pane that outer levels share. nil in the pane's body.
+    func outerLevelDrop(_ p: NSPoint, chain: [PaneLevel]) -> PaneDropTarget? {
+        guard chain.count > 1, let r = chain.last?.rect else { return nil }
+        let dist: [(PaneEdge, CGFloat)] = [(.left, p.x - r.minX), (.right, r.maxX - p.x), (.bottom, p.y - r.minY), (.top, r.maxY - p.y)]
+        let (edge, d) = dist.min { $0.1 < $1.1 }!
+        func side(_ x: NSRect) -> CGFloat {
+            switch edge { case .left: return x.minX; case .right: return x.maxX; case .bottom: return x.minY; default: return x.maxY }
+        }
+        // The outer levels whose pane ends on the same edge, nearest first.
+        var shared: [Int] = []
+        for i in stride(from: chain.count - 2, through: 0, by: -1) {
+            guard abs(side(chain[i].rect) - side(r)) <= 2 else { break }
+            shared.append(i)
+        }
+        let band = Int(d / paneLevelBand)
+        guard !shared.isEmpty, band < shared.count else { return nil }
+        // The band at the edge is the outermost shared level.
+        let lv = chain[shared[shared.count - 1 - band]]
+        guard !lv.full else { return nil }
+        let level = chain.firstIndex { $0.host === lv.host && $0.paneId == lv.paneId }.map { $0 + 2 } ?? 2
+        return PaneDropTarget(host: lv.host, paneId: lv.paneId, edge: edge, name: edge.rawValue, preview: paneDropRect(lv.rect, edge: edge).integral,
+                              level: level, label: paneDropLabel(edge: edge, level: level, pane: lv.name))
     }
 
     /// `c` becomes a pane of `host`'s window, beside `paneId` on `edge`, or
@@ -701,6 +765,7 @@ extension AppDelegate {
         case .move(let t):
             let page = targetPage ?? t.host
             let into = page.paneHost ?? page
+            dlog("verdict=pane_drop_level level=\(t.level) edge=\(t.edge.rawValue) depth=\(into.depth)")
             if !dockPane(c, into: into, at: into.grid?.id(of: page), edge: t.edge, zone: t.name) {
                 if let cw = c.window, !(hw.tabbedWindows?.contains(cw) ?? false) { hw.addTabbedWindow(cw, ordered: .above) }
                 c.window?.makeKeyAndOrderFront(nil)
@@ -984,6 +1049,7 @@ extension AppDelegate {
         }
         let again = paneDropTarget(at: p, excluding: [tw])
         let t = again?.host === host ? again! : drop
+        dlog("verdict=pane_drop_level level=\(t.level) edge=\(t.edge.rawValue) depth=\(host.depth)")
         dockPane(torn, into: host, at: t.host === host ? t.paneId : nil, edge: t.edge, zone: t.name)
     }
 

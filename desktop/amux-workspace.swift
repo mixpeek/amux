@@ -510,14 +510,37 @@ final class SnapPreview {
         v.layer?.borderWidth = 2
         v.layer?.cornerRadius = 10
         panel.contentView = v
+        // Which level and pane a pane drop lands in, at the outline's top.
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .white
+        label.drawsBackground = true
+        label.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.9)
+        label.isBezeled = false
+        label.isEditable = false
+        label.isHidden = true
+        label.wantsLayer = true
+        label.layer?.cornerRadius = 5
+        v.addSubview(label)
+    }
+    let label = NSTextField(labelWithString: "")
+    /// The text shown now, "" when none (the test state reads it).
+    var labelText: String { label.isHidden ? "" : label.stringValue }
+    private func setLabel(_ text: String?) {
+        label.isHidden = (text ?? "").isEmpty
+        label.stringValue = " " + (text ?? "") + " "
+        label.sizeToFit()
+        let b = panel.frame.size
+        label.frame.origin = NSPoint(x: max(6, (b.width - label.frame.width) / 2), y: max(6, b.height - label.frame.height - 10))
     }
     func show(_ r: NSRect, below w: NSWindow) {
         panel.setFrame(r, display: true)
+        setLabel(nil)
         if !panel.isVisible { panel.order(.below, relativeTo: w.windowNumber) }
     }
     /// For a tab being dragged out: there is no window under it yet.
-    func showFront(_ r: NSRect) {
+    func showFront(_ r: NSRect, label text: String? = nil) {
         panel.setFrame(r, display: true)
+        setLabel(text)
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
     func hide() { panel.orderOut(nil) }
@@ -734,7 +757,7 @@ extension AppDelegate {
                 pane = self.paneDropTarget(at: at, excluding: moving)
                 let out = !source.insetBy(dx: -8, dy: -8).contains(at)
                 zone = pane == nil && out ? self.zoneAtCursor() : nil
-                if let p = pane { self.snapPreview.showFront(p.preview) } else if let z = zone { self.snapPreview.showFront(z.frame) } else { self.snapPreview.hide() }
+                if let p = pane { self.snapPreview.showFront(p.preview, label: p.label) } else if let z = zone { self.snapPreview.showFront(z.frame) } else { self.snapPreview.hide() }
                 return
             }
             t.invalidate()
@@ -779,7 +802,7 @@ extension AppDelegate {
             let out = !source.insetBy(dx: -8, dy: -8).contains(at)
             let zone = free || !out || pane != nil ? nil : self.zoneAtCursor()
             if Pointer.buttonDown {
-                if let p = pane { self.snapPreview.showFront(p.preview) } else if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
+                if let p = pane { self.snapPreview.showFront(p.preview, label: p.label) } else if let z = zone { self.snapPreview.showFront(z.frame) } else if !windowDrag { self.snapPreview.hide() }
                 return
             }
             t.invalidate()
@@ -1007,8 +1030,9 @@ extension AppDelegate {
                 guard m !== g.host, let sub = m.grid else { break }
                 g = sub
             }
-        case "/pane-tab-select", "/pane-tab-close", "/pane-tab-drag", "/pane-focus", "/pane-action":
-            guard let h = controllers.first(where: { $0.grid?.host === $0 }), let g = h.grid else { break }
+        case "/pane-tab-select", "/pane-tab-close", "/pane-tab-drag", "/pane-tab-hover", "/pane-focus", "/pane-action":
+            // The window's own grid, not a split inside one of its panes.
+            guard let h = controllers.first(where: { $0.grid?.host === $0 && $0.paneHost == nil }), let g = h.grid else { break }
             h.window?.tabGroup?.selectedWindow = h.window
             let leaves = g.tree.leaves, i = Int(num("i")), t = Int(num("t"))
             let v = i >= 0 && i < leaves.count ? g.views[leaves[i]] : nil
@@ -1019,6 +1043,10 @@ extension AppDelegate {
             case "/pane-tab-drag":
                 let p = NSPoint(x: num("x"), y: num("y"))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v?.dragged(to: p, tab: t); v?.dropped(at: p, tab: t) }
+            // A tab held over `p`, not let go: the outline and its label show.
+            case "/pane-tab-hover":
+                let p = NSPoint(x: num("x"), y: num("y"))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v?.dragged(to: p, tab: t) }
             default:
                 // The same actions the menu items send, as a key press reaches them.
                 let item = NSMenuItem(); item.tag = Int(num("n"))
@@ -1170,6 +1198,7 @@ extension AppDelegate {
                                      "pointer_window": NSWindow.windowNumber(at: Pointer.location, belowWindowWithWindowNumber: 0),
                                      "pointer_amux": amuxWindow(at: Pointer.location)?.window?.title ?? "",
                                      "content_frame": arrangeTarget.map { NSStringFromRect($0.convertToScreen($0.contentLayoutRect)) } ?? "", "preview_frame": NSStringFromRect(snapPreview.panel.frame),
+                                     "preview_label": snapPreview.labelText,
                                      "tracking": tabDragTimer?.isValid ?? false,
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
