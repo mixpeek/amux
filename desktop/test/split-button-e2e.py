@@ -203,12 +203,19 @@ try:
         p = a.wait_page(i, lambda p: p.get("peek") == "splitw")
         check(f"pane {i} reopens on the deep link, signed in", p.get("auth") == "owner" and p.get("peek") == "splitw" and p.get("sessions") == 200, p)
 
-    print("a full grid")
-    for _ in range(3):
-        a.send("split", 2)
+    # Owner, 2026-10-29: "if i do a split button in a worker it should make the
+    # split tab in that tab's pane then rather than the neighboring pane".
+    print("Split in a pane splits that pane, down to the deepest level, then beside")
+    nested0 = log().count("verdict=split_button_nested")
+    for _ in range(4):
+        a.send("split", 3)
     w = grid(a.state())
-    check("four panes at most", len(w.get("panes") or []) == 4, w)
-    check("the fifth joined a pane as a tab", "verdict=pane_split_joined reason=grid_full" in log() and any(len(t) == 2 for t in w.get("pane_tabs") or []), w.get("pane_tabs"))
+    check("the window keeps its two panes", len(w.get("panes") or []) == 2, w)
+    check("each Split nested the pane it was pressed in", log().count("verdict=split_button_nested") - nested0 == 4,
+          log().count("verdict=split_button_nested") - nested0)
+    check("that pane is now a split of its own", any(" | " in t[0] for t in w.get("pane_tabs") or []), w.get("pane_tabs"))
+    a.send("split", 3)
+    check("past the deepest level, Split adds a pane beside", "verdict=split_button_sibling reason=too_deep" in log(), log()[-400:])
     a.stop()
 finally:
     try:

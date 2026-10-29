@@ -736,7 +736,7 @@ extension AppDelegate {
 
     /// "Split this tab": the tab pane `id` shows becomes a split of its own,
     /// that page and a second copy of it side by side, each with its own tabs.
-    func nestSplit(_ c: DashboardWindowController, in g: PaneGrid) {
+    func nestSplit(_ c: DashboardWindowController, in g: PaneGrid, url: URL? = nil) {
         guard let id = g.id(of: c), g.canNest(id) else {
             dlog("verdict=pane_nest_refused reason=\(c.grid != nil && c !== g.host ? "already_split" : "too_deep") depth=\(c.depth)")
             return
@@ -765,7 +765,7 @@ extension AppDelegate {
         c.paneHost = up
         let n = DashboardWindowController(app: self, frame: up.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
-        if let u = c.webView.url { n.load(u) } else { n.showConnectPage() }
+        if let u = url ?? c.webView.url { n.load(u) } else { n.showConnectPage() }
         // Along the pane's longer side, so splits inside splits stay readable.
         let size = g.views[id]?.bounds.size ?? .zero
         let edge: PaneEdge = size.width >= size.height ? .right : .bottom
@@ -825,6 +825,20 @@ extension AppDelegate {
     /// the right of `c`'s pane, as if a tab of it were dropped on that edge.
     /// A full grid takes it as a tab of the pane instead (dockPane).
     func splitPane(_ c: DashboardWindowController, url: URL?) {
+        // A page already in a pane splits THAT pane: its tab becomes a split of
+        // its own, beside its neighbours rather than taking a neighbour's room
+        // (owner, 2026-10-29: "if i do a split button in a worker it should
+        // make the split tab in that tab's pane then rather than the
+        // neighboring pane"). Past the deepest level it adds a pane beside, as
+        // before, and says so.
+        if let g = c.grid ?? c.paneHost?.grid, let id = g.id(of: c) {
+            if g.canNest(id) {
+                dlog("verdict=split_button_nested depth=\(c.depth + 1)")
+                nestSplit(c, in: g, url: url)
+                return
+            }
+            dlog("verdict=split_button_sibling reason=too_deep depth=\(c.depth)")
+        }
         // The grid the page is in; a page hosting a split splits that split.
         let host = c.grid != nil ? c : (c.paneHost ?? c)
         let paneId = host.grid?.id(of: c)

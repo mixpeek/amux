@@ -1120,7 +1120,8 @@ extension AppDelegate {
         // A click on the Split button of the focused pane (or the only page).
         case "/split":
             let host = controllers.first { $0.grid != nil && isShown($0) } ?? controllers.first { isShown($0) }
-            if let c = host?.grid.flatMap({ g in g.focused.flatMap { g.members[$0] } }) ?? host {
+            // The innermost focused pane's page, as a click there would be.
+            if let c = host?.grid.map(deepestFocused).flatMap({ g in g.focused.flatMap { g.members[$0] } }) ?? host {
                 c.webView.evaluateJavaScript("document.getElementById('peek-split-toggle').click()")
             }
         // Show the tab whose page is on #<view> (perf-bench.py times the switch).
