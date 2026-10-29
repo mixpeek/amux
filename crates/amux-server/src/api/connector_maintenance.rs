@@ -102,11 +102,16 @@ pub(super) async fn pass(ctx: &ConnectorsCtx) -> Value {
                 // transport error and was recorded as "provider unreachable", so the
                 // list showed a working key as an error after every pass. The Test
                 // button answers "untested" for these; upkeep says the same and
-                // records nothing, like a declared key with no test_url below.
+                // records that it tried nothing. The record replaces a failure an
+                // older pass stored, which nothing else would clear until someone
+                // pressed Test; the list and the dashboard read untested as no
+                // failure (status_after_test, _connTestFailed).
                 if provider.test_url.is_empty() && provider.id != "telegram" {
                     tracing::info!(connector = %provider.id, measured = false, n_considered = 1,
                         verdict = "connector_maintenance_untested", "connector has no test endpoint; upkeep did not probe it");
-                    keys.push(json!({"connector":provider.id,"status":"untested","measured":false}));
+                    let check = json!({"connector":provider.id,"ok":false,"status":"untested","measured":false});
+                    record_test(&ctx.home, provider.id, &check);
+                    keys.push(check);
                     continue;
                 }
                 let url = if provider.id == "telegram" {
@@ -161,7 +166,7 @@ pub(super) async fn pass(ctx: &ConnectorsCtx) -> Value {
             )
         })
         .count()
-        + keys.iter().filter(|k| k["ok"] == false).count()
+        + keys.iter().filter(|k| k["ok"] == false && k["status"] != "untested").count()
         + accounts
             .iter()
             .flat_map(|a| a["canary"].as_object().into_iter().flat_map(|c| c.values()))

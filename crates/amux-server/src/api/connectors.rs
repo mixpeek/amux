@@ -5486,10 +5486,14 @@ mod connector_maintenance_regressions {
         // record the transport error, so the list showed it as an error.
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("server.env"), "DEVTO_API_KEY=fixture-devto-key\n").unwrap();
+        // What an older pass stored on the live server (2026-10-29 14:03).
+        record_test(home.path(), "devto", &json!({"ok":false,"status":"error","detail":"provider unreachable; inspect network configuration"}));
         let report = maintenance_pass(&ctx(home.path(), RefreshHttp::new(false))).await;
         let devto = report["api_keys"].as_array().unwrap().iter().find(|k| k["connector"] == "devto").cloned();
         assert_eq!(devto.as_ref().map(|k| k["status"].clone()), Some(json!("untested")), "{report}");
-        assert!(last_tests(home.path()).get("devto").is_none(), "an untried connector must not get a recorded test");
+        let recorded = last_tests(home.path()).get("devto").cloned();
+        assert_eq!(recorded.as_ref().map(|t| t["status"].clone()), Some(json!("untested")), "{recorded:?}");
+        assert_eq!(status_after_test("connected", recorded.as_ref()).0, "connected", "untested must not list it as an error");
         assert_eq!(report["failures"], 0);
         assert!(!report.to_string().contains("fixture-devto-key"));
     }
