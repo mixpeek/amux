@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Remote Access with Tailscale — amux</title>
+  <title>Self-Hosted amux on Your iPhone with Tailscale: HTTPS Setup Guide | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Access your amux dashboard securely from anywhere using Tailscale.">
-  <meta name="keywords" content="amux remote access, tailscale amux, remote AI agents, secure agent dashboard">
+  <meta name="description" content="Reach your self-hosted amux server from your iPhone, iPad or Mac over Tailscale with a browser-trusted HTTPS certificate. No public ports, no SSH exposure. Step-by-step setup, renewal and troubleshooting.">
+  <meta name="keywords" content="amux tailscale, self-hosted ai agents iphone, tailscale cert https, amux remote access, coding agents from iphone, agent orchestration tailscale">
   <link rel="canonical" href="https://amux.io/guides/remote-access-tailscale/">
-  <meta property="og:title" content="Remote Access with Tailscale — amux">
-  <meta property="og:description" content="Access your amux dashboard securely from anywhere using Tailscale.">
+  <meta property="og:title" content="Self-Hosted amux on Your iPhone with Tailscale: HTTPS Setup Guide">
+  <meta property="og:description" content="Reach your self-hosted amux server from your iPhone, iPad or Mac over Tailscale with a browser-trusted HTTPS certificate. No public ports, no SSH exposure. Step-by-step setup, renewal and troubleshooting.">
   <meta property="og:url" content="https://amux.io/guides/remote-access-tailscale/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,8 +20,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Remote Access with Tailscale","item":"https://amux.io/guides/remote-access-tailscale/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Remote Access with Tailscale","description":"Access your amux dashboard securely from anywhere using Tailscale.","url":"https://amux.io/guides/remote-access-tailscale/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"}, {"@type": "ListItem", "position": 3, "name": "Remote Access with Tailscale", "item": "https://amux.io/guides/remote-access-tailscale/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "Self-Hosted amux on Your iPhone with Tailscale: HTTPS Setup Guide", "description": "Reach your self-hosted amux server from your iPhone, iPad or Mac over Tailscale with a browser-trusted HTTPS certificate. No public ports, no SSH exposure. Step-by-step setup, renewal and troubleshooting.", "url": "https://amux.io/guides/remote-access-tailscale/", "datePublished": "2026-02-26", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "HowTo", "name": "Reach a self-hosted amux server from your iPhone over Tailscale with HTTPS", "description": "Reach your self-hosted amux server from your iPhone, iPad or Mac over Tailscale with a browser-trusted HTTPS certificate. No public ports, no SSH exposure. Step-by-step setup, renewal and troubleshooting.", "totalTime": "PT15M", "tool": [{"@type": "HowToTool", "name": "Tailscale"}, {"@type": "HowToTool", "name": "amux"}], "step": [{"@type": "HowToStep", "position": 1, "name": "Install Tailscale on the server and your devices", "text": "Install Tailscale on the machine that runs amux and on your iPhone, iPad or laptop, and sign in to the same tailnet on each.", "url": "https://amux.io/guides/remote-access-tailscale/#step-1"}, {"@type": "HowToStep", "position": 2, "name": "Enable HTTPS certificates in the Tailscale admin console", "text": "In the Tailscale admin console, open the DNS page, make sure MagicDNS is on, and enable HTTPS Certificates.", "url": "https://amux.io/guides/remote-access-tailscale/#step-2"}, {"@type": "HowToStep", "position": 3, "name": "Issue the certificate into ~/.amux/tls", "text": "On the server run: tailscale cert --cert-file ~/.amux/tls/<host>.<tailnet>.ts.net.crt --key-file ~/.amux/tls/<host>.<tailnet>.ts.net.key <host>.<tailnet>.ts.net", "url": "https://amux.io/guides/remote-access-tailscale/#step-3"}, {"@type": "HowToStep", "position": 4, "name": "Restart amux", "text": "amux loads certificates when it starts. Restart it so it picks up the new files: launchctl kickstart -k gui/$(id -u)/com.amux.server-rs on macOS, or systemctl --user restart amux-server on Linux.", "url": "https://amux.io/guides/remote-access-tailscale/#step-4"}, {"@type": "HowToStep", "position": 5, "name": "Open the dashboard on any tailnet device", "text": "Open https://<host>.<tailnet>.ts.net:8824. The browser shows a valid padlock because the certificate is issued by Let's Encrypt through Tailscale.", "url": "https://amux.io/guides/remote-access-tailscale/#step-5"}, {"@type": "HowToStep", "position": 6, "name": "Add the server to the iPhone, iPad or Mac app", "text": "In the amux iPhone and iPad app or the Mac app, add https://<host>.<tailnet>.ts.net:8824 as a connection. On Android or any other browser, install the dashboard as a PWA instead.", "url": "https://amux.io/guides/remote-access-tailscale/#step-6"}, {"@type": "HowToStep", "position": 7, "name": "Schedule renewal", "text": "Certificates from tailscale cert last 90 days. Re-run the command and restart amux on a schedule, for example a monthly amux schedule with kind shell.", "url": "https://amux.io/guides/remote-access-tailscale/#step-7"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does amux create the Tailscale certificate for me?", "acceptedAnswer": {"@type": "Answer", "text": "No. You run tailscale cert yourself and write the files into ~/.amux/tls. When amux starts, it finds any <name>.ts.net.crt and matching .key in that folder and serves that certificate to clients that connect by that name. Everything else, including localhost, keeps amux's own self-signed certificate."}}, {"@type": "Question", "name": "Do I need to open ports on my router or expose SSH?", "acceptedAnswer": {"@type": "Answer", "text": "No. Tailscale connects your devices directly over an encrypted WireGuard network, so port 8824 is only reachable from devices in your tailnet. Never expose port 8824 to the public internet."}}, {"@type": "Question", "name": "Why does my browser still show a certificate warning?", "acceptedAnswer": {"@type": "Answer", "text": "Usually the filename does not match the name you typed. The file must be named exactly <host>.<tailnet>.ts.net.crt (with a matching .key) and you must open that same full name, not the 100.x address or the short host name. Then restart amux, because certificates are read at startup."}}, {"@type": "Question", "name": "How often do I need to renew the certificate?", "acceptedAnswer": {"@type": "Answer", "text": "Certificates from tailscale cert expire after 90 days. Re-run the command and restart amux before then. A monthly amux schedule with kind shell does this without using an agent."}}, {"@type": "Question", "name": "Can I sign in from my phone without pasting the token?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, if you set AMUX_TRUST_TAILNET_OWNER=1 on the server. Devices that the local Tailscale daemon reports as your own (same Tailscale user, untagged, unexpired) then sign in automatically. Forwarded headers, LAN addresses, other tailnet users, tagged devices and expired devices never qualify."}}, {"@type": "Question", "name": "Can teammates sign in with their Tailscale login?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, with AMUX_TAILNET_MEMBER_AUTH=1. An invited member whose Tailscale login matches their accepted member email signs in by that login alone and gets that member's scope. Removing them from the tailnet revokes access within a minute; deleting the member revokes it at once."}}, {"@type": "Question", "name": "Does this work with amux Cloud?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. An amux Cloud server can join your own tailnet from the dashboard (Settings, Your tailnet) with a login link or an auth key. It then publishes itself with tailscale serve at https://<host>.<tailnet>.ts.net. Nothing about your tailnet passes through amux Cloud."}}]}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -48,20 +50,137 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Remote Access with Tailscale</span></div>
-    <h1>Remote Access with Tailscale</h1>
-<p class="subtitle">Access your agent dashboard from anywhere. No port forwarding needed.</p>
-<p>amux generates TLS certificates automatically. With Tailscale, your dashboard is accessible from any device on your tailnet — phone, laptop, or another server.</p>
+    <h1>Remote Access with Tailscale: Your Self-Hosted amux on iPhone, iPad and Mac</h1>
+<p class="subtitle">Reach your amux server from any device with a real HTTPS certificate. No public ports, no SSH exposure, no port forwarding.</p>
+<p>amux (amux.io, <a href="https://github.com/mixpeek/amux">github.com/mixpeek/amux</a>) is a self-hosted control plane for AI coding agents: Claude Code, Codex, Gemini CLI, OpenCode and Ollama models running side by side on your own Mac or Linux machine. Tailscale is the simplest way to reach that machine from your phone. This guide takes about 15 minutes and ends with <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code> opening on your iPhone with a valid padlock.</p>
+
+<h2>How it works</h2>
+<p>amux always serves HTTPS on port 8824. On first start it creates a self-signed certificate in <code>~/.amux/tls</code>, which is fine for <code>https://localhost:8824</code> but shows a warning everywhere else. Tailscale can issue a Let's Encrypt certificate for your machine's MagicDNS name. You write that certificate into <code>~/.amux/tls</code> yourself with <code>tailscale cert</code>. When amux starts, it looks for a <code>&lt;name&gt;.ts.net.crt</code> file with a matching <code>.key</code> and serves it to any client that connects by that exact name. Clients that connect by localhost or by IP address still get the self-signed certificate.</p>
+<p>amux does not request or renew the Tailscale certificate for you. That part is the <code>tailscale cert</code> command below.</p>
+
+<h2>Before you start</h2>
+<ul>
+<li>amux installed and running on a Mac or Linux machine (<code>curl -fsSL https://amux.io/install.sh | bash</code>, then open <code>https://localhost:8824</code>).</li>
+<li>A Tailscale account. The free personal plan is enough.</li>
+<li>Admin access to your tailnet's admin console, to turn on HTTPS certificates.</li>
+</ul>
+
 <h2>Setup</h2>
-<ol>
-<li>Install Tailscale on your amux server and devices</li>
-<li>amux auto-detects Tailscale and generates a valid TLS cert</li>
-<li>Open <code>https://your-tailscale-ip:8824</code> from any device</li>
-<li>Install as PWA on your phone for quick access</li>
-</ol>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+<h3 id="step-1">1. Install Tailscale on the server and your devices</h3>
+<p>Install Tailscale on the machine that runs amux and on every device you want to use: iPhone, iPad, laptop. Sign in to the same tailnet on each one. Note the server's MagicDNS name. It has the form <code>&lt;host&gt;.&lt;tailnet&gt;.ts.net</code>, for example <code>desktop.tail5ce8f5.ts.net</code>. You can read it in the Tailscale app, in the admin console's Machines page, or on the server with:</p>
+<pre><code>tailscale status --json | grep DNSName</code></pre>
+
+<h3 id="step-2">2. Enable HTTPS certificates in the Tailscale admin console</h3>
+<p>Open the Tailscale admin console, go to <strong>DNS</strong>, make sure <strong>MagicDNS</strong> is on, and enable <strong>HTTPS Certificates</strong>. Without this, <code>tailscale cert</code> refuses to issue a certificate.</p>
+
+<h3 id="step-3">3. Issue the certificate into ~/.amux/tls</h3>
+<p>On the amux server, replace <code>&lt;host&gt;.&lt;tailnet&gt;</code> with your own name and run:</p>
+<pre><code>tailscale cert \
+  --cert-file ~/.amux/tls/&lt;host&gt;.&lt;tailnet&gt;.ts.net.crt \
+  --key-file  ~/.amux/tls/&lt;host&gt;.&lt;tailnet&gt;.ts.net.key \
+  &lt;host&gt;.&lt;tailnet&gt;.ts.net</code></pre>
+<p>The file names matter. amux reads the host name from the file name, so the part before <code>.crt</code> must be exactly the name you will type in the browser. Keep one Tailscale certificate pair in that folder. If you set <code>AMUX_HOME</code>, the folder is <code>$AMUX_HOME/tls</code> instead.</p>
+<p>On Linux, if <code>tailscale cert</code> says access is denied, allow your user to drive Tailscale once as root: <code>sudo tailscale set --operator=$USER</code>.</p>
+
+<h3 id="step-4">4. Restart amux</h3>
+<p>amux reads certificates when it starts, so restart it to pick up the new files:</p>
+<pre><code># macOS
+launchctl kickstart -k gui/$(id -u)/com.amux.server-rs
+
+# Linux
+systemctl --user restart amux-server</code></pre>
+
+<h3 id="step-5">5. Open the dashboard on any tailnet device</h3>
+<p>On your phone or laptop, with Tailscale connected, open:</p>
+<pre><code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code></pre>
+<p>The browser should show a valid padlock. A trusted certificate also lets the dashboard register its service worker, which the installable PWA needs. Sign in with the token from <code>~/.amux/auth_token</code> on the server, or turn on the owner sign-in described below.</p>
+
+<h3 id="step-6">6. Add the server to the iPhone, iPad or Mac app</h3>
+<ul>
+<li><strong>iPhone and iPad:</strong> install <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux from the App Store</a> (one app for both), choose self-hosted, and enter <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code>.</li>
+<li><strong>Mac:</strong> download <a href="https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.dmg">Amux-macOS.dmg</a> (macOS 12+, Apple silicon and Intel) and add the same URL as a connection. The app is not notarized yet, so the first open needs System Settings, Privacy &amp; Security, <strong>Open Anyway</strong>.</li>
+<li><strong>Android or any browser:</strong> open the URL and choose <strong>Install app</strong> or <strong>Add to Home Screen</strong> to install the PWA.</li>
+</ul>
+<p>See <a href="/guides/manage-coding-agents-from-iphone/">Manage AI coding agents from your iPhone or iPad</a> for what you can do once connected.</p>
+
+<h3 id="step-7">7. Schedule renewal every 90 days</h3>
+<p>Certificates from <code>tailscale cert</code> expire after 90 days. Re-run the command and restart amux before then. The amux scheduler can do it with a <code>shell</code> schedule, which runs the command directly with no agent and no model cost. On macOS, from the server:</p>
+<pre><code>H=&lt;host&gt;.&lt;tailnet&gt;.ts.net
+curl -sk -X POST -H 'Content-Type: application/json' https://localhost:8824/api/schedules -d "{
+  \"title\": \"Renew Tailscale cert\",
+  \"kind\": \"shell\",
+  \"schedule_expr\": \"monthly on 1 at 4am\",
+  \"command\": \"tailscale cert --cert-file ~/.amux/tls/$H.crt --key-file ~/.amux/tls/$H.key $H &amp;&amp; launchctl kickstart -k gui/\$(id -u)/com.amux.server-rs\"
+}"</code></pre>
+<p>On Linux, swap the last command for <code>systemctl --user restart amux-server</code>. Requests from localhost need no token. Pick a quiet hour, since the restart briefly disconnects open dashboards.</p>
+
+<h2>Optional: sign in by Tailscale identity</h2>
+<p>By default every device signs in with the bearer token in <code>~/.amux/auth_token</code>. Two server settings let Tailscale's own identity do it instead. Both are off unless set, and both go in <code>~/.amux/server.env</code>.</p>
+<table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+<thead><tr><th style="text-align:left;padding:.5rem;border-bottom:1px solid var(--border)">Setting</th><th style="text-align:left;padding:.5rem;border-bottom:1px solid var(--border)">What it does</th><th style="text-align:left;padding:.5rem;border-bottom:1px solid var(--border)">Never qualifies</th></tr></thead>
+<tbody>
+<tr><td style="padding:.5rem;vertical-align:top"><code>AMUX_TRUST_TAILNET_OWNER=1</code></td><td style="padding:.5rem;vertical-align:top">Devices that the local Tailscale daemon identifies as the server owner's own sign in automatically. The connecting address must match the daemon's record for that device. amux then sets its usual Secure, HttpOnly owner session cookie; the owner key never goes into a link or browser storage.</td><td style="padding:.5rem;vertical-align:top">Forwarded headers, LAN addresses, other tailnet users, tagged devices and expired devices.</td></tr>
+<tr><td style="padding:.5rem;vertical-align:top"><code>AMUX_TAILNET_MEMBER_AUTH=1</code></td><td style="padding:.5rem;vertical-align:top">An invited member signs in by Tailscale login alone, when that login equals their accepted member email, and gets that member's scope. No cookie is minted: the daemon's answer is cached per address for 60 seconds, so removing someone from the tailnet revokes them within a minute, and deleting the member revokes them at once.</td><td style="padding:.5rem;vertical-align:top">Tagged devices, expired devices and the server owner's own devices.</td></tr>
+</tbody>
+</table>
+<p>If the Tailscale identity check is unavailable, ordinary token sign-in keeps working.</p>
+
+<h2>amux Cloud: join your own tailnet</h2>
+<p>An amux Cloud server (your own dedicated server at <code>yourname.amux.io</code>) already has a public HTTPS address. You can also put it on your tailnet: open <strong>Settings</strong>, then <strong>Your tailnet</strong>, and choose <strong>Add to my tailnet</strong>. Approve the device with the Tailscale login link, or paste an auth key to join without the link. Once it is on the tailnet, amux runs <code>tailscale serve</code>, which publishes the server at <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net</code> with Tailscale's own certificate, so you skip steps 3, 4 and 7. Nothing about your tailnet passes through amux Cloud. Only the server's owner can change this setting.</p>
+
+<h2>Why no public ports or SSH are needed</h2>
+<ul>
+<li>Tailscale builds an encrypted WireGuard network between your own devices, so the server needs no open inbound port on your router or cloud firewall.</li>
+<li>The dashboard, the apps and the REST API all use the same HTTPS address, so there is no SSH tunnel to keep alive on your phone.</li>
+<li>Port 8824 stays private to your tailnet. Never expose it to the public internet.</li>
+<li>amux still checks its bearer token (or the Tailscale identity settings above) and refuses cross-site requests, so tailnet membership alone does not grant access.</li>
+</ul>
+
+<h2>Troubleshooting</h2>
+<h3>The browser still shows a certificate warning</h3>
+<ul>
+<li>Check the file names in <code>~/.amux/tls</code>. They must be <code>&lt;host&gt;.&lt;tailnet&gt;.ts.net.crt</code> and <code>&lt;host&gt;.&lt;tailnet&gt;.ts.net.key</code>, spelled exactly like the name you open.</li>
+<li>Open the full MagicDNS name. <code>https://100.x.y.z:8824</code> or the short host name gets the self-signed certificate by design.</li>
+<li>Restart amux after writing or renewing the files. Certificates are read at startup.</li>
+<li>Check that the certificate has not expired: <code>openssl x509 -enddate -noout -in ~/.amux/tls/&lt;host&gt;.&lt;tailnet&gt;.ts.net.crt</code>.</li>
+</ul>
+<h3>tailscale cert fails</h3>
+<ul>
+<li>HTTPS Certificates is off in the admin console's DNS page. Turn it on and retry.</li>
+<li>MagicDNS is off, so the machine has no <code>ts.net</code> name. Turn it on.</li>
+<li>On Linux, "access denied" means your user cannot drive tailscaled. Run <code>sudo tailscale set --operator=$USER</code> once.</li>
+</ul>
+<h3>The name does not resolve on my phone</h3>
+<ul>
+<li>Check that Tailscale is connected on the phone and that it is signed in to the same tailnet as the server.</li>
+<li>Use the exact name from <code>tailscale status</code>. The tailnet part (for example <code>tail5ce8f5</code>) is specific to your tailnet.</li>
+</ul>
+
+<h2>FAQ</h2>
+<h3>Does amux create the Tailscale certificate for me?</h3>
+<p>No. You run tailscale cert yourself and write the files into ~/.amux/tls. When amux starts, it finds any &lt;name&gt;.ts.net.crt and matching .key in that folder and serves that certificate to clients that connect by that name. Everything else, including localhost, keeps amux&#x27;s own self-signed certificate.</p>
+<h3>Do I need to open ports on my router or expose SSH?</h3>
+<p>No. Tailscale connects your devices directly over an encrypted WireGuard network, so port 8824 is only reachable from devices in your tailnet. Never expose port 8824 to the public internet.</p>
+<h3>Why does my browser still show a certificate warning?</h3>
+<p>Usually the filename does not match the name you typed. The file must be named exactly &lt;host&gt;.&lt;tailnet&gt;.ts.net.crt (with a matching .key) and you must open that same full name, not the 100.x address or the short host name. Then restart amux, because certificates are read at startup.</p>
+<h3>How often do I need to renew the certificate?</h3>
+<p>Certificates from tailscale cert expire after 90 days. Re-run the command and restart amux before then. A monthly amux schedule with kind shell does this without using an agent.</p>
+<h3>Can I sign in from my phone without pasting the token?</h3>
+<p>Yes, if you set AMUX_TRUST_TAILNET_OWNER=1 on the server. Devices that the local Tailscale daemon reports as your own (same Tailscale user, untagged, unexpired) then sign in automatically. Forwarded headers, LAN addresses, other tailnet users, tagged devices and expired devices never qualify.</p>
+<h3>Can teammates sign in with their Tailscale login?</h3>
+<p>Yes, with AMUX_TAILNET_MEMBER_AUTH=1. An invited member whose Tailscale login matches their accepted member email signs in by that login alone and gets that member&#x27;s scope. Removing them from the tailnet revokes access within a minute; deleting the member revokes it at once.</p>
+<h3>Does this work with amux Cloud?</h3>
+<p>Yes. An amux Cloud server can join your own tailnet from the dashboard (Settings, Your tailnet) with a login link or an auth key. It then publishes itself with tailscale serve at https://&lt;host&gt;.&lt;tailnet&gt;.ts.net. Nothing about your tailnet passes through amux Cloud.</p>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/guides/manage-coding-agents-from-iphone/">Manage AI coding agents from your iPhone or iPad</a></li>
+<li><a href="/guides/mobile-management-pwa/">Mobile management via PWA</a></li>
+<li><a href="/guides/run-ai-agents-remotely/">Run AI agents remotely</a></li>
+<li><a href="/guides/getting-started/">Getting started with amux</a></li>
+</ul>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents from one dashboard or your phone. One Rust binary with SQLite. Self-host free under MIT + Commons Clause, or use <a href="https://amux.io/start/">amux Cloud</a>.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
