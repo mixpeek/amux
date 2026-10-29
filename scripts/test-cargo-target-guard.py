@@ -324,6 +324,53 @@ class CargoReclaimTests(unittest.TestCase):
             proc.kill()
             proc.wait()
 
+    def test_build_target_reads_out_dir_target_dir_and_env(self):
+        """AF-983: which target a compiler writes into, from its own argv/env."""
+        bt = guard.build_target
+        self.assertEqual(bt('rustc', ['rustc', '--crate-name', 'x', '--out-dir', '/t/a/debug/deps'], {}),
+                         Path('/t/a/debug/deps'))
+        self.assertEqual(bt('clippy-driver', ['clippy-driver', 'rustc', '--out-dir=/t/b/debug/deps'], {}),
+                         Path('/t/b/debug/deps'))
+        self.assertEqual(bt('cargo', ['cargo', 'build', '--target-dir', '/t/c'], {'CARGO_TARGET_DIR': '/t/d'}),
+                         Path('/t/c'), 'the flag wins over the environment, as in cargo')
+        self.assertEqual(bt('cargo', ['cargo', 'test'], {'CARGO_TARGET_DIR': '/t/d'}), Path('/t/d'))
+        self.assertIsNone(bt('cargo', ['cargo', 'test'], {}), 'a default target cannot be named')
+        self.assertIsNone(bt('rustc', ['rustc', '-vV'], {'CARGO_TARGET_DIR': '/t/d'}),
+                          "rustc's target is its --out-dir, never the environment")
+
+    def test_a_compiler_writing_into_another_target_does_not_block_this_one(self):
+        """AF-983. On 2026-10-28 the shared target sat over budget all day.
+
+        Its purge was deferred by cargo/rustc processes building into OTHER
+        target dirs. A compiler that provably writes elsewhere no longer
+        blocks; one writing here, or one whose target cannot be read, still does.
+        """
+        bin_dir = self.base / 'bin'
+        bin_dir.mkdir()
+        binary = bin_dir / 'rustc'
+        source = self.base / 'slow.c'
+        source.write_text('#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
+        subprocess.run(['cc', str(source), '-o', str(binary)], check=True, capture_output=True)
+        proc = subprocess.Popen([str(binary)])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        other = self.base / 'rust-build-target-other' / 'debug' / 'deps'
+        cases = [
+            ('elsewhere', (['rustc', '--out-dir', str(other)], {}), False),
+            ('this target', (['rustc', '--out-dir', str(self.artifacts)], {}), True),
+            ('unreadable', None, True),
+            ('no out-dir', (['rustc', '-vV'], {}), True),
+        ]
+        for label, seen, blocks in cases:
+            with self.subTest(label):
+                def reader(pid, seen=seen):
+                    return seen if pid == str(proc.pid) else guard.process_argv_env(pid)
+                try:
+                    active, _ = guard.active_processes([self.root], read_process=reader)
+                except guard.Deferred as unmeasured:
+                    self.skipTest('ambient process table unmeasurable on this host: %s' % unmeasured)
+                self.assertEqual(str(proc.pid) in active, blocks, label)
+
     def test_consecutive_deferrals_on_one_condition_count_up_and_reset_on_a_new_one(self):
         """AMUX-4944. 243 identical refusals logged exactly like one.
 

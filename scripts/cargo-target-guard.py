@@ -191,7 +191,64 @@ def parse_etime(text):
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
-def active_processes(targets):
+COMPILERS = ('cargo', 'rustc', 'rustdoc', 'clippy-driver')
+
+
+def build_target(name, argv, env):
+    """The target directory a compiler process writes into, or None if unknown.
+
+    AF-984/AF-983 (2026-10-28): the shared target sat at 69-77 GB all day
+    because any cargo or rustc ANYWHERE on the Mac deferred its purge, while
+    some lane was nearly always compiling into another target (a private one,
+    rust-build-target-amux-cloud). The native locks taken above already stop a
+    build in THIS target; a compiler writing elsewhere is no threat to it.
+
+    rustc, rustdoc and clippy-driver are told where to write with --out-dir
+    (cargo passes <target>/<profile>/deps); cargo's target is --target-dir or
+    CARGO_TARGET_DIR. Pure, so the rule is pinned without spawning compilers.
+    """
+    flag = '--target-dir' if name == 'cargo' else '--out-dir'
+    for i, arg in enumerate(argv):
+        if arg == flag and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith(flag + '='):
+            return Path(arg[len(flag) + 1:])
+    if name == 'cargo' and env.get('CARGO_TARGET_DIR'):
+        return Path(env['CARGO_TARGET_DIR'])
+    return None
+
+
+def process_argv_env(pid, linux=None, proc_root=Path('/proc')):
+    """argv and environment of one same-user process, or None when unreadable."""
+    linux = sys.platform.startswith('linux') if linux is None else linux
+    try:
+        if linux:
+            argv = (proc_root / pid / 'cmdline').read_bytes().split(b'\0')
+            environ = (proc_root / pid / 'environ').read_bytes().split(b'\0')
+            argv = [a.decode(errors='replace') for a in argv if a]
+            pairs = [e.decode(errors='replace') for e in environ if e]
+        else:
+            # macOS: -E appends the environment after the arguments. Paths on
+            # this Mac's targets carry no spaces; a split that finds no flag
+            # reads as unknown, which defers.
+            out = subprocess.run(['ps', '-E', '-ww', '-p', pid, '-o', 'command='],
+                                 capture_output=True, text=True, timeout=5).stdout.split()
+            if not out:
+                return None
+            argv, pairs = out, [t for t in out if '=' in t and not t.startswith('-')]
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return argv, dict(p.split('=', 1) for p in pairs if '=' in p)
+
+
+def writes_into(target, roots):
+    # resolve(): /tmp is /private/tmp on macOS, and one directory named two
+    # ways must still read as the same target.
+    target = Path(target).expanduser().resolve()
+    return any(overlaps(target, Path(root).resolve()) for root in roots)
+
+
+def active_processes(targets, read_process=process_argv_env):
     try:
         output = subprocess.run(['ps', '-A', '-ww', '-o', 'pid=,etime=,comm='],
                                 capture_output=True, text=True, check=True, timeout=5).stdout
@@ -202,14 +259,24 @@ def active_processes(targets):
         raise Deferred('process probe unmeasured: empty or malformed ps output')
     active = []
     stale = []
+    elsewhere = []
     for pid, etime, command in rows:
         # Linux ps comm is truncated. Resolve same-user executable paths so a
         # directly launched test binary is protected after its Cargo parent exits.
         executable = process_executable(pid, command)
         if executable is None:
             continue
-        if executable.name in ('cargo', 'rustc', 'rustdoc', 'clippy-driver'):
-            active.append(pid)
+        if executable.name in COMPILERS:
+            under_target = any(executable == root or root in executable.parents for root in targets)
+            seen = None if under_target else read_process(pid)
+            where = build_target(executable.name, *seen) if seen else None
+            # FAIL CLOSED: an unreadable process, or one whose target cannot be
+            # named, still defers. Only a compiler provably writing elsewhere
+            # is let through.
+            if where is not None and not writes_into(where, targets):
+                elsewhere.append((pid, executable.name, where))
+            else:
+                active.append(pid)
             continue
         if any(executable == root or root in executable.parents for root in targets):
             age = parse_etime(etime)
@@ -220,6 +287,11 @@ def active_processes(targets):
                 active.append(pid)
             else:
                 stale.append((pid, age, executable))
+    if elsewhere:
+        # SURFACED like the stale case: this judgement lets a reclaim through.
+        print('cargo_guard_compiler_elsewhere: not blocking, writes into another target '
+              + ', '.join('pid %s %s -> %s' % (p, n, w) for p, n, w in elsewhere),
+              file=sys.stderr)
     if stale:
         # SURFACED, not silently dropped: this is the judgement that unblocks
         # the reclaim, so it has to be auditable in the builder log.

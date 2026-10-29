@@ -50,6 +50,14 @@ fn mutate(
     // identically. A sweep reads this file, so the count has to be in it.
     let mut streak: Option<(i64, bool)> = None;
     let result = output.and_then(|out| {
+        // The guard's judgements that LET a reclaim through (a compiler
+        // writing into another target, AF-983; a stale process under the
+        // target) are printed to stderr. Without this line they reached no log
+        // when the server ran the guard.
+        let note = String::from_utf8_lossy(&out.stderr);
+        if !note.trim().is_empty() {
+            tracing::info!(path = %path.display(), action, note = %note.trim(), "cargo_reclaim_guard_note");
+        }
         let verdict: serde_json::Value = serde_json::from_slice(&out.stdout)
             .map_err(|e| format!("Cargo reclaim guard returned no valid verdict: {e}"))?;
         if !out.status.success() {
