@@ -14,6 +14,21 @@ test.describe.configure({ timeout: 90_000 });
 // e2e server is shared by every spec in a project, so clear it after each test:
 // left set, it booted settings.spec's next fresh page in Atom One Light (CI
 // ce3589473, settings_theme_toggle on ios-safari).
+// The other direction: settings.spec's Dark mode switch saves ui_theme
+// (amux-light) server-wide while these run in a parallel worker, and a page
+// booting then adopts it. "New theme" copies the active theme, so the editor
+// started from Amux Light, whose dark text failed contrast on the new dark
+// background and nothing was previewed (CI 40857350630, mobile, twice). These
+// tests set their themes themselves; keep the other spec's out.
+test.beforeEach(async ({ context }) => {
+  await context.route(/\/api\/prefs$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const res = await route.fetch();
+    const prefs = await res.json();
+    delete prefs.ui_theme;
+    await route.fulfill({ response: res, json: prefs });
+  });
+});
 test.afterEach(async ({ page }) => {
   await page.evaluate(() => Promise.all(['ui_theme', 'ui_themes'].map(key => fetch('/api/prefs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value: '' }) }))))
