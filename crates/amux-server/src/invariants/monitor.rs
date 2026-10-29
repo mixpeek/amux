@@ -3012,7 +3012,7 @@ async fn served_commit_check() -> Vec<InvariantResult> {
             age_source: age_source.to_string(),
             gate_hold: crate::api::self_update::gate_state()
                 .as_ref()
-                .and_then(checks::gate_hold_reason),
+                .and_then(|g| checks::gate_hold_reason(g, served)),
         }),
         "",
         checks::deploy_lag_threshold_s(),

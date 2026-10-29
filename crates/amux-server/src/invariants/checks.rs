@@ -769,18 +769,45 @@ pub struct DeployLag {
 
 /// The gate's own words for a hold, from `activation-gate.json`. Pure so the
 /// mapping is tested; the caller reads the file.
-pub fn gate_hold_reason(gate: &serde_json::Value) -> Option<String> {
-    if gate["verdict"].as_str() != Some("ci_gate_no_green") {
-        return None;
-    }
+pub fn gate_hold_reason(gate: &serde_json::Value, served: &str) -> Option<String> {
     let tip = gate["tip"].as_str().unwrap_or("");
     let state = gate["tip_state"].as_str().unwrap_or("unknown");
-    let held = gate["held"].as_i64().map(|n| format!(" in the last {n}")).unwrap_or_default();
-    Some(format!(
-        "the CI gate is holding: no main commit{held} passed both `rust` and `checks`, and \
-         main's tip {} is {state}",
-        short(tip)
-    ))
+    // Same commit when one id is a prefix of the other (served is often short).
+    let same = |a: &str, b: &str| {
+        let n = a.len().min(b.len());
+        n >= 7 && a[..n] == b[..n]
+    };
+    match gate["verdict"].as_str() {
+        Some("ci_gate_no_green") => {
+            let held = gate["held"].as_i64().map(|n| format!(" in the last {n}")).unwrap_or_default();
+            Some(format!(
+                "the CI gate is holding: no main commit{held} passed CI, and main's tip {} is {state}",
+                short(tip)
+            ))
+        }
+        // AMUX-6540: the gate's two other hold verdicts. 477 failures in a day
+        // read "the builder may be ticking and still shipping nothing" while the
+        // gate file said ci_gate_held_back: the server was ALREADY on the newest
+        // green commit and the commits after it had not passed CI. That is CI's
+        // to fix, as much as no_green is. held_back counts only when the served
+        // commit IS the gate's target: a target the builder has not shipped is
+        // still the builder's.
+        Some("ci_gate_held_back") if same(gate["target"].as_str().unwrap_or(""), served) => {
+            let n = gate["held"].as_i64().unwrap_or(0);
+            Some(format!(
+                "the CI gate is holding: the server already runs the newest green commit {}, and \
+                 the {n} newer commit(s) up to main's tip {} are {state}",
+                short(served),
+                short(tip)
+            ))
+        }
+        Some("ci_gate_no_rollback") => Some(format!(
+            "the CI gate is holding: the newest green commit is older than the live build, so it \
+             keeps the live build rather than roll back; main's tip {} is {state}",
+            short(tip)
+        )),
+        _ => None,
+    }
 }
 
 /// When did origin/main first move PAST `served`?
@@ -11046,7 +11073,7 @@ mod served_commit_tests {
         let gate = serde_json::json!({"verdict": "ci_gate_no_green", "tip": "210066e2d0a5bd6a",
             "tip_state": "red", "target": "", "held": 40});
         let mut l = lag(73, 97_067);
-        l.gate_hold = gate_hold_reason(&gate);
+        l.gate_hold = gate_hold_reason(&gate, &l.served);
         let held = served_commit_is_current(Some(&l), "", 1_800);
         assert_eq!(held[0].status, Status::Fail);
         let o = &held[0].observed;
@@ -11060,8 +11087,35 @@ mod served_commit_tests {
             serde_json::json!({"verdict": "ci_gate_green", "target": "abc"}),
             serde_json::json!({}),
         ] {
-            assert_eq!(gate_hold_reason(&not_held), None, "{not_held}");
+            assert_eq!(gate_hold_reason(&not_held, "2c375773aaaaaaaa"), None, "{not_held}");
         }
+    }
+
+    /// AMUX-6540: serving the newest green commit while newer ones wait on CI
+    /// is a hold (held_back with target == served); a green target the server
+    /// has NOT shipped is still the builder's; no_rollback is always a hold.
+    #[test]
+    fn a_held_back_gate_on_the_served_commit_is_a_hold_and_an_unshipped_target_is_not() {
+        let served = "19d1dcf1223c";
+        let held = serde_json::json!({"verdict": "ci_gate_held_back", "tip": "2698a2b9e3ca789c",
+            "tip_state": "pending", "target": "19d1dcf1223cdf6ad195c0561d5b25192d8f0000", "held": 28});
+        let why = gate_hold_reason(&held, served).expect("serving the newest green is a CI hold");
+        assert!(why.contains("19d1dcf1223c") && why.contains("28 newer") && why.contains("pending"), "{why}");
+        let mut l = lag(28, 12_930);
+        l.served = served.into();
+        l.gate_hold = Some(why);
+        let r = served_commit_is_current(Some(&l), "", 1_800);
+        assert!(!r[0].observed.contains("cargo_build_backoff"), "not the builder: {}", r[0].observed);
+
+        let unshipped = serde_json::json!({"verdict": "ci_gate_held_back", "tip": "2698a2b9e3ca",
+            "tip_state": "pending", "target": "ee4541f1426442fb", "held": 2});
+        assert_eq!(gate_hold_reason(&unshipped, served), None, "a newer green target unshipped is the builder's");
+
+        let no_rollback = serde_json::json!({"verdict": "ci_gate_no_rollback", "tip": "7ff7d7871596",
+            "tip_state": "red", "target": "aaaaaaaaaaaa", "held": 3});
+        assert!(gate_hold_reason(&no_rollback, served).is_some());
+        let clear = serde_json::json!({"verdict": "ci_gate_clear", "tip": served, "tip_state": "green", "target": served});
+        assert_eq!(gate_hold_reason(&clear, served), None);
     }
 
     /// THE AMUX-4947 PAIR, which is the whole reason this check exists.
