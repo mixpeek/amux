@@ -976,12 +976,19 @@ async fn board_changes(
         .unwrap_or(500)
         .clamp(1, 5000);
 
+    // A read that cannot get a pooled connection is the pool saturated, not
+    // this handler failing (AMUX-6515: "db read failed" after 5143 ms, the
+    // pool's acquire timeout, during a fleet-wide stall). 503 with
+    // Retry-After says what it is; the dashboard only reads `ok` and retries
+    // on its next poll, and autofix keeps 501/503 out of its 5xx cards because
+    // the overload already reports itself (read_pool_exhausted).
     let conn = match state.store.read() {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "db read failed"})),
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "2")],
+                Json(json!({"error": "board read pool busy; retry", "detail": e.to_string(), "retryable": true})),
             )
                 .into_response();
         }
@@ -9064,6 +9071,23 @@ mod overlap_reconciliation_tests {
 
     async fn post(app: &Router, session: &str, body: Value) -> (StatusCode, Value) {
         call(app, "POST", "/api/board/overlap", session, Some(body)).await
+    }
+
+    /// AMUX-6515: with every pooled read connection held, /api/board/changes
+    /// answers 503 + Retry-After (overload, retryable) instead of a 500.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_saturated_read_pool_answers_503_not_500() {
+        let db = store();
+        let app = Router::new()
+            .nest("/api/board", routes())
+            .with_state(state(db.clone()));
+        let held: Vec<_> = (0..crate::db::read_pool_size()).map(|_| db.read().unwrap()).collect();
+        let (status, v) = call(&app, "GET", "/api/board/changes?since_seq=0&limit=1", "probe", None).await;
+        drop(held);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert_eq!(v["retryable"], true, "{v}");
+        let (status, _) = call(&app, "GET", "/api/board/changes?since_seq=0&limit=1", "probe", None).await;
+        assert_eq!(status, StatusCode::OK, "answers again once a connection is free");
     }
 
     #[tokio::test]
