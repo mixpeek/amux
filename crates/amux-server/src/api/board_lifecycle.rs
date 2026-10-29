@@ -113,8 +113,16 @@ pub(crate) fn no_board(session: &str) -> bool {
     session_verbs::session_is_isolated(session) || board_unused(session)
 }
 
+/// Whether an owner message is held for the board dispatcher instead of
+/// reaching the worker. OFF unless AMUX_STAGE_OWNER_COMMANDS is on for the
+/// worker (owner, 2026-10-29, after MSG-100647 "its on @<image>" read
+/// "not sent → board": "board enabled should never send messages directly to
+/// the board"). Forced adherence still has the board track the work; the
+/// message itself always reaches the worker.
+pub(crate) const STAGE_OWNER_COMMANDS_KEY: &str = "AMUX_STAGE_OWNER_COMMANDS";
 pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
-    enabled(session)
+    setting(session, STAGE_OWNER_COMMANDS_KEY).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        && enabled(session)
         && force_adherence(session)
         && board_intake::model_client().is_some()
         && !session_verbs::session_is_isolated(session)
@@ -1488,6 +1496,9 @@ mod tests {
         assert!(!force_adherence("plain"), "default must deliver the owner's text");
         assert!(force_adherence("strict"));
         assert!(!stage_owner_command("plain", "Implement the parser validation"));
+        // Forced adherence alone never holds the owner's text back.
+        assert!(!stage_owner_command("strict", "Implement the parser validation"));
+        assert!(!setting("strict", STAGE_OWNER_COMMANDS_KEY).is_some(), "staging is opt-in");
     }
 
     use super::*;

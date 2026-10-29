@@ -16,8 +16,9 @@ test('the worker Board tab has a config container and _peekBoardPolicySync rende
  assert.match(sv,/"board_decompose",\s*super::board_lifecycle::DECOMPOSE_KEY/);
  assert.match(sv,/"board_force_adherence",\s*super::board_lifecycle::FORCE_ADHERENCE_KEY/);
 });
-test('withholding an owner message requires force adherence, which defaults off',()=>{
- assert.match(bl,/pub\(crate\) fn stage_owner_command\(session: &str, text: &str\) -> bool \{\n    enabled\(session\)\n        && force_adherence\(session\)/);
+test('withholding an owner message requires its own opt-in and force adherence, both off by default',()=>{
+ // Owner, 2026-10-29: "board enabled should never send messages directly to the board".
+ assert.match(bl,/pub\(crate\) fn stage_owner_command\(session: &str, text: &str\) -> bool \{\n    setting\(session, STAGE_OWNER_COMMANDS_KEY\)\.is_some_and\([^\n]*\)\n        && enabled\(session\)\n        && force_adherence\(session\)/);
 });
 test('an isolated worker shows all toggles disabled with the reason',()=>{
  const fnEnd=(name)=>{const fi=app.indexOf(name);let d=0;for(let k=app.indexOf('{',fi);k<app.length;k++){if(app[k]==='{')d++;else if(app[k]==='}'&&--d===0)return k+1;}};
