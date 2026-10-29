@@ -32090,7 +32090,10 @@ function _fileHashSync(path) {
     // file opened from its Chat must not rewrite that address.
     if (/[?&]peekEmbed=/.test(location.search)) return;
     const own = !h || h.startsWith('#path=') || h === '#view=files';
-    if (!own && !/^#(peek|view)=/.test(h)) return;
+    // A close while the address moved to something else (a card link): what
+    // the file covered is gone, and must not come back on a later close (land
+    // review F1).
+    if (!own && !/^#(peek|view)=/.test(h)) { if (!path) _fileHashUnder = null; return; }
     if (path && !own) _fileHashUnder = h;
     let want = path ? '#path=' + _encodeHashPath(path)
       : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');

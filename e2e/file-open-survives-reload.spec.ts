@@ -40,7 +40,10 @@ test('an open file is in the address, so a reload opens it again; closing it ret
   }
 });
 
-test('a file opened over a worker leaves the worker link alone', async ({ page }) => {
+// Owner, 2026-10-29: "when i refresh an open md file it goes to the worker
+// view". This used to leave #peek= in place; a file opened over a worker now
+// takes the address, and closing it gives the worker's back.
+test('a file opened over a worker takes the address, and closing it gives the worker link back', async ({ page }) => {
   const dir = await mkdtemp(join(tmpdir(), 'amux-file-reload-'));
   const file = join(dir, 'note.txt');
   await writeFile(file, 'hello\n');
@@ -51,7 +54,17 @@ test('a file opened over a worker leaves the worker link alone', async ({ page }
     await page.evaluate(() => history.replaceState(null, '', location.pathname + '#peek=someone&tab=terminal'));
     await page.evaluate(p => (window as any).openFilePreview(p), file);
     await expect(page.locator('#file-overlay')).toHaveClass(/active/);
+    expect(decodeURIComponent(await page.evaluate(() => location.hash))).toBe('#path=' + file);
+    await page.evaluate(() => (window as any).closeFilePreview());
     expect(await page.evaluate(() => location.hash)).toBe('#peek=someone&tab=terminal');
+    // A link the file did not open over is left alone, and is not put back later.
+    await page.evaluate(p => (window as any).openFilePreview(p), file);
+    await page.evaluate(() => history.replaceState(null, '', location.pathname + '#issue=AMUX-1'));
+    await page.evaluate(() => (window as any).closeFilePreview());
+    expect(await page.evaluate(() => location.hash)).toBe('#issue=AMUX-1');
+    await page.evaluate(p => (window as any).openFilePreview(p), file);
+    await page.evaluate(() => (window as any).closeFilePreview());
+    expect(await page.evaluate(() => location.hash)).not.toContain('peek=someone');
   } finally {
     await cleanup('remove the fixture folder', () => rm(dir, { recursive: true, force: true }));
   }
