@@ -725,14 +725,45 @@ impl Store {
         if self.db_path.as_path() == Path::new(":memory:") {
             return Ok(ProjectionRead::Pooled(self.read()?));
         }
-        let conn = Connection::open_with_flags(
+        // A NEW read-only connection can fail where the pool cannot
+        // (AMUX-6434): GET /api/sessions answered 500 "unable to open database
+        // file" in bursts, while pooled reads kept working on connections opened
+        // earlier. A read-only connection cannot create the WAL side files, and
+        // SQLite opens lazily, so the failure surfaces at the first read. Probe
+        // with that read here and fall back to the request pool, logged, rather
+        // than failing the projection.
+        let opened = Connection::open_with_flags(
             self.db_path.as_ref(),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.pragma_update(None, "query_only", "ON")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(ProjectionRead::Dedicated(conn))
+        )
+        .and_then(|conn| {
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            conn.pragma_update(None, "query_only", "ON")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))?;
+            Ok(conn)
+        });
+        match opened {
+            Ok(conn) => Ok(ProjectionRead::Dedicated(conn)),
+            Err(e) => {
+                let side = |ext: &str| {
+                    let mut p = self.db_path.as_os_str().to_owned();
+                    p.push(ext);
+                    Path::new(&p).exists()
+                };
+                tracing::warn!(
+                    verdict = "dedicated_read_fell_back_to_pool",
+                    path = %self.db_path.display(),
+                    error = %e,
+                    wal_exists = side("-wal"),
+                    shm_exists = side("-shm"),
+                    measured = true,
+                    n_considered = 1,
+                    "a dedicated read-only connection could not open; served from the request pool"
+                );
+                Ok(ProjectionRead::Pooled(self.read()?))
+            }
+        }
     }
 
     /// Current global revision.
@@ -1549,6 +1580,31 @@ mod amux4744_write_queue_tests {
 #[cfg(test)]
 mod af640_read_pool_tests {
     use super::*;
+
+    /// AMUX-6434: when a NEW read-only connection cannot open the database,
+    /// the projection read falls back to the pool's already-open connections
+    /// instead of failing the request with "unable to open database file".
+    #[test]
+    fn a_dedicated_read_that_cannot_open_falls_back_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cantopen.db");
+        let store = Store::open(&path).unwrap();
+        // Warm the pool so an already-open connection exists to fall back to.
+        drop(store.read().unwrap());
+        assert!(matches!(store.dedicated_read().unwrap(), ProjectionRead::Dedicated(_)), "normally a dedicated reader");
+        // Move the database out from under the path. A chmod does not do it:
+        // SQLite's unix VFS reuses a descriptor it already holds for the same
+        // inode. The pool keeps its open connections; a new read-only open of
+        // the path cannot create the file, so it fails with CANTOPEN.
+        let moved = dir.path().join("moved.db");
+        std::fs::rename(&path, &moved).unwrap();
+        let got = store.dedicated_read();
+        std::fs::rename(&moved, &path).unwrap();
+        let got = got.expect("falls back instead of failing");
+        assert!(matches!(got, ProjectionRead::Pooled(_)), "served from the pool");
+        let v: i64 = got.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
+        assert!(v >= 0);
+    }
 
     /// AF-640 / AMUX-4744: a read must not pin the runtime worker that awaits it.
     ///
