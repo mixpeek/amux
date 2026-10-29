@@ -1416,7 +1416,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             Arc::new(crate::db::Store::open(&dir.path().join("signals.db")).expect("open store"));
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),

@@ -318,7 +318,7 @@ mod tests {
     fn store() -> SharedStore {
         let dir = tempfile::tempdir().unwrap();
         let st = crate::db::Store::open(&dir.path().join("gemini-ledger-test.db")).unwrap();
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         std::sync::Arc::new(st)
     }
 

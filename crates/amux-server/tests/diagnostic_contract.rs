@@ -62,7 +62,7 @@ fn app() -> axum::Router {
     let dir = tempfile::tempdir().unwrap();
     // Leaked on purpose: the store must outlive the router for the duration of
     // the test process, and a temp dir dropped here would delete the db under it.
-    let dir = Box::leak(Box::new(dir));
+    let dir = amux_server::test_tempdirs::keep(dir);
     let store = amux_server::db::Store::open(&dir.path().join("diag.db")).unwrap();
     router(AppState {
         store: std::sync::Arc::new(store),
@@ -81,7 +81,7 @@ fn app() -> axum::Router {
 /// has to hand the probe something to count.
 fn app_with(seed: impl FnOnce(&rusqlite::Connection) + Send + 'static) -> axum::Router {
     let dir = tempfile::tempdir().unwrap();
-    let dir = Box::leak(Box::new(dir));
+    let dir = amux_server::test_tempdirs::keep(dir);
     let store = amux_server::db::Store::open(&dir.path().join("diag.db")).unwrap();
     store
         .write(move |conn| {

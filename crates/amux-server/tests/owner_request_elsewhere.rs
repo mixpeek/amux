@@ -22,7 +22,7 @@ const ZOOM: &str = "make the ability in the amux Mac OS app to apply a zoom in/z
 fn fleet_home() -> &'static std::path::Path {
     static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+        let dir = amux_server::test_tempdirs::keep(tempfile::tempdir().expect("tempdir"));
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).expect("sessions dir");
         for n in ["re-a", "re-b", "re-w"] {

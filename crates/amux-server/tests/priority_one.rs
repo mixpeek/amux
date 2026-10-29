@@ -7,7 +7,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dir = amux_server::test_tempdirs::keep(tempfile::tempdir().unwrap());
     let store = amux_server::db::Store::open(&dir.path().join("priority-one.db")).unwrap();
     router(AppState {
         store: std::sync::Arc::new(store),

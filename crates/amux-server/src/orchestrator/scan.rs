@@ -585,7 +585,7 @@ mod tests {
     fn store() -> SharedStore {
         let dir = tempfile::tempdir().unwrap();
         let s = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         s
     }
 

@@ -179,7 +179,7 @@ impl Actions for Arc<Mock> {
 fn state() -> AppState {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::db::Store::open(&dir.path().join("ni-auto.db")).unwrap();
-    std::mem::forget(dir);
+    crate::test_tempdirs::keep(dir);
     AppState {
         store: Arc::new(store),
         started: std::time::Instant::now(),

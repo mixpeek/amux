@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use tower::ServiceExt;
 
 async fn get(path: &str) -> (u16, String) {
-    let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dir = amux_server::test_tempdirs::keep(tempfile::tempdir().unwrap());
     let store = amux_server::db::Store::open(&dir.path().join("o.db")).unwrap();
     let app = router(AppState {
         store: std::sync::Arc::new(store),

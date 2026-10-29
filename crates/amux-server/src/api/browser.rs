@@ -706,7 +706,7 @@ mod af419_start_origin_tests {
     use super::*;
 
     fn store_with(rows: &[(f64, &str, &str, &str)]) -> crate::db::SharedStore {
-        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let dir = crate::test_tempdirs::keep(tempfile::tempdir().unwrap());
         let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let owned: Vec<(f64, String, String, String)> = rows
             .iter()
@@ -5141,7 +5141,7 @@ mod tests {
     fn test_state() -> AppState {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         AppState {
             store,
             started: std::time::Instant::now(),

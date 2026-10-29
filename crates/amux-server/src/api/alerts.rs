@@ -1619,7 +1619,7 @@ mod tests {
     fn app(channels: Arc<MockChannels>) -> axum::Router {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("alerts-test.db")).unwrap();
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: Arc::new(store),
             started: std::time::Instant::now(),

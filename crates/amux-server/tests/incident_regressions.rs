@@ -82,7 +82,7 @@ use std::sync::Arc;
 fn store() -> Arc<Store> {
     let dir = tempfile::tempdir().unwrap();
     let s = Arc::new(Store::open(&dir.path().join("t.db")).unwrap());
-    std::mem::forget(dir);
+    amux_server::test_tempdirs::keep(dir);
     s
 }
 

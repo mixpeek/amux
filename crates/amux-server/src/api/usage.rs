@@ -2146,7 +2146,7 @@ mod tests {
     fn app_routes(routes: Router<AppState>) -> axum::Router {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("usage-test.db")).unwrap();
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: Arc::new(store),
             started: Instant::now(),

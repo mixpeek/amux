@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dir = amux_server::test_tempdirs::keep(tempfile::tempdir().unwrap());
     let store = amux_server::db::Store::open(&dir.path().join("v.db")).unwrap();
     router(AppState {
         store: std::sync::Arc::new(store),

@@ -912,7 +912,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
         let s = Arc::new(Store::open(&path).unwrap());
-        std::mem::forget(dir); // keep the DB alive for the test body
+        crate::test_tempdirs::keep(dir); // keep the DB alive for the test body
         s
     }
 

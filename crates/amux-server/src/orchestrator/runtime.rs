@@ -2367,7 +2367,7 @@ mod tests {
         let path = dir.path().join("t.db");
         let s = Arc::new(crate::db::Store::open(&path).unwrap());
         // Leak tempdir so the DB survives the test body.
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         s
     }
 
@@ -2508,7 +2508,7 @@ mod pump_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
         let s = Arc::new(crate::db::Store::open(&path).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         s
     }
 
@@ -2909,7 +2909,7 @@ mod adherence_tests {
     fn store() -> SharedStore {
         let dir = tempfile::tempdir().unwrap();
         let s = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         s
     }
 
@@ -3909,7 +3909,7 @@ mod rate_limit_recovery_tests {
         let dir = tempfile::tempdir().unwrap();
         let store: SharedStore =
             Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let now = Utc::now();
         let seed = |n: u128, reset: Option<DateTime<Utc>>| {
             let id =
@@ -4070,7 +4070,7 @@ mod rate_limit_recovery_tests {
         let dir = tempfile::tempdir().unwrap();
         let store: SharedStore =
             Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let now = Utc::now();
         let shared_reset = Some(now - chrono::Duration::seconds(7));
         let w1 = seed_rate_limited(&store, 11, shared_reset);
@@ -4123,7 +4123,7 @@ mod rate_limit_recovery_tests {
         let dir = tempfile::tempdir().unwrap();
         let store: SharedStore =
             Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let now = Utc::now();
         seed_rate_limited(&store, 21, Some(now + chrono::Duration::hours(2)));
 

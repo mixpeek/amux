@@ -17,7 +17,7 @@ fn app() -> axum::Router {
     // A database per router: tests run in parallel and one file has one owner.
     let db = tempfile::tempdir().unwrap();
     let store = amux_server::db::Store::open(&db.path().join("t.db")).unwrap();
-    std::mem::forget(db);
+    amux_server::test_tempdirs::keep(db);
     router(AppState {
         store: std::sync::Arc::new(store),
         started: std::time::Instant::now(),

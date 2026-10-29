@@ -8636,7 +8636,7 @@ mod overlap_reconciliation_tests {
         let store = Arc::new(crate::db::Store::open(&dir.path().join("overlap.db")).unwrap());
         // The writer and read pool outlive this helper.  The OS cleans the test
         // directory, but the Store must retain a valid path for this test.
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         store
     }
 
@@ -15446,7 +15446,7 @@ mod capture_requeue_tests {
             crate::db::Store::open(&dir.path().join("capture-requeue.db")).expect("open store"),
         );
         // Store owns live SQLite handles after this helper returns.
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
@@ -15618,7 +15618,7 @@ mod af701_archive_guard_tests {
         let store = Arc::new(
             crate::db::Store::open(&dir.path().join("af701-archive-guard.db")).expect("open store"),
         );
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
@@ -17117,7 +17117,7 @@ mod af711_acceptance_criteria_tests {
             crate::db::Store::open(&dir.path().join("af711-acceptance-criteria.db"))
                 .expect("open store"),
         );
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
@@ -17358,7 +17358,7 @@ mod af930_waiting_on_tests {
         let store = Arc::new(
             crate::db::Store::open(&dir.path().join("af930-waiting-on.db")).expect("open store"),
         );
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
@@ -17605,7 +17605,7 @@ mod af703_citing_cards_tests {
         let store = Arc::new(
             crate::db::Store::open(&dir.path().join("af703-citing-cards.db")).expect("open store"),
         );
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         let state = AppState {
             store: store.clone(),
             started: std::time::Instant::now(),

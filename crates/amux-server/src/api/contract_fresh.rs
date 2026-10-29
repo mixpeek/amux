@@ -309,7 +309,7 @@ mod tests {
     fn state() -> AppState {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("fresh-test.db")).unwrap();
-        std::mem::forget(dir);
+        crate::test_tempdirs::keep(dir);
         AppState {
             store: std::sync::Arc::new(store),
             started: std::time::Instant::now(),
