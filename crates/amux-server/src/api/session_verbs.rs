@@ -23296,7 +23296,7 @@ pub(crate) fn stamp_queued_delivery(
         "UPDATE cmd_history SET delivered_at=?1 \
          WHERE id = (SELECT id FROM cmd_history \
                      WHERE session=?2 AND text=?3 \
-                       AND delivery='queued' AND delivered_at IS NULL \
+                       AND delivery IN ('queued','board') AND delivered_at IS NULL \
                      ORDER BY ts LIMIT 1)",
         // The row holds the redacted form; the queue holds the raw text.
         rusqlite::params![at_ms, session, redact_secrets(text)],

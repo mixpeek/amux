@@ -2116,6 +2116,22 @@ async fn commit_plan(
         )
         .unwrap_or(false)
     };
+    let owner_tasks = !session.starts_with("project:") && plan.decision.kind == "tasks" && {
+        let c = state.store.read()?;
+        c.query_row(
+            "SELECT delivery='board' FROM cmd_history WHERE id=?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    };
+    let owner_origin = if owner_tasks {
+        let c = state.store.read()?;
+        c.query_row("SELECT origin FROM cmd_history WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))?.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let (owner_session, owner_text) = (session.to_string(), text.to_string());
     if board_conversation {
         session_verbs::enqueue_board_conversation(state, session, id, text, &{
             let c = state.store.read()?;
@@ -2160,6 +2176,24 @@ async fn commit_plan(
             Ok(result)
         })
         .await?;
+    // A staged owner message planned as TASKS used to stop here: the worker got
+    // the cards when the dispatcher reached them, and never the owner's words.
+    // Ethan, 2026-10-28 ("this is wrong"): three instructions to
+    // tubescience-parity in eight minutes ("until then just get the capability
+    // and latency/perf parity", "we need the commitments made to yossi done
+    // overnight") each read "not sent -> board", and the lane kept working on
+    // the card it had. The plan is committed first, so the worker that reads
+    // this cannot race the planner into a second board; the text is queued
+    // verbatim so the steering delivery stamps delivered_at on this row
+    // (stamp_queued_delivery) and the message reads "delivered via board".
+    if owner_tasks {
+        match session_verbs::enqueue_board_conversation(state, &owner_session, id, &owner_text, &owner_origin).await {
+            Ok(()) => tracing::info!(session = %owner_session, message_id = id, measured = true, n_considered = 1,
+                verdict = "owner_task_message_queued", "owner message planned as tasks; its text is also queued for the worker"),
+            Err(error) => tracing::warn!(session = %owner_session, message_id = id, %error, measured = true, n_considered = 1,
+                verdict = "owner_task_message_not_queued", "owner message planned as tasks; its text could not be queued for the worker"),
+        }
+    }
     Ok(())
 }
 
@@ -3027,6 +3061,64 @@ mod tests {
     }
     fn receipt(c: &Connection, id: i64, text: &str) {
         c.execute("INSERT INTO cmd_history(id,session,text,type,ts,capture_pending) VALUES (?1,'fixture',?2,'user',1,1)",rusqlite::params![id,text]).unwrap();
+    }
+    /// Ethan, 2026-10-28 ("this is wrong"): an owner message staged for the
+    /// board and planned as tasks read "not sent -> TP-118" and never reached
+    /// the worker. Its text is now queued verbatim once the plan commits, and
+    /// delivering it stamps the row so it reads "delivered via board".
+    #[tokio::test]
+    async fn an_owner_message_planned_as_tasks_still_reaches_the_worker() {
+        struct Never;
+        impl mdai::ModelClient for Never {
+            fn complete(&self, _: &str, _: &str) -> Result<String, String> {
+                panic!("a prepared plan bought another interpretation")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(temp.path());
+        // A real worker: the steering queue only takes text for one with an env file.
+        std::fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        std::fs::write(temp.path().join("sessions/fixture.env"), "").unwrap();
+        let store = Arc::new(crate::db::Store::open(&temp.path().join("owner-words.db")).unwrap());
+        let staged = "Produce the fixture reports and check them tonight";
+        let plain = "Produce the other fixture reports and check them";
+        store.write_async(move |c| {
+            receipt(c, 1, staged);
+            c.execute("UPDATE cmd_history SET delivery='board' WHERE id=1", [])?;
+            receipt(c, 2, plain);
+            let p = Prepared { decision: plan(), candidates: vec![], telemetry: json!({"model_calls":1}) };
+            c.execute("UPDATE cmd_history SET intake_attempts=2,intake_retry_at=9999999999,intake_result=?1",[json!({"state":"prepared","plan":p}).to_string()])?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).await.unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        capture_inner(&state, 1, "fixture", Arc::new(Never)).await.unwrap();
+        capture_inner(&state, 2, "fixture", Arc::new(Never)).await.unwrap();
+        let c = state.store.read().unwrap();
+        let queued: Vec<String> = c
+            .prepare("SELECT text FROM steering_queue WHERE session='fixture'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        let row: (i64, Option<String>, Option<String>) = c
+            .query_row("SELECT capture_pending, card_id, delivery FROM cmd_history WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!(queued, vec![staged.to_string()], "only the staged owner message is queued, word for word (row 1 after capture: {row:?})");
+        drop(c);
+        state.store.write_async(move |c| {
+            session_verbs::stamp_queued_delivery(c, "fixture", staged, 42)?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).await.unwrap();
+        let c = state.store.read().unwrap();
+        let stamped: Option<i64> = c.query_row("SELECT delivered_at FROM cmd_history WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(stamped, Some(42), "delivering the queued text marks the board row delivered");
     }
     #[test]
     fn plan_requires_concrete_acyclic_outputs_and_authorized_matches() {
