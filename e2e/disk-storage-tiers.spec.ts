@@ -176,6 +176,48 @@ test('the policy moves an idle folder out, and brings it back once it is used', 
   expect({...digest(src), 'runs/new-result.json': undefined}).toEqual({...before, 'runs/new-result.json': undefined});
 });
 
+test('a folder that keeps growing: old subfolders move, new ones stay and are found', async ({page}) => {
+  const runs = path.join(base, 'projects/customer-c/runs');
+  makeTree(path.join(runs, 'run-2026-09-01'), 30);
+  makeTree(path.join(runs, 'run-2026-09-02'), 30);
+  makeTree(path.join(runs, 'run-today'));
+  await openDisk(page);
+  await page.fill('#tier-add-path', runs);
+  await page.fill('#tier-add-days', '14');
+  await page.check('#tier-add-each');
+  await page.click('#tier-add-btn');
+  const root = page.locator(`.tier-root[data-tier-path="${runs}"]`);
+  await expect(root.locator('[data-tier-summary]')).toContainText('3 subfolders', {timeout: 30_000});
+  await expect(page.locator('#tier-add-each')).not.toBeChecked();
+  await page.click('#tier-run');
+  const kid = (n: string) => card(page, path.join(runs, n));
+  await expect(kid('run-2026-09-01')).toHaveAttribute('data-tier-location', 'hdd', {timeout: 60_000});
+  await expect(kid('run-2026-09-02')).toHaveAttribute('data-tier-location', 'hdd', {timeout: 60_000});
+  await expect(kid('run-today')).toHaveAttribute('data-tier-location', 'mac');
+  await expect(root.locator('[data-tier-summary]')).toContainText('1 on this Mac');
+  await expect(root.locator('[data-tier-summary]')).toContainText('2 on the cold drive');
+  // The root itself never moves, and a subfolder has no Stop watching of its own.
+  expect(fs.lstatSync(runs).isSymbolicLink()).toBe(false);
+  expect(fs.lstatSync(path.join(runs, 'run-2026-09-01')).isSymbolicLink()).toBe(true);
+  await root.locator('[data-tier-kids] summary').click();
+  await expect(kid('run-today')).toBeVisible();
+  await expect(kid('run-today').locator('[data-tier-act="unwatch"]')).toHaveCount(0);
+
+  // Tomorrow's run appears and is picked up, on the Mac.
+  makeTree(path.join(runs, 'run-tomorrow'));
+  await page.click('#tier-run');
+  await expect(root.locator('[data-tier-summary]')).toContainText('4 subfolders', {timeout: 30_000});
+  await expect(kid('run-tomorrow')).toHaveAttribute('data-tier-location', 'mac');
+
+  // Stop watching the root: every file stays where it is.
+  await root.locator('[data-tier-act="unwatch"]').last().click();
+  await page.locator('#modal-btns button.primary').click();
+  await expect(root).toHaveCount(0);
+  await expect(kid('run-today')).toHaveCount(0);
+  expect(fs.lstatSync(path.join(runs, 'run-2026-09-01')).isSymbolicLink()).toBe(true);
+  expect(fs.readFileSync(path.join(runs, 'run-2026-09-01/runs/notes.txt'), 'utf8')).toBe('notes');
+});
+
 test('refusals are specific and never read as success', async ({page}) => {
   await openDisk(page);
   const msg = page.locator('#tier-add-msg');

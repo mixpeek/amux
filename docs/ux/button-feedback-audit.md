@@ -700,6 +700,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Bring back to this Mac | `_tierMove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | app.js | Move to cold drive | `_tierMove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | app.js | Stop watching | `_tierRemove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Stop watching | `_tierRemove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | ${t.ticking ? Checking : Check now} | `_tierRunNow` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Save policy | `_tierSavePolicy` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | ${c ? Change drive : Use this drive} | `_tierSetDrive` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |

@@ -36,6 +36,14 @@
 //! keep working through the link, nothing moves while it is open, and moves are
 //! rare enough to be predictable.
 //!
+//! # Folders that keep growing
+//! A folder that gains new runs every day never goes idle as a whole, so a
+//! watched folder can be marked `each_subfolder`: it becomes a root that never
+//! moves itself, and every immediate subfolder is aged and moved on its own,
+//! discovered on every tick as it appears. Old runs go to the cold drive while
+//! the newest stay on the Mac, which is how tiering systems age append-only
+//! data: per item, not per container.
+//!
 //! # A move is a journal, not a task
 //! The builder re-execs this binary on most commits to main, often several
 //! times an hour, so a copy of a million files cannot live in one in-memory
@@ -209,6 +217,12 @@ pub(crate) struct Folder {
     /// When it last came back to the Mac.
     #[serde(default)]
     pub promoted_at: Option<i64>,
+    /// A root: never moves itself; each immediate subfolder is its own entry.
+    #[serde(default)]
+    pub each_subfolder: bool,
+    /// For a subfolder found under a root, that root's path.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -618,8 +632,20 @@ async fn gate_to_hdd(f: &Folder, cold_root: &Path, owners: &reclaim_owner::Owner
     if let Err(why) = guard_path(&src) {
         return Some(("protected".into(), why));
     }
-    if let Some(r) = reclaim_owner::refusal(&src, owners).await {
+    let (owned, live_sub) = reclaim_owner::refusal_for_tiering(&src, owners).await;
+    if let Some(r) = owned {
         return Some((r.class.to_string(), r.reason));
+    }
+    if live_sub {
+        // A running worker's scratch: only a subfolder idle for its full limit,
+        // whoever asks (Ethan, 2026-10-29: "Yes, idle subfolders").
+        let idle_ok = f.stats.as_ref().is_some_and(|s| s.complete && now_secs() - s.last_used >= i64::from(f.idle_days) * 86_400);
+        if !idle_ok {
+            return Some((
+                "live_scratch_recent".into(),
+                format!("it is inside a running worker's scratch and was used within its {} idle days", f.idle_days),
+            ));
+        }
     }
     let probe = src.clone();
     let blocking = tokio::task::spawn_blocking(move || -> Option<(String, String)> {
@@ -730,6 +756,73 @@ fn gb(b: u64) -> String {
     }
 }
 
+// ── roots ───────────────────────────────────────────────────────────────────
+
+fn child(path: String, root: &Folder, adopted: Option<String>, now: i64) -> Folder {
+    Folder {
+        path,
+        idle_days: root.idle_days,
+        promote_on_use: root.promote_on_use,
+        added_at: now,
+        demoted_at: adopted.as_ref().map(|_| now),
+        baseline_used: adopted.as_ref().map(|_| now),
+        dest: adopted,
+        op: None,
+        stats: None,
+        last_refusal: None,
+        last_move: None,
+        last_error: None,
+        read_days: Vec::new(),
+        promoted_at: None,
+        each_subfolder: false,
+        parent: Some(root.path.clone()),
+    }
+}
+
+/// Bring each root's entries in line with what is on disk: a new subfolder is
+/// added, one gone from disk (and not mid-move, and not on the cold drive) is
+/// dropped. Hidden entries and our own `.amux-tier-*` staging names are skipped.
+/// Returns (added, dropped).
+pub(crate) fn discover(c: &mut Config) -> (usize, usize) {
+    let now = now_secs();
+    let roots: Vec<Folder> = c.folders.iter().filter(|f| f.each_subfolder).cloned().collect();
+    let mut added = 0;
+    for root in &roots {
+        let Ok(rd) = std::fs::read_dir(&root.path) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || [OLD, NEW, LINK].iter().any(|s| name.ends_with(s)) {
+                continue;
+            }
+            let p = e.path();
+            let ps = p.to_string_lossy().to_string();
+            if c.folders.iter().any(|x| x.path == ps) {
+                continue;
+            }
+            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            let adopted = if m.file_type().is_symlink() {
+                match std::fs::read_link(&p) {
+                    Ok(t) if t.is_absolute() && t.starts_with("/Volumes") => Some(t.to_string_lossy().to_string()),
+                    _ => continue,
+                }
+            } else if m.is_dir() {
+                None
+            } else {
+                continue;
+            };
+            c.folders.push(child(ps, root, adopted, now));
+            added += 1;
+        }
+    }
+    let root_paths: Vec<String> = roots.iter().map(|r| r.path.clone()).collect();
+    let before = c.folders.len();
+    c.folders.retain(|f| match &f.parent {
+        None => true,
+        Some(r) => root_paths.contains(r) && (f.op.is_some() || f.dest.is_some() || std::fs::symlink_metadata(&f.path).is_ok()),
+    });
+    (added, before - c.folders.len())
+}
+
 // ── the tick ────────────────────────────────────────────────────────────────
 
 pub fn spawn(_state: AppState) -> crate::runtime_jobs::PeriodicTask {
@@ -773,6 +866,11 @@ pub(crate) async fn tick(trigger: &'static str) -> Option<TickReport> {
 }
 
 async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
+    match update(discover) {
+        Ok((a, d)) if a + d > 0 => tracing::info!(added = a, dropped = d, verdict = "tier_discovered", "tiering: subfolders of watched roots changed"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, verdict = "tier_state_write_failed", "tiering: could not refresh watched roots"),
+    }
     let cfg = match load() {
         Ok(c) => c,
         Err(e) => {
@@ -796,6 +894,9 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     let mut folders = cfg.folders.clone();
     folders.sort_by_key(|f| f.stats.as_ref().map(|s| s.last_used).unwrap_or(0));
     for f in folders {
+        if f.each_subfolder {
+            continue; // a root never moves; its subfolders are entries of their own
+        }
         rep.considered += 1;
         let path = f.path.clone();
 
@@ -1214,6 +1315,8 @@ struct AddReq {
     idle_days: Option<u32>,
     #[serde(default)]
     promote_on_use: Option<bool>,
+    #[serde(default)]
+    each_subfolder: Option<bool>,
 }
 
 async fn add_folder(headers: HeaderMap, Json(body): Json<AddReq>) -> Response {
@@ -1275,6 +1378,8 @@ async fn add_folder(headers: HeaderMap, Json(body): Json<AddReq>) -> Response {
             last_error: None,
             read_days: Vec::new(),
             promoted_at: None,
+            each_subfolder: body.each_subfolder.unwrap_or(false) && adopted.is_none(),
+            parent: None,
         });
         Ok(())
     });
@@ -1300,10 +1405,16 @@ async fn remove_folder(headers: HeaderMap, Query(q): Query<PathQuery>) -> Respon
         let Some(i) = c.folders.iter().position(|x| x.path == q.path) else {
             return Err((StatusCode::NOT_FOUND, "not watched".to_string()));
         };
-        if c.folders[i].op.as_ref().map(|o| o.phase != Phase::Queued).unwrap_or(false) {
+        if let Some(root) = &c.folders[i].parent {
+            return Err((StatusCode::CONFLICT, format!("it is watched as part of {root}; stop watching that folder instead")));
+        }
+        let mine = |x: &Folder| x.path == q.path || x.parent.as_deref() == Some(q.path.as_str());
+        if c.folders.iter().filter(|x| mine(x)).any(|x| x.op.as_ref().map(|o| o.phase != Phase::Queued).unwrap_or(false)) {
             return Err((StatusCode::CONFLICT, "it is being moved; wait for the move to finish".to_string()));
         }
-        Ok(c.folders.remove(i))
+        let f = c.folders.remove(i);
+        c.folders.retain(|x| x.parent.as_deref() != Some(q.path.as_str()));
+        Ok(f)
     });
     match r {
         Ok(Ok(f)) => {
@@ -1333,6 +1444,9 @@ async fn request_move(headers: HeaderMap, Json(body): Json<MoveReq>) -> Response
         let Some(f) = c.folders.iter_mut().find(|x| x.path == body.path) else {
             return Err((StatusCode::NOT_FOUND, "not watched".to_string()));
         };
+        if f.each_subfolder {
+            return Err((StatusCode::CONFLICT, "each subfolder of it moves on its own; move a subfolder instead".to_string()));
+        }
         if f.op.is_some() {
             return Err((StatusCode::CONFLICT, "a move is already queued or running".to_string()));
         }
@@ -1394,6 +1508,8 @@ mod tests {
             last_error: None,
             read_days: Vec::new(),
             promoted_at: None,
+            each_subfolder: false,
+            parent: None,
         }
     }
 
@@ -1598,6 +1714,48 @@ mod tests {
         assert_eq!(policy(&g, &ctx(t0 + 20 * day)), None, "those reads are two weeks old");
         st.touched = 0;
         assert_eq!(observe_reads(&mut g, &st, t0 + 21 * day), None);
+    }
+
+    #[test]
+    fn a_root_discovers_new_subfolders_and_drops_deleted_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("runs");
+        for n in ["r1", "r2", ".hidden", "r3.amux-tier-new"] {
+            fs::create_dir_all(root.join(n)).unwrap();
+        }
+        fs::write(root.join("notes.txt"), "a file, not a unit").unwrap();
+        let mut c = Config::default();
+        let mut r = folder(&root, None);
+        r.each_subfolder = true;
+        r.idle_days = 30;
+        c.folders.push(r);
+        assert_eq!(discover(&mut c), (2, 0));
+        let kids: Vec<_> = c.folders.iter().filter(|f| f.parent.is_some()).map(|f| f.path.clone()).collect();
+        assert_eq!(kids.len(), 2, "{kids:?}");
+        assert!(c.folders.iter().filter(|f| f.parent.is_some()).all(|f| f.idle_days == 30), "children inherit the root's limit");
+        assert_eq!(discover(&mut c), (0, 0), "idempotent");
+        fs::create_dir(root.join("r4")).unwrap();
+        fs::remove_dir(root.join("r1")).unwrap();
+        assert_eq!(discover(&mut c), (1, 1));
+        assert!(c.folders.iter().any(|f| f.path.ends_with("/r4")));
+        assert!(!c.folders.iter().any(|f| f.path.ends_with("/r1")));
+    }
+
+    #[test]
+    fn a_child_on_the_cold_drive_is_kept_even_when_its_link_is_unreachable() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("runs");
+        fs::create_dir_all(root.join("r1")).unwrap();
+        let mut c = Config::default();
+        let mut r = folder(&root, None);
+        r.each_subfolder = true;
+        c.folders.push(r);
+        discover(&mut c);
+        // r1 moved to a drive that is now unplugged: no folder on disk, dest set.
+        let k = c.folders.iter_mut().find(|f| f.path.ends_with("/r1")).unwrap();
+        k.dest = Some("/Volumes/gone/r1".into());
+        fs::remove_dir(root.join("r1")).unwrap();
+        assert_eq!(discover(&mut c), (0, 0), "its data lives on the drive; dropping it would orphan it");
     }
 
     #[test]

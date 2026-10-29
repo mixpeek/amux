@@ -59569,6 +59569,7 @@ function _torrentRender() {
 // queues requests. Polls only while a move or a run is in flight.
 let _tier = null;
 let _tierTimer = null;
+const _tierOpen = {};
 const _TIER_WHERE = {
   mac: 'On this Mac', hdd: 'On the cold drive', hdd_unavailable: 'On the cold drive, which is not connected',
   moving: 'Moving', missing: 'Missing', foreign_link: 'A symlink amux did not create', not_a_folder: 'Not a folder',
@@ -59651,10 +59652,33 @@ function _tierStatusHtml() {
   h += `<div class="reclaim-safe-text" id="tier-last-run">${t.auto ? `Checks every ${Math.round((t.interval_s || 300) / 60)} minutes.` : 'Automatic moves are off; the buttons below still work.'}
     ${lt ? ` Last check ${esc(timeAgo(lt.at))}: ${lt.moved} moved, ${lt.refused} refused${lt.resumed ? `, ${lt.resumed} resumed` : ''}${lt.pressure ? ', with the Mac low on space' : ''}.` : ' No check has run yet.'}</div></div>`;
   const fs = t.folders || [];
+  const top = fs.filter(f => !f.parent);
   h += '<div id="tier-folders" class="reclaim-safe-grid" style="margin-top:var(--space-2-5);">';
-  if (!fs.length) h += '<div class="metrics-card reclaim-safe-text" id="tier-empty">No watched folders yet. Add one below.</div>';
-  for (const f of fs) h += _tierFolderCard(f);
+  if (!top.length) h += '<div class="metrics-card reclaim-safe-text" id="tier-empty">No watched folders yet. Add one below.</div>';
+  for (const f of top) h += f.each_subfolder ? _tierRootCard(f, fs.filter(k => k.parent === f.path)) : _tierFolderCard(f);
   return h + '</div></div>';
+}
+
+// A folder that keeps growing: it never moves itself, each subfolder does.
+// Children sit in a collapsed list so hundreds of runs do not bury the panel.
+function _tierRootCard(f, kids) {
+  const on = w => kids.filter(k => k.location === w);
+  const sum = list => list.reduce((a, k) => a + (k.stats?.bytes || 0), 0);
+  const moving = on('moving').length, mac = on('mac'), hdd = on('hdd');
+  const p = escJs(f.path);
+  const openKey = 'tier-open:' + f.path;
+  const open = !!_tierOpen[openKey];
+  return `<div class="metrics-card reclaim-safe-card tier-root" data-tier-path="${esc(f.path)}" data-tier-root="1">
+    <div class="reclaim-safe-head" style="word-break:break-all;">${esc(f.path)}</div>
+    <div class="reclaim-safe-text" data-tier-summary><b>${kids.length} subfolder${kids.length === 1 ? '' : 's'}</b>, each moved on its own:
+      ${mac.length} on this Mac (${_tierBytes(sum(mac))}), ${hdd.length} on the cold drive (${_tierBytes(sum(hdd))})${moving ? `, ${moving} moving` : ''}.</div>
+    <div class="reclaim-safe-text">A subfolder moves out after ${f.idle_days} idle day${f.idle_days === 1 ? '' : 's'}${f.promote_on_use ? ' and comes back when used' : ''}. New subfolders are picked up as they appear.</div>
+    ${kids.length ? `<details data-tier-kids ${open ? 'open' : ''} ontoggle="_tierOpen['${escJs(openKey)}']=this.open">
+      <summary class="reclaim-safe-text" style="cursor:pointer;min-height:44px;display:flex;align-items:center;">Show subfolders</summary>
+      <div class="reclaim-safe-grid" style="margin-top:var(--space-2);">${kids.map(_tierFolderCard).join('')}</div>
+    </details>` : ''}
+    <div class="reclaim-actions-row"><button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button></div>
+  </div>`;
 }
 
 function _tierFolderCard(f) {
@@ -59668,7 +59692,7 @@ function _tierFolderCard(f) {
   let btns = '';
   if (!op && where === 'mac') btns += `<button class="btn" data-tier-act="to-hdd" onclick="_tierMove('${p}','hdd')">Move to cold drive</button>`;
   if (!op && where === 'hdd') btns += `<button class="btn" data-tier-act="to-mac" onclick="_tierMove('${p}','mac')">Bring back to this Mac</button>`;
-  if (!op) btns += `<button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button>`;
+  if (!op && !f.parent) btns += `<button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button>`;
   const notes = [];
   if (where === 'hdd' && !op) {
     const today = Math.floor(Date.now() / 86400000), win = _tier?.policy?.read_window_days || 7;
@@ -59695,6 +59719,8 @@ function _tierFormHtml() {
       <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);white-space:nowrap;">Move after <input class="input" id="tier-add-days" type="number" min="1" max="3650" value="14" style="width:72px;"> idle days</label>
       <button class="btn" id="tier-add-btn" onclick="_tierAdd()">Watch</button>
     </div>
+    <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);min-height:44px;"><input type="checkbox" id="tier-add-each">
+      Move each subfolder on its own, for folders that keep growing, like run outputs</label>
     <div class="reclaim-safe-text" id="tier-add-msg" role="status"></div>
   </div>`;
 }
@@ -59720,12 +59746,15 @@ async function _tierAdd() {
   if (!path) { msg.textContent = 'Type the folder path first.'; return; }
   if (btn.disabled) return;
   btn.disabled = true;
-  const r = await _tierCall('POST', '/api/tiering/folders', {path, idle_days: days});
+  const each = !!document.getElementById('tier-add-each')?.checked;
+  const r = await _tierCall('POST', '/api/tiering/folders', {path, idle_days: days, each_subfolder: each});
   btn.disabled = false;
   if (!r.ok) { msg.textContent = r.j?.error || `Could not add it (HTTP ${r.status}).`; return; }
   msg.style.color = '';
   msg.textContent = '';
   input.value = '';
+  const eachBox = document.getElementById('tier-add-each');
+  if (eachBox) eachBox.checked = false;
   _tier = r.j;
   _tierRefresh();
   showToast('Watching ' + path);
@@ -59745,7 +59774,11 @@ async function _tierMove(path, to) {
 }
 
 async function _tierRemove(path) {
-  if (!(await showConfirm(`Stop watching ${path}? Its files stay exactly where they are now.`, 'Stop watching'))) return;
+  const root = (_tier?.folders || []).find(f => f.path === path && f.each_subfolder);
+  const msg = root
+    ? `Stop watching ${path} and its subfolders? Every file stays exactly where it is now, including subfolders on the cold drive.`
+    : `Stop watching ${path}? Its files stay exactly where they are now.`;
+  if (!(await showConfirm(msg, 'Stop watching'))) return;
   const r = await _tierCall('DELETE', '/api/tiering/folders?path=' + encodeURIComponent(path));
   if (!r.ok) { showToast(r.j?.error || `Could not stop watching (HTTP ${r.status})`); return; }
   _tier = r.j;

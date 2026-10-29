@@ -134,6 +134,30 @@ pub(crate) async fn refusal(p: &Path, o: &Owners) -> Option<Refusal> {
     if let Some(r) = scratch_rule(&p, o) {
         return Some(r);
     }
+    repo_refusal(&p, o).await
+}
+
+/// `refusal` for storage tiering, which moves a folder but leaves a link at its
+/// path, so the owner keeps reaching it. One rule differs: a SUBFOLDER of a
+/// running worker's scratch may move (the caller still requires it to be idle
+/// and closed). The worker's own folder, and every repo rule, still refuse.
+/// Ethan, 2026-10-29: "Yes, idle subfolders". Disk Cleanup keeps `refusal`.
+pub(crate) async fn refusal_for_tiering(p: &Path, o: &Owners) -> (Option<Refusal>, bool) {
+    let p = resolved(p);
+    let mut live_sub = false;
+    if let Some(r) = scratch_rule(&p, o) {
+        let depth = p.strip_prefix(&o.tmp_root).map(|r| r.components().count()).unwrap_or(0);
+        if r.class == CLASS_LIVE_SCRATCH && depth >= 2 {
+            live_sub = true;
+        } else {
+            return (Some(r), false);
+        }
+    }
+    (repo_refusal(&p, o).await, live_sub)
+}
+
+async fn repo_refusal(p: &Path, o: &Owners) -> Option<Refusal> {
+    let p = p.to_path_buf();
     match enclosing_repo(&p) {
         Some(root) if root == p => {
             if let Some(r) = repo_root_rule(&root, o).await {
@@ -359,6 +383,22 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn tiering_may_move_an_idle_subfolder_of_live_scratch_but_never_the_scratch_itself() {
+        let d = tempfile::tempdir().unwrap();
+        let tmp = d.path().join("tmp");
+        std::fs::create_dir_all(tmp.join("gs/old-run")).unwrap();
+        let o = Owners { tmp_root: resolved(&tmp), live: Ok(["gs".to_string()].into_iter().collect()) };
+        let (r, sub) = refusal_for_tiering(&tmp.join("gs"), &o).await;
+        assert_eq!(r.map(|r| r.class), Some(CLASS_LIVE_SCRATCH), "the worker's own folder still refuses");
+        assert!(!sub);
+        let (r, sub) = refusal_for_tiering(&tmp.join("gs/old-run"), &o).await;
+        assert!(r.is_none() && sub, "a subfolder passes, flagged so the caller requires idleness");
+        assert_eq!(refusal(&tmp.join("gs/old-run"), &o).await.map(|r| r.class), Some(CLASS_LIVE_SCRATCH), "Disk Cleanup keeps its rule");
+        let (r, _) = refusal_for_tiering(&tmp, &o).await;
+        assert_eq!(r.map(|r| r.class), Some(CLASS_TMP_ROOT));
+    }
     use super::*;
 
     fn sh(dir: &Path, args: &[&str]) {
