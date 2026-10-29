@@ -40577,7 +40577,7 @@ function switchView(view) {
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
-  if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
+  if (view === 'disk') _reclaimLoad(); else { if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling(); if (typeof _tierStopPolling === 'function') _tierStopPolling(); }
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
 
   if (view === 'journal') _journalInit();
@@ -58695,6 +58695,7 @@ async function _reclaimLoad() {
     const [scan, quar] = await Promise.all([
       fetch(API + '/api/reclaim/scan/latest').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(API + '/api/reclaim/quarantine').then(r => r.ok ? r.json() : null).catch(() => null),
+      _tierLoad(),
     ]);
     _reclaimScan = scan;
     _reclaimQuarantine = quar;
@@ -59014,6 +59015,7 @@ function _reclaimRender() {
     </div>
   </div>`;
 
+  html += _tierPanel();
   if (!scan) html += _reclaimActionsPanel(findings);
 
   if (!scan) {
@@ -59544,6 +59546,234 @@ function _torrentRender() {
       </div>` : ''}
     </div>`;
   }).join('');
+}
+
+// ── Storage tiers (api/tiering.rs) ─────────────────────────────────────────
+// Ethan, 2026-10-29: watched folders move between this Mac and a chosen cold
+// drive by how recently they were used, configured here in the Disk tab. The
+// server owns every decision and every refusal; this panel shows them and
+// queues requests. Polls only while a move or a run is in flight.
+let _tier = null;
+let _tierTimer = null;
+const _TIER_WHERE = {
+  mac: 'On this Mac', hdd: 'On the cold drive', hdd_unavailable: 'On the cold drive, which is not connected',
+  moving: 'Moving', missing: 'Missing', foreign_link: 'A symlink amux did not create', not_a_folder: 'Not a folder',
+};
+
+async function _tierLoad() {
+  const prev = _tier;
+  const r = await fetch(API + '/api/tiering').then(r => r.ok ? r.json() : null).catch(() => null);
+  _tier = r;
+  const busy = !!(r && (r.ticking || (r.folders || []).some(f => f.op)));
+  if (busy && !_tierTimer) _tierTimer = setInterval(_tierPoll, 2000);
+  if (!busy) _tierStopPolling();
+  // Say when a move finishes, so a click that took minutes does not end in silence.
+  for (const f of (r?.folders || [])) {
+    const was = (prev?.folders || []).find(x => x.path === f.path);
+    if (was?.op && !f.op) {
+      if (f.last_move && f.last_move.at >= was.op.started_at) showToast(f.path + ': ' + f.last_move.text);
+      else if (f.last_refusal) showToast(f.path + ': not moved. ' + f.last_refusal.text);
+    }
+  }
+  return r;
+}
+
+function _tierStopPolling() {
+  if (_tierTimer) { clearInterval(_tierTimer); _tierTimer = null; }
+}
+
+async function _tierPoll() {
+  await _tierLoad();
+  _tierRefresh();
+}
+
+function _tierRefresh() {
+  const el = document.getElementById('tier-status');
+  if (el) el.outerHTML = _tierStatusHtml();
+}
+
+// TB once past a terabyte: an 18 TB drive read as "18543.23 GB free".
+function _tierBytes(b) {
+  return b >= 1e12 ? (b / 1e12).toFixed(1) + ' TB' : _fmtBytes(b);
+}
+
+function _tierPanel() {
+  return `<div id="tier-panel">${_tierStatusHtml()}${_tierFormHtml()}</div>`;
+}
+
+function _tierStatusHtml() {
+  const t = _tier;
+  let h = '<div id="tier-status"><div class="metrics-section-title" style="margin-top:var(--space-3);" id="tier-title">Storage tiers</div>';
+  if (!t) return h + '<div class="metrics-card reclaim-safe-text" id="tier-unloaded">Storage tiers did not load.</div></div>';
+  if (!t.measured) return h + `<div class="metrics-card reclaim-safe-text" id="tier-unmeasured">Not measured: ${esc(t.why_unmeasured || 'no status')}</div></div>`;
+  const c = t.cold_root;
+  const vols = t.volumes || [];
+  h += '<div class="metrics-card reclaim-safe-card" id="tier-drive"><div class="reclaim-safe-head">Cold drive</div>';
+  if (c) {
+    h += `<div class="reclaim-safe-text" id="tier-drive-text" style="overflow-wrap:anywhere;"><code>${esc(c.path)}</code>, ${c.available
+      ? `${_tierBytes(c.free)} free of ${_tierBytes(c.total)}`
+      : '<b style="color:var(--red);">not connected</b>'}${c.same_disk_as_mac ? '. <b>This is the same disk as the Mac, so a move frees nothing.</b>' : ''}</div>`;
+  } else {
+    h += '<div class="reclaim-safe-text" id="tier-drive-text" style="overflow-wrap:anywhere;">Pick a drive for folders you are not using. A watched folder moves there after it sits idle, leaves a link behind so every path still works, and comes back when it is used.</div>';
+  }
+  h += `<div class="reclaim-actions-row">
+    <select class="input" id="tier-drive-pick" aria-label="Cold drive" style="max-width:100%;">
+      ${vols.map(v => `<option value="${esc(v.path)}/amux-tier"${c && c.path.startsWith(v.path + '/') ? ' selected' : ''}>${esc(v.path)} (${_tierBytes(v.free)} free)</option>`).join('')}
+      <option value=""${c && !vols.some(v => c.path.startsWith(v.path + '/')) ? ' selected' : ''}>Another folder</option>
+    </select>
+    <button class="btn" id="tier-drive-save" onclick="_tierSetDrive()">${c ? 'Change drive' : 'Use this drive'}</button>
+    <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);white-space:nowrap;"><input type="checkbox" id="tier-auto"${t.auto ? ' checked' : ''} onchange="_tierSetAuto(this.checked)"> Move automatically</label>
+    <button class="btn" id="tier-run" onclick="_tierRunNow()"${t.ticking ? ' disabled' : ''}>${t.ticking ? 'Checking' : 'Check now'}</button>
+  </div>`;
+  const pol = t.policy || {};
+  h += `<div class="reclaim-safe-text">Policy: a folder idle for its set days moves to the drive. It comes back on any write, or after reads on
+    <input class="input" id="tier-recall" type="number" min="1" max="7" value="${pol.recall_read_days || 3}" style="width:56px;" aria-label="Read days before a folder comes back">
+    separate days within ${pol.read_window_days || 7}. A pass that reads nearly every file at once, like a backup, does not count.
+    When this Mac drops under <input class="input" id="tier-low" type="number" min="1" max="90" value="${pol.pressure_free_pct || 15}" style="width:56px;" aria-label="Low-space level, percent free">% free,
+    the coldest folders move out sooner until <input class="input" id="tier-target" type="number" min="2" max="90" value="${pol.target_free_pct || 25}" style="width:56px;" aria-label="Target free space, percent">% is free.
+    A folder that just came back stays at least ${pol.residency_hours ?? 24} hours.
+    <button class="btn" id="tier-policy-save" onclick="_tierSavePolicy()">Save policy</button></div>`;
+  const lt = t.last_tick;
+  h += `<div class="reclaim-safe-text" id="tier-last-run">${t.auto ? `Checks every ${Math.round((t.interval_s || 300) / 60)} minutes.` : 'Automatic moves are off; the buttons below still work.'}
+    ${lt ? ` Last check ${esc(timeAgo(lt.at))}: ${lt.moved} moved, ${lt.refused} refused${lt.resumed ? `, ${lt.resumed} resumed` : ''}${lt.pressure ? ', with the Mac low on space' : ''}.` : ' No check has run yet.'}</div></div>`;
+  const fs = t.folders || [];
+  h += '<div id="tier-folders" class="reclaim-safe-grid" style="margin-top:var(--space-2-5);">';
+  if (!fs.length) h += '<div class="metrics-card reclaim-safe-text" id="tier-empty">No watched folders yet. Add one below.</div>';
+  for (const f of fs) h += _tierFolderCard(f);
+  return h + '</div></div>';
+}
+
+function _tierFolderCard(f) {
+  const st = f.stats, op = f.op, where = f.location;
+  const state = op
+    ? (op.kind === 'to_hdd' ? 'Moving to the cold drive' : 'Bringing back to this Mac') + (op.phase === 'queued' ? ', queued' : `, ${op.phase} step`)
+    : (_TIER_WHERE[where] || where);
+  const size = st ? `${_tierBytes(st.bytes)} in ${Number(st.files).toLocaleString()} files` : 'Size not measured yet';
+  const used = st ? (st.last_used ? `last used ${timeAgo(st.last_used)}` : 'no use recorded') + (st.complete ? '' : ' (count still partial)') : '';
+  const p = escJs(f.path);
+  let btns = '';
+  if (!op && where === 'mac') btns += `<button class="btn" data-tier-act="to-hdd" onclick="_tierMove('${p}','hdd')">Move to cold drive</button>`;
+  if (!op && where === 'hdd') btns += `<button class="btn" data-tier-act="to-mac" onclick="_tierMove('${p}','mac')">Bring back to this Mac</button>`;
+  if (!op) btns += `<button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button>`;
+  const notes = [];
+  if (where === 'hdd' && !op) {
+    const today = Math.floor(Date.now() / 86400000), win = _tier?.policy?.read_window_days || 7;
+    const n = (f.read_days || []).filter(d => d > today - win).length;
+    notes.push(`<div class="reclaim-safe-text" data-tier-note="reads">Reads seen on ${n} of the last ${win} days; it comes back at ${_tier?.policy?.recall_read_days || 3}, or on any write.</div>`);
+  }
+  if (f.last_refusal) notes.push(`<div class="reclaim-safe-text" data-tier-note="refused" style="color:var(--red);overflow-wrap:anywhere;">Not moved ${esc(timeAgo(f.last_refusal.at))}: ${esc(f.last_refusal.text)}</div>`);
+  if (f.last_error) notes.push(`<div class="reclaim-safe-text" data-tier-note="error" style="color:var(--red);overflow-wrap:anywhere;">Last step failed, retrying: ${esc(f.last_error.text)}</div>`);
+  if (f.last_move && !f.last_error) notes.push(`<div class="reclaim-safe-text" data-tier-note="moved" style="overflow-wrap:anywhere;">${esc(timeAgo(f.last_move.at))}: ${esc(f.last_move.text)}</div>`);
+  return `<div class="metrics-card reclaim-safe-card tier-folder" data-tier-path="${esc(f.path)}" data-tier-location="${esc(where)}">
+    <div class="reclaim-safe-head" style="word-break:break-all;">${esc(f.path)}</div>
+    <div class="reclaim-safe-text"><b data-tier-state>${esc(state)}</b>. ${esc(size)}${used ? ', ' + esc(used) : ''}.</div>
+    <div class="reclaim-safe-text">Moves out after ${f.idle_days} idle day${f.idle_days === 1 ? '' : 's'}${f.promote_on_use ? ', comes back when used' : ''}.</div>
+    ${notes.join('')}
+    ${btns ? `<div class="reclaim-actions-row">${btns}</div>` : ''}
+  </div>`;
+}
+
+function _tierFormHtml() {
+  return `<div class="metrics-card reclaim-safe-card" id="tier-add" style="margin-top:var(--space-2-5);">
+    <div class="reclaim-safe-head">Watch a folder</div>
+    <div class="reclaim-actions-row">
+      <input class="input" id="tier-add-path" placeholder="~/Dev/mixpeek/customers/primis" spellcheck="false" autocapitalize="off" style="flex:1 1 180px;min-width:0;" onkeydown="if(event.key==='Enter')_tierAdd()">
+      <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);white-space:nowrap;">Move after <input class="input" id="tier-add-days" type="number" min="1" max="3650" value="14" style="width:72px;"> idle days</label>
+      <button class="btn" id="tier-add-btn" onclick="_tierAdd()">Watch</button>
+    </div>
+    <div class="reclaim-safe-text" id="tier-add-msg" role="status"></div>
+  </div>`;
+}
+
+async function _tierCall(method, url, body) {
+  try {
+    const r = await fetch(API + url, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+    let j = null;
+    try { j = await r.json(); } catch (e) {}
+    return {ok: r.ok, status: r.status, j};
+  } catch (e) {
+    return {ok: false, status: 0, j: {error: 'Could not reach the server: ' + String(e)}};
+  }
+}
+
+async function _tierAdd() {
+  const input = document.getElementById('tier-add-path');
+  const msg = document.getElementById('tier-add-msg');
+  const btn = document.getElementById('tier-add-btn');
+  const path = (input?.value || '').trim();
+  const days = parseInt(document.getElementById('tier-add-days')?.value, 10);
+  msg.style.color = 'var(--red)';
+  if (!path) { msg.textContent = 'Type the folder path first.'; return; }
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const r = await _tierCall('POST', '/api/tiering/folders', {path, idle_days: days});
+  btn.disabled = false;
+  if (!r.ok) { msg.textContent = r.j?.error || `Could not add it (HTTP ${r.status}).`; return; }
+  msg.style.color = '';
+  msg.textContent = '';
+  input.value = '';
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Watching ' + path);
+  await _tierLoad();
+  _tierRefresh();
+}
+
+async function _tierMove(path, to) {
+  // Disable this card's buttons before the request, so a double click queues one move.
+  document.querySelectorAll('.tier-folder').forEach(card => {
+    if (card.dataset.tierPath === path) card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  });
+  const r = await _tierCall('POST', '/api/tiering/move', {path, to});
+  if (!r.ok) showToast(r.j?.error || `Move refused (HTTP ${r.status})`);
+  await _tierLoad();
+  _tierRefresh();
+}
+
+async function _tierRemove(path) {
+  if (!(await showConfirm(`Stop watching ${path}? Its files stay exactly where they are now.`, 'Stop watching'))) return;
+  const r = await _tierCall('DELETE', '/api/tiering/folders?path=' + encodeURIComponent(path));
+  if (!r.ok) { showToast(r.j?.error || `Could not stop watching (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+}
+
+async function _tierSetDrive() {
+  let p = document.getElementById('tier-drive-pick')?.value || '';
+  if (!p) {
+    p = await showPrompt('Folder on the cold drive', '/Volumes/YourDrive/amux-tier', _tier?.cold_root?.path || '');
+    if (!p) return;
+  }
+  const r = await _tierCall('PUT', '/api/tiering/config', {cold_root: p});
+  if (!r.ok) { showToast(r.j?.error || `Could not set the drive (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Cold drive set to ' + p);
+}
+
+async function _tierSetAuto(on) {
+  const r = await _tierCall('PUT', '/api/tiering/config', {auto: on});
+  if (!r.ok) showToast(r.j?.error || 'Could not change automatic moves');
+  else _tier = r.j;
+  _tierRefresh();
+}
+
+async function _tierSavePolicy() {
+  const num = id => parseInt(document.getElementById(id)?.value, 10);
+  const r = await _tierCall('PUT', '/api/tiering/config', {
+    recall_read_days: num('tier-recall'), pressure_free_pct: num('tier-low'), target_free_pct: num('tier-target'),
+  });
+  if (!r.ok) { showToast(r.j?.error || `Could not save the policy (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Policy saved');
+}
+
+async function _tierRunNow() {
+  const r = await _tierCall('POST', '/api/tiering/run');
+  showToast(r.j?.started ? 'Checking watched folders' : 'A check is already running');
+  await _tierLoad();
+  _tierRefresh();
 }
 
 function _fmtBytes(b) {

@@ -583,7 +583,7 @@ fn kind_of(name: &str) -> &'static str {
 /// wrongly refusing to clean something costs disk space, wrongly moving
 /// something costs the user's data or a broken machine. Everything here is a
 /// path a size-ranking heuristic would otherwise happily nominate.
-fn guard_path(p: &FsPath) -> Result<(), String> {
+pub(crate) fn guard_path(p: &FsPath) -> Result<(), String> {
     let home = home_dir();
     if !p.is_absolute() {
         return Err("path is not absolute".into());

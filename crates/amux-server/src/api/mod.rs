@@ -118,6 +118,7 @@ pub mod prefs;
 pub mod py_proxy;
 pub mod reclaim;
 pub(crate) mod reclaim_owner;
+pub mod tiering;
 pub mod reconciliation;
 pub mod recording_live;
 pub mod recording_sessions;
@@ -276,6 +277,7 @@ pub fn router_with_connector_transport(
         .nest("/api/criteria", criteria::routes())
         .nest("/api/metrics", metrics::routes())
         .nest("/api/reclaim", reclaim::routes())
+        .nest("/api/tiering", tiering::routes())
         .nest("/api/usage", usage::routes())
         .nest("/api/review", review::routes())
         .nest("/api/channels", channels::routes())

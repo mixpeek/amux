@@ -143,6 +143,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/signals", "named clearance signals: a card waits on a name, another lane raises it (api/signals.rs, AMUX-5237)"),
     ("/api/subscriptions", "event subscriptions: an event pattern fires a send, board card, schedule or shell action; plus emit and fire history (api/signals.rs, migration 0130)"),
     ("/api/reclaim", "disk scan, reclaim findings, treemap, quarantine"),
+    ("/api/tiering", "storage tiers: watched folders between the Mac and a cold drive by access (api/tiering.rs)"),
     ("/api/recordings", "audio recorder: upload, list, folder config, local transcription (api/recordings.rs)"),
     ("/api/usage", "token usage"),
     ("/api/alert", "owner alerts"),
