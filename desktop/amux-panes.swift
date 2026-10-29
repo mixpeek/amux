@@ -712,6 +712,34 @@ extension AppDelegate {
                 targetPage = t.host
             }
         }
+        // A split down to its host and one page that is a split of its own
+        // (owner, 2026-10-29: "this tab is stuck i can't move or delete it").
+        // No plain page could take the host's place, so handOver refused and
+        // the host's tab could neither close nor move (17 refusals logged that
+        // day). Two pages are no split worth keeping: the other page takes the
+        // host's place in the pane above, with its own split, and the host
+        // leaves as any tab does.
+        if g.host === c, g.all.count == 2, let other = g.all.first(where: { $0 !== c }), other.grid != nil,
+           let up = c.paneHost, let pg = up.grid, let pid = pg.id(of: c), let hw = up.rootHost.window {
+            lastTabPlaced = Date()
+            g.syncFractions()
+            g.container.removeFromSuperview()
+            c.grid = nil
+            other.paneHost = up
+            if other.windowName == nil { other.windowName = c.windowName }
+            c.windowName = nil
+            if var st = pg.stacks[pid], let i = st.firstIndex(where: { $0 === c }) { st[i] = other; pg.stacks[pid] = st }
+            if pg.members[pid] === c { pg.members[pid] = other }
+            c.paneHost = nil
+            c.webView.removeFromSuperview()
+            c.window?.contentView = c.webView
+            if let shown = pg.members[pid] { pg.views[pid]?.attach(shown) }
+            pg.refreshStrips()
+            up.updateTitle()
+            dlog("verdict=pane_split_collapsed_to_split depth=\(other.depth)")
+            finishUndock(c, to: dest, window: hw, panesLeft: pg.tree.leaves.count, targetPage: targetPage)
+            return
+        }
         // The host's own page: another page takes over the window first, so the
         // window, its place and its tab stay.
         if g.host === c {
@@ -753,7 +781,12 @@ extension AppDelegate {
             g.rebuild()
         }
         host.updateTitle()
-        let panesLeft = host.grid?.tree.leaves.count ?? 1
+        finishUndock(c, to: dest, window: hw, panesLeft: host.grid?.tree.leaves.count ?? 1, targetPage: targetPage)
+    }
+
+    /// Where a page that left its pane goes: a window tab, closed, or another pane.
+    private func finishUndock(_ c: DashboardWindowController, to dest: PaneDestination, window hw: NSWindow,
+                              panesLeft: Int, targetPage: DashboardWindowController?) {
         switch dest {
         case .tab:
             if let cw = c.window, cw !== hw, !(hw.tabbedWindows?.contains(cw) ?? false) { hw.addTabbedWindow(cw, ordered: .above) }

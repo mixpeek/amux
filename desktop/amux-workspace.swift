@@ -1031,9 +1031,15 @@ extension AppDelegate {
                 g = sub
             }
         case "/pane-tab-select", "/pane-tab-close", "/pane-tab-drag", "/pane-tab-hover", "/pane-focus", "/pane-action":
-            // The window's own grid, not a split inside one of its panes.
-            guard let h = controllers.first(where: { $0.grid?.host === $0 && $0.paneHost == nil }), let g = h.grid else { break }
+            // The window's own grid, or with `at` ("1", "1.0") the split that
+            // pane's tab is, walked down as /pane-nest does.
+            guard let h = controllers.first(where: { $0.grid?.host === $0 && $0.paneHost == nil }), var g = h.grid else { break }
             h.window?.tabGroup?.selectedWindow = h.window
+            for k in (q.first { $0.name == "at" }?.value ?? "").split(separator: ".").compactMap({ Int($0) }) {
+                let ls = g.tree.leaves
+                guard k >= 0 && k < ls.count, let m = g.members[ls[k]], m !== g.host, let sub = m.grid else { break }
+                g = sub
+            }
             let leaves = g.tree.leaves, i = Int(num("i")), t = Int(num("t"))
             let v = i >= 0 && i < leaves.count ? g.views[leaves[i]] : nil
             switch url.path {
