@@ -73,6 +73,14 @@ struct WorkspaceOp: Codable {
     }
 }
 
+/// The server's copy of the open windows (prefs key desktop_windows).
+struct ServerWindows: Codable {
+    var schema: Int
+    var windows: [SavedWindow]
+    var savedBy: String?
+    var savedAt: Double
+}
+
 /// The server's copy of every saved workspace (prefs key desktop_workspaces).
 struct ServerWorkspaces: Codable {
     var schema: Int
@@ -280,9 +288,55 @@ extension AppDelegate {
         } else if launch == "new" {
             openWindow(url: nil, frame: nil)
         } else {
+            launchedWithoutWindows = (config.windows ?? []).isEmpty
             openWindows(config.windows ?? [])
         }
         lastSignature = placementSignature()
+    }
+
+    // ── The open windows, on the server too (owner, 2026-10-29: "make sure the
+    // tab names are also saved with the windows and ensure its all saved server
+    // side") ──
+    // Every autosave also sends the windows (each tab, its name, its panes and
+    // their tabs and names, where it sits) to the server, at most every 10 s and
+    // only when they changed. A Mac that starts with no windows of its own (a
+    // new Mac, a cleared config) opens the server's once its first page has
+    // the token to read them.
+    var windowsKey: String? { workspacesKey.map { $0 == "desktop_workspaces" ? "desktop_windows" : $0 + "_windows" } }
+
+    func sendWindowsSoon(_ windows: [SavedWindow]) {
+        guard let key = windowsKey, !windows.isEmpty else { return }
+        windowsSendWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.sortedKeys]
+            guard let body = try? enc.encode(windows), body != self.windowsSent else { return }
+            let doc = ServerWindows(schema: 1, windows: windows, savedBy: Host.current().localizedName, savedAt: Date().timeIntervalSince1970)
+            guard let data = try? enc.encode(doc), let text = String(data: data, encoding: .utf8) else { return }
+            self.api("/api/prefs", method: "POST", body: ["key": key, "value": text]) { [weak self] r in
+                let ok = (r as? [String: Any])?["ok"] as? Bool == true
+                if ok { self?.windowsSent = body }
+                NSLog("amux-desktop: verdict=%@ key=%@ windows=%d bytes=%d", ok ? "windows_sent" : "windows_send_failed", key, windows.count, data.count)
+            }
+        }
+        windowsSendWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: w)
+    }
+
+    /// At most once a launch: the server's windows for a Mac that had none.
+    func adoptServerWindows() {
+        guard launchedWithoutWindows, let key = windowsKey else { return }
+        launchedWithoutWindows = false
+        api("/api/prefs?key=" + key) { [weak self] obj in
+            guard let self = self, let raw = (obj as? [String: Any])?["value"] as? String, !raw.isEmpty,
+                  let doc = try? JSONDecoder().decode(ServerWindows.self, from: Data(raw.utf8)), !doc.windows.isEmpty else {
+                NSLog("amux-desktop: verdict=windows_server_none key=%@", key)
+                return
+            }
+            NSLog("amux-desktop: verdict=windows_adopted_from_server key=%@ windows=%d saved_by=%@", key, doc.windows.count, doc.savedBy ?? "-")
+            self.openWindows(doc.windows, reuse: self.controllers)
+        }
     }
 
     @objc func saveLayoutPrompt(_ sender: Any?) {

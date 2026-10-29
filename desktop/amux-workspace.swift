@@ -609,6 +609,62 @@ extension AppDelegate {
     /// windowWillMove never fires, so dragBegan never sees it. From a press in
     /// a tab bar to the release this previews the zone under the cursor, then
     /// places the window the tab became: in that zone, or snapped to the grid.
+    // ── The Globe key as a hotkey (owner, 2026-10-29: "i want to use the globe
+    // button on my keyboard as a hotkey too") ──
+    // A web page never sees 🌐 (macOS keeps it from WebKit), so the app watches
+    // it while amux is in front and hands it to the page in focus as "Globe"
+    // (pressed and released alone) or "Globe+R" (held with a key). The page's
+    // Hotkeys run it like any other combination (app.js _hkNativeKey). Globe
+    // with an arrow or F-key is left alone: those are Home, End, Page Up and
+    // the function keys.
+    func startGlobeKey() {
+        globeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] e in
+            guard let self = self else { return e }
+            if e.type == .flagsChanged {
+                guard e.keyCode == 63 else {   // kVK_Function
+                    if self.globeDown { self.globeUsed = true }   // another modifier joined in
+                    return e
+                }
+                if e.modifierFlags.contains(.function) {
+                    self.globeDown = true
+                    self.globeUsed = false
+                } else if self.globeDown {
+                    self.globeDown = false
+                    if !self.globeUsed { self.sendGlobe("Globe") }
+                }
+                return e
+            }
+            guard self.globeDown else { return e }
+            // Released where amux could not see it (another app was in front):
+            // the next key decides, so letters are never swallowed afterwards.
+            guard e.modifierFlags.contains(.function) else { self.globeDown = false; return e }
+            // Any key with 🌐 means it was not a tap, Globe+arrow (Home, End) included.
+            self.globeUsed = true
+            guard let k = globeKeyName(e) else { return e }
+            if !e.isARepeat { self.sendGlobe("Globe+" + k) }
+            return nil
+        }
+        // Leaving amux with 🌐 held: its release goes to another app.
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.globeDown = false
+        }
+    }
+
+    func sendGlobe(_ combo: String) {
+        guard let c = focusedPage() else { return }
+        let lit = String(data: (try? JSONSerialization.data(withJSONObject: [combo])) ?? Data(), encoding: .utf8)?.dropFirst().dropLast() ?? ""
+        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit)) : 'no_hook'") { r, _ in
+            dlog("verdict=globe_key combo=\(combo) page=\(c.viewHash) result=\(r ?? "-")")
+        }
+    }
+
+    /// The page you are typing in: the key window's, or its focused pane's.
+    func focusedPage() -> DashboardWindowController? {
+        guard let w = NSApp.keyWindow, let c = controllers.first(where: { $0.window === w }) else { return nil }
+        if let g = c.grid, let id = g.focused, let m = g.members[id] { return m }
+        return c
+    }
+
     func startTabDragTracking() {
         tabDragMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
             self?.tabPressed(e)
@@ -1276,4 +1332,13 @@ func buildArrangeMenu(_ d: AppDelegate) -> NSMenu {
     let snap = m.addItem(withTitle: "Snap to Grid While Dragging", action: #selector(AppDelegate.toggleSnap(_:)), keyEquivalent: "")
     snap.target = d
     return m
+}
+
+/// The key held with 🌐, named as the page's Hotkeys name it ("R", "5",
+/// "Space"); nil for keys Globe already means something with.
+func globeKeyName(_ e: NSEvent) -> String? {
+    if e.keyCode == 49 { return "Space" }
+    guard let ch = e.charactersIgnoringModifiers?.uppercased(), ch.count == 1,
+          let u = ch.unicodeScalars.first, CharacterSet.alphanumerics.contains(u), u.isASCII else { return nil }
+    return ch
 }

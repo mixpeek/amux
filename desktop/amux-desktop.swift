@@ -2,6 +2,7 @@ import Cocoa
 import WebKit
 import Carbon.HIToolbox
 import UserNotifications
+import AVFoundation
 
 // The native macOS app: dashboard windows and tabs on the system WebKit (no
 // bundled browser), pinned notes as floating panels, the menu bar readout, a
@@ -677,7 +678,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // workspaces needs; until one sync reaches it, each page load tries again.
         if let a = app, a.workspacesSync == .never, a.workspacesKey != nil, webView.url.map(a.isServerURL) ?? false {
             a.workspacesSync = .running
-            a.syncWorkspaces { [weak a] reached in a?.workspacesSync = reached ? .reached : .never }
+            a.syncWorkspaces { [weak a] reached in
+                a?.workspacesSync = reached ? .reached : .never
+                if reached { a?.adoptServerWindows() }
+            }
         }
     }
 
@@ -882,7 +886,28 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(origin.host == app?.serverURL?.host ? .grant : .prompt)
+        guard origin.host == app?.serverURL?.host else { decisionHandler(.prompt); return }
+        guard type == .microphone || type == .cameraAndMicrophone else { decisionHandler(.grant); return }
+        // Dictation sat on "Starting mic…" (owner, 2026-10-29): WebKit was told
+        // yes while macOS had not decided, and its own prompt never came to the
+        // front. The app asks macOS itself, in front, and answers the page with
+        // what macOS said, so the page hears yes or no instead of waiting.
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            decisionHandler(.grant)
+        case .notDetermined:
+            dlog("verdict=mic_permission_asked view=\(viewHash)")
+            NSApp.activate(ignoringOtherApps: true)
+            AVCaptureDevice.requestAccess(for: .audio) { ok in
+                DispatchQueue.main.async {
+                    dlog("verdict=mic_permission_\(ok ? "granted" : "refused") view=\(self.viewHash)")
+                    decisionHandler(ok ? .grant : .deny)
+                }
+            }
+        default:
+            dlog("verdict=mic_permission_denied_in_settings view=\(viewHash)")
+            decisionHandler(.deny)
+        }
     }
 }
 
@@ -932,6 +957,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var dragTimer: Timer?
     var tabDragTimer: Timer?
     var tabDragMonitor: Any?
+    var globeMonitor: Any?
+    var globeDown = false, globeUsed = false
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
     var lastTabPlaced = Date.distantPast
@@ -995,6 +1022,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         saveConfig(config)
         startWorkspaceTracking()
         startTabDragTracking()
+        startGlobeKey()
         applyOpenAtLogin()
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()
@@ -1104,6 +1132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 // was on screen, never to what was saved (owner, 2026-10-28).
                 self.config = c
                 saveConfig(c)
+                self.sendWindowsSoon(windows)
             }
         }
         saveWork = w
@@ -1376,6 +1405,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // One sync at a time: a second waits, so two never read the same server
     // list and overwrite each other's change.
     var workspacesSyncBusy = false
+    // The open windows' copy on the server: what was last sent, the pending
+    // send, and whether this launch began with no windows of its own.
+    var windowsSent: Data?
+    var windowsSendWork: DispatchWorkItem?
+    var launchedWithoutWindows = false
     var workspacesSyncWaiting: [(Bool) -> Void] = []
 
     func withAPIToken(_ go: @escaping (String?) -> Void) {

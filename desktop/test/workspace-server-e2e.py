@@ -21,6 +21,8 @@ Runs a second copy of the app with its own config and its own server key
    server and opens the same windows.
 6. Changes made offline (pending at launch) merge into the server's list, and
    a Mac's first sync keeps the workspaces only it had.
+7. The open windows reach the server with their tab names, and a Mac with no
+   windows of its own opens them.
 """
 import json, os, signal, subprocess, sys, tempfile, time
 
@@ -42,8 +44,8 @@ def check(label, ok, detail=""):
     fails += 0 if ok else 1
 
 
-def server_value():
-    out = sh("amux", "get", f"/api/prefs?key={KEY}").stdout
+def server_value(key=None):
+    out = sh("amux", "get", f"/api/prefs?key={key or KEY}").stdout
     try:
         v = json.loads(out).get("value")
         return json.loads(v) if v else None
@@ -159,6 +161,18 @@ try:
     a.send("amux://save-workspace/P2", 6)
     names = sorted(l["name"] for l in (server_value() or {}).get("layouts", []))
     check("two quick saves both reach the server", names == ["E2E", "P1", "P2"], str(names))
+    # The open windows go to the server too, tab names included.
+    a.send("amux://test/rename-tab?view=view%3Dboard&whole=1&name=Planning", 1)
+    a.send("amux://arrange/fill", 1)
+    end = time.time() + 30
+    win = None
+    while time.time() < end:
+        win = server_value(KEY + "_windows")
+        if win and any((w.get("grid") or {}).get("name") == "Planning" for w in win.get("windows", [])):
+            break
+        time.sleep(1)
+    check("the open windows are on the server, with the tab's name",
+          bool(win) and any((w.get("grid") or {}).get("name") == "Planning" for w in win.get("windows", [])), json.dumps(win)[:400])
     a.stop()
     srv = server_value()
 
@@ -196,11 +210,21 @@ try:
     d.wait_log("verdict=workspaces_synced key=" + KEY, 40)
     names = sorted(l["name"] for l in (server_value() or {}).get("layouts", []))
     check("a Mac's first sync keeps the workspaces only it had", names == ["E2E", "Mine", "P2", "Y"], str(names))
+    d.stop()
+
+    # A Mac with no windows of its own opens the server's, the named tab included.
+    e = App("five", dict(base, launch="last"))
+    apps.append(e)
+    e.wait_log("verdict=windows_adopted_from_server", 40)
+    time.sleep(4)
+    titles = sorted(w["title"] for w in e.state()["windows"])
+    check("a Mac with no windows opens the server's, with the tab's name", "Planning" in titles, f"{titles} {e.text()[-400:]}")
 finally:
     for x in apps:
         if x.p.poll() is None:
             x.stop()
-    sh("curl", "-sk", "-m", "20", "-X", "POST", "-H", "Content-Type: application/json",
-       "-H", "X-Amux-Session: " + os.environ.get("AMUX_SESSION", ""), "-d", json.dumps({"key": KEY, "value": ""}), url + "/api/prefs")
+    for k in (KEY, KEY + "_windows"):
+        sh("curl", "-sk", "-m", "20", "-X", "POST", "-H", "Content-Type: application/json",
+           "-H", "X-Amux-Session: " + os.environ.get("AMUX_SESSION", ""), "-d", json.dumps({"key": k, "value": ""}), url + "/api/prefs")
 print("PASS: workspace-server, all checks passed" if fails == 0 else f"workspace-server: {fails} check(s) FAILED (dir {TMP})")
 sys.exit(1 if fails else 0)
