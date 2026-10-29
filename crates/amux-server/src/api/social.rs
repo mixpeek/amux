@@ -64,6 +64,11 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
     ("linkedin", "not_built", "Community Management API approval and an amux company page."),
 ];
 
+/// Every platform call names amux. dev.to answers 403 to a request with no
+/// User-Agent (amux-gtm measured it with the live key, 2026-10-28), so the
+/// first queued dev.to post failed "refused the article: HTTP 403".
+pub const USER_AGENT: &str = concat!("amux/", env!("CARGO_PKG_VERSION"));
+
 type TokenFuture = Pin<Box<dyn Future<Output = Result<String, Value>> + Send>>;
 type TokenSource = Arc<dyn Fn(AppState, HeaderMap, String) -> TokenFuture + Send + Sync>;
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -95,6 +100,7 @@ impl SocialCtx {
                 })
             }),
             http: reqwest::Client::builder()
+                .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(600))
                 .build()
                 .unwrap_or_default(),
@@ -120,7 +126,7 @@ impl SocialCtx {
                 Box::pin(async move { Ok(b) })
             }),
             env: Arc::new(move |key| env.get(key).cloned()),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder().user_agent(USER_AGENT).build().unwrap_or_default(),
         }
     }
 }

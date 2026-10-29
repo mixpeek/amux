@@ -67,6 +67,10 @@ async fn reports(State(f): State<Shared>, Query(q): Query<HashMap<String, String
 }
 
 async fn devto_create(State(f): State<Shared>, h: HeaderMap, Json(b): Json<Value>) -> axum::response::Response {
+    // dev.to refuses a request with no User-Agent (403), and so does this fake.
+    if !h.get("user-agent").and_then(|v| v.to_str().ok()).is_some_and(|ua| ua.starts_with("amux/")) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "forbidden: no user agent"}))).into_response();
+    }
     let mut f = f.lock().unwrap();
     f.devto_keys.push(h.get("api-key").and_then(|v| v.to_str().ok()).unwrap_or("").to_string());
     if f.devto_fail {
@@ -77,8 +81,11 @@ async fn devto_create(State(f): State<Shared>, h: HeaderMap, Json(b): Json<Value
     Json(json!({"id": 555, "url": "https://dev.to/amux/eight-agents-555", "published": published})).into_response()
 }
 
-async fn devto_mine() -> Json<Value> {
-    Json(json!([{"id": 554, "page_views_count": 1}, {"id": 555, "page_views_count": 9, "public_reactions_count": 2, "comments_count": 1, "published": false, "url": "https://dev.to/amux/eight-agents-555"}]))
+async fn devto_mine(h: HeaderMap) -> axum::response::Response {
+    if h.get("user-agent").is_none() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "forbidden: no user agent"}))).into_response();
+    }
+    Json(json!([{"id": 554, "page_views_count": 1}, {"id": 555, "page_views_count": 9, "public_reactions_count": 2, "comments_count": 1, "published": false, "url": "https://dev.to/amux/eight-agents-555"}])).into_response()
 }
 
 async fn fake_youtube() -> (String, Shared) {
