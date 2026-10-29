@@ -65,7 +65,7 @@ test('Split: the source with line numbers beside a live preview, and a status li
   await page.screenshot({ path: test.info().outputPath('md-split.png') });
 });
 
-test('the formatting bar and keys edit the source, and ⌘Z undoes them', async ({ page, browserName }) => {
+test('the formatting bar and keys edit the source, and ⌘Z undoes them', async ({ page }) => {
   const f = freshFile('fmt.md', 'hello world\n');
   await open(page, f);
   await mode(page, 'edit');
@@ -76,10 +76,13 @@ test('the formatting bar and keys edit the source, and ⌘Z undoes them', async 
   await page.locator('#mdx-tools [data-t="heading"]').click();
   await expect(ta).toHaveValue('# hello **world**\n');
   await page.keyboard.press('ControlOrMeta+z');
-  // WebKit merges back-to-back edits into one undo step, so there ⌘Z takes
-  // both back; Chromium undoes the heading alone.
-  if (browserName === 'webkit') {
-    await expect(ta).toHaveValue('hello world\n');
+  // ⌘Z takes back the heading alone, or both edits when the browser grouped
+  // them into one undo step. WebKit groups them only when they land close
+  // together, so on a busy CI runner it does either (main CI 95b3d5ac9 got
+  // the heading alone on iPhone Safari after 420af10a6 required both). Either
+  // is a correct undo.
+  await expect.poll(() => ta.inputValue()).toMatch(/^hello (\*\*world\*\*|world)\n$/);
+  if ((await ta.inputValue()) === 'hello world\n') {
     await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(6, 11); });
     await page.locator('#mdx-tools [data-t="bold"]').click();
   }
