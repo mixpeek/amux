@@ -3834,7 +3834,10 @@ else
     page=-; pcard=-
     if [ -n "$plast" ]; then
       page=$(awk -v a="$now" -v b="$plast" 'BEGIN{printf "%.1f", (a-b)/3600}')
-      pcard=$(tr -d '[:space:]' < "$STATE_DIR/rca/$pstamp.$cls.card" 2>/dev/null); [ -n "$pcard" ] || pcard="none written (the previous turn did not record one)"
+      # Squeeze, not delete: a lane with no board writes its card as a sentence
+      # (none:board_off. ...), and deleting whitespace quoted it back as one
+      # unreadable word (memory RCA 20261029-063250).
+      pcard=$(tr -s '[:space:]' ' ' < "$STATE_DIR/rca/$pstamp.$cls.card" 2>/dev/null | sed 's/^ //; s/ $//'); [ -n "$pcard" ] || pcard="none written (the previous turn did not record one)"
       [ -n "$psnap" ] || psnap="not recorded"
     fi
     escalation_message "$cls" "$v" "$bundle" "$cardf" "$nowsnap" "$page" "$pcard" "$psnap" > "$msg"

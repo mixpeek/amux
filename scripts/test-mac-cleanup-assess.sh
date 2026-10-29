@@ -252,6 +252,12 @@ if [ "$(uname)" = Darwin ]; then
   check "after the cooldown a recurrence escalates"     "yes" "$(has "$out" 'recurrence, previous 7.0h ago, card MO-9999')"
   msg2=$(sed -n 's/.*file=//p' "$FIX/sent.log" | grep '\.disk\.msg$' | tail -1)
   check "and the prompt quotes the previous card"       "yes" "$(grep -q 'card: MO-9999; measured then: disk=' "$msg2" && echo yes || echo no)"
+  # A lane with no board writes its card as a sentence; it is quoted readable.
+  printf 'none:board_off. the fix\n  landed\n' > "${msg2%.msg}.card"
+  state_put "$FIX/tick/state" "esc_disk=$(( $(date +%s) - 7*3600 ))"
+  out=$(tick 999999 "$REC")
+  msg3=$(sed -n 's/.*file=//p' "$FIX/sent.log" | grep '\.disk\.msg$' | tail -1)
+  check "a card written as a sentence is quoted with its spaces" "yes" "$(grep -q 'card: none:board_off. the fix landed; measured then: disk=' "$msg3" && echo yes || echo no)"
 else
   echo "  skip macOS-only cells (the tick's probes are macOS commands): not run on $(uname)"
 fi
