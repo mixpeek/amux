@@ -84,10 +84,8 @@
 <h2>Coordination via REST</h2>
 <p>amux agents coordinate via HTTP API — they can read the shared board, post updates, and message each other. Combined with MCP tool access, this means an orchestrator agent can see what specialist agents have done (via the board) and issue follow-up tasks without any human intervention.</p>
 <p>The pattern looks like: orchestrator reads the task list, assigns sub-tasks to specialist agents via the board, specialist agents complete tasks with their MCP tools, orchestrator verifies and closes the loop. Pure agent orchestration, no human in the loop.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

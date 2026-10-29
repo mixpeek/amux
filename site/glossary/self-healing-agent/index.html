@@ -48,10 +48,8 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>Self-Healing AI Agent</span></div>
-    <h1>Self-Healing AI Agent</h1><p class="subtitle">An AI agent that automatically recovers from crashes, context exhaustion, and stuck states.</p><p>Self-healing agents detect when something goes wrong and fix it without human intervention. In amux, the watchdog monitors for context exhaustion, thinking-block corruption, and stuck prompts — automatically recovering from each.</p><h2>Common failure modes</h2><ul><li>Context window fills up → auto-compact</li><li>Thinking-block corruption → restart + replay</li><li>Tool-approval stuck → auto-respond (YOLO mode)</li></ul><div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div><p><a href="/glossary/">← Back to glossary</a></p>
+    <h1>Self-Healing AI Agent</h1><p class="subtitle">An AI agent that automatically recovers from crashes, context exhaustion, and stuck states.</p><p>Self-healing agents detect when something goes wrong and fix it without human intervention. In amux, the watchdog monitors for context exhaustion, thinking-block corruption, and stuck prompts — automatically recovering from each.</p><h2>Common failure modes</h2><ul><li>Context window fills up → auto-compact</li><li>Thinking-block corruption → restart + replay</li><li>Tool-approval stuck → auto-respond (YOLO mode)</li></ul><div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div><p><a href="/glossary/">← Back to glossary</a></p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

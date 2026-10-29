@@ -75,10 +75,8 @@ amux register architect --dir ~/project --model claude-opus-4 --yolo
 amux register test-writer --dir ~/project --model claude-sonnet-4 --yolo</code></pre>
 <h2>The Model Mix Strategy</h2>
 <p>The most cost-effective fleet uses mixed models: 1-2 Opus 4 agents for complex reasoning and architecture decisions, 5-10 Sonnet 4 agents for implementation, and Haiku agents for search, triage, and documentation. This gives you frontier capability where it matters and lower cost where it doesn't.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
