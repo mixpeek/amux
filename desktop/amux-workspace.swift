@@ -1105,6 +1105,8 @@ extension AppDelegate {
             if let w = q.first(where: { $0.name == "worker" })?.value { openNotificationTab("#peek=" + w, why: "worker") }
             else if let h = q.first(where: { $0.name == "hash" })?.value { openNotificationTab(h, why: "message") }
         case "/hide": NSApp.hide(nil)
+        // View > Reload Pane Ignoring Cache, as ⌘⇧R reaches it.
+        case "/reload-ignoring-cache": reloadIgnoringCache(nil)
         // Run a script in the shown tab's page (download-e2e.py starts a page
         // download with it). Test mode only, like every hook here.
         case "/js":
