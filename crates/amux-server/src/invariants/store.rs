@@ -23,6 +23,13 @@ use serde_json::json;
 /// pass-row age. Flap history lives in _amux_invariant_incident either way.
 const RESULT_RETAIN_SECS: f64 = 7.0 * 86400.0;
 const PASS_RETAIN_SECS: f64 = 3600.0;
+// UNKNOWN KEEPS THE PASS WINDOW (AMUX-6496). An unknown opens no incident
+// (unknown_records_but_does_not_page), so nobody greps its history after
+// one; it only says the check ran and could not measure, which is what the
+// pass window keeps. Kept for the week, it filled the log: on 2026-10-29
+// schema.timestamp_units_declared alone held 187,435 unknown rows, the same
+// 45 per-column verdicts every pass, and the log sat at the 500k bound
+// (store.result_log_bounded failed 25,188 times since 08-22).
 /// Trim cap per write cycle: the first cycle after the differential retention
 /// ships faces a ~7M-row backlog, and deleting it in one transaction would
 /// balloon the WAL past the DB's own size. The monitor cycles constantly, so
@@ -274,7 +281,7 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                 .prepare_cached(
                     "DELETE FROM _amux_invariant_result WHERE rowid IN (
                         SELECT rowid FROM _amux_invariant_result
-                         WHERE status = 'pass' AND ts < ?1
+                         WHERE status IN ('pass', 'unknown') AND ts < ?1
                          LIMIT ?2)",
                 )
                 .and_then(|mut s| {
@@ -831,7 +838,7 @@ mod tests {
         let old = now() - 7200.0;
         let _ = s
             .write_async(move |conn| {
-                for (st, id) in [("pass", "old.pass"), ("fail", "old.fail")] {
+                for (st, id) in [("pass", "old.pass"), ("fail", "old.fail"), ("unknown", "old.unknown")] {
                     conn.execute(
                         "INSERT INTO _amux_invariant_result
                            (ts, invariant_id, status, entity_key, expected, observed, evidence, duration_ms)
@@ -857,7 +864,7 @@ mod tests {
         assert_eq!(
             left,
             vec!["fresh.check".to_string(), "old.fail".to_string()],
-            "stale pass gone, stale fail kept, fresh row kept"
+            "stale pass and stale unknown gone, stale fail kept, fresh row kept"
         );
 
         let (rows, oldest) = result_log_stats(&s).unwrap();
