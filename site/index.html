@@ -7,21 +7,21 @@
 <title>amux — The Agent Control Plane</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
-<meta name="description" content="Run an AI engineering team from one dashboard. amux is the open-source control plane for AI coding agents — launch, coordinate, monitor, and recover dozens of parallel Claude Code, Codex, and Gemini CLI sessions from a single interface. Self-healing, MIT licensed.">
+<meta name="description" content="Run an AI engineering team from one dashboard. amux is the open-source control plane for AI coding agents — launch, coordinate, monitor, and recover dozens of parallel Claude Code, Codex, and Gemini CLI sessions from a single interface. Self-healing, MIT + Commons Clause.">
 <meta name="keywords" content="amux, agent control plane, agent infrastructure, agent fleet management, agent observability, claude code multiplexer, parallel AI coding agents, AI agent orchestration, self-healing AI agent, claude code dashboard, run multiple claude code, AI coding while you sleep, AI agent remote control, monitor Claude Code from phone, open source AI tools">
 <link rel="sitemap" type="application/xml" href="/sitemap.xml">
 <link rel="canonical" href="https://amux.io/">
 <meta name="google-site-verification" content="AJSSTzLMefBajDLdBuVXCqkllDAaLSJ-vWrbabxJQDI">
 <meta property="og:title" content="amux — The Agent Control Plane">
-<meta property="og:description" content="Run an AI engineering team from one dashboard. Open-source control plane for parallel Claude Code agents — launch, coordinate, monitor, and recover dozens of sessions.">
+<meta property="og:description" content="Run an AI engineering team from one dashboard. Control plane for parallel Claude Code, Codex and Gemini CLI agents — launch, coordinate, monitor, and recover dozens of sessions.">
 <meta property="og:url" content="https://amux.io">
 <meta property="og:image" content="https://amux.io/og-image.png">
 <meta property="og:image:width" content="1280">
 <meta property="og:image:height" content="640">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://amux.io/og-image.png">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","alternateName":"Agent Control Plane","description":"Open-source control plane for AI agents. Run, monitor, and govern parallel agent sessions with a web dashboard, kanban board, and agent-to-agent orchestration. Self-healing, MIT licensed, single binary.","url":"https://amux.io","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","license":"https://opensource.org/licenses/MIT","offers":[{"@type":"Offer","name":"Open Source","price":"0","priceCurrency":"USD"},{"@type":"Offer","name":"amux Cloud Solo","price":"39","priceCurrency":"USD","url":"https://amux.io/start/?plan=solo","priceSpecification":{"@type":"UnitPriceSpecification","price":"39","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Team","price":"69","priceCurrency":"USD","url":"https://amux.io/start/?plan=team","priceSpecification":{"@type":"UnitPriceSpecification","price":"69","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Max","price":"129","priceCurrency":"USD","url":"https://amux.io/start/?plan=max","priceSpecification":{"@type":"UnitPriceSpecification","price":"129","priceCurrency":"USD","billingDuration":"P1M"}}],"author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"sameAs":["https://github.com/mixpeek/amux","https://www.youtube.com/@amux_io","https://www.instagram.com/amux_io/","https://www.linkedin.com/company/amux-io/","https://dev.to/amux","https://sourceforge.net/projects/amux/","https://www.producthunt.com/products/amux-agent-multiplexer"]}</script>
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is the open-source control plane for AI coding agents. It runs, coordinates, monitors, and recovers fleets of Claude Code, Codex CLI, and Gemini CLI sessions from one dashboard and a phone. Each agent is a named worker with its own repo, memory, and lane; a shared kanban board with atomic task claiming keeps them from colliding. MIT licensed, single Rust binary."}},{"@type":"Question","name":"How is amux different from an IDE with agents or an agent wrapper?","acceptedAnswer":{"@type":"Answer","text":"amux sits above the agent runtimes rather than replacing them. Your agents stay vanilla CLI tools (Claude Code, Codex, Gemini CLI) running in real terminal sessions; amux adds the layer they lack: a shared board with atomic claiming, origin-stamped messaging between agents, schedules, autonomous loops, model switching, and self-healing recovery. When the underlying models improve, amux gets better with them."}},{"@type":"Question","name":"Does amux work with Claude Code, Codex, and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux runs Claude Code, Codex CLI, Gemini CLI, OpenCode, and Ollama-backed local agents side by side in the same fleet. Any CLI agent that runs in a terminal can be a worker, and you can switch a running worker between models and providers."}},{"@type":"Question","name":"Can I run my agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux ships an iOS app and an installable PWA. From your phone you can watch every worker's live status, steer any session by typing into it, approve or answer blocked prompts, and receive owner alerts when something genuinely needs you. amux is built mobile-first."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is open source (MIT + Commons Clause) and free to self-host, with the full feature set included. amux Cloud, your own dedicated amux server that runs 24/7 at yourname.amux.io, is $39, $69 or $129 a month."}}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","alternateName":["amux by Mixpeek","Agent Control Plane"],"description":"The agent control plane. Run, monitor, and govern parallel Claude Code, Codex, Gemini CLI, OpenCode and Ollama agent sessions from a web dashboard, iPhone and iPad app, or Mac app, with a shared task board and agent-to-agent orchestration. Self-healing, single Rust binary, self-hosted or amux Cloud. MIT + Commons Clause.","url":"https://amux.io","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux, iOS, iPadOS, Web","license":"https://github.com/mixpeek/amux/blob/main/LICENSE","offers":[{"@type":"Offer","name":"Open Source","price":"0","priceCurrency":"USD"},{"@type":"Offer","name":"amux Cloud Solo","price":"39","priceCurrency":"USD","url":"https://amux.io/start/?plan=solo","priceSpecification":{"@type":"UnitPriceSpecification","price":"39","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Team","price":"69","priceCurrency":"USD","url":"https://amux.io/start/?plan=team","priceSpecification":{"@type":"UnitPriceSpecification","price":"69","priceCurrency":"USD","billingDuration":"P1M"}},{"@type":"Offer","name":"amux Cloud Max","price":"129","priceCurrency":"USD","url":"https://amux.io/start/?plan=max","priceSpecification":{"@type":"UnitPriceSpecification","price":"129","priceCurrency":"USD","billingDuration":"P1M"}}],"author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"sameAs":["https://github.com/mixpeek/amux","https://www.youtube.com/@amux_io","https://www.instagram.com/amux_io/","https://www.linkedin.com/company/amux-io/","https://dev.to/amux","https://sourceforge.net/projects/amux/","https://www.producthunt.com/products/amux-agent-multiplexer","https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is the open-source control plane for AI coding agents. It runs, coordinates, monitors, and recovers fleets of Claude Code, Codex CLI, Gemini CLI, OpenCode and Ollama sessions from one dashboard and a phone. Each agent is a named worker with its own repo, memory, and lane; a shared kanban board with atomic task claiming keeps them from colliding. Single Rust binary, MIT + Commons Clause."}},{"@type":"Question","name":"How is amux different from an IDE with agents or an agent wrapper?","acceptedAnswer":{"@type":"Answer","text":"amux sits above the agent runtimes rather than replacing them. Your agents stay vanilla CLI tools (Claude Code, Codex, Gemini CLI) running in real terminal sessions; amux adds the layer they lack: a shared board with atomic claiming, origin-stamped messaging, schedules, loops, model switching, and self-healing recovery. When the underlying models improve, amux gets better with them."}},{"@type":"Question","name":"Does amux work with Claude Code, Codex, and Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux runs Claude Code, Codex CLI, Gemini CLI, OpenCode, and Ollama-backed local agents side by side in the same fleet, and you can switch a running worker between models and providers."}},{"@type":"Question","name":"Can I run my agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux ships a native iPhone and iPad app (https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435), a Mac app and an installable PWA. From your phone you can watch every worker's live status, steer any session, answer blocked prompts, and receive owner alerts when something genuinely needs you. amux is built mobile-first."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is free to self-host, with the full feature set included, under MIT + Commons Clause (source-available: free to use and modify, including at work; you may not sell amux itself). amux Cloud, your own dedicated amux server that runs 24/7 at yourname.amux.io, is $39, $69 or $129 a month."}}]}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -793,7 +793,7 @@
   <div class="hero-grid-bg"></div>
   <div class="hero-glow"></div>
   <div class="container hero-inner">
-    <span class="hero-badge"><span class="pulse"></span> open source &middot; MIT &middot; self-hosted</span>
+    <span class="hero-badge"><span class="pulse"></span> open source &middot; MIT + Commons Clause &middot; self-hosted</span>
     <h1 class="headline">Run An <span class="accent">AI Engineering Team</span></h1>
     <p class="lede">Run Claude Code, Codex and Gemini CLI agents in parallel from one dashboard or your phone.
       They share a task board, message each other, recover from crashes, and keep shipping while you sleep.</p>
@@ -1025,7 +1025,7 @@
           <tr><td>Agents message each other</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
           <tr><td>Restarts and recovers on its own</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
           <tr><td>Control from your phone</td><td class="yes hl-col">Yes</td><td class="no">No</td></tr>
-          <tr><td>Open source</td><td class="yes hl-col">MIT</td><td class="yes">Yes</td></tr>
+          <tr><td>Source code public</td><td class="yes hl-col">MIT + Commons Clause</td><td class="yes">Yes</td></tr>
         </tbody>
       </table>
     </div>
@@ -1043,9 +1043,9 @@
       <div class="faq-item">
         <button class="faq-q">What is amux?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
         <div class="faq-a"><p>amux is the open-source control plane for AI coding agents. It runs, coordinates, monitors, and
-          recovers fleets of Claude Code, Codex CLI, and Gemini CLI sessions from one dashboard and a phone.
+          recovers fleets of Claude Code, Codex CLI, Gemini CLI, OpenCode and Ollama sessions from one dashboard and a phone.
           Each agent is a named worker with its own repo, memory, and lane; a shared board with atomic task
-          claiming keeps them from colliding. MIT licensed, single Rust binary.</p></div>
+          claiming keeps them from colliding. Single Rust binary, MIT + Commons Clause.</p></div>
       </div>
       <div class="faq-item">
         <button class="faq-q">How is amux different from an IDE with agents, or an agent wrapper?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
@@ -1058,19 +1058,21 @@
       <div class="faq-item">
         <button class="faq-q">Does amux work with Claude Code, Codex, and Gemini CLI?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
         <div class="faq-a"><p>Yes. amux runs Claude Code, Codex CLI, Gemini CLI, OpenCode, and Ollama-backed local agents side
-          by side in the same fleet. Any CLI agent that runs in a terminal can be a worker, and you can switch
+          by side in the same fleet, and you can switch
           a running worker between models and providers.</p></div>
       </div>
       <div class="faq-item">
         <button class="faq-q">Can I run my agents from my phone?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div class="faq-a"><p>Yes. amux ships an <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a>
-          and an installable PWA. From your phone you can watch every worker's live status, steer any session,
+        <div class="faq-a"><p>Yes. amux ships a native <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iPhone and iPad app</a>,
+          a <a href="https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.dmg">Mac app</a> and an installable PWA. From your phone you can watch every worker's live status, steer any session,
           answer blocked prompts, and receive owner alerts when something genuinely needs you. amux is built
           mobile-first.</p></div>
       </div>
       <div class="faq-item">
         <button class="faq-q">Is amux free?<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div class="faq-a"><p>Yes. amux is open source (MIT + Commons Clause) and free to self-host, with the full feature set included.
+        <div class="faq-a"><p>Yes. amux is free to self-host, with the full feature set included, under
+          <a href="https://github.com/mixpeek/amux/blob/main/LICENSE" target="_blank" rel="noopener">MIT + Commons Clause</a>
+          (source-available: free to use and modify, including at work; you may not sell amux itself).
           amux Cloud, your own dedicated amux server that runs 24/7 at yourname.amux.io, is $39, $69 or $129
           a month. <a href="/pricing/">See pricing &rarr;</a></p></div>
       </div>
@@ -1088,7 +1090,7 @@
     <div class="start-plans four reveal">
       <div class="start-plan free">
         <strong>Self-host</strong><span class="start-price">Free</span>
-        <span class="start-spec">Your machine &middot; every feature &middot; MIT</span>
+        <span class="start-spec">Your machine &middot; every feature &middot; MIT + Commons Clause</span>
         <div class="install-line mini"><span><span class="pmt">$</span> curl -fsSL https://amux.io/install.sh | bash</span><button class="copy-btn" aria-label="Copy install command">copy</button></div>
         <a class="start-go" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">★ Star on GitHub</a>
       </div>
@@ -1112,7 +1114,7 @@ amux import &lt;file&gt; --to https://yourname.amux.io</code></pre>
     <div class="foot-grid">
       <div class="foot-col">
         <a class="foot-brand" href="/">amux</a>
-        <p class="foot-desc">The open-source control plane for AI coding agents. Self-hosted. Single binary. MIT licensed.</p>
+        <p class="foot-desc">The open-source control plane for AI coding agents. Self-hosted or amux Cloud. Single binary. MIT + Commons Clause.</p>
       </div>
       <div class="foot-col">
         <h4>Product</h4>
