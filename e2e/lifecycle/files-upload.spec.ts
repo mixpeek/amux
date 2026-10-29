@@ -9,12 +9,17 @@ test('LC-FILES-UPLOAD: upload, preview, rename, download exact bytes, and delete
   test.setTimeout(90_000);
   const dir = await mkdtemp(path.join(os.tmpdir(), 'amux-lc-files-'));
   await boot(page);
-  const headers = await auth(page);
-  const prior = await (await request.get('/api/prefs?key=files_cwd', { headers })).json();
+  await auth(page);
   const filename = 'résumé fruit counts.csv', renamed = 'reviewed fruit counts.csv';
   const bytes = Buffer.from('fruit,count\napples,2\npears,4\n');
   try {
-    expect((await request.post('/api/prefs', { headers, data: { key: 'files_cwd', value: dir } })).ok()).toBeTruthy();
+    // Files opens the saved folder (files_cwd). That pref is server-wide, and
+    // four other specs set and restore it in parallel workers on this same
+    // server, so writing it here raced them: the page opened another test's
+    // folder, or "/" after one restored an empty value (main CI 40874475222).
+    // This page alone reads this test's folder; nobody else's is touched.
+    await page.route(u => u.pathname === '/api/prefs' && u.searchParams.get('key') === 'files_cwd',
+      route => route.request().method() === 'GET' ? route.fulfill({ json: { key: 'files_cwd', value: dir } }) : route.continue());
     await page.reload();
     await page.locator('#tab-files').click();
     await expect(page.locator('#files-breadcrumb')).toContainText(path.basename(dir));
@@ -52,14 +57,12 @@ test('LC-FILES-UPLOAD: upload, preview, rename, download exact bytes, and delete
     await expect(row(renamed)).toHaveCount(0);
     await expect(readFile(path.join(dir, renamed))).rejects.toThrow(/ENOENT/);
   } finally {
-    // AMUX-4737. Both of these can throw AFTER the body has already failed, and
+    // AMUX-4737. A teardown can throw AFTER the body has already failed, and
     // a throwing `finally` DISCARDS the body's error. This spec is the recorded
     // specimen: AMUX-4643 was titled "request context closed", which is what
     // this POST raises once a 90s timeout has killed the context, while the
     // step that actually broke was line 35. The card sat two days wearing its
     // teardown's error.
-    await cleanup('restore files_cwd', () =>
-      request.post('/api/prefs', { headers, data: { key: 'files_cwd', value: prior.value || '' } }), info);
     await cleanup('remove the temp dir', () => rm(dir, { recursive: true, force: true }), info);
   }
 });
