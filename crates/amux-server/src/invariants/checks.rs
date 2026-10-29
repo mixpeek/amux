@@ -9358,6 +9358,12 @@ pub struct UnrecordedScheduleOutcome {
 /// genuinely stopped within one and a half turns.
 const OVERDUE_CADENCE_NUM: i64 = 3;
 const OVERDUE_CADENCE_DEN: i64 = 2;
+/// The least slack any schedule gets past its owed fire (AMUX-6582). Half a
+/// cadence is 30 s for an every-1m schedule, below the scheduler's own
+/// dispatch jitter: on 2026-10-29 the every-1m wake-watch schedules ran with
+/// gaps of 60 to 128 s, every run ok, and were reported silent 44 times in 6 h.
+/// A cadence of 4 min or more already has at least this much.
+const OVERDUE_MIN_SLACK_S: i64 = 120;
 
 impl UnrecordedScheduleOutcome {
     /// Is this tick genuinely missing, as opposed to waiting for its next fire?
@@ -9597,8 +9603,9 @@ impl EnabledScheduleClock {
         match self.cadence_s {
             Some(c) if c > 0 => {
                 let owed = self.first_due_s.unwrap_or(c).max(0);
-                let slack = c.saturating_mul(OVERDUE_CADENCE_NUM - OVERDUE_CADENCE_DEN)
-                    / OVERDUE_CADENCE_DEN;
+                let slack = (c.saturating_mul(OVERDUE_CADENCE_NUM - OVERDUE_CADENCE_DEN)
+                    / OVERDUE_CADENCE_DEN)
+                    .max(OVERDUE_MIN_SLACK_S);
                 self.silent_s > owed.saturating_add(slack)
             }
             _ => false,
@@ -9812,6 +9819,16 @@ mod enabled_schedule_firing_tests {
         }
     }
     const UP: i64 = 86_400;
+
+    /// AMUX-6582: an every-1m schedule running with the scheduler's real gaps
+    /// (60-128 s) is firing; one silent for 4 min is not.
+    #[test]
+    fn a_minute_schedule_is_not_silent_inside_scheduler_jitter() {
+        assert!(!clock("W", Some(60), 128, false).is_past_deadline(), "a 128 s gap is jitter");
+        assert!(!clock("W", Some(60), 180, false).is_past_deadline(), "the floor: owed 60 s + 120 s");
+        assert!(clock("W", Some(60), 240, false).is_past_deadline(), "4 min silent on a 1 min cadence has stopped");
+        assert!(clock("F", Some(300), 451, false).is_past_deadline(), "5 min cadences keep their 3/2 bound");
+    }
 
     #[test]
     fn on_time_schedules_pass_with_counts() {
