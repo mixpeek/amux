@@ -1258,7 +1258,7 @@ async fn commit_plan(
         )
         .unwrap_or(false)
     };
-    let owner_tasks = !session.starts_with("project:") && plan.decision.kind == "tasks" && {
+    let owner_tasks = plan.decision.kind == "tasks" && {
         let c = state.store.read()?;
         c.query_row(
             "SELECT delivery='board' FROM cmd_history WHERE id=?1",
