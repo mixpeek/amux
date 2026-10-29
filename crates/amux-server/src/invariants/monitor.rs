@@ -1445,9 +1445,24 @@ fn provider_launch_check() -> Vec<InvariantResult> {
 
 // Use the same isolation boundary as command intake. Raw owner transport is
 // deliberately cardless, including workers with boards from before isolation.
+/// Should this prompt row count toward `pipeline.user_prompts_card`? The mint's
+/// text predicate, minus the prompts the capture path DECIDED not to card
+/// (AMUX-6542). With "decompose onto board" off for a lane, session_verbs
+/// keeps the message uncarded on purpose and stamps intake_result.state =
+/// "board_capture_off"; the check read those as "board leg silently dropped"
+/// and failed 151 times on mixpeek-seo, whose every owner prompt is kept that
+/// way. Reading the recorded verdict is the fix the comment below asks for.
+fn counts_toward_capture(session: &str, text: &str, intake_state: &str) -> bool {
+    intake_state != "board_capture_off" && measures_board_capture(session, text)
+}
+
 fn measures_board_capture(session: &str, text: &str) -> bool {
     !session.is_empty()
         && !crate::api::session_verbs::session_is_isolated(session)
+        // Same gate the send path uses to queue capture at all
+        // (session_verbs `capture_pending`): a worker with every board switch
+        // off gets no capture and no intake verdict on the row (AMUX-6541).
+        && !crate::api::board_lifecycle::board_unused(session)
         && amux_core::board::title_from_prompt(text).is_some()
         && !amux_core::board::is_informational_query(text)
 }
@@ -1478,15 +1493,18 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
-    let rows: Vec<(String, String, bool, i64)> = {
+    let rows: Vec<(String, String, bool, i64, String)> = {
         let Ok(mut stmt) = conn.prepare(
-            "SELECT session, text, card_id IS NOT NULL, ts FROM cmd_history \
+            "SELECT session, text, card_id IS NOT NULL, ts, \
+                    CASE WHEN json_valid(intake_result) \
+                         THEN COALESCE(json_extract(intake_result, '$.state'), '') ELSE '' END \
+               FROM cmd_history \
              WHERE type = 'user' AND ts > (strftime('%s','now') - ?1) * 1000",
         ) else {
             return vec![InvariantResult::unknown(ID, "cmd_history query failed")];
         };
         stmt.query_map(rusqlite::params![lookback_s], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?, r.get(4)?))
         })
         .map(|it| it.flatten().collect())
         .unwrap_or_default()
@@ -1524,8 +1542,8 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
         max_ts: i64,
     }
     let mut map: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
-    for (session, text, carded, ts) in rows {
-        if !measures_board_capture(&session, &text) {
+    for (session, text, carded, ts, intake_state) in rows {
+        if !counts_toward_capture(&session, &text, &intake_state) {
             continue;
         }
         let e = map.entry(session).or_insert(Acc {
@@ -5212,5 +5230,18 @@ mod enabled_schedule_clock_sql_tests {
         assert!(owed.unwrap() > 40 * 86_400, "{owed:?}");
         assert_eq!(super::owed_fire("every 5m", since), (Some(300), Some(300)));
         assert_eq!(super::owed_fire("whenever", since), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod capture_off_tests {
+    /// AMUX-6542: a prompt the capture path kept uncarded on purpose is not a
+    /// dropped card; an ordinary uncarded prompt still counts.
+    #[test]
+    fn a_prompt_kept_uncarded_by_the_board_switch_does_not_count() {
+        let ask = "can you review this and come up with a robust plan for the seo pages";
+        assert!(super::counts_toward_capture("lane-a", ask, ""), "an ordinary prompt counts");
+        assert!(!super::counts_toward_capture("lane-a", ask, "board_capture_off"), "a deliberate no-card does not");
+        assert!(super::counts_toward_capture("lane-a", ask, "captured"), "other intake states still count");
     }
 }
