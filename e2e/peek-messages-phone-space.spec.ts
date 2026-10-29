@@ -156,8 +156,9 @@ test('phone: the toolbar stays on every tab, the folder path leaves content tabs
     await set(t);
     expect(await shown('.peek-dir-bar'), t).toBe(true);
   }
-  // Split, worker menu and close stay on every tab.
+  // The worker menu and close stay on every tab. Split is the Mac app's (a new
+  // pane), so a browser does not show it (owner, 2026-10-29).
   await set('messages');
-  expect(await shown('#peek-split-toggle')).toBe(true);
+  expect(await shown('#peek-split-toggle')).toBe(false);
   expect(await shown('#peek-close-btn')).toBe(true);
 });

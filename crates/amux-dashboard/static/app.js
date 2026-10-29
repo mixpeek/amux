@@ -8632,8 +8632,8 @@ function _renderPeekWorkerActions(s) {
     + _renderWorkerActionMenu(s, 'peek')
     + '<div class="peek-more-sep"></div>'
     + '<div class="peek-more-item" id="peek-file-browser-btn" data-peek-action="file-browser" role="menuitem" '
-    + 'onclick="event.stopPropagation();_closePeekMore();togglePeekSplit()">'
-    + '<span class="mi">&#x1F4C2;</span>File browser (split)</div>'
+    + 'onclick="event.stopPropagation();_closePeekMore();_peekFileBrowser()">'
+    + '<span class="mi">&#x1F4C2;</span>File browser</div>'
     + '<div class="peek-more-item" id="peek-render-steps-btn" role="menuitem" '
     + 'onclick="event.stopPropagation();_closePeekMore();_peekShowRenderSteps()">'
     + '<span class="mi">&#x2699;</span>Rendering steps</div>'
@@ -17910,29 +17910,12 @@ function _peekSplitViewOptions() {
   });
   return out;
 }
-// "Open in split view" on a file: the file gets a pane of its own (view
-// 'file:<path>'), so several files sit side by side (Ethan, 2026-10-24). The
-// split opens on it; an open split adds it as another pane; with every pane in
-// use it takes the last one's place. A file already shown is not added twice.
+// "Open in split pane" on a file: the file in a new pane with a tab of its
+// own, beside this one (the Mac app's split, 2026-10-29). With no panes (a
+// browser) it opens here.
 function _peekSplitOpenFile(path) {
-  const view = 'file:' + path;
-  const wrap = document.getElementById('peek-split-wrap');
-  let how;
-  if (!wrap || !wrap.classList.contains('split-active')) {
-    _peekSplitPanes = [view]; how = 'opened';
-    _peekSplitOpen(view);
-  } else {
-    if (_peekSplitPanes.includes(view)) how = 'already_shown';
-    else if (_peekSplitPanes.length < _PEEK_SPLIT_MAX) { _peekSplitPanes.push(view); how = 'added'; }
-    else { _peekSplitPanes[_peekSplitPanes.length - 1] = view; how = 'replaced_last'; }
-    _pspFlexGrow = null; try { localStorage.removeItem('amux_psp_sizes'); } catch (_) {}
-    _peekSplitPersist();
-    _peekSplitRenderPanes();
-  }
-  try {
-    fetch(API + '/api/client-debug', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'file-split-pane', how, panes: _peekSplitPanes.length, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
-  } catch (e) {}
+  if (_splitPaneOpen('#path=' + encodeURIComponent(path), 'file')) return;
+  return openFilePreview(path);
 }
 function _peekSplitSrc(view) {
   if (view === 'files') return '/?embed=files#path=' + _encodeHashPath(peekSessionDir || '/');
@@ -18070,7 +18053,7 @@ function _peekSplitAddPane() {
 }
 function _peekSplitClosePane(i) {
   if (_peekSplitPanes.length <= 1) {   // the last pane: close the split
-    togglePeekSplit();
+    _peekSplitSetActive(false);
     return;
   }
   _peekSplitPanes.splice(i, 1);
@@ -18118,8 +18101,8 @@ function _peekSplitMenu(btn) {
   }, true), 0);
 }
 function _peekSplitOpen(view) {
-  const wrap = document.getElementById('peek-split-wrap');
-  if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
+  // The in-page split is retired: this records the view and the split stays closed.
+  _peekSplitSetActive(true);
   _peekSplitShow(view);
 }
 // The first pane's view (the Split menu and saved views name one view).
@@ -18135,6 +18118,11 @@ function _peekSplitSetActive(active, path) {
   const wrap = document.getElementById('peek-split-wrap');
   const btn = document.getElementById('peek-split-toggle');
   if (!wrap) return false;
+  if (active) {
+    // Retired (see _splitPaneOpen): a remembered or saved split stays closed.
+    if (!_peekSplitSetActive._said) { _peekSplitSetActive._said = true; _splitBeacon('split_view_retired', { asked: 'activate' }); }
+    active = false;
+  }
   if (active && (_peekSplitNestedRefuse('activate') || !document.getElementById('peek-split-files'))) active = false;
   wrap.classList.toggle('split-active', active);
   if (btn) btn.classList.toggle('active', active);
@@ -18153,20 +18141,35 @@ function _peekSplitSetActive(active, path) {
   }
   return active;
 }
-function togglePeekSplit(ev, force) {
-  if (ev && !force && _nativeSplit()) return;
-  if (window.innerWidth <= 600) {
-    openExplore(peekSessionDir, peekSession);
-    return;
-  }
-  if (_peekSplitNestedRefuse('toggle')) return;
-  const wrap = document.getElementById('peek-split-wrap');
-  const btn = document.getElementById('peek-split-toggle');
-  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
-  const active = _peekSplitSetActive(force ? true : !wrap.classList.contains('split-active'));
-  if (active && !force) _peekSplitRenderPanes();
-  _peekViewRemember();
-  _savePeekState();
+// SPLIT IS A NEW PANE (owner, 2026-10-29: "lets deprecate split view
+// entirely, i like the split button but i onyl like it because it creates a
+// split pane with aen entirely new tab. that should take the place of any
+// split view"). In the Mac app every split opens a pane of its own with its
+// own tab; the in-page split view never opens, and a saved or remembered one
+// is not restored (_peekSplitSetActive refuses it and says so). A browser has
+// no panes, so its Split button is hidden and the file browser opens in Files.
+function _splitPaneOpen(hash, what) {
+  const h = _nativePaneBridge();
+  if (!h) return false;
+  try {
+    h.postMessage({ op: 'split', url: location.origin + location.pathname + hash });
+    _splitBeacon('split_pane_opened', { what: what || 'page' });
+    return true;
+  } catch (e) { return false; }
+}
+function _splitBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'split', verdict, measured: true, n_considered: 1, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
+function _peekFileBrowser() {
+  if (_splitPaneOpen('#path=' + encodeURIComponent(peekSessionDir || '/'), 'files')) return;
+  openExplore(peekSessionDir, peekSession);
+}
+function togglePeekSplit() {
+  if (_nativeSplit()) { _splitBeacon('split_pane_opened', { what: 'page' }); return; }
+  _peekFileBrowser();
 }
 
 // ── Per-worker view memory ──
@@ -19265,11 +19268,8 @@ async function _resolveLinkedPath(p) {
 // for window.open.
 let _fileCtx = null;
 function _fileCtxClose() { document.getElementById('file-ctx-menu')?.remove(); _fileCtx = null; }
-function _fileCtxCanSplit() {
-  return typeof peekSession !== 'undefined' && !!peekSession && window.innerWidth > 600
-    && !window._peekSplitChild && !!document.getElementById('peek-split-wrap')
-    && document.getElementById('peek-overlay')?.classList.contains('active');
-}
+// A split is a new pane with a tab of its own, which only the Mac app has.
+function _fileCtxCanSplit() { return !!_nativePaneBridge(); }
 function _fileCtxMenu(e, link) {
   e.preventDefault(); e.stopPropagation();
   _fileCtxClose();
@@ -19284,7 +19284,7 @@ function _fileCtxMenu(e, link) {
   _fileCtx = ctx;
   const item = (act, icon, label) => '<div class="card-menu-item" role="menuitem" data-act="' + act + '"><span class="mi">' + icon + '</span> ' + label + '</div>';
   let h = item('open', '&#x2197;', 'Open');
-  if (_fileCtxCanSplit()) h += item('split', '&#x25EB;', 'Open in split view');
+  if (_fileCtxCanSplit()) h += item('split', '&#x25EB;', 'Open in split pane');
   h += item('window', '&#x29C9;', 'Open in new window');
   h += '<div class="card-menu-sep"></div>' + item('copy', '&#x2398;', 'Copy path');
   const m = document.createElement('div');
@@ -27463,6 +27463,13 @@ const _DICT_WARM_MS = 45000;   // how long the mic stays warm between takes
 let _dictWarmTimer = 0;
 let _dictAudioCtx = null, _dictAnalyser = null, _dictRafId = 0, _dictPopupOpen = false;
 
+function _dictBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'dictation', verdict, measured: true, n_considered: 1, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
+
 function _dictToggleRec() { if (_dictRecording) _dictStopRec(); else _dictStartRec(); }
 
 // Compact recording popup with a live volume waveform — the feedback surface
@@ -27494,10 +27501,23 @@ async function _dictStartRec() {
   // follow-up recording start on the same tap.
   if (!_dictStream || !_dictStream.active || !(_dictStream.getAudioTracks()[0] || {}).enabled) {
     _dictStatus('Starting mic…');
+    // A permission nobody has answered never resolves, and the popup sat on
+    // "Starting mic…" (owner, 2026-10-29). Past 6 s it says what it waits for.
+    const mac = /Amux-Desktop/.test(navigator.userAgent || '');
+    const slow = setTimeout(() => {
+      _dictStatus('Waiting for mic permission…');
+      showToast(mac ? 'Waiting for macOS to allow the microphone: look for its prompt, or System Settings → Privacy & Security → Microphone.'
+        : 'Waiting for the browser to allow the microphone.');
+      _dictBeacon('mic_permission_slow', { mac });
+    }, 6000);
     try {
       _dictStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
-    } catch(e) { showToast('Microphone access denied'); _dictClosePopup(false); return; }
+    } catch(e) {
+      showToast(mac ? 'The microphone is off for amux. Turn it on in System Settings → Privacy & Security → Microphone.' : 'Microphone access denied');
+      _dictBeacon('mic_permission_refused', { mac, error: String(e && e.name || e).slice(0, 80) });
+      _dictClosePopup(false); return;
+    } finally { clearTimeout(slow); }
   }
   if (_dictWarmTimer) { clearTimeout(_dictWarmTimer); _dictWarmTimer = 0; }
   // Safari/iOS produce mp4; Chrome/Firefox webm/opus. Pick what's supported and
@@ -55002,12 +55022,14 @@ function _navBeacon(verdict, extra) {
   } catch (e) {}
 }
 
+// Every ‹ button: the header's, and the worker's and the file's, whose
+// overlays cover the header (owner, 2026-10-29). One history drives them all.
 function _navRender() {
-  const b = document.getElementById('nav-back-btn');
-  if (!b) return;
   const prev = _nav.pos > 0 ? _nav.list[_nav.pos - 1] : null;
-  b.hidden = !prev;
-  if (prev) b.title = 'Back to ' + _navLabel(prev) + ' (' + (_HK_IS_MAC ? '⌘[' : 'Ctrl+[') + '). Hold for history';
+  document.querySelectorAll('.nav-back-btn').forEach(b => {
+    b.hidden = !prev;
+    if (prev) b.title = 'Back to ' + _navLabel(prev) + ' (' + (_HK_IS_MAC ? '⌘[' : 'Ctrl+[') + '). Hold for history';
+  });
 }
 
 // Record the current place once the action that changed it has settled.
@@ -55129,8 +55151,10 @@ function _navMenu(anchor) {
 }
 
 function _navBindButton() {
-  const b = document.getElementById('nav-back-btn');
-  if (!b || b._navBound) return;
+  document.querySelectorAll('.nav-back-btn').forEach(_navBindOne);
+}
+function _navBindOne(b) {
+  if (b._navBound) return;
   b._navBound = true;
   let hold = 0, held = false;
   b.addEventListener('click', e => { if (held) { held = false; e.preventDefault(); return; } navBack(); });
@@ -71276,7 +71300,7 @@ function _hkComboFromEvent(e) {
   return mods.concat([key]).join('+');
 }
 function _hkKeyChips(combo) {
-  const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space' };
+  const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐' };
   return '<span class="hk-keys">' + String(combo || '').split('+').filter(Boolean)
     .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
 }
@@ -71292,8 +71316,9 @@ function _hkConflict(h, list) {
     if (/\s/.test(t)) return 'A text trigger cannot contain spaces';
   } else {
     const parts = t.split('+');
-    if (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt'))
-      return 'A shortcut needs ⌘, ⌥ or ⌃ (⇧ alone is how capitals are typed)';
+    // 🌐 works alone or with a key (the Mac app hands it over: _hkNativeKey).
+    if (t !== 'Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
+      return 'A shortcut needs ⌘, ⌥, ⌃ or 🌐 (⇧ alone is how capitals are typed)';
     const b = _HK_BUILTIN.find(x => x.combo === t);
     if (b) return 'amux already uses this for ' + b.label;
   }
@@ -71381,6 +71406,21 @@ document.addEventListener('keydown', e => {
   e.stopPropagation();
   _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
 }, true);
+
+// THE GLOBE KEY (owner, 2026-10-29: "i want to use the globe button on my
+// keyboard as a hotkey too"). A page never sees 🌐: macOS keeps it from the
+// browser. The Mac app watches it and calls this with "Globe" (pressed and
+// released alone) or "Globe+R" (held with a key). A recording takes it like
+// any combination; otherwise the hotkey bound to it runs.
+window._hkNativeKey = function (combo) {
+  combo = String(combo || '');
+  if (!/^Globe(\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
+  const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
+  if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }
+  _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
+  return 'ran';
+};
 
 let _hkInTrigger = false;
 document.addEventListener('input', e => {
@@ -71518,12 +71558,15 @@ function _hkTypeUI() {
   t.placeholder = text ? '##' : 'Press Record shortcut';
   document.getElementById('hk-trigger-help').textContent = text
     ? 'Fires the moment you finish typing it in any text box in amux.'
-    : 'Include ⌘, ⌥ or ⌃. Works anywhere in amux, including while typing.';
+    : 'Include ⌘, ⌥ or ⌃, or use 🌐 alone or with a key (in the Mac app). Works anywhere in amux, including while typing.';
 }
+// What a recording does with a combination the Mac app hands over (🌐).
+let _hkRecordTake = null;
 function _hkRecord() {
   const btn = document.getElementById('hk-record');
   const t = document.getElementById('hk-trigger');
   _hkRecording = true;
+  _hkRecordTake = c => { t.value = c; stop(); };
   btn.textContent = 'Press keys…';
   t.value = '';
   const onKey = ev => {
@@ -71536,7 +71579,7 @@ function _hkRecord() {
   };
   // On window, capture phase: ahead of every document-level shortcut (⌘K
   // would otherwise open search instead of being recorded).
-  const stop = () => { _hkRecording = false; btn.textContent = 'Record shortcut'; window.removeEventListener('keydown', onKey, true); };
+  const stop = () => { _hkRecording = false; _hkRecordTake = null; btn.textContent = 'Record shortcut'; window.removeEventListener('keydown', onKey, true); };
   window.addEventListener('keydown', onKey, true);
 }
 function _hkCloseDialog() {

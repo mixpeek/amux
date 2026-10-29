@@ -1,4 +1,4 @@
-import {test, expect, Page} from './fixtures';
+import {test, expect, Page, allowUnusedRoute} from './fixtures';
 import {mkdtemp, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -98,4 +98,52 @@ test('back still lands on the right place after the oldest places are dropped', 
   await page.evaluate(() => (window as any).navBack());
   await expect.poll(() => view(page)).toBe('calendar');
   await expect(page.locator('#nav-back-btn')).toBeHidden();
+});
+
+// Owner, 2026-10-29: "when i click a file i should have the same back button -
+// make sure the back button is throughout amux ... and make sure its not in
+// the way". The file view and the worker view cover the header, so each shows
+// the same ‹ in its own title row, beside the title and never over it.
+async function inRowBesideTitle(page: Page, back: string, title: string) {
+  const [b, t] = await Promise.all([page.locator(back).boundingBox(), page.locator(title).boundingBox()]);
+  expect(b && t, 'both drawn').toBeTruthy();
+  // Same row: their centres line up.
+  expect(Math.abs((b!.y + b!.height / 2) - (t!.y + t!.height / 2))).toBeLessThan(14);
+  // Not in the way: it ends before the title starts.
+  expect(b!.x + b!.width).toBeLessThanOrEqual(t!.x + 1);
+}
+
+test('a file shows the same back button in its own header, and it goes back', async ({page}) => {
+  const dir = await mkdtemp(join(tmpdir(), 'amux-nav-'));
+  const f = join(dir, 'plan.md');
+  await writeFile(f, '# Plan\n\nhello\n');
+  await go(page, 'board');
+  await page.evaluate(p => (window as any).openFilePreview(p), f);
+  await page.waitForFunction(() => !_nav.restoring && _nav.list[_nav.pos] && _nav.list[_nav.pos].k === 'file');
+  const back = page.locator('#file-overlay .nav-back-btn');
+  await expect(back).toBeVisible();
+  await expect(back).toHaveAttribute('title', /Back to/);
+  await inRowBesideTitle(page, '#file-overlay .nav-back-btn', '#file-title');
+  await back.click();
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+  await expect.poll(() => view(page)).toBe('board');
+});
+
+test('a worker shows the same back button beside its name, and it goes back', async ({page}) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json: [{name: 'nav-w', running: true, status: 'idle', dir: '/tmp'}]}));
+  await page.route(/\/api\/sessions\/nav-w\/peek\?/, r => r.fulfill({json: {name: 'nav-w', live: 'output', history: ''}}));
+  await page.route(/\/api\/sessions\/nav-w\/subagents$/, r => r.fulfill({json: {session: 'nav-w', subagents: []}}));
+  allowUnusedRoute(page, /\/api\/sessions\/nav-w\/subagents$/);
+  allowUnusedRoute(page, /\/api\/sessions\/nav-w\/peek\?/);
+  // Registered after the page loaded, so the worker list may not poll again first.
+  allowUnusedRoute(page, /\/api\/sessions(?:\?.*)?$/);
+  await go(page, 'board');
+  await page.evaluate(() => (window as any).openPeek('nav-w'));
+  await page.waitForFunction(() => _nav.list[_nav.pos] && _nav.list[_nav.pos].k === 'peek');
+  const back = page.locator('#peek-overlay .nav-back-btn');
+  await expect(back).toBeVisible();
+  await inRowBesideTitle(page, '#peek-overlay .nav-back-btn', '#peek-title');
+  await back.click();
+  await expect(page.locator('#peek-overlay')).toBeHidden();
+  await expect.poll(() => view(page)).toBe('board');
 });

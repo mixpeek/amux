@@ -1254,6 +1254,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictBeacon": {
+      "kind": "command._dictBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictClearKey": {
       "kind": "command._dictClearKey",
       "feedback_required": true,
@@ -3438,6 +3444,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekFileBrowser": {
+      "kind": "command._peekFileBrowser",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekFilterContentSelect": {
       "kind": "command._peekFilterContentSelect",
       "feedback_required": true,
@@ -4826,6 +4838,18 @@
     },
     "_spWireCapture": {
       "kind": "command._spWireCapture",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_splitBeacon": {
+      "kind": "command._splitBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_splitPaneOpen": {
+      "kind": "command._splitPaneOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

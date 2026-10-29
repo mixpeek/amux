@@ -497,6 +497,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | + | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Turn on chat | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Clear input | `_peekClearInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | + | `_peekFileBrowser` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Reset | `_peekFiltersReset` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Show … earlier lines | `_peekHistExpand` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Load earlier output… | `_peekLoadEarlier` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1023,7 +1024,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Find in terminal | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | This worker | `togglePeekIssuesAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Worker actions | `togglePeekMoreMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | + | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Split view | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | button | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Customize worker tabs | `togglePeekTabCustomizer` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1603,7 +1603,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | iframe.contentDocument | `function` | addEventListener |
 | app.js | / | `go` | onclick |
 | app.js | … | `go` | onclick |
-| app.js | nav-back-btn | `navBack` | addEventListener |
+| app.js | b | `navBack` | addEventListener |
 | index.html | Continue all limited workers | `openBulkActions` | onclick |
 | app.js | + | `openCustomChipForm` | onclick |
 | index.html | Filters | `openFiltersModal` | onclick |

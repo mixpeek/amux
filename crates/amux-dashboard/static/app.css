@@ -10713,3 +10713,7 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .nav-history-item:hover { background: var(--bg-inset); }
 .nav-history-item.current { color: var(--accent); font-weight: 600; }
 @media (max-width: 600px) { .nav-history-item { min-height: 44px; } }
+
+/* Split is a pane of its own, which only the Mac app has (2026-10-29): a
+   browser shows no Split button. */
+body:not(.native-panes) #peek-split-toggle { display: none !important; }

@@ -10,7 +10,12 @@ test('the Split button shows its icon, label and caret without squeezing', async
   await page.route('**/api/sessions', route => route.request().method() === 'GET'
     ? route.fulfill({ json: [{ name: W, dir: '/tmp/', provider: 'claude', status: 'idle', running: true, tags: ['e2e'], desc: '', pinned: false, isolated: false }] })
     : route.fallback());
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    // Split is the Mac app's (a new pane): stand in for its pane bridge so the
+    // button shows, as it does there.
+    (window as any).webkit = { messageHandlers: { amuxPane: { postMessage: () => {} } } };
+  });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
   await page.evaluate(n => (window as any).openPeek(n), W);
@@ -29,10 +34,11 @@ test('the Split button shows its icon, label and caret without squeezing', async
   });
   expect(m.h).toBeGreaterThanOrEqual(44);
   if (m.vw > 600) {
-    expect(m.icon.shown && m.label.shown && m.caret.shown).toBe(true);
+    // In the Mac app Split opens a pane at once, so it has no menu and no caret.
+    expect(m.icon.shown && m.label.shown).toBe(true);
+    expect(m.caret.shown).toBe(false);
     expect(m.icon.w).toBeGreaterThanOrEqual(17);
     expect(m.label.clipped).toBe(false);
-    expect(m.caret.right).toBeLessThanOrEqual(m.right);
     expect(m.w).toBeGreaterThan(44);
   } else {
     expect(m.folder.shown).toBe(true);

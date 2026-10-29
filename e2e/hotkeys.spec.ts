@@ -144,3 +144,33 @@ test('a keyboard shortcut runs its action from anywhere, including while typing'
   await page.keyboard.press('Alt+Shift+KeyN');
   await expect(page.locator('#board-edit-overlay')).toHaveClass(/active/);
 });
+
+// Owner, 2026-10-29: "i want to use the globe button on my keyboard as a hotkey
+// too". A page never sees 🌐; the Mac app calls _hkNativeKey with "Globe" or
+// "Globe+<key>", the same call its key monitor makes (amux-workspace.swift
+// startGlobeKey). Recording takes it, it saves, it shows as 🌐, and it runs.
+test('the Globe key records, saves and runs a hotkey, alone or with a key', async ({ page }) => {
+  await settle(page);
+  await page.evaluate("switchView('hotkeys')");
+  const dlg = page.locator('#hk-dialog');
+  for (const [combo, action, opened] of [['Globe+B', 'open_board', 'board'], ['Globe', 'open_messages', 'messages']] as const) {
+    await page.evaluate("switchView('hotkeys')");
+    await page.locator('#hk-add').click();
+    await expect(dlg).toBeVisible();
+    await dlg.locator('label.hk-type', { hasText: 'Keyboard shortcut' }).click();
+    await dlg.locator('#hk-action').selectOption(action);
+    await dlg.locator('#hk-record').click();
+    expect(await page.evaluate(c => (window as any)._hkNativeKey(c), combo)).toBe('recorded');
+    await expect(dlg.locator('#hk-trigger')).toHaveValue(combo);
+    await dlg.locator('#hk-save').click();
+    await expect(dlg).toBeHidden();
+    await expect(page.locator('#hotkeys-view .hk-row', { hasText: '🌐' }).first()).toBeVisible();
+    await page.evaluate("switchView('scheduler')");
+    expect(await page.evaluate(c => (window as any)._hkNativeKey(c), combo)).toBe('ran');
+    await expect.poll(() => page.evaluate(() => (globalThis as any).eval('activeView'))).toBe(opened);
+  }
+  // A Globe combination nobody bound is said, not silently dropped.
+  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe+Q'))).toBe('unbound');
+  await page.evaluate(() => fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'hotkeys', value: '' }) }));
+});

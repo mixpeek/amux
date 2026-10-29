@@ -1,7 +1,9 @@
-// Right-click a file link in worker output to open it in the split view or a
-// new window (Ethan, 2026-10-24, screenshot of the browser's own menu on a
-// path in the Mac app). The link is rendered by the shipped pipeline
-// (_peekHtml) and the menu is opened by a real contextmenu event.
+// Right-click a file link in worker output to open it or open it in a new
+// window (Ethan, 2026-10-24, screenshot of the browser's own menu on a path in
+// the Mac app). "Open in split pane" is the Mac app's and is covered by
+// split-pane.spec.ts; a browser has no panes, so it is not offered here. The
+// link is rendered by the shipped pipeline (_peekHtml) and the menu is opened
+// by a real contextmenu event.
 import { test, expect, Page } from './fixtures';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,13 +42,11 @@ async function rightClickPath(page: Page, path: string, via: 'peek' | 'chat' = '
 }
 const items = (page: Page) => page.locator('#file-ctx-menu .card-menu-item').allTextContents();
 
-test('right-click a file link: open it in a new window or beside the worker in the split view', async ({ page }, info) => {
+test('right-click a file link: open it or open it in a new window', async ({ page }, info) => {
   await openPeek(page);
   await rightClickPath(page, FILE);
   const labels = (await items(page)).map(s => s.trim().replace(/^\S+\s+/, ''));
-  const phone = (info.project.use.viewport?.width || 1280) <= 600;
-  expect(labels).toEqual(phone ? ['Open', 'Open in new window', 'Copy path']
-    : ['Open', 'Open in split view', 'Open in new window', 'Copy path']);
+  expect(labels).toEqual(['Open', 'Open in new window', 'Copy path']);
   await page.screenshot({ path: info.outputPath('file-link-menu.png') });
 
   // Escape closes it without acting.
@@ -75,19 +75,4 @@ test('right-click a file link: open it in a new window or beside the worker in t
   await expect(rp.locator('#file-body')).toContainText('found through the worker cwd', { timeout: 15000 });
   await rp.close();
 
-  if (phone) return;
-  // Split view: the first pane loads the Files view on this file, and peek stays up.
-  // e2e-probe is not a live worker, so peek may have closed itself meanwhile.
-  await openPeek(page);
-  await rightClickPath(page, FILE);
-  await page.locator('#file-ctx-menu .card-menu-item', { hasText: 'Open in split view' }).click();
-  await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-  const frame = page.locator('#psp-frame');
-  await expect(frame).toHaveAttribute('src', /embed=files#path=/);
-  expect(decodeURIComponent((await frame.getAttribute('src'))!.split('#path=')[1])).toBe(FILE);
-  const pane = page.frameLocator('#psp-frame');
-  await expect(pane.locator('#file-overlay.active')).toBeVisible({ timeout: 15000 });
-  await expect(pane.locator('#file-body')).toContainText('opened from a right-click');
-  await expect(page.locator('#peek-overlay')).toBeVisible();
-  await page.screenshot({ path: info.outputPath('file-link-split.png') });
 });

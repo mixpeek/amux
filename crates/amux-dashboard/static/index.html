@@ -3275,6 +3275,9 @@
            The badges stay flex-shrink:0 so the name yields space first: status
            and model are short and fixed, the name is the one that can afford
            an ellipsis. -->
+      <!-- The same Back as the header's, which this overlay covers (owner,
+           2026-10-29: "make sure the back button is throughout amux"). -->
+      <button class="nav-back-btn" type="button" aria-label="Back" title="Back" hidden>&#x2039;</button>
       <h2 id="peek-title" style="margin:0;font-size:var(--fs-xl);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0;">peek</h2>
       <span id="peek-session-status" style="flex-shrink:0;display:flex;align-items:center;gap:var(--space-1);"></span>
       <span id="peek-model-badge" style="font-size:var(--fs-sm);padding:var(--space-0-5) var(--space-2);border-radius:var(--radius-pill);background:color-mix(in srgb, var(--on-solid) 6%, transparent);color:var(--dim);border:1px solid var(--border);white-space:nowrap;flex-shrink:0;max-width:40%;overflow:hidden;text-overflow:ellipsis;"></span>
@@ -4181,6 +4184,7 @@
 <!-- File preview overlay (z-index 300 so it stacks above explorer at 250) -->
 <div id="file-overlay" class="file-overlay" style="z-index:300;">
   <div class="file-overlay-header">
+    <button class="nav-back-btn" type="button" aria-label="Back" title="Back" hidden>&#x2039;</button>
     <div class="file-title-wrap">
       <h2 id="file-title">file</h2>
       <div id="file-subpath" class="file-subpath"></div>

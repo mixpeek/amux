@@ -107,7 +107,7 @@ test('worker card and peek share all worker actions, plus both peek-only actions
   expect(state.peek).toEqual(state.card);
   // 64f864c6 made the peek item toggle the split file browser, and the
   // Chat tab's on/off moved into this menu (AMUX-5350).
-  expect(state.peekOnly).toEqual(['Focus mode', 'File browser (split)', 'Turn on chat']);
+  expect(state.peekOnly).toEqual(['Focus mode', 'File browser', 'Turn on chat']);
   expect(state.focusFirst).toBe(true);
   expect(state.overflowY).toBe('auto');
   expect(state.maxHeight).not.toBe('none');
@@ -155,22 +155,16 @@ test('peek file entries produce the exact same canonical Files route state', asy
   expect(sharedBrowse).toEqual(directoryPath);
 });
 
-// 64f864c6: the peek menu's File browser opens the split pane beside the
-// terminal instead of leaving it. At phone width there is no room for a split,
-// so it takes the same Files route as the other two entries.
-test('the peek File browser item splits the terminal on desktop and routes to Files on a phone', async ({ page }) => {
+// The in-page split is retired (owner, 2026-10-29): in a browser the peek
+// menu's File browser opens the worker's folder in Files, and the in-page
+// split never opens. (In the Mac app it opens a new pane: split-pane.spec.ts.)
+test('the peek File browser item opens the folder in Files, never the old split', async ({ page }) => {
   await boot(page);
-  const narrow = await page.evaluate(() => window.innerWidth <= 600);
-  const before = page.url();
   await page.evaluate((sample) => {
     const w = window as any;
     w._renderPeekWorkerActions(sample);
     document.querySelector<HTMLElement>('[data-peek-action="file-browser"]')!.click();
   }, SAMPLE);
-  if (narrow) {
-    await expect(page).toHaveURL(/#path=\/tmp\/$/);
-  } else {
-    await expect(page.locator('#peek-split-wrap')).toHaveClass(/split-active/);
-    expect(page.url()).toBe(before);
-  }
+  await expect(page).toHaveURL(/#path=\/tmp\/$/);
+  await expect(page.locator('#peek-split-wrap')).not.toHaveClass(/split-active/);
 });

@@ -55,21 +55,6 @@ async function finalLine(page: Page, scroller = '#file-body', scroll = true, nee
   }, [needle, scroll] as [string, boolean]), 'the complete final line is visible and hit-testable after scrolling to the end').toBe(true);
 }
 
-// A worker whose split panes show `dir`: panes are the worker page, so a split
-// needs an open worker.
-async function openSplitWorker(page:Page,dir:string){
-  const w={name:'file-bottom-worker',dir,provider:'claude',status:'idle',running:true,tags:['e2e'],desc:'split fixture',pinned:false,isolated:false};
-  // Replaces the beforeEach stub: same worker, with this test's folder as its directory.
-  await page.unroute(/\/api\/sessions(?:\?.*)?$/);
-  // The beforeEach stub never fires when no page loaded before this; this
-  // one must (no worker, no panes, and the wait below times out).
-  allowUnusedRoute(page,/\/api\/sessions(?:\?.*)?$/);
-  await page.route(/\/api\/sessions(?:\?.*)?$/,route=>route.fulfill({json:[w]}));
-  await page.goto('/');
-  await page.waitForFunction(()=>JSON.parse(eval('JSON.stringify(sessions)')).some((r:any)=>r.name==='file-bottom-worker'));
-  await page.evaluate(()=>(window as any).openPeek('file-bottom-worker'));
-  await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session','file-bottom-worker');
-}
 
 test('real Markdown preview, raw and edit reach the end in dashboard and embedded chat', async ({page,browserName}, info) => {
   const dir = await mkdtemp(join(tmpdir(),'amux-file-bottom-'));
@@ -291,7 +276,7 @@ test('spreadsheet read-only views expose the last row and XLSX editor keeps its 
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
 });
 
-test('Files listing and worker split previews expose their final row and complete scrollports',async({page},info)=>{
+test('the Files listing and its previews expose their final row and complete scrollports',async({page},info)=>{
   const dir=await mkdtemp(join(tmpdir(),'amux-file-list-'));
   try{
     await Promise.all(Array.from({length:150},(_,i)=>writeFile(join(dir,String(i).padStart(3,'0')+'.md'),'Evidence '+i)));
@@ -308,25 +293,6 @@ test('Files listing and worker split previews expose their final row and complet
       if(await row.getAttribute('title')==='Double-click to open')await row.dblclick();else await row.click();
       await expect(page.locator('#file-body')).toContainText(end);await finalLine(page);
       await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
-    }
-    // A split pane is the worker page itself (b20e23647): the Files pane is the
-    // Files page in an iframe, so its final row and preview are the Files
-    // page's, checked above. What the split adds is the frame: it fits the
-    // pane in a short window and the last row of a long folder is reachable
-    // inside it.
-    await openSplitWorker(page,dir);
-    for(const size of [sizes[0],sizes[1],sizes[3]]){
-      await page.setViewportSize(size);
-      await page.evaluate(()=>(window as any)._peekSplitOpen('files'));
-      const pane=page.frameLocator('#psp-frame');
-      await pane.locator('#files-body').waitFor();
-      await fits(page,'#psp-frame');
-      await pane.locator('html').evaluate((el,p)=>(el.ownerDocument.defaultView as any).loadFiles(p),dir);
-      const last=pane.locator('#files-body .fe-row').filter({hasText:'zzz-final.md'});
-      await last.scrollIntoViewIfNeeded();
-      expect(await last.evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=el.ownerDocument.defaultView!.innerHeight;}),
-        'the final row is inside the pane after scrolling').toBe(true);
-      if(size.height===350)await page.screenshot({path:info.outputPath('worker-split-final-row.png')});
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
 });
@@ -374,18 +340,18 @@ test('computed Markdown node editor and raw view fit with its full instruction r
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
 });
 
-test('a late directory response cannot replace the folder a split pane moved to',async({page})=>{
-  // The split's Files pane is the Files page (b20e23647), so the guard is
-  // loadFiles' generation check. Hold the first folder's listing, move to a
-  // second folder, release the first: the pane keeps the second.
+test('a late directory response cannot replace the folder Files moved to',async({page})=>{
+  // The guard is loadFiles' generation check. Hold the first folder's listing,
+  // move to a second folder, release the first: Files keeps the second. (It
+  // ran in the old split's Files pane, retired 2026-10-29; Files is the same page.)
   const root=await mkdtemp(join(tmpdir(),'amux-file-race-'));
   const oldDir=join(root,'old'), curDir=join(root,'current');
   try{
     await mkdir(oldDir);await mkdir(curDir);
     await writeFile(join(oldDir,'OLD_DIR_MUST_NOT_REPLACE_CURRENT.md'),'x');await writeFile(join(curDir,'current-folder.md'),'y');
-    await page.setViewportSize(sizes[0]);await openSplitWorker(page,root);
-    await page.evaluate(()=>(window as any)._peekSplitOpen('files'));
-    const pane=page.frameLocator('#psp-frame');await pane.locator('#files-body').waitFor();
+    await page.setViewportSize(sizes[0]);await page.goto('/');
+    await page.evaluate(p=>(window as any).openExplore(p),root);
+    const pane=page;await pane.locator('#files-body').waitFor();
     const key='/api/ls?path='+encodeURIComponent(oldDir);
     let release!:()=>void, arrived!:()=>void, completed!:()=>void, taken=false;
     const held=new Promise<void>(r=>release=r), seen=new Promise<void>(r=>arrived=r), done=new Promise<void>(r=>completed=r);
