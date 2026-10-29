@@ -1401,8 +1401,8 @@ pub(crate) async fn worker_pane_pids(name: &str) -> Vec<u32> {
     if session_backend(name) == "herdr" {
         return Vec::new();
     }
-    let target = format!("=amux-{name}");
-    let Some(out) = tmux(&["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"]).await else {
+    let st = st(name);
+    let Some(out) = tmux(&["list-panes", "-s", "-t", &st, "-F", "#{pane_pid}"]).await else {
         return Vec::new();
     };
     if !out.status.success() {
