@@ -21,6 +21,12 @@ use crate::db::telegram as tg_db;
 use std::time::Duration;
 
 const JOB: &str = super::registry::ids::TELEGRAM_RELAY;
+/// How long the retired relay sleeps between ticks, which is also the
+/// interval it declares (AMUX-6479's shape, found again under AF-1002): it
+/// ticked, then slept 300 s, against the 30 s interval it was spawned with,
+/// whose stall bound is 90 s, so a retired relay read "stalled" for most of
+/// every cycle and joined each "N system jobs unhealthy" rollup.
+const RETIRED_SLEEP: Duration = Duration::from_secs(300);
 
 pub async fn run(state: AppState) {
     let mut said = false;
@@ -34,9 +40,8 @@ pub async fn run(state: AppState) {
                 tracing::info!(verdict = "telegram_relay_retired", "telegram_relay: replies go through the chat bridge; the screen relay is off");
                 said = true;
             }
-            registry::tick_start(JOB);
-            registry::tick_end(JOB);
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            registry::tick_every(JOB, RETIRED_SLEEP);
+            tokio::time::sleep(RETIRED_SLEEP).await;
             continue;
         }
         // AMUX-4828: bracket the cycle; the one-shot records no duration.
@@ -619,6 +624,16 @@ pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The retired relay's declared interval is the sleep it keeps, so its
+    /// last tick stays inside the registry's stall bound between ticks.
+    #[test]
+    fn the_retired_relay_declares_the_sleep_it_keeps() {
+        let w = super::RETIRED_SLEEP.as_secs_f64();
+        assert!(w < crate::runtime_jobs::registry::stall_after_s(w));
+        assert!(w >= crate::runtime_jobs::registry::stall_after_s(30.0),
+            "the 30 s spawn interval could not cover this sleep, which is why it read stalled");
+    }
+
     use super::{content_hash, extract_reply, markdown_to_html};
 
     /// The bug this module used to have: a single-pass char walker toggled
