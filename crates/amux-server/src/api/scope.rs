@@ -1068,6 +1068,17 @@ async fn scope_write(
                  Change it from the dashboard."), "code": "owner_only_key", "key": k}));
         }
     }
+    // A board switch written at any scope can turn a worker's board on or off;
+    // note each affected worker's answer first so a flip can refresh its rules
+    // (AF-986).
+    let board_before: Vec<(String, bool)> = if key == "env" {
+        crate::api::session_verbs::workers_in_scope(level, name)
+            .into_iter()
+            .map(|w| { let off = crate::api::board_lifecycle::board_unused(&w); (w, off) })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let write_result: Result<(), (u16, String)> = match key {
         "memory" | "rules" => write_memory(&home, level, name, key, &value),
         "env" => write_env(&home, level, name, &value),
@@ -1122,6 +1133,12 @@ async fn scope_write(
     // started with unless it is told. Say who this reaches and when, and tell
     // the running ones (session_verbs::refresh_scoped_context), deletions
     // included: an emptied layer is a change the worker must hear about too.
+    if key == "env" {
+        let flipped = crate::api::session_verbs::refresh_if_board_flipped(state, board_before, actor).await;
+        if !flipped.is_empty() {
+            body["board_context_refreshed"] = json!(flipped);
+        }
+    }
     if key == "rules" || key == "memory" {
         let reached = crate::api::session_verbs::workers_in_scope(level, name);
         let what = format!("{key} ({level} scope{})", if level == "global" { String::new() } else { format!(" {name}") });

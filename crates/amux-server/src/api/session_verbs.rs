@@ -31635,6 +31635,30 @@ pub(crate) fn scoped_context_notice(name: &str, what: &str) -> String {
 /// `scoped_context_delivered_live`, `scoped_context_not_running`,
 /// `scoped_context_skipped_isolated` or `scoped_context_not_delivered_live`.
 /// Returns the workers that were sent the notice.
+/// Workers whose "board off" answer changed since `before` was taken get their
+/// rules file rewritten and the [amux scoped context] notice (AF-986).
+///
+/// The "Board off for this worker" section is composed from
+/// `board_unused` at launch, and only a rules or memory edit refreshed it, so
+/// turning a worker's Board switches back on left its rules saying the board
+/// was off: on 2026-10-28 amux-frustrations obeyed that stale text while the
+/// board drive auto-picked and auto-reclaimed AF-977 twelve times in six
+/// hours. Same predicate as the composer, so the file and the drive agree.
+pub(crate) async fn refresh_if_board_flipped(state: &AppState, before: Vec<(String, bool)>, actor: &str) -> Vec<String> {
+    let flipped: Vec<String> = before
+        .into_iter()
+        .filter(|(w, was)| super::board_lifecycle::board_unused(w) != *was)
+        .map(|(w, _)| w)
+        .collect();
+    if !flipped.is_empty() {
+        tracing::info!(workers = ?flipped, measured = true, n_considered = flipped.len(),
+            verdict = "board_switch_context_refreshed",
+            "a worker's board went on or off: its scoped rules are rewritten and it is told");
+        refresh_scoped_context(state, &flipped, "board switches", actor).await;
+    }
+    flipped
+}
+
 pub(crate) async fn refresh_scoped_context(
     state: &AppState,
     workers: &[String],
@@ -34775,7 +34799,9 @@ pub(crate) fn membership_patch_refusal(headers: &HeaderMap, membership_named: bo
 }
 
 pub(crate) async fn config_patch(state: &AppState, name: &str, body: &Value) -> Response {
+    let board_before = vec![(name.to_string(), super::board_lifecycle::board_unused(name))];
     let out = config_patch_inner(state, name, body).await;
+    refresh_if_board_flipped(state, board_before, "config").await;
     // A groups-only edit does not throw the session list away. Invalidating
     // made the next caller wait for a full fleet build (11 to 16 s live), so
     // the dashboard kept showing the removed group while its refresh hung
@@ -47031,6 +47057,32 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             env.contains("--effort high"),
             "claude still takes its effort in CC_FLAGS: {env}"
         );
+    }
+
+    /// AF-986: turning a worker's board off or on rewrites its scoped rules
+    /// file, so the "Board off for this worker" section follows the switch.
+    /// On 2026-10-28 the file still said off after the switches went on, and
+    /// the board drive reclaimed a finished card twelve times in six hours.
+    #[tokio::test]
+    async fn flipping_the_board_switch_rewrites_the_workers_rules_file() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state);
+        let rules = || std::fs::read_to_string(home.path().join("rules/probe.md")).unwrap_or_default();
+        // On first, so the off below is a flip whatever the process env says
+        // (a worker shell can carry board keys set to 0 from its own launch).
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": true}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": false}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(rules().contains("# Board off for this worker"), "board off: the rules say so: {}", rules());
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"board_enabled": true}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(!rules().is_empty(), "the rules file was rewritten");
+        assert!(!rules().contains("# Board off for this worker"), "board back on: the section is gone: {}", rules());
     }
 
     /// Ethan, 2026-10-17: one switch for "all the board stuff". `board_enabled`
