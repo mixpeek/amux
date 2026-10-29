@@ -72,6 +72,23 @@ fn defaults_approve_judgment_only() {
     );
 }
 
+/// AF-987: AF-981 asked Ethan to approve a scripts/land_gate.py change on the
+/// owner tier. The policy approved it once and sent it back twice as an
+/// access ask. Filed as access or as decision, it now stays with the owner.
+#[test]
+fn an_owner_tier_land_approval_is_never_approved_or_sent_back() {
+    let policy = Policy::default();
+    let q = "Will you approve the land-gate change (patch 9b0e02a1d435, commit 24def39b6) at \
+             https://desktop.tail5ce8f5.ts.net:8824/#land-approve=9b0e02a1d435fb7f9e8a19b96ff1954460faaa19?";
+    for ask in ["access", "decision", "credential"] {
+        assert_eq!(decide(&policy, &item("card", "other", ask, q)), Decision::Never("owner_tier_guard_approval"), "{ask}");
+    }
+    let q2 = "May amux-frustrations proceed with this: Needs your approval: the land-gate speedup?";
+    assert_eq!(decide(&policy, &item("card", "other", "decision", q2)), Decision::Never("owner_tier_guard_approval"));
+    // A sign-in ask still goes down the ladder: the control.
+    assert_eq!(decide(&policy, &item("card", "other", "access", "Can you sign in to Studio?")), Decision::SendBack("credential_or_access"));
+}
+
 #[test]
 fn a_group_setting_decision_does_not_go_through_the_credential_ladder() {
     let policy = Policy::default();
