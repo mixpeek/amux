@@ -67905,11 +67905,13 @@ function _cvSelect(sel, auto) {
   compose.style.display = isConv ? '' : 'none'; hint.style.display = isConv ? '' : 'none';
   document.getElementById('cv-typing').textContent = '';
   document.getElementById('cv-head-people').innerHTML = '';
+  { const pb = document.getElementById('cv-pins-btn'); if (pb) pb.hidden = true; }
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
@@ -67962,7 +67964,9 @@ async function _cvPollOnce(full) {
   // (after=) is usually empty and would say "nothing older", disarming
   // scroll-up loading.
   const hadMore = _cv.info && _cv.info.has_more;
+  const pinsWere = JSON.stringify(((_cv.info || {}).pins || []).map(x => x.id));
   _cv.info = d;
+  const pinsChanged = hadInfo && pinsWere !== JSON.stringify((d.pins || []).map(x => x.id));
   if (!full) _cv.info.has_more = hadMore;
   Object.assign(_cvProfiles, d.profiles || {});
   // Typing "@" before the member list arrived left the picker empty; offer
@@ -67995,7 +67999,9 @@ async function _cvPollOnce(full) {
   if (full) _cv.readId = 0;
   _cv.readId = Math.max(_cv.readId || 0, latest);
   _cvRenderHead(sel, d);
-  if (full || grew || pending.length) _cvRenderPosts(full || grew);
+  _cvRenderPinsBtn();
+  if (full || grew || pending.length || pinsChanged) _cvRenderPosts(full || grew);
+  if (pinsChanged && !full && !grew && _cv.thread) _cvRenderThread();
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
     ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
   if (grew || full || readGrew) _cvMarkRead();
@@ -68160,6 +68166,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const mine = p.author_key === _cvMeKey();
   const owner = _cvMeKey() === 'person:owner';
   const real = typeof p.id === 'number';
+  const pinned = real && _cvPinnedIds().has(p.id);
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
     : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
@@ -68173,6 +68180,8 @@ function _cvPostHtml(p, showConv, inThread) {
     + _CV_QUICK.slice(0, 3).map(e => '<button type="button" title="React ' + e + '" aria-label="React ' + e + '" onclick="_cvReact(' + p.id + ',\'' + e + '\')">' + e + '</button>').join('')
     + (!inThread ? '<button type="button" title="Reply in thread" aria-label="Reply in thread" onclick="_cvOpenThread(' + p.id + ')">&#x1F4AC;</button>' : '')
     + '<button type="button" title="Copy link" aria-label="Copy link" onclick="_cvCopyLink(' + p.id + ',' + (p.parent_id || 0) + ')">&#x1F517;</button>'
+    + (pinned ? '<button type="button" title="Unpin" aria-label="Unpin" onclick="_cvPin(' + p.id + ',false)">&#x1F4CC;&#xFE0E;</button>'
+      : '<button type="button" title="Pin to this conversation" aria-label="Pin" onclick="_cvPin(' + p.id + ',true)">&#x1F4CC;</button>')
     + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
     + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
     + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
@@ -68180,6 +68189,7 @@ function _cvPostHtml(p, showConv, inThread) {
     '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
     (p.edited_at && !p.deleted ? '<span class="cv-edited" title="' + esc(new Date(p.edited_at).toLocaleString()) + '">(edited)</span>' : '') +
+    (pinned && !p.deleted ? '<span class="cv-post-pinned" title="' + esc(_cvPinTitle(p.id)) + '">&#x1F4CC; Pinned</span>' : '') +
     (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvOpenThreadOrScroll(this.dataset.cv,' + (p.parent_id || p.id) + ')">in ' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' (thread)' : '') + '</span>' : '') +
     (p.pending ? '<span class="cv-post-tag">Queued: sends when you are back online</span>' : p.tag ? '<span class="cv-post-tag">' + esc(p.tag) + '</span>' : '') +
     '</div>' + body + (p.snippet ? '<div class="cv-snippet">' + esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') + '</div>' : '')
@@ -68235,6 +68245,48 @@ async function _cvMore(btn) {
 }
 function _cvFindPost(id) {
   return _cv.posts.find(p => p.id === id) || (_cv.thread && (_cv.thread.posts || []).find(p => p.id === id));
+}
+// Pinned messages: the conversation's pins come with every page of posts
+// (`pins`), so a pin made in another tab or by someone else shows on the next
+// poll, and a page of older posts still knows which of its posts are pinned.
+function _cvPinnedIds() { return new Set(((_cv.info || {}).pins || []).map(x => x.id)); }
+function _cvPinTitle(id) {
+  const x = ((_cv.info || {}).pins || []).find(y => y.id === id);
+  return x ? 'Pinned by ' + String(x.pinned_by || '').replace(/^(person|worker):/, '') + ' ' + timeAgo(x.pinned_at / 1000) : 'Pinned';
+}
+function _cvRenderPinsBtn() {
+  const btn = document.getElementById('cv-pins-btn'); if (!btn) return;
+  const n = ((_cv.info || {}).pins || []).length;
+  btn.hidden = !n;
+  document.getElementById('cv-pins-n').textContent = n ? String(n) : '';
+}
+async function _cvPin(id, on) {
+  try {
+    const r = await fetch(API + '/api/conversations/posts/' + id + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: on }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+    (_cv.info = _cv.info || {}).pins = d.pins || [];
+    _cvRenderPinsBtn();
+    _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+    showToast(on ? 'Pinned' : 'Unpinned');
+  } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
+}
+// The pinned list opens from the 📌 count in the header (one control in the
+// header row, no new bar). Choosing one goes to it: in the list when it is a
+// top-level post, in its thread when it is a reply.
+async function _cvShowPins() {
+  const pins = (_cv.info || {}).pins || [];
+  if (!pins.length) return;
+  const html = '<div class="cv-pins-list">' + pins.map((x, i) => '<button type="button" class="btn cv-pin-item" data-i="' + i + '">'
+    + '<span class="cv-pin-who">' + esc(x.author_name) + ' <span class="cv-pin-when">' + esc(new Date(x.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></span>'
+    + '<span class="cv-pin-body">' + esc(String(x.body || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>').join('') + '</div>';
+  const chosen = new Promise(resolve => {
+    setTimeout(() => document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(Number(el.dataset.i)); _modalClose(false); }), 0);
+    showFormModal('Pinned messages', html, 'Close').then(() => resolve(-1));
+  });
+  const i = await chosen;
+  const x = pins[i]; if (!x) return;
+  if (x.parent_id) _cvOpenThread(x.parent_id); else _cvOpenThreadOrScroll(_cv.sel, x.id);
 }
 async function _cvReact(id, emoji) {
   try {
@@ -68689,7 +68741,7 @@ function _cvOnLive(ev) {
   _cv.liveListT = setTimeout(_cvLoadList, 300);
   if (ev.op === 'created') _cvMaybeNotify(ev);
   if (_cvViewOn() && _cv.sel === ev.conv) {
-    if (ev.op === 'created' && !ev.parent_id) _cvPoll(false);
+    if ((ev.op === 'created' && !ev.parent_id) || ev.op === 'pinned' || ev.op === 'unpinned') _cvPoll(false);
     else _cvRefreshPost(ev.parent_id || ev.id);
   }
   if (_cv.thread && _cv.thread.conv === ev.conv && (ev.parent_id === _cv.thread.root || ev.id === _cv.thread.root)) _cvLoadThread();

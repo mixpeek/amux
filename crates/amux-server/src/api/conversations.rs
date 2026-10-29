@@ -43,6 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/conversations/{conv}/typing", post(typing))
         .route("/api/conversations/posts/{id}", axum::routing::patch(edit_post).delete(delete_post))
         .route("/api/conversations/posts/{id}/reactions", post(react_post))
+        .route("/api/conversations/posts/{id}/pin", post(pin_post))
         .route("/api/conversations/unfurl", get(unfurl))
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/avatar/{name}", get(get_avatar))
@@ -965,7 +966,11 @@ async fn posts(
         .collect();
     let mut mentionable = mentionable_workers(&me, &conv, &lanes);
     mentionable.extend(mentionable_isolated(&me, &conv, &isolated_lanes()));
+    // Every page carries the conversation's pins: a pin changes no post, so a
+    // client polling with `after=` learns of it here.
+    let pins = pins_of(&conn, &key);
     Json(json!({"conv": key, "posts": rows, "last_read": last_read, "latest_id": latest_id, "thread": thread, "has_more": has_more && thread.is_none(),
+        "pins": pins,
         "profiles": profiles,
         "people": ppl, "workers": workers_in(&conv, &lanes),
         "mentionable_workers": mentionable,
@@ -1886,6 +1891,68 @@ async fn react_post(State(state): State<AppState>, Path(id): Path<i64>, headers:
     }).await;
     match r {
         Ok(_) => Json(json!({"ok": true, "id": id, "reactions": out.lock().map(|g| g.clone()).unwrap_or(json!({}))})).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
+}
+
+/// A conversation's pinned posts, newest pin first: enough of each to list it
+/// and jump to it. Deleted posts drop out.
+fn pins_of(conn: &rusqlite::Connection, conv: &str) -> Vec<Value> {
+    conn.prepare(
+        "SELECT p.id, p.parent_id, p.author_key, p.author_name, p.body, p.ts, x.pinned_by, x.pinned_at
+         FROM conversation_pins x JOIN conversation_posts p ON p.id = x.post_id
+         WHERE x.conv=?1 AND p.deleted_at IS NULL ORDER BY x.pinned_at DESC, p.id DESC LIMIT 100",
+    )
+    .and_then(|mut q| {
+        q.query_map(rusqlite::params![conv], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?, "parent_id": r.get::<_, Option<i64>>(1)?,
+                "author_key": r.get::<_, String>(2)?, "author_name": r.get::<_, String>(3)?,
+                "body": r.get::<_, String>(4)?.chars().take(300).collect::<String>(), "ts": r.get::<_, i64>(5)?,
+                "pinned_by": r.get::<_, String>(6)?, "pinned_at": r.get::<_, i64>(7)?,
+            }))
+        })?
+        .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// `POST /api/conversations/posts/<id>/pin` `{"pinned": true|false}`: pin a
+/// post inside its channel or DM, or unpin it. Anyone who can read the
+/// conversation may, as in Slack; who pinned it is kept and shown.
+async fn pin_post(State(state): State<AppState>, Path(id): Path<i64>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
+    let lanes = fleet(&state);
+    let me = match identify(&headers, &lanes) {
+        Ok(w) => w,
+        Err(m) => return err(StatusCode::FORBIDDEN, m),
+    };
+    let pinned = b.get("pinned").and_then(Value::as_bool).unwrap_or(true);
+    let Some((_, conv, parent)) = state.store.read().ok().and_then(|c| author_of(&c, id)) else {
+        return err(StatusCode::NOT_FOUND, "no such post");
+    };
+    let Some(cv) = Conv::parse(&conv) else { return err(StatusCode::NOT_FOUND, "no such post") };
+    if !may_read(&me, &cv, &lanes) {
+        return err(StatusCode::FORBIDDEN, "not a conversation you can read");
+    }
+    let (key, c2) = (me.key(), conv.clone());
+    let r = state.store.write_async(move |c| {
+        let n = if pinned {
+            c.execute(
+                "INSERT INTO conversation_pins (post_id, conv, pinned_by, pinned_at) VALUES (?1,?2,?3,?4) ON CONFLICT(post_id) DO NOTHING",
+                rusqlite::params![id, c2, key, now_ms()],
+            )?
+        } else {
+            c.execute("DELETE FROM conversation_pins WHERE post_id=?1", rusqlite::params![id])?
+        };
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: if n > 0 { vec![post_event(&c2, id, parent, if pinned { "pinned" } else { "unpinned" })] } else { vec![] } })
+    }).await;
+    match r {
+        Ok(_) => {
+            tracing::info!(conv = %conv, post = id, by = %me.key(), pinned, measured = true, n_considered = 1,
+                verdict = if pinned { "conversation_post_pinned" } else { "conversation_post_unpinned" }, "a Messages post was pinned or unpinned");
+            let pins = state.store.read().map(|c| pins_of(&c, &conv)).unwrap_or_default();
+            Json(json!({"ok": true, "id": id, "pinned": pinned, "pins": pins})).into_response()
+        }
         Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
 }
