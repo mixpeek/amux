@@ -75,7 +75,7 @@ pub struct BootstrapReport {
     pub spawned: Vec<String>,
     /// worker ids registered with the structured protocol this pass.
     pub registered: Vec<String>,
-    /// stopped workers restarted because a todo card was waiting (sweep 0).
+    /// owners in `error` restarted because a todo card was waiting (sweep 0; never an owner stop).
     pub started_stopped_owners: Vec<String>,
     /// backend_refs terminated because their latest session row is ended.
     pub terminated: Vec<String>,
@@ -238,10 +238,19 @@ impl Bootstrap {
     /// worker to send a Telegram message sat in todo for 20 minutes beside a
     /// stopped worker with no log line anywhere.
     ///
-    /// Bounded and level-triggered: only ACTIVE lifecycles, only `Stopped`, only
-    /// with a todo card owned by the lane and NO live session, and only while
-    /// the host passes the same admission gate `start_worker` uses (AMUX-3396 —
-    /// this must not be the reason a starved box starts another CLI).
+    /// Bounded and level-triggered: only ACTIVE lifecycles, only `Error`, only
+    /// with a todo card owned by the lane, and only while the host passes the
+    /// same admission gate `start_worker` uses (AMUX-3396 — this must not be
+    /// the reason a starved box starts another CLI).
+    ///
+    /// NOT `Stopped`. `stop_worker` writes exactly `WorkerState::Stopped`, and
+    /// the state carries no reason, so a worker the owner stopped on purpose is
+    /// indistinguishable here from one nobody started. Restarting it would undo
+    /// an owner stop on the next tick (review on #391, 2026-10-27). The board
+    /// drive already holds that stop and says so (`owner_stop_held`, lane
+    /// trace `owner-stopped`: "Start it (amux start) to resume board work").
+    /// `Error` is a start that failed, not a decision, so recovering it
+    /// overrides nobody.
     fn stopped_owners_with_todo(
         &self,
     ) -> anyhow::Result<Vec<(String, String, String, WorkerState)>> {
@@ -250,7 +259,7 @@ impl Bootstrap {
             "SELECT w.id, w.display_name, MIN(i.id), w.state
              FROM _amux_workers w
              JOIN issues i ON lower(i.session) = lower(w.display_name)
-             WHERE json_extract(w.state, '$.state') IN ('stopped', 'error')
+             WHERE json_extract(w.state, '$.state') = 'error'
                AND w.lifecycle = 'active'
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0
                AND i.status = 'todo'
@@ -260,9 +269,6 @@ impl Bootstrap {
                -- recovery (measured 2026-10-26: PATCH {model} -> session_restart
                -- -> spawn conflict -> error + live pid-less row -> sweep 0
                -- silent, forever).
-               AND (json_extract(w.state, '$.state') = 'error'
-                    OR NOT EXISTS (SELECT 1 FROM _amux_sessions s
-                                   WHERE s.worker_id = w.id AND s.ended_at IS NULL))
              GROUP BY w.id, w.display_name, w.state",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -367,13 +373,13 @@ impl Bootstrap {
                 // Re-checked under the write lock: a human (or another job) may
                 // have started or paused it between the read and this write.
                 //
-                // Restartable = stopped, or parked in `error` whose only live
-                // session row has NO pid: that row is a spawn that never
-                // happened (the failed start wrote it first), so it is ended
-                // here rather than being allowed to block recovery forever. A
-                // row WITH a pid describes a running process and is respected.
-                let restartable = matches!(row.state, WorkerState::Stopped)
-                    || matches!(row.state, WorkerState::Error { .. });
+                // Restartable = parked in `error`, whose only live session row
+                // has NO pid: that row is a spawn that never happened (the
+                // failed start wrote it first), so it is ended here rather than
+                // being allowed to block recovery forever. A row WITH a pid
+                // describes a running process and is respected. `Stopped` is
+                // never restarted here: it may be the owner's own stop.
+                let restartable = matches!(row.state, WorkerState::Error { .. });
                 let live = queries::live_session_for(conn, &row.id)?;
                 let stale_live = live.as_ref().filter(|s| s.pid.is_none());
                 if !row.lifecycle.is_drivable()
@@ -450,7 +456,7 @@ impl Bootstrap {
     pub async fn pass_once(&self) -> anyhow::Result<BootstrapReport> {
         let mut report = BootstrapReport::default();
 
-        // ---- sweep 0: restart a stopped owner that a todo card waits on -----
+        // ---- sweep 0: recover an owner a failed start left in `error`, when a todo card waits on it ----
         //
         // Runs BEFORE the spawn sweep so the same pass spawns and registers what
         // it starts. Refusals are named once: this loop ticks every 2s.
@@ -932,7 +938,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stopped_owner_with_a_todo_card_is_discovered_and_restarted() {
+    async fn a_stopped_owner_with_a_todo_card_stays_stopped() {
         let (store, _dir) = store();
         // A stopped durable worker owning a todo card: the shape a human
         // reports as "I created a card and the worker did not pick it up"
@@ -963,71 +969,32 @@ mod tests {
                 .unwrap();
         };
 
-        // Discovery: a todo card for this lane IS a reason to restart it.
-        assert!(bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
-            .stopped_owners_with_todo()
-            .unwrap()
-            .is_empty());
+        // An owner stop and a todo card: the card is not a reason to undo the
+        // stop. `stop_worker` writes exactly this state, with no reason
+        // attached, so sweep 0 cannot tell it from "never started" and must
+        // leave it alone; the card is reported as waiting on a stopped owner.
         insert_card("TST-RESTART", "todo", &display);
-        assert_eq!(
-            bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
-                .stopped_owners_with_todo()
-                .unwrap(),
-            vec![(
-                id.to_string(),
-                display.clone(),
-                "TST-RESTART".to_string(),
-                WorkerState::Stopped
-            )],
-            "a todo card owned by a stopped worker must be found"
-        );
-        // ... and ONLY for a live todo. A stopped worker whose only card is
-        // `done` (or `doing`) is not a restart reason: restarting every lane
-        // that ever finished something is a fleet-wide spawn storm.
-        let (id2, _bref2) = seed(&store, WorkerState::Stopped, "herdr", "claude", false);
-        let display2 = {
-            let conn = store.read().unwrap();
-            queries::get_worker(&conn, id2.as_str())
-                .unwrap()
-                .unwrap()
-                .display_name
-        };
-        insert_card("TST-FINISHED", "done", &display2);
-        assert_eq!(
-            bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()))
-                .stopped_owners_with_todo()
-                .unwrap(),
-            vec![(
-                id.to_string(),
-                display.clone(),
-                "TST-RESTART".to_string(),
-                WorkerState::Stopped
-            )],
-            "a finished card is not a reason to restart its (stopped) owner"
-        );
-
-        // The write: the SAME durable shape `start_worker` produces, which is
-        // what makes sweep 1 of the same pass spawn and register it.
         let boot = bootstrap(store.clone(), Arc::new(FakeBackend::default()), Arc::new(RecordingRegistrar::default()));
-        assert!(boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap());
-        assert!(matches!(worker_state(&store, &id), WorkerState::Starting));
-        let (sessions, brefs): (i64, String) = {
+        assert!(
+            boot.stopped_owners_with_todo().unwrap().is_empty(),
+            "a stopped owner with a todo card must not be offered for restart"
+        );
+        assert!(
+            !boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap(),
+            "start_owner refuses a Stopped worker even when asked directly"
+        );
+        assert!(matches!(worker_state(&store, &id), WorkerState::Stopped), "the owner's stop holds");
+        let sessions: i64 = {
             let conn = store.read().unwrap();
             conn.query_row(
-                "SELECT COUNT(*), COALESCE(MAX(backend_ref),'') FROM _amux_sessions \
-                 WHERE worker_id = ?1 AND ended_at IS NULL",
+                "SELECT COUNT(*) FROM _amux_sessions WHERE worker_id = ?1 AND ended_at IS NULL",
                 params![id.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .unwrap()
         };
-        assert_eq!(sessions, 1, "one live session row");
-        assert_eq!(brefs, bref, "the session ref is the worker's own ref");
-
-        // Idempotent: a second attempt in the same state finds nothing to do
-        // (it is Starting now), so the 2s loop cannot restart-storm.
-        assert!(!boot.start_owner(id.to_string(), "TST-RESTART".into()).await.unwrap());
-        assert!(boot.stopped_owners_with_todo().unwrap().is_empty());
+        assert_eq!(sessions, 0, "no session row was written for a stopped owner");
+        let _ = bref;
     }
 
     /// MEASURED 2026-10-26: a stop ends the session ROW, and the reap sweep
