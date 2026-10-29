@@ -2802,6 +2802,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdBeacon": {
+      "kind": "command._mdBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiCancel": {
       "kind": "command._mdaiCancel",
       "feedback_required": true,

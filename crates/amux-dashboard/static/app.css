@@ -1143,6 +1143,10 @@
      _bindMdFileLinks). Distinguished from external links by the accent + a small
      document glyph, so a reader knows it navigates within, not to the browser. */
   .md-file-link { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); cursor: pointer; }
+  /* @worker in a markdown file's preview: opens the worker (2026-10-29). */
+  .md-worker-link { color: var(--accent); text-decoration: none; font-weight: 600; padding: 0 var(--space-0-5); border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent) 12%, transparent); cursor: pointer; }
+  .md-worker-link:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   .md-file-link::before { content: "\1F4C4\00A0"; font-size: 0.82em; opacity: 0.75; }
   .md-file-link:hover { border-bottom-style: solid; }
   .md-file-link:active { opacity: 0.7; }

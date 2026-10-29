@@ -29702,6 +29702,9 @@ function _renderFileBody(data, mode) {
     body.style.display = 'none';
     editWrap.style.display = 'flex';
     editTa.value = data.content;
+    // Type @ to tag a worker: the same worker list every input has. In Edit
+    // the tag is text; Preview makes it a link (owner, 2026-10-29).
+    _atAttach(editTa);
     editTa.focus();
     return;
   }
@@ -29722,7 +29725,7 @@ function _renderFileBody(data, mode) {
   } else if (data.is_markdown) {
     body.className = 'file-overlay-body markdown md-content';
     const fm = _parseFrontmatter(data.content);
-    body.innerHTML = _renderFrontmatterBlock(fm.meta) + renderMarkdown(fm.body, data.path);
+    body.innerHTML = _renderFrontmatterBlock(fm.meta) + renderMarkdown(fm.body, data.path, { workers: true });
     _bindMdFileLinks(body);
     _fileBindAnchors(body);
     _bindReadPosDiv(body, data.path);
@@ -44182,6 +44185,14 @@ function _bindMdFileLinks(container) {
       _mdScrollToAnchor(container, jump.dataset.anchor || '');
       return;
     }
+    const w = e.target.closest && e.target.closest('.md-worker-link');
+    if (w && container.contains(w) && w.dataset.worker) {
+      e.preventDefault();
+      e.stopPropagation();
+      _mdBeacon('md_worker_link_opened', { known: _mdWorkerKnown(w.dataset.worker) ? 1 : 0 });
+      if (typeof openPeek === 'function') openPeek(w.dataset.worker);
+      return;
+    }
     const a = e.target.closest && e.target.closest('.md-file-link');
     if (!a || !container.contains(a) || !a.dataset.file) return;
     e.preventDefault();
@@ -44242,6 +44253,16 @@ function _mdSlug(text) {
 // Rendered as data-attribute links, handled by _bindMdFileLinks: a bare "#"
 // href would reach the dashboard's hash routing.
 let _mdWikiBase = '';
+let _mdWorkerLinks = false;
+function _mdWorkerKnown(name) {
+  try { return (typeof sessions !== 'undefined' ? sessions : []).some(s => s && s.name === name); } catch (e) { return false; }
+}
+function _mdBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'markdown', verdict, measured: true, n_considered: 1, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
 function _mdUseWikiLinks() {   // and math (the same marked.use call)
   if (typeof marked === 'undefined' || marked._amuxWikiLinks) return;
   marked._amuxWikiLinks = true;
@@ -44270,6 +44291,27 @@ function _mdUseWikiLinks() {   // and math (the same marked.use call)
       if (m) return { type: 'inlineMath', raw: m[0], text: m[1], display: false };
     },
     renderer(t) { return '<span class="md-math' + (t.display ? ' md-math-display' : '') + '">' + esc(t.text) + '</span>'; },
+  }, {
+    // @worker in a markdown file (owner, 2026-10-29: "make it so i can tag
+    // workers in md files and i can link the worker it should only be
+    // clickable when in preview mode"). A worker amux knows becomes a link to
+    // it; any other @word (an email, a handle) stays text. Only in a preview
+    // that asked for it (_mdWorkerLinks); Edit and Raw show the text as typed.
+    name: 'workerMention', level: 'inline',
+    start(src) {
+      if (!_mdWorkerLinks) return undefined;
+      for (let i = src.indexOf('@'); i >= 0; i = src.indexOf('@', i + 1)) if (i === 0 || !/[\w.@]/.test(src[i - 1])) return i;
+      return undefined;
+    },
+    tokenizer(src) {
+      if (!_mdWorkerLinks) return undefined;
+      const m = /^@([A-Za-z0-9][\w.-]*[A-Za-z0-9_]|[A-Za-z0-9])/.exec(src);
+      if (!m || !_mdWorkerKnown(m[1])) return undefined;
+      return { type: 'workerMention', raw: m[0], name: m[1] };
+    },
+    renderer(t) {
+      return '<a href="#peek=' + encodeURIComponent(t.name) + '" class="md-worker-link" data-worker="' + esc(t.name) + '" title="Open ' + esc(t.name) + '">@' + esc(t.name) + '</a>';
+    },
   }, {
     name: 'wikilink', level: 'inline',
     start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
@@ -44359,7 +44401,13 @@ function _mdScrollToAnchor(root, slug) {
   return true;
 }
 
-function renderMarkdown(raw, basePath) {
+function renderMarkdown(raw, basePath, opts) {
+  // @worker links: only where the caller asks (a file's preview). Messages and
+  // chat mark their own mentions. Reset after, so no other render inherits it.
+  _mdWorkerLinks = !!(opts && opts.workers);
+  try { return _renderMarkdownInner(raw, basePath); } finally { _mdWorkerLinks = false; }
+}
+function _renderMarkdownInner(raw, basePath) {
   if (!raw) return '';
   // Use marked.js for full GFM support (tables, task lists, strikethrough, etc.)
   if (typeof marked !== 'undefined') {
