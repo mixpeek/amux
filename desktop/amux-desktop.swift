@@ -114,6 +114,9 @@ struct Config: Codable {
     // "last" (default), "new", or "layout:<name>"
     var launch: String?
     var snapToGrid: Bool?
+    // Added 2026-10-29: where Split puts the new pane: "right" (unset), "below",
+    // or "longer" (along the pane's longer side).
+    var splitDirection: String?
     var openAtLogin: Bool?
     // The workspace open now; switching away saves where you left it.
     var activeWorkspace: String?

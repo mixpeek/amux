@@ -9,7 +9,8 @@ A second copy of the app with its own config opens a window split into two
 panes (Board | Calendar). Then, as the pane header's "Split this tab" does:
   - Calendar's tab becomes a split of its own (level 3), then a pane inside
     that is split again, down to level 6; a seventh level is refused and
-    logged; each split runs along its pane's longer side;
+    logged; each split opens its new pane to the right, and with Settings'
+    "Along the pane's longer side" a tall pane splits top and bottom;
   - the window's own first pane (the host's page) is split too;
   - the window and the parent strip are named by the panes inside;
   - it saves into a workspace with every level, and comes back after a relaunch;
@@ -136,8 +137,14 @@ try:
     n5, n6 = at(w, [1, 1, 1]), at(w, [1, 1, 1, 1])
     check("level 5 and level 6 split too", bool(n5) and bool(n6) and n5["depth"] == 3 and n6["depth"] == 4 and all(n6["pane_shown"]),
           json.dumps(w["pane_nested"])[:500])
-    check("each split runs along its pane's longer side",
-          bool(n1) and bool(n11) and bool(n5) and len({n1["grid"][0], n11["grid"][0], n5["grid"][0]}) == 2, f'{n1 and n1["grid"]} {n11 and n11["grid"]} {n5 and n5["grid"]}')
+    # Owner, 2026-10-29: "split button still opens pane below when it should
+    # be to the right".
+    grids = [n and n["grid"] for n in (n1, n11, n5, n6)]
+    check("each split opens its new pane to the right while the pane has room",
+          all(grids) and grids[0][0] == "r" and grids[1][0] == "r", str(grids))
+    check("a pane too narrow for two side by side splits below, and says so",
+          all(grids) and any(g[0] == "c" for g in grids[2:]) and "verdict=split_edge_no_room want=right" in log(), str(grids))
+    check("no split is saved past its ends", all(grids) and all(0 < float(re.match(r"[rc]([0-9.]+)", g).group(1)) < 1 for g in grids), str(grids))
     check("level 6 offers no deeper split", bool(n6) and n6["can_nest"] == [False, False], json.dumps(n6))
     before = log().count("verdict=pane_nest_refused")
     send("amux://test/pane-nest?at=1.1.1.1.0", 2)
@@ -175,6 +182,18 @@ try:
     time.sleep(3)
     got = shape(win())
     check("a relaunch brings every level back", got == want, f"want={want} got={got}")
+
+    # Settings' "Along the pane's longer side": a tall pane splits top and bottom.
+    stop()
+    cfg = json.load(open(CFG))
+    cfg["splitDirection"] = "longer"
+    json.dump(cfg, open(CFG, "w"))
+    start()
+    time.sleep(3)
+    send("amux://test/pane-nest?at=0.1", 4)
+    settle()
+    n01 = (((win().get("pane_nested") or [None])[0] or {}).get("nested") or [None, None])[1]
+    check("with the longer-side setting a tall pane splits top and bottom", bool(n01) and n01["grid"].startswith("c"), json.dumps(n01)[:300])
 
     # Closing a split tab closes the pages inside it.
     pages = len(state()["pages"])

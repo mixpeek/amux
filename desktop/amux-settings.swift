@@ -504,6 +504,11 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             cfg.launch = m["value"] as? String
             saveConfig(cfg)
             app.config = cfg
+        case "splitDirection":
+            cfg.splitDirection = m["value"] as? String
+            saveConfig(cfg)
+            app.config = cfg
+            dlog("verdict=split_direction_set value=\(cfg.splitDirection ?? "right")")
         case "toggle":
             let on = m["value"] as? Bool ?? true
             switch name {
@@ -565,6 +570,9 @@ func settingsHTML(_ app: AppDelegate) -> String {
             </div>
             """
         }.joined()
+    let split = c.splitDirection ?? "right"
+    let splitOptions = [("right", "To the right"), ("below", "Below"), ("longer", "Along the pane's longer side")]
+        .map { "<option value=\"\($0.0)\"\(split == $0.0 ? " selected" : "")>\($0.1)</option>" }.joined()
     let launchOptions = [("last", "Reopen the windows from last time"), ("new", "Open one new window")]
         .map { "<option value=\"\($0.0)\"\(launch == $0.0 ? " selected" : "")>\($0.1)</option>" }.joined()
         + layouts.map { l in
@@ -631,6 +639,9 @@ func settingsHTML(_ app: AppDelegate) -> String {
       \(toggle("menuBar", c.menuBar ?? true, "Show in menu bar", "CPU and memory readout, with your pinned notes one click away."))
       \(toggle("notifications", c.notifications ?? true, "Notify when amux needs you", "A notification for each new item waiting on you."))
       \(toggle("dockBadge", c.dockBadge ?? true, "Show count on Dock icon", "The number of items waiting on you."))
+      <div class="row"><div class="info"><div class="name">Split opens the new pane</div>
+        <small>The Split button, "Open in split pane" and "Split this tab".</small></div>
+        <select onchange="send('splitDirection','',this.value)">\(splitOptions)</select></div>
       \(toggle("snapToGrid", c.snapToGrid ?? true, "Snap windows to a grid", "While you drag, an outline shows where the window lands: a 12 by 8 grid of the screen or another amux window's edge. Hold Option to place it freely."))
     </div>
     <h2>Updates</h2>

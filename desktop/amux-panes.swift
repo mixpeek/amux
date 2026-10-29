@@ -185,8 +185,10 @@ final class GridSplitView: NSSplitView, NSSplitViewDelegate {
     var currentFraction: Double? {
         guard pending == nil, subviews.count == 2, length > dividerThickness else { return pending }
         let first = isVertical ? subviews[0].frame.width : subviews[0].frame.height
-        return Double(first / (length - dividerThickness))
+        return min(1, max(0, Double(first / (length - dividerThickness))))
     }
+    /// The narrowest a pane gets beside a divider.
+    static let minPane: CGFloat = 160
 
     override func layout() {
         super.layout()
@@ -195,8 +197,8 @@ final class GridSplitView: NSSplitView, NSSplitViewDelegate {
             setPosition((length - dividerThickness) * CGFloat(f), ofDividerAt: 0)
         }
     }
-    func splitView(_ s: NSSplitView, constrainMinCoordinate p: CGFloat, ofSubviewAt i: Int) -> CGFloat { 160 }
-    func splitView(_ s: NSSplitView, constrainMaxCoordinate p: CGFloat, ofSubviewAt i: Int) -> CGFloat { length - 160 }
+    func splitView(_ s: NSSplitView, constrainMinCoordinate p: CGFloat, ofSubviewAt i: Int) -> CGFloat { Self.minPane }
+    func splitView(_ s: NSSplitView, constrainMaxCoordinate p: CGFloat, ofSubviewAt i: Int) -> CGFloat { length - Self.minPane }
     func splitViewDidResizeSubviews(_ n: Notification) {
         if pending == nil, NSEvent.pressedMouseButtons & 1 != 0 { onResize?() }
     }
@@ -734,6 +736,29 @@ extension AppDelegate {
         return true
     }
 
+    /// Where Split puts the new pane (owner, 2026-10-29: "split button still
+    /// opens pane below when it should be to the right"; "it should always be
+    /// vertical but we can configure in settings"): to the right unless
+    /// Settings says below, or along the pane's longer side.
+    /// A side with no room for two panes of `GridSplitView.minPane` gives way
+    /// to the other, so a deep split never leaves a pane with no width.
+    func splitEdge(for size: NSSize) -> PaneEdge {
+        let want = config.splitDirection ?? "right"
+        let edge: PaneEdge
+        switch want {
+        case "below": edge = .bottom
+        case "longer": edge = size.width >= size.height ? .right : .bottom
+        default: edge = .right
+        }
+        let room = 2 * GridSplitView.minPane + 1
+        let fits = (edge == .right ? size.width : size.height) >= room
+        let other: PaneEdge = edge == .right ? .bottom : .right
+        let otherFits = (other == .right ? size.width : size.height) >= room
+        guard size != .zero, !fits, otherFits else { return edge }
+        dlog("verdict=split_edge_no_room want=\(want) size=\(Int(size.width))x\(Int(size.height)) used=\(other == .right ? "right" : "below")")
+        return other
+    }
+
     /// "Split this tab": the tab pane `id` shows becomes a split of its own,
     /// that page and a second copy of it side by side, each with its own tabs.
     func nestSplit(_ c: DashboardWindowController, in g: PaneGrid, url: URL? = nil) {
@@ -766,9 +791,7 @@ extension AppDelegate {
         let n = DashboardWindowController(app: self, frame: up.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
         if let u = url ?? c.webView.url { n.load(u) } else { n.showConnectPage() }
-        // Along the pane's longer side, so splits inside splits stay readable.
-        let size = g.views[id]?.bounds.size ?? .zero
-        let edge: PaneEdge = size.width >= size.height ? .right : .bottom
+        let edge = splitEdge(for: g.views[id]?.bounds.size ?? .zero)
         let ok = dockPane(n, into: c, at: nil, edge: edge, zone: "split_tab")
         dlog("verdict=\(ok ? "pane_tab_split" : "pane_tab_split_refused") depth=\(c.depth + 1) panes=\(c.grid?.tree.leaves.count ?? 1)")
         if !ok { n.window?.close() }
@@ -845,7 +868,10 @@ extension AppDelegate {
         let n = DashboardWindowController(app: self, frame: host.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
         if let u = url { n.load(u) } else { n.showConnectPage() }
-        let ok = dockPane(n, into: host, at: paneId, edge: .right, zone: "split_button")
+        // The room the new pane splits: the pane the page is in, or the whole
+        // window when it has no panes yet.
+        let room = paneId.flatMap { host.grid?.views[$0]?.bounds.size } ?? host.rootHost.window?.contentLayoutRect.size ?? .zero
+        let ok = dockPane(n, into: host, at: paneId, edge: splitEdge(for: room), zone: "split_button")
         dlog("verdict=\(ok ? "split_button_pane" : "split_button_refused") panes=\(host.grid?.tree.leaves.count ?? 1) view=\(url?.fragment ?? "")")
         if !ok { n.window?.makeKeyAndOrderFront(nil) }
     }
