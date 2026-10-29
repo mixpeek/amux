@@ -356,8 +356,8 @@ mod tests {
 
     #[test]
     fn a_command_is_quoted_word_by_word() {
-        assert_eq!(command_line(&["send-keys", "-t", "=amux-a:", "-l", "it's $HOME; #{x}"]).unwrap(),
-            r#"'send-keys' '-t' '=amux-a:' '-l' 'it'\''s $HOME; #{x}'"#);
+        assert_eq!(command_line(&["send-keys", "-l", "it's $HOME; #{x}"]).unwrap(),
+            r#"'send-keys' '-l' 'it'\''s $HOME; #{x}'"#);
     }
 
     #[test]
