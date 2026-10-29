@@ -12,6 +12,7 @@
 pub mod acp;
 pub mod events;
 pub mod mock;
+pub mod serve;
 pub mod structured;
 
 /// The model an OpenCode worker runs when neither the worker nor the fleet
