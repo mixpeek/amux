@@ -44,11 +44,14 @@ for id in $ids; do
   l_st=$(curl -sk --max-time 20 "$U/api/connectors" | j "[c['status'] for c in d['connectors'] if c['id']=='$id'][0]") || l_st=""
   case "$t_st" in
     needs_credentials|needs_auth) note "$id not set up ($t_st): $t_detail" ;;
+    # A key is set and the connector has no test endpoint (dev.to): nothing
+    # was tried, so nothing passed or failed (SCHED-646, 2026-10-29).
+    untested) note "$id has no live test endpoint (untested)" ;;
     *) if [ "$t_ok" = "True" ]; then ok "$id live test ($t_detail)"
        elif [ -n "$t_reauth" ] && [ "$t_other" = "0" ]; then own "$id: grant revoked for $t_reauth (approve again: POST /api/connectors/google/auth?account=<email>)"
        else bad "$id live test: $t_detail"; fi ;;
   esac
-  if [ "$t_ok" != "True" ] && [ "$l_st" = "connected" ] && [ "$t_st" != "needs_credentials" ]; then
+  if [ "$t_ok" != "True" ] && [ "$l_st" = "connected" ] && [ "$t_st" != "needs_credentials" ] && [ "$t_st" != "untested" ]; then
     bad "$id list says connected while its test failed ($t_st)"
   else
     ok "$id list agrees with its test (list=$l_st test_ok=$t_ok)"

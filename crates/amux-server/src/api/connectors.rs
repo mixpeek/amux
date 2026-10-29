@@ -2321,14 +2321,16 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
 
 /// What the list should say given the computed status and the last test: a
 /// connector whose last real test failed reads "error" with that test's own
-/// words. A "needs_*" answer is not a failed test (nothing was tried).
+/// words. A "needs_*" answer is not a failed test (nothing was tried), and
+/// neither is "untested": a connector with no test endpoint (dev.to, which
+/// reads its key from a header the bearer test cannot send) tried nothing.
 pub(crate) fn status_after_test(computed: &str, last: Option<&Value>) -> (String, Option<String>) {
     let Some(t) = last else {
         return (computed.to_string(), None);
     };
     let ok = t.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let st = t.get("status").and_then(Value::as_str).unwrap_or("");
-    if computed == "connected" && !ok && !st.starts_with("needs_credentials") {
+    if computed == "connected" && !ok && !st.starts_with("needs_credentials") && st != "untested" {
         let detail = t
             .get("detail")
             .and_then(Value::as_str)
@@ -3970,6 +3972,16 @@ mod tests {
             .0,
             "connected",
             "a test that could not run is not a failed test"
+        );
+        // SCHED-646, 2026-10-29: dev.to has a key and no test endpoint, and its
+        // "untested" answer listed it as "last live test failed: " (empty).
+        assert_eq!(
+            status_after_test(
+                "connected",
+                Some(&json!({"ok": false, "status": "untested", "measured": false}))
+            ),
+            ("connected".to_string(), None),
+            "a connector with no test endpoint tried nothing, so nothing failed"
         );
         assert_eq!(
             status_after_test("needs_auth", Some(&failed)).0,
