@@ -17997,7 +17997,11 @@ function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
   _whereSoon();
   const cur = location.hash;
-  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur)) return;
+  // A folder's address (#path= with no file open) gives way to a worker opened
+  // over it, so a reload shows the worker; an open file keeps its own.
+  const fo = document.getElementById('file-overlay');
+  const folderOnly = /^#path=/.test(cur || '') && peekSession && !(fo && fo.classList.contains('active'));
+  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur) && !folderOnly) return;
   try {
     let hash = '';
     if (peekSession) {
@@ -32075,15 +32079,23 @@ function _feRecordOpen(path) {
 // showed the folder (Ethan, 2026-10-26: "when i close and re-open it doesnt open
 // the file"). A link to anything else (#peek=, #issue=) is left alone; closing
 // the file puts back the folder, or nothing when the Files view is not showing.
+// A file opened over a worker or a view takes the address too, and closing it
+// puts that address back (owner, 2026-10-29: "when i refresh an open md file
+// it goes to the worker view"): the address had stayed #peek=<worker>.
+let _fileHashUnder = null;
 function _fileHashSync(path) {
   try {
     const h = location.hash;
-    if (h && !h.startsWith('#path=') && h !== '#view=files') return;
     // A split pane's page (?peekEmbed=) is addressed by its worker and tab; a
     // file opened from its Chat must not rewrite that address.
     if (/[?&]peekEmbed=/.test(location.search)) return;
-    const want = path ? '#path=' + _encodeHashPath(path)
+    const own = !h || h.startsWith('#path=') || h === '#view=files';
+    if (!own && !/^#(peek|view)=/.test(h)) return;
+    if (path && !own) _fileHashUnder = h;
+    let want = path ? '#path=' + _encodeHashPath(path)
       : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
+    if (!path && _fileHashUnder) { want = _fileHashUnder; _fileHashUnder = null; }
+    if (!path && !own) return;
     if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
   } catch (e) {}
 }
@@ -33296,7 +33308,9 @@ async function loadFiles(path) {
     if (openFile) {
       try { amuxTrack('file_hash_kept_open_file', {measured: true, n_considered: 1}); } catch (_) {}
       history.replaceState({}, '', location.pathname + location.search + '#path=' + _encodeHashPath(openFile));
-    } else {
+    } else if (!/^#peek=/.test(location.hash)) {
+      // A worker opened while this listing loaded keeps its address: the
+      // folder written late made a reload show the folder, not the worker.
       history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
     }
   } catch(e) {}
@@ -37587,6 +37601,9 @@ document.addEventListener('click', e => {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = e.target.closest && e.target.closest('a[href]');
   if (!a || a.hasAttribute('download') || a.closest('#file-body iframe')) return;
+  // A worker tagged in markdown has its own handler (_bindMdFileLinks): it
+  // closes the file it sits in first, so the worker is not opened beneath it.
+  if (a.classList.contains('md-worker-link')) return;
   if (!_ownLinkHash(a.getAttribute('href'))) return;
   e.preventDefault(); e.stopPropagation();
   _openOwnLink(a.href, 'anchor');
@@ -45200,7 +45217,20 @@ function _bindMdFileLinks(container) {
       e.preventDefault();
       e.stopPropagation();
       _mdBeacon('md_worker_link_opened', { known: _mdWorkerKnown(w.dataset.worker) ? 1 : 0 });
+      // The file closes first: it covers the worker view, and the worker
+      // opened beneath it (owner, 2026-10-29: "when i @ a worker and click it
+      // it should open that worker"). Back (‹, ⌘[) returns to the file, as
+      // _nav records each as a place. Unsaved edits keep the file open.
+      const fo = document.getElementById('file-overlay');
+      if (fo && fo.classList.contains('active') && container.closest('#file-overlay')) {
+        // The file is a place now, however soon after opening it the link is
+        // clicked, so Back finds it.
+        if (typeof _navNote === 'function') { clearTimeout(_nav.timer); _navNote(); }
+        closeFilePreview();
+        if (fo.classList.contains('active')) { _mdBeacon('md_worker_link_kept_file', { reason: 'unsaved' }); return; }
+      }
       if (typeof openPeek === 'function') openPeek(w.dataset.worker);
+      if (typeof _navSoon === 'function') _navSoon();
       return;
     }
     const a = e.target.closest && e.target.closest('.md-file-link');
