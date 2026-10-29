@@ -1538,6 +1538,27 @@ pub enum LockHolder {
 }
 
 #[cfg(test)]
+mod ui_stuck_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_stuck_control_fails_and_an_old_one_passes() {
+        let mut rows = BTreeMap::new();
+        rows.insert("composer_send_stuck".to_string(), (2u64, 1_000u64, "composer".to_string(), "id=x".to_string()));
+        // Within the window: named in the failure.
+        let r = controls_do_not_stick(Some(&rows), 1_500, 86_400);
+        assert_eq!(r[0].status, Status::Fail, "{:?}", r[0]);
+        assert!(r[0].observed.contains("composer_send_stuck x2"), "{:?}", r[0]);
+        // Out of the window: clear.
+        let r = controls_do_not_stick(Some(&rows), 1_000 + 86_401, 86_400);
+        assert_eq!(r[0].status, Status::Pass);
+        // Unreadable: unknown, never a pass.
+        assert_eq!(controls_do_not_stick(None, 0, 86_400)[0].status, Status::Unknown);
+    }
+}
+
+#[cfg(test)]
 mod divergence_began_at_tests {
     use super::divergence_began_at;
 
@@ -4056,6 +4077,43 @@ mod guard_reach_tests {
 /// be guessed. It also doubles as the AMUX-2936 uptake meter: as lanes recycle
 /// onto the new hook this falls on its own, and the breach clearing IS the
 /// remediation landing.
+/// INCIDENT: the Send button sat greyed out and the Pages tab sat on
+/// "Loading..." (owner, 2026-10-29), each because a request's receipt never
+/// settled, and nothing anywhere said so until the owner screenshotted it.
+///
+/// INVARIANT: no client reports a control or view that stayed stuck within
+/// `window_s`. `rows` is the server's tally (api::ui_stuck_snapshot): verdict
+/// -> (count, last seen, kind, client). Fails naming each verdict, so a sweep
+/// of the invariants finds the class without anyone watching a screen.
+/// verdict -> (count, last seen unix s, last kind, last client): api::ui_stuck_snapshot.
+pub type StuckRows = std::collections::BTreeMap<String, (u64, u64, String, String)>;
+
+pub fn controls_do_not_stick(
+    rows: Option<&StuckRows>,
+    now_s: u64,
+    window_s: u64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "ui.controls_do_not_stick";
+    let Some(rows) = rows else {
+        return vec![InvariantResult::unknown(ID, "the stuck-UI tally could not be read")];
+    };
+    let recent: Vec<_> = rows.iter().filter(|(_, v)| now_s.saturating_sub(v.1) <= window_s).collect();
+    if recent.is_empty() {
+        return vec![InvariantResult::pass(ID).evidence(json!({"verdicts_seen_since_start": rows.len(), "window_s": window_s}))];
+    }
+    let summary: Vec<String> = recent.iter().map(|(k, v)| format!("{k} x{} ({}, {}s ago)", v.0, v.2, now_s.saturating_sub(v.1))).collect();
+    vec![InvariantResult::fail(
+        ID,
+        "no client reports a control or view that stayed stuck",
+        format!("{} stuck-UI verdict(s) in the last {}h: {}. Grep server-rs.log for \"client UI stuck\" for the payloads.",
+            recent.len(), window_s / 3600, summary.join("; ")),
+    )
+    .evidence(json!({
+        "window_s": window_s,
+        "verdicts": recent.iter().map(|(k, v)| json!({"verdict": k, "count": v.0, "last_ts": v.1, "kind": v.2, "client": v.3})).collect::<Vec<_>>(),
+    }))]
+}
+
 pub fn reports_are_attributed(total: i64, unattributed: i64) -> Vec<InvariantResult> {
     const ID: &str = "hooks.reports_are_attributed";
     // No reports at all is not health: it is the control plane being down, which

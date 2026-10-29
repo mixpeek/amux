@@ -499,6 +499,11 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // a report is a 200, so 7,708 unattributed reports/day were visible to
     // nobody until a human-named trigger happened to say "unattributed-http".
     out.extend(reports_attributed_check(state));
+    out.extend(super::checks::controls_do_not_stick(
+        crate::api::ui_stuck_snapshot().as_ref(),
+        crate::config::now_f64() as u64,
+        86_400,
+    ));
 
     tm.mark(&out, "6c. are session reports ATTRIBUTED?");
     // -- 6c2. does the CURRENT staged-guard reach every checkout? (AF-410,

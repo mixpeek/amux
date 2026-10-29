@@ -5970,7 +5970,18 @@ async function _outboxFetch(input, init) {
   const receipt = _interactionAccept(url, init);
   init = _interactionRequestOptions(receipt, init);
   if (_localMessageRequest(url, init) || /\/api\/sessions\/[^/?]+\/stop$/.test(url)) {
-    if (!await _queueOp(url, init)) {
+    // LOCAL STORAGE THAT DOES NOT ANSWER MUST NOT HOLD A MESSAGE (owner,
+    // 2026-10-29: Send stayed greyed out while the Mac app's IndexedDB
+    // stalled for 46-68 s, outbox_flight_stalled). Past 3 s the message goes
+    // to the server directly. Its msg_id was set above, so if the queued copy
+    // lands and replays later the server drops the repeat (send_dedup).
+    const queuedOrLate = await Promise.race([_queueOp(url, init), new Promise(r => setTimeout(() => r('late'), 3000))]);
+    if (queuedOrLate === 'late' && online) {
+      _outboxDiagnostic('message_queue_stalled_sent_direct', {waited_ms: 3000, target: url.split('/').at(-2)});
+      _interactionSet(receipt.id, {phase:'sending'});
+      return _boundedMutationFetch(input, init);
+    }
+    if (!(queuedOrLate === true || (queuedOrLate && queuedOrLate !== 'late'))) {
       _interactionFail(receipt.id, 'Queue unavailable', false);
       return new Response('Queue unavailable', {status:507});
     }
@@ -6101,7 +6112,17 @@ window.fetch = async function(input, init) {
   _interactionSet(receipt.id, {phase:'sending'});
   try {
     const response = await _origFetch(input, options);
-    await _interactionAcknowledge(receipt.id, response);
+    // A write waits for its receipt, but not forever: the Send button sat
+    // disabled while the receipt's local bookkeeping stalled (owner,
+    // 2026-10-29, the same stall as the Pages "Loading..."). Past 4 s the
+    // response goes back and the receipt finishes on its own, said in the log.
+    const t0 = Date.now();
+    const ack = _interactionAcknowledge(receipt.id, response);
+    const settled = await Promise.race([ack.then(() => true, () => true), new Promise(r => setTimeout(() => r(false), 4000))]);
+    if (!settled) {
+      _interactionDiagnostic({verdict:'interaction_ack_timeout', path:url.pathname, method, after_ms:Date.now() - t0, measured:true, n_considered:1});
+      ack.then(() => _interactionDiagnostic({verdict:'interaction_ack_late', path:url.pathname, method, ms:Date.now() - t0, measured:true, n_considered:1}), () => {});
+    }
     return response;
   } catch (error) {
     _interactionSet(receipt.id, {phase:'unknown', measured:false,
@@ -12914,6 +12935,7 @@ async function sendFromInput(name) {
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
   _composerPendingSends.add(name);
+  _composerLockWatch(name, original);
   _syncComposerPending();
   try {
     const identity = {};
@@ -23350,7 +23372,30 @@ function _composerUnconfirmed(session, result, attachments) {
   }).catch(() => {});
 }
 
+// A send that has not settled in 20 s gives its button back (owner,
+// 2026-10-29: Send sat greyed out). The draft is kept; whether the first one
+// arrived shows in Messages, so the toast says to look there before resending.
+const _COMPOSER_LOCK_MS = 20000;
+const _composerPendingSince = new Map();
+function _composerLockWatch(name, original) {
+  _composerPendingSince.set(name, Date.now());
+  setTimeout(() => {
+    const t = _composerPendingSince.get(name);
+    if (!t || !_composerPendingSends.has(name) || Date.now() - t < _COMPOSER_LOCK_MS) return;
+    _composerPendingSends.delete(name);
+    _composerPendingSince.delete(name);
+    // The text back where it was typed, as a refused send does.
+    try { _composerUnconfirmed(name, 'stuck', 0); if (original) _composerRestore(name, original); } catch (e) {}
+    _syncComposerPending();
+    showToast('Still waiting on the server for ' + name + '. Your text is back: check Messages before sending again.');
+    try {
+      fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'composer', verdict: 'composer_send_stuck', session: name, after_ms: Date.now() - t, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+    } catch (e) {}
+  }, _COMPOSER_LOCK_MS + 50);
+}
 function _syncComposerPending() {
+  for (const n of [..._composerPendingSince.keys()]) if (!_composerPendingSends.has(n)) _composerPendingSince.delete(n);
   const sync = (btn, session) => {
     if (!btn) return;
     const pending = _composerPendingSends.has(session);
@@ -23398,6 +23443,7 @@ async function sendPeekCmd() {
   // A network refusal remains reviewable in Sync and pending Messages.
   const draftRevision = _draftSave(session, original);
   _composerPendingSends.add(session);
+  _composerLockWatch(session, original);
   _syncComposerPending();
   let result = 'failed';
   try {

@@ -1081,6 +1081,29 @@ async fn debug_sse(
 
 static CLIENT_DEBUG_RING: std::sync::Mutex<Vec<serde_json::Value>> =
     std::sync::Mutex::new(Vec::new());
+
+/// UI-STUCK SIGNALS (owner, 2026-10-29: "make sure we have verbose logging,
+/// profiling, monitoring etc. in amux so we can automatically identify these
+/// bugs and fix them via a sweep"). The verdicts a client sends when a control
+/// or a view stayed stuck: a button held disabled, a request whose receipt
+/// never settled, a microphone nobody answered. Counted per verdict for the
+/// life of this process, outside the 500-entry ring that routine beacons
+/// churn through in minutes, logged at WARN so /api/logs/analyze groups them,
+/// and read by the invariant `ui.controls_do_not_stick`.
+pub(crate) const UI_STUCK_VERDICTS: &[&str] = &[
+    "composer_send_stuck", "press_busy_released_unsettled", "interaction_ack_timeout",
+    "interaction_ack_failed", "interaction_ack_slow", "mic_permission_slow",
+    "outbox_replay_lock_stalled", "attachment-save-stalled", "history_failed", "task_toggle_unmatched",
+    "outbox_flight_stalled", "message_queue_stalled_sent_direct", "outbox_upload_list_timeout",
+];
+type StuckTally = crate::invariants::checks::StuckRows;
+static UI_STUCK: std::sync::Mutex<StuckTally> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Every stuck-UI verdict seen since this process started, or None when the
+/// tally could not be read (so the invariant says unmeasured, not clear).
+pub(crate) fn ui_stuck_snapshot() -> Option<StuckTally> {
+    UI_STUCK.lock().ok().map(|t| t.clone())
+}
 const CLIENT_DEBUG_RING_MAX: usize = 500;
 
 /// The client beacons of one `kind` still in the ring, oldest first, or None
@@ -1129,6 +1152,19 @@ async fn client_debug_post(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // A stuck control or view: counted and said at WARN (see UI_STUCK_VERDICTS).
+    let verdict = body.get("verdict").or_else(|| body.get("action")).and_then(|v| v.as_str()).unwrap_or("");
+    if UI_STUCK_VERDICTS.contains(&verdict) {
+        tracing::warn!(kind = %kind, verdict, client = %client, measured = true, n_considered = 1,
+            payload = %body, "client UI stuck: a control or view did not settle (ui.controls_do_not_stick)");
+        if let Ok(mut t) = UI_STUCK.lock() {
+            let e = t.entry(verdict.to_string()).or_insert((0, 0, String::new(), String::new()));
+            e.0 += 1;
+            e.1 = ts;
+            e.2 = kind.clone();
+            e.3 = client.chars().take(120).collect();
+        }
+    }
     if let Ok(mut ring) = CLIENT_DEBUG_RING.lock() {
         ring.push(serde_json::json!({ "ts": ts, "kind": kind, "ua": ua, "client": client, "body": body }));
         let n = ring.len();
