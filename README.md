@@ -6,7 +6,7 @@
   <a href="https://amux.io"><img src="https://img.shields.io/badge/site-amux.io-orange?style=flat-square" alt="Website"/></a>
 </p>
 
-**Run an AI engineering team.** amux runs Claude Code, Codex and Gemini CLI agents in parallel from one dashboard or your phone. They share a task board, message each other, recover from crashes, and keep shipping while you sleep.
+**Run an AI engineering team.** amux runs Claude Code, Codex and Gemini CLI agents in parallel from one dashboard or your phone. They share a task board, message each other, wait out usage limits, and keep shipping while you sleep.
 
 ## Install
 
@@ -58,7 +58,7 @@ The Mac app is a native window on the system WebKit (about 1.5 MB). It opens sev
 
 - **A shared task board.** Claiming a card is atomic, so two agents never grab the same work.
 - **Messages to each other.** Agents ask, hand off and unblock peers without you relaying.
-- **Self-healing.** Crashed or stuck sessions restart and pick up where they left off.
+- **Keeps going.** When a usage limit hits, delivery is held and resumes at the reset. On macOS, every worker comes back in its own conversation after a reboot. (Restarting an agent whose process crashed is not built into the server yet.)
 - **Schedules and loops.** `daily at 9am`, `every 15m`, or overnight runs that pace themselves.
 - **Your phone, tablet and Mac.** Watch, steer and approve from the [iPhone and iPad app, the Mac app](#apps) or the browser.
 - **Any model.** Claude Code, Codex, Gemini CLI, OpenCode or Ollama, switchable per worker.
