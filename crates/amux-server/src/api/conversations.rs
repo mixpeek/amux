@@ -1362,9 +1362,17 @@ pub(crate) async fn post_inner(
             targets.clear();
         }
     }
-    // What the channel said just before, so a mentioned worker answers in
-    // context the way a person scrolling up would.
-    let context = recent_context(state, &conv.key(), 8);
+    // What was said just before, so a mentioned worker answers in context the
+    // way a person scrolling up would. In a thread that is the THREAD (its
+    // opening post and replies so far), not the conversation's last few posts,
+    // which can leave out the very post the thread is about (Ethan,
+    // 2026-10-29: "in a thread if a worker is tagged it should understand the
+    // context of the thread").
+    let thread_ctx: Vec<String> = match parent {
+        Some(root) => state.store.read().map(|c| thread_lines(&c, &conv.key(), root, 20)).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let context = if parent.is_some() { Vec::new() } else { recent_context(state, &conv.key(), 8) };
     let (key, ts) = (conv.key(), now_ms());
     let id_cell = Arc::new(Mutex::new(0i64));
     let att2 = attachments.to_string();
@@ -1431,7 +1439,13 @@ pub(crate) async fn post_inner(
                     Conv::Group(g) => g == GENERAL || channel_workers.contains(&w),
                     _ => true,
                 };
-                if !isolated && member && !context.is_empty() {
+                if !thread_ctx.is_empty() {
+                    // Every worker in the thread gets it, an isolated one too:
+                    // these are the thread's own posts, people's words with no
+                    // instruction added, and without them a reply like "can you
+                    // do this?" means nothing to the worker it tags.
+                    text = format!("Earlier in this thread ({}, amux Messages):\n{}\n\n{text}", conv2.key(), thread_ctx.join("\n"));
+                } else if !isolated && member && !context.is_empty() {
                     text = format!("Recent messages in {} before this one:\n{}\n\n{text}", conv2.key(), context.join("\n"));
                 }
                 if let Some(n) = &note {
@@ -1478,6 +1492,29 @@ pub(crate) async fn post_inner(
 pub(crate) type AlsoWrite = Box<dyn FnOnce(&rusqlite::Connection, i64) -> rusqlite::Result<()> + Send>;
 
 /// The conversation's last `n` posts, oldest first, as `- Name: text` lines.
+/// A thread as context lines: its opening post, then its latest `n` replies,
+/// oldest first. Deleted replies are left out, a deleted opening post is named
+/// as deleted; no opening post in `conv`, no lines.
+fn thread_lines(c: &rusqlite::Connection, conv: &str, root: i64, n: usize) -> Vec<String> {
+    let line = |a: String, b: String| format!("- {a}: {}", b.chars().take(800).collect::<String>().replace('\n', " "));
+    let mut out = Vec::new();
+    // A deleted opening post still anchors its replies (review F1): say it is
+    // gone rather than dropping the whole thread.
+    match c.query_row(
+        "SELECT author_name, body, deleted_at IS NOT NULL FROM conversation_posts WHERE id=?1 AND conv=?2",
+        rusqlite::params![root, conv], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?))) {
+        Ok((a, _, true)) => out.push(format!("- {a}: (this opening post was deleted)")),
+        Ok((a, b, false)) => out.push(line(a, b)),
+        Err(_) => return out,
+    }
+    let Ok(mut q) = c.prepare("SELECT author_name, body FROM conversation_posts WHERE conv=?1 AND parent_id=?2 AND deleted_at IS NULL ORDER BY id DESC LIMIT ?3") else { return out };
+    let mut replies: Vec<String> = q.query_map(rusqlite::params![conv, root, n as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .into_iter().flatten().flatten().map(|(a, b)| line(a, b)).collect();
+    replies.reverse();
+    out.extend(replies);
+    out
+}
+
 fn recent_context(state: &AppState, conv: &str, n: usize) -> Vec<String> {
     let Ok(c) = state.store.read() else { return vec![] };
     let Ok(mut q) = c.prepare("SELECT author_name, body FROM conversation_posts WHERE conv=?1 ORDER BY id DESC LIMIT ?2") else { return vec![] };
@@ -2527,6 +2564,29 @@ mod tests {
         assert_eq!(latest_post_id(&c, "g:wexus"), 2);
         read_to(latest_post_id(&c, "g:wexus"));
         assert_eq!(counts(&c, me)["g:wexus"].0, 0, "reading up to the latest post clears it");
+    }
+
+    #[test]
+    fn a_thread_reply_carries_the_thread_opening_post_first() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE conversation_posts (id INTEGER PRIMARY KEY, conv TEXT, author_name TEXT, body TEXT, parent_id INTEGER, deleted_at INTEGER);").unwrap();
+        let add = |id: i64, conv: &str, a: &str, b: &str, p: Option<i64>, del: Option<i64>| {
+            c.execute("INSERT INTO conversation_posts VALUES (?1,?2,?3,?4,?5,?6)", rusqlite::params![id, conv, a, b, p, del]).unwrap();
+        };
+        add(1, "p:a|b", "doron", "can you upload your LinkedIn contacts?", None, None);
+        add(2, "p:a|b", "ethan", "an unrelated top-level post", None, None);
+        add(3, "p:a|b", "ethan", "yes, here they are", Some(1), None);
+        add(4, "p:a|b", "doron", "a reply that was deleted", Some(1), Some(9));
+        add(5, "g:other", "x", "another conversation's reply", Some(1), None);
+        assert_eq!(thread_lines(&c, "p:a|b", 1, 20),
+            vec!["- doron: can you upload your LinkedIn contacts?".to_string(), "- ethan: yes, here they are".to_string()]);
+        assert_eq!(thread_lines(&c, "p:a|b", 1, 0), vec!["- doron: can you upload your LinkedIn contacts?".to_string()],
+            "the opening post is kept even when no replies fit");
+        assert!(thread_lines(&c, "g:other", 1, 20).is_empty(), "a root in another conversation is not this thread");
+        // A deleted opening post keeps its replies (review F1).
+        c.execute("UPDATE conversation_posts SET deleted_at=9 WHERE id=1", []).unwrap();
+        assert_eq!(thread_lines(&c, "p:a|b", 1, 20),
+            vec!["- doron: (this opening post was deleted)".to_string(), "- ethan: yes, here they are".to_string()]);
     }
 
     #[test]

@@ -67264,6 +67264,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
+  _cv.restoreScroll = true; _cv.unreadFrom = null;
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
@@ -67323,6 +67324,13 @@ async function _cvPollOnce(full) {
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
   if (full) _cv.posts = d.posts || [];
+  // The first post someone else wrote after your read mark, captured before
+  // this load marks the conversation read (_cvMarkRead below).
+  if (full && _cv.restoreScroll) {
+    const lr = Number(d.last_read || 0), me = _cvMeKey();
+    const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
+    _cv.unreadFrom = first ? first.id : null;
+  }
   else if ((d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
@@ -67713,6 +67721,7 @@ async function _cvOpenThreadOrScroll(conv, id) {
 }
 // ── Older history: scrolling to the top loads the page before it ──
 async function _cvOnScroll(box) {
+  if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
   const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
@@ -67844,17 +67853,54 @@ function _cvRenderPosts(scroll) {
     .concat(_cv.pending.filter(q => q.conv === _cv.sel).map(q => ({ ...q, id: 'q' + q.ts, pending: true,
       author_key: _cvMeKey(), author_name: (_cv.list && _cv.list.me && _cv.list.me.name) || 'you', mentions: [], deliveries: [] })));
   if (!all.length) {
+    _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
       : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
-  for (const p of all) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  for (const p of all) {
+    const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; }
+    if (_cv.unreadFrom && p.id === _cv.unreadFrom) html += '<div class="cv-unread-line" role="separator"><span>New</span></div>';
+    html += _cvPostHtml(p, false);
+  }
   _cvEditBeforeRender();
   box.innerHTML = html;
   _cvEditAfterRender(box);
+  if (_cv.restoreScroll) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
   if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+}
+// WHERE YOU LEFT OFF (Ethan, 2026-10-29: "when i open messages it should scroll
+// to where i left off"). Opening a conversation goes, in order, to the first
+// message someone else sent since your last read (under a "New" line), else to
+// the post you were reading when you scrolled up and left, else the end. The
+// place is kept per conversation in this browser (amux_cv_pos).
+function _cvPositions() { try { return JSON.parse(localStorage.getItem('amux_cv_pos') || '{}'); } catch (e) { return {}; } }
+function _cvRestoreScroll(box) {
+  const pos = _cvPositions()[_cv.sel];
+  const at = id => box.querySelector('.cv-post[data-id="' + CSS.escape(String(id)) + '"]');
+  const unread = _cv.unreadFrom && at(_cv.unreadFrom);
+  if (unread) { box.scrollTop += unread.getBoundingClientRect().top - box.getBoundingClientRect().top - 48; return; }
+  const el = pos && !pos.bottom && at(pos.id);
+  if (el) { box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - (pos.off || 0); return; }
+  box.scrollTop = box.scrollHeight;
+}
+let _cvPosT = 0;
+function _cvSavePosition(box) {
+  clearTimeout(_cvPosT);
+  _cvPosT = setTimeout(() => {
+    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+    const top = box.getBoundingClientRect().top;
+    const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+    const all = _cvPositions();
+    all[sel] = { id: el ? el.dataset.id : null, off: el ? Math.round(el.getBoundingClientRect().top - top) : 0,
+      bottom: box.scrollHeight - box.scrollTop - box.clientHeight < 80, at: Date.now() };
+    // Keep the 200 most recent conversations.
+    const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
+    for (const k of keys.slice(200)) delete all[k];
+    try { localStorage.setItem('amux_cv_pos', JSON.stringify(all)); } catch (e) {}
+  }, 300);
 }
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
