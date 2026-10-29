@@ -32433,7 +32433,23 @@ pub(crate) fn workers_with_changed_context(workers: &[String]) -> (usize, Vec<St
 /// verdict=worker_context_reconciled with how many were compared and changed.
 pub(crate) async fn refresh_changed_worker_contexts(state: &AppState) -> usize {
     let (compared, changed) = workers_with_changed_context(&workers_in_scope("global", ""));
-    let sent = refresh_scoped_context(state, &changed, "instructions (amux was updated)", "amux").await;
+    // refresh_scoped_context rewrites each file before it tries the notice. A
+    // worker not reached gets its old file back, so the next start sees the
+    // difference again and retries instead of treating it as delivered. A
+    // worker that is not running gets it back too, harmlessly: its next launch
+    // composes and writes the file itself.
+    let before: Vec<(String, String)> = changed.iter()
+        .filter_map(|w| std::fs::read_to_string(worker_rules_file(w)).ok().map(|t| (w.clone(), t)))
+        .collect();
+    // Sent as the owner (empty sender), as a rules edit is. "amux" was read as
+    // a WORKER of that name and refused at every group boundary
+    // (why="worker_group_boundary", sandbox 2026-10-29: 7 changed, 0 notified).
+    let sent = refresh_scoped_context(state, &changed, "instructions (amux was updated)", "").await;
+    for (w, old) in &before {
+        if !sent.contains(w) {
+            write_worker_context_file(w, old);
+        }
+    }
     tracing::info!(compared, changed = changed.len(), notified = sent.len(), measured = true, n_considered = compared,
         verdict = "worker_context_reconciled",
         "compared each worker's launch instructions with the current ones; changed workers were told to re-read");
