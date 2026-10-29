@@ -11354,7 +11354,11 @@ function _chipDetailModal(id, title, subtitle, bodyHtml, opts) {
     + '<div class="modal-body">' + bodyHtml + '</div>'
     + '<footer class="modal-footer"><span class="ui-help"></span><button class="btn" data-close>Close</button></footer></section>';
   const opener = opts && opts.returnFocus;
-  const close = () => { overlay.remove(); if (opener && opener.isConnected) opener.focus({ preventScroll: true }); };
+  const close = () => {
+    overlay.remove();
+    if (opts && typeof opts.onClose === 'function') { try { opts.onClose(); } catch (_) {} }
+    if (opener && opener.isConnected) opener.focus({ preventScroll: true });
+  };
   overlay.onclick = e => { if (e.target === overlay) close(); };
   overlay.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   document.body.appendChild(overlay);
@@ -22289,6 +22293,63 @@ function _fileIcon(name) {
   return '📎';
 }
 
+// AN ATTACHMENT PREVIEWS BEFORE IT IS SENT (Ethan, 2026-10-29: "when i
+// attach a file i want to be able to click the icon and it shows a preview of
+// it (in a modal thats closable)"). A chip's icon is a button that opens the
+// shared dialog. It shows the device's own copy while the chip still has it,
+// so a preview never waits on the upload, and the uploaded file after that.
+// Beaconed as kind=attach-preview with the file kind and where it came from.
+function _attachThumbButton(thumb, name, onclick) {
+  return `<button type="button" class="chip-thumb" aria-label="Preview ${esc(name)}" title="Preview" onclick="event.stopPropagation();${onclick}">${thumb}</button>`;
+}
+function _attachKind(name, mime) {
+  const m = String(mime || '').toLowerCase(), ext = String(name || '').toLowerCase().split('.').pop();
+  if (m.startsWith('image/') || /^(png|jpe?g|gif|webp|bmp|svg|heic|avif)$/.test(ext)) return 'image';
+  if (m.startsWith('video/') || /^(mp4|mov|webm|m4v)$/.test(ext)) return 'video';
+  if (m.startsWith('audio/') || /^(mp3|wav|m4a|ogg|aac|flac)$/.test(ext)) return 'audio';
+  if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (m.startsWith('text/') || /^(txt|md|csv|tsv|json|log|ya?ml|toml|xml|html?|css|js|ts|py|rs|sh|sql)$/.test(ext)) return 'text';
+  return 'other';
+}
+function _attachPreview(surface, i, name) {
+  const f = surface === 'card' ? (_cardFiles[name] || [])[i] : peekFiles[i];
+  _attachPreviewOpen(f, typeof event !== 'undefined' && event ? event.currentTarget || event.target : null);
+}
+function _attachPreviewOpen(f, opener) {
+  if (!f) return;
+  const kind = _attachKind(f.name, f.mime || (f.file && f.file.type));
+  let src = '', from = 'none', revoke = null;
+  if (f.file instanceof Blob) { src = URL.createObjectURL(f.file); revoke = src; from = 'device'; }
+  else if (kind === 'image' && f.previewUrl) { src = f.previewUrl; from = 'device'; }
+  else if (f.path) { src = _htmlPreviewUrl(f.path) || ''; from = 'server'; }
+  let body;
+  if (!src) body = '<p class="ui-help">This file has no copy to show yet. It can be previewed once it finishes uploading.</p>';
+  else if (kind === 'image') body = `<img class="attach-preview-img" src="${esc(src)}" alt="${esc(f.name)}">`;
+  else if (kind === 'video') body = `<video class="attach-preview-media" src="${esc(src)}" controls playsinline></video>`;
+  else if (kind === 'audio') body = `<audio class="attach-preview-audio" src="${esc(src)}" controls></audio>`;
+  else if (kind === 'pdf') body = `<iframe class="attach-preview-frame" src="${esc(src)}" title="${esc(f.name)}"></iframe>`;
+  else if (kind === 'text') body = '<pre class="attach-preview-text">Loading…</pre>';
+  else body = `<p class="attach-preview-icon">${_fileIcon(f.name)}</p><p class="ui-help">No preview for this kind of file here.</p>`;
+  if (f.path) body += `<p><button type="button" class="btn" data-open-file>Open in the file viewer</button></p>`;
+  const size = f.sizeMB ? f.sizeMB + ' MB' : (f.file && f.file.size ? (f.file.size / 1048576).toFixed(1) + ' MB' : '');
+  const state = f.path ? 'uploaded' : (f.error ? 'upload failed' : 'uploading');
+  const ov = _chipDetailModal('attach-preview', f.name, [size, state].filter(Boolean).join(' · '), body,
+    { returnFocus: opener, onClose: () => { if (revoke) URL.revokeObjectURL(revoke); } });
+  ov.querySelector('.modal').classList.add('attach-preview');
+  const openBtn = ov.querySelector('[data-open-file]');
+  if (openBtn) openBtn.onclick = () => { ov.querySelector('.modal-close').click(); openFilePreview(f.path); };
+  if (kind === 'text' && src) {
+    const pre = ov.querySelector('.attach-preview-text');
+    const read = f.file instanceof Blob ? f.file.slice(0, 200000).text() : fetch(src).then(r => r.ok ? r.text() : Promise.reject(r.status));
+    read.then(t => { pre.textContent = t.length >= 200000 ? t + '\n…' : t; }, () => { pre.textContent = 'Could not read this file.'; });
+  }
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'attach-preview', verdict: src ? 'shown' : 'no_copy', file_kind: kind, from, measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (_) {}
+}
+
 function renderPeekFiles() {
   const bar = document.getElementById('peek-attach-bar');
   if (!bar) return;
@@ -22331,6 +22392,7 @@ function _renderPeekFileChips() {
     } else {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
+    thumb = _attachThumbButton(thumb, f.name, `_attachPreview('peek',${i})`);
     // THE × IS ON EVERY CHIP IN EVERY STATE. It used to render only in the
     // `done` branch, so the one state where you need it most — an upload that
     // will never finish — had no remove control at all, and `sendPeekCmd`
@@ -22514,6 +22576,7 @@ function _renderCardFileChips(name) {
     let thumb;
     if (f.isImage && f.previewUrl) thumb = `<img src="${f.previewUrl}" alt="">`;
     else thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
+    thumb = _attachThumbButton(thumb, f.name, `_attachPreview('card',${i},'${escJs(name)}')`);
     let status;
     if (f.path) status = `<span style="color:var(--green);font-size:var(--fs-sm);">✓</span>`;
     else if (f.error) status = `<span class="chip-err" title="${esc(f.error)}">!</span>` +

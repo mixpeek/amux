@@ -2847,6 +2847,17 @@
   @keyframes chip-pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 0.85; } }
   .peek-attach-chip img { width: 24px; height: 24px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; }
   .peek-attach-chip .chip-icon { font-size: var(--fs-2xl); line-height: 1; flex-shrink: 0; }
+  /* The icon is the preview button (_attachPreviewOpen). */
+  .peek-attach-chip .chip-thumb { display: inline-flex; align-items: center; justify-content: center; padding: 0; margin: 0;
+    border: 0; background: none; color: inherit; cursor: zoom-in; flex-shrink: 0; border-radius: var(--radius-sm); }
+  .peek-attach-chip .chip-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  @media (max-width: 600px) { .peek-attach-chip .chip-thumb { min-width: 44px; min-height: 44px; } }
+  .modal.attach-preview { width: min(920px, 94vw); }
+  .attach-preview-img, .attach-preview-media { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: var(--radius-sm); }
+  .attach-preview-audio { width: 100%; }
+  .attach-preview-frame { width: 100%; height: 70vh; border: 0; background: var(--bg); }
+  .attach-preview-text { max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: var(--fs-sm); margin: 0; }
+  .attach-preview-icon { font-size: var(--fs-8xl); text-align: center; margin: var(--space-2) 0; }
   .peek-attach-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .peek-attach-chip .chip-remove { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: var(--fs-3xl); line-height: 1; opacity: 0.7; }
   .peek-attach-chip .chip-remove:hover { color: var(--red); opacity: 1; }

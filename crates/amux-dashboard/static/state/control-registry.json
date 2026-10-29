@@ -126,6 +126,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_attachPreview": {
+      "kind": "command._attachPreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_attachPreviewOpen": {
+      "kind": "command._attachPreviewOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bdAnswer": {
       "kind": "command._bdAnswer",
       "feedback_required": true,

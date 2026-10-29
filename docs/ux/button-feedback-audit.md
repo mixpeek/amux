@@ -1090,6 +1090,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Off | `` | onclick |
 | app.js | On | `` | onclick |
 | app.js | Open | `` | onclick |
+| app.js | Preview ${esc(name)} | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
 | app.js | Review or restore | `` | onclick |
 | app.js | Select  | `` | onclick |
