@@ -20,6 +20,16 @@
 //!
 //! Kill switch: `AMUX_REPEAT_ASK_NOTE=0` (process env, then worker > group >
 //! global).
+//!
+//! SENT TO ANOTHER LANE TOO (AF-985). On 2026-10-28 Ethan sent "make the
+//! ability in the amux Mac OS app to apply a zoom in/zoom out to all windows"
+//! to amux-frustrations as MSG-99572 and, 88 seconds later, to amux-admin as
+//! MSG-99574. Both lanes held it and one built it (6109d02e1); neither was
+//! told about the other. An owner message that matches one sent to a
+//! DIFFERENT lane in the last 6 hours is named in the send result
+//! (`same_request_elsewhere`) and, for a lane that receives it directly, in a
+//! note on the delivered text, so one lane takes it and the other coordinates.
+//! Same similarity, no minimum age: the incident was a minute apart.
 use std::collections::BTreeSet;
 
 pub(crate) const GATE_KEY: &str = "AMUX_REPEAT_ASK_NOTE";
@@ -81,6 +91,10 @@ pub(crate) fn similarity(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     inter / union
 }
 
+/// How far back a send to another lane counts. Two lanes building the same
+/// thing is a same-day problem; older work is findable on the board.
+pub(crate) const ELSEWHERE_WINDOW_MS: i64 = 6 * 3_600_000;
+
 /// An earlier owner message to the same lane: `(id, ts_ms, text)`.
 pub(crate) type Candidate = (i64, i64, String);
 
@@ -107,6 +121,38 @@ pub(crate) fn find_repeat(
             (score >= THRESHOLD).then_some((*id, *ts, score))
         })
         .max_by_key(|(_, ts, _)| *ts)
+}
+
+/// An owner message to another lane: `(id, session, ts_ms, text)`.
+pub(crate) type ElsewhereCandidate = (i64, String, i64, String);
+
+/// The same request sent to another lane, if any: `(id, session, ts_ms)`. The
+/// most recent match wins.
+pub(crate) fn find_elsewhere(
+    text: &str,
+    candidates: &[ElsewhereCandidate],
+    now_ms: i64,
+) -> Option<(i64, String, i64)> {
+    let mine = tokens(text);
+    if mine.len() < MIN_TOKENS {
+        return None;
+    }
+    candidates
+        .iter()
+        .filter(|(_, _, ts, _)| (0..=ELSEWHERE_WINDOW_MS).contains(&(now_ms - ts)))
+        .filter(|(_, _, _, t)| similarity(&mine, &tokens(t)) >= THRESHOLD)
+        .max_by_key(|(_, _, ts, _)| *ts)
+        .map(|(id, lane, ts, _)| (*id, lane.clone(), *ts))
+}
+
+/// The line prepended to the delivered text when the request also went to
+/// another lane.
+pub(crate) fn note_elsewhere(id: i64, lane: &str, ts_ms: i64, now_ms: i64) -> String {
+    let mins = ((now_ms - ts_ms).max(0) + 59_999) / 60_000;
+    format!(
+        "[amux: the owner sent this same request to {lane} as MSG-{id} {mins} min ago. \
+         Check that lane's board before building it, so only one lane does the work.]\n\n"
+    )
 }
 
 /// The line prepended to the delivered text.
@@ -159,6 +205,66 @@ pub(crate) async fn lookup(
         );
     }
     found.map(|(id, ts, _)| (id, ts))
+}
+
+/// Did the owner send this message to another lane recently? Gate, lookup and
+/// log in one place. Returns `(id, session, ts_ms)`.
+pub(crate) async fn lookup_elsewhere(
+    state: &super::AppState,
+    session: &str,
+    text: &str,
+) -> Option<(i64, String, i64)> {
+    if !super::session_verbs::scoped_gate_on(session, GATE_KEY) {
+        return None;
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let rows = state
+        .store
+        .read()
+        .ok()
+        .and_then(|c| candidates_elsewhere(&c, session, now_ms).ok());
+    let Some(rows) = rows else {
+        tracing::warn!(
+            session,
+            measured = false,
+            verdict = "owner_request_elsewhere_unmeasured",
+            "could not read owner messages to other lanes; delivering without the check"
+        );
+        return None;
+    };
+    let found = find_elsewhere(text, &rows, now_ms);
+    if let Some((id, lane, ts)) = &found {
+        tracing::info!(
+            session,
+            other_lane = %lane,
+            other_msg = id,
+            age_s = (now_ms - ts) / 1000,
+            measured = true,
+            n_considered = rows.len(),
+            verdict = "owner_request_sent_elsewhere",
+            "owner message matches one sent to another lane; the send result and the delivered text name it"
+        );
+    }
+    found
+}
+
+/// Owner messages (no worker origin) to OTHER lanes inside the window, newest
+/// first.
+pub(crate) fn candidates_elsewhere(
+    conn: &rusqlite::Connection,
+    session: &str,
+    now_ms: i64,
+) -> rusqlite::Result<Vec<ElsewhereCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session, ts, text FROM cmd_history WHERE session<>?1 AND ts>?2 \
+         AND type IN ('user','direct','steering') AND COALESCE(origin,'')='' \
+         ORDER BY ts DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![session, now_ms - ELSEWHERE_WINDOW_MS, MAX_CANDIDATES],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    rows.collect()
 }
 
 /// Owner messages to `session` inside the window, newest first.
@@ -304,6 +410,39 @@ mod tests {
             !text.contains("[amux: this repeats"),
             "the row keeps the owner's words"
         );
+    }
+
+    #[test]
+    fn the_zoom_request_sent_to_two_lanes_is_named_on_the_second() {
+        // MSG-99572 to amux-frustrations, then MSG-99574 to amux-admin 88 s later.
+        let zoom = "make the ability in the amux Mac OS app to apply a zoom in/zoom out to all windows";
+        let now = 1_793_198_252_000;
+        let prior = vec![
+            (99572, "amux-frustrations".to_string(), now - 88_000, zoom.to_string()),
+            (99560, "amux".to_string(), now - 60_000, "fix the speaker notes in the pptx viewer".to_string()),
+        ];
+        let got = find_elsewhere(&format!("[02:37 PM] {zoom}"), &prior, now);
+        assert_eq!(got, Some((99572, "amux-frustrations".to_string(), now - 88_000)));
+        let n = note_elsewhere(99572, "amux-frustrations", now - 88_000, now);
+        assert!(n.starts_with("[amux: the owner sent this same request to amux-frustrations as MSG-99572 2 min ago."), "{n}");
+        assert!(n.ends_with("\n\n"));
+        // Outside six hours, a short ack, or a different ask: nothing.
+        assert_eq!(find_elsewhere(zoom, &[(1, "a".into(), now - 7 * HOUR, zoom.into())], now), None);
+        assert_eq!(find_elsewhere("continue", &[(1, "a".into(), now, "continue".into())], now), None);
+        assert_eq!(find_elsewhere("fix the editor edit button that goes away when zoomed in", &prior, now), None);
+    }
+
+    #[test]
+    fn candidates_elsewhere_reads_only_owner_rows_to_other_lanes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cmd_history(id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER, origin TEXT);
+             INSERT INTO cmd_history VALUES (1,'a','user','ops',100,''),(2,'b','user','web',100,''),
+               (3,'c','user','web',100,'amux-helper'),(4,'d','pickup','web',100,''),(5,'e','direct','api',90,NULL);",
+        )
+        .unwrap();
+        let got = candidates_elsewhere(&conn, "ops", 200).unwrap();
+        assert_eq!(got.iter().map(|c| c.0).collect::<Vec<_>>(), vec![2, 5]);
     }
 
     #[test]

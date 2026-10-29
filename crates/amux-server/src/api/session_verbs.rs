@@ -29803,6 +29803,20 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
         text = format!("{}{text}", super::repeat_ask::note(rid, rts));
     }
     let repeat_of = repeat.map(|(rid, _)| rid);
+    // THE SAME REQUEST TO ANOTHER LANE IS NAMED (AF-985, repeat_ask.rs). The
+    // sender always learns it from the result; a lane that receives the text
+    // directly gets a note, an isolated lane the owner's words untouched.
+    let elsewhere = if matches!(send_origin, SendOrigin::Owner) {
+        super::repeat_ask::lookup_elsewhere(state, name, &orig_text).await
+    } else {
+        None
+    };
+    let elsewhere_json = elsewhere.as_ref().map(|(id, lane, ts)| {
+        json!({"id": format!("MSG-{id}"), "session": lane, "age_s": (now_i64() * 1000 - ts).max(0) / 1000})
+    });
+    if let (Some((id, lane, ts)), false) = (elsewhere.as_ref(), isolated) {
+        text = format!("{}{text}", super::repeat_ask::note_elsewhere(*id, lane, *ts, now_i64() * 1000));
+    }
     // OWNER @-MENTION GRANTS (api/mention_grants.rs). Only the owner's own
     // dashboard input creates one: no worker origin, no worker header, and the
     // UI token. A worker's sends never reach this branch.
@@ -29874,7 +29888,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             verdict="command_retained_before_dispatch","request accepted; existing board dispatcher owns execution, no duplicate raw prompt sent");
         return jresp(
             StatusCode::OK,
-            json!({"ok":true,"id":format!("MSG-{id}"),"message":"accepted into board lifecycle","submitted":null,"submission":"queued","root":result.get("root"),"task_ids":result.get("task_ids"),"planning":result.get("state")}),
+            json!({"ok":true,"id":format!("MSG-{id}"),"message":"accepted into board lifecycle","submitted":null,"submission":"queued","root":result.get("root"),"task_ids":result.get("task_ids"),"planning":result.get("state"),"same_request_elsewhere":elsewhere_json}),
         );
     }
     let mut queue_id = None;
@@ -30178,6 +30192,9 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     };
     let send_id = send_response_id(name, &msg_id);
     let mut resp = json!({"ok": ok, "message": msg, "id": send_id});
+    if let Some(e) = elsewhere_json {
+        resp["same_request_elsewhere"] = e;
+    }
     if let (true, Some(h)) = (ok, hold.as_ref()) {
         // AMUX-5237: the fields a sender (and `amux send`) reads to know the
         // message is parked and the work is still theirs.
