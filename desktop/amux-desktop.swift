@@ -534,6 +534,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// and name it"). It wins over the page's own name until cleared, and is
     /// saved with the window and its workspace.
     var customName: String?
+    /// A name for the whole tab of a window split into panes (owner,
+    /// 2026-10-29: "when i rename a tab it should rename the entire tab").
+    /// Shown instead of the panes' names joined; each page keeps its own.
+    var windowName: String?
 
     var pageTitle: String {
         if let n = customName, !n.isEmpty { return n }
@@ -550,6 +554,18 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         app?.saveWindowsSoon()
     }
 
+    /// Renames the tab in the window's tab bar: the whole tab when the
+    /// window is split into panes, else its page.
+    func renameTab(_ name: String?) {
+        guard grid != nil else { rename(name); return }
+        let n = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        windowName = (n?.isEmpty ?? true) ? nil : n
+        dlog("verdict=tab_renamed whole=1 named=\(windowName == nil ? 0 : 1) view=\(viewHash)")
+        updateTitle()
+        app?.saveWindowsSoon()
+    }
+    var tabName: String? { grid != nil ? windowName : customName }
+
     func updateTitle() {
         window?.title = pageTitle
         // The tab's dot says which server this page is on.
@@ -561,7 +577,11 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // A grid's window is named by its panes, each pane by its page.
         if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
             g.refreshStrips()
-            host.window?.title = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }.joined(separator: " | ")
+            let panes = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }.joined(separator: " | ")
+            host.window?.title = host.windowName ?? panes
+            // Hovering a split tab lists its panes, named or not, so clearing
+            // the name leaves no stale tooltip behind.
+            host.window?.tab.toolTip = panes
         }
     }
 

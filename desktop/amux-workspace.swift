@@ -767,7 +767,7 @@ extension AppDelegate {
         let m = NSMenu()
         func add(_ title: String, _ sel: Selector) { let i = NSMenuItem(title: title, action: sel, keyEquivalent: ""); i.target = self; m.addItem(i) }
         add("Rename Tab…", #selector(renameTargetTab(_:)))
-        if c.customName != nil { add("Use Page Name", #selector(clearTargetTabName(_:))) }
+        if c.tabName != nil { add(c.grid != nil ? "Use Pane Names" : "Use Page Name", #selector(clearTargetTabName(_:))) }
         m.addItem(.separator())
         add("Move Tab to New Window", #selector(moveTargetTab(_:)))
         add("Close Tab", #selector(closeTargetTab(_:)))
@@ -775,8 +775,8 @@ extension AppDelegate {
         NSMenu.popUpContextMenu(m, with: e, for: w.contentView?.superview ?? w.contentView!)
         return true
     }
-    @objc func renameTargetTab(_ sender: Any?) { if let c = tabMenuTarget { promptRename(c) } }
-    @objc func clearTargetTabName(_ sender: Any?) { tabMenuTarget?.rename(nil) }
+    @objc func renameTargetTab(_ sender: Any?) { if let c = tabMenuTarget { promptRename(c, wholeTab: true) } }
+    @objc func clearTargetTabName(_ sender: Any?) { tabMenuTarget?.renameTab(nil) }
     @objc func moveTargetTab(_ sender: Any?) { tabMenuTarget?.window?.moveTabToNewWindow(nil) }
     @objc func closeTargetTab(_ sender: Any?) { tabMenuTarget?.window?.performClose(nil) }
     @objc func closeOtherTabs(_ sender: Any?) {
@@ -785,18 +785,24 @@ extension AppDelegate {
     }
 
     /// Ask for a tab's name; empty puts the page's own name back.
-    func promptRename(_ c: DashboardWindowController) {
+    /// From the window's tab bar (`wholeTab`), a tab split into panes is
+    /// named as a whole; from a pane's own tab strip, only that page.
+    func promptRename(_ c: DashboardWindowController, wholeTab: Bool = false) {
+        let whole = wholeTab && c.grid != nil
         let a = NSAlert()
         a.messageText = "Rename Tab"
-        a.informativeText = "Leave it empty to use the page's own name."
+        a.informativeText = whole ? "Names the whole tab. Leave it empty to show its panes' names." : "Leave it empty to use the page's own name."
         let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        f.stringValue = c.customName ?? c.pageTitle
+        f.stringValue = whole ? (c.windowName ?? c.window?.title ?? "") : (c.customName ?? c.pageTitle)
         a.accessoryView = f
         a.addButton(withTitle: "Rename")
         a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = f
         let win = (c.paneHost ?? c).window
-        let done: (NSApplication.ModalResponse) -> Void = { r in if r == .alertFirstButtonReturn { c.rename(f.stringValue) } }
+        let done: (NSApplication.ModalResponse) -> Void = { r in
+            guard r == .alertFirstButtonReturn else { return }
+            if whole { c.renameTab(f.stringValue) } else { c.rename(f.stringValue) }
+        }
         if let win = win { a.beginSheetModal(for: win, completionHandler: done) } else { done(a.runModal()) }
     }
 
@@ -987,8 +993,9 @@ extension AppDelegate {
         case "/rename-tab":
             let want = "#" + (q.first { $0.name == "view" }?.value ?? "")
             // A tab still waiting to load has no view yet; its saved URL names it.
-            controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }?
-                .rename(q.first { $0.name == "name" }?.value)
+            let target = controllers.first { $0.viewHash == want || $0.savedURL().flatMap { URL(string: $0)?.fragment }.map { "#" + $0 } == want }
+            if q.contains(where: { $0.name == "whole" && $0.value == "1" }) { target?.renameTab(q.first { $0.name == "name" }?.value) }
+            else { target?.rename(q.first { $0.name == "name" }?.value) }
         // A notification click, the handler a real click runs (notify-click-e2e.py).
         case "/notification-click":
             if let w = q.first(where: { $0.name == "worker" })?.value { openNotificationTab("#peek=" + w, why: "worker") }
@@ -1058,7 +1065,7 @@ extension AppDelegate {
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
-                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w,
+                                        "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w, "tooltip": w.tab.toolTip ?? "",
                                         "connection": w.tab.accessoryView?.toolTip ?? "",
                                         "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? ""]
                 if let g = c.grid {

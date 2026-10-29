@@ -412,6 +412,7 @@ struct SavedGrid: Codable {
     var hostTabs: [SavedTab]?
     var hostActive: Int?
     var zoomed: Int?          // in the saved numbering
+    var name: String?         // the whole tab's name (windowName)
 }
 
 struct PaneDropTarget {
@@ -817,7 +818,7 @@ extension AppDelegate {
         }
         return SavedGrid(tree: g.tree.mapped { index[$0] ?? 0 }.encoded, panes: panes,
                          hostTabs: hostTabs.isEmpty ? nil : hostTabs, hostActive: hostActive == 0 ? nil : hostActive,
-                         zoomed: g.zoomed.flatMap { index[$0] })
+                         zoomed: g.zoomed.flatMap { index[$0] }, name: c.windowName)
     }
 
     /// Rebuilds a saved grid in `host`'s window, reusing open controllers
@@ -861,6 +862,7 @@ extension AppDelegate {
         g.container.frame = hw.contentView?.bounds ?? .zero
         hw.contentView = g.container
         g.rebuild()
+        host.windowName = s.name
         host.updateTitle()
         dlog("verdict=pane_grid_restored panes=\(tree.leaves.count) tabs=\(g.all.count) grid=\(s.tree)")
     }
@@ -878,6 +880,7 @@ extension AppDelegate {
             h.webView.removeFromSuperview()
             hw.contentView = h.webView
             h.grid = nil
+            h.windowName = nil
         }
     }
 }

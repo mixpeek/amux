@@ -28,7 +28,9 @@ func savedTabName(_ w: SavedWindow) -> String {
         ([savedPageName(url: url, title: title) + savedSubtab(url)] + (tabs ?? []).map { savedPageName(url: $0.url, title: $0.title) + savedSubtab($0.url) })
             .joined(separator: " + ")
     }
-    return ([pane(w.url, w.title, g.hostTabs)] + g.panes.map { pane($0.url, $0.title, $0.tabs) }).joined(separator: " | ")
+    let panes = ([pane(w.url, w.title, g.hostTabs)] + g.panes.map { pane($0.url, $0.title, $0.tabs) }).joined(separator: " | ")
+    if let n = g.name, !n.isEmpty { return n + " (" + panes + ")" }
+    return panes
 }
 
 /// A worker shown on another of its tabs than Terminal: " (Chat)".
