@@ -174,6 +174,11 @@ struct RouteWindow {
     /// ~30k distinct paths, and that took 106.8 s of a 33-chunk build on
     /// 3027f2512 while each chunk's SQL took 0.18 s in the sqlite3 shell.
     shapes: std::collections::HashMap<String, String>,
+    /// Time spent in normalize_target_verb and how many paths it ran on, so a
+    /// slow build says whether the time went to SQL or to route matching
+    /// (the memo above did not move a 34-chunk boot build: 84.8 s on f7ff7741b).
+    normalize_ms: f64,
+    normalized: usize,
 }
 /// Past this many remembered paths the memo starts over, so an unbounded set
 /// of distinct paths cannot grow it forever.
@@ -229,7 +234,10 @@ fn route_fold(
                 if w.shapes.len() >= ROUTE_SHAPES_MAX {
                     w.shapes.clear();
                 }
+                let t = std::time::Instant::now();
                 let shape = crate::api::request_log::normalize_target_verb(&path);
+                w.normalize_ms += t.elapsed().as_secs_f64() * 1000.0;
+                w.normalized += 1;
                 w.shapes.insert(path, shape.clone());
                 shape
             }
@@ -267,7 +275,7 @@ fn route_window(
     if rebuild {
         let started = std::time::Instant::now();
         let shapes = cache.as_mut().map(|w| std::mem::take(&mut w.shapes)).unwrap_or_default();
-        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), shapes };
+        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), shapes, normalize_ms: 0.0, normalized: 0 };
         let built = (|| -> rusqlite::Result<i64> {
             let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
                 "SELECT MIN(id), MAX(id) FROM _amux_request_log WHERE ts >= ?1",
@@ -289,11 +297,13 @@ fn route_window(
         match built {
             Ok(chunks) => {
                 let ms = started.elapsed().as_millis() as u64;
+                let (normalize_ms, normalized) = (w.normalize_ms as u64, w.normalized);
+                let sql_ms = ms.saturating_sub(normalize_ms);
                 if ms > 5000 {
-                    tracing::warn!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                    tracing::warn!(ms, sql_ms, normalize_ms, normalized, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
                         verdict = "route_window_rebuild_slow", "section 1a rebuilt its route window slowly");
                 } else {
-                    tracing::info!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                    tracing::info!(ms, sql_ms, normalize_ms, normalized, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
                         verdict = "route_window_rebuilt", "section 1a rebuilt its route window");
                 }
                 *cache = Some(w);
@@ -820,6 +830,7 @@ mod f64_roundtrip_wiring_tests {
         let w = cache.as_ref().unwrap();
         // Two distinct raw paths, each remembered with the shape it folds into.
         assert_eq!(w.shapes.len(), 2, "{:?}", w.shapes);
+        assert_eq!(w.normalized, 2, "each distinct path is normalized once, and counted");
         let want = crate::api::request_log::normalize_target_verb("/api/board/AMUX-1");
         assert_eq!(w.shapes.get("/api/board/AMUX-1"), Some(&want));
         // A rebuild keeps what it learned.
