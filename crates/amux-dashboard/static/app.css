@@ -10827,7 +10827,8 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 @media (max-width: 700px) {
   .mdx [data-m="split"] { display: none; }
   .mdx-bar { padding: var(--space-0-5) var(--space-1-5); }
-  .mdx-pane { border-radius: var(--radius-md); }
+  /* A phone: the note runs edge to edge, as the viewer's did. */
+  .mdx-pane { border-radius: 0; border-left: 0; border-right: 0; }
   .mdx-out #file-body { padding: var(--space-3); }
   .mdx-editor #mdx-hl, .mdx-editor .file-edit-ta { padding-left: calc(var(--space-10) + var(--space-1)); padding-right: var(--space-2); }
   #mdx-hl .ln::before { left: -40px; width: 30px; }

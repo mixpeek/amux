@@ -66,8 +66,10 @@ test('markdown preview is compact: no blank line between blocks, no rule under h
     // Consecutive items sit one line apart (Obsidian), not a line plus a blank line.
     expect(m.step, JSON.stringify(m)).toBeLessThan(m.lh * 1.5);
     expect(m.h1Border).toBe('none');
-    // The Raw view still shows the file's own line breaks.
+    // Raw is the markdown editor's source now, with the file's own line breaks.
     await page.evaluate(() => (window as any).setFileViewMode('raw'));
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('file-body')!).whiteSpace)).toMatch(/pre/);
+    await expect(page.locator('#mdx')).toHaveAttribute('data-mode', /edit|split/);
+    await expect(page.locator('#file-edit-ta')).toHaveValue(/item 1\n/);
+    expect(await page.locator('#mdx-hl .ln').count()).toBeGreaterThan(3);
   } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });
