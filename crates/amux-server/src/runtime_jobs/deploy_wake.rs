@@ -177,7 +177,15 @@ pub fn plan_wakes(commits: &[DeployedCommit]) -> BTreeMap<String, LaneWake> {
     out
 }
 
-/// Open "CI red" cards the autofix CI detector filed (AMUX-5371), newest first.
+/// Open "CI red" cards the autofix CI detector filed (AMUX-5371), newest first,
+/// whose red stretch is still current.
+///
+/// A card autofix has noted "workflow is green again" on (idem
+/// `autofix-ci-green:<id>`) stays open for its owner to close, by design, but
+/// its stretch is over, and a NEW red stretch files a new card. Counting the
+/// old one made every deploy-wake on 2026-10-29 say "CI on main is RED:
+/// AH-413" while main's rust was green; AH-413's owner lane had every board
+/// switch off and could never close it.
 ///
 /// A red main blocks every card behind it from reaching `verified`, and the
 /// card that says so is routed through board-drive, which skips any lane with
@@ -188,6 +196,8 @@ pub fn open_ci_red(conn: &rusqlite::Connection) -> Vec<(String, String)> {
     let Ok(mut st) = conn.prepare(&format!(
         "SELECT id, title FROM issues WHERE source_ref LIKE 'autofix:ci|%' \
            AND status IN ({live}) AND COALESCE(archived,0)=0 AND deleted IS NULL \
+           AND NOT EXISTS (SELECT 1 FROM session_events e \
+                            WHERE e.idem = 'autofix-ci-green:' || issues.id) \
          ORDER BY created DESC LIMIT 4",
         live = crate::db::board_store::live_work_status_list()
     )) else {
@@ -455,6 +465,21 @@ pub fn spawn(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ci_card_noted_green_again_does_not_make_main_read_red() {
+        let c = crate::db::migrate::test_memdb();
+        c.execute_batch(
+            "INSERT INTO issues(id,title,status,session,created,updated,source_ref) VALUES
+               ('AH-413','CI red: rust','todo','amux',1,1,'autofix:ci|mixpeek/amux|rust|1|2'),
+               ('AF-2000','CI red: checks','todo','x',2,2,'autofix:ci|mixpeek/amux|checks|3|4');
+             INSERT INTO session_events(ts,session,type,data,source,idem)
+               VALUES(3,'autofix','note',NULL,'autofix','autofix-ci-green:AH-413');",
+        )
+        .unwrap();
+        let ids: Vec<String> = open_ci_red(&c).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["AF-2000".to_string()], "only the stretch that is still red");
+    }
 
     fn sha(c: char) -> String {
         std::iter::repeat_n(c, 40).collect()
