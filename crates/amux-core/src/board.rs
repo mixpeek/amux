@@ -1902,7 +1902,21 @@ pub fn is_conversational_ack(text: &str) -> bool {
         "on it",
         "sounds good",
     ];
-    ACK_PREFIXES.iter().any(|p| lower.starts_with(p))
+    if ACK_PREFIXES.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    // A GO-AHEAD IS AN ANSWER, NOT A NEW TASK (owner, 2026-10-29: "do whatever
+    // is best" to a worker waiting on his call was staged on the board as
+    // "Structure request: Do whatever is best" and never reached the worker).
+    // Whole words only, so "yes" never matches "yesterday's report".
+    const GO_AHEAD: &[&str] = &[
+        "do whatever", "do what you think", "whatever you think", "whatever is best", "your call", "up to you",
+        "go ahead", "go for it", "proceed", "keep going", "carry on", "yes", "yep", "yeah", "ok", "okay", "sure",
+        "approved", "agreed", "do it", "lgtm", "fine", "sounds right", "makes sense",
+    ];
+    GO_AHEAD.iter().any(|p| {
+        lower.strip_prefix(p).is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+    })
 }
 
 /// A message whose primary content is a STATUS REPORT, a detailed
@@ -3694,6 +3708,20 @@ mod self_description_tests {
         assert!(is_conversational_ack("got it"));
         assert!(is_conversational_ack("noted"));
         assert!(is_conversational_ack("[15:42 PM] standing by"));
+    }
+
+    #[test]
+    fn a_go_ahead_is_an_answer_not_a_task() {
+        // MSG-100463, staged on the board instead of reaching the worker.
+        assert!(is_conversational_ack("[11:42 AM] do whatever is best"));
+        for t in ["do what you think is best", "your call", "go ahead", "yes", "Yes, do it", "ok", "okay go",
+                  "proceed", "approved", "lgtm", "sure", "keep going"] {
+            assert!(is_conversational_ack(t), "{t}");
+        }
+        // Whole words: these are not go-aheads.
+        for t in ["yesterday's report is wrong", "okta login is broken", "procedure for the deploy", "surely not"] {
+            assert!(!is_conversational_ack(t), "{t}");
+        }
     }
 
     #[test]
