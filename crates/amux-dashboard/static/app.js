@@ -52901,6 +52901,7 @@ async function _vaultLoad() {
     const r = await fetch(API + '/api/vault', { headers: _authHeaders() });
     const d = await r.json();
     const items = d.items || [];
+    _vaultPendingRender(items);
     if (!items.length) { el.innerHTML = '<div class="vault-empty"><b>No payment methods yet</b><p>Add a card and set what workers may spend with it.</p></div>'; return; }
     el.innerHTML = items.map(i => {
       const pending = i.status !== 'active';
@@ -53113,13 +53114,14 @@ function _vaultEnsurePage() {
       <header class="vault-head"><h2 id="vault-title">Vault</h2><p class="ui-help">Manage credentials and payment methods for your workers. Keep your secrets secure and scoped.</p></header>
       <div class="vault-tabs" role="tablist" aria-label="Vault sections">
         <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
-        <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods</button>
+        <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods<span id="vault-pending-count" class="vault-chip vault-chip-global" hidden></span></button>
         <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
       </div>
       <div class="vault-body">
         <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
           <div class="vault-banner" role="note">${_vaultIcon('shield')}<div><b>Secure by design</b><p>Secrets are encrypted and automatically injected as environment variables when workers launch. Values are never shown in logs.</p></div></div>
           <div id="vault-keystore-note"></div>
+          <div id="vault-pending-note"></div>
           <div class="vault-toolbar">
             <label class="vault-search">${_vaultIcon('search')}<span class="sr-only">Search secrets</span><input id="vault-q" class="input" type="search" placeholder="Search secrets…" autocomplete="off" spellcheck="false" oninput="_vault.q=this.value;_vaultRender()"></label>
             <select id="vault-f-scope" class="input" aria-label="Filter by scope" onchange="_vault.scope=this.value;_vaultRender()"><option value="">All Scopes</option><option value="global">Global</option><option value="group">Group</option><option value="worker">Worker</option></select>
@@ -53160,6 +53162,30 @@ function _vaultEnter() {
   if (!_vaultEnsurePage()) return;
   _vaultTab(_vault.tab || 'secrets');
   _vaultSecretsLoad();
+  _vaultPendingLoad();
+}
+// Sign-ins and cards a worker added wait for the owner under Payment
+// Methods. Name them from the Secrets tab too, where the owner lands, or
+// they wait unseen.
+async function _vaultPendingLoad() {
+  let items = [];
+  try {
+    const r = await fetch(API + '/api/vault', { headers: _authHeaders() });
+    if (r.ok) items = (await r.json()).items || [];
+  } catch (e) { return; }
+  _vaultPendingRender(items);
+}
+function _vaultPendingRender(items) {
+  const pending = items.filter(i => i.status && i.status !== 'active');
+  const badge = document.getElementById('vault-pending-count');
+  if (badge) { badge.hidden = !pending.length; badge.textContent = pending.length ? String(pending.length) : ''; badge.title = pending.length + ' waiting for activation'; }
+  const note = document.getElementById('vault-pending-note');
+  if (!note) return;
+  note.innerHTML = pending.length
+    ? '<div class="vault-banner" role="status"><div><b>' + pending.length + (pending.length === 1 ? ' item waits' : ' items wait') + ' for you to activate</b><p>'
+      + pending.map(i => esc(i.kind === 'login' ? 'Sign-in ' + (i.name || i.id) : 'Card ' + (i.name || i.id)) + ' (added by ' + esc(i.created_by || 'a worker') + ')').join(', ')
+      + '. Workers cannot use it until you do.</p><button class="btn" onclick="_vaultTab(\'payments\')">Review in Payment Methods</button></div></div>'
+    : '';
 }
 // Called by switchView on leaving it.
 function _vaultLeave() {
@@ -53271,7 +53297,7 @@ const _VAULT_STATE = {
   stale: ['Needs restart', 'warn', 'Running with a previous value. Restart to apply.'],
   not_in_process: ['Needs restart', 'warn', 'Added or moved after this worker started. Restart to apply.'],
   next_launch: ['At next start', 'dim', 'Not running. It receives this when it starts.'],
-  unknown: ['Unknown', 'dim', 'Started before delivery was tracked. Restart to be sure.'],
+  unknown: ['Unknown', 'dim', 'Started before delivery was tracked and its environment could not be read. Restart to be sure.'],
   overridden: ['Overridden', 'dim', 'A more specific secret with this name wins for this worker.'],
 };
 function _vaultStateBadge(state) {
@@ -53284,7 +53310,7 @@ function _vaultWorkerPanel() {
   const p = _vault.prov;
   if (!_vault.worker || !p) { el.innerHTML = ''; return; }
   const res = p.resolved || [];
-  const needs = res.filter(x => x.state === 'stale' || x.state === 'not_in_process').length + (p.revoked_held || []).length;
+  const needs = res.filter(x => x.state === 'stale' || x.state === 'not_in_process' || x.state === 'unknown').length + (p.revoked_held || []).length;
   el.innerHTML = '<div class="vault-worker-card">'
     + '<div><b>' + esc(_vault.worker) + '</b> receives ' + res.length + ' secret' + (res.length === 1 ? '' : 's')
     + ' · ' + (p.running ? 'running' : 'stopped') + (p.isolated ? ' · isolated' : '')
@@ -53593,14 +53619,17 @@ async function _vaultSecretSave(id, mode) {
   _vaultSubClose('vault-edit');
   const key = d.item?.key || body.key;
   const verb = mode === 'add' ? 'Added' : mode === 'rotate' ? 'Rotated' : ((d.changes || []).length ? 'Saved' : 'No changes to');
-  showToast(verb + ' ' + key + (mode === 'add' ? ' · workers get it at their next start' : ''));
+  const restart = d.running_stale || [];
+  showToast(verb + ' ' + key + (mode === 'add' ? (restart.length ? ' · running workers need a restart to get it' : ' · workers get it at their next start') : ''));
   await _vaultSecretsLoad();
-  if ((d.running_stale || []).length) _vaultOfferRestart(d.running_stale, key + ' changed.');
+  if (restart.length) _vaultOfferRestart(restart, mode === 'add' ? key + ' added.' : key + ' changed.', mode === 'add');
 }
-async function _vaultOfferRestart(names, what) {
+async function _vaultOfferRestart(names, what, added) {
   const list = names.slice().sort();
-  const ok = await showConfirm(what + ' ' + list.length + ' running worker' + (list.length === 1 ? '' : 's') + ' (' + list.join(', ')
-    + ') still hold' + (list.length === 1 ? 's' : '') + ' the previous value. A running process keeps the environment it started with. Restart now to apply?', 'Restart now');
+  const n = list.length === 1;
+  const ok = await showConfirm(what + ' ' + list.length + ' running worker' + (n ? '' : 's') + ' (' + list.join(', ')
+    + (added ? ') do' + (n ? 'es' : '') + ' not have it yet' : ') still hold' + (n ? 's' : '') + ' the previous value')
+    + '. A running process keeps the environment it started with. Restart now to apply?', 'Restart now');
   if (ok) _vaultRestart(list);
 }
 async function _vaultRestart(names) {

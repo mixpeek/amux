@@ -710,19 +710,136 @@ fn process_state(running: bool, held: Option<&serde_json::Map<String, Value>>, k
     }
 }
 
+fn value_digest(v: &str) -> String {
+    hex::encode(Sha256::digest(v.as_bytes()))
+}
+
+/// Per key, the SHA-256 of every distinct value the processes under `roots`
+/// (a worker's panes and all their descendants) hold in their environment,
+/// read from `<proc_root>/<pid>/environ`. Only `keys` are kept, and only as
+/// digests. `None` when no root's environment could be read (no /proc, no
+/// pane, another user's process), so the caller says unknown, not absent.
+pub(crate) fn observed_env(
+    proc_root: &Path,
+    roots: &[u32],
+    keys: &std::collections::BTreeSet<String>,
+) -> Option<BTreeMap<String, std::collections::BTreeSet<String>>> {
+    if roots.is_empty() || keys.is_empty() {
+        return None;
+    }
+    let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
+        // "pid (comm) state ppid ...": comm may hold spaces or ')', so split after the last ')'.
+        let ppid = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)).and_then(|p| p.parse::<u32>().ok());
+        if let Some(pp) = ppid {
+            children.entry(pp).or_default().push(pid);
+        }
+    }
+    let mut todo: Vec<u32> = roots.to_vec();
+    let mut seen_pids = std::collections::BTreeSet::new();
+    let mut read_any = false;
+    let mut out: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    while let Some(pid) = todo.pop() {
+        if !seen_pids.insert(pid) || seen_pids.len() > 10_000 {
+            continue;
+        }
+        if let Some(kids) = children.get(&pid) {
+            todo.extend(kids.iter().copied());
+        }
+        let Ok(env) = std::fs::read(proc_root.join(pid.to_string()).join("environ")) else { continue };
+        read_any = true;
+        for var in env.split(|b| *b == 0) {
+            let Some(eq) = var.iter().position(|b| *b == b'=') else { continue };
+            let Ok(k) = std::str::from_utf8(&var[..eq]) else { continue };
+            if keys.contains(k) {
+                out.entry(k.to_string()).or_default().insert(hex::encode(Sha256::digest(&var[eq + 1..])));
+            }
+        }
+    }
+    read_any.then_some(out)
+}
+
+/// The state of one key for a running worker that has no launch record,
+/// from what its processes were seen to hold. `want` is the digest of the
+/// value it should have (None when the item would not open).
+fn observed_state(seen: Option<&std::collections::BTreeSet<String>>, want: Option<&str>) -> &'static str {
+    match (seen, want) {
+        (None, _) => "not_in_process",
+        (Some(s), Some(w)) if s.contains(w) => "current",
+        (Some(_), Some(_)) => "stale",
+        (Some(_), None) => "unknown",
+    }
+}
+
+/// What a worker's processes hold for the keys it resolves, when it is
+/// running and the launch ledger has no record of it (a worker started
+/// before delivery was tracked, AMUX-5375). Values never leave this function:
+/// only digests are compared.
+pub(crate) async fn observe_untracked(home: &Path, items: &[Value], worker: &str, running: bool, ledger: &serde_json::Map<String, Value>) -> Option<Observed> {
+    if !running || ledger.contains_key(worker) {
+        return None;
+    }
+    let groups = worker_groups(home, worker);
+    let res = resolve_with(items, worker, &groups);
+    if res.is_empty() {
+        return None;
+    }
+    let roots = super::session_verbs::worker_pane_pids(worker).await;
+    let keys: std::collections::BTreeSet<String> = res.keys().cloned().collect();
+    let Some(seen) = observed_env(Path::new("/proc"), &roots, &keys) else {
+        tracing::info!(session = worker, panes = roots.len(), measured = false, n_considered = keys.len(),
+            verdict = "vault_process_env_unmeasured",
+            "vault: a running worker has no launch record and its environment could not be read; its secrets show as unknown");
+        return None;
+    };
+    let master = master_key(home, false).ok().flatten();
+    let want: BTreeMap<String, String> = res
+        .iter()
+        .filter_map(|(k, (win, _))| {
+            let m = master.as_ref()?;
+            open(m, win).ok().map(|v| (k.clone(), value_digest(&v)))
+        })
+        .collect();
+    let states: BTreeMap<String, &'static str> = res
+        .keys()
+        .map(|k| (k.clone(), observed_state(seen.get(k), want.get(k).map(String::as_str))))
+        .collect();
+    let missing = states.values().filter(|s| matches!(**s, "not_in_process" | "stale")).count();
+    if missing > 0 {
+        tracing::warn!(session = worker, needs_restart = missing, measured = true, n_considered = states.len(),
+            verdict = "vault_running_worker_lacks_secret",
+            "vault: a running worker started before delivery was tracked and lacks secrets it now resolves; it needs a restart");
+    }
+    Some(Observed { states })
+}
+
+/// Per-key states measured from a running process (see `observe_untracked`).
+pub(crate) struct Observed {
+    states: BTreeMap<String, &'static str>,
+}
+
 /// One worker's provisioned secrets: names, source scope, version and whether
-/// its running process holds the current value. Never a value.
-fn provisioned(home: &Path, items: &[Value], worker: &str, running: bool, ledger: &serde_json::Map<String, Value>) -> Value {
+/// its running process holds the current value. Never a value. With no
+/// launch record, `observed` (read from the process environment) decides;
+/// without either, the state is unknown.
+fn provisioned(home: &Path, items: &[Value], worker: &str, running: bool, ledger: &serde_json::Map<String, Value>, observed: Option<&Observed>) -> Value {
     let groups = worker_groups(home, worker);
     let res = resolve_with(items, worker, &groups);
     let held = ledger.get(worker).and_then(|e| e["keys"].as_object()).filter(|_| running);
+    let state_source = if !running { "not_running" } else if held.is_some() { "ledger" } else if observed.is_some() { "process_env" } else { "unmeasured" };
     let resolved: Vec<Value> = res
         .iter()
         .map(|(k, (win, sh))| {
+            let state = match (held, observed) {
+                (None, Some(o)) if running => o.states.get(k).copied().unwrap_or("unknown"),
+                _ => process_state(running, held, k, win),
+            };
             json!({
                 "key": k, "id": win["id"], "scope": win["scope"], "target": win["target"],
                 "version": item_version(win), "note": win["note"],
-                "state": process_state(running, held, k, win),
+                "state": state,
                 "shadows": sh.iter().map(|s| json!({"id": s["id"], "scope": s["scope"], "target": s["target"]})).collect::<Vec<_>>(),
             })
         })
@@ -735,6 +852,7 @@ fn provisioned(home: &Path, items: &[Value], worker: &str, running: bool, ledger
         "groups": groups.iter().collect::<Vec<_>>(),
         "tracked": ledger.get(worker).is_some(),
         "launched_at": ledger.get(worker).map(|e| e["at"].clone()).unwrap_or(Value::Null),
+        "state_source": state_source,
         "resolved": resolved, "revoked_held": revoked_held,
     })
 }
@@ -904,9 +1022,11 @@ async fn list(headers: HeaderMap, RawQuery(q): RawQuery) -> Response {
     }
     if let Some(w) = viewer.filter(|w| !w.is_empty()) {
         let running = super::session_verbs::running_workers().await.contains(&w);
-        let p = provisioned(&home, &items, &w, running, &load_ledger(&home));
+        let ledger = load_ledger(&home);
+        let observed = observe_untracked(&home, &items, &w, running, &ledger).await;
+        let p = provisioned(&home, &items, &w, running, &ledger, observed.as_ref());
         body["resolved_for"] = json!(w);
-        for k in ["resolved", "running", "isolated", "tracked", "launched_at", "revoked_held", "groups"] {
+        for k in ["resolved", "running", "isolated", "tracked", "launched_at", "state_source", "revoked_held", "groups"] {
             body[k] = p[k].clone();
         }
     }
@@ -1016,15 +1136,42 @@ async fn create(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
     };
     match create_item_of_kind(&home, &key, &scope, &value, "owner", &note, None, kind) {
         Ok(item) => {
+            // A running process keeps the environment it started with, so
+            // every running worker this item now wins for lacks it until a
+            // restart. Saying only "at next start" left an owner looking
+            // for a secret a running worker could not see.
+            let running = super::session_verbs::running_workers().await;
+            let needs_restart = winning_running(&home, &item, &running);
             audit(&home, json!({"ts": now_f64(), "event": "secret_added", "item": item["id"], "key": key,
-                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner", "kind": kind}));
-            tracing::info!(key = %key, scope = scope.kind(), kind, measured = true, n_considered = 1,
+                "scope": scope.kind(), "target": scope.target(), "version": 1, "by": "owner", "kind": kind,
+                "running_stale": needs_restart.len()}));
+            tracing::info!(key = %key, scope = scope.kind(), kind, measured = true, n_considered = running.len(),
+                running_needs_restart = needs_restart.len(),
                 verdict = "vault_secret_added", "vault: a secret was added (no value logged)");
+            let applies = if needs_restart.is_empty() {
+                "workers receive it at their next start"
+            } else {
+                "running workers receive it only after a restart; the rest at their next start"
+            };
             (StatusCode::CREATED, Json(json!({"ok": true, "item": public_view(&item),
-                "applies": "workers receive it at their next start or restart"}))).into_response()
+                "applies": applies, "running_stale": needs_restart}))).into_response()
         }
         Err((code, v)) => err(code, v),
     }
+}
+
+/// Running workers for which `item` is now the winning value of its key.
+fn winning_running(home: &Path, item: &Value, running: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let Ok(items) = load(home) else { return Vec::new() };
+    let key = item["key"].as_str().unwrap_or("");
+    running
+        .iter()
+        .filter(|w| {
+            let groups = worker_groups(home, w);
+            resolve_with(&items, w, &groups).get(key).is_some_and(|(win, _)| win["id"] == item["id"])
+        })
+        .cloned()
+        .collect()
 }
 
 /// Seal `value` onto the item at `pos` under its (possibly new) key and scope.
@@ -1303,7 +1450,12 @@ async fn access(State(state): State<super::AppState>, uri: Uri, headers: HeaderM
         let is_running = running.contains(w);
         let held = ledger.get(w.as_str()).and_then(|e| e["keys"].as_object()).filter(|_| is_running);
         let wins = win["id"] == id.as_str();
-        let state = if wins { process_state(is_running, held, key, win) } else { "overridden" };
+        let observed = if wins && held.is_none() { observe_untracked(&home, &items, w, is_running, &ledger).await } else { None };
+        let state = match (wins, observed.as_ref().and_then(|o| o.states.get(key))) {
+            (false, _) => "overridden",
+            (true, Some(s)) => *s,
+            (true, None) => process_state(is_running, held, key, win),
+        };
         if wins { effective += 1 } else { overridden += 1 }
         if state == "stale" || state == "not_in_process" { stale += 1 }
         rows.push(json!({
@@ -1679,6 +1831,34 @@ mod tests {
         assert_eq!(process_state(true, Some(&held), "K", &win), "stale", "rotated since launch");
         held.insert("K".into(), json!({"id": "sec_b", "version": 2}));
         assert_eq!(process_state(true, Some(&held), "K", &win), "stale", "a different item won since launch");
+    }
+
+    #[test]
+    fn a_worker_with_no_launch_record_is_measured_from_its_process_environment() {
+        // A fake /proc: pane 10 -> child 11 (the agent) holds OLD_KEY with
+        // value "v1"; nothing holds NEW_KEY. Pid 20 is another session.
+        let root = tempfile::tempdir().unwrap();
+        let mk = |pid: u32, ppid: u32, env: &[(&str, &str)]| {
+            let d = root.path().join(pid.to_string());
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("stat"), format!("{pid} (a b) c) S {ppid} 1 1")).unwrap();
+            let body: Vec<u8> = env.iter().flat_map(|(k, v)| format!("{k}={v}\0").into_bytes()).collect();
+            std::fs::write(d.join("environ"), body).unwrap();
+        };
+        mk(10, 1, &[("PATH", "/bin")]);
+        mk(11, 10, &[("OLD_KEY", "v1"), ("UNRELATED", "x")]);
+        mk(20, 1, &[("NEW_KEY", "elsewhere")]);
+        let keys: std::collections::BTreeSet<String> = ["OLD_KEY", "NEW_KEY"].iter().map(|s| s.to_string()).collect();
+        let seen = observed_env(root.path(), &[10], &keys).expect("the pane's environment was readable");
+        assert!(!seen.contains_key("UNRELATED"), "only asked-for keys are kept");
+        assert!(!seen.contains_key("NEW_KEY"), "another session's process is not this worker's");
+        assert_eq!(observed_state(seen.get("NEW_KEY"), Some(value_digest("n").as_str())), "not_in_process");
+        assert_eq!(observed_state(seen.get("OLD_KEY"), Some(value_digest("v1").as_str())), "current");
+        assert_eq!(observed_state(seen.get("OLD_KEY"), Some(value_digest("v2").as_str())), "stale");
+        assert_eq!(observed_state(seen.get("OLD_KEY"), None), "unknown");
+        // Nothing readable is unmeasured, never "absent".
+        assert!(observed_env(root.path(), &[999], &keys).is_none());
+        assert!(observed_env(root.path(), &[], &keys).is_none());
     }
 
     #[test]
