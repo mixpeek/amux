@@ -3348,6 +3348,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxStorageLock": {
+      "kind": "command._outboxStorageLock",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxViewsRefresh": {
       "kind": "command._outboxViewsRefresh",
       "feedback_required": true,

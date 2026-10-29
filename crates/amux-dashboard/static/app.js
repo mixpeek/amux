@@ -1596,6 +1596,26 @@ function _outboxLock(name, work) {
 // the server de-duplicates (send_dedup). A hidden window never steals: it may be
 // the stalled one.
 const _DELIVERY_STEAL_MS = 30000;
+// The storage lock, taken over the same way and much sooner (Ethan, 2026-10-29:
+// the Send button stayed greyed with a message typed, Mac app). Its work is one
+// synchronous read-modify-write of localStorage, so a wait past
+// _STORAGE_STEAL_MS means the holder was suspended after the lock was granted.
+// Every local save queued behind it: the composer keeps Send disabled until its
+// message is saved here, and each sync pass waited too, beaconed as
+// outbox_flight_stalled in phase queue_read at ~48s, hundreds of times a day.
+// A visible window takes it over; the work reads the queue when it runs, so a
+// holder that wakes later applies its change to the current queue.
+const _STORAGE_STEAL_MS = 3000;
+function _outboxStorageLock(work) {
+  const name = 'amux-outbox-storage';
+  if (!navigator.locks || typeof AbortSignal === 'undefined' || !AbortSignal.timeout) return _outboxLock(name, work);
+  return _lockRequest(name, {signal:AbortSignal.timeout(_STORAGE_STEAL_MS)}, work).catch(e => {
+    if (!e || (e.name !== 'AbortError' && e.name !== 'TimeoutError')) throw e;
+    if (document.hidden) return _lockRequest(name, {}, work);
+    _outboxDiagnostic('outbox_storage_lock_stolen', {waited_ms:_STORAGE_STEAL_MS});
+    return _lockRequest(name, {steal:true}, work);
+  });
+}
 function _outboxDeliveryLock(name, work) {
   if (!navigator.locks) return _outboxLock(name, work);
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(_DELIVERY_STEAL_MS) : undefined;
@@ -1755,7 +1775,7 @@ function _outboxOwnedMissing() {
   return n;
 }
 async function _mutateQueue(change) {
-  return _outboxLock('amux-outbox-storage', () => {
+  return _outboxStorageLock(() => {
     const raw = localStorage.getItem('amux_offline_queue') || '[]';
     const current = _readQueue();
     for (const entry of current) if (!entry.id) entry.id = crypto.randomUUID();
