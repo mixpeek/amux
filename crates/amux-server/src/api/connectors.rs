@@ -5481,6 +5481,20 @@ mod connector_maintenance_regressions {
     }
 
     #[tokio::test]
+    async fn connector_maintenance_does_not_probe_a_key_with_no_test_endpoint() {
+        // dev.to has a key and no test_url. Upkeep used to GET the empty URL and
+        // record the transport error, so the list showed it as an error.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("server.env"), "DEVTO_API_KEY=fixture-devto-key\n").unwrap();
+        let report = maintenance_pass(&ctx(home.path(), RefreshHttp::new(false))).await;
+        let devto = report["api_keys"].as_array().unwrap().iter().find(|k| k["connector"] == "devto").cloned();
+        assert_eq!(devto.as_ref().map(|k| k["status"].clone()), Some(json!("untested")), "{report}");
+        assert!(last_tests(home.path()).get("devto").is_none(), "an untried connector must not get a recorded test");
+        assert_eq!(report["failures"], 0);
+        assert!(!report.to_string().contains("fixture-devto-key"));
+    }
+
+    #[tokio::test]
     async fn connector_maintenance_corrupt_registry_is_retained_and_reported() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("connectors")).unwrap();

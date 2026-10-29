@@ -34035,6 +34035,11 @@ function _connAccountsFor(c) {
 // The four google-* registry rows share one OAuth client and one grant per
 // account, so the tab shows them as ONE Google connector whose per-service
 // permissions live inside it (Ethan, 2026-10-09).
+// A test that tried nothing (no test endpoint, status "untested") is not a
+// failure: the server's status_after_test draws the same line.
+function _connTestFailed(t) { return !!t && !t.ok && t.status !== 'untested'; }
+function _connTestMark(t) { return t.ok ? '✓ ' : t.status === 'untested' ? '– ' : '✗ '; }
+function _connTestText(t) { return t.status === 'untested' ? 'No live test for this connector' : (t.detail || t.status || ''); }
 let _cxGroup = null;
 function _cxGroupGoogle(list) {
   const services = list.filter(c => String(c.id || '').indexOf('google-') === 0);
@@ -34047,7 +34052,7 @@ function _cxGroupGoogle(list) {
     docs: services[0].docs, token_endpoint: services[0].token_endpoint,
     setup_note: 'One approval per account covers Gmail, Calendar, Drive and Docs. Every worker mints its token from that grant.',
     status: services.some(sv => sv.status === 'connected') ? 'connected' : services[0].status,
-    last_test: tests.length && tests.every(t => t.ok) ? tests[0] : (tests.find(t => !t.ok) || null),
+    last_test: tests.length && !tests.some(_connTestFailed) ? tests[0] : (tests.find(_connTestFailed) || null),
   };
   return [_cxGroup].concat(list.filter(c => services.indexOf(c) < 0));
 }
@@ -34120,7 +34125,7 @@ function _connectorsRender(d) {
     } else if (c.auth === 'oauth2' && _connAcctsState !== 'ok' && c.status !== 'needs_credentials') {
       h += _connAcctsNote();
     } else {
-      const failed = c.last_test && !c.last_test.ok;
+      const failed = _connTestFailed(c.last_test);
       const blurb = s.kind === 'connected' && failed ? 'Last live test failed ' + _connAgo(c.last_test.at) + '. Open for details.' : c.setup_note;
       if (blurb) h += '<div class="cx-blurb">' + esc(blurb) + '</div>';
     }
@@ -34261,13 +34266,13 @@ function _connDrawerRender() {
       for (const sv of c.services) {
         const t = sv.last_test || {};
         h += '<div class="cx-svcrow">' + _connIcon(sv) + '<span class="cx-title"><span class="cx-name">' + esc(sv.label) + '</span>'
-          + '<span class="cx-dim cx-small" id="conn-test-' + esc(sv.id) + '">' + (t.at ? (t.ok ? '✓ ' : '✗ ') + esc(_niClip(t.detail || t.status || '', 140)) + ' (' + esc(_connAgo(t.at)) + ')' : 'Not tested yet') + '</span></span>'
+          + '<span class="cx-dim cx-small" id="conn-test-' + esc(sv.id) + '">' + (t.at ? _connTestMark(t) + esc(_niClip(_connTestText(t), 140)) + ' (' + esc(_connAgo(t.at)) + ')' : 'Not tested yet') + '</span></span>'
           + '<button class="btn cx-mini" onclick="_connectorTest(\'' + escJs(sv.id) + '\', this)">Test</button></div>';
       }
       h += '<div class="cx-dim cx-small">These tests check every saved account through its grant. When no account is saved, they check the configured service-account path.</div>';
     } else if (c.last_test) {
-      h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : 'bad') + '">' + (c.last_test.ok ? '✓ ' : '✗ ') + esc(c.last_test.detail || c.last_test.status || '') + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
-      if (!c.last_test.ok && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
+      h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : _connTestFailed(c.last_test) ? 'bad' : 'none') + '">' + _connTestMark(c.last_test) + esc(_connTestText(c.last_test)) + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
+      if (_connTestFailed(c.last_test) && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
     }
     h += '<div class="cx-sec">Quick actions</div><div class="cx-actions">'
       + (c.group ? '' : '<button class="btn" onclick="_connectorTest(\'' + escJs(c.id) + '\', this)">Test connection</button>')
@@ -34545,7 +34550,7 @@ async function _connectorTest(id, btn) {
       _connectorsData = fresh;
       _connectorsRender(fresh);
       if (_connOpenId) _connDrawerRender();
-      track(d.ok ? 'passed' : 'refused', d.measured);
+      track(d.ok ? 'passed' : _connTestFailed(d) ? 'refused' : 'untested', d.measured);
     } catch (e) {
       track('refresh_failed', d.measured);
       showToast('Test finished, but saved health could not be refreshed. Refresh health to retry.');
@@ -34554,8 +34559,8 @@ async function _connectorTest(id, btn) {
     // drawers during the request. Never write into the detached old result.
     out = document.getElementById('conn-test-' + id);
     if (out) {
-      out.textContent = (d.ok ? '✓ ' : '✗ ') + (d.detail || (d.ok ? 'works' : (d.status || 'failed')));
-      out.className = 'conn-test-result ' + (d.ok ? 'ok' : 'bad');
+      out.textContent = _connTestMark(d) + (d.status === 'untested' ? _connTestText(d) : (d.detail || (d.ok ? 'works' : (d.status || 'failed'))));
+      out.className = 'conn-test-result ' + (d.ok ? 'ok' : _connTestFailed(d) ? 'bad' : 'none');
     }
   } catch (e) {
     track('test_failed', false);
