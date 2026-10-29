@@ -2952,6 +2952,78 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxBeacon": {
+      "kind": "command._mdxBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxBind": {
+      "kind": "command._mdxBind",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxChanged": {
+      "kind": "command._mdxChanged",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxCopy": {
+      "kind": "command._mdxCopy",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxHistoryAct": {
+      "kind": "command._mdxHistoryAct",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxRenderHistory": {
+      "kind": "command._mdxRenderHistory",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxRenderPreview": {
+      "kind": "command._mdxRenderPreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSetMode": {
+      "kind": "command._mdxSetMode",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSetTab": {
+      "kind": "command._mdxSetTab",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxShow": {
+      "kind": "command._mdxShow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxTabClick": {
+      "kind": "command._mdxTabClick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxToggleTask": {
+      "kind": "command._mdxToggleTask",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mediaBeacon": {
       "kind": "command._mediaBeacon",
       "feedback_required": true,

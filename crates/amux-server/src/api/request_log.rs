@@ -2619,6 +2619,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/file/history",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/file/transcode",
         methods: ANY,
     },

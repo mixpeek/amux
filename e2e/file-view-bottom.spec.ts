@@ -74,8 +74,9 @@ test('real Markdown preview, raw and edit reach the end in dashboard and embedde
         if(browserName==='webkit'&&info.project.use.isMobile) await page.locator('#file-body').evaluate(el=>{el.scrollTop=el.scrollHeight;});
         else {await page.locator('#file-body').hover(); await page.mouse.wheel(0,100000);}
         await finalLine(page,'#file-body',false);
-        await page.locator('#file-tab-raw').click(); await finalLine(page);
-        await page.locator('#file-menu-btn').click(); await page.locator('#file-tab-edit').click();
+        // A markdown file is the editor (md-editor.spec.ts): its source pane is
+        // what Raw and Edit were.
+        await page.locator('#mdx-mode [data-m="edit"]').click();
         await expect(page.locator('#file-edit-ta')).toHaveValue(longText);
         await fits(page,'#file-edit-ta');
         await page.locator('#file-edit-ta').press('ControlOrMeta+End');
@@ -84,7 +85,7 @@ test('real Markdown preview, raw and edit reach the end in dashboard and embedde
         if(browserName==='webkit'&&info.project.use.isMobile) await page.locator('#file-edit-ta').evaluate(el=>{el.scrollTop=el.scrollHeight;});
         const atEnd = await page.locator('#file-edit-ta').evaluate((el:HTMLTextAreaElement) => ({at:el.selectionEnd,length:el.value.length,remaining:el.scrollHeight-el.clientHeight-el.scrollTop}));
         expect(atEnd.at).toBe(atEnd.length); expect(atEnd.remaining).toBeLessThanOrEqual(2);
-        await page.locator('#file-tab-preview').click(); await finalLine(page);
+        await page.locator('#mdx-mode [data-m="preview"]').click(); await finalLine(page);
         if (size.height===350) await page.screenshot({path:info.outputPath(route==='/'?'markdown-dashboard.png':'markdown-embedded.png')});
         await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
       }

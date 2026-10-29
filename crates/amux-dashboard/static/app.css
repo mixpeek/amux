@@ -10727,3 +10727,109 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 /* Split is a pane of its own, which only the Mac app has (2026-10-29): a
    browser shows no Split button. */
 body:not(.native-panes) #peek-split-toggle { display: none !important; }
+
+/* ── The markdown editor (app.js _mdx*, owner 2026-10-29) ──
+   Two panes in the file viewer: source (bar, numbered and highlighted lines,
+   status line) and what it renders to (Preview, Diff, History). data-mode on
+   #mdx says which show. */
+.mdx { flex: 1; min-height: 0; display: flex; gap: var(--space-2); }
+.mdx[hidden] { display: none; }
+.mdx-pane { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.mdx[data-mode="edit"] .mdx-view, .mdx[data-mode="preview"] .mdx-src { display: none; }
+.mdx-bar { display: flex; align-items: center; gap: var(--space-1-5); padding: var(--space-1-5) var(--space-2); border-bottom: 1px solid var(--border);
+  flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-height: 44px; box-sizing: border-box; flex-shrink: 0; }
+.mdx-bar::-webkit-scrollbar { display: none; }
+.mdx-seg { display: inline-flex; flex-shrink: 0; background: var(--bg-inset); border-radius: var(--radius-md); padding: var(--space-0-5); gap: var(--space-0-5); }
+.mdx-seg button { border: 0; background: none; color: var(--dim); font: inherit; font-size: var(--fs-md); padding: var(--space-1) var(--space-2-5);
+  border-radius: var(--radius-sm); cursor: pointer; min-height: 30px; }
+.mdx-seg button.active { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+.mdx-tools { display: inline-flex; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
+.mdx-tools button, .mdx-icon { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); min-width: 30px; min-height: 30px;
+  border-radius: var(--radius-sm); cursor: pointer; padding: 0 var(--space-1); }
+.mdx-tools button:hover, .mdx-icon:hover { background: var(--bg-inset); }
+.mdx-readonly .mdx-tools { opacity: 0.4; pointer-events: none; }
+.mdx-spacer { flex: 1; }
+.mdx-copy-as { font: inherit; font-size: var(--fs-sm); color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: var(--space-1) var(--space-1-5); flex-shrink: 0; }
+
+/* Source: a transparent textarea over a highlighted copy of its text, so the
+   caret, selection, undo and the @ list are the browser's own. */
+.mdx-edit { flex: 1; min-height: 0; display: flex; }
+.mdx-edit #file-edit-wrap.mdx-editor { display: block !important; position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.mdx-editor #mdx-hl, .mdx-editor .file-edit-ta {
+  font-family: var(--font-mono); font-size: var(--fs-md); line-height: 1.65; tab-size: 2; letter-spacing: normal;
+  padding: var(--space-3) var(--space-4) var(--space-8) calc(var(--space-12) + var(--space-1)); margin: 0; box-sizing: border-box;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.mdx-editor #mdx-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--text); background: var(--bg); }
+.mdx-editor .file-edit-ta { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; resize: none;
+  background: transparent; color: transparent; caret-color: var(--text); overflow: auto; z-index: 1; }
+.mdx-editor .file-edit-ta::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
+.mdx-editor.mdx-plain .file-edit-ta { color: var(--text); }
+.mdx-editor.mdx-plain #mdx-hl { color: transparent; }
+#mdx-hl .ln { display: block; position: relative; }
+#mdx-hl .ln::before { content: attr(data-n); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
+#mdx-hl .mdx-h { color: var(--accent); font-weight: 700; }
+#mdx-hl .mdx-li, #mdx-hl .mdx-task { color: var(--accent); }
+#mdx-hl .mdx-tg { color: var(--purple); }
+#mdx-hl .mdx-at { color: var(--green); font-weight: 600; }
+#mdx-hl .mdx-url { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+#mdx-hl .mdx-ic, #mdx-hl .mdx-codeln, #mdx-hl .mdx-fence { color: var(--orange); }
+#mdx-hl .mdx-b { font-weight: 700; }
+#mdx-hl .mdx-i { font-style: italic; }
+#mdx-hl .mdx-q, #mdx-hl .mdx-hr { color: var(--dim); }
+.mdx-status { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-1) var(--space-3); border-top: 1px solid var(--border);
+  font-size: var(--fs-sm); color: var(--dim); flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; flex-shrink: 0; }
+.mdx-dirty.on { color: var(--orange); font-weight: 600; }
+.mdx-indent select { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+/* Rendered: the preview reads as a page, not the terminal-coloured raw view. */
+.mdx-out { flex: 1; min-height: 0; display: flex; }
+.mdx-out[hidden] { display: none; }
+.mdx-out #file-body { flex: 1; border: 0; border-radius: 0; background: var(--bg); color: var(--text); white-space: normal;
+  font-family: var(--font-ui); padding: var(--space-4) var(--space-6); }
+body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); color: var(--text); }
+.mdx-preview h2 { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.mdx-preview h2:first-child { border-top: 0; padding-top: 0; }
+.mdx-anchor { margin-left: var(--space-2); font-size: 0.7em; text-decoration: none; opacity: 0.35; vertical-align: middle; }
+.mdx-preview :is(h1,h2,h3,h4,h5,h6):hover .mdx-anchor, .mdx-anchor:focus { opacity: 0.9; }
+.mdx-preview a[href^="http"]::before { content: '🔗'; font-size: 0.8em; margin-right: 0.25em; }
+.mdx-preview li.mdx-task-li { list-style: none; margin-left: calc(-1 * var(--space-5)); }
+/* A task's own subtasks sit under its text, not under its box. */
+.mdx-preview li.mdx-task-li > ul { padding-left: calc(var(--space-5) + var(--space-6)); }
+.mdx-preview li.mdx-task-li input[type="checkbox"] { pointer-events: auto; width: 16px; height: 16px; margin: 0 var(--space-2) 0 0; vertical-align: -3px; cursor: pointer; accent-color: var(--accent); }
+.md-tag { display: inline-block; font-size: 0.9em; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: var(--radius-sm); padding: 0 var(--space-1-5); cursor: pointer; }
+.md-tag:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.mdx-alt { flex: 1; min-height: 0; overflow: auto; padding: var(--space-3) var(--space-4); }
+.mdx-alt[hidden] { display: none; }
+.mdx-empty { color: var(--dim); padding: var(--space-6); text-align: center; border: 1px dashed var(--border); border-radius: var(--radius-lg); margin: var(--space-4) 0; }
+.mdx-diff-head, .mdx-hist-head { font-size: var(--fs-md); color: var(--dim); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.mdx-add { color: var(--green); }
+.mdx-del { color: var(--red); }
+.mdx-diff { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.mdx-diff td { padding: 0 var(--space-1-5); vertical-align: top; }
+.mdx-dn { color: var(--dim); text-align: right; width: 1%; white-space: nowrap; user-select: none; }
+.mdx-dl { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mdx-dm { display: inline-block; width: 1.2em; color: var(--dim); user-select: none; }
+.mdx-row-add { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.mdx-row-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.mdx-gap td { color: var(--dim); text-align: center; }
+.mdx-commit { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.mdx-commit-main { flex: 1; min-width: 0; }
+.mdx-commit-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdx-commit-meta { font-size: var(--fs-sm); color: var(--dim); }
+
+/* Full screen: the editor alone, the viewer's header out of the way. */
+#file-overlay.mdx-full .file-overlay-header { display: none; }
+#file-overlay.mdx-on #file-view-tabs { display: none !important; }
+
+@media (max-width: 700px) {
+  .mdx [data-m="split"] { display: none; }
+  .mdx-bar { padding: var(--space-0-5) var(--space-1-5); }
+  .mdx-pane { border-radius: var(--radius-md); }
+  .mdx-out #file-body { padding: var(--space-3); }
+  .mdx-editor #mdx-hl, .mdx-editor .file-edit-ta { padding-left: calc(var(--space-10) + var(--space-1)); padding-right: var(--space-2); }
+  #mdx-hl .ln::before { left: -40px; width: 30px; }
+  .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
+}

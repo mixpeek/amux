@@ -450,7 +450,7 @@ fn member_file_target(path: &str, uri: &Uri) -> Option<std::path::PathBuf> {
             .into_iter().next().map(|(_, v)| v).unwrap_or_default();
         return Some(std::path::PathBuf::from(format!("/{}", decoded.trim_start_matches('/'))));
     }
-    let reads = ["/api/file", "/api/file/", "/api/file/raw", "/api/file/hls", "/api/file/xlsx", "/api/file/vtt",
+    let reads = ["/api/file", "/api/file/", "/api/file/raw", "/api/file/hls", "/api/file/xlsx", "/api/file/vtt", "/api/file/history",
                  "/api/fs/read", "/api/fs/list"];
     if !reads.contains(&path) {
         return None;

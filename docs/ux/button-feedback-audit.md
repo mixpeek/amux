@@ -413,6 +413,13 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | div | `_mdaiShowRun` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Retry | `_mdaiTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_mdaiTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | mdx-copy | `_mdxCopy` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Edit | `_mdxSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Preview | `_mdxSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Split | `_mdxSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Diff | `_mdxTabClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | History | `_mdxTabClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Preview | `_mdxTabClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Search all history | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | \u21BB | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
@@ -1327,6 +1334,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + Another .mdai | `_mdaiSrcAdd` | onclick |
 | app.js | + File or folder | `_mdaiSrcAdd` | onclick |
 | app.js | Remove source  | `_mdaiSrcRemove` | onclick |
+| app.js | mdx-full | `_mdxFull` | addEventListener |
 | app.js | Reset | `_metricsResetSpeedtest` | onclick |
 | app.js | div | `_metricsSelectSession` | onclick |
 | app.js | tr | `_metricsSelectSession` | onclick |
@@ -1585,6 +1593,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | a | `e` | addEventListener |
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
+| app.js | mdx-alt | `e` | addEventListener |
+| app.js | mdx-out-host | `e` | addEventListener |
+| app.js | mdx-tools | `e` | addEventListener |
 | app.js | menu | `e` | addEventListener |
 | app.js | panel | `e` | addEventListener |
 | app.js | el | `ev` | addEventListener |

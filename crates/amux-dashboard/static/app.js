@@ -29673,6 +29673,14 @@ async function _pptxRender(buf, zip, doc) {
 }
 
 function _renderFileBody(data, mode) {
+  // A markdown file with its text is the editor (_mdxShow); anything else
+  // puts the viewer's own panes back first.
+  if (data && data.is_markdown && typeof data.content === 'string' && !data.truncated) {
+    _presentSetup(data);
+    _readPosDetach();   // the previous file's reading-position tracker, as below
+    if (_mdxShow(data, mode)) return;
+  }
+  _mdxHide();
   _presentSetup(data);
   _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
@@ -29915,7 +29923,600 @@ function _fileBindAnchors(container) {
   });
 }
 
+// ── The markdown editor (owner, 2026-10-29: "redesign the md file
+// viewer/editor around this. maintain our functionality but put it in this
+// format and add to it") ──
+// A markdown file opens in two panes: its source (a formatting bar, line
+// numbers, highlighting, a status line) and what it renders to (Preview, Diff
+// against the saved file or a past commit, History from git). Edit, Preview
+// and Split choose which show. Nothing is rebuilt: #file-edit-wrap (the same
+// textarea Save, ⌘S and the unsaved-changes guard read) and #file-body (the
+// preview Find, Read Aloud, read position and links use) move into the panes
+// for a markdown file and back for anything else.
+const _mdx = { path: null, mode: 'preview', tab: 'preview', loaded: false, timer: 0, histFor: null, against: null, base: '' };
+const _MDX_MODES = ['edit', 'preview', 'split'];
+
+function _mdxEls() {
+  return { root: document.getElementById('mdx'), ta: document.getElementById('file-edit-ta'),
+    wrap: document.getElementById('file-edit-wrap'), body: document.getElementById('file-body') };
+}
+function _mdxActive() { const r = document.getElementById('mdx'); return !!(r && !r.hidden); }
+function _mdxWide() { return window.innerWidth > 700; }
+function _mdxBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'md-editor', verdict, measured: true, n_considered: 1, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
+}
+
+// Show `data` (a markdown file) in the editor. `mode` is the old viewer's:
+// preview, edit, or raw (the source, read-only when the file cannot be saved).
+function _mdxShow(data, mode) {
+  const { root, ta, wrap, body } = _mdxEls();
+  if (!root || !ta || !wrap || !body) return false;
+  _mdxBind();
+  document.getElementById('mdx-edit-host').appendChild(wrap);
+  document.getElementById('mdx-out-host').appendChild(body);
+  wrap.classList.add('mdx-editor');
+  wrap.style.display = '';
+  body.style.display = '';
+  root.hidden = false;
+  document.getElementById('file-overlay')?.classList.add('mdx-on');
+  const tabs = document.getElementById('file-view-tabs');
+  if (tabs) tabs.style.display = 'none';
+  const editable = _fileEditable(data);
+  // A new file, a reload or a different file: the source is the file's. The
+  // same file again (a mode switch) keeps what is being typed, unless the file
+  // changed on disk and nothing was typed.
+  const untouched = _mdx.path === data.path && _mdx.loaded && ta.value === _mdx.base && data.content !== _mdx.base;
+  if (_mdx.path !== data.path || !_mdx.loaded || data._mdxReload || untouched) {
+    ta.value = data.content || '';
+    // A file opens at its top, caret and scroll both.
+    ta.setSelectionRange(0, 0);
+    ta.scrollTop = 0;
+    _mdx.base = ta.value;
+    _mdx.path = data.path;
+    _mdx.loaded = true;
+    _mdx.against = null;
+    _mdx.histFor = null;
+    delete data._mdxReload;
+    _bindReadPosDiv(body, data.path);
+  }
+  ta.readOnly = !editable;
+  root.classList.toggle('mdx-readonly', !editable);
+  const want = mode === 'raw' || mode === 'edit' ? (_mdxWide() && localStorage.getItem('amux_mdx_mode') === 'split' ? 'split' : 'edit')
+    : mode === 'split' ? 'split' : 'preview';
+  _mdxSetMode(want, false);
+  _mdxSetTab(_mdx.tab === 'history' || _mdx.tab === 'diff' ? _mdx.tab : 'preview');
+  _mdxHighlight();
+  _mdxStatus();
+  return true;
+}
+
+// The file viewer showing something else (or closing): everything back where it was.
+function _mdxHide() {
+  const { root, wrap, body } = _mdxEls();
+  if (!root || root.hidden) return;
+  const ov = document.getElementById('file-overlay');
+  const search = document.getElementById('md-search-row');
+  if (ov && body && search) search.after(body);
+  if (ov && wrap && body) body.after(wrap);
+  if (wrap) { wrap.classList.remove('mdx-editor'); wrap.style.display = 'none'; }
+  if (body) body.style.display = '';
+  const hl = document.getElementById('mdx-hl');
+  if (hl) hl.textContent = '';
+  root.hidden = true;
+  ov?.classList.remove('mdx-on', 'mdx-full');
+  _mdx.path = null;
+  _mdx.loaded = false;
+  _mdx.tab = 'preview';
+}
+
+function _mdxSetMode(mode, remember) {
+  if (!_MDX_MODES.includes(mode)) mode = 'preview';
+  if (mode === 'split' && !_mdxWide()) mode = 'edit';
+  _mdx.mode = mode;
+  const root = document.getElementById('mdx');
+  root.dataset.mode = mode;
+  _fileViewMode = mode === 'preview' ? 'preview' : 'edit';
+  // The layout switch lives in whichever pane is showing.
+  const seg = document.getElementById('mdx-mode');
+  const into = document.getElementById(mode === 'preview' ? 'mdx-view-bar' : 'mdx-src-bar');
+  if (seg && into && seg.parentElement !== into) into.insertBefore(seg, into.firstChild);
+  seg.querySelectorAll('[data-m]').forEach(b => { const on = b.dataset.m === mode; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  if (remember) { try { localStorage.setItem('amux_mdx_mode', mode); } catch (e) {} }
+  ['file-tab-search', 'file-tab-readaloud'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = mode === 'edit' ? 'none' : ''; });
+  if (mode === 'edit') _mdSearchClose();
+  if (mode !== 'preview') { const ta = document.getElementById('file-edit-ta'); if (ta && !ta.readOnly) requestAnimationFrame(() => ta.focus({ preventScroll: true })); }
+  _mdxStatus();
+  _mdxRenderPreview();
+  requestAnimationFrame(_mdxHighlight);
+}
+
+function _mdxSetTab(tab) {
+  _mdx.tab = tab;
+  document.querySelectorAll('#mdx-tab [data-v]').forEach(b => { const on = b.dataset.v === tab; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  const body = document.getElementById('file-body'), alt = document.getElementById('mdx-alt');
+  body.style.display = tab === 'preview' ? '' : 'none';
+  document.getElementById('mdx-out-host').hidden = tab !== 'preview';
+  alt.hidden = tab === 'preview';
+  if (tab === 'diff') _mdxRenderDiff();
+  else if (tab === 'history') _mdxRenderHistory();
+  else _mdxRenderPreview();
+}
+
+// ── Preview ──
+// What the source renders to right now, not what was last saved, so Split is live.
+function _mdxRenderPreview() {
+  if (!_mdxActive() || !_fileData || _mdx.mode === 'edit' || _mdx.tab !== 'preview') return;
+  const ta = document.getElementById('file-edit-ta'), body = document.getElementById('file-body');
+  const top = body.scrollTop;
+  body.className = 'file-overlay-body markdown md-content mdx-preview';
+  const fm = _parseFrontmatter(ta.value);
+  body.innerHTML = _renderFrontmatterBlock(fm.meta) + renderMarkdown(fm.body, _fileData.path, { workers: true, tags: true });
+  _bindMdFileLinks(body);
+  _fileBindAnchors(body);
+  _mdxDecoratePreview(body);
+  body.scrollTop = top;
+  if (_mdSearchHits && _mdSearchHits.length) { const q = document.getElementById('md-search-input'); if (q && q.value) _mdSearchApply(q.value); }
+}
+
+// Heading links, task boxes that tick the file.
+function _mdxDecoratePreview(body) {
+  body.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]').forEach(h => {
+    if (h.querySelector('.mdx-anchor')) return;
+    const a = document.createElement('a');
+    a.href = '#'; a.className = 'mdx-anchor'; a.dataset.slug = h.id;
+    a.title = 'Copy a link to this heading'; a.setAttribute('aria-label', 'Copy a link to this heading');
+    a.textContent = '🔗';
+    h.appendChild(a);
+  });
+  const editable = _fileEditable(_fileData);
+  body.querySelectorAll('li input[type="checkbox"]').forEach((cb, i) => {
+    cb.disabled = !editable;
+    cb.dataset.task = String(i);
+    cb.closest('li')?.classList.add('mdx-task-li');
+  });
+}
+
+// Where the i-th task marker's box sits ("- [ ]", "* [x]", "1. [ ]"), outside fenced code.
+function _mdxTaskOffsets(src) {
+  const out = [];
+  let fence = false, pos = 0;
+  for (const line of src.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    else if (!fence) {
+      const m = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]/.exec(line);
+      if (m) out.push(pos + m[1].length + 1);
+    }
+    pos += line.length + 1;
+  }
+  return out;
+}
+
+function _mdxToggleTask(i) {
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || ta.readOnly) return;
+  const at = _mdxTaskOffsets(ta.value)[i];
+  if (at == null) { _mdxBeacon('task_toggle_unmatched', { index: i }); return; }
+  const wasClean = !_fileEditDirty();
+  const ch = ta.value[at] === ' ' ? 'x' : ' ';
+  // Through the browser's editing where the source is showing, so ⌘Z undoes
+  // the tick and the rest of the undo history stays (land review F2).
+  if (_mdx.mode !== 'preview') {
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    _mdxReplace(at, at + 1, ch, a, b);
+  } else {
+    ta.setRangeText(ch, at, at + 1, 'preserve');
+    _mdxChanged();
+  }
+  // A box ticked in Preview is saved straight away, as long as nothing else
+  // was waiting to be saved: then it waits with the rest.
+  if (wasClean && typeof _fileSave === 'function') _fileSave();
+  _mdxBeacon('task_toggled', { saved: wasClean ? 1 : 0 });
+}
+
+// ── Source: highlighting, line numbers, status ──
+function _mdxInline(s) {
+  return s.replace(/(`[^`]+`)|(\*\*[^*\n]+\*\*)|(\[[^\]\n]*\]\([^)\s]*\))|(https?:\/\/[^\s<)]+)|((?:^|(?<=[\s(]))#[A-Za-z][\w/-]*)|((?:^|(?<=[\s(]))@[A-Za-z0-9][\w.-]*)|((?:^|(?<=[\s(]))\*[^*\s][^*\n]*\*)/g,
+    (m, code, bold, link, url, tag, at) =>
+      code ? '<span class="mdx-ic">' + m + '</span>' : bold ? '<span class="mdx-b">' + m + '</span>'
+      : link || url ? '<span class="mdx-url">' + m + '</span>' : tag ? '<span class="mdx-tg">' + m + '</span>'
+      : at ? '<span class="mdx-at">' + m + '</span>' : '<span class="mdx-i">' + m + '</span>');
+}
+function _mdxHighlight() {
+  const { ta, wrap } = _mdxEls();
+  if (!ta || !wrap || !_mdxActive()) return;
+  let hl = document.getElementById('mdx-hl');
+  if (!hl) {
+    hl = document.createElement('pre');
+    hl.id = 'mdx-hl'; hl.setAttribute('aria-hidden', 'true');
+    wrap.insertBefore(hl, ta);
+  }
+  const big = ta.value.length > 300000;
+  wrap.classList.toggle('mdx-plain', big);
+  const lines = ta.value.split('\n');
+  let fence = false, h = '';
+  lines.forEach((raw, i) => {
+    const e = esc(raw);
+    let cls = '', inner;
+    if (/^\s*(```|~~~)/.test(raw)) { fence = !fence; cls = 'mdx-fence'; inner = e; }
+    else if (fence) { cls = 'mdx-codeln'; inner = e; }
+    else if (/^#{1,6}\s/.test(raw)) { cls = 'mdx-h'; inner = e; }
+    else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { cls = 'mdx-hr'; inner = e; }
+    else if (big) inner = e;
+    else {
+      const li = /^(\s*)((?:[-*+]|\d+[.)]))(\s+)(\[[ xX]\]\s)?/.exec(raw);
+      if (li) {
+        inner = esc(li[1]) + '<span class="mdx-li">' + esc(li[2]) + '</span>' + li[3]
+          + (li[4] ? '<span class="mdx-task">' + esc(li[4]) + '</span>' : '') + _mdxInline(esc(raw.slice(li[0].length)));
+      } else if (/^\s*>/.test(raw)) { cls = 'mdx-q'; inner = _mdxInline(e); }
+      else inner = _mdxInline(e);
+    }
+    h += '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + (inner || '') + '\n</span>';
+  });
+  hl.innerHTML = h;
+  // The pre wraps exactly as the textarea does: same width once its scrollbar is counted.
+  hl.style.paddingRight = (parseFloat(getComputedStyle(ta).paddingRight) + (ta.offsetWidth - ta.clientWidth)) + 'px';
+  _mdxSyncScroll();
+}
+function _mdxSyncScroll() {
+  const ta = document.getElementById('file-edit-ta'), hl = document.getElementById('mdx-hl');
+  if (ta && hl) hl.scrollTop = ta.scrollTop;
+}
+function _mdxStatus() {
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || !_mdxActive()) return;
+  const before = ta.value.slice(0, ta.selectionStart);
+  const ln = before.split('\n').length, col = ta.selectionStart - before.lastIndexOf('\n');
+  document.getElementById('mdx-pos').textContent = 'Ln ' + ln + ', Col ' + col;
+  const n = ta.value.length;
+  document.getElementById('mdx-chars').textContent = n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
+  const d = document.getElementById('mdx-dirty');
+  const dirty = _fileEditDirty();
+  if (!dirty) _mdx.base = ta.value;
+  d.textContent = ta.readOnly ? 'Read-only' : dirty ? 'Unsaved' : 'Saved';
+  d.classList.toggle('on', dirty);
+  const save = document.getElementById('file-save-btn');
+  if (save) save.style.display = _fileEditable(_fileData) && (_mdx.mode !== 'preview' || dirty) ? '' : 'none';
+}
+// Every change to the source: highlight now, the preview a beat later.
+function _mdxChanged() {
+  _mdxHighlight();
+  _mdxStatus();
+  clearTimeout(_mdx.timer);
+  _mdx.timer = setTimeout(() => { if (_mdx.tab === 'diff') _mdxRenderDiff(); else _mdxRenderPreview(); }, 150);
+}
+
+// ── Editing commands ──
+function _mdxIndent() { return parseInt(localStorage.getItem('amux_mdx_indent') || '2', 10) === 4 ? 4 : 2; }
+// Replace [start, end) with `text` through the browser's own editing, so ⌘Z undoes it.
+function _mdxReplace(start, end, text, selStart, selEnd) {
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || ta.readOnly) return;
+  ta.focus();
+  ta.setSelectionRange(start, end);
+  let ok = false;
+  try { ok = document.execCommand('insertText', false, text); } catch (e) {}
+  if (!ok) { ta.setRangeText(text, start, end, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+  if (selStart != null) ta.setSelectionRange(selStart, selEnd == null ? selStart : selEnd);
+}
+function _mdxLines(ta) {
+  const v = ta.value;
+  const s = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  let e = v.indexOf('\n', Math.max(ta.selectionEnd - (ta.selectionEnd > ta.selectionStart && v[ta.selectionEnd - 1] === '\n' ? 1 : 0), ta.selectionStart));
+  if (e < 0) e = v.length;
+  return { s, e, lines: v.slice(s, e).split('\n') };
+}
+function _mdxWrap(open, close, placeholder) {
+  const ta = document.getElementById('file-edit-ta');
+  const a = ta.selectionStart, b = ta.selectionEnd, sel = ta.value.slice(a, b);
+  const v = ta.value;
+  if (sel && v.slice(a - open.length, a) === open && v.slice(b, b + close.length) === close) {
+    _mdxReplace(a - open.length, b + close.length, sel, a - open.length, b - open.length);   // already wrapped: unwrap
+    return;
+  }
+  const body = sel || placeholder;
+  _mdxReplace(a, b, open + body + close, a + open.length, a + open.length + body.length);
+}
+function _mdxPrefix(fn) {
+  const ta = document.getElementById('file-edit-ta');
+  const { s, e, lines } = _mdxLines(ta);
+  const out = fn(lines).join('\n');
+  _mdxReplace(s, e, out, s, s + out.length);
+}
+const _mdxTools = {
+  heading() {
+    _mdxPrefix(ls => ls.map(l => {
+      const m = /^(#{1,6})\s+/.exec(l);
+      const n = m ? m[1].length : 0;
+      const rest = m ? l.slice(m[0].length) : l;
+      return n >= 3 ? rest : '#'.repeat(n + 1) + ' ' + rest;
+    }));
+  },
+  bold() { _mdxWrap('**', '**', 'bold text'); },
+  italic() { _mdxWrap('*', '*', 'italic text'); },
+  ul() {
+    _mdxPrefix(ls => { const all = ls.every(l => /^\s*[-*+]\s/.test(l) || !l.trim()); return ls.map(l => !l.trim() ? l : all ? l.replace(/^(\s*)[-*+]\s+/, '$1') : l.replace(/^(\s*)(?:\d+[.)]\s+)?/, '$1- ')); });
+  },
+  ol() {
+    _mdxPrefix(ls => { const all = ls.every(l => /^\s*\d+[.)]\s/.test(l) || !l.trim()); let n = 0; return ls.map(l => !l.trim() ? l : all ? l.replace(/^(\s*)\d+[.)]\s+/, '$1') : l.replace(/^(\s*)(?:[-*+]\s+)?/, (m, sp) => sp + (++n) + '. ')); });
+  },
+  task() {
+    _mdxPrefix(ls => { const all = ls.every(l => /^\s*[-*+]\s+\[[ xX]\]\s/.test(l) || !l.trim()); return ls.map(l => !l.trim() ? l : all ? l.replace(/^(\s*)[-*+]\s+\[[ xX]\]\s+/, '$1') : l.replace(/^(\s*)(?:[-*+]\s+)?(?:\[[ xX]\]\s+)?/, '$1- [ ] ')); });
+  },
+  code() {
+    const ta = document.getElementById('file-edit-ta');
+    const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+    if (sel.includes('\n')) { const a = ta.selectionStart, body = sel.replace(/\n$/, ''); _mdxReplace(a, ta.selectionEnd, '```\n' + body + '\n```\n', a + 4, a + 4 + body.length); }
+    else _mdxWrap('`', '`', 'code');
+  },
+  link() {
+    const ta = document.getElementById('file-edit-ta');
+    const a = ta.selectionStart, sel = ta.value.slice(a, ta.selectionEnd) || 'link text';
+    const isUrl = /^https?:\/\//.test(sel);
+    const t = isUrl ? '[link text](' + sel + ')' : '[' + sel + '](url)';
+    const at = isUrl ? a + 1 : a + sel.length + 3;
+    _mdxReplace(a, ta.selectionEnd, t, at, at + (isUrl ? 9 : 3));
+  },
+  image() {
+    const ta = document.getElementById('file-edit-ta');
+    const a = ta.selectionStart, sel = ta.value.slice(a, ta.selectionEnd) || 'description';
+    _mdxReplace(a, ta.selectionEnd, '![' + sel + '](image.png)', a + sel.length + 4, a + sel.length + 13);
+  },
+  table() {
+    const ta = document.getElementById('file-edit-ta');
+    const a = ta.selectionStart, pre = a > 0 && ta.value[a - 1] !== '\n' ? '\n\n' : '';
+    const t = pre + '| Column | Column |\n| --- | --- |\n| Cell | Cell |\n';
+    _mdxReplace(a, ta.selectionEnd, t, a + pre.length + 2, a + pre.length + 8);
+  },
+  worker() {
+    // The same worker list every input has, from an @ at the caret.
+    const ta = document.getElementById('file-edit-ta');
+    const a = ta.selectionStart, pre = a > 0 && !/\s/.test(ta.value[a - 1]) ? ' @' : '@';
+    _mdxReplace(a, ta.selectionEnd, pre, a + pre.length);
+  },
+};
+
+// Enter carries a list on; Enter on an empty item ends it. Tab and ⇧Tab indent.
+function _mdxKeydown(e) {
+  const ta = e.target;
+  if (ta.readOnly) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.altKey && !e.shiftKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'b') { e.preventDefault(); _mdxTools.bold(); return; }
+    if (k === 'i') { e.preventDefault(); _mdxTools.italic(); return; }
+    if (k === 'k') { e.preventDefault(); e.stopPropagation(); _mdxTools.link(); return; }
+  }
+  // ⌘/Ctrl+End and Home: the end or start of the file, on every platform.
+  if (mod && !e.altKey && (e.key === 'End' || e.key === 'Home')) {
+    e.preventDefault();
+    const at = e.key === 'End' ? ta.value.length : 0;
+    ta.setSelectionRange(e.shiftKey ? Math.min(at, ta.selectionStart) : at, e.shiftKey ? Math.max(at, ta.selectionEnd) : at);
+    ta.scrollTop = e.key === 'End' ? ta.scrollHeight : 0;
+    _mdxSyncScroll();
+    _mdxStatus();
+    return;
+  }
+  // The @ list takes Tab and Enter while it is open.
+  const listOpen = !!ta.parentElement?.querySelector('.ac-list.open');
+  if (e.key === 'Tab' && !mod && !e.altKey) {
+    if (listOpen) return;
+    e.preventDefault();
+    const ind = ' '.repeat(_mdxIndent());
+    if (ta.selectionStart === ta.selectionEnd && !e.shiftKey) { _mdxReplace(ta.selectionStart, ta.selectionEnd, ind, ta.selectionStart + ind.length); return; }
+    _mdxPrefix(ls => ls.map(l => e.shiftKey ? l.replace(new RegExp('^ {1,' + ind.length + '}'), '') : ind + l));
+    return;
+  }
+  if (e.key === 'Enter' && !mod && !e.shiftKey && !e.altKey && ta.selectionStart === ta.selectionEnd) {
+    if (listOpen) return;
+    const v = ta.value, a = ta.selectionStart;
+    const s = v.lastIndexOf('\n', a - 1) + 1, line = v.slice(s, a);
+    const m = /^(\s*)((?:[-*+])|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?/.exec(line);
+    if (!m) return;
+    e.preventDefault();
+    if (line.trim() === m[0].trim()) { _mdxReplace(s, a, m[1], s + m[1].length); return; }   // an empty item ends the list
+    const marker = m[3] ? (parseInt(m[3], 10) + 1) + m[4] : m[2];
+    const next = '\n' + m[1] + marker + m[5] + (m[6] ? '[ ] ' : '');
+    _mdxReplace(a, a, next, a + next.length);
+  }
+}
+
+// ── Diff ──
+// Line by line: the saved file (or a past commit) against the source now.
+function _mdxDiffLines(a, b) {
+  const A = a.split('\n'), B = b.split('\n');
+  let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++;
+  let sa = A.length, sb = B.length; while (sa > p && sb > p && A[sa - 1] === B[sb - 1]) { sa--; sb--; }
+  const X = A.slice(p, sa), Y = B.slice(p, sb);
+  const out = [];
+  for (let i = 0; i < p; i++) out.push([' ', i + 1, i + 1, A[i]]);
+  if (X.length * Y.length > 4e6) {
+    X.forEach((l, i) => out.push(['-', p + i + 1, null, l]));
+    Y.forEach((l, i) => out.push(['+', null, p + i + 1, l]));
+  } else {
+    const L = Array.from({ length: X.length + 1 }, () => new Uint32Array(Y.length + 1));
+    for (let i = X.length - 1; i >= 0; i--) for (let j = Y.length - 1; j >= 0; j--) L[i][j] = X[i] === Y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    let i = 0, j = 0;
+    while (i < X.length || j < Y.length) {
+      if (i < X.length && j < Y.length && X[i] === Y[j]) { out.push([' ', p + i + 1, p + j + 1, X[i]]); i++; j++; }
+      // On a tie the removed line comes first, as diffs read.
+      else if (j < Y.length && (i >= X.length || L[i][j + 1] > L[i + 1][j])) { out.push(['+', null, p + j + 1, Y[j]]); j++; }
+      else { out.push(['-', p + i + 1, null, X[i]]); i++; }
+    }
+  }
+  for (let k = sa; k < A.length; k++) out.push([' ', k + 1, sb + (k - sa) + 1, A[k]]);
+  return out;
+}
+function _mdxRenderDiff() {
+  const alt = document.getElementById('mdx-alt'), ta = document.getElementById('file-edit-ta');
+  if (!alt || !ta || !_fileData) return;
+  const base = _mdx.against ? _mdx.against.content : (_fileData.content || '');
+  const what = _mdx.against ? 'commit ' + esc(_mdx.against.short) + ' (' + esc(_mdx.against.subject) + ')' : 'the saved file';
+  const rows = _mdxDiffLines(base, ta.value);
+  const add = rows.filter(r => r[0] === '+').length, del = rows.filter(r => r[0] === '-').length;
+  let h = '<div class="mdx-diff-head">' + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b> against ' + what
+    : 'No changes against ' + what) + (_mdx.against ? ' <button type="button" class="btn mdx-diff-saved">Against the saved file</button>' : '') + '</div>';
+  if (add || del) {
+    // Only the changes and three lines around each.
+    const keep = new Set();
+    rows.forEach((r, i) => { if (r[0] !== ' ') for (let k = Math.max(0, i - 3); k <= Math.min(rows.length - 1, i + 3); k++) keep.add(k); });
+    h += '<table class="mdx-diff"><tbody>';
+    let gap = false;
+    rows.forEach((r, i) => {
+      if (!keep.has(i)) { if (!gap) h += '<tr class="mdx-gap"><td colspan="3">⋯</td></tr>'; gap = true; return; }
+      gap = false;
+      h += '<tr class="' + (r[0] === '+' ? 'mdx-row-add' : r[0] === '-' ? 'mdx-row-del' : '') + '"><td class="mdx-dn">' + (r[1] || '') + '</td><td class="mdx-dn">' + (r[2] || '') + '</td><td class="mdx-dl"><span class="mdx-dm">' + r[0] + '</span>' + esc(r[3]) + '</td></tr>';
+    });
+    h += '</tbody></table>';
+  }
+  alt.innerHTML = h;
+}
+
+// ── History (GET /api/file/history) ──
+async function _mdxRenderHistory() {
+  const alt = document.getElementById('mdx-alt');
+  if (!alt || !_fileData) return;
+  const path = _fileData.path;
+  if (_mdx.histFor && _mdx.histFor.path === path) { _mdxDrawHistory(_mdx.histFor.data); return; }
+  alt.innerHTML = '<div class="mdx-empty">Reading history…</div>';
+  try {
+    const r = await fetch(API + '/api/file/history?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+    const d = await r.json();
+    if (!r.ok || d.measured === false) throw new Error(d.why_unmeasured || d.error || ('HTTP ' + r.status));
+    _mdx.histFor = { path, data: d };
+    if (_mdx.tab === 'history' && _fileData && _fileData.path === path) _mdxDrawHistory(d);
+  } catch (e) {
+    alt.innerHTML = '<div class="ui-error">History could not be read: ' + esc(e.message || String(e)) + '</div>';
+    _mdxBeacon('history_failed', { error: String(e && e.message || e).slice(0, 120) });
+  }
+}
+function _mdxDrawHistory(d) {
+  const alt = document.getElementById('mdx-alt');
+  if (!d.in_repo) {
+    alt.innerHTML = '<div class="mdx-empty">This file is not in a git repository, so it has no history here. Saving does not keep earlier versions.</div>';
+    return;
+  }
+  const rel = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago'; };
+  let h = '<div class="mdx-hist-head">' + d.commits.length + ' commit' + (d.commits.length === 1 ? '' : 's') + (d.uncommitted ? ' · <span class="mdx-dirty on">edits not committed</span>' : '') + '</div>';
+  if (!d.commits.length) h += '<div class="mdx-empty">No commits include this file yet.</div>';
+  h += d.commits.map(c => '<div class="mdx-commit" data-sha="' + esc(c.sha) + '">'
+    + '<div class="mdx-commit-main"><div class="mdx-commit-subj">' + esc(c.subject) + '</div>'
+    + '<div class="mdx-commit-meta">' + esc(c.author) + ' · ' + rel(c.at) + ' · <code>' + esc(c.short) + '</code></div></div>'
+    + '<button type="button" class="btn" data-act="diff">Diff</button>'
+    + (_fileEditable(_fileData) ? '<button type="button" class="btn" data-act="restore" title="Put this version in the editor (not saved until you save)">Restore</button>' : '')
+    + '</div>').join('');
+  alt.innerHTML = h;
+}
+async function _mdxCommitAt(sha) {
+  const r = await fetch(API + '/api/file/history?path=' + encodeURIComponent(_fileData.path) + '&sha=' + encodeURIComponent(sha), { headers: _authHeaders() });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d.content;
+}
+async function _mdxHistoryAct(sha, act) {
+  const c = (_mdx.histFor?.data?.commits || []).find(x => x.sha === sha);
+  if (!c) return;
+  try {
+    const content = await _mdxCommitAt(sha);
+    if (act === 'diff') { _mdx.against = { sha, short: c.short, subject: c.subject, content }; _mdxSetTab('diff'); }
+    else if (act === 'restore') {
+      const ta = document.getElementById('file-edit-ta');
+      _mdxReplace(0, ta.value.length, content, 0);
+      if (_mdx.mode === 'preview') _mdxSetMode(_mdxWide() ? 'split' : 'edit', false);
+      showToast('Version ' + c.short + ' is in the editor. Save to keep it.');
+      _mdxBeacon('history_restored');
+    }
+  } catch (e) { showToast('Could not read that version: ' + (e.message || e)); }
+}
+
+// ── Copy, full screen ──
+function _mdxCopy() {
+  const ta = document.getElementById('file-edit-ta');
+  const as = document.getElementById('mdx-copy-as').value;
+  if (as === 'html' || as === 'text') {
+    const fm = _parseFrontmatter(ta.value);
+    const div = document.createElement('div');
+    div.innerHTML = renderMarkdown(fm.body, _fileData && _fileData.path);
+    _copyTextWithToast(as === 'html' ? div.innerHTML : (div.innerText || div.textContent || ''), 'Copied as ' + (as === 'html' ? 'HTML' : 'text'));
+  } else _copyTextWithToast(ta.value, 'Copied the markdown');
+  _mdxBeacon('copied', { as });
+}
+function _mdxFull(on) {
+  const ov = document.getElementById('file-overlay');
+  const want = on == null ? !ov.classList.contains('mdx-full') : on;
+  ov.classList.toggle('mdx-full', want);
+  document.getElementById('mdx-full').title = want ? 'Leave full screen (Esc)' : 'Full screen (Esc to leave)';
+  requestAnimationFrame(_mdxHighlight);
+}
+
+// The Preview / Diff / History switch (index.html onclick). Diff opened from
+// the switch is against the saved file; History's Diff picks a commit.
+function _mdxTabClick(v) {
+  if (v === 'diff' && _mdx.tab !== 'diff') _mdx.against = null;
+  _mdxSetTab(v);
+}
+
+let _mdxBound = false;
+function _mdxBind() {
+  if (_mdxBound) return;
+  _mdxBound = true;
+  const ta = document.getElementById('file-edit-ta');
+  ta.addEventListener('input', () => { if (_mdxActive()) _mdxChanged(); });
+  ta.addEventListener('scroll', () => { if (_mdxActive()) _mdxSyncScroll(); });
+  ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) _mdxStatus(); }));
+  ta.addEventListener('keydown', e => { if (_mdxActive()) _mdxKeydown(e); });
+  _atAttach(ta);   // @ offers the workers
+  document.getElementById('mdx-tools').addEventListener('mousedown', e => { if (e.target.closest('[data-t]')) e.preventDefault(); });   // keep the selection
+  document.getElementById('mdx-tools').addEventListener('click', e => {
+    const b = e.target.closest('[data-t]');
+    if (!b || ta.readOnly) return;
+    if (_mdx.mode === 'preview') _mdxSetMode('edit', false);
+    _mdxTools[b.dataset.t]?.();
+    _mdxBeacon('tool', { tool: b.dataset.t });
+  });
+  const ind = document.getElementById('mdx-indent');
+  ind.value = String(_mdxIndent());
+  ind.addEventListener('change', () => { try { localStorage.setItem('amux_mdx_indent', ind.value); } catch (e) {} });
+  document.getElementById('mdx-copy').addEventListener('click', _mdxCopy);
+  document.getElementById('mdx-full').addEventListener('click', () => _mdxFull());
+  document.getElementById('mdx-alt').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.classList.contains('mdx-diff-saved')) { _mdx.against = null; _mdxRenderDiff(); return; }
+    const row = b.closest('.mdx-commit');
+    if (row) _mdxHistoryAct(row.dataset.sha, b.dataset.act);
+  });
+  const out = document.getElementById('mdx-out-host');
+  out.addEventListener('change', e => {
+    const cb = e.target;
+    if (cb.matches && cb.matches('input[type="checkbox"][data-task]')) _mdxToggleTask(parseInt(cb.dataset.task, 10));
+  });
+  out.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('.mdx-anchor');
+    if (a) {
+      e.preventDefault(); e.stopPropagation();
+      const name = (_fileData && _fileData.path || '').split('/').pop();
+      const text = (a.parentElement.textContent || '').replace('🔗', '').trim();
+      _copyTextWithToast('[' + text + '](' + name + '#' + a.dataset.slug + ')', 'Copied a link to this heading');
+      return;
+    }
+    const t = e.target.closest && e.target.closest('.md-tag');
+    if (t) { e.preventDefault(); _mdSearchOpen(); const q = document.getElementById('md-search-input'); q.value = t.textContent; _mdSearchApply(q.value); }
+  });
+  document.getElementById('file-overlay').addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.getElementById('file-overlay').classList.contains('mdx-full')) { e.stopPropagation(); _mdxFull(false); }
+  }, true);
+  window.addEventListener('resize', () => { if (!_mdxActive()) return; if (_mdx.mode === 'split' && !_mdxWide()) _mdxSetMode('edit', false); _mdxHighlight(); });
+}
+
 function setFileViewMode(mode) {
+  // A markdown file: the editor's own layouts (raw is its source pane).
+  if (_mdxActive() && _fileData && _fileData.is_markdown) {
+    _mdxSetMode(mode === 'raw' ? 'edit' : mode, false);
+    return;
+  }
   if (_fileData?.readOnly) return;
   _fileViewMode = mode;
   document.getElementById('file-tab-preview').classList.toggle('active', mode === 'preview');
@@ -31559,7 +32160,9 @@ function _fileEditable(data) {
 }
 function _fileEditDirty() {
   const wrap = document.getElementById('file-edit-wrap'), ta = document.getElementById('file-edit-ta');
-  if (!_fileData || _fileData.readOnly || !wrap || wrap.style.display === 'none' || !ta) return false;
+  if (!_fileData || _fileData.readOnly || !wrap || !ta) return false;
+  // The editor keeps its text while Preview shows; otherwise a hidden editor has nothing new.
+  if (wrap.style.display === 'none' && !(_mdxActive() && _mdx.loaded)) return false;
   if (!_fileEditable(_fileData)) return false;   // _fileSave cannot write it anyway
   if (_fileData._isNew && !ta.value.trim()) return false;          // an empty new note is nothing to keep
   return ta.value !== (_fileData.content || '');
@@ -31601,6 +32204,7 @@ function closeFilePreview() {
     return;
   }
   _xlsxEditorTeardown();
+  _mdxHide();
   _readPosDetach();   // flush the reading position before tearing down
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
@@ -31749,6 +32353,7 @@ async function _fileSaveOnce() {
         if (activeView === 'scratchpad') _scratchpadLoad();
       }
       btn.textContent = 'Saved!';
+      if (_mdxActive()) { _mdxStatus(); if (_mdx.tab === 'diff') _mdxRenderDiff(); }
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
     } else {
       btn.textContent = d.error || 'Error';
@@ -44364,6 +44969,7 @@ function _mdSlug(text) {
 // href would reach the dashboard's hash routing.
 let _mdWikiBase = '';
 let _mdWorkerLinks = false;
+let _mdTagChips = false;
 function _mdWorkerKnown(name) {
   try { return (typeof sessions !== 'undefined' ? sessions : []).some(s => s && s.name === name); } catch (e) { return false; }
 }
@@ -44422,6 +45028,21 @@ function _mdUseWikiLinks() {   // and math (the same marked.use call)
     renderer(t) {
       return '<a href="#peek=' + encodeURIComponent(t.name) + '" class="md-worker-link" data-worker="' + esc(t.name) + '" title="Open ' + esc(t.name) + '">@' + esc(t.name) + '</a>';
     },
+  }, {
+    // #tag in the editor's preview: a chip, and a click finds the others.
+    // A heading is a block (never reaches here); #123 and URL fragments stay text.
+    name: 'hashTag', level: 'inline',
+    start(src) {
+      if (!_mdTagChips) return undefined;
+      for (let i = src.indexOf('#'); i >= 0; i = src.indexOf('#', i + 1)) if ((i === 0 || /[\s(]/.test(src[i - 1])) && /[A-Za-z]/.test(src[i + 1] || '')) return i;
+      return undefined;
+    },
+    tokenizer(src) {
+      if (!_mdTagChips) return undefined;
+      const m = /^#([A-Za-z][\w/-]*)/.exec(src);
+      if (m) return { type: 'hashTag', raw: m[0], tag: m[1] };
+    },
+    renderer(t) { return '<span class="md-tag" role="button" tabindex="0" title="Find #' + esc(t.tag) + ' in this file">#' + esc(t.tag) + '</span>'; },
   }, {
     name: 'wikilink', level: 'inline',
     start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
@@ -44515,7 +45136,8 @@ function renderMarkdown(raw, basePath, opts) {
   // @worker links: only where the caller asks (a file's preview). Messages and
   // chat mark their own mentions. Reset after, so no other render inherits it.
   _mdWorkerLinks = !!(opts && opts.workers);
-  try { return _renderMarkdownInner(raw, basePath); } finally { _mdWorkerLinks = false; }
+  _mdTagChips = !!(opts && opts.tags);
+  try { return _renderMarkdownInner(raw, basePath); } finally { _mdWorkerLinks = false; _mdTagChips = false; }
 }
 function _renderMarkdownInner(raw, basePath) {
   if (!raw) return '';
@@ -71639,7 +72261,8 @@ let _hkInTrigger = false;
 document.addEventListener('input', e => {
   if (_hkInTrigger || e.isComposing) return;
   const el = e.target;
-  if (!_hkTextField(el) || el.closest('#hotkeys-view, #hk-dialog')) return;
+  // Not in the file editor: "##" there is a markdown heading, not dictation.
+  if (!_hkTextField(el) || el.closest('#hotkeys-view, #hk-dialog, #file-edit-wrap')) return;
   if (e.inputType && !/^insert(Text|FromPaste|CompositionText)?$/.test(e.inputType)) return;
   const at = el.selectionStart;
   if (at == null) return;

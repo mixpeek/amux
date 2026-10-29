@@ -43,9 +43,10 @@ test('a worker tagged in a markdown file is a link in Preview, and opens the wor
 
 test('Edit and Raw show the tag as text, and Edit offers workers after @', async ({ page }) => {
   await boot(page);
+  // Raw is the editor's source pane: the text as typed, no preview showing.
   await page.evaluate(() => (window as any).setFileViewMode('raw'));
-  await expect(page.locator('#file-body .md-worker-link')).toHaveCount(0);
-  await expect(page.locator('#file-body')).toContainText('Ask @' + W);
+  await expect(page.locator('#mdx .mdx-view')).toBeHidden();
+  await expect(page.locator('#file-edit-ta')).toHaveValue(new RegExp('Ask @' + W));
   await page.evaluate(() => (window as any).setFileViewMode('edit'));
   const ta = page.locator('#file-edit-ta');
   await expect(ta).toBeVisible();

@@ -4221,6 +4221,60 @@
   </div>
   <div id="file-body" class="file-overlay-body"></div>
   <div id="file-edit-wrap"><textarea id="file-edit-ta" class="file-edit-ta" spellcheck="false" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='s'){event.preventDefault();_fileSave();}"></textarea></div>
+  <!-- The markdown editor (owner, 2026-10-29): source on the left with a
+       formatting bar, line numbers and a status line; Preview, Diff and
+       History on the right. #file-edit-wrap and #file-body move into it for a
+       markdown file and back out for anything else (app.js _mdx*). -->
+  <div id="mdx" class="mdx" hidden data-mode="preview">
+    <section class="mdx-pane mdx-src" id="mdx-src" aria-label="Markdown source">
+      <div class="mdx-bar" id="mdx-src-bar">
+        <div class="mdx-seg" id="mdx-mode" role="tablist" aria-label="Layout">
+          <button type="button" role="tab" data-m="edit" onclick="_mdxSetMode('edit', true)" title="Source only">Edit</button>
+          <button type="button" role="tab" data-m="preview" onclick="_mdxSetMode('preview', true)" title="Preview only">Preview</button>
+          <button type="button" role="tab" data-m="split" onclick="_mdxSetMode('split', true)" title="Source and preview side by side">Split</button>
+        </div>
+        <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting">
+          <button type="button" data-t="heading" title="Heading (cycles # to ###)" aria-label="Heading"><b>H</b></button>
+          <button type="button" data-t="bold" title="Bold (⌘B)" aria-label="Bold"><b>B</b></button>
+          <button type="button" data-t="italic" title="Italic (⌘I)" aria-label="Italic"><i>I</i></button>
+          <button type="button" data-t="ul" title="Bulleted list" aria-label="Bulleted list">&#x2022;&#x2261;</button>
+          <button type="button" data-t="ol" title="Numbered list" aria-label="Numbered list">1&#x2261;</button>
+          <button type="button" data-t="task" title="Task" aria-label="Task">&#x2611;</button>
+          <button type="button" data-t="code" title="Code" aria-label="Code">&lt;/&gt;</button>
+          <button type="button" data-t="link" title="Link (⌘K)" aria-label="Link">&#x1F517;</button>
+          <button type="button" data-t="image" title="Image" aria-label="Image">&#x1F5BC;</button>
+          <button type="button" data-t="table" title="Table" aria-label="Table">&#x229E;</button>
+          <button type="button" data-t="worker" title="Tag a worker (@)" aria-label="Tag a worker">@</button>
+        </div>
+      </div>
+      <div class="mdx-edit" id="mdx-edit-host"></div>
+      <div class="mdx-status" id="mdx-status" aria-live="polite">
+        <span id="mdx-pos">Ln 1, Col 1</span>
+        <span id="mdx-chars">0 characters</span>
+        <span>Markdown</span>
+        <span id="mdx-dirty" class="mdx-dirty"></span>
+        <span class="mdx-spacer"></span>
+        <label class="mdx-indent">Spaces:
+          <select id="mdx-indent" aria-label="Indent with"><option value="2">2</option><option value="4">4</option></select></label>
+      </div>
+    </section>
+    <section class="mdx-pane mdx-view" id="mdx-view" aria-label="Rendered">
+      <div class="mdx-bar" id="mdx-view-bar">
+        <div class="mdx-seg" id="mdx-tab" role="tablist" aria-label="Show">
+          <button type="button" role="tab" data-v="preview" onclick="_mdxTabClick('preview')">Preview</button>
+          <button type="button" role="tab" data-v="diff" onclick="_mdxTabClick('diff')">Diff</button>
+          <button type="button" role="tab" data-v="history" onclick="_mdxTabClick('history')">History</button>
+        </div>
+        <span class="mdx-spacer"></span>
+        <select id="mdx-copy-as" class="mdx-copy-as" aria-label="Copy as" title="What Copy copies">
+          <option value="md">Markdown</option><option value="html">HTML</option><option value="text">Text</option></select>
+        <button type="button" class="mdx-icon" id="mdx-copy" title="Copy" aria-label="Copy">&#x29C9;</button>
+        <button type="button" class="mdx-icon" id="mdx-full" title="Full screen (Esc to leave)" aria-label="Full screen">&#x26F6;</button>
+      </div>
+      <div class="mdx-out" id="mdx-out-host"></div>
+      <div class="mdx-alt" id="mdx-alt" hidden></div>
+    </section>
+  </div>
 </div>
 
 <!-- MDAI node overlay: open a .mdai node, run its chain, browse run history, and

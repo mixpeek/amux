@@ -52,7 +52,7 @@
 //!   shutil.which quietly fails there.
 
 use super::fs::{
-    expanduser, git_show_file, is_dangerous_write, is_path_allowed, j, mtime_secs, not_found,
+    abs_to_repo_rel, expanduser, git_show_file, is_dangerous_write, is_path_allowed, j, mtime_secs, not_found,
     parse_body, parse_qs, pystr, qs_get, real_list_dirs, resolve_rel_candidates,
     resolve_rel_descend,
 };
@@ -85,10 +85,79 @@ pub fn routes() -> Router<AppState> {
         .route("/hls", any(hls))
         .route("/prepare", any(prepare))
         .route("/transcode", any(transcode))
+        .route("/history", any(history))
         .route("/{*rest}", any(not_found))
         // Python has no body cap on PUT /api/file; axum's 2MB default would
         // 413 a large markdown save the python origin accepts.
         .layer(DefaultBodyLimit::disable())
+}
+
+// ---------------------------------------------------------------------------
+// History (the markdown editor's History tab, owner 2026-10-29)
+// ---------------------------------------------------------------------------
+
+/// A file's git history: the commits that touched it, newest first, and
+/// whether it has edits not committed yet. With `sha=<commit>`, the file as it
+/// was in that commit. A file outside a git repository answers `in_repo:
+/// false`, measured, so "no history" and "could not look" stay different.
+async fn history(req: Request) -> Response {
+    if req.method() != Method::GET {
+        return not_found().await;
+    }
+    let qs = parse_qs(req.uri().query().unwrap_or(""));
+    let p = match qpath(&qs) {
+        Ok(p) => p,
+        Err(r) => return *r,
+    };
+    if !is_path_allowed(&p) {
+        return j(403, json!({"error": "access denied"}));
+    }
+    let Some((top, rel)) = abs_to_repo_rel(&p).await else {
+        return j(200, json!({"measured": true, "n_considered": 0, "in_repo": false, "commits": [],
+                             "why": "not in a git repository"}));
+    };
+    let git = |args: Vec<String>| {
+        let top = top.clone();
+        async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio::process::Command::new("git").arg("-C").arg(&top).args(&args).output(),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+        }
+    };
+    if let Some(sha) = qs_get(&qs, "sha") {
+        if sha.len() < 4 || sha.len() > 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return j(400, json!({"error": "sha must be a commit id"}));
+        }
+        return match git(vec!["show".into(), format!("{sha}:{rel}")]).await {
+            Some(o) if o.status.success() => j(200, json!({"measured": true, "n_considered": 1, "in_repo": true, "sha": sha,
+                                                           "content": String::from_utf8_lossy(&o.stdout)})),
+            Some(o) => j(404, json!({"measured": true, "n_considered": 0, "in_repo": true, "error": "not in that commit",
+                                     "detail": String::from_utf8_lossy(&o.stderr).trim()})),
+            None => j(503, json!({"measured": false, "n_considered": 0, "why_unmeasured": "git did not answer in 10 s"})),
+        };
+    }
+    let limit = qs_get(&qs, "limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);
+    let log = git(vec!["log".into(), "--follow".into(), format!("-n{limit}"),
+                       "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s".into(), "--".into(), rel.clone()]).await;
+    let Some(log) = log.filter(|o| o.status.success()) else {
+        return j(503, json!({"measured": false, "n_considered": 0, "in_repo": true, "why_unmeasured": "git log failed or timed out"}));
+    };
+    let commits: Vec<Value> = String::from_utf8_lossy(&log.stdout)
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\x1f').collect();
+            (f.len() == 5).then(|| json!({"sha": f[0], "short": f[1], "author": f[2],
+                                          "at": f[3].parse::<i64>().unwrap_or(0), "subject": f[4]}))
+        })
+        .collect();
+    let dirty = git(vec!["status".into(), "--porcelain".into(), "--".into(), rel.clone()]).await
+        .map(|o| !o.stdout.is_empty());
+    j(200, json!({"measured": true, "n_considered": commits.len(), "in_repo": true, "repo": top, "rel": rel,
+                  "commits": commits, "uncommitted": dirty}))
 }
 
 // ---------------------------------------------------------------------------
