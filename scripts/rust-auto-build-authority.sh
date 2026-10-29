@@ -26,6 +26,28 @@ gate_state() { # verdict tip tip_state target held
     "$(date +%s)" "$1" "$2" "$3" "$4" "${5:-0}" > "$t" && mv -f "$t" "$GATE_STATE" || rm -f "$t"
 }
 
+# The deploy settings live in ~/.amux/server.env like every other amux
+# setting, but launchd hands this job only its plist's environment, so a gate
+# set there was read by nothing (2026-10-29: AMUX_CI_REQUIRED_WORKFLOWS=rust sat
+# in server.env while the gate ran its default). Read the deploy keys from it,
+# never overriding one the environment already sets, and name what was read.
+ENV_FILE="${AMUX_SERVER_ENV:-$HOME/.amux/server.env}"
+if [ -r "$ENV_FILE" ]; then
+  read_keys=""
+  while IFS='=' read -r k v; do
+    case "$k" in
+      AMUX_CI_REQUIRED_WORKFLOWS|AMUX_DEPLOY_CI_GATE|AMUX_DEPLOY_PREBUILD|AMUX_ACTIVATION_ROLLBACK|AMUX_ACTIVATION_HEALTH_S) ;;
+      *) continue ;;
+    esac
+    [ -z "${!k+x}" ] || continue
+    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    export "$k=$v"
+    read_keys="$read_keys $k"
+  done < <(grep -E '^[A-Z_]+=' "$ENV_FILE" 2>/dev/null || true)
+  [ -z "$read_keys" ] || [ "$(cat "${GATE_STATE}.env-keys" 2>/dev/null)" = "$read_keys" ] \
+    || { say "deploy settings read from $ENV_FILE:$read_keys verdict=authority_env_read"; echo "$read_keys" > "${GATE_STATE}.env-keys" 2>/dev/null || true; }
+fi
+
 [ -n "$REPO" ] || refuse "AMUX_AUTHORITY_REPO is unset; no checkout may choose the live image"
 tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
   || refuse "cannot resolve $REF in $REPO; refusing an unmeasured activation"
@@ -34,12 +56,23 @@ tip=$(git -C "$REPO" rev-parse --verify -q "${REF}^{commit}" 2>/dev/null) \
 # shit goes thru cicd"). Until then this activated $REF's tip about a minute
 # after any push, while its CI was still running or already red. Now the target
 # is the newest first-parent commit of $REF whose required push workflows
-# (AMUX_CI_REQUIRED_WORKFLOWS, default rust,checks) all completed with success. A tip that is pending or red leaves the last green image
+# (AMUX_CI_REQUIRED_WORKFLOWS, default checks) all completed with success.
+# The default was rust,checks until 2026-10-29: rust runs the whole e2e suite,
+# about 50 minutes, and each push cancelled the queued run, so on a busy main
+# nothing went green for hours while fixes sat undeployed. The owner chose the
+# fast gate ("ok do that", best practice: a fast required gate, the slow suite
+# after deploy); scripts/main-ci-watch.sh (SCHED-713) still cards a red rust
+# run, and a deploy that does not come up healthy is rolled back
+# (AMUX_ACTIVATION_ROLLBACK in rust-auto-build.sh, on by default since then). A tip that is pending or red leaves the last green image
 # running; a commit that never had CI (an inner commit of a multi-commit push)
 # is passed over. Verdicts come from GitHub check runs through the App token;
 # final ones are cached per sha so a 60s timer costs about one API call while a
 # run is in flight. Opt out with AMUX_DEPLOY_CI_GATE=0.
 CI_CACHE="${AMUX_CI_VERDICT_CACHE:-$HOME/.amux/ci-verdicts-v2}"  # v2: workflow-run verdicts; v1 judged check runs
+# One cache per set of required workflows: a verdict is about that set, and
+# with one shared cache a commit judged green under `checks` stayed green after
+# the gate went back to `rust,checks` (found 2026-10-29, changing the gate).
+CI_CACHE="$CI_CACHE/$(printf %s "${AMUX_CI_REQUIRED_WORKFLOWS:-checks}" | tr -c 'A-Za-z0-9' '_')"
 # How far back the walk looks for a green commit. It was 40, and on 2026-10-24
 # main had 56 commits after its newest green one: the gate refused every tick
 # (ci_gate_no_green), the builder never ran, and a hand-installed build of a
@@ -78,7 +111,7 @@ ci_runs_json() {
 # Kept at top level: the Python below is indentation-sensitive, and indenting
 # it inside a block made every verdict "unmeasured" (2026-10-16, 162e78e03).
 ci_judge_runs() {
-  AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-rust,checks}" python3 -c '
+  AMUX_CI_REQUIRED="${AMUX_CI_REQUIRED_WORKFLOWS:-checks}" python3 -c '
 import json,os,sys
 runs=json.load(sys.stdin)["workflow_runs"]
 need=[w.strip() for w in os.environ["AMUX_CI_REQUIRED"].split(",") if w.strip()]
@@ -220,4 +253,22 @@ fi
 say "BUILD $target from detached $REF worktree=$WORK (source checkout=$REPO)"
 # The builder's own authority check compares against this ref, so hand it the
 # ELECTED sha: passing $REF made it refuse every held-back green commit.
-AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-build.sh"
+rc=0
+AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-build.sh" || rc=$?
+
+# BUILD WHILE CI RUNS (owner, 2026-10-29: "we need to speed up how this
+# works"). With the tip still pending, compile it now in the builder's stable
+# directory, so when it goes green its activation finds nothing to compile.
+# From a copy of the target's script, in the background: this worktree moves
+# on the next pass, and bash reads a running script by offset.
+# AMUX_DEPLOY_PREBUILD=0 turns it off.
+if [ "${AMUX_DEPLOY_PREBUILD:-1}" = 1 ] && [ "$target" != "$tip" ] && [ "${tip_state:-}" = pending ] \
+   && [ -f "$WORK/scripts/rust-prebuild.sh" ] && [ "$(cat "$HOME/.amux/prebuild-done" 2>/dev/null)" != "$tip" ] \
+   && ! git -C "$REPO" diff --quiet "$target" "$tip" -- crates Cargo.toml Cargo.lock 2>/dev/null; then
+  pre=$(mktemp "${TMPDIR:-/tmp}/amux-prebuild-sh.XXXXXX")
+  cp "$WORK/scripts/rust-prebuild.sh" "$pre"
+  ( nohup bash "$pre" "$REPO" "$tip" >/dev/null 2>&1; rm -f "$pre" ) &
+  disown 2>/dev/null || true
+  say "PREBUILD tip $tip while its CI runs (pid $!) verdict=prebuild_launched"
+fi
+exit "$rc"

@@ -103,13 +103,18 @@ Verify a hook by what it WROTE, not by the settings file.
   fixed or closed with `scripts/land_gate.py --resolve <id> "<why>"`; after three rounds the
   review stops hunting and says to rethink. `amux explain <path>` writes an explainer of a
   slice of the code. Reviewer scoring: `scripts/land_review_eval.py --score`.
-- **Only main deploys.** The builder activates the newest `origin/main` commit that passed
-  CI (`rust` and `checks`), within about a minute. A local commit, a branch, a fork or a
+- **Only main deploys.** The builder activates the newest `origin/main` commit whose
+  `checks` workflow passed, within about a minute. It compiles the tip while its CI runs
+  (`scripts/rust-prebuild.sh`), and puts the previous binary back if the new one does not
+  report healthy (`AMUX_ACTIVATION_ROLLBACK`, on by default). The gate is
+  `AMUX_CI_REQUIRED_WORKFLOWS` (default `checks`) in `~/.amux/server.env`; the slow `rust`
+  e2e suite runs after deploy (owner, 2026-10-29). A local commit, a branch, a fork or a
   hand-built binary deploys nothing and is replaced. Never copy a build over
   `~/.local/bin/amux-server-rs`: on 2026-10-24 a hand build of a two-week-old fork ran the
   Mac for hours. Settings shows what the server runs against main (`GET /api/pull`).
-- **A red main holds the server.** Until one main commit passes both `rust` and `checks`,
-  nothing newer deploys (2026-10-24: a week red, 73 commits behind). SCHED-713
+- **A red main holds the server.** Until one main commit passes `checks`, nothing newer
+  deploys (2026-10-24: a week red, 73 commits behind). A red `rust` run no longer holds it;
+  it is the first thing to fix all the same. SCHED-713
   (`scripts/main-ci-watch.sh`) re-runs a first attempt that failed only in e2e once, then
   keeps ONE card on the amux lane per red stretch. `deploy.served_commit_is_current` in
   `/api/health/invariants` says when the gate is holding. A red main is the first thing to fix.

@@ -938,7 +938,7 @@ PYIDENTITY
     # AMUX_ACTIVATION_ROLLBACK=1 (amux Cloud, which deploys main's tip without
     # waiting for CI): keep what is live, so a build that installs but does not
     # come up healthy is put back below.
-    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ -f "$INSTALL" ]; then
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ -f "$INSTALL" ]; then
       cp -p "$INSTALL" "${INSTALL}.rollback" 2>/dev/null || rm -f "${INSTALL}.rollback"
       if [ -f "${INSTALL}.identity.json" ]; then cp -p "${INSTALL}.identity.json" "${INSTALL}.identity.json.rollback"; else rm -f "${INSTALL}.identity.json.rollback"; fi
     fi
@@ -977,7 +977,7 @@ PYIDENTITY
     # failure branch below it is left alone, so it keeps naming the last good
     # build — which is exactly what that branch says is still running.
     echo "== installation action=$install_action; running server will verify identity before adoption"
-    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
       limit="${AMUX_ACTIVATION_HEALTH_S:-300}"; waited=0; healthy=0
       case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
       while [ "$waited" -lt "$limit" ]; do

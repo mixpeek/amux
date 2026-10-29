@@ -7,6 +7,9 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LAUNCHER="$ROOT/scripts/rust-auto-build-authority.sh"
+# Never this machine's settings or a real prebuild: the launcher reads deploy
+# keys from ~/.amux/server.env and may start a background compile.
+export AMUX_SERVER_ENV=/dev/null AMUX_DEPLOY_PREBUILD=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 AUTH="$TMP/authority"
@@ -170,7 +173,12 @@ case "\$v" in green2) a=2 ;; *) a=1 ;; esac
 printf '{"workflow_runs":[{"name":"rust","status":"completed","conclusion":"%s","created_at":"1","run_attempt":%s,"head_sha":"%s"},{"name":"checks","status":"completed","conclusion":"success","created_at":"1","run_attempt":1}]}' "\$c" "\$a" "\$1"
 EOF
 chmod +x "$TMP/fetch"
+# rust,checks unless REQUIRED=unset, which leaves the setting to the default
+# and to AMUX_SERVER_ENV.
 run_cached() {
+  local req=(AMUX_CI_REQUIRED_WORKFLOWS=rust,checks)
+  [ "${REQUIRED:-}" = unset ] && req=()
+  env -u AMUX_CI_REQUIRED_WORKFLOWS ${req[@]+"${req[@]}"} \
   AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
   AMUX_AUTHORITY_LOG="$LOG" AMUX_RS_ACTIVATION_REF=origin/main AMUX_CI_VERDICT_CACHE="$CACHE" \
   AMUX_CI_FETCH_CMD="$TMP/fetch" AMUX_RS_HEALTH_URL="file://$TMP/health.json" "$@" bash "$LAUNCHER"
@@ -180,7 +188,7 @@ echo "{\"commit_full\":\"$ELECTED\"}" > "$TMP/health.json"
 echo "$RERUN red" >> "$FETCHED"
 : > "$TRACE"
 run_cached env
-expect test "$(cat "$CACHE/$RERUN")" = red
+expect test "$(cat "$CACHE/rust_checks/$RERUN")" = red
 expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
 echo "$RERUN green" >> "$FETCHED"
 # Inside the re-check window the cached red stands.
@@ -188,22 +196,43 @@ run_cached env AMUX_CI_RED_RECHECK_S=3600
 expect test "$(grep -c "sha=$RERUN" "$TRACE")" = 0
 # Past it, the re-run's green is seen, cached, and activated.
 run_cached env AMUX_CI_RED_RECHECK_S=0
-expect test "$(cat "$CACHE/$RERUN")" = green
+expect test "$(cat "$CACHE/rust_checks/$RERUN")" = green
 expect grep -q "repo=$WORK sha=$RERUN" "$TRACE"
+
+# THE GATE'S DEFAULT IS checks (2026-10-29): a commit whose rust run failed but
+# whose checks passed is elected when nothing sets the gate.
+DEF=$(commit_next default-gate)
+echo "$DEF red" >> "$FETCHED"
+: > "$LOG"
+REQUIRED=unset run_cached env
+expect grep -q "BUILD $DEF" "$LOG"
+# And a gate set in server.env is read (launchd hands this job none of it).
+ENVF="$TMP/server.env"; printf 'OTHER=1\nAMUX_CI_REQUIRED_WORKFLOWS=rust,checks\n' > "$ENVF"
+STRICT=$(commit_next strict-gate)
+echo "$STRICT red" >> "$FETCHED"
+: > "$LOG"
+REQUIRED=unset run_cached env AMUX_SERVER_ENV="$ENVF" AMUX_ACTIVATION_GATE_STATE="$TMP/gate.json"
+expect grep -q "verdict=authority_env_read" "$LOG"
+expect grep -q "AMUX_CI_REQUIRED_WORKFLOWS" "$LOG"
+expect test "$(grep -c "BUILD $STRICT" "$LOG")" = 0
+# The environment wins over the file.
+: > "$LOG"
+REQUIRED=unset run_cached env AMUX_SERVER_ENV="$ENVF" AMUX_CI_REQUIRED_WORKFLOWS=checks
+expect grep -q "BUILD $STRICT" "$LOG"
 
 # A CANCELLED VERDICT IS RE-ASKED TOO (2026-10-24). f83afc792's checks run was
 # cancelled, so the cache held "none" as final and never read its re-run; the
 # Mac stayed 79 commits behind main. A cached none is re-asked like a red.
 REVIVED=$(commit_next revived)
 echo "{\"commit_full\":\"$RERUN\"}" > "$TMP/health.json"
-echo none > "$CACHE/$REVIVED"
+mkdir -p "$CACHE/rust_checks"; echo none > "$CACHE/rust_checks/$REVIVED"
 echo "$REVIVED green2" >> "$FETCHED"
 : > "$TRACE"
 run_cached env AMUX_CI_RED_RECHECK_S=3600
-expect test "$(cat "$CACHE/$REVIVED")" = none
+expect test "$(cat "$CACHE/rust_checks/$REVIVED")" = none
 expect test "$(grep -c "sha=$REVIVED" "$TRACE")" = 0
 run_cached env AMUX_CI_RED_RECHECK_S=0
-expect test "$(cat "$CACHE/$REVIVED")" = green
+expect test "$(cat "$CACHE/rust_checks/$REVIVED")" = green
 expect grep -q "repo=$WORK sha=$REVIVED" "$TRACE"
 # It went green on a re-run, which the builder log says once, by commit.
 expect grep -q "WARN CI-GATE ${REVIVED:0:9} green only after a re-run (rust attempt 2) verdict=ci_green_after_rerun" "$LOG"

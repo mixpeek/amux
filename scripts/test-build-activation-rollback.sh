@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # amux Cloud deploys main's tip without waiting for CI (AMUX_DEPLOY_CI_GATE=0),
 # so a build that installs but does not come up healthy must not stay live:
-# with AMUX_ACTIVATION_ROLLBACK=1 the builder waits for /api/health to report
+# with AMUX_ACTIVATION_ROLLBACK on (the default since 2026-10-29, for the Mac too) the builder waits for /api/health to report
 # the new commit, else restores the previous binary and its identity and holds
 # that commit until a newer one (Ethan, 2026-10-27: every cloud instance gets
 # main as it comes out).
@@ -58,12 +58,14 @@ for _ in $(seq 1 50); do curl -s "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && br
 
 # Never the real amux on this machine: its in-flight schedule runs would defer
 # the activation (a test run on 2026-10-27 was held by a live SCHED-751).
+# Rollback is on by default since 2026-10-29, so `run` leaves the switch unset
+# and tests the default; case 4 passes AMUX_ACTIVATION_ROLLBACK=0.
 run() {
-  env -u AMUX_URL AMUX_RS_RUNS_URL="http://127.0.0.1:$PORT/runs" \
+  env -u AMUX_URL -u AMUX_ACTIVATION_ROLLBACK "$@" AMUX_RS_RUNS_URL="http://127.0.0.1:$PORT/runs" \
   HOME="$FAKE_HOME" AMUX_REPO="$REPO" AMUX_RS_INSTALL="$INSTALL" AMUX_RS_BUILD_STAMP="$TMP/stamp" \
   AMUX_RS_BUILD_LOG="$TMP/build.log" AMUX_RS_BUILD_LOCK="$TMP/build.lock" AMUX_RS_BUILD_PROVENANCE="$TMP/provenance.json" \
   AMUX_RS_ACTIVATION_REF=HEAD AMUX_BUILD_MIN_FREE_GB=0 AMUX_BUILD_DEBUG_MAX_GB=999999 \
-  AMUX_RS_HEALTH_URL="http://127.0.0.1:$PORT/api/health" AMUX_ACTIVATION_ROLLBACK=1 AMUX_ACTIVATION_HEALTH_S=6 AMUX_RS_BUILD_COOLDOWN=0 \
+  AMUX_RS_HEALTH_URL="http://127.0.0.1:$PORT/api/health" AMUX_ACTIVATION_HEALTH_S=6 AMUX_RS_BUILD_COOLDOWN=0 \
     bash "$BUILDER" >/dev/null 2>&1 || true
 }
 
@@ -90,6 +92,14 @@ run
 grep -q new-build "$INSTALL" && ok "a healthy build stays live" || bad "a healthy build was rolled back"
 grep -q "verdict=activation_healthy" "$TMP/build.log" && ok "its health is logged" || bad "no healthy verdict"
 [ ! -e "$TMP/stamp.rolled_back" ] && ok "the hold clears once a build is healthy" || bad "hold left in place"
+
+# 4. Opted out: an unhealthy build stays (what every Mac had before 2026-10-29).
+printf 'fixture 3\n' > "$REPO/crates/input.rs"
+(cd "$REPO" && git -c user.name=test -c user.email=test@example.com commit -qam third)
+printf '#!/bin/sh\nprintf old-build\\n\n' > "$INSTALL"; chmod 0755 "$INSTALL"
+echo "0000000000000000000000000000000000000000" > "$TMP/live"
+run AMUX_ACTIVATION_ROLLBACK=0
+grep -q new-build "$INSTALL" && ok "AMUX_ACTIVATION_ROLLBACK=0 keeps the new build without a health wait" || bad "opt-out still rolled back: $(cat "$INSTALL")"
 
 echo "test-build-activation-rollback: $fails failed"
 exit "$fails"

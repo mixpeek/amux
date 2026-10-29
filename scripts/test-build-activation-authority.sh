@@ -8,6 +8,10 @@
 #   2. if an old process did replace it, a matching local stamp does not make
 #      the elected builder exit early — /api/health forces re-adoption.
 set -euo pipefail
+# These cases install builds against a health endpoint that does not model
+# the new commit coming up, so rollback (on by default since 2026-10-29) is
+# off here; test-build-activation-rollback.sh covers it.
+export AMUX_ACTIVATION_ROLLBACK=0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILDER="$ROOT/scripts/rust-auto-build.sh"
