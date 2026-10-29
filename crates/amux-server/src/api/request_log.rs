@@ -1393,6 +1393,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/debug/send-profile",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/debug/downtime",
         methods: &["GET"],
     },
