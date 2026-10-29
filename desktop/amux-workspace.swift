@@ -661,7 +661,7 @@ extension AppDelegate {
     /// The page you are typing in: the key window's, or its focused pane's.
     func focusedPage() -> DashboardWindowController? {
         guard let w = NSApp.keyWindow, let c = controllers.first(where: { $0.window === w }) else { return nil }
-        if let g = c.grid, let id = g.focused, let m = g.members[id] { return m }
+        if let g = c.grid { let d = deepestFocused(g); if let id = d.focused, let m = d.members[id] { return m } }
         return c
     }
 
@@ -854,7 +854,7 @@ extension AppDelegate {
         a.addButton(withTitle: "Rename")
         a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = f
-        let win = (c.paneHost ?? c).window
+        let win = c.rootHost.window
         let done: (NSApplication.ModalResponse) -> Void = { r in
             guard r == .alertFirstButtonReturn else { return }
             if whole { c.renameTab(f.stringValue) } else { c.rename(f.stringValue) }
@@ -993,6 +993,20 @@ extension AppDelegate {
             else { let p = NSPoint(x: num("x"), y: num("y")); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { v.dragged(to: p); v.dropped(at: p) } }
         // A pane's tab strip and the Panes menu (amux-panes.swift), on the
         // window holding a grid: i is the pane in reading order, t a tab in its strip.
+        // "Split this tab" on a pane, as its header button does. `at` walks
+        // down splits inside tabs: "1" is the root grid's second pane, "1.0"
+        // the first pane of the split that pane's tab is.
+        case "/pane-nest":
+            guard let h = controllers.first(where: { $0.grid?.host === $0 && $0.paneHost == nil }), var g = h.grid else { break }
+            h.window?.tabGroup?.selectedWindow = h.window
+            let path = (q.first { $0.name == "at" }?.value ?? "0").split(separator: ".").compactMap { Int($0) }
+            for (k, i) in path.enumerated() {
+                let leaves = g.tree.leaves
+                guard i >= 0 && i < leaves.count, let m = g.members[leaves[i]] else { break }
+                if k == path.count - 1 { nestSplit(m, in: g); break }
+                guard m !== g.host, let sub = m.grid else { break }
+                g = sub
+            }
         case "/pane-tab-select", "/pane-tab-close", "/pane-tab-drag", "/pane-focus", "/pane-action":
             guard let h = controllers.first(where: { $0.grid?.host === $0 }), let g = h.grid else { break }
             h.window?.tabGroup?.selectedWindow = h.window
@@ -1130,7 +1144,18 @@ extension AppDelegate {
                     let frames = Dictionary(g.paneFrames().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
                     d["pane_frames"] = g.tree.leaves.map { NSStringFromRect(frames[$0] ?? .zero) }
                     d["pane_views"] = g.tree.leaves.map { g.members[$0]?.viewHash ?? "" }
-                    d["pane_tabs"] = g.tree.leaves.map { g.tabs($0).map { $0.pageTitle } }
+                    d["pane_tabs"] = g.tree.leaves.map { g.tabs($0).map { g.label($0) } }
+                    // Splits inside tabs: per pane, its shown tab's split, nested the same way.
+                    func nested(_ g: PaneGrid) -> [Any] {
+                        g.tree.leaves.map { id -> Any in
+                            guard let m = g.members[id], m !== g.host, let sub = m.grid else { return NSNull() }
+                            return ["grid": sub.readingOrder, "pane_tabs": sub.tree.leaves.map { sub.tabs($0).map { sub.label($0) } },
+                                    "pane_shown": sub.tree.leaves.map { sub.views[$0]?.window != nil },
+                                    "depth": m.depth, "can_nest": sub.tree.leaves.map { sub.canNest($0) }, "nested": nested(sub)] as [String: Any]
+                        }
+                    }
+                    d["pane_nested"] = nested(g)
+                    d["can_nest"] = g.tree.leaves.map { g.canNest($0) }
                     d["pane_active"] = g.tree.leaves.map { id in g.tabs(id).firstIndex { $0 === g.members[id] } ?? -1 }
                     d["pane_shown"] = g.tree.leaves.map { g.views[$0]?.window != nil }
                     d["focused"] = g.focused.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1

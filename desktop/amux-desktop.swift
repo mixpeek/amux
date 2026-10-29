@@ -567,7 +567,6 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         customName = (n?.isEmpty ?? true) ? nil : n
         dlog("verdict=tab_renamed named=\(customName == nil ? 0 : 1) view=\(viewHash)")
         updateTitle()
-        (paneHost ?? self).updateTitle()
         app?.saveWindowsSoon()
     }
 
@@ -583,6 +582,23 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
     var tabName: String? { grid != nil ? windowName : customName }
 
+    // ── Nested splits (owner, 2026-10-29: "i have top level 2nd level i want
+    // 3rd and 4th so i can create panes within panes") ──
+    // A pane's tab can itself be split: that page hosts a grid of its own,
+    // shown in its pane. Its own paneHost is the grid it is a tab of, so the
+    // hosts form a tree up to the window.
+    /// The page whose window everything here is drawn in.
+    var rootHost: DashboardWindowController { var h = self; while let p = h.paneHost { h = p }; return h }
+    /// Hosts above this page: 0 for a window, 1 for a pane tab of a window's
+    /// split, 2 for a tab of a split inside that, ...
+    var depth: Int { var n = 0, h = self; while let p = h.paneHost { n += 1; h = p }; return n }
+    /// A tab that is a split of its own is named by its panes (or its name).
+    var tabLabel: String {
+        guard let g = grid, paneHost != nil else { return pageTitle }
+        if let n = windowName, !n.isEmpty { return n }
+        return g.tree.leaves.compactMap { g.members[$0].map { $0 === self ? $0.pageTitle : $0.tabLabel } }.joined(separator: " | ")
+    }
+
     func updateTitle() {
         window?.title = pageTitle
         // The tab's dot says which server this page is on.
@@ -591,15 +607,19 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             w.tab.accessoryView = badge.dot()
             w.tab.toolTip = pageTitle + " · " + badge.name
         }
-        // A grid's window is named by its panes, each pane by its page.
-        if let host = paneHost ?? (grid != nil ? self : nil), let g = host.grid {
+        // A grid's window is named by its panes, each pane by its page (a
+        // split tab inside one by its panes), up through every host.
+        if let g = grid {
             g.refreshStrips()
-            let panes = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }.joined(separator: " | ")
-            host.window?.title = host.windowName ?? panes
-            // Hovering a split tab lists its panes, named or not, so clearing
-            // the name leaves no stale tooltip behind.
-            host.window?.tab.toolTip = panes
+            if paneHost == nil {
+                let panes = g.tree.leaves.compactMap { g.members[$0].map { $0 === self ? $0.pageTitle : $0.tabLabel } }.joined(separator: " | ")
+                window?.title = windowName ?? panes
+                // Hovering a split tab lists its panes, named or not, so clearing
+                // the name leaves no stale tooltip behind.
+                window?.tab.toolTip = panes
+            }
         }
+        paneHost?.updateTitle()
     }
 
     func applyTheme(_ color: NSColor?) {
@@ -631,10 +651,13 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// ⌘W in a window split into panes closes the focused pane's tab
     /// (amux-panes.swift); the window's close button still closes the window.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if let g = grid, g.all.count > 1, NSApp.currentEvent?.type == .keyDown,
-           let id = g.focused ?? g.tree.leaves.first, let c = g.members[id] {
-            app?.undockPane(c, to: .close)
-            return false
+        if let top = grid, let app = app, top.all.count > 1, NSApp.currentEvent?.type == .keyDown {
+            // The innermost focused pane's tab, inside a split tab included.
+            let g = app.deepestFocused(top)
+            if let id = g.focused ?? g.tree.leaves.first, let c = g.members[id] {
+                app.undockPane(c, to: .close, from: g)
+                return false
+            }
         }
         return true
     }
@@ -1104,8 +1127,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// the pane you last clicked. Reload, zoom and the like act on it.
     var keyPage: DashboardWindowController? {
         guard let c = keyController else { return nil }
-        if let g = c.grid, let fr = c.window?.firstResponder as? NSView,
-           let m = g.members.values.first(where: { fr === $0.webView || fr.isDescendant(of: $0.webView) }) { return m }
+        if c.grid != nil, let fr = c.window?.firstResponder as? NSView,
+           let m = pages(under: c).first(where: { fr === $0.webView || fr.isDescendant(of: $0.webView) }) { return m }
         return c
     }
 
@@ -1227,7 +1250,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         case "worker":
             // Already open somewhere (any Desktop): go to it instead of opening a duplicate.
             if let c = controllers.first(where: { $0.viewHash.hasPrefix("#peek=" + enc) && ($0.viewHash.count == 6 + enc.count || $0.viewHash.dropFirst(6 + enc.count).hasPrefix("&")) }),
-               let w = c.paneHost?.window ?? c.window {
+               let w = c.rootHost.window {
                 // A pane is shown in its grid's window; its own window is hidden.
                 if w.isMiniaturized { w.deminiaturize(nil) }
                 w.tabGroup?.selectedWindow = w
@@ -1287,7 +1310,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     /// On screen: the selected tab of a visible window, or a pane of one.
     func isShown(_ c: DashboardWindowController) -> Bool {
-        let host = c.paneHost?.window ?? c.window
+        let host = c.rootHost.window
         return (host?.isVisible ?? false) && (host?.tabGroup?.selectedWindow ?? host) === host
             && (c.paneHost == nil || c.webView.window != nil)
     }
@@ -1819,10 +1842,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         var seen = Set<ObjectIdentifier>()
         var out: [DashboardWindowController] = []
         for c in controllers {
-            for p in [c] + (c.grid?.stacks.values.flatMap { $0 } ?? []) where seen.insert(ObjectIdentifier(p)).inserted {
+            for p in pages(under: c) where seen.insert(ObjectIdentifier(p)).inserted {
                 out.append(p)
             }
         }
+        return out
+    }
+
+    /// `c` and every page in its grid, and in the splits inside those.
+    func pages(under c: DashboardWindowController) -> [DashboardWindowController] {
+        var out = [c]
+        for p in c.grid?.all ?? [] where p !== c { out += pages(under: p) }
         return out
     }
 

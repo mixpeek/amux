@@ -26,6 +26,16 @@ import WebKit
 // become a window tab again. A tab not showing in its pane is out of the
 // window, so its page reads as hidden and does its hidden-tab deferrals.
 
+// SPLITS INSIDE TABS (owner, 2026-10-29: "i have top level 2nd level i want
+// 3rd and 4th so i can create panes within panes"). A pane's tab can be split
+// too ("Split this tab", the pane header's button): that page hosts a grid of
+// its own, drawn in its pane, whose panes have their own tabs. Tabs nest four
+// deep: the window's tabs, a split's pane tabs, and two levels of splits
+// inside those (`maxSplitDepth`). Each grid keeps the rules above (up to
+// `maxPanes` panes, one focused); the innermost focused pane is the one the
+// menus, ⌘T and the Globe key act on.
+let maxSplitDepth = 2   // the deepest host of a split inside a tab (a window is 0)
+
 final class PaneGrid {
     var tree: PaneTree
     /// The tab each pane shows.
@@ -55,13 +65,20 @@ final class PaneGrid {
     deinit { if let m = clickMonitor { NSEvent.removeMonitor(m) } }
 
     func id(of c: DashboardWindowController) -> Int? { stacks.first { $0.value.contains { $0 === c } }?.key }
+    /// The window this grid is drawn in (a split inside a tab is in its window's).
+    var window: NSWindow? { host?.rootHost.window }
+    /// What pane `id` draws for `c`: a tab that is a split of its own draws its
+    /// grid; any other page (the host's own included) its web view.
+    func content(for c: DashboardWindowController) -> NSView { c !== host ? (c.grid?.container ?? c.webView) : c.webView }
+    /// A tab's name in this grid's strips.
+    func label(_ c: DashboardWindowController) -> String { c === host ? c.pageTitle : c.tabLabel }
     func tabs(_ id: Int) -> [DashboardWindowController] { stacks[id] ?? [] }
     /// Every page in the grid, pane by pane in reading order.
     var all: [DashboardWindowController] { tree.leaves.flatMap { tabs($0) } }
 
     /// A click in a pane gives it focus.
     func noteClick(_ e: NSEvent) {
-        guard let w = e.window, w === host?.window else { return }
+        guard let w = e.window, w === window else { return }
         if let hit = views.first(where: { $0.value.window === w && $0.value.convert($0.value.bounds, to: nil).contains(e.locationInWindow) }) { focus(hit.key) }
     }
 
@@ -75,10 +92,10 @@ final class PaneGrid {
     func select(_ c: DashboardWindowController, in id: Int) {
         guard tabs(id).contains(where: { $0 === c }) else { return }
         members[id] = c
-        views[id]?.attach(c.webView)
+        views[id]?.attach(c)
         views[id]?.reloadStrip()
         focus(id)
-        host?.window?.makeFirstResponder(c.webView)
+        window?.makeFirstResponder(c.webView)
         host?.updateTitle()
         dlog("verdict=pane_tab_selected pane_tabs=\(tabs(id).count)")
         host?.app?.saveWindowsSoon()
@@ -106,7 +123,7 @@ final class PaneGrid {
             case .leaf(let id):
                 let v = views[id] ?? PaneView(grid: self, id: id)
                 views[id] = v
-                if let c = members[id] { v.attach(c.webView) }
+                if let c = members[id] { v.attach(c) }
                 return v
             case .split(let row, let f, let a, let b):
                 let s = GridSplitView(row: row, fraction: f)
@@ -133,6 +150,16 @@ final class PaneGrid {
             guard let w = v.window else { return nil }
             return (id, w.convertToScreen(v.convert(v.bounds, to: nil)))
         }
+    }
+
+    /// Whether pane `id`'s shown tab can be split into panes of its own: not
+    /// already split, and not past the deepest level.
+    func canNest(_ id: Int) -> Bool {
+        guard let c = members[id], let h = host else { return false }
+        if c !== h && c.grid != nil { return false }
+        // The host's own page hands the grid on first (nestSplit), to another
+        // plain page or, when every other tab is a split, a copy of itself.
+        return h.depth + 1 <= maxSplitDepth
     }
 
     var signature: String { syncFractions(); return tree.encoded }
@@ -185,8 +212,9 @@ final class PaneView: NSView {
     private let zoomButton = NSButton()
     private let tabButton = NSButton()
     private let closeButton = NSButton()
+    private let nestButton = NSButton()
     static let headerHeight: CGFloat = 26
-    static let buttonsWidth: CGFloat = 104
+    static let buttonsWidth: CGFloat = 130
     /// The pane's name: the page it shows.
     var title: String { controller?.pageTitle ?? "" }
     var isFocused = false { didSet { if isFocused != oldValue { paintHeader() } } }
@@ -197,7 +225,8 @@ final class PaneView: NSView {
         super.init(frame: .zero)
         header.wantsLayer = true
         focusLine.wantsLayer = true
-        for (b, sym, tip, act) in [(newButton, "plus", "New tab in this pane (⌘T)", #selector(newTabHere)),
+        for (b, sym, tip, act) in [(nestButton, "rectangle.split.2x1", "Split this tab into panes of its own", #selector(nestHere)),
+                                   (newButton, "plus", "New tab in this pane (⌘T)", #selector(newTabHere)),
                                    (zoomButton, "arrow.up.left.and.arrow.down.right", "Zoom this pane (⌘⇧↩)", #selector(toggleZoom)),
                                    (tabButton, "rectangle.on.rectangle", "Move to a window tab", #selector(toTab)),
                                    (closeButton, "xmark", "Close pane", #selector(closePane))] {
@@ -227,8 +256,10 @@ final class PaneView: NSView {
 
     /// Only the shown tab's page is in the pane; the others are out of the
     /// window, so WebKit hides them.
-    func attach(_ wv: WKWebView) {
-        for v in subviews where v is WKWebView && v !== wv { v.removeFromSuperview() }
+    func attach(_ c: DashboardWindowController) {
+        guard let g = grid else { return }
+        let wv = g.content(for: c)
+        for v in subviews where v !== header && v !== wv { v.removeFromSuperview() }
         if wv.superview !== self { wv.removeFromSuperview(); addSubview(wv) }
         needsLayout = true
     }
@@ -242,13 +273,18 @@ final class PaneView: NSView {
             let it = PaneTabItem()
             it.onClose = { [weak self, weak it] in if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }) { s.closeTab(i) } }
             it.onRename = { [weak self, weak it] in
-                if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }), i < s.tabs.count { s.grid?.host?.app?.promptRename(s.tabs[i]) }
+                if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }), i < s.tabs.count {
+                    let c = s.tabs[i]
+                    // A tab that is a split is named as a whole, as a window tab is.
+                    s.grid?.host?.app?.promptRename(c, wholeTab: c.grid != nil && c !== s.grid?.host)
+                }
             }
             items.append(it)
             header.addSubview(it)
         }
-        for (i, c) in t.enumerated() { items[i].set(title: c.pageTitle, active: c === controller, closable: true) }
+        for (i, c) in t.enumerated() { items[i].set(title: grid?.label(c) ?? c.pageTitle, active: c === controller, closable: true) }
         zoomButton.contentTintColor = grid?.zoomed == id ? .controlAccentColor : .secondaryLabelColor
+        nestButton.isHidden = !(grid?.canNest(id) ?? false)
         needsLayout = true
     }
 
@@ -258,11 +294,11 @@ final class PaneView: NSView {
         header.frame = NSRect(x: 0, y: bounds.height - h, width: bounds.width, height: h)
         focusLine.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 2)
         var x = bounds.width - 26
-        for b in [closeButton, tabButton, zoomButton, newButton] { b.frame = NSRect(x: x, y: 3, width: 22, height: 20); x -= 26 }
+        for b in [closeButton, tabButton, zoomButton, newButton, nestButton] where !b.isHidden { b.frame = NSRect(x: x, y: 3, width: 22, height: 20); x -= 26 }
         let room = max(0, bounds.width - PaneView.buttonsWidth - 6)
         let w = items.isEmpty ? 0 : min(200, floor(room / CGFloat(items.count)))
         for (i, it) in items.enumerated() { it.frame = NSRect(x: 4 + CGFloat(i) * w, y: 2, width: max(0, w - 2), height: h - 4) }
-        for v in subviews where v is WKWebView { v.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - h)) }
+        for v in subviews where v !== header { v.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - h)) }
     }
 
     var controller: DashboardWindowController? { grid?.members[id] }
@@ -273,12 +309,13 @@ final class PaneView: NSView {
     }
 
     func selectTab(_ i: Int?) { if let c = tab(i), let g = grid { g.select(c, in: id) } }
-    func closeTab(_ i: Int?) { if let c = tab(i) { c.app?.undockPane(c, to: .close) } }
+    func closeTab(_ i: Int?) { if let c = tab(i) { c.app?.undockPane(c, to: .close, from: grid) } }
+    @objc func nestHere() { if let g = grid, let c = controller { c.app?.nestSplit(c, in: g) } }
     @objc func newTabHere() { if let g = grid, let app = g.host?.app { app.newTab(inPane: id, of: g) } }
     @objc func toggleZoom() { if let g = grid, let app = g.host?.app { app.zoomPane(id, of: g) } }
-    @objc func toTab() { if let c = controller { c.app?.undockPane(c, to: .tab) } }
+    @objc func toTab() { if let c = controller { c.app?.undockPane(c, to: .tab, from: grid) } }
     /// The pane and every tab in it.
-    @objc func closePane() { for c in tabs.reversed() { c.app?.undockPane(c, to: .close) } }
+    @objc func closePane() { let g = grid; for c in tabs.reversed() { c.app?.undockPane(c, to: .close, from: g) } }
 
     /// A drop that would put `c` back where it is: its own pane's middle, or
     /// any edge of its own pane when it is that pane's only tab.
@@ -296,16 +333,16 @@ final class PaneView: NSView {
     }
 
     func dropped(at p: NSPoint, tab i: Int?) {
-        guard let c = tab(i), let app = c.app, let hostWindow = grid?.host?.window else { return }
+        guard let c = tab(i), let app = c.app, let hostWindow = grid?.window else { return }
         app.snapPreview.hide()
         if let t = app.paneDropTarget(at: p, moving: c) {
             if isNoop(t, c) { return }
-            app.undockPane(c, to: .move(t))
+            app.undockPane(c, to: .move(t), from: grid)
             return
         }
         // Out of every window, or onto this window's tab bar: a tab again.
         let content = hostWindow.convertToScreen(hostWindow.contentLayoutRect)
-        if !hostWindow.frame.contains(p) || p.y > content.maxY { app.undockPane(c, to: .tab) }
+        if !hostWindow.frame.contains(p) || p.y > content.maxY { app.undockPane(c, to: .tab, from: grid) }
     }
     // The pane's header drag as a test drives it (amux://test/pane-drag): its shown tab.
     func dragged(to p: NSPoint) { dragged(to: p, tab: nil) }
@@ -393,12 +430,23 @@ struct SavedTab: Codable {
     var url: String
     var title: String?
     var name: String?   // the owner's name for the tab, when given
+    var split: Box<SavedGrid>? = nil   // a tab that is a split of its own (2026-10-29)
+}
+
+/// Holds a value by reference, so a saved split can hold saved splits.
+/// Encodes as the value itself.
+final class Box<T: Codable>: Codable {
+    let value: T
+    init(_ v: T) { value = v }
+    required init(from d: Decoder) throws { value = try T(from: d) }
+    func encode(to e: Encoder) throws { try value.encode(to: e) }
 }
 
 struct SavedPane: Codable {
     var url: String
     var title: String?
     var name: String?
+    var split: Box<SavedGrid>? = nil   // its first tab, when that is a split of its own
     /// The pane's other tabs, after this one, and which tab it shows
     /// (0 is this one). Absent in a file saved before panes had tabs.
     var tabs: [SavedTab]?
@@ -413,6 +461,10 @@ struct SavedGrid: Codable {
     var hostActive: Int?
     var zoomed: Int?          // in the saved numbering
     var name: String?         // the whole tab's name (windowName)
+    /// Where the host's own page sits in its pane's strip, when not first
+    /// (a copy tab that holds the window, 2026-10-29). hostActive then counts
+    /// in that same strip order.
+    var hostAt: Int? = nil
 }
 
 struct PaneDropTarget {
@@ -484,7 +536,10 @@ extension AppDelegate {
         var paneId: Int? = nil
         var rect = content
         var full = false
-        if let g = host.grid {
+        var into = host
+        // The innermost pane under the pointer: a tab that is a split of its
+        // own is looked into, down to the pane the drop lands in.
+        while let g = into.grid {
             // A split adds a pane unless the tab moving is its pane's only tab.
             let samePane = moving.flatMap { g.id(of: $0) }
             let freesOne = samePane.map { g.tabs($0).count == 1 } ?? false
@@ -492,25 +547,39 @@ extension AppDelegate {
             guard let hit = g.paneFrames().first(where: { $0.frame.contains(p) }) else { return nil }
             paneId = hit.id
             rect = hit.frame
+            if let m = g.members[hit.id], m !== g.host, m !== moving, let sub = m.grid, !sub.paneFrames().isEmpty {
+                into = m
+                continue
+            }
+            break
         }
         guard rect.width > 0, rect.height > 0 else { return nil }
         let d = paneDropEdge(u: (p.x - rect.minX) / rect.width, v: (p.y - rect.minY) / rect.height, width: rect.width, height: rect.height, full: full)
-        return PaneDropTarget(host: host, paneId: paneId, edge: d.edge, name: d.name, preview: paneDropRect(rect, edge: d.edge).integral)
+        return PaneDropTarget(host: into, paneId: paneId, edge: d.edge, name: d.name, preview: paneDropRect(rect, edge: d.edge).integral)
     }
 
     /// `c` becomes a pane of `host`'s window, beside `paneId` on `edge`, or
     /// (`.center`) a tab of that pane.
     @discardableResult
     func dockPane(_ c: DashboardWindowController, into host: DashboardWindowController, at paneId: Int?, edge: PaneEdge, zone: String = "") -> Bool {
-        guard c !== host, c.grid == nil, let hw = host.window, let cw = c.window else {
+        guard c !== host, c.grid == nil, let hw = host.rootHost.window, let cw = c.window else {
             dlog("verdict=pane_dock_refused reason=\(c === host ? "same_window" : c.grid != nil ? "dragged_tab_has_grid" : "no_window")")
             return false
         }
         if host.grid == nil {
+            // A split inside a tab: no deeper than the fourth level of tabs.
+            if host.paneHost != nil && host.depth > maxSplitDepth {
+                dlog("verdict=pane_nest_refused reason=too_deep depth=\(host.depth)")
+                return false
+            }
             let g = PaneGrid(host: host)
             host.grid = g
-            g.container.frame = hw.contentView?.bounds ?? .zero
-            hw.contentView = g.container
+            if let parent = host.paneHost?.grid, let pid = parent.id(of: host) {
+                g.container.frame = parent.views[pid]?.bounds ?? .zero
+            } else {
+                g.container.frame = hw.contentView?.bounds ?? .zero
+                hw.contentView = g.container
+            }
         }
         guard let g = host.grid else { return false }
         let target = paneId.flatMap { g.stacks[$0] != nil ? $0 : nil } ?? g.focused ?? g.tree.leaves.first ?? 0
@@ -540,6 +609,10 @@ extension AppDelegate {
         g.members[into] = c
         g.focused = into
         g.rebuild()
+        // A split inside a tab: its pane in the grid above shows it.
+        if let parent = host.paneHost?.grid, let pid = parent.id(of: host) {
+            if parent.members[pid] === host { parent.views[pid]?.attach(host) } else { parent.select(host, in: pid) }
+        }
         host.updateTitle()
         hw.tabGroup?.selectedWindow = hw
         hw.makeKeyAndOrderFront(nil)
@@ -556,8 +629,11 @@ extension AppDelegate {
     /// Takes `c` out of its pane: back to a tab of that window, closed, or into
     /// another pane. A pane left with no tabs closes and its neighbour takes the
     /// space; a window left with one page is a plain window again.
-    func undockPane(_ c: DashboardWindowController, to dest: PaneDestination) {
-        guard let g = c.paneHost?.grid ?? c.grid, let cid = g.id(of: c) else { return }
+    func undockPane(_ c: DashboardWindowController, to dest: PaneDestination, from grid: PaneGrid? = nil) {
+        // The grid it leaves: the one named (a pane's own controls name theirs),
+        // else the one it is a tab of. A split inside a tab is a tab of the grid
+        // above it, and the host of its own.
+        guard let g = grid ?? c.paneHost?.grid ?? c.grid, let cid = g.id(of: c) else { return }
         // A move's target, by its page: removing this tab can renumber the grid
         // or collapse it to a plain window. A target pane whose shown tab is `c`
         // is named by another of its tabs.
@@ -572,10 +648,9 @@ extension AppDelegate {
         // The host's own page: another page takes over the window first, so the
         // window, its place and its tab stay.
         if g.host === c {
-            guard let heir = g.all.first(where: { $0 !== c }) else { return }
-            rehost(g, to: heir)
+            guard handOver(g, from: c) else { return }
         }
-        guard let host = g.host, let hw = host.window else { return }
+        guard let host = g.host, let hw = host.rootHost.window else { return }
         lastTabPlaced = Date()
         g.syncFractions()
         var left = g.tabs(cid)
@@ -591,13 +666,22 @@ extension AppDelegate {
             if g.members[cid] === c { g.members[cid] = left[min(at, left.count - 1)] }
         }
         c.paneHost = nil
-        c.webView.removeFromSuperview()
-        c.window?.contentView = c.webView
+        // A tab that is a split of its own takes its split with it.
+        let own = c.grid?.container ?? c.webView
+        own.removeFromSuperview()
+        c.window?.contentView = own
         if g.tree.leaves.count <= 1 && g.all.count <= 1 {
             host.grid = nil
             g.container.removeFromSuperview()
             host.webView.removeFromSuperview()
-            hw.contentView = host.webView
+            if let parent = host.paneHost?.grid, let pid = parent.id(of: host) {
+                // A split inside a tab down to one page: the tab is that page again.
+                host.windowName = nil
+                parent.views[pid]?.attach(host)
+                parent.refreshStrips()
+            } else {
+                hw.contentView = host.webView
+            }
         } else {
             g.rebuild()
         }
@@ -619,6 +703,71 @@ extension AppDelegate {
                 c.window?.makeKeyAndOrderFront(nil)
             }
         }
+        saveWindowsSoon()
+    }
+
+    /// `c`, the grid's host, gives the grid to another of its pages before it
+    /// leaves. A window's grid moves window (rehost); a split inside a tab
+    /// stays where it is, with `heir` as the tab in the grid above.
+    @discardableResult
+    func handOver(_ g: PaneGrid, from c: DashboardWindowController) -> Bool {
+        // A page that hosts a split of its own cannot also take this one.
+        guard g.host === c, let heir = g.all.first(where: { $0 !== c && $0.grid == nil }) else {
+            dlog("verdict=pane_split_handover_refused reason=no_plain_page panes=\(g.tree.leaves.count)")
+            return false
+        }
+        guard let up = c.paneHost, let pg = up.grid, let pid = pg.id(of: c) else {
+            rehost(g, to: heir)
+            return true
+        }
+        heir.paneHost = up
+        heir.grid = g
+        heir.windowName = c.windowName
+        c.grid = nil
+        c.windowName = nil
+        g.host = heir
+        for m in g.all where m !== heir { m.paneHost = heir }
+        if var st = pg.stacks[pid], let i = st.firstIndex(where: { $0 === c }) { st[i] = heir; pg.stacks[pid] = st }
+        if pg.members[pid] === c { pg.members[pid] = heir }
+        dlog("verdict=pane_split_handed_over depth=\(heir.depth) panes=\(g.tree.leaves.count)")
+        return true
+    }
+
+    /// "Split this tab": the tab pane `id` shows becomes a split of its own,
+    /// that page and a second copy of it side by side, each with its own tabs.
+    func nestSplit(_ c: DashboardWindowController, in g: PaneGrid) {
+        guard let id = g.id(of: c), g.canNest(id) else {
+            dlog("verdict=pane_nest_refused reason=\(c.grid != nil && c !== g.host ? "already_split" : "too_deep") depth=\(c.depth)")
+            return
+        }
+        if g.host === c {
+            // Every other tab here is a split of its own: a copy of this page
+            // joins its pane as a tab and takes over the grid.
+            if !g.all.contains(where: { $0 !== c && $0.grid == nil }) {
+                let copy = DashboardWindowController(app: self, frame: c.rootHost.window?.frame, configuration: nil)
+                controllers.append(copy)
+                if let u = c.webView.url { copy.load(u) } else { copy.showConnectPage() }
+                guard dockPane(copy, into: c, at: id, edge: .center, zone: "split_tab_host") else { copy.window?.close(); return }
+                if let m = g.members[id], m !== c { g.select(c, in: id) }
+                dlog("verdict=pane_split_host_copy pane_tabs=\(g.tabs(id).count)")
+            }
+            guard handOver(g, from: c) else { return }
+            // Its window handed the grid on; it is a pane now, so its own window
+            // leaves the tab bar like any pane's.
+            if let cw = c.window, cw !== g.window {
+                lastTabPlaced = Date()
+                if (cw.tabbedWindows?.count ?? 1) > 1 { cw.tabGroup?.removeWindow(cw) }
+                cw.orderOut(nil)
+            }
+        }
+        guard let up = g.host else { return }
+        c.paneHost = up
+        let n = DashboardWindowController(app: self, frame: up.rootHost.window?.frame, configuration: nil)
+        controllers.append(n)
+        if let u = c.webView.url { n.load(u) } else { n.showConnectPage() }
+        let ok = dockPane(n, into: c, at: nil, edge: .right, zone: "split_tab")
+        dlog("verdict=\(ok ? "pane_tab_split" : "pane_tab_split_refused") depth=\(c.depth + 1) panes=\(c.grid?.tree.leaves.count ?? 1)")
+        if !ok { n.window?.close() }
         saveWindowsSoon()
     }
 
@@ -658,15 +807,24 @@ extension AppDelegate {
 
     /// The grid of the window in front, when it has one. `actionGrid` names it
     /// for one call from the test hook, whose window is never key.
-    var keyGrid: PaneGrid? { actionGrid ?? keyController?.grid }
+    var keyGrid: PaneGrid? { actionGrid ?? keyController?.grid.map(deepestFocused) }
+
+    /// The innermost grid along the focused panes: a focused tab that is a
+    /// split of its own is the one acted on.
+    func deepestFocused(_ g: PaneGrid) -> PaneGrid {
+        var g = g
+        while let id = g.focused, let m = g.members[id], m !== g.host, let sub = m.grid { g = sub }
+        return g
+    }
 
     /// The Split button: the page `c` shows, a second time, in a new pane to
     /// the right of `c`'s pane, as if a tab of it were dropped on that edge.
     /// A full grid takes it as a tab of the pane instead (dockPane).
     func splitPane(_ c: DashboardWindowController, url: URL?) {
-        let host = c.paneHost ?? c
+        // The grid the page is in; a page hosting a split splits that split.
+        let host = c.grid != nil ? c : (c.paneHost ?? c)
         let paneId = host.grid?.id(of: c)
-        let n = DashboardWindowController(app: self, frame: host.window?.frame, configuration: nil)
+        let n = DashboardWindowController(app: self, frame: host.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
         if let u = url { n.load(u) } else { n.showConnectPage() }
         let ok = dockPane(n, into: host, at: paneId, edge: .right, zone: "split_button")
@@ -677,7 +835,7 @@ extension AppDelegate {
     /// A new tab in pane `id`, on the worker list like any new tab.
     func newTab(inPane id: Int, of g: PaneGrid) {
         guard let host = g.host else { return }
-        let n = DashboardWindowController(app: self, frame: host.window?.frame, configuration: nil)
+        let n = DashboardWindowController(app: self, frame: host.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
         // On the server of the tab showing in that pane, like any new tab.
         let from = g.members[id]?.serverOrigin ?? host.serverOrigin
@@ -690,7 +848,7 @@ extension AppDelegate {
         g.syncFractions()
         g.zoomed = g.zoomed == id ? nil : id
         g.rebuild()
-        if let c = g.members[id] { g.host?.window?.makeFirstResponder(c.webView) }
+        if let c = g.members[id] { g.window?.makeFirstResponder(c.webView) }
         dlog("verdict=pane_zoom zoomed=\(g.zoomed == nil ? 0 : 1) panes=\(g.tree.leaves.count)")
         saveWindowsSoon()
     }
@@ -717,6 +875,8 @@ extension AppDelegate {
     /// The page `c` shown wherever it is: its pane's tab, its view in front.
     func reveal(_ c: DashboardWindowController) {
         guard let g = c.inGrid, let id = g.id(of: c) else { return }
+        // Inside a split that is itself a tab: that tab in front first.
+        if let up = g.host, up.paneHost != nil { reveal(up) }
         if g.zoomed != nil && g.zoomed != id { g.zoomed = nil; g.rebuild() }
         if g.members[id] !== c { g.select(c, in: id) } else { g.focus(id) }
     }
@@ -727,7 +887,7 @@ extension AppDelegate {
     }
     @objc func paneCloseTab(_ sender: Any?) {
         guard let g = keyGrid, let id = g.focused ?? g.tree.leaves.first, let c = g.members[id] else { return }
-        undockPane(c, to: .close)
+        undockPane(c, to: .close, from: g)
     }
     @objc func paneZoom(_ sender: Any?) {
         guard let g = keyGrid, let id = g.focused ?? g.tree.leaves.first else { return }
@@ -794,20 +954,24 @@ extension AppDelegate {
         func tab(_ m: DashboardWindowController) -> SavedTab? {
             guard let url = m.savedURL() else { return nil }
             let t = m.window?.title ?? ""
-            return SavedTab(url: url, title: t.isEmpty || t == "amux" ? nil : t, name: m.customName)
+            // A tab that is a split of its own is saved with its split.
+            let sub = m !== c && m.grid != nil ? savedGrid(m).map(Box.init) : nil
+            return SavedTab(url: url, title: t.isEmpty || t == "amux" ? nil : t, name: m.customName, split: sub)
         }
         var panes: [SavedPane] = []
         for id in others {
             let stack = g.tabs(id).compactMap(tab)
             guard stack.count == g.tabs(id).count, let first = stack.first else { return nil }
             let active = g.tabs(id).firstIndex { $0 === g.members[id] } ?? 0
-            panes.append(SavedPane(url: first.url, title: first.title, name: first.name, tabs: stack.count > 1 ? Array(stack.dropFirst()) : nil, active: active == 0 ? nil : active))
+            panes.append(SavedPane(url: first.url, title: first.title, name: first.name, split: first.split,
+                                   tabs: stack.count > 1 ? Array(stack.dropFirst()) : nil, active: active == 0 ? nil : active))
         }
-        // The host's pane: the host first, its other tabs after.
-        let hostStack = [c] + g.tabs(hostLeaf).filter { $0 !== c }
-        let hostTabs = hostStack.dropFirst().compactMap(tab)
-        guard hostTabs.count == hostStack.count - 1 else { return nil }
-        let hostActive = hostStack.firstIndex { $0 === g.members[hostLeaf] } ?? 0
+        // The host's pane: its other tabs in strip order, and where the host sits.
+        let strip = g.tabs(hostLeaf)
+        let hostAt = strip.firstIndex { $0 === c } ?? 0
+        let hostTabs = strip.filter { $0 !== c }.compactMap(tab)
+        guard hostTabs.count == strip.count - 1 else { return nil }
+        let hostActive = strip.firstIndex { $0 === g.members[hostLeaf] } ?? 0
         // A page twice in one window (Ethan's 2026-10-25 screenshot: one worker
         // in both panes) is saved as it is, but said, so the next one is traceable.
         let urls = [c.savedURL()].compactMap { $0 } + hostTabs.map { $0.url } + panes.flatMap { [$0.url] + ($0.tabs ?? []).map { $0.url } }
@@ -818,18 +982,18 @@ extension AppDelegate {
         }
         return SavedGrid(tree: g.tree.mapped { index[$0] ?? 0 }.encoded, panes: panes,
                          hostTabs: hostTabs.isEmpty ? nil : hostTabs, hostActive: hostActive == 0 ? nil : hostActive,
-                         zoomed: g.zoomed.flatMap { index[$0] }, name: c.windowName)
+                         zoomed: g.zoomed.flatMap { index[$0] }, name: c.windowName, hostAt: hostAt == 0 ? nil : hostAt)
     }
 
     /// Rebuilds a saved grid in `host`'s window, reusing open controllers
     /// showing the same pages.
     func restoreGrid(_ s: SavedGrid, in host: DashboardWindowController, pool: inout [DashboardWindowController]) {
-        guard let tree = PaneTree.decode(s.tree), let hw = host.window, tree.leaves.contains(0),
+        guard let tree = PaneTree.decode(s.tree), let hw = host.rootHost.window ?? host.window, tree.leaves.contains(0),
               Set(tree.leaves) == Set(0...s.panes.count) else {
             dlog("verdict=pane_grid_restore_skipped reason=bad_tree tree=\(s.tree)")
             return
         }
-        func page(_ url: String, _ title: String?, _ name: String? = nil) -> DashboardWindowController {
+        func page(_ url: String, _ title: String?, _ name: String? = nil, _ split: Box<SavedGrid>? = nil) -> DashboardWindowController {
             let c: DashboardWindowController
             if let j = pool.firstIndex(where: { $0.savedURL() == url }) {
                 c = pool.remove(at: j)
@@ -844,14 +1008,17 @@ extension AppDelegate {
             }
             c.paneHost = host
             if let n = name, !n.isEmpty { c.customName = n }
+            // A tab that was a split of its own, built inside it (its pane draws it).
+            if let sub = split?.value { restoreGrid(sub, in: c, pool: &pool) }
             return c
         }
         let g = PaneGrid(host: host)
-        let hostStack = [host] + (s.hostTabs ?? []).map { page($0.url, $0.title, $0.name) }
+        var hostStack = (s.hostTabs ?? []).map { page($0.url, $0.title, $0.name, $0.split) }
+        hostStack.insert(host, at: min(max(s.hostAt ?? 0, 0), hostStack.count))
         g.stacks[0] = hostStack
         g.members[0] = hostStack[min(s.hostActive ?? 0, hostStack.count - 1)]
         for (i, p) in s.panes.enumerated() {
-            let stack = [page(p.url, p.title, p.name)] + (p.tabs ?? []).map { page($0.url, $0.title, $0.name) }
+            let stack = [page(p.url, p.title, p.name, p.split)] + (p.tabs ?? []).map { page($0.url, $0.title, $0.name, $0.split) }
             g.stacks[i + 1] = stack
             g.members[i + 1] = stack[min(p.active ?? 0, stack.count - 1)]
         }
@@ -859,8 +1026,10 @@ extension AppDelegate {
         g.nextId = s.panes.count + 1
         g.zoomed = s.zoomed
         host.grid = g
-        g.container.frame = hw.contentView?.bounds ?? .zero
-        hw.contentView = g.container
+        if host.paneHost == nil {
+            g.container.frame = hw.contentView?.bounds ?? .zero
+            hw.contentView = g.container
+        }
         g.rebuild()
         host.windowName = s.name
         host.updateTitle()
@@ -873,6 +1042,7 @@ extension AppDelegate {
         for h in cs {
             guard let g = h.grid, g.host === h, let hw = h.window else { continue }
             for m in g.all where m !== h {
+                if m.grid != nil { dissolveGrids([m]) }   // a split inside a tab first
                 m.webView.removeFromSuperview()
                 m.window?.contentView = m.webView
                 m.paneHost = nil
