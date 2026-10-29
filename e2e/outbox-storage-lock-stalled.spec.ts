@@ -24,10 +24,17 @@ test('a local save goes through past a window that froze holding the storage loc
     .some((l: any) => l.name === 'amux-outbox-storage'))).toBe(true);
 
   const page = await context.newPage();
+  // Record every outbox verdict from the first request on. The page's own
+  // boot sync (runSyncBanner -> _mutateQueue) is the first thing to queue
+  // behind the frozen window, so the takeover usually happens DURING boot.
+  // A recorder installed after boot missed it and saw only the replay-lock
+  // verdict, which failed this spec on every engine on main (AF-999).
+  const verdicts: string[] = [];
+  await page.route(/\/api\/client-debug$/, async route => {
+    try { const b = route.request().postDataJSON(); if (b && b.verdict) verdicts.push(b.verdict); } catch (_) {}
+    await route.fulfill({ json: { ok: true } });
+  });
   await boot(page);
-  // Every engine: record the diagnostic where it is raised, not off the wire.
-  await page.evaluate(() => { const g = window as any, real = g._outboxDiagnostic; g.__verdicts = [];
-    g._outboxDiagnostic = (v: string, f: any) => { g.__verdicts.push(v); return real(v, f); }; });
   const t0 = Date.now();
   // The same call the composer's save makes (_queueOp -> _mutateQueue).
   const saved = await page.evaluate(async (w) => {
@@ -40,7 +47,7 @@ test('a local save goes through past a window that froze holding the storage loc
   const waited = Date.now() - t0;
   expect(saved, 'the save landed in the queue').toBe(true);
   expect(waited, 'within seconds, not after the holder wakes').toBeLessThan(15_000);
-  expect(await page.evaluate(() => (window as any).__verdicts), 'the takeover is reported').toContain('outbox_storage_lock_stolen');
+  await expect.poll(() => verdicts, { message: 'the takeover is reported' }).toContain('outbox_storage_lock_stolen');
   await page.evaluate(async () => { await (window as any)._mutateQueue((rows: any[]) => {
     const at = rows.findIndex((q: any) => q.id === 'storage-stalled-1'); if (at >= 0) rows.splice(at, 1); }); });
 });
