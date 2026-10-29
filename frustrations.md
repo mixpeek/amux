@@ -6142,3 +6142,29 @@ FIX: (proposed) priority-aware preemption in the subagents boundary. (1) An
   (3) The refusal message names the running agents, their ages, and the one
   that would be preempted, so the worker can decide without reading files.
   The usage-headroom floor stays as it is, because preemption does not add load.
+
+## The land gate's Rust stage fails on the Mac in a file the change never touched
+AREA: land-gate
+SEVERITY: high
+STATUS: open
+DATE: 2026-10-28
+SESSION: amux-cloud
+CARD: none yet (amux-cloud filed none; the land-gate owner should take it)
+SYMPTOM: three land gates in a row on 2026-10-28 evening (commits 5d0cad11d,
+  ed3aac7c1's rerun, f4b5eaa7a) reported rust_fail with 72 errors (E0432,
+  E0433, E0277 "the size for values of type `str` cannot be known") in
+  crates/amux-server/src/project_execution/driver.rs:655 and :664, a file
+  none of them changed and that had not changed in 35 hours. Main's CI
+  test-build was green on the same commits. A check and a lib-only test
+  build of amux-server on the gate's own scratch checkout passed by hand;
+  the gate's workspace test build is what fails, and reproducing it was then
+  refused by the cargo budget (shared target over 42.9 GB).
+COST: every push from this lane that evening went out with
+  AMUX_SKIP_LAND_GATE and a reason instead of a receipt; about 25 minutes
+  per gate run, three runs, with no Rust verdict from any of them. Any lane
+  landing from this Mac hits the same wall.
+FIX: (proposed) when the gate's workspace build fails only in files outside
+  the change, build origin/main the same way in the same target and report
+  "also fails on origin/main here" (as it already does for failing tests),
+  so a local target problem is named instead of blocking. Separately, the
+  shared target is past its size budget and needs a reclaim.
