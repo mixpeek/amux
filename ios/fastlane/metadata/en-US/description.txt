@@ -33,7 +33,7 @@ Progressive Web App: Open your amux dashboard URL in Safari and install to home 
 
 REQUIREMENTS
 
-- amux server running on Mac or Linux (free, open source: github.com/mixpeek/amux)
+- amux server running on Mac or Linux (free to self-host, MIT + Commons Clause: github.com/mixpeek/amux)
 - Claude Code, OpenAI Codex CLI, or Gemini CLI installed on your server
 - Wi-Fi, Tailscale, or amux cloud for remote access
 

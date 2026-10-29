@@ -67,7 +67,7 @@ Tailscale is free and works great for personal use, and an amux cloud box has it
 
 **Requirements**
 
-- amux server running on Mac or Linux (free, open source: github.com/mixpeek/amux)
+- amux server running on Mac or Linux (free to self-host, MIT + Commons Clause: github.com/mixpeek/amux)
 - Claude Code, OpenAI Codex CLI, or Gemini CLI installed on your server
 - Wi-Fi, Tailscale, or amux cloud for remote access
 
