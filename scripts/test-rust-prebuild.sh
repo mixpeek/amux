@@ -51,6 +51,7 @@ run
 grep -q "verdict=prebuild_skipped reason=lock" "$TMP/build.log" && ok "a held builder lock is a skip" || bad "ran beside the builder"
 [ -d "$TMP/build.lock" ] && [ "$(cat "$TMP/build.lock/pid")" = $$ ] && ok "and the builder's lock is left alone" || bad "took the builder's lock"
 rm -rf "$TMP/build.lock"
+[ "$(cat "$TMP/done" 2>/dev/null)" != "$SHA" ] && ok "a skip is not marked done, so it runs later" || bad "a skip was marked done"
 
 run AMUX_BUILD_MIN_FREE_GB=999999
 grep -q "verdict=prebuild_skipped reason=disk" "$TMP/build.log" && ok "low disk is a skip" || bad "built on low disk"
@@ -60,6 +61,12 @@ printf 'exit 1\n' >> "$REPO/scripts/safe-cargo.sh"
 SHA=$(git -C "$REPO" rev-parse HEAD)
 run
 grep -q "verdict=prebuild_failed" "$TMP/build.log" && ok "a failed compile is logged as one" || bad "no prebuild_failed"
+[ "$(cat "$TMP/done" 2>/dev/null)" != "$SHA" ] && ok "and is not marked done" || bad "a failed compile was marked done"
+n=$(wc -l < "$TMP/cargo.calls")
+run
+[ "$(wc -l < "$TMP/cargo.calls")" = "$n" ] && ok "it is not retried straight away" || bad "retried at once"
+run AMUX_PREBUILD_RETRY_S=0
+[ "$(wc -l < "$TMP/cargo.calls")" -gt "$n" ] && ok "and is retried once the wait is over" || bad "never retried"
 
 echo "test-rust-prebuild: $fails failed"
 exit "$fails"

@@ -32095,7 +32095,9 @@ function _fileHashSync(path) {
     let want = path ? '#path=' + _encodeHashPath(path)
       : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
     if (!path && _fileHashUnder) { want = _fileHashUnder; _fileHashUnder = null; }
-    if (!path && !own) return;
+    // Closed while the address moved elsewhere: what the file covered is
+    // gone already, and it must not be put back by a later close (land review F1).
+    if (!path && !own) { _fileHashUnder = null; return; }
     if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
   } catch (e) {}
 }

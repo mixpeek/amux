@@ -19,7 +19,8 @@
 # held. It skips when disk is below the builder's floor, and it never starts a
 # second time for the same commit (the done file). Every outcome is one log
 # line with a verdict: prebuild_started, prebuild_done, prebuild_failed,
-# prebuild_skipped.
+# prebuild_skipped. A commit is marked done only once it compiled; a failure
+# is retried after AMUX_PREBUILD_RETRY_S (600).
 set -euo pipefail
 
 REPO="${1:?repo}"
@@ -35,6 +36,13 @@ mkdir -p "$(dirname "$LOG")"
 say() { echo "== $(date '+%F %T') PREBUILD $SHA $*" >> "$LOG"; }
 
 [ "$(cat "$DONE" 2>/dev/null)" != "$SHA" ] || exit 0
+# A failure is retried, but not every pass: a commit that does not compile would
+# otherwise recompile every minute until its CI resolves (land review F2).
+FAILED="$DONE.failed"
+if [ "$(cat "$FAILED" 2>/dev/null)" = "$SHA" ] \
+   && [ $(( $(date +%s) - $(stat -f %m "$FAILED" 2>/dev/null || stat -c %Y "$FAILED" 2>/dev/null || echo 0) )) -lt "${AMUX_PREBUILD_RETRY_S:-600}" ]; then
+  exit 0
+fi
 free_gb=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
 if [ "${free_gb:-0}" -lt "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
   say "skipped: ${free_gb}GB free is under the builder's floor verdict=prebuild_skipped reason=disk"
@@ -47,15 +55,14 @@ fi
 OUT=$(mktemp "${TMPDIR:-/tmp}/amux-prebuild.XXXXXX")
 trap 'rm -rf "$LOCK"; rm -f "$OUT"' EXIT
 echo $$ > "$LOCK/pid"
-echo "$SHA" > "$DONE"
 
 # The same snapshot the builder makes: hard-reset and cleaned, then the commit.
 if [ -d "$STABLE" ] && git -C "$STABLE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$STABLE" reset -q --hard && git -C "$STABLE" clean -qfdx && git -C "$STABLE" checkout -q --detach "$SHA" \
-    || { say "skipped: could not check out $SHA in $STABLE verdict=prebuild_skipped reason=checkout"; exit 0; }
+    || { echo "$SHA" > "$FAILED"; say "skipped: could not check out $SHA in $STABLE verdict=prebuild_skipped reason=checkout"; exit 0; }
 else
   git -C "$REPO" worktree add --detach "$STABLE" "$SHA" >/dev/null 2>&1 \
-    || { say "skipped: could not create $STABLE verdict=prebuild_skipped reason=checkout"; exit 0; }
+    || { echo "$SHA" > "$FAILED"; say "skipped: could not create $STABLE verdict=prebuild_skipped reason=checkout"; exit 0; }
 fi
 
 # The builder's settings (rust-auto-build.sh "THE DEPLOY PROFILE ONLY PAYS OFF
@@ -69,7 +76,9 @@ CARGO="${AMUX_PREBUILD_CARGO:-$STABLE/scripts/safe-cargo.sh}"
 say "started jobs=$JOBS nice=$NICE verdict=prebuild_started"
 t0=$(date +%s)
 if (cd "$STABLE" && CARGO_TARGET_DIR="$TARGET" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$JOBS" nice -n "$NICE" "$CARGO" build --profile deploy -p amux-server) > "$OUT" 2>&1; then
+  echo "$SHA" > "$DONE"; rm -f "$FAILED"
   say "done elapsed_s=$(( $(date +%s) - t0 )) verdict=prebuild_done"
 else
-  say "failed elapsed_s=$(( $(date +%s) - t0 )) verdict=prebuild_failed: $(grep -m1 -E '^error' "$OUT" | cut -c1-200)"
+  echo "$SHA" > "$FAILED"
+  say "failed elapsed_s=$(( $(date +%s) - t0 )) verdict=prebuild_failed (retried after ${AMUX_PREBUILD_RETRY_S:-600}s): $(grep -m1 -E '^error' "$OUT" | cut -c1-200)"
 fi

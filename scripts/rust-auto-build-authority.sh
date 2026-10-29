@@ -264,6 +264,8 @@ AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-buil
 # AMUX_DEPLOY_PREBUILD=0 turns it off.
 if [ "${AMUX_DEPLOY_PREBUILD:-1}" = 1 ] && [ "$target" != "$tip" ] && [ "${tip_state:-}" = pending ] \
    && [ -f "$WORK/scripts/rust-prebuild.sh" ] && [ "$(cat "$HOME/.amux/prebuild-done" 2>/dev/null)" != "$tip" ] \
+   && ! { [ "$(cat "$HOME/.amux/prebuild-done.failed" 2>/dev/null)" = "$tip" ] \
+          && [ -n "$(find "$HOME/.amux/prebuild-done.failed" -mmin -10 2>/dev/null)" ]; } \
    && ! git -C "$REPO" diff --quiet "$target" "$tip" -- crates Cargo.toml Cargo.lock 2>/dev/null; then
   pre=$(mktemp "${TMPDIR:-/tmp}/amux-prebuild-sh.XXXXXX")
   cp "$WORK/scripts/rust-prebuild.sh" "$pre"
