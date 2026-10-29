@@ -67,7 +67,7 @@
     <p>These properties make tmux the ideal runtime for autonomous AI agents. But raw tmux is not designed for managing fleets of AI sessions. That is where amux comes in.</p>
 
     <h2>What amux adds to tmux</h2>
-    <p>amux is a Python server that wraps tmux with everything you need to run, monitor, and coordinate multiple Claude Code agents. Think of it as "tmux for AI" or, more precisely, an agent multiplexer built on top of tmux.</p>
+    <p>amux is a single Rust binary (with SQLite storage) that wraps tmux with everything you need to run, monitor, and coordinate multiple Claude Code agents. Think of it as "tmux for AI" or, more precisely, an agent multiplexer built on top of tmux.</p>
 
     <table>
       <thead><tr><th>Capability</th><th>Raw tmux</th><th>amux</th></tr></thead>
@@ -84,15 +84,15 @@
     </table>
 
     <h2>Setting up your AI terminal environment</h2>
-    <p>Getting started with amux takes about two minutes. You need Python 3, tmux, and a Claude Code API key:</p>
+    <p>Getting started with amux takes about two minutes. You need macOS or Linux, tmux 3.2+, and an agent CLI such as Claude Code:</p>
     <pre><code># Install amux
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+curl -fsSL https://amux.io/install.sh | bash
 
 # Register a project (--yolo enables autonomous mode for Claude Code)
 amux register myproject --dir ~/Dev/myproject --yolo
 
-# Start 4 parallel agents
-amux start myproject --sessions 4
+# Start it (register more workers the same way to run agents in parallel)
+amux start myproject --detach
 
 # Launch the web dashboard
 amux serve</code></pre>

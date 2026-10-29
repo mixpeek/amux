@@ -74,18 +74,21 @@
 
     <h2>Pair programming with a fleet</h2>
     <p>The core idea behind amux is that AI pair programming should not be a 1:1 relationship. When you have a feature that touches the API layer, the frontend, the database schema, and the test suite, why wait for a single agent to work through each layer sequentially?</p>
-    <p>With amux, you register a project once and then spin up as many sessions as you need:</p>
-    <pre><code># Register the project
-amux register webapp --dir ~/Dev/webapp --yolo
+    <p>With amux, you register one worker per task on the same repository and start as many as you need:</p>
+    <pre><code># Register one worker per focus area
+amux register api --dir ~/Dev/webapp --yolo
+amux register frontend --dir ~/Dev/webapp --yolo
+amux register tests --dir ~/Dev/webapp --yolo
+amux register docs --dir ~/Dev/webapp --yolo
 
-# Start parallel agents, each with a focused task
-amux start webapp --sessions 4
+# Start them in the background
+amux start api -d && amux start frontend -d && amux start tests -d && amux start docs -d
 
-# Or start them individually with specific prompts
-amux start webapp/api --prompt "Add pagination to the /users endpoint"
-amux start webapp/frontend --prompt "Build the user list page with infinite scroll"
-amux start webapp/tests --prompt "Write integration tests for the /users endpoint"
-amux start webapp/docs --prompt "Update the API docs for the /users endpoint"</code></pre>
+# Give each a focused task
+amux send api "Add pagination to the /users endpoint"
+amux send frontend "Build the user list page with infinite scroll"
+amux send tests "Write integration tests for the /users endpoint"
+amux send docs "Update the API docs for the /users endpoint"</code></pre>
     <p>Each session is an independent Claude Code instance running in its own tmux pane, with full access to the repository. The amux dashboard at <code>https://localhost:8824</code> gives you a real-time view of what every agent is doing, including live terminal output, token spend, and git diffs.</p>
 
     <h2>Pattern: test writer + implementer</h2>
@@ -178,13 +181,10 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <h2>Getting started</h2>
     <p>If you are already using Claude Code, adding multi-agent pair programming with amux takes about two minutes:</p>
     <pre><code># Install amux
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+curl -fsSL https://amux.io/install.sh | bash
 
-# Register your project
-amux register myproject --dir ~/Dev/myproject --yolo
-
-# Start 4 parallel agents
-amux start myproject --sessions 4
+# Register and start 4 parallel agents on your project
+for i in 1 2 3 4; do amux register myproject-$i --dir ~/Dev/myproject --yolo; amux start myproject-$i --detach; done
 
 # Open the dashboard to see all agents working
 amux serve  # https://localhost:8824</code></pre>

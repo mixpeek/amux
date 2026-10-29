@@ -343,8 +343,7 @@
 curl -fsSL https://amux.io/install.sh | bash
 
 <span class="dim"># Register your project and start 5 agents</span>
-amux register myproject --dir ~/Dev/myproject --yolo
-amux scale myproject --count 5
+for i in 1 2 3 4 5; do amux register myproject-$i --dir ~/Dev/myproject --yolo; amux start myproject-$i --detach; done
 
 <span class="dim"># Open the web dashboard</span>
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>

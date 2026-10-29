@@ -120,7 +120,7 @@
           </tr>
           <tr>
             <td><strong>Architecture</strong></td>
-            <td>Single Python server, tmux sessions, REST API</td>
+            <td>Single Rust binary with SQLite, tmux sessions, REST API</td>
             <td>CLI process, single interactive session</td>
           </tr>
           <tr>
@@ -225,7 +225,7 @@
     </ul>
 
     <p>
-      The install is a single command. amux has zero external dependencies beyond Python 3 and tmux, both of which are already present on any development machine running Antigravity CLI.
+      The install is a single command. amux is a single Rust binary that needs only tmux 3.2+ and an agent CLI, and Antigravity CLI is already one.
       The marginal cost of adding it is effectively zero; the marginal benefit compounds with every additional session.
     </p>
 

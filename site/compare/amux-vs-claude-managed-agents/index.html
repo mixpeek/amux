@@ -156,11 +156,9 @@ curl -sk $AMUX_URL/api/sessions/nightly-refactor/peek  # read output</code></pre
     </ul>
 
     <h2>The 5-minute setup</h2>
-    <p>Nothing about self-hosting amux is harder than signing up for Managed Agents. You need Python 3, tmux, and one command:</p>
-    <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8824</code></pre>
+    <p>Nothing about self-hosting amux is harder than signing up for Managed Agents. You need macOS or Linux, tmux 3.2+, an agent CLI, and one command:</p>
+    <pre><code>curl -fsSL https://amux.io/install.sh | bash
+# then open https://localhost:8824</code></pre>
     <p>From there you have a web dashboard, a kanban board, mobile PWA, REST API, and inter-session messaging. Spin up as many sessions as your RAM allows. The whole thing is <a href="https://github.com/mixpeek/amux/blob/main/amux-server-rs">one Rust binary</a>, MIT + Commons Clause, and hackable.</p>
 
     <h2>Related reading</h2>

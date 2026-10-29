@@ -264,12 +264,12 @@ if not claude_ui_visible(output) and recently_alive(name):
 
 <h2>The stack</h2>
 
-<p>Everything described in this post is a single Rust binary. Not a framework, not a collection of microservices &mdash; one file that runs on Python 3 and tmux.</p>
+<p>Everything described in this post runs in a single Rust binary plus tmux, with SQLite for storage.</p>
 
 <ul>
 <li><strong>Isolation:</strong> <code>git worktree</code> (ships with git)</li>
-<li><strong>Task queue:</strong> SQLite (ships with Python)</li>
-<li><strong>Real-time:</strong> SSE over stdlib <code>http.server</code></li>
+<li><strong>Task queue:</strong> SQLite (built into the binary)</li>
+<li><strong>Real-time:</strong> SSE from the amux server</li>
 <li><strong>Agent communication:</strong> tmux <code>send-keys</code></li>
 <li><strong>Dashboard:</strong> inline HTML/CSS/JS (no build step)</li>
 <li><strong>External dependencies:</strong> zero</li>

@@ -662,8 +662,7 @@
 
     <pre><code><span class="dim"># Install amux and run 5 Claude Code agents on your project</span>
 curl -fsSL https://amux.io/install.sh | bash
-amux register myproject --dir ~/Dev/myproject --yolo
-amux scale myproject --count 5
+for i in 1 2 3 4 5; do amux register myproject-$i --dir ~/Dev/myproject --yolo; amux start myproject-$i --detach; done
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
     <!-- ═══════════════════════════════════════════════════════════════

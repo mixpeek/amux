@@ -94,9 +94,9 @@
 
 <h3>Prerequisites</h3>
 <ul>
-<li><strong>Python 3.8+</strong></li>
-<li><strong>tmux</strong> &mdash; <code>brew install tmux</code> (macOS) or <code>apt install tmux</code> (Linux)</li>
-<li><strong>Claude Code CLI</strong> &mdash; installed and authenticated (<code>claude</code> command available)</li>
+<li><strong>macOS or Linux</strong></li>
+<li><strong>tmux 3.2+</strong> &mdash; <code>brew install tmux</code> (macOS) or <code>apt install tmux</code> (Linux)</li>
+<li><strong>At least one agent CLI</strong> &mdash; Claude Code, Codex, Gemini CLI or OpenCode, installed and signed in</li>
 </ul>
 
 <h3>Install</h3>
@@ -118,11 +118,9 @@
 
 <h3>Updating</h3>
 
-<pre><code>brew upgrade amux          # Homebrew installs
-pipx upgrade amux          # pipx installs
-cd ~/path/to/amux && git pull && ./install.sh   # source installs</code></pre>
+<pre><code>cd ~/Dev/amux && git pull && ./install.sh   # ~/Dev/amux is the one-line installer's checkout</code></pre>
 
-<p>The server knows its install channel and the dashboard&rsquo;s update button points you at the right command.</p>
+<p>The Homebrew and PyPI packages are retired. If you installed from another checkout, run the same commands there.</p>
 
 <p>The server auto-restarts when <code>amux-server-rs</code> changes, so updates take effect immediately if the dashboard is running.</p>
 
@@ -696,15 +694,14 @@ AMUX_S3_REGION=us-east-2</code></pre>
 
 <h2 id="architecture">Architecture</h2>
 
-<p>amux is a single Rust binary (<code>amux-server-rs</code>) with no external dependencies beyond Python 3 and tmux. The same file runs locally and in the cloud.</p>
+<p>amux is a single Rust binary (<code>amux-server-rs</code>) with SQLite storage. It needs only tmux 3.2+ and an agent CLI, and runs on macOS and Linux. The same binary runs locally and on amux Cloud.</p>
 
 <ul>
-<li><strong>Server</strong> &mdash; Python HTTP server with threading, serves the dashboard + API</li>
+<li><strong>Server</strong> &mdash; Rust HTTP server, serves the dashboard + API</li>
 <li><strong>Dashboard</strong> &mdash; inline HTML/CSS/JS, no build step, no bundler</li>
 <li><strong>Storage</strong> &mdash; SQLite for board, CRM, logs, scheduler. Flat files for session configs and notes.</li>
 <li><strong>Sessions</strong> &mdash; tmux panes running Claude Code CLI. Managed via <code>tmux send-keys</code> and <code>tmux capture-pane</code>.</li>
 <li><strong>Live updates</strong> &mdash; Server-Sent Events (SSE) with a 10-second ping heartbeat. Clients reconnect after 18 seconds of silence.</li>
-<li><strong>Auto-restart</strong> &mdash; the server watches its own file and calls <code>os.execv</code> on change</li>
 </ul>
 
 <h3>Data directory</h3>

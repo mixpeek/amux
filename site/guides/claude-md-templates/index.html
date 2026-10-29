@@ -520,7 +520,7 @@ Server ships on commit via the auto-builder (live within ~60s).
 - No async runtimes other than tokio. No axum handler with more than two
   extractors. If it needs three, extract a helper struct.
 - `cargo clippy --workspace --all-targets -- -D warnings` must pass before push.</code></pre>
-        <div class="tmpl-note">Why: amux has been a single Rust binary since July 2026 (removed the Python server at 792ce1f). The key rules — append-only migrations and static JS files — prevent the two most common shared-checkout race conditions.</div>
+        <div class="tmpl-note">Why: amux has been a single Rust binary since August 2026 (removed the Python server at 792ce1f). The key rules — append-only migrations and static JS files — prevent the two most common shared-checkout race conditions.</div>
       </div>
 
       <!-- 14. Global personal -->

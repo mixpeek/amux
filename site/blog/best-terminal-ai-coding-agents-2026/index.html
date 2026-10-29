@@ -766,9 +766,8 @@
     </div>
 
     <pre><code><span class="dim"># Install and run 5 agents on your project</span>
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux scale myproject --count 5
+curl -fsSL https://amux.io/install.sh | bash
+for i in 1 2 3 4 5; do amux register myproject-$i --dir ~/Dev/myproject --yolo; amux start myproject-$i --detach; done
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
     <p>See our <a href="/blog/best-multi-agent-orchestrators-2026/">complete orchestrator comparison</a> for the full landscape.</p>
