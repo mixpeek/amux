@@ -36,7 +36,7 @@
     "@context": "https://schema.org",
     "@type": "DefinedTerm",
     "name": "AI Agent Fleet",
-    "description": "An AI agent fleet is a collection of AI coding or automation agents running in parallel under a shared control plane. The fleet shares a task queue (kanban board), coordination layer, monitoring dashboard, and self-healing watchdog. An AI engineering team running Claude Code, Codex, or Gemini CLI agents at scale is an example of an AI agent fleet.",
+    "description": "An AI agent fleet is a collection of AI coding or automation agents running in parallel under a shared control plane. The fleet shares a task queue (kanban board), coordination layer, monitoring dashboard, and recovery from usage limits and stalls. An AI engineering team running Claude Code, Codex, or Gemini CLI agents at scale is an example of an AI agent fleet.",
     "url": "https://amux.io/glossary/ai-agent-fleet/",
     "inDefinedTermSet": "https://amux.io/glossary/"
   }
@@ -63,7 +63,7 @@
         "name": "What is an AI agent fleet?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "An AI agent fleet is a group of AI coding or automation agents — such as Claude Code, Codex CLI, or Gemini CLI instances — running in parallel under a shared control plane. The fleet has a common task queue, coordination layer, monitoring dashboard, and self-healing watchdog. A solo developer running 10 Claude Code agents overnight to generate tests across a codebase is operating an AI agent fleet."
+          "text": "An AI agent fleet is a group of AI coding or automation agents — such as Claude Code, Codex CLI, or Gemini CLI instances — running in parallel under a shared control plane. The fleet has a common task queue, coordination layer, monitoring dashboard, and recovery from usage limits and stalls. A solo developer running 10 Claude Code agents overnight to generate tests across a codebase is operating an AI agent fleet."
         }
       },
       {
@@ -71,7 +71,7 @@
         "name": "How is an AI agent fleet different from a single AI agent?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "A single AI agent runs one task at a time and requires a human present to restart it if it crashes or hits a context limit. An AI agent fleet runs many tasks in parallel across multiple agents, uses a shared task queue to prevent duplication, heals automatically from crashes and context overflows, and supports remote monitoring from a phone or dashboard while the fleet runs unattended overnight."
+          "text": "A single AI agent runs one task at a time and requires a human present to restart it if it crashes or hits a context limit. An AI agent fleet runs many tasks in parallel across multiple agents, uses a shared task queue to prevent duplication, resumes after usage limits and flags stalled work, and supports remote monitoring from a phone or dashboard while the fleet runs unattended overnight."
         }
       },
       {
@@ -79,7 +79,7 @@
         "name": "What does a fleet control plane do?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "A fleet control plane launches, monitors, and self-heals agent sessions. It provides: a shared task board so agents claim work without duplication; an inter-agent messaging layer so sessions can coordinate and delegate; a self-healing watchdog that detects context overflows, crashes, and stuck prompts; a web and mobile dashboard for real-time monitoring and steering; and built-in tooling (scheduler, email, CRM, browser automation) to run full business workflows alongside coding agents."
+          "text": "A fleet control plane launches, monitors, and recovers agent sessions. It provides: a shared task board so agents claim work without duplication; an inter-agent messaging layer so sessions can coordinate and delegate; recovery that resumes agents after usage limits and alerts you to stalled work; a web and mobile dashboard for real-time monitoring and steering; and built-in tooling (scheduler, email, CRM, browser automation) to run full business workflows alongside coding agents."
         }
       },
       {
@@ -95,7 +95,7 @@
         "name": "What is the difference between an AI agent fleet and an orchestrator?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "An orchestrator is a component that coordinates what agents do — dispatching tasks, routing outputs, managing dependencies. A fleet is the collection of agents plus the control plane that manages them end to end: launch, monitoring, self-healing, task coordination, inter-agent messaging, and human oversight. amux is a fleet control plane that includes an orchestrator (the board and messaging layer) as one of its components."
+          "text": "An orchestrator is a component that coordinates what agents do — dispatching tasks, routing outputs, managing dependencies. A fleet is the collection of agents plus the control plane that manages them end to end: launch, monitoring, recovery, task coordination, inter-agent messaging, and human oversight. amux is a fleet control plane that includes an orchestrator (the board and messaging layer) as one of its components."
         }
       },
       {
@@ -146,7 +146,7 @@
     <h1>AI Agent Fleet</h1>
     <p class="subtitle">
       A collection of AI coding or automation agents running in parallel under a shared control plane —
-      with a common task queue, inter-agent coordination, self-healing, and remote monitoring.
+      with a common task queue, inter-agent coordination, recovery, and remote monitoring.
     </p>
     <p style="color:var(--muted);font-size:0.85rem">Published: August 27, 2026</p>
 
@@ -156,7 +156,7 @@
       <strong>Definition:</strong> An AI agent fleet is a group of AI coding or automation agents —
       such as Claude Code, OpenAI Codex CLI, or Gemini CLI instances — running in parallel under a
       shared control plane. The fleet has a common task queue, coordination layer, monitoring
-      dashboard, and self-healing watchdog. Running 10 Claude Code agents overnight to generate
+      dashboard, and recovery from usage limits and stalls. Running 10 Claude Code agents overnight to generate
       tests across a codebase, each claiming tasks from a shared kanban board, is an example of
       operating an AI agent fleet.
     </div>
@@ -202,9 +202,9 @@
           <td>SQLite-backed kanban board with atomic compare-and-swap claiming</td>
         </tr>
         <tr>
-          <td><strong>Self-healing watchdog</strong></td>
-          <td>A process that monitors agent health, detects context overflows and crashes, and restarts or compacts sessions automatically</td>
-          <td>Built-in watchdog with auto-compact, crash restart, and stuck-prompt detection</td>
+          <td><strong>Recovery</strong></td>
+          <td>The part that keeps agents going through known interruptions and alerts a human about the rest</td>
+          <td>Usage-limit resume at the provider's reset, reboot recovery on macOS, stall detection with owner alerts</td>
         </tr>
         <tr>
           <td><strong>Monitoring and oversight</strong></td>
@@ -246,13 +246,13 @@
         </tr>
         <tr>
           <td><strong>Agent fleet</strong></td>
-          <td>Multiple agents running in parallel with shared coordination, self-healing, and a monitoring layer</td>
+          <td>Multiple agents running in parallel with shared coordination, recovery, and a monitoring layer</td>
           <td>10 Claude Code agents claiming tasks from an amux board overnight</td>
-          <td>Full lifecycle: launch, coordinate, heal, monitor</td>
+          <td>Full lifecycle: launch, coordinate, recover, monitor</td>
         </tr>
         <tr>
           <td><strong>Fleet control plane</strong></td>
-          <td>The software layer that manages the entire fleet lifecycle — sessions, board, watchdog, messaging, oversight</td>
+          <td>The software layer that manages the entire fleet lifecycle — sessions, board, recovery, messaging, oversight</td>
           <td>amux</td>
           <td>Everything above plus human oversight interface</td>
         </tr>
@@ -272,9 +272,9 @@
 
     <p>
       Beyond throughput, a fleet adds resilience. When one agent hits its context limit or
-      encounters an error, the self-healing watchdog handles recovery automatically.
-      Overnight runs complete without a human sitting at the desk. The next morning you review
-      the results, not the crash logs.
+      pauses at a usage limit, amux resumes it at the provider's reset, and stall detection
+      alerts you to anything stuck. The next morning you review the results and the few
+      sessions that were flagged.
     </p>
 
     <h2>How amux manages an AI agent fleet</h2>
@@ -287,7 +287,7 @@
     <ul>
       <li><strong>Parallel agent sessions</strong> — launch 1 to 50+ Claude Code, Codex, or Gemini CLI sessions headlessly in tmux, each isolated in its own project directory</li>
       <li><strong>Shared kanban board</strong> — post tasks before a run; agents claim them with atomic SQLite compare-and-swap so no two sessions take the same job</li>
-      <li><strong>Self-healing watchdog</strong> — auto-compacts on context overflow, restarts on crash, replays the last message on stuck prompts; your fleet runs overnight without human intervention</li>
+      <li><strong>Recovery</strong> — delivery is held through usage limits and resumes at the provider's reset; on macOS every worker comes back in its own conversation after a reboot; stall detection surfaces stuck work and alerts you. Restarting a crashed agent process is not built into the server.</li>
       <li><strong>Inter-agent messaging</strong> — sessions send and receive messages via REST API, coordinate handoffs, and delegate sub-tasks through named @worker channels</li>
       <li><strong>Session cloning</strong> — duplicate any live session to run parallel prompt experiments, compare outputs, then pick the better result and discard the other</li>
       <li><strong>Mobile oversight</strong> — the iOS app and installable PWA give you live fleet visibility, steering messages, and approval gates from anywhere</li>
@@ -298,7 +298,7 @@
 
     <p>
       Most developers start with 3–5 agents and scale up as they gain confidence in the
-      fleet's self-healing behavior. The practical ceiling on a single machine is memory: each
+      fleet's unattended behavior. The practical ceiling on a single machine is memory: each
       Claude Code session uses roughly 200–400 MB, so a MacBook Pro with 32 GB of RAM can
       comfortably sustain 10–15 agents without swapping. A Linux server with 64 GB can run 30–50+.
     </p>
@@ -336,7 +336,7 @@
         <dt style="font-weight:600;margin-bottom:0.35rem">What is an AI agent fleet?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           A group of AI coding or automation agents running in parallel under a shared control plane.
-          The fleet shares a task queue, coordination layer, self-healing watchdog, and monitoring
+          The fleet shares a task queue, coordination layer, recovery from usage limits and stalls, and monitoring
           dashboard. A solo developer running 10 Claude Code agents overnight to generate tests across
           a codebase is operating an AI agent fleet.
         </dd>
@@ -344,17 +344,17 @@
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">How is a fleet different from a single agent?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
-          A single agent processes tasks serially and requires human presence to restart on failure.
-          A fleet processes tasks in parallel across many agents, claims work from a shared board to
-          prevent duplication, heals automatically from crashes and context overflows, and runs
+          A single agent runs one task at a time and requires a human present to restart it if it crashes or hits a context limit.
+          A fleet runs many tasks in parallel across multiple agents, uses a shared task queue to
+          prevent duplication, resumes after usage limits and flags stalled work, and runs
           unattended overnight with remote monitoring from a phone.
         </dd>
       </div>
       <div>
         <dt style="font-weight:600;margin-bottom:0.35rem">What does a fleet control plane do?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
-          A fleet control plane launches, monitors, and self-heals agent sessions. It provides a
-          shared task board, inter-agent messaging, a self-healing watchdog, and a web and mobile
+          A fleet control plane launches, monitors, and recovers agent sessions. It provides a
+          shared task board, inter-agent messaging, recovery that resumes agents after usage limits and alerts you to stalled work, and a web and mobile
           dashboard. amux is a fleet control plane for Claude Code, Codex CLI, and Gemini CLI fleets.
         </dd>
       </div>
@@ -380,7 +380,7 @@
         <dt style="font-weight:600;margin-bottom:0.35rem">What is the difference between a fleet and an orchestrator?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           An orchestrator routes tasks to agents and manages dependencies. A fleet is the full
-          collection of agents plus the control plane — launch, monitoring, self-healing, task
+          collection of agents plus the control plane — launch, monitoring, recovery, task
           coordination, inter-agent messaging, and human oversight. amux is a fleet control plane that
           includes an orchestration layer (the board and messaging system) as one of its components.
         </dd>
@@ -402,7 +402,7 @@
       <h3>Run your AI agent fleet with amux</h3>
       <p>
         Open-source control plane for Claude Code, Codex CLI, and Gemini CLI fleets.
-        Self-healing, shared kanban board, web dashboard, and iOS app.
+        Usage-limit resume, shared kanban board, web dashboard, and iOS app.
         MIT + Commons Clause. Install in under 2 minutes.
       </p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash

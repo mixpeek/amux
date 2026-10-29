@@ -69,7 +69,7 @@
         "name": "Can Zed run background AI coding agents?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "No. Zed's AI assistant is a foreground tool — it works when you are actively in the editor, helping you write, explain, or refactor code interactively. It does not run headless background agents, does not self-heal crashed sessions, does not manage a task queue across multiple agents, and does not provide phone monitoring or iOS app visibility. For background agent orchestration — running 10-50 coding agents overnight while you sleep — you need a tool like amux."
+          "text": "No. Zed's AI assistant is a foreground tool — it works when you are actively in the editor, helping you write, explain, or refactor code interactively. It does not run headless background agents, does not manage a task queue across multiple agents, and does not provide phone monitoring or iOS app visibility. For background agent orchestration — running 10-50 coding agents overnight while you sleep — you need a tool like amux."
         }
       },
       {
@@ -85,7 +85,7 @@
         "name": "Does Zed support running multiple AI agents in parallel?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Zed does not support parallel background agent orchestration. Its AI assistant handles one conversation at a time within the editor session you are actively using. amux is designed specifically for running 10-50 agents simultaneously, with a shared kanban board, atomic task claiming so agents never duplicate work, and a self-healing watchdog that restarts crashed sessions automatically."
+          "text": "Zed does not support parallel background agent orchestration. Its AI assistant handles one conversation at a time within the editor session you are actively using. amux is designed specifically for running 10-50 agents simultaneously, with a shared kanban board, atomic task claiming so agents never duplicate work, and automatic resume after usage limits, with stall alerts when an agent stops."
         }
       },
       {
@@ -93,7 +93,7 @@
         "name": "What does amux offer that Zed does not?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux provides multi-session orchestration (10-50 parallel agents), headless background execution, a self-healing watchdog, built-in kanban board, phone/PWA monitoring, iOS app, multi-runtime support (Claude Code + Codex + Gemini CLI), built-in CRM and email, browser automation, and a scheduler. Zed provides a beautiful fast editor, real-time collaborative coding, and interactive AI assistance — none of which amux offers. They address entirely different parts of the developer workflow."
+          "text": "amux provides multi-session orchestration (10-50 parallel agents), headless background execution, usage-limit resume, built-in kanban board, phone/PWA monitoring, iOS app, multi-runtime support (Claude Code + Codex + Gemini CLI), built-in CRM and email, browser automation, and a scheduler. Zed provides a beautiful fast editor, real-time collaborative coding, and interactive AI assistance — none of which amux offers. They address entirely different parts of the developer workflow."
         }
       },
       {
@@ -149,7 +149,7 @@
 
     <p><strong>Zed</strong> (zed.dev) is a high-performance, open-source code editor written in Rust. It is designed for speed and collaboration: instant startup, GPU-accelerated rendering, and a built-in AI "Assistant" panel that connects to Claude, GPT-4, and other models. Zed also supports real-time pair programming — multiple engineers can share a live editing session, with each person's cursor visible to the others. Zed is an editor you open, interact with, and actively use to write code.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously — all running headlessly in the background. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and Google Calendar sync. Single Rust binary, MIT + Commons Clause, zero external dependencies. amux is not an editor — it is the orchestration layer that lets you run background agents at scale while you do other things.</p>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously — all running headlessly in the background. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and Google Calendar sync. Single Rust binary, MIT + Commons Clause, zero external dependencies. amux is not an editor — it is the orchestration layer that lets you run background agents at scale while you do other things.</p>
 
     <h2>At a Glance</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -183,8 +183,8 @@
             <td style="padding:10px 16px;text-align:center;">No</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:10px 16px;">Self-healing watchdog</td>
-            <td style="padding:10px 16px;text-align:center;">Yes (auto-restart, /compact)</td>
+            <td style="padding:10px 16px;">Recovery</td>
+            <td style="padding:10px 16px;text-align:center;">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
             <td style="padding:10px 16px;text-align:center;">No</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
@@ -257,7 +257,7 @@
     <p>What Zed does not do: run code autonomously, execute tasks in the background, manage a queue of work across multiple agents, or continue working when you are not actively in the editor. Zed's AI is an interactive assistant, not an autonomous agent.</p>
 
     <h2>How amux Works</h2>
-    <p>amux runs on your machine or a cloud VM and manages a fleet of AI coding agents — Claude Code, Codex CLI, or Gemini CLI — all executing in the background inside tmux sessions. You define tasks on the shared kanban board, and agents pull tasks with atomic claiming so no two agents work on the same thing. A background watchdog monitors every session: it auto-compacts context overflow, auto-approves tool prompts (YOLO mode), restarts crashed sessions, and detects idle hangs.</p>
+    <p>amux runs on your machine or a cloud VM and manages a fleet of AI coding agents — Claude Code, Codex CLI, or Gemini CLI — all executing in the background inside tmux sessions. You define tasks on the shared kanban board, and agents pull tasks with atomic claiming so no two agents work on the same thing. amux monitors every session: it resumes agents after usage limits, auto-approves tool prompts (YOLO mode), lets you set Claude Code's compaction threshold, and flags stalled work.</p>
     <p>You monitor everything from a web dashboard at <code>https://localhost:8824</code>, from the iOS app, or from your phone via the PWA. Agents work while you sleep, commute, or focus on other things. amux is not an editor and does not change how you write code — it only manages the background work agents do on your behalf.</p>
 
     <h2>Which Should You Use?</h2>
@@ -307,7 +307,7 @@
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Can Zed run background AI coding agents?</summary>
-      <p style="margin:0.8rem 0 0;">No. Zed's AI assistant is a foreground, interactive tool — it works when you are actively in the editor. It does not run headless background agents, does not self-heal crashed sessions, and does not manage a task queue across multiple agents. For background agent orchestration — running 10-50 coding agents overnight — you need a tool like amux.</p>
+      <p style="margin:0.8rem 0 0;">No. Zed's AI assistant is a foreground, interactive tool — it works when you are actively in the editor. It does not run headless background agents, and does not manage a task queue across multiple agents. For background agent orchestration — running 10-50 coding agents overnight — you need a tool like amux.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -337,7 +337,7 @@
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with self-healing, kanban, Google Calendar sync, and iOS app monitoring. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
+      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with usage-limit resume, kanban, Google Calendar sync, and iOS app monitoring. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

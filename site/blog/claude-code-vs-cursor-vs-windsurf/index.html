@@ -62,7 +62,7 @@
       {"@type":"Question","name":"Which AI coding tool has the best code quality?","acceptedAnswer":{"@type":"Answer","text":"As of May 2026, Claude Code with Opus 4.7 leads SWE-bench Verified at 82%. Cursor's Composer 2 model scores 73.7 on SWE-bench Multilingual. Windsurf's SWE-1.6 improves 10%+ over SWE-1.5 on SWE-Bench Pro. However, both Cursor and Windsurf also support Claude Opus 4.7 as an optional model, so you can get top-tier code quality from any tool by choosing the right model."}},
       {"@type":"Question","name":"What happened to Windsurf? Did OpenAI buy it?","acceptedAnswer":{"@type":"Answer","text":"OpenAI announced a $3B acquisition of Windsurf (then Codeium) in 2025, but the deal fell through, reportedly due to Microsoft's contractual rights over OpenAI acquisitions. Google hired Windsurf's CEO and ~40 senior engineers. Cognition AI (makers of Devin) then acquired the remaining company — IP, product, brand, and 210 employees — for approximately $250M in December 2025. Windsurf now ships with Devin integration and Cognition's proprietary SWE-1 model family."}},
       {"@type":"Question","name":"Claude Code vs Cursor pricing: which is cheaper?","acceptedAnswer":{"@type":"Answer","text":"Both start at $20/month for their Pro tiers, but the pricing models differ significantly. Claude Code (via Claude Pro) gives you access to Claude Code in terminal, web, desktop, and IDE extensions with usage limits that reset monthly. Cursor Pro gives you $20 in monthly model credits plus unlimited Tab completions and Auto mode. For heavy agentic use, Claude Max ($100-200/month) or Cursor Pro+ ($60/month) offer higher limits. Windsurf Pro at $15/month is the cheapest option with unlimited Cascade and free SWE-1.6 model usage."}},
-      {"@type":"Question","name":"Which tool is best for running multiple AI agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Claude Code is the strongest choice for parallel agent workflows. It runs as a CLI that can be spawned in multiple terminal sessions, supports subagents within each session, and has a full Agent SDK for programmatic control. Cursor's Background Agents run up to 8 parallel agents on cloud VMs. Windsurf (via Devin integration) supports autonomous agent tasks. For orchestrating large fleets of agents (10-50+), tools like amux wrap around Claude Code to provide fleet management, crash recovery, and task coordination."}},
+      {"@type":"Question","name":"Which tool is best for running multiple AI agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Claude Code is the strongest choice for parallel agent workflows. It runs as a CLI that can be spawned in multiple terminal sessions, supports subagents within each session, and has a full Agent SDK for programmatic control. Cursor's Background Agents run up to 8 parallel agents on cloud VMs. Windsurf (via Devin integration) supports autonomous agent tasks. For orchestrating large fleets of agents (10-50+), tools like amux wrap around Claude Code to provide fleet management, usage-limit resume, and task coordination."}},
       {"@type":"Question","name":"Do I need an IDE or can I just use Claude Code in the terminal?","acceptedAnswer":{"@type":"Answer","text":"Claude Code works entirely in the terminal — no IDE required. Many power users prefer this workflow because it's faster, scriptable, and better suited for automation. Claude Code also has VS Code and JetBrains extensions, a desktop app, and a web interface at claude.ai/code if you want a GUI. Cursor and Windsurf are IDE-first tools that require their desktop applications. The choice comes down to whether you prefer terminal or GUI workflows."}}
     ]
   }</script>
@@ -563,8 +563,8 @@
             <td class="p">Via Devin platform</td>
           </tr>
           <tr>
-            <td>Crash recovery</td>
-            <td class="y">Self-healing (amux)</td>
+            <td>Recovery</td>
+            <td class="y">Usage limits, reboots, stall alerts (amux)</td>
             <td class="y">Cloud-managed</td>
             <td class="y">Cloud-managed</td>
           </tr>
@@ -638,7 +638,7 @@
       </div>
       <div class="axis-card">
         <h4>Fleet orchestration</h4>
-        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> wraps around <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> to manage 10&ndash;50+ agent sessions: web dashboard, crash recovery, task coordination via kanban board, mobile monitoring.</p>
+        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> wraps around <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> to manage 10&ndash;50+ agent sessions: web dashboard, usage-limit resume, task coordination via kanban board, mobile monitoring.</p>
       </div>
     </div>
 
@@ -651,10 +651,10 @@
         <span>Open source (MIT + Commons Clause)</span>
         <span><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></span>
       </div>
-      <p>Whether you pick <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, or <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a> as your primary tool, you&rsquo;ll eventually want to run multiple <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agents for batch work. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the open-source control plane: spawn dozens of agents, monitor them from a web dashboard or mobile PWA, auto-recover from crashes, and coordinate tasks through a shared kanban board.</p>
+      <p>Whether you pick <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, or <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a> as your primary tool, you&rsquo;ll eventually want to run multiple <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agents for batch work. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the open-source control plane: spawn dozens of agents, monitor them from a web dashboard or mobile PWA, resume them after usage limits, and coordinate tasks through a shared kanban board.</p>
       <ul>
         <li><strong>Complements any IDE</strong> &mdash; keeps working in the background while you use <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> or <a href="https://windsurf.com/" target="_blank" rel="noopener">Windsurf</a></li>
-        <li><strong>Self-healing watchdog</strong> &mdash; detects context overflow, API errors, and session corruption, then auto-restarts</li>
+        <li><strong>Recovery</strong> &mdash; holds delivery through usage limits and resumes at the provider's reset, brings every worker back in its own conversation after a macOS reboot, and flags stalled board work with an owner alert</li>
         <li><strong>REST API + kanban</strong> &mdash; programmatic session management with atomic task claiming</li>
         <li><strong>Single Rust binary, zero dependencies</strong> &mdash; installs in one command</li>
       </ul>
@@ -715,7 +715,7 @@ amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
       <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
         <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">Which tool is best for running multiple AI agents in parallel?</summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          <p><a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> is the strongest for parallel agent workflows. It runs as a CLI that can be spawned in multiple terminal sessions, supports subagents within each session, and has a full <a href="https://code.claude.com/docs/en/agent-sdk/overview" target="_blank" rel="noopener">Agent SDK</a>. <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>&rsquo;s Background Agents run up to 8 parallel on cloud VMs. For orchestrating large fleets (10&ndash;50+ agents), <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> wraps around <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> with fleet management, crash recovery, and task coordination.</p>
+          <p><a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> is the strongest for parallel agent workflows. It runs as a CLI that can be spawned in multiple terminal sessions, supports subagents within each session, and has a full <a href="https://code.claude.com/docs/en/agent-sdk/overview" target="_blank" rel="noopener">Agent SDK</a>. <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>&rsquo;s Background Agents run up to 8 parallel on cloud VMs. For orchestrating large fleets (10&ndash;50+ agents), <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> wraps around <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> with fleet management, usage-limit resume, and task coordination.</p>
         </div>
       </details>
 

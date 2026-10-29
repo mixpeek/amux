@@ -116,10 +116,10 @@
       },
       {
         "@type": "Question",
-        "name": "Does amux start --detach work with self-healing?",
+        "name": "Does amux start --detach work with amux recovery?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes, fully. The amux self-healing watchdog operates independently of how the session was started. A detached session gets the same automatic context compaction, crash detection, restart, and last-message replay as a session started interactively. This combination — detached start plus self-healing — is what enables true overnight unattended operation."
+          "text": "Yes. Recovery runs at the amux server level, independent of how the session was started. A detached session gets the same treatment as an interactive one: it resumes after usage limits, comes back in its own conversation after a macOS reboot, and gets flagged by stall detection with an owner alert if its board work stops moving. Restarting a crashed agent process is not built into the amux server; on macOS an optional script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers."
         }
       }
     ]
@@ -225,11 +225,11 @@ ssh myserver "amux start overnight-refactor --detach"
 
     <h3>Overnight batch jobs</h3>
 
-    <p>The most common use: go to bed with your agent running. Start it detached, enable self-healing, and wake up to completed work.</p>
+    <p>The most common use: go to bed with your agent running. Start it detached, turn on stall alerts, and wake up to completed work.</p>
 
     <pre><code"># Evening: kick off the sprint backlog
 amux start sprint-agent -d
-# Agent runs overnight, self-heals on crash, you monitor from phone
+# Agent runs overnight, resumes after usage limits, you monitor from phone
 # Morning: check output
 amux peek sprint-agent</code></pre>
 
@@ -275,17 +275,18 @@ amux serve --host 0.0.0.0
 
     <p>See <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a> for the full setup.</p>
 
-    <h2>Detached sessions and self-healing</h2>
+    <h2>Detached sessions and recovery</h2>
 
-    <p>Self-healing runs at the amux server level — it's independent of how the session was started. A detached session gets the same watchdog behavior as an interactive one:</p>
+    <p>Recovery runs at the amux server level, independent of how the session was started. A detached session gets the same behavior as an interactive one:</p>
 
     <ul>
-      <li><strong>Context compaction</strong>: when a session's context window fills, amux auto-compacts and continues.</li>
-      <li><strong>Crash detection</strong>: if the agent process exits unexpectedly, amux detects it within seconds.</li>
-      <li><strong>Automatic restart</strong>: amux restarts the session and replays the last message so the agent picks up where it left off.</li>
+      <li><strong>Usage limits</strong>: delivery is held and the agent resumes at the provider's reset time.</li>
+      <li><strong>Context</strong>: Claude Code compacts its own context, and amux lets you set the compaction threshold.</li>
+      <li><strong>Reboots</strong>: on macOS, a login job brings every non-archived worker back, resumed in its own conversation.</li>
+      <li><strong>Stalls</strong>: board work that stops moving is flagged and an owner alert fires.</li>
     </ul>
 
-    <p>This combination — <code>--detach</code> plus self-healing — is what makes overnight unattended operation practical. You don't need to babysit a terminal or worry about context exhaustion killing your agent at 2 AM. See <a href="/guides/self-healing-configuration/">Self-healing configuration</a> for tuning options.</p>
+    <p>Restarting a crashed agent process is not built into the amux server. On macOS, the optional <code>scripts/tmux-watchdog.sh</code> (not installed by default) restarts crashed Claude Code workers. The tmux session itself survives terminal and network disconnects, so closing your laptop lid or dropping SSH does not stop the agent. See <a href="/guides/self-healing-configuration/">Recovery configuration</a> for tuning options.</p>
 
     <h2>Attaching to a detached session</h2>
 
@@ -313,8 +314,8 @@ amux serve --host 0.0.0.0
     </details>
 
     <details>
-      <summary>Does --detach work with self-healing?</summary>
-      <p>Yes, fully. Self-healing operates at the amux server level independently of how the session was started. A detached session gets the same automatic context compaction, crash restart, and last-message replay as an interactive session.</p>
+      <summary>Does --detach work with amux recovery?</summary>
+      <p>Yes. Recovery runs at the amux server level, independent of how the session was started. A detached session gets the same treatment as an interactive one: it resumes after usage limits, comes back in its own conversation after a macOS reboot, and gets flagged by stall detection with an owner alert if its board work stops moving. Restarting a crashed agent process is not built into the amux server; on macOS an optional script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>
     </details>
 
     <details>
@@ -324,7 +325,7 @@ amux serve --host 0.0.0.0
 
     <h2>See also</h2>
     <ul>
-      <li><a href="/guides/self-healing-configuration/">Self-healing configuration</a> — keep agents running overnight automatically</li>
+      <li><a href="/guides/self-healing-configuration/">Recovery configuration</a>: usage-limit resume, reboot recovery, and stall alerts</li>
       <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a> — monitor detached sessions from anywhere</li>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a> — launch a full fleet in detached mode</li>
       <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> — overnight unattended workflows</li>
@@ -333,10 +334,10 @@ amux serve --host 0.0.0.0
 
     <div class="cta-box">
       <h3>Run your AI engineering team while you sleep</h3>
-      <p>amux runs dozens of Claude Code, Codex CLI, and Gemini CLI agents in detached mode with self-healing. Monitor from your phone. Open source — single Rust binary.</p>
+      <p>amux runs dozens of Claude Code, Codex CLI, and Gemini CLI agents in detached mode, resumes them after usage limits, and flags stalls. Monitor from your phone. Open source — single Rust binary.</p>
       <pre><code>amux start my-agent --detach  # non-blocking, returns immediately
 amux serve &amp;                  # dashboard at localhost:8824
-# agent runs, self-heals, you sleep</code></pre>
+# agent runs, resumes after limits, you sleep</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
     </div>
   </main>
@@ -360,7 +361,7 @@ amux serve &amp;                  # dashboard at localhost:8824
         <div class="footer-col">
           <div class="footer-col-label">Guides</div>
           <ul>
-            <li><a href="/guides/self-healing-configuration/">Self-healing</a></li>
+            <li><a href="/guides/self-healing-configuration/">Recovery</a></li>
             <li><a href="/guides/mobile-management-pwa/">Phone management</a></li>
             <li><a href="/guides/running-10-plus-agents/">10+ agents</a></li>
             <li><a href="/guides/">All guides</a></li>

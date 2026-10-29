@@ -287,7 +287,7 @@ open $AMUX_URL</code></pre>
     <p>A typical remote overnight session:</p>
     <ol>
       <li><strong>Evening</strong> — SSH into the remote server (or use the local amux CLI with AMUX_URL set). Add tasks to the board. Start 10-20 sessions. Confirm agents are running.</li>
-      <li><strong>Night</strong> — close your laptop. Agents run on the remote server. The self-healing watchdog handles context overflow, crashes, and stuck prompts automatically.</li>
+      <li><strong>Night</strong> — close your laptop. Agents run on the remote server. Usage limits hold delivery until the provider resets, and stall alerts tell you if work stops moving.</li>
       <li><strong>Morning</strong> — open the amux iOS app or PWA. Check the board for completed tasks. Peek at session output for any that need review. Merge the PRs your agents opened.</li>
     </ol>
 
@@ -323,7 +323,7 @@ open $AMUX_URL</code></pre>
 
     <details>
       <summary><strong>What if the remote server restarts?</strong></summary>
-      <p>Configure amux as a system service (launchd on macOS, systemd on Linux) so it starts automatically on boot. The amux watchdog resumes monitoring sessions that were running before the restart. Any session that was in the middle of a task will replay its last message and continue.</p>
+      <p>Configure amux as a system service (launchd on macOS, systemd on Linux) so it starts automatically on boot. On macOS the installer also adds a login job that brings every non-archived worker back after a reboot, each resumed in its own conversation.</p>
     </details>
 
     <details>

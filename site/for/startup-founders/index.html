@@ -86,7 +86,7 @@
         "name": "What happens when an agent crashes overnight?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux's self-healing watchdog detects the crash within seconds, restarts the session, and replays the last message so the agent picks up where it left off. Context overflow (when the conversation gets too long) triggers automatic compaction — the agent summarizes earlier context and continues without losing the thread. You can start a multi-hour run at midnight and come back to completed work in the morning, from your phone."
+          "text": "The amux server does not restart a crashed agent process today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does overnight: when a usage limit hits, it holds delivery and resumes the agent at the provider's reset; Claude Code compacts its own context, with the threshold set in amux; and stall detection flags stuck work and alerts your phone. You can start a multi-hour run at midnight and review the results and any flagged sessions in the morning."
         }
       },
       {
@@ -155,7 +155,7 @@
     <h1>Run an AI Engineering Team Without Hiring</h1>
     <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated October 2026.</p>
 
-    <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is an open-source control plane for AI agent teams</strong>: it runs, monitors, and self-heals dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
+    <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is an open-source control plane for AI agent teams</strong>: it runs and monitors dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
 
     <p>The limiting factor shifts from headcount to your vision. amux handles the coordination infrastructure: a shared kanban board, live session monitoring, a steering queue for mid-run guidance, token cost tracking, and mobile access so you can manage the whole operation from your phone.</p>
 
@@ -208,7 +208,7 @@
       <li><strong>Launch:</strong> Start all sessions simultaneously — <code>amux start feature-payments bug-triage test-coverage</code>. Each agent reads its CLAUDE.md spec and begins working independently.</li>
       <li><strong>Commute / meetings:</strong> Check session statuses from your phone. Send steering messages to redirect agents that go off-track. The board shows which tasks are in-progress.</li>
       <li><strong>Afternoon review (30–60 min):</strong> Agents have finished their tasks. Review diffs, accept or request revisions, merge clean PRs. Re-queue anything that needs iteration.</li>
-      <li><strong>Overnight:</strong> Queue the next batch of tasks. Agents run while you sleep. Self-healing ensures they don't stall. Come back to completed pull requests in the morning.</li>
+      <li><strong>Overnight:</strong> Queue the next batch of tasks. Agents run while you sleep and resume on their own after usage limits. Come back to completed pull requests in the morning.</li>
     </ol>
 
     <h2>Built-In Business Tools, Not Just Code</h2>
@@ -270,7 +270,7 @@
           <td style="text-align:center;padding:0.75rem;">Varies</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.75rem 1rem;">Self-healing on crash</td>
+          <td style="padding:0.75rem 1rem;">Resume after usage limits</td>
           <td style="text-align:center;padding:0.75rem;">✓ Built-in</td>
           <td style="text-align:center;padding:0.75rem;">—</td>
           <td style="text-align:center;padding:0.75rem;">Varies</td>
@@ -381,7 +381,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p>amux works with any coding agent that runs in a terminal: Claude Code, OpenAI Codex CLI, Antigravity CLI (formerly Gemini CLI), or any other tool. You can run a mixed fleet — a Claude Code agent for complex reasoning, a Codex agent for fast code generation — and compare output quality and cost across providers.</p>
 
     <h3>What happens when an agent crashes overnight?</h3>
-    <p>amux's self-healing watchdog detects the crash within seconds, restarts the session, and replays the last message so the agent picks up where it left off. Context overflow triggers automatic compaction. You can start a multi-hour run at midnight and come back to completed work in the morning, reviewed from your phone.</p>
+    <p>The amux server does not restart a crashed agent process today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does overnight: when a usage limit hits, it holds delivery and resumes the agent at the provider's reset; Claude Code compacts its own context, with the threshold set in amux; and stall detection flags stuck work and alerts your phone. You can start a multi-hour run at midnight and review the results and any flagged sessions in the morning.</p>
 
     <h3>Can my co-founder or contractors see what the agents are doing?</h3>
     <p>Yes. The amux dashboard is a web app — any browser on your local network (or via Tailscale for remote access) can view session statuses, peek at agent output, and update the shared kanban board. There is no per-seat pricing. You can give a contractor read access to specific sessions without exposing your full codebase or SSH credentials.</p>

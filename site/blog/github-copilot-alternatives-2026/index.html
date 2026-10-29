@@ -176,7 +176,7 @@
       <p><strong>Best free:</strong> <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">Gemini CLI</a> &mdash; 1,000 req/day, 1M token context, no credit card</p>
       <p><strong>Best open source:</strong> <a href="https://continue.dev" target="_blank" rel="noopener">Continue</a> &mdash; VS Code + JetBrains, any model, fully open source</p>
       <p><strong>Best for autonomous work:</strong> <a href="https://cognition.ai" target="_blank" rel="noopener">Devin</a> &mdash; full-stack agent with its own browser, editor, and terminal</p>
-      <p><strong>Best for running agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> &mdash; orchestrate 50+ agents with dashboard, self-healing, mobile access</p>
+      <p><strong>Best for running agent fleets:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> &mdash; orchestrate 50+ agents with dashboard, usage-limit resume, stall alerts, mobile access</p>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -768,16 +768,16 @@
           <span>Python</span>
           <span>MIT + Commons Clause</span>
         </div>
-        <p>The open-source control plane for AI coding agents. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> manages fleets of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> sessions (or any terminal agent) in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>, with a web dashboard for monitoring, a self-healing watchdog that recovers from crashes and context compaction, and a shared kanban board for task coordination between agents.</p>
+        <p>The open-source control plane for AI coding agents. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> manages fleets of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> sessions (or any terminal agent) in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>, with a web dashboard for monitoring, usage-limit resume and stall alerts, and a shared kanban board for task coordination between agents.</p>
         <ul>
           <li><strong>50+ parallel agents</strong> &mdash; register, start, and monitor dozens of independent coding agents</li>
           <li><strong>Web dashboard</strong> &mdash; real-time session monitoring, token tracking, and peek into agent output</li>
-          <li><strong>Self-healing</strong> &mdash; auto-detect crashed, stuck, or compacted agents and restart them</li>
+          <li><strong>Recovery</strong> &mdash; holds delivery through usage limits and resumes at the provider's reset, brings every worker back in its own conversation after a macOS reboot, and flags stalled board work with an owner alert</li>
           <li><strong>Kanban board</strong> &mdash; shared task board with atomic claiming so agents don&rsquo;t duplicate work</li>
           <li><strong>Mobile PWA</strong> &mdash; manage your agent fleet from your phone with the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a></li>
           <li><strong>REST API</strong> &mdash; programmatic control over sessions, tasks, notes, CRM, and browser automation</li>
         </ul>
-        <div class="tool-verdict"><strong>Best for:</strong> developers running multiple AI agents in parallel who need visibility, crash recovery, and task coordination. The missing control plane for agent-scale development.</div>
+        <div class="tool-verdict"><strong>Best for:</strong> developers running multiple AI agents in parallel who need visibility, recovery from usage limits and reboots, and task coordination. The missing control plane for agent-scale development.</div>
       </div>
 
     </div>
@@ -941,7 +941,7 @@
       </div>
       <div class="axis-card">
         <h4><a href="#orchestration">I want to run many agents at once</a></h4>
-        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> orchestrates 50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> sessions (or any terminal agent) with a dashboard, self-healing, and a shared kanban board.</p>
+        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> orchestrates 50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> sessions (or any terminal agent) with a dashboard, usage-limit resume, stall alerts, and a shared kanban board.</p>
       </div>
       <div class="axis-card">
         <h4>I want the cheapest option</h4>
@@ -1001,7 +1001,7 @@
 
     <div class="cta-box" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.6rem;margin:2rem 0;">
       <h3 style="margin:0 0 0.6rem;">Ready to go beyond autocomplete?</h3>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run dozens of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agents in parallel with a web dashboard, self-healing watchdog, and shared kanban board. One Rust binary + <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>. MIT + Commons Clause.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run dozens of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agents in parallel with a web dashboard, usage-limit resume, stall alerts, and a shared kanban board. One Rust binary + <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>. MIT + Commons Clause.</p>
       <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;"><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

@@ -434,7 +434,7 @@ workers:
     runtime: gemini-cli           # Gemini CLI (Google) — 1M token context for large docs
     dir: ~/Dev/myproject</code></pre>
 
-    <p>amux monitors, self-heals, and manages all three runtimes from a single dashboard and mobile app — one team, one vertical.yaml, one control plane, regardless of which underlying model each worker uses.</p>
+    <p>amux monitors, resumes after usage limits, and manages all three runtimes from a single dashboard and mobile app — one team, one vertical.yaml, one control plane, regardless of which underlying model each worker uses.</p>
 
     <h2>Frequently asked questions</h2>
     <div class="faq-list">
@@ -461,7 +461,7 @@ workers:
 
       <details>
         <summary><h3>Does declarative setup work with Claude Code, Codex, and Gemini CLI?</h3></summary>
-        <p>Yes. amux is multi-runtime. Specify <code>runtime: claude-code</code>, <code>runtime: codex</code>, or <code>runtime: gemini-cli</code> per worker in your vertical.yaml. A single team can mix runtimes — Claude Code for complex reasoning, Codex for fast code generation, Gemini CLI for long-context document work. amux monitors and self-heals all three from one dashboard.</p>
+        <p>Yes. amux is multi-runtime. Specify <code>runtime: claude-code</code>, <code>runtime: codex</code>, or <code>runtime: gemini-cli</code> per worker in your vertical.yaml. A single team can mix runtimes — Claude Code for complex reasoning, Codex for fast code generation, Gemini CLI for long-context document work. amux monitors all three from one dashboard and resumes them after usage limits.</p>
       </details>
 
       <details>
@@ -482,7 +482,7 @@ workers:
 
     <div class="cta-box">
       <h3>Run your AI engineering team — declared in code, applied in seconds</h3>
-      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Define your team in a YAML vertical, apply it idempotently, commit it to git. Self-healing, multi-runtime (Claude Code, Codex, Gemini CLI), built-in kanban, CRM, email, browser automation, and scheduler. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Define your team in a YAML vertical, apply it idempotently, commit it to git. Usage-limit resume, multi-runtime (Claude Code, Codex, Gemini CLI), built-in kanban, CRM, email, browser automation, and scheduler. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux serve  # → https://localhost:8824
 amux iac apply vertical.yaml</code></pre>

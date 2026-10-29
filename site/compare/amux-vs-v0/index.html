@@ -65,7 +65,7 @@
 
     <p><strong>v0 by Vercel</strong> is a specialized AI tool for generating React and Next.js UI components from natural language. You describe a screen or component — "a pricing table with three tiers and a popular badge" — and v0 produces clean, visually polished code using Tailwind CSS and shadcn/ui primitives. It runs in a sandboxed browser environment with an instant preview. You copy the output into your own project. v0 is excellent for quickly scaffolding UI and for teams building on the Vercel/Next.js stack.</p>
 
-    <p><strong>amux</strong> is the open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions across your actual local codebase. Agents claim tasks from a shared kanban board, coordinate through inter-agent messaging, and produce commits to your git repo. Install: <code>curl -fsSL https://amux.io/install.sh | bash</code>.</p>
+    <p><strong>amux</strong> is the open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex, or Gemini CLI sessions across your actual local codebase. Agents claim tasks from a shared kanban board, coordinate through inter-agent messaging, and produce commits to your git repo. Install: <code>curl -fsSL https://amux.io/install.sh | bash</code>.</p>
 
     <h2>Feature comparison</h2>
 
@@ -75,7 +75,7 @@
         <tr><td>Primary scope</td><td>Full-stack: backend, database, tests, infra, UI</td><td>UI component generation (React/Next.js/Tailwind)</td></tr>
         <tr><td>Codebase access</td><td>Full local filesystem — your actual repo</td><td>Isolated generation sandbox — no filesystem access</td></tr>
         <tr><td>Parallel agents</td><td>10–50+ independent sessions claiming tasks atomically</td><td>Single interactive generation session</td></tr>
-        <tr><td>Unattended overnight runs</td><td>Built-in — self-healing watchdog, approval memory</td><td>Interactive prompt-response only</td></tr>
+        <tr><td>Unattended overnight runs</td><td>Built-in — usage-limit resume, stall alerts, approval memory</td><td>Interactive prompt-response only</td></tr>
         <tr><td>Output format</td><td>Git commits to your repo via Claude Code</td><td>Copy-paste component code</td></tr>
         <tr><td>Git integration</td><td>Full — agents commit, branch, diff, and resolve conflicts</td><td>No git integration</td></tr>
         <tr><td>Framework support</td><td>Any language or framework your agents can edit</td><td>React, Next.js, Tailwind, shadcn/ui focused</td></tr>
@@ -139,7 +139,7 @@ amux serve  # → https://localhost:8824</code></pre>
 
     <div class="cta-box">
       <h3>Run a full-stack AI engineering team with amux</h3>
-      <p>Parallel agents on your actual codebase. Self-healing, web dashboard, iOS remote control. Open source, MIT + Commons Clause.</p>
+      <p>Parallel agents on your actual codebase. Usage-limit resume, web dashboard, iOS remote control. Open source, MIT + Commons Clause.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

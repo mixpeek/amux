@@ -221,10 +221,10 @@ curl $AMUX_URL/api/schedules -X POST \
         <div><strong style="color:var(--accent);">9:00 AM</strong> — Scheduler fires. coding-daily agent reads the board, launches 5 coding agents with the highest-priority tasks.</div>
         <div><strong style="color:var(--accent);">9:15 AM</strong> — You check the iOS app over coffee. See 3 email replies sent, 5 coding sessions active. No intervention needed.</div>
         <div><strong style="color:var(--accent);">12:00 PM</strong> — Browser agent visits 3 competitor sites after a board task is created. Saves research note.</div>
-        <div><strong style="color:var(--accent);">2:00 PM</strong> — Coding agents start completing tasks. Board moves items from doing → done. Self-healing watchdog restarts one crashed session.</div>
+        <div><strong style="color:var(--accent);">2:00 PM</strong> — Coding agents start completing tasks. Board moves items from doing → done. One agent hits a usage limit and amux resumes it at the reset.</div>
         <div><strong style="color:var(--accent);">5:00 PM</strong> — You briefly review completed branches, merge 4, leave 1 for tomorrow. 45 minutes of your time.</div>
         <div><strong style="color:var(--accent);">6:00 PM</strong> — Scheduler fires. biz-ops agent emails you a board digest. Overnight coding batch queued.</div>
-        <div><strong style="color:var(--accent);">Overnight</strong> — 8 agents work on tests, docs, and refactoring. Watchdog handles any crashes. You sleep.</div>
+        <div><strong style="color:var(--accent);">Overnight</strong> — 8 agents work on tests, docs, and refactoring. Stall detection flags anything stuck. You sleep.</div>
       </div>
     </div>
 

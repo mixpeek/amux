@@ -345,8 +345,8 @@ amux deregister my-worker-v2</code></pre>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           No hard limit from amux. Practical limits are your machine's CPU/RAM and your API rate
           limits. Running 3–5 clones in parallel for prompt experiments is routine; 10–50 parallel
-          sessions for overnight batch work is the intended fleet-scale use case. The self-healing
-          watchdog monitors all of them.
+          sessions for overnight batch work is the intended fleet-scale use case. Usage-limit resume and stall
+          detection cover all of them.
         </dd>
       </div>
     </dl>

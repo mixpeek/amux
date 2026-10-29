@@ -127,7 +127,7 @@
         "name": "What happens when my agents are running overnight and my phone is offline?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Nothing bad. amux's self-healing watchdog runs entirely on the server. If an agent context overflows, it auto-compacts and continues. If a session crashes, it restarts and replays the last message. Your phone being offline does not affect any of this — the agents keep running. When you reconnect, the dashboard shows you exactly what happened while you were away."
+          "text": "Nothing bad. The agents and amux run entirely on the server. If a provider usage limit hits, amux holds delivery and resumes the agent at the reset time. Claude Code compacts its own context, at a threshold you can set in amux. If work stalls, stall detection flags it and an owner alert fires. Your phone being offline does not affect any of this — the agents keep running. When you reconnect, the dashboard shows you exactly what happened while you were away."
         }
       },
       {
@@ -286,14 +286,16 @@
     </ol>
     <p>This is how you manage agents from your phone without babysitting them. Queue a course-correction in the morning, put your phone away, and the agent will pick it up at the right moment.</p>
 
-    <h2>Self-Healing: Your Agents Keep Running While You're Away</h2>
-    <p>The biggest anxiety about overnight or away-from-desk agent runs is: "will it just crash and sit there?" amux's self-healing watchdog eliminates this problem entirely:</p>
+    <h2>Recovery: Your Agents Keep Going While You're Away</h2>
+    <p>The biggest anxiety about overnight or away-from-desk agent runs is: "will it just crash and sit there?" Here is what amux handles on the server:</p>
     <ul>
-      <li><strong>Context overflow</strong> — when a session approaches its context limit, amux auto-compacts (using Claude Code's built-in compaction) and continues without data loss</li>
-      <li><strong>Session crash</strong> — if a tmux session dies unexpectedly, the watchdog detects it within seconds, restarts the session, and replays the last message so the agent picks up where it left off</li>
-      <li><strong>Stale connection</strong> — if the agent gets stuck waiting for a response that never comes, the watchdog detects the stall and intervenes</li>
+      <li><strong>Usage limits</strong>: when a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the provider's reset time</li>
+      <li><strong>Context overflow</strong>: Claude Code compacts its own context, and amux lets you set the compaction threshold</li>
+      <li><strong>Reboots</strong>: on macOS a login job brings every non-archived worker back after a reboot, each resumed in its own conversation</li>
+      <li><strong>Stalls</strong>: stall detection flags board work that stops moving and stuck orchestrators, and owner alerts fire</li>
     </ul>
-    <p>None of this requires your phone to be online. The watchdog runs continuously on the server. You can start a 12-hour agent run, put your phone in airplane mode, and come back to completed work.</p>
+    <p>Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>
+    <p>None of this requires your phone to be online. It all runs on the server. You can start a 12-hour agent run, put your phone in airplane mode, and check the dashboard when you are back.</p>
 
     <h2>Returning to Your Dashboard — iOS PWA State Restore</h2>
     <p>iOS aggressively evicts backgrounded apps to reclaim memory. When you switch to another app and return, iOS may have fully unloaded the PWA — causing a page reload that previously reset your session to the default view.</p>
@@ -400,7 +402,7 @@
     <p>Yes. amux is specifically designed for this. You can see every agent's live status, peek at what each agent is doing, send new instructions, manage your task board, and check token costs — all from your phone. The dashboard is a responsive PWA that works in any mobile browser, plus there's a native iOS app on the App Store.</p>
 
     <h3>Does my phone need to stay on for the agents to keep running?</h3>
-    <p>No. The agents run entirely on the server. Your phone is a remote control, not a host. You can close the app, turn off your phone, or lose connectivity — the agents keep running. The self-healing watchdog on the server handles crashes, context overflows, and stalls automatically.</p>
+    <p>No. The agents run entirely on the server. Your phone is a remote control, not a host. You can close the app, turn off your phone, or lose connectivity — the agents keep running. On the server, amux resumes agents after usage limits and alerts you when work stalls.</p>
 
     <h3>How is amux different from just SSH-ing into my server from my phone?</h3>
     <p>SSH gives you one terminal. amux gives you a fleet dashboard: status cards for all sessions at once, a shared kanban board, cost tracking, notes, CRM, email, and a steering queue. You can also share the amux dashboard with team members — a collaborator can see agent statuses and add board tasks without needing SSH credentials. The experience is optimized for touch and mobile screens, not repurposed from a terminal emulator.</p>
@@ -435,7 +437,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <h2>Related Guides</h2>
     <ul>
       <li><a href="/guides/remote-access-tailscale/">Remote Access with Tailscale</a> — access your amux server from anywhere</li>
-      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight Unattended</a> — self-healing patterns for long runs</li>
+      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight Unattended</a> — recovery patterns for long runs</li>
       <li><a href="/guides/team-workflow-setup/">How to Run an AI Engineering Team</a> — coordinate an agent fleet end-to-end</li>
       <li><a href="/features/mobile-pwa/">Mobile PWA Feature Overview</a></li>
       <li><a href="/for/solopreneurs/">amux for Solopreneurs</a> — run a software company from your phone</li>

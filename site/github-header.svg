@@ -119,7 +119,7 @@
 
   <!-- Feature pill row 1 -->
   <rect x="240" y="372" width="128" height="27" rx="5.5" fill="rgba(0,212,176,0.07)" stroke="rgba(0,212,176,0.22)" stroke-width="1"/>
-  <text x="304" y="390" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="11.5" fill="#00C4A8" text-anchor="middle">self-healing</text>
+  <text x="304" y="390" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="11.5" fill="#00C4A8" text-anchor="middle">keeps going</text>
 
   <rect x="377" y="372" width="112" height="27" rx="5.5" fill="rgba(0,212,176,0.05)" stroke="rgba(0,212,176,0.16)" stroke-width="1"/>
   <text x="433" y="390" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="11.5" fill="#00C4A8" text-anchor="middle">multi-agent</text>
@@ -203,11 +203,11 @@
   <text x="716" y="354" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#B6CCDF">amux board doing API-3</text>
 
   <!-- comment -->
-  <text x="700" y="384" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="12.5" fill="#1E3548"># self-healing fires automatically</text>
+  <text x="700" y="384" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="12.5" fill="#1E3548"># recovery runs on its own</text>
 
-  <!-- self-healing output -->
-  <text x="700" y="408" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#205040">  ⚡ api: context 17% → /compact queued</text>
-  <text x="700" y="428" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#205040">  ⚡ worker-1: stuck → auto-continued</text>
+  <!-- recovery output -->
+  <text x="700" y="408" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#205040">  ⚡ api: usage limit → resumes at reset</text>
+  <text x="700" y="428" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#205040">  ⚡ worker-1: stalled → owner alerted</text>
 
   <!-- peek -->
   <text x="700" y="454" font-family="'SF Mono', 'Fira Code', Menlo, monospace" font-size="13" fill="#00CEB0">❯</text>

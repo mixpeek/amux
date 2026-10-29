@@ -84,7 +84,7 @@
     <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:18px 22px;margin:24px 0;display:flex;align-items:center;gap:18px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:.95rem;margin-bottom:3px;color:var(--fg)">Running Claude Code, Codex, and Gemini CLI in parallel?</div>
-        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for mixed-runtime agent fleets — orchestration, self-healing, shared kanban, and mobile monitoring, all for $0.</div>
+        <div style="color:var(--fg-dim);font-size:.875rem">amux is the open-source control plane for mixed-runtime agent fleets — orchestration, usage-limit resume, shared kanban, and mobile monitoring, all for $0.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp030_runtimes_compare_topofpage_cta_click',{page:window.location.pathname})" style="background:linear-gradient(135deg,#047857,#065f46);color:#fff;padding:10px 20px;border-radius:7px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0;font-size:.9rem">View amux on GitHub ★</a>
     </div>
@@ -316,7 +316,7 @@
     <h2 id="fleet">Running all three in parallel with amux</h2>
     <p>Each runtime has a domain where it excels. The fastest teams don't pick one — they assign tasks to the right runtime and run everything simultaneously. amux is the open-source control plane that makes this practical.</p>
 
-    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> gives every runtime session the same environment: a shared CLAUDE.md (or equivalent context file), a common kanban board for task assignment, self-healing crash recovery, and a web + mobile dashboard for monitoring and steering. You can run 5 Claude Code sessions, 3 Codex sessions, and 4 Gemini sessions simultaneously, all visible in one place.</p>
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> gives every runtime session the same environment: a shared CLAUDE.md (or equivalent context file), a common kanban board for task assignment, resume after usage limits with stall alerts, and a web + mobile dashboard for monitoring and steering. You can run 5 Claude Code sessions, 3 Codex sessions, and 4 Gemini sessions simultaneously, all visible in one place.</p>
 
     <div class="fleet-step">
       <div class="step-num">1</div>
@@ -447,7 +447,7 @@ amux register gemini-1 --runtime gemini --dir ~/Dev/myproject</div>
     <hr style="margin:2.5rem 0;border:none;border-top:1px solid rgba(255,255,255,.08)">
     <div style="background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(5,150,105,.08));border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:22px 26px;margin:2rem 0">
       <h3 style="margin:0 0 .4rem;font-size:1.1rem">Run a mixed-runtime agent fleet tonight</h3>
-      <p style="margin:0 0 1rem;color:var(--fg-dim);font-size:.9rem">amux orchestrates Claude Code, Codex, and Gemini CLI sessions in parallel — shared kanban board, self-healing, mobile dashboard. Free, open-source, single Rust binary.</p>
+      <p style="margin:0 0 1rem;color:var(--fg-dim);font-size:.9rem">amux orchestrates Claude Code, Codex, and Gemini CLI sessions in parallel — shared kanban board, usage-limit resume, mobile dashboard. Free, open-source, single Rust binary.</p>
       <div style="display:flex;gap:.75rem;flex-wrap:wrap">
         <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#047857,#065f46);color:#fff;padding:10px 22px;border-radius:7px;font-weight:600;text-decoration:none;font-size:.9rem">View amux on GitHub ★</a>
         <a href="/guides/harness-engineering/" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:var(--fg);padding:10px 18px;border-radius:7px;font-weight:500;text-decoration:none;font-size:.9rem">Harness Engineering Guide →</a>

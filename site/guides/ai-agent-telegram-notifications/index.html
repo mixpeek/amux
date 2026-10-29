@@ -296,7 +296,7 @@ systemctl --user restart amux.service</code></pre>
     <!-- ============================================================ -->
     <h2>Overnight monitoring patterns</h2>
 
-    <p>amux is built for <a href="/blog/running-ai-agents-24-7/">unattended overnight runs</a>. The self-healing layer handles the common failure modes: context exhaustion triggers auto-compact, a crashed session restarts and replays the last message, and the watchdog keeps every worker in the fleet alive without intervention. Telegram adds the visibility layer on top.</p>
+    <p>amux is built for <a href="/blog/running-ai-agents-24-7/">unattended overnight runs</a>. It keeps agents going through usage limits and restarts: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot. Claude Code compacts its own context at the threshold you set, and stall detection fires an alert when work stops moving. Telegram adds the visibility layer on top.</p>
 
     <p>A useful overnight pattern:</p>
 

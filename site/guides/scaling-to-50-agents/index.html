@@ -62,7 +62,7 @@
       {"@type": "HowToStep", "position": 1, "name": "Size your infrastructure", "text": "Plan for 300-500MB RAM per agent. A 32GB server comfortably runs 50 agents with headroom for the OS and amux dashboard."},
       {"@type": "HowToStep", "position": 2, "name": "Set up an atomic task queue", "text": "Use the amux kanban board with SQLite compare-and-swap claiming so multiple agents pull from the same task list without collisions."},
       {"@type": "HowToStep", "position": 3, "name": "Configure API rate limits", "text": "Set provider-specific concurrency caps in amux. For Anthropic Max plan, stagger session starts by 5-10 seconds. For API tiers, set SYNC_POOL_CAPACITY to match your allocated RPM."},
-      {"@type": "HowToStep", "position": 4, "name": "Enable YOLO mode and self-healing", "text": "Register sessions with --yolo to auto-approve tool prompts. The watchdog auto-restarts crashed agents and compacts context on overflow."},
+      {"@type": "HowToStep", "position": 4, "name": "Enable YOLO mode and recovery", "text": "Register sessions with --yolo so Claude Code launches with --dangerously-skip-permissions and approval prompts never appear. Keep usage-limit resume on and turn on stall alerts."},
       {"@type": "HowToStep", "position": 5, "name": "Monitor from dashboard or phone", "text": "Use the amux workspace tiled view to watch all agents simultaneously. The iOS app lets you check status, read output, and send messages from anywhere."}
     ]
   }
@@ -102,7 +102,7 @@
         "name": "What happens when agents crash at scale?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux runs a background watchdog that polls all registered sessions every few seconds. When it detects a crashed session (process exited, tmux pane dead), it automatically restarts the process and replays the last message. Context overflow — the most common failure mode — triggers auto-compaction before the context fills completely. At 50-agent scale, expect 2-5 crashes per 8-hour run; the watchdog handles them without human intervention."
+          "text": "Restarting a crashed agent process is not built into the amux server today. An optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does: stall detection flags work that stops moving and fires an owner alert, so you see which agents went down. Claude Code compacts its own context, and amux lets you set the compaction threshold. Usage limits hold delivery and resume at the provider's reset."
         }
       },
       {
@@ -144,7 +144,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Scaling to 50+ Agents</span></div>
 
     <h1>Scaling to 50+ AI Coding Agents</h1>
-    <p class="subtitle">amux runs a fleet of 50+ Claude Code, Codex, or Gemini CLI agents from a single dashboard or your phone — with atomic task claiming, self-healing watchdog, and live monitoring. Here is the architecture you need to do it reliably. <em>Updated July 2026.</em></p>
+    <p class="subtitle">amux runs a fleet of 50+ Claude Code, Codex, or Gemini CLI agents from a single dashboard or your phone — with atomic task claiming, resume after usage limits, stall alerts, and live monitoring. Here is the architecture you need to do it reliably. <em>Updated July 2026.</em></p>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -153,7 +153,7 @@
         <li><a href="#hardware" style="color:var(--dim);text-decoration:none;">Hardware Sizing</a></li>
         <li><a href="#task-queue" style="color:var(--dim);text-decoration:none;">Atomic Task Queue (No Duplicate Work)</a></li>
         <li><a href="#rate-limits" style="color:var(--dim);text-decoration:none;">API Rate Limit Strategies</a></li>
-        <li><a href="#yolo-self-healing" style="color:var(--dim);text-decoration:none;">YOLO Mode + Self-Healing at Scale</a></li>
+        <li><a href="#yolo-self-healing" style="color:var(--dim);text-decoration:none;">YOLO Mode + Recovery at Scale</a></li>
         <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring a 50-Agent Fleet</a></li>
         <li><a href="#provider-mix" style="color:var(--dim);text-decoration:none;">Mixing Providers (Claude + Codex + Gemini)</a></li>
         <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">amux vs Alternatives at Scale</a></li>
@@ -167,7 +167,7 @@
       <li><strong>Task collisions.</strong> Two agents claim the same work item from a shared list, do overlapping work, and produce conflicting commits.</li>
       <li><strong>Rate limit cascades.</strong> Agents start simultaneously and spike API requests — all hit 429 errors, back off at the same time, then spike again in lockstep.</li>
       <li><strong>Monitoring blindness.</strong> You can watch 5 terminal panes. You cannot watch 50. Without a unified dashboard, you won't know which agents are stuck, which finished, or which are burning money on repeated failures.</li>
-      <li><strong>Crash accumulation.</strong> At 10 agents, 1 crash is a 10% loss. At 50, expecting 2-5 crashes per overnight run is normal — you need automated recovery, not manual restarts.</li>
+      <li><strong>Crash accumulation.</strong> At 10 agents, 1 crash is a 10% loss. At 50, expecting 2-5 crashes per overnight run is normal, and you need to know which agents went down without watching 50 panes.</li>
     </ul>
     <p>amux is designed to solve all four. The rest of this guide explains how.</p>
 
@@ -329,19 +329,20 @@ for i in $(seq 1 50); do
 done</code></pre>
     <p>This spreads the initial burst of API calls across 4 minutes, avoiding the synchronized spike that triggers rate limiting. After the first few turns, agents naturally desynchronize as tasks have different lengths.</p>
 
-    <h2 id="yolo-self-healing">YOLO Mode + Self-Healing at Scale</h2>
+    <h2 id="yolo-self-healing">YOLO Mode + Recovery at Scale</h2>
     <p>At 50 agents, you cannot manually approve every tool-use prompt. YOLO mode is not optional — it is required. Enable it when registering sessions:</p>
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject</code></pre>
-    <p>As of July 2026, YOLO mode is the default for new session registrations. The watchdog detects the unique "Esc to cancel" marker that only appears on tool-approval prompts and auto-answers, keeping agents unblocked.</p>
-    <p>The <a href="/guides/self-healing-configuration/">self-healing watchdog</a> handles the most common failure patterns at scale:</p>
+    <p>As of July 2026, YOLO mode is the default for new session registrations. It launches Claude Code with <code>--dangerously-skip-permissions</code>, so approval prompts never appear and agents stay unblocked.</p>
+    <p>Here is how amux handles the common failure patterns at scale (see <a href="/guides/self-healing-configuration/">Recovery configuration</a>):</p>
     <ul>
-      <li><strong>Process crash:</strong> Detects dead tmux pane → restarts process → replays last message</li>
-      <li><strong>Context overflow:</strong> Detects context approaching limit → auto-compacts → continues</li>
-      <li><strong>Stuck agent:</strong> No output for configurable timeout → restart with fresh context</li>
-      <li><strong>API rate limit 429:</strong> Detects error output → exponential backoff → retry</li>
+      <li><strong>Usage limits:</strong> Provider limit hits → amux holds message delivery → agent resumes at the provider's reset</li>
+      <li><strong>Context overflow:</strong> Claude Code compacts its own context → amux lets you set the threshold</li>
+      <li><strong>Stuck agent:</strong> Stall detection flags stalled board work and stuck orchestrators → owner alert fires</li>
+      <li><strong>Machine reboot (macOS):</strong> A login job brings every non-archived worker back, resumed in its own conversation</li>
+      <li><strong>Process crash:</strong> Not restarted by the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</li>
     </ul>
-    <p>Expected crash rate at 50-agent scale: 2-8 per 8-hour overnight run, all auto-recovered. The watchdog logs every restart with timestamp and reason, visible in the amux board's session activity feed.</p>
+    <p>Expected crash rate at 50-agent scale: 2-8 per 8-hour overnight run. Stall alerts tell you which ones need a restart.</p>
 
     <h2 id="monitoring">Monitoring a 50-Agent Fleet</h2>
     <p>The amux dashboard provides several monitoring views for large fleets:</p>
@@ -349,7 +350,7 @@ amux start myproject</code></pre>
     <p><strong>Workspace tiled view</strong>: Arranges multiple session peek panels side-by-side in the browser. Useful for spot-checking 6-12 agents at once. On a 4K display you can tile 16 panes.</p>
     <p><strong>iOS app / mobile PWA</strong>: The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a> lets you check fleet status from anywhere. Useful for checking in on an overnight run from bed — swipe through sessions, read output, send messages. The board tab gives the same kanban view as the desktop.</p>
     <p><strong>Schedules tab in peek</strong>: Each session's peek panel now includes a Schedules tab. For agents running recurring tasks, you can see schedule status without leaving the context of that session.</p>
-    <p>For alerting, set up a simple watchdog notification:</p>
+    <p>For alerting, set up a simple scheduled health check:</p>
     <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Schedule an hourly health check that posts to your board
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{
@@ -394,8 +395,8 @@ curl -sk -X POST -H 'Content-Type: application/json' \
             <td style="padding:10px 16px;text-align:center;">Yes (own queue)</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:10px 16px;">Self-healing watchdog</td>
-            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;">Recovery</td>
+            <td style="padding:10px 16px;text-align:center;">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
             <td style="padding:10px 16px;text-align:center;">Manual / fragile</td>
             <td style="padding:10px 16px;text-align:center;">Yes</td>
           </tr>
@@ -427,7 +428,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
       </table>
     </div>
 
-    <p>The key differentiator vs. DIY scripts is the combination of atomic task claiming + self-healing + a unified monitoring dashboard. DIY approaches work at 5-10 agents; the coordination overhead catches up with you above 20.</p>
+    <p>The key differentiator vs. DIY scripts is the combination of atomic task claiming + usage-limit resume and stall alerts + a unified monitoring dashboard. DIY approaches work at 5-10 agents; the coordination overhead catches up with you above 20.</p>
 
     <h2 id="faq">FAQ</h2>
 
@@ -448,7 +449,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">What happens when agents crash at scale?</summary>
-      <p style="margin:0.8rem 0 0;">amux's watchdog detects crashes automatically and restarts the process, replaying the last message. Context overflow triggers auto-compaction before it becomes a crash. At 50-agent scale, expect 2-8 auto-recoveries per overnight run.</p>
+      <p style="margin:0.8rem 0 0;">Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. What amux does: stall detection flags work that stops moving and fires an owner alert, so you see which agents went down. Claude Code compacts its own context, and amux lets you set the compaction threshold. Usage limits hold delivery and resume at the provider's reset.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -458,7 +459,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Open-source control plane for AI agent teams. Run dozens of Claude Code, Codex, or Gemini CLI agents from your phone or browser — self-healing, kanban task queue, atomic claiming. Single Rust binary, zero dependencies.</p>
+      <p>Open-source control plane for AI agent teams. Run dozens of Claude Code, Codex, or Gemini CLI agents from your phone or browser — usage-limit resume, kanban task queue, atomic claiming. Single Rust binary, zero dependencies.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -469,7 +470,7 @@ amux serve  # → https://localhost:8824</code></pre>
 
     <p style="margin-top:2rem;"><strong>Related guides:</strong>
       <a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> ·
-      <a href="/guides/self-healing-configuration/">Self-Healing Configuration</a> ·
+      <a href="/guides/self-healing-configuration/">Recovery configuration</a> ·
       <a href="/guides/multi-runtime-agent-setup/">Multi-Runtime Setup</a> ·
       <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a> ·
       <a href="/guides/kanban-board-for-agents/">Kanban Board for Agents</a>

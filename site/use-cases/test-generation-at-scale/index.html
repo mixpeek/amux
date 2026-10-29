@@ -50,7 +50,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>Test Generation at Scale</span></div>
     <h1>Test Generation at Scale</h1>
 <p class="subtitle">One agent per module. Full test coverage by morning.</p>
-<p>Low test coverage? Assign one Claude Code agent per module or file. Each agent writes unit tests, integration tests, and edge cases. amux's self-healing ensures they keep working through context resets.</p>
+<p>Low test coverage? Assign one Claude Code agent per module or file. Each agent writes unit tests, integration tests, and edge cases. Claude Code compacts its own context and amux resumes agents after usage limits, so they keep working.</p>
 <h2>Workflow</h2>
 <ol>
 <li>List your untested modules</li>
@@ -58,8 +58,8 @@
 <li>Start agents: they claim tasks atomically from the board</li>
 <li>Monitor from the dashboard — check coverage as agents complete work</li>
 </ol>
-<h2>Why self-healing matters here</h2>
-<p>Test generation is token-intensive. Agents frequently hit context limits. amux's watchdog automatically runs <code>/compact</code> and restarts agents that crash — so your test generation runs don't stall at 3am.</p>
+<h2>Why recovery matters here</h2>
+<p>Test generation is token-intensive. Agents frequently hit context and usage limits. Claude Code compacts its own context at a threshold you set in amux, amux holds delivery through usage limits and resumes at the provider's reset, and stall detection alerts you if a run stops at 3am.</p>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 # then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>

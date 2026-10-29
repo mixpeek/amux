@@ -46,12 +46,12 @@
       {
         "@type": "Question",
         "name": "Which AI coding runtime is best for running overnight unattended?",
-        "acceptedAnswer": {"@type": "Answer", "text": "Claude Code has the most mature self-healing story when paired with amux — context compaction, crash recovery, and replay are well-tested overnight. Codex and Gemini CLI work well for bounded tasks (a script, a test suite, a document) where the task is likely to complete within one session."}
+        "acceptedAnswer": {"@type": "Answer", "text": "Claude Code has the most mature recovery story when paired with amux: Claude Code compacts its own context at a threshold amux lets you set, usage limits resume at the provider's reset, and on macOS workers return after a reboot. Codex and Gemini CLI work well for bounded tasks (a script, a test suite, a document) where the task is likely to complete within one session."}
       },
       {
         "@type": "Question",
         "name": "Does amux support Gemini CLI agents?",
-        "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux registers any terminal process as a session. Start a Gemini CLI agent in a tmux window, register it with amux, and it appears on the dashboard alongside Claude Code and Codex sessions with the same peek, steer, and self-healing capabilities."}
+        "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux registers any terminal process as a session. Start a Gemini CLI agent in a tmux window, register it with amux, and it appears on the dashboard alongside Claude Code and Codex sessions with the same peek, steer, usage-limit resume, and stall alerts."}
       },
       {
         "@type": "Question",
@@ -61,7 +61,7 @@
       {
         "@type": "Question",
         "name": "What does amux add to a multi-runtime agent fleet?",
-        "acceptedAnswer": {"@type": "Answer", "text": "amux provides a single control plane: one dashboard that shows all runtimes simultaneously, a shared kanban board where any agent pulls tasks regardless of runtime, phone monitoring via iOS app or PWA, self-healing watchdog for all sessions, and shared CRM, email, and browser automation tools that any agent can call."}
+        "acceptedAnswer": {"@type": "Answer", "text": "amux provides a single control plane: one dashboard that shows all runtimes simultaneously, a shared kanban board where any agent pulls tasks regardless of runtime, phone monitoring via iOS app or PWA, usage-limit resume and stall alerts for all sessions, and shared CRM, email, and browser automation tools that any agent can call."}
       }
     ]
   }
@@ -107,7 +107,7 @@
     <p>You don't have to pick one AI coding runtime. Claude Code, OpenAI Codex CLI, and Gemini CLI each have different strengths — and a mature agent workflow uses all three in parallel, each assigned to the tasks it handles best. amux is the control plane that makes this work: one dashboard, one kanban board, one phone view, regardless of which runtime each agent uses.</p>
 
     <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> Use Claude Code for complex reasoning and refactoring, Codex for Python scripts and data pipelines, Gemini CLI for long-context tasks and free-tier work. Run all three in amux — they share the same kanban board, you monitor all from your phone, and the self-healing watchdog covers all sessions equally.
+      <strong>Quick answer:</strong> Use Claude Code for complex reasoning and refactoring, Codex for Python scripts and data pipelines, Gemini CLI for long-context tasks and free-tier work. Run all three in amux — they share the same kanban board, you monitor all from your phone, and usage-limit resume and stall alerts cover all sessions.
     </div>
 
     <h2>How Claude Code, Codex, and Gemini CLI differ</h2>
@@ -242,8 +242,8 @@ amux board drain on payments-agent</code></pre>
     <h2>Switching runtimes mid-sprint</h2>
     <p>You don't have to commit to a fleet composition at the start of a sprint. amux lets you add and remove sessions at any time. If a Claude Code session is blocked on an API rate limit, spin up a Codex session and route the next task there. The board state stays consistent — whoever claims the task owns it until done.</p>
 
-    <h2>Self-healing across runtimes</h2>
-    <p>amux's watchdog works the same for all runtimes: if a Codex or Gemini session crashes, it restarts and replays the last message exactly as it does for Claude Code. The only difference is context compaction — <code>/compact</code> is a Claude Code-specific command. For Codex and Gemini sessions that overflow context, the watchdog restarts with a fresh context (losing conversation history but keeping the board state and task description).</p>
+    <h2>Recovery across runtimes</h2>
+    <p>Usage limits work the same for all runtimes: amux holds message delivery and resumes the agent at the provider's reset time. Stall detection and owner alerts also cover every session. Context compaction is runtime-specific: Claude Code compacts its own context, and amux lets you set the threshold. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers only, and nothing does this for Codex or Gemini sessions.</p>
 
     <h2>Getting started with a multi-runtime fleet</h2>
     <ol>
@@ -274,13 +274,13 @@ amux board drain on payments-agent</code></pre>
     <p>Yes. With amux, each agent is an independent session. You can assign Claude Code sessions to architecture and refactoring tasks, Codex sessions to Python scripts and data pipelines, and Gemini CLI sessions to documentation and long-context analysis — all monitored from one dashboard.</p>
 
     <h3>Which AI coding runtime is best for running overnight unattended?</h3>
-    <p>Claude Code has the most mature self-healing story when paired with amux. Context compaction (<code>/compact</code>), crash recovery, and last-message replay are well-tested for overnight runs. Codex and Gemini CLI work well for bounded tasks where the session is likely to complete within a few hours.</p>
+    <p>Claude Code has the most mature recovery story when paired with amux. Claude Code compacts its own context at a threshold amux lets you set, usage limits resume at the provider's reset, and on macOS workers return after a reboot. Codex and Gemini CLI work well for bounded tasks where the session is likely to complete within a few hours.</p>
 
     <h3>How does cost compare between the three runtimes?</h3>
     <p>Codex CLI is MIT-licensed (free); you pay for OpenAI API usage. Gemini CLI has a free tier (1,500 requests/day on Gemini 2.0 Flash). Claude Code bills through Anthropic API pricing — Sonnet is the recommended daily driver for cost-quality balance. In a mixed fleet, route high-volume mechanical work to Codex or Gemini and reserve Claude for tasks requiring deep reasoning.</p>
 
     <h3>Does amux support Gemini CLI agents?</h3>
-    <p>Yes. amux registers any terminal process. Start Gemini CLI in a tmux window, register it, and it appears on the dashboard alongside Claude Code and Codex sessions with the same peek, steer, and self-healing capabilities.</p>
+    <p>Yes. amux registers any terminal process. Start Gemini CLI in a tmux window, register it, and it appears on the dashboard alongside Claude Code and Codex sessions with the same peek, steer, usage-limit resume, and stall alerts.</p>
 
     <h2>Related guides</h2>
     <ul>

@@ -81,7 +81,7 @@
 <li><a href="#skills">Skills &amp; slash commands</a></li>
 <li><a href="#channels">Channels</a></li>
 <li><a href="#files">File explorer</a></li>
-<li><a href="#self-healing">Self-healing</a></li>
+<li><a href="#self-healing">Recovery</a></li>
 <li><a href="#mobile">Mobile &amp; PWA</a></li>
 <li><a href="#auth">Authentication</a></li>
 <li><a href="#tls">TLS &amp; HTTPS</a></li>
@@ -611,18 +611,19 @@ curl -sk "https://localhost:8824/api/file?path=/Users/you/Dev/myproject/README.m
 # Upload a file
 curl -sk -X POST -F "file=@local.txt" https://localhost:8824/api/fs/upload</code></pre>
 
-<h2 id="self-healing">Self-healing</h2>
+<h2 id="self-healing">Recovery</h2>
 
-<p>amux monitors sessions and automatically handles common failure modes:</p>
+<p>amux keeps agents going through usage limits and restarts:</p>
 
 <ul>
-<li><strong>Context overflow</strong> &mdash; detects when Claude Code hits its context limit and triggers <code>/compact</code> to compress the conversation</li>
-<li><strong>Crash recovery</strong> &mdash; restarts crashed sessions and replays the last message</li>
-<li><strong>Stale detection</strong> &mdash; identifies stuck sessions and prompts them to continue</li>
-<li><strong>Auto-resume</strong> &mdash; when the server starts, it re-attaches to any tmux sessions that survived a restart</li>
+<li><strong>Usage limits</strong> &mdash; when a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the provider's reset time (all platforms)</li>
+<li><strong>Server restarts</strong> &mdash; the OS service (launchd on macOS, a systemd user service on Linux) restarts the amux server if its process exits, and the server re-attaches to the tmux sessions that are still running</li>
+<li><strong>Reboots (macOS)</strong> &mdash; the installer adds a login job that brings every non-archived worker back after a reboot, resumed in its own conversation</li>
+<li><strong>Context</strong> &mdash; Claude Code compacts its own context; amux lets you set the compaction threshold</li>
+<li><strong>Stall detection</strong> &mdash; stalled board work and stuck orchestrators are detected and surfaced, and owner alerts fire</li>
 </ul>
 
-<p>The watchdog runs every 3 seconds and requires no configuration. It's on by default for all sessions registered with <code>--yolo</code>.</p>
+<p>Restarting an agent whose process crashed, was killed or quit to a shell is not built into the amux server today. On macOS an optional script, <code>scripts/tmux-watchdog.sh</code>, runs as a separate launchd job and restarts crashed Claude Code workers; the installer does not set it up. Nothing does this on Linux or for other providers.</p>
 
 <h2 id="mobile">Mobile &amp; PWA</h2>
 

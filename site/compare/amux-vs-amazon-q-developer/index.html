@@ -69,7 +69,7 @@
         "name": "What is the best self-hosted alternative to Amazon Q Developer?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is the most complete self-hosted alternative for teams who want fleet-scale AI coding agent capabilities without cloud vendor dependency. It runs Claude Code, Codex CLI, and Gemini CLI on your own machine or server under the MIT + Commons Clause license. The full feature set — kanban board, self-healing watchdog, mobile dashboard (iOS app), shared fleet view, and scheduled overnight runs — runs entirely on your infrastructure."
+          "text": "amux is the most complete self-hosted alternative for teams who want fleet-scale AI coding agent capabilities without cloud vendor dependency. It runs Claude Code, Codex CLI, and Gemini CLI on your own machine or server under the MIT + Commons Clause license. The full feature set — kanban board, usage-limit and reboot recovery, mobile dashboard (iOS app), shared fleet view, and scheduled overnight runs — runs entirely on your infrastructure."
         }
       },
       {
@@ -77,7 +77,7 @@
         "name": "How does Amazon Q Developer differ from Claude Code?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Amazon Q Developer is AWS's proprietary product, runs on AWS infrastructure, and uses Amazon's models. Claude Code is Anthropic's CLI for Claude — a terminal-first coding agent that runs locally. amux is not a competitor to either: it is the orchestration layer that runs Claude Code (along with Codex and Gemini CLI) at fleet scale — parallel sessions, shared board, self-healing, mobile monitoring. Think of amux as the control plane and Claude Code as one of the engines it manages."
+          "text": "Amazon Q Developer is AWS's proprietary product, runs on AWS infrastructure, and uses Amazon's models. Claude Code is Anthropic's CLI for Claude — a terminal-first coding agent that runs locally. amux is not a competitor to either: it is the orchestration layer that runs Claude Code (along with Codex and Gemini CLI) at fleet scale — parallel sessions, shared board, usage-limit and reboot recovery, mobile monitoring. Think of amux as the control plane and Claude Code as one of the engines it manages."
         }
       },
       {
@@ -124,7 +124,7 @@
 
     <p><strong>Amazon Q Developer</strong> is AWS's AI coding product. It provides IDE-level inline suggestions, an agentic mode for multi-step development tasks, a CLI tool, and deep integration with AWS services like CloudFormation, Lambda, and CodeCatalyst. It runs entirely on AWS infrastructure and is available via a free tier or Pro subscription ($19/month). It is proprietary and AWS-specific.</p>
 
-    <p><strong>amux</strong> is an open-source control plane that runs parallel fleets of Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google) agents on your own machine or server. It is model-agnostic, cloud-provider neutral, and ships with a kanban board, self-healing watchdog, mobile dashboard (iOS app), and shared fleet view. MIT + Commons Clause, no subscription.</p>
+    <p><strong>amux</strong> is an open-source control plane that runs parallel fleets of Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google) agents on your own machine or server. It is model-agnostic, cloud-provider neutral, and ships with a kanban board, usage-limit and reboot recovery, mobile dashboard (iOS app), and shared fleet view. MIT + Commons Clause, no subscription.</p>
 
     <p>The core tradeoff: Amazon Q is optimized for AWS-ecosystem integration with low setup friction. amux is optimized for parallel fleet execution, full data control, and model flexibility — without requiring AWS.</p>
 
@@ -143,7 +143,7 @@
         <tr><td>Open source</td><td>MIT + Commons Clause</td><td>Proprietary</td></tr>
         <tr><td>Board / task tracking</td><td>Built-in kanban board, fleet-wide</td><td>No task board</td></tr>
         <tr><td>Mobile monitoring</td><td>iOS app + PWA, push notifications</td><td>No native mobile app</td></tr>
-        <tr><td>Overnight / unattended runs</td><td>Self-healing watchdog, auto-restart</td><td>Not designed for unattended fleet runs</td></tr>
+        <tr><td>Overnight / unattended runs</td><td>Usage-limit resume, stall alerts, workers return after a macOS reboot</td><td>Not designed for unattended fleet runs</td></tr>
         <tr><td>Secrets management</td><td>Vault: scoped to worker/group/global, never in transcripts</td><td>AWS Secrets Manager integration (separate AWS service)</td></tr>
         <tr><td>Workspace isolation</td><td>Per-agent git worktree, scratch dir, TMPDIR via AMUX_WORKSPACE_ISOLATION</td><td>Single agent, no parallel workspace isolation</td></tr>
         <tr><td>Standing approvals</td><td>Pre-authorize action categories for unattended overnight runs</td><td>No equivalent — each agent run requires manual oversight</td></tr>
@@ -170,7 +170,7 @@
 
     <h2>Claude Code vs Amazon Q — and where amux fits</h2>
     <p>A common search pattern is "Claude Code vs Amazon Q Developer." These two are actual alternatives for the AI coding assistant role — both work in the terminal or IDE, both can do multi-step coding tasks, and both are used by individual developers. The difference is that Claude Code uses Anthropic's Claude models and is local-first; Amazon Q uses Amazon's models and is AWS-integrated.</p>
-    <p>amux is not an alternative to either — it is the layer above them. amux runs Claude Code (and Codex and Gemini) at scale: parallel sessions, a shared kanban board, self-healing overnight runs, and a mobile dashboard. If you already use Claude Code and want to run it as a fleet, amux is the natural next step. Amazon Q does not have an equivalent fleet layer.</p>
+    <p>amux is not an alternative to either — it is the layer above them. amux runs Claude Code (and Codex and Gemini) at scale: parallel sessions, a shared kanban board, overnight runs that resume after usage limits, and a mobile dashboard. If you already use Claude Code and want to run it as a fleet, amux is the natural next step. Amazon Q does not have an equivalent fleet layer.</p>
 
     <h2>Frequently Asked Questions</h2>
 
@@ -184,17 +184,17 @@
     <p>Yes. amux runs on any local codebase regardless of where it deploys. Edit CloudFormation, write Lambda handlers, update IaC — all locally, through your normal git workflow. No AWS dependency for the orchestration layer.</p>
 
     <h3>What is the best self-hosted alternative to Amazon Q Developer?</h3>
-    <p>amux is the most complete self-hosted option. MIT + Commons Clause, runs on your own machine or server, supports Claude Code, Codex, and Gemini CLI, and includes a full fleet management layer — kanban board, self-healing watchdog, iOS app, scheduled overnight runs. Zero AWS dependency. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub →</a></p>
+    <p>amux is the most complete self-hosted option. MIT + Commons Clause, runs on your own machine or server, supports Claude Code, Codex, and Gemini CLI, and includes a full fleet management layer — kanban board, usage-limit and reboot recovery, iOS app, scheduled overnight runs. Zero AWS dependency. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub →</a></p>
 
     <h3>How does Amazon Q Developer differ from Claude Code?</h3>
-    <p>Amazon Q is AWS's proprietary product running on AWS infrastructure using Amazon's models. Claude Code is Anthropic's open terminal-first coding agent using Claude. amux is the fleet orchestration layer for Claude Code (and Codex, Gemini) — parallel sessions, shared board, self-healing, mobile dashboard. Claude Code and Amazon Q compete at the single-agent level; amux operates above that.</p>
+    <p>Amazon Q is AWS's proprietary product running on AWS infrastructure using Amazon's models. Claude Code is Anthropic's open terminal-first coding agent using Claude. amux is the fleet orchestration layer for Claude Code (and Codex, Gemini) — parallel sessions, shared board, usage-limit and reboot recovery, mobile dashboard. Claude Code and Amazon Q compete at the single-agent level; amux operates above that.</p>
 
     <h3>Which is better for enterprise teams?</h3>
     <p>Depends on the primary constraint. Amazon Q offers lower setup friction for AWS-native enterprises (IAM, SOC2, existing AWS toolchain). amux offers full data residency, no per-seat fees, model flexibility, and parallel fleet execution that Amazon Q cannot match. Orgs that cannot send code off-premises have one choice.</p>
 
     <div class="cta-box">
       <h3>Self-hosted fleet orchestration — no AWS required</h3>
-      <p>amux runs Claude Code, Codex, and Gemini CLI agents in parallel on your own infrastructure. MIT + Commons Clause, free to self-host. Kanban board, mobile dashboard, self-healing, and scheduled overnight runs — all on your machine.</p>
+      <p>amux runs Claude Code, Codex, and Gemini CLI agents in parallel on your own infrastructure. MIT + Commons Clause, free to self-host. Kanban board, mobile dashboard, usage-limit and reboot recovery, and scheduled overnight runs — all on your machine.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

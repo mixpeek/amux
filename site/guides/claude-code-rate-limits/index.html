@@ -152,7 +152,7 @@
 
     <p>Shorter context means fewer tokens per API call. Fewer tokens per call means lower rate-limit pressure &mdash; especially on per-minute caps for API key users. Claude Code can automatically compact (summarize) the conversation when context grows large; you can also trigger this manually with <code>/compact</code>.</p>
 
-    <p>amux auto-compacts context for sessions it manages. Beyond compaction, keeping sessions scoped to one task rather than one long multi-task session significantly reduces how much context accumulates before the task is done.</p>
+    <p>In amux you can set the compaction threshold for the sessions it manages, so Claude Code compacts earlier. Beyond compaction, keeping sessions scoped to one task rather than one long multi-task session significantly reduces how much context accumulates before the task is done.</p>
 
     <h3>3. Stagger Session Starts</h3>
 
@@ -204,19 +204,19 @@ for s in data.get('sessions', []):
 
     <p>amux treats Claude Code, Codex CLI, and Gemini CLI as interchangeable runtimes. Sessions can be assigned to any runtime; the board, CRM, kanban, and email integrations work the same regardless of which model is driving the agent. When Claude is rate-limited, you switch the affected sessions to Codex or Gemini from the dashboard &mdash; no reconfiguration required.</p>
 
-    <h3>Self-Healing Watchdog</h3>
+    <h3>Usage-Limit Resume</h3>
 
-    <p>amux runs a watchdog that monitors each session for overload and rate-limit errors. When a session gets an overload response, the watchdog can automatically retry after a backoff delay or mark the session for manual review on the board. This prevents silent failures where an agent appears to be running but has actually been blocked by a rate limit for hours.</p>
+    <p>When a provider's usage or rate limit hits, amux holds message delivery to that session and resumes the agent at the provider's reset time (<code>AMUX_RATE_LIMIT_ACTION=wait</code>; set it to <code>off</code> to disable). Stall detection flags board work that stops moving, so an agent that looks busy but has made no progress for hours gets surfaced with an owner alert.</p>
 
-    <h3>Context Auto-Compaction</h3>
+    <h3>Compaction Threshold</h3>
 
-    <p>amux monitors context size across sessions and triggers compaction before context grows large enough to cause &ldquo;prompt too long&rdquo; errors or push per-call token costs up toward rate-limit thresholds. This is especially useful for overnight runs where no developer is watching the sessions.</p>
+    <p>Claude Code compacts its own context, and amux lets you set the compaction threshold so compaction happens before context grows large enough to cause &ldquo;prompt too long&rdquo; errors or push per-call token costs up toward rate-limit thresholds. This is especially useful for overnight runs where no developer is watching the sessions.</p>
 
     <!-- ─────────────────────────── CTA EXP-014 ─────────────────────────── -->
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux &mdash; multi-runtime fallback when Claude hits rate limits (307&#9733; GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Switch from Claude Code to Codex or Gemini CLI mid-session. Self-healing watchdog retries on overload. Cost tab tracks token spend per session in real time.</div>
+        <div style="color:var(--muted);font-size:.9rem">Switch from Claude Code to Codex or Gemini CLI mid-session. Sessions resume at the provider's reset after a usage limit. Cost tab tracks token spend per session in real time.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
     </div>

@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>Getting Started with amux — Run Your AI Engineering Team in Under 5 Minutes (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Get your AI engineering team running in under 5 minutes. amux installs with one command, self-heals agents overnight, and lets you steer your whole fleet from your phone.">
+  <meta name="description" content="Get your AI engineering team running in under 5 minutes. amux installs with one command, resumes agents after usage limits overnight, and lets you steer your whole fleet from your phone.">
   <meta name="keywords" content="amux getting started, install amux, amux tutorial, AI engineering team dashboard, amux quickstart 2026, run multiple AI agents, claude code multiplexer setup">
   <link rel="canonical" href="https://amux.io/guides/getting-started/">
   <meta property="og:title" content="Getting Started with amux — Run Your AI Engineering Team in Under 5 Minutes (2026)">
-  <meta property="og:description" content="Get your AI engineering team running in under 5 minutes. amux installs with one command, self-heals agents overnight, full dashboard at localhost:8824.">
+  <meta property="og:description" content="Get your AI engineering team running in under 5 minutes. amux installs with one command, resumes agents after usage limits overnight, full dashboard at localhost:8824.">
   <meta property="og:url" content="https://amux.io/guides/getting-started/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,9 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Getting Started with amux","item":"https://amux.io/guides/getting-started/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Getting Started with amux — Run Your AI Engineering Team in Under 5 Minutes","description":"Get your AI engineering team running in under 5 minutes. amux installs with one command, self-heals agents overnight, and lets you steer your whole fleet from your phone.","url":"https://amux.io/guides/getting-started/","datePublished":"2026-02-26","dateModified":"2026-10-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Install amux and Run an AI Engineering Team","description":"Set up amux to run multiple Claude Code, Codex, or Gemini CLI sessions with a web dashboard, self-healing watchdog, and phone control.","step":[{"@type":"HowToStep","position":1,"name":"Install","text":"curl -fsSL https://amux.io/install.sh | bash. It clones amux to ~/Dev/amux, asks before installing Rust or tmux, builds the server and adds the amux CLI to your PATH."},{"@type":"HowToStep","position":2,"name":"Register a project","text":"amux register myproject --dir ~/Dev/myproject --yolo — registers the project directory and sets permissive mode for the agent"},{"@type":"HowToStep","position":3,"name":"Start your first session","text":"amux start myproject — launches a tmux session running Claude Code, watched by amux's self-healing watchdog"},{"@type":"HowToStep","position":4,"name":"Open the dashboard","text":"Open https://localhost:8824 in your browser — you'll see live session status, token tracking, agent plans, and a steering bar"},{"@type":"HowToStep","position":5,"name":"Send your first task","text":"Type a prompt in the steering bar and hit Enter, or run: amux send myproject 'add unit tests for the auth module'"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause."}},{"@type":"Question","name":"Does amux work with Codex and Gemini CLI too?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is model-agnostic at the session level. Each registered session can run Claude Code, OpenAI Codex CLI, or Gemini CLI — you specify the provider when registering. The dashboard, self-healing watchdog, scheduler, and board work identically regardless of which AI runtime is running in the tmux session."}},{"@type":"Question","name":"How many agents can I run at once?","acceptedAnswer":{"@type":"Answer","text":"As many as your machine's CPU, RAM, and API rate limits allow. Most developers run 5–15 sessions on a modern laptop. Each session is a tmux pane running an AI CLI, so the overhead is minimal. See the guide on running 10+ agents for hardware and rate-limit recommendations."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"The core amux server is open source (MIT + Commons Clause) and free forever. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io. Everything else — dashboard, self-healing, scheduler, board, CRM, email, browser automation — is free and open source."}},{"@type":"Question","name":"How do I run agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Install the iOS app (App Store: amux – Agent Multiplexer, id6760410435) or open the amux dashboard on your phone's browser and install it as a PWA. The mobile interface shows session cards, live status, a peek panel for reading agent output, and a steering bar for sending prompts — all with touch targets sized for phone use."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Getting Started with amux — Run Your AI Engineering Team in Under 5 Minutes","description":"Get your AI engineering team running in under 5 minutes. amux installs with one command, resumes agents after usage limits overnight, and lets you steer your whole fleet from your phone.","url":"https://amux.io/guides/getting-started/","datePublished":"2026-02-26","dateModified":"2026-10-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Install amux and Run an AI Engineering Team","description":"Set up amux to run multiple Claude Code, Codex, or Gemini CLI sessions with a web dashboard, usage-limit resume, stall alerts, and phone control.","step":[{"@type":"HowToStep","position":1,"name":"Install","text":"curl -fsSL https://amux.io/install.sh | bash. It clones amux to ~/Dev/amux, asks before installing Rust or tmux, builds the server and adds the amux CLI to your PATH."},{"@type":"HowToStep","position":2,"name":"Register a project","text":"amux register myproject --dir ~/Dev/myproject --yolo — registers the project directory and sets permissive mode for the agent"},{"@type":"HowToStep","position":3,"name":"Start your first session","text":"amux start myproject — launches a tmux session running Claude Code, monitored by amux with stall detection and usage-limit resume"},{"@type":"HowToStep","position":4,"name":"Open the dashboard","text":"Open https://localhost:8824 in your browser — you'll see live session status, token tracking, agent plans, and a steering bar"},{"@type":"HowToStep","position":5,"name":"Send your first task","text":"Type a prompt in the steering bar and hit Enter, or run: amux send myproject 'add unit tests for the auth module'"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and resumes dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit resume, single Rust binary, zero external dependencies, MIT + Commons Clause."}},{"@type":"Question","name":"Does amux work with Codex and Gemini CLI too?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is model-agnostic at the session level. Each registered session can run Claude Code, OpenAI Codex CLI, or Gemini CLI — you specify the provider when registering. The dashboard, usage-limit resume, stall detection, scheduler, and board work identically regardless of which AI runtime is running in the tmux session."}},{"@type":"Question","name":"How many agents can I run at once?","acceptedAnswer":{"@type":"Answer","text":"As many as your machine's CPU, RAM, and API rate limits allow. Most developers run 5–15 sessions on a modern laptop. Each session is a tmux pane running an AI CLI, so the overhead is minimal. See the guide on running 10+ agents for hardware and rate-limit recommendations."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"The core amux server is open source (MIT + Commons Clause) and free forever. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io. Everything else — dashboard, usage-limit resume, scheduler, board, CRM, email, browser automation — is free and open source."}},{"@type":"Question","name":"How do I run agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Install the iOS app (App Store: amux – Agent Multiplexer, id6760410435) or open the amux dashboard on your phone's browser and install it as a PWA. The mobile interface shows session cards, live status, a peek panel for reading agent output, and a steering bar for sending prompts — all with touch targets sized for phone use."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -77,7 +77,7 @@
 
     <h2 id="start">Step 3: Start the session</h2>
     <pre><code>amux start myproject</code></pre>
-    <p>This launches a tmux session running Claude Code (or your configured runtime), watched by amux's self-healing watchdog. If the agent hangs or crashes, it's automatically restarted. Add <code>--detach</code> to return the terminal immediately and let the session run in the background.</p>
+    <p>This launches a tmux session running Claude Code (or your configured runtime), monitored by amux. If a usage limit hits, amux holds delivery and resumes the agent at the provider's reset; if the session stalls, stall detection flags it. Restarting a crashed agent process is not built into the amux server. Add <code>--detach</code> to return the terminal immediately and let the session run in the background.</p>
 
     <h2 id="dashboard">Step 4: Open the dashboard</h2>
     <pre><code># The server starts automatically on install. Open in your browser:
@@ -87,7 +87,7 @@
       <li>Send steering prompts to any running session</li>
       <li>Peek at the agent's live output and scroll the transcript</li>
       <li>Create board tasks and assign them to sessions</li>
-      <li>Watch the self-healing watchdog status</li>
+      <li>See stalled sessions and stall alerts</li>
       <li>Open the Scheduler tab to set up recurring prompts</li>
     </ul>
 
@@ -105,12 +105,12 @@ amux register docs-work --dir ~/Dev/myproject --yolo
 amux start api-work
 amux start frontend-work
 amux start docs-work</code></pre>
-    <p>The dashboard shows all sessions at a glance. Each has its own token budget, plan strip, and self-healing watchdog. See <a href="/guides/running-10-plus-agents/">Running 10+ AI Agents in Parallel</a> for multi-session tuning.</p>
+    <p>The dashboard shows all sessions at a glance. Each has its own token budget, plan strip, and status. See <a href="/guides/running-10-plus-agents/">Running 10+ AI Agents in Parallel</a> for multi-session tuning.</p>
 
     <h2 id="comparison">How amux compares to the alternatives</h2>
     <table>
       <thead>
-        <tr><th>Method</th><th>Setup time</th><th>Parallel agents</th><th>Dashboard</th><th>Self-healing</th></tr>
+        <tr><th>Method</th><th>Setup time</th><th>Parallel agents</th><th>Dashboard</th><th>Recovery</th></tr>
       </thead>
       <tbody>
         <tr>
@@ -118,7 +118,7 @@ amux start docs-work</code></pre>
           <td>Under 2 min</td>
           <td>&#10003; unlimited</td>
           <td>&#10003; web + iOS</td>
-          <td>&#10003; watchdog + auto-restart</td>
+          <td>&#10003; Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
         </tr>
         <tr>
           <td>Bare tmux</td>
@@ -163,12 +163,12 @@ amux start docs-work</code></pre>
 
     <details class="faq-item" open>
       <summary>What is amux?</summary>
-      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and resumes dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit resume, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
     </details>
 
     <details class="faq-item">
       <summary>Does amux work with Codex and Gemini CLI too?</summary>
-      <p>Yes. amux is model-agnostic. Each session can run Claude Code, OpenAI Codex CLI, or Gemini CLI &mdash; specify the provider when registering. The dashboard, self-healing, scheduler, and board all work the same regardless of runtime. You can mix providers across sessions in the same dashboard.</p>
+      <p>Yes. amux is model-agnostic. Each session can run Claude Code, OpenAI Codex CLI, or Gemini CLI &mdash; specify the provider when registering. The dashboard, usage-limit resume, scheduler, and board all work the same regardless of runtime. You can mix providers across sessions in the same dashboard.</p>
     </details>
 
     <details class="faq-item">
@@ -178,7 +178,7 @@ amux start docs-work</code></pre>
 
     <details class="faq-item">
       <summary>Is amux free?</summary>
-      <p>The core amux server is open source (MIT + Commons Clause) and free forever. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at <code>yourname.amux.io</code>. Everything else &mdash; dashboard, self-healing, scheduler, board, CRM, email, browser automation &mdash; is free and open source. See <a href="/cloud/">amux Cloud vs open source</a>.</p>
+      <p>The core amux server is open source (MIT + Commons Clause) and free forever. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at <code>yourname.amux.io</code>. Everything else &mdash; dashboard, usage-limit resume, scheduler, board, CRM, email, browser automation &mdash; is free and open source. See <a href="/cloud/">amux Cloud vs open source</a>.</p>
     </details>
 
     <details class="faq-item">
@@ -188,7 +188,7 @@ amux start docs-work</code></pre>
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Open-source control plane for AI agent teams &mdash; self-healing, phone-first, one Rust binary with SQLite.</p>
+      <p>Open-source control plane for AI agent teams &mdash; usage-limit resume, phone-first, one Rust binary with SQLite.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -203,7 +203,7 @@ amux start myproject
     <ul>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ AI agents in parallel &mdash; hardware, rate limits, and coordination patterns</a></li>
       <li><a href="/guides/scheduling-ai-agents/">Schedule Claude Code to run automatically every morning</a></li>
-      <li><a href="/features/self-healing/">How the self-healing watchdog works &mdash; 4 failure modes it handles</a></li>
+      <li><a href="/features/self-healing/">Recovery and restarts: what amux handles after limits, reboots and stalls</a></li>
       <li><a href="/guides/ai-agent-skills/">Define reusable Skills (custom slash commands) for your agents</a></li>
       <li><a href="/use-cases/ai-coding-while-you-sleep/">Run AI agents overnight unattended</a></li>
       <li><a href="/features/mobile-pwa/">Control everything from your iPhone</a></li>

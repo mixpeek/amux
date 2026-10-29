@@ -120,7 +120,7 @@
       <li><strong>Missing credentials / access</strong> — you need to rotate an API key or grant access. Do it in your tooling, then tell the agent to continue.</li>
       <li><strong>Merge conflict</strong> — you need to merge the upstream changes. Resolve locally, push, then send "Pull the latest and continue."</li>
     </ul>
-    <p>The key is that the agent stops cleanly at a known point rather than silently hallucinating past a blocker or consuming tokens in a loop. Self-healing handles crashes and context overflow; blockers that require human judgment always surface to the board.</p>
+    <p>The key is that the agent stops cleanly at a known point rather than silently hallucinating past a blocker or consuming tokens in a loop. amux resumes agents after usage limits and stall detection flags stuck work; blockers that require human judgment always surface to the board.</p>
 
     <h2>Standup Comparison</h2>
 
@@ -204,7 +204,7 @@
 
     <div class="cta-box">
       <h3>Run your AI engineering team overnight — wake up to a full standup report</h3>
-      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Usage-limit resume, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>Ship Features While You Sleep — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How to run AI coding agents overnight with self-healing to wake up to completed features.">
+  <meta name="description" content="How to run AI coding agents overnight, resume them after usage limits, and wake up to completed features.">
   <meta name="keywords" content="AI coding overnight, ship while sleeping, unattended AI development, autonomous coding">
   <link rel="canonical" href="https://amux.io/blog/ship-features-while-you-sleep/">
   <meta property="og:title" content="Ship Features While You Sleep — amux">
-  <meta property="og:description" content="How to run AI coding agents overnight with self-healing to wake up to completed features.">
+  <meta property="og:description" content="How to run AI coding agents overnight, resume them after usage limits, and wake up to completed features.">
   <meta property="og:url" content="https://amux.io/blog/ship-features-while-you-sleep/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"Ship Features While You Sleep","item":"https://amux.io/blog/ship-features-while-you-sleep/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Ship Features While You Sleep","description":"How to run AI coding agents overnight with self-healing to wake up to completed features.","url":"https://amux.io/blog/ship-features-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/ship-features-while-you-sleep/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Ship Features While You Sleep","description":"How to run AI coding agents overnight, resume them after usage limits, and wake up to completed features.","url":"https://amux.io/blog/ship-features-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/ship-features-while-you-sleep/"}}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -50,11 +50,12 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>Ship Features While You Sleep</span></div>
     <h1>Ship Features While You Sleep</h1>
 <p class="subtitle">The economics of autonomous overnight development.</p>
-<p>A developer reported waking up to a fully tested REST API. Total cost: $3.47 in API tokens. The catch? It only works if your agents don't crash at 3am.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
+<p>A developer reported waking up to a fully tested REST API. Total cost: $3.47 in API tokens. The catch? It only works if your agents keep going at 3am.</p>
 <h2>The reliability problem</h2>
-<p>Claude Code sessions fail in predictable ways: context compaction crashes, thinking-block corruption, and stuck tool-approval prompts. Without recovery, your overnight agent is dead by midnight.</p>
-<h2>Self-healing changes the equation</h2>
-<p>amux's watchdog handles every known failure mode automatically. Context low? Auto-compact. Corruption? Restart and replay. Stuck prompt? Auto-respond. Your agents work through the night.</p>
+<p>Claude Code sessions stop in predictable ways: usage limits, full context windows, tool-approval prompts, and stalls. Without a plan for each, your overnight agent is idle by midnight.</p>
+<h2>Recovery changes the equation</h2>
+<p>Usage limit? amux holds delivery and resumes at the provider's reset. Context full? Claude Code compacts at the threshold you set in amux. Approval prompts? YOLO mode skips them. Stalled work? Stall detection sends you an alert. Mac rebooted? Every worker comes back in its own conversation.</p>
 <h2>The morning routine</h2>
 <p>Check the board from your phone. See what shipped. Review PRs. Merge. Your overnight agents just saved you a day of work.</p>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash

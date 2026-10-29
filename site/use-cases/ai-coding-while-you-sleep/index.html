@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>AI Coding While You Sleep — amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight with self-healing watchdog, YOLO mode, TTS read-aloud morning briefing, and Trends view from your phone.">
+  <meta name="description" content="Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight with usage-limit resume, YOLO mode, TTS read-aloud morning briefing, and Trends view from your phone.">
   <meta name="keywords" content="AI coding while you sleep, run coding agents overnight, unattended AI coding, autonomous coding overnight, AI agents 24/7, Claude Code overnight, Gemini CLI overnight, Codex overnight, AI engineering team runs while you sleep, AI agent morning briefing, AI agent read aloud">`
   <link rel="canonical" href="https://amux.io/use-cases/ai-coding-while-you-sleep/">
   <meta property="og:title" content="AI Coding While You Sleep — amux">
-  <meta property="og:description" content="Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight — self-healing watchdog, YOLO mode, TTS morning briefing, Trends view. Review from your phone.">
+  <meta property="og:description" content="Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight — usage-limit resume, YOLO mode, TTS morning briefing, Trends view. Review from your phone.">
   <meta property="og:url" content="https://amux.io/use-cases/ai-coding-while-you-sleep/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,9 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Coding While You Sleep","item":"https://amux.io/use-cases/ai-coding-while-you-sleep/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding While You Sleep — amux","description":"Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight — self-healing watchdog, YOLO mode, TTS read-aloud morning briefing, Trends view, and Review dashboard from your phone.","url":"https://amux.io/use-cases/ai-coding-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-08-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"image":"https://amux.io/og-image.png","keywords":["AI coding while you sleep","run coding agents overnight","AI coding agents unattended","Gemini CLI overnight","AI engineering team","morning agent review"]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can Claude Code run overnight without supervision?","acceptedAnswer":{"@type":"Answer","text":"Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. The self-healing watchdog monitors every session for idle hangs, context overflow, and process crashes — handling each automatically without any human input. The morning review takes about five minutes from your phone."}},{"@type":"Question","name":"What is YOLO mode in amux and is it safe?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode makes amux auto-respond 'yes' to every tool-approval prompt Claude Code raises, so sessions never block waiting for human input overnight. It is safe to use on a dedicated dev machine or inside a properly scoped project directory. As of July 2026, YOLO mode is the default for new sessions registered with amux. You can disable it per-session with the --no-yolo flag."}},{"@type":"Question","name":"What happens if a Claude Code session runs out of context while I'm asleep?","acceptedAnswer":{"@type":"Answer","text":"amux's watchdog detects the context-overflow signal and automatically sends the /compact slash command to the session. A 5-minute cooldown prevents repeated compactions from thrashing. If the session enters a thinking-block corruption state, the watchdog restarts the session entirely and replays the last message, so work continues without any human intervention."}},{"@type":"Question","name":"How do I check on my AI coding agents from my phone in the morning?","acceptedAnswer":{"@type":"Answer","text":"Open the amux PWA at https://localhost:8824 from your phone (or use the native iOS app). The board tab shows which tasks each session completed, is still working on, or failed. Tap any session to peek at its last 100 lines of output. Use the Trends view to see what themes your fleet worked on overnight, and the Review dashboard to surface any blockers that need your attention. From there you can send a one-tap saved message to redirect an agent, or open GitHub to review the pull requests it opened overnight."}},{"@type":"Question","name":"How many AI coding agents can run overnight on one machine?","acceptedAnswer":{"@type":"Answer","text":"On a Mac with 32 GB of RAM you can comfortably run 10–20 parallel Claude Code sessions. A Mac Studio or Mac Pro with 64–192 GB of RAM supports 30–50 sessions. Each Claude Code session uses roughly 1–2 GB of RAM at peak. The practical limit is usually your Anthropic API rate limit and disk I/O throughput, not CPU or RAM alone."}},{"@type":"Question","name":"Can I run Gemini CLI or Codex agents overnight, not just Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux supports Claude Code, Codex CLI, and Gemini CLI in the same fleet. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging, self-healing, and board integration all work the same way. You can run a mixed fleet: Claude Code for complex reasoning tasks, Codex for sandboxed code execution, and Gemini CLI for cost-effective batch tasks. The watchdog handles all three runtimes with the same overnight reliability."}},{"@type":"Question","name":"What is the read-aloud feature and how does it help with overnight reviews?","acceptedAnswer":{"@type":"Answer","text":"amux includes a built-in read-aloud (TTS) button powered by Piper — a free, local text-to-speech engine that runs entirely on your machine with no API key required. In your morning review, tap the read-aloud button on any session card or Trends summary and amux reads the agent's output aloud. This is especially useful on your commute or while making coffee — you can hear what your fleet accomplished without staring at a screen."}}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to run AI coding agents overnight with amux","description":"Set up amux so Claude Code agents run autonomously overnight, with self-healing and morning board review.","totalTime":"PT10M","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Run curl -fsSL https://amux.io/install.sh | bash. amux is a single Rust binary that needs tmux 3.2+ and an agent CLI.","url":"https://amux.io/guides/getting-started/"},{"@type":"HowToStep","position":2,"name":"Register your project with YOLO mode","text":"Run 'amux register myproject --dir ~/Dev/myproject --yolo'. YOLO mode (now default) auto-approves all tool prompts so sessions never block overnight.","url":"https://amux.io/guides/setting-up-yolo-mode/"},{"@type":"HowToStep","position":3,"name":"Add tasks to the board","text":"Use 'amux board add' to create one task per agent. The board uses SQLite CAS (compare-and-swap) so two agents can never claim the same task simultaneously."},{"@type":"HowToStep","position":4,"name":"Start sessions and go to sleep","text":"Run 'amux start myproject' for each session slot. The watchdog activates immediately. Check the live board at localhost:8824 before closing your laptop."},{"@type":"HowToStep","position":5,"name":"Review results in the morning","text":"Open the amux PWA or iOS app, check the board for completed tasks, peek at session output, and review pull requests on GitHub.","url":"https://amux.io/guides/mobile-management-pwa/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding While You Sleep — amux","description":"Wake up to shipped features. amux runs 10–50 Claude Code, Codex, or Gemini CLI agents overnight — usage-limit resume, YOLO mode, TTS read-aloud morning briefing, Trends view, and Review dashboard from your phone.","url":"https://amux.io/use-cases/ai-coding-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-08-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"image":"https://amux.io/og-image.png","keywords":["AI coding while you sleep","run coding agents overnight","AI coding agents unattended","Gemini CLI overnight","AI engineering team","morning agent review"]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can Claude Code run overnight without supervision?","acceptedAnswer":{"@type":"Answer","text":"Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. When a provider's usage limit hits, amux holds delivery and resumes the session at the reset; Claude Code compacts its own context at a threshold you set in amux; and stall detection flags idle or stuck work and alerts you. The amux server does not restart a crashed agent process today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) does that for Claude Code workers. The morning review takes about five minutes from your phone."}},{"@type":"Question","name":"What is YOLO mode in amux and is it safe?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode launches Claude Code with --dangerously-skip-permissions, so tool-approval prompts for file writes, shell commands, web fetches and MCP tool calls never appear. Without it, any prompt blocks the session until a human responds. As of July 2026 it is the default for new sessions registered with amux. It is safe to use on a machine and project directory dedicated to agent work; scope your project directory carefully and run with a non-root user as you would any automated process. Disable per-session with --no-yolo. See the YOLO mode guide for details."}},{"@type":"Question","name":"What happens if a Claude Code session runs out of context while I'm asleep?","acceptedAnswer":{"@type":"Answer","text":"Claude Code compacts its own context when the window fills: it summarizes the conversation into a compressed context and continues from where it left off. amux lets you set the compaction threshold. If a session stops making progress afterwards, stall detection flags it so you see it in the morning."}},{"@type":"Question","name":"How do I check on my AI coding agents from my phone in the morning?","acceptedAnswer":{"@type":"Answer","text":"Open the amux PWA at https://localhost:8824 from your phone (or use the native iOS app). The board tab shows which tasks each session completed, is still working on, or failed. Tap any session to peek at its last 100 lines of output. Use the Trends view to see what themes your fleet worked on overnight, and the Review dashboard to surface any blockers that need your attention. From there you can send a one-tap saved message to redirect an agent, or open GitHub to review the pull requests it opened overnight."}},{"@type":"Question","name":"How many AI coding agents can run overnight on one machine?","acceptedAnswer":{"@type":"Answer","text":"On a Mac with 32 GB of RAM you can comfortably run 10–20 parallel Claude Code sessions. A Mac Studio or Mac Pro with 64–192 GB of RAM supports 30–50 sessions. Each Claude Code session uses roughly 1–2 GB of RAM at peak. The practical limit is usually your Anthropic API rate limit and disk I/O throughput, not CPU or RAM alone."}},{"@type":"Question","name":"Can I run Gemini CLI or Codex agents overnight, not just Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux supports Claude Code, Codex CLI, and Gemini CLI in the same fleet. As of August 2026, Gemini CLI sessions have full parity with Claude lanes: state detection, memory bridging, usage-limit resume, and board integration all work identically. You can run a mixed fleet overnight: Claude Code for complex reasoning tasks, Codex for sandboxed code execution, and Gemini CLI for cost-effective batch work like test generation or documentation updates. Register each session with its runtime: amux register myproject --dir ~/Dev/myproject --yolo --runtime gemini."}},{"@type":"Question","name":"What is the read-aloud feature and how does it help with overnight reviews?","acceptedAnswer":{"@type":"Answer","text":"amux includes a built-in read-aloud (TTS) button powered by Piper — a free, local text-to-speech engine that runs entirely on your machine with no API key required. In your morning review, tap the read-aloud button on any session card or Trends summary and amux reads the agent's output aloud. This is especially useful on your commute or while making coffee — you can hear what your fleet accomplished without staring at a screen."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to run AI coding agents overnight with amux","description":"Set up amux so Claude Code agents run autonomously overnight, with usage-limit resume, stall alerts and morning board review.","totalTime":"PT10M","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Run curl -fsSL https://amux.io/install.sh | bash. amux is a single Rust binary that needs tmux 3.2+ and an agent CLI.","url":"https://amux.io/guides/getting-started/"},{"@type":"HowToStep","position":2,"name":"Register your project with YOLO mode","text":"Run 'amux register myproject --dir ~/Dev/myproject --yolo'. YOLO mode (now default) launches Claude Code without tool-approval prompts so sessions never block overnight.","url":"https://amux.io/guides/setting-up-yolo-mode/"},{"@type":"HowToStep","position":3,"name":"Add tasks to the board","text":"Use 'amux board add' to create one task per agent. The board uses SQLite CAS (compare-and-swap) so two agents can never claim the same task simultaneously."},{"@type":"HowToStep","position":4,"name":"Start sessions and go to sleep","text":"Run 'amux start myproject' for each session slot. Monitoring starts immediately. Check the live board at localhost:8824 before closing your laptop."},{"@type":"HowToStep","position":5,"name":"Review results in the morning","text":"Open the amux PWA or iOS app, check the board for completed tasks, peek at session output, and review pull requests on GitHub.","url":"https://amux.io/guides/mobile-management-pwa/"}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -59,12 +59,12 @@
     <h1>AI Coding While You Sleep</h1>
     <p class="subtitle">Queue up work before bed. Wake up to pull requests.</p>
 
-    <p class="answer-box">Yes — with amux you can run 10 to 50 Claude Code, Codex, or Gemini CLI sessions overnight and wake up to completed features and open pull requests. amux's self-healing watchdog handles every failure mode automatically: context overflow triggers <code>/compact</code>, tool-approval prompts are auto-accepted via YOLO mode (now the default), crashed sessions restart and replay the last message, and idle hangs receive a continue signal. In the morning you review the board from your phone, peek at any session, and merge the PRs. No babysitting required.</p>
+    <p class="answer-box">Yes — with amux you can run 10 to 50 Claude Code, Codex, or Gemini CLI sessions overnight and wake up to completed features and open pull requests. amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider's reset, YOLO mode (now the default) launches Claude Code without tool-approval prompts, Claude Code compacts its own context at a threshold you set, and stall detection alerts you to stuck work. Restarting a crashed agent process is not built into the amux server today. In the morning you review the board from your phone, peek at any session, and merge the PRs. Little babysitting required.</p>
 
     <p class="freshness-note"><strong>Updated August 2026</strong> — reflects Gemini CLI and Codex overnight support, new TTS read-aloud morning briefing (Piper, no API key), Trends view and Review dashboard in morning review, YOLO mode as the default for new sessions, and saved messages for one-tap phone interaction. See the <a href="/changelog/">changelog</a> for details.</p>
 
     <h2>What goes wrong at 3 AM — and how amux fixes it</h2>
-    <p>DIY overnight setups using raw tmux fail silently. You wake up to a screen full of paused prompts and zero commits. amux's watchdog runs continuously and handles each failure mode before it can stall progress.</p>
+    <p>DIY overnight setups using raw tmux fail silently. You wake up to a screen full of paused prompts and zero commits. amux handles the predictable ones and tells you about the rest.</p>
 
     <div class="table-wrap">
       <table>
@@ -75,27 +75,27 @@
           <tr>
             <td>Context window fills up</td>
             <td>Session blocks, waits for manual <code>/compact</code></td>
-            <td>Watchdog detects overflow signal, auto-sends <code>/compact</code> with 5-min cooldown between compactions</td>
+            <td>Claude Code compacts its own context; amux lets you set the threshold</td>
           </tr>
           <tr>
-            <td>Thinking-block corruption</td>
-            <td>Session hangs in unrecoverable state</td>
-            <td>Detects corrupted pane output, kills and restarts session, replays last message</td>
+            <td>Provider usage limit</td>
+            <td>Session stops, you restart it by hand</td>
+            <td>Delivery is held and the session resumes at the provider's reset time</td>
           </tr>
           <tr>
             <td>Tool-approval prompt</td>
             <td>Session blocks until you type <kbd>y</kbd></td>
-            <td>YOLO mode (default since July 2026) auto-approves every prompt — no human input needed</td>
+            <td>YOLO mode (default since July 2026) launches Claude Code with <code>--dangerously-skip-permissions</code>, so the prompt never appears</td>
           </tr>
           <tr>
             <td>Silent hang / no output</td>
             <td>Stays frozen until morning</td>
-            <td>Idle detector fires after configurable inactivity threshold, sends continue signal</td>
+            <td>Stall detection surfaces stalled work on the dashboard and fires an owner alert</td>
           </tr>
           <tr>
             <td>Process crash / tmux pane dies</td>
             <td>Work stops, you never know</td>
-            <td>Watchdog detects missing pane, relaunches the session and replays the last message</td>
+            <td>Not restarted by the amux server today; stall detection shows it. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</td>
           </tr>
           <tr>
             <td>Two agents claim the same task</td>
@@ -125,7 +125,7 @@
 
     <h3>Step 2 — Register your project with YOLO mode</h3>
     <pre><code>amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
-    <p>YOLO mode is now the default for new sessions. It auto-approves every tool-approval prompt Claude Code raises — file writes, shell commands, web fetches. Without it, a session that hits a prompt at 2 AM will sit frozen until morning. If you want to restrict auto-approval to specific tool categories, see <a href="/guides/setting-up-yolo-mode/">the YOLO mode configuration guide</a>.</p>
+    <p>YOLO mode is now the default for new sessions. It launches Claude Code with <code>--dangerously-skip-permissions</code>, so tool-approval prompts for file writes, shell commands and web fetches never appear. Without it, a session that hits a prompt at 2 AM will sit frozen until morning. For the details, see <a href="/guides/setting-up-yolo-mode/">the YOLO mode configuration guide</a>.</p>
 
     <h3>Step 3 — Load tasks onto the board</h3>
     <pre><code>amux board add "Implement OAuth refresh token rotation"
@@ -137,13 +137,13 @@ amux board add "Refactor UserService to use repository pattern"</code></pre>
     <h3>Step 4 — Start sessions</h3>
     <pre><code>amux start myproject   # start one session
 amux start myproject   # start another — each claims its own task from the board</code></pre>
-    <p>Each session opens in its own tmux pane, initializes Claude Code in the project directory, pulls the next unclaimed board task, and begins working. The watchdog activates immediately. Check the live dashboard at <code>https://localhost:8824</code> before you close your laptop — you'll see all sessions in the "doing" column within 30 seconds.</p>
+    <p>Each session opens in its own tmux pane, initializes Claude Code in the project directory, pulls the next unclaimed board task, and begins working. Monitoring starts immediately. Check the live dashboard at <code>https://localhost:8824</code> before you close your laptop — you'll see all sessions in the "doing" column within 30 seconds.</p>
     <p>Start the server if it isn't already running: <code>amux serve</code></p>
 
     <h3>Step 5 — Go to sleep</h3>
     <p>That's it. Sessions run until their tasks complete, then pull the next available task from the board. If you have 20 tasks and 5 sessions, each session will work through 4 tasks sequentially through the night. The board is updated in real time as tasks move from todo to doing to done.</p>
 
-    <p>Want to dig deeper? Read the full <a href="/guides/ai-coding-agents-overnight/">overnight agent configuration guide</a> and the <a href="/guides/self-healing-configuration/">self-healing configuration reference</a>.</p>
+    <p>Want to dig deeper? Read the full <a href="/guides/ai-coding-agents-overnight/">overnight agent configuration guide</a> and the <a href="/guides/self-healing-configuration/">recovery configuration reference</a>.</p>
 
     <h2>What to check in the morning</h2>
     <p>Your morning review takes about five minutes from your phone. Open the amux PWA at <code>https://localhost:8824</code> or launch the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">native iOS app</a>.</p>
@@ -207,27 +207,27 @@ amux start myproject   # start another — each claims its own task from the boa
 
     <p>Each Claude Code session uses roughly 1–2 GB of RAM at peak (during large diffs or test suite runs). Disk I/O throughput matters for repos with large test suites — an SSD is effectively mandatory above 10 parallel sessions. Network bandwidth for API calls is negligible; the Claude API uses text tokens, not large payloads.</p>
 
-    <p>The real ceiling for most setups is the <strong>Anthropic API rate limit</strong>. A Tier 4 or 5 account (typically reached after sustained monthly spend) gives you enough throughput for 20–30 active sessions. If you hit rate limits, amux sessions back off gracefully and retry — they do not crash or lose work.</p>
+    <p>The real ceiling for most setups is the <strong>Anthropic API rate limit</strong>. A Tier 4 or 5 account (typically reached after sustained monthly spend) gives you enough throughput for 20–30 active sessions. If you hit rate limits, amux holds delivery and resumes sessions at the provider's reset.</p>
 
     <h2>What if an agent gets stuck?</h2>
-    <p>Most stuck states are handled automatically before you need to intervene:</p>
+    <p>Some stuck states are handled for you, and the rest are flagged so you can act:</p>
 
     <ul>
-      <li><strong>Context overflow</strong> — auto-compacted with a 5-minute cooldown. The session continues with a fresh context window summarizing prior work.</li>
-      <li><strong>Tool-approval prompt</strong> — auto-approved by YOLO mode. The session never blocks on these.</li>
-      <li><strong>Process crash</strong> — watchdog detects the dead pane within seconds, restarts the session, and replays the last message. Restart takes under 30 seconds.</li>
-      <li><strong>Thinking-block corruption</strong> — watchdog detects the malformed state from Claude's output stream, kills the session cleanly, and relaunches.</li>
-      <li><strong>Idle hang (genuinely stuck)</strong> — the idle detector fires after a configurable threshold (default: a few minutes of no output). It sends a nudge prompt to break the session out of any reasoning loop.</li>
+      <li><strong>Context overflow</strong>: Claude Code compacts its own context at the threshold you set in amux, and the session continues from a summary of prior work.</li>
+      <li><strong>Tool-approval prompt</strong>: YOLO mode launches Claude Code without approval prompts, so the session never blocks on these.</li>
+      <li><strong>Usage limit</strong>: amux holds delivery and resumes the session at the provider's reset time.</li>
+      <li><strong>Mac reboot</strong>: a login job brings every non-archived worker back, resumed in its own conversation.</li>
+      <li><strong>Idle hang or crash</strong>: stall detection surfaces stalled board work and stuck orchestrators and fires an owner alert. The amux server does not restart a crashed agent process today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</li>
     </ul>
 
     <p>The one case that still requires human judgment is a <strong>genuine ambiguity in the spec</strong> — where the agent correctly identifies that two valid interpretations exist and needs a decision. Well-written agents (and Claude Code is good at this) will write a comment in the code, open a draft PR noting the ambiguity, mark their board task done, and move on to the next task rather than spinning. In the morning you'll see a draft PR with a question — answer it and the agent can finish in minutes.</p>
 
     <p>If you see a session that's been in "doing" for hours with no output, use the <strong>peek</strong> view from your phone to read the last 100 lines. You can send a saved message directly to that session — "summarize what you're stuck on and open a draft PR with what you have" is a useful recovery prompt to pre-save.</p>
 
-    <p>For advanced self-healing tuning, see <a href="/guides/self-healing-configuration/">the self-healing configuration guide</a>.</p>
+    <p>For the settings behind this, see <a href="/guides/self-healing-configuration/">the recovery configuration guide</a>.</p>
 
     <h2>Running multi-runtime fleets overnight: Claude Code, Codex, and Gemini CLI</h2>
-    <p>amux is not Claude Code-only. You can run a mixed fleet of Claude Code, Codex CLI, and Gemini CLI sessions from the same dashboard, all monitored by the same watchdog, all writing to the same kanban board. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging (shared context across sessions), self-healing, and board integration all work identically.</p>
+    <p>amux is not Claude Code-only. You can run a mixed fleet of Claude Code, Codex CLI, and Gemini CLI sessions from the same dashboard, all monitored from the same dashboard, all writing to the same kanban board. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging (shared context across sessions), usage-limit resume, and board integration all work identically.</p>
 
     <p>Typical overnight fleet composition:</p>
     <div class="table-wrap">
@@ -246,7 +246,7 @@ amux start myproject   # start another — each claims its own task from the boa
             <td><strong>Codex CLI</strong></td>
             <td>Code execution tasks, sandboxed environments, tasks requiring Docker container isolation</td>
             <td>Competitive; strong sandboxing makes it ideal for untrusted repos</td>
-            <td>Full — parallel sessions, board integration, watchdog</td>
+            <td>Full — parallel sessions, board integration, status detection</td>
           </tr>
           <tr>
             <td><strong>Gemini CLI</strong></td>
@@ -276,17 +276,17 @@ amux start myproject   # start another — each claims its own task from the boa
           <tr>
             <td>Tool-approval prompts overnight</td>
             <td>Session blocks until you SSH in and type <kbd>y</kbd></td>
-            <td>YOLO mode auto-approves; default for new sessions as of July 2026</td>
+            <td>YOLO mode skips approval prompts; default for new sessions as of July 2026</td>
           </tr>
           <tr>
-            <td>Crash recovery</td>
-            <td>Custom watchdog script (usually buggy)</td>
-            <td>Built-in watchdog: detects dead pane, restarts, replays last message</td>
+            <td>Usage limits</td>
+            <td>Session stops until you restart it</td>
+            <td>Delivery held, session resumes at the provider's reset</td>
           </tr>
           <tr>
-            <td>Thinking-block corruption</td>
+            <td>Stalled or crashed session</td>
             <td>Usually undetected until you read output</td>
-            <td>Detected from output stream, clean kill + restart</td>
+            <td>Stall detection and owner alert; crash restart is not built into the server</td>
           </tr>
           <tr>
             <td>Task distribution to agents</td>
@@ -337,17 +337,17 @@ amux start myproject   # start another — each claims its own task from the boa
     <div class="faq-list">
       <details open>
         <summary><h3>Can Claude Code run overnight without supervision?</h3></summary>
-        <p>Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. The self-healing watchdog monitors every session for idle hangs, context overflow, and process crashes — handling each automatically without any human input. The morning review takes about five minutes from your phone.</p>
+        <p>Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. When a provider's usage limit hits, amux holds delivery and resumes the session at the reset; Claude Code compacts its own context at a threshold you set in amux; and stall detection flags idle or stuck work and alerts you. The amux server does not restart a crashed agent process today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) does that for Claude Code workers. The morning review takes about five minutes from your phone.</p>
       </details>
 
       <details>
         <summary><h3>What is YOLO mode and is it safe?</h3></summary>
-        <p>YOLO mode makes amux auto-respond "yes" to every tool-approval prompt Claude Code raises — file writes, shell commands, web fetches, MCP tool calls. Without it, any prompt blocks the session until a human responds. As of July 2026 it is the default for new sessions registered with amux. It is safe to use on a machine and project directory dedicated to agent work; scope your project directory carefully and run with a non-root user as you would any automated process. Disable per-session with <code>--no-yolo</code>. See the <a href="/guides/setting-up-yolo-mode/">YOLO mode guide</a> for per-tool-category restriction options.</p>
+        <p>YOLO mode launches Claude Code with <code>--dangerously-skip-permissions</code>, so tool-approval prompts for file writes, shell commands, web fetches and MCP tool calls never appear. Without it, any prompt blocks the session until a human responds. As of July 2026 it is the default for new sessions registered with amux. It is safe to use on a machine and project directory dedicated to agent work; scope your project directory carefully and run with a non-root user as you would any automated process. Disable per-session with <code>--no-yolo</code>. See the <a href="/guides/setting-up-yolo-mode/">YOLO mode guide</a> for details.</p>
       </details>
 
       <details>
         <summary><h3>What happens if a session runs out of context while I'm asleep?</h3></summary>
-        <p>amux's watchdog detects the context-overflow signal in the session output and automatically sends <code>/compact</code> to the session. A 5-minute cooldown prevents repeated compactions from thrashing. Claude Code's <code>/compact</code> command summarizes the full conversation into a compressed context, then continues from where it left off. If the session enters a thinking-block corruption state — a different failure mode where Claude's output stream becomes malformed — the watchdog detects it, kills the session, restarts it cleanly, and replays the last message.</p>
+        <p>Claude Code compacts its own context when the window fills: it summarizes the conversation into a compressed context and continues from where it left off. amux lets you set the compaction threshold. If a session stops making progress afterwards, stall detection flags it so you see it in the morning.</p>
       </details>
 
       <details>
@@ -367,7 +367,7 @@ amux start myproject   # start another — each claims its own task from the boa
 
       <details>
         <summary><h3>Can I run Gemini CLI or Codex agents overnight, not just Claude Code?</h3></summary>
-        <p>Yes. amux supports Claude Code, Codex CLI, and Gemini CLI in the same fleet. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging, self-healing, and board integration all work identically. You can run a mixed fleet overnight: Claude Code for complex reasoning tasks, Codex for sandboxed code execution, and Gemini CLI for cost-effective batch work like test generation or documentation updates. Register each session with its runtime: <code>amux register myproject --dir ~/Dev/myproject --yolo --runtime gemini</code>.</p>
+        <p>Yes. amux supports Claude Code, Codex CLI, and Gemini CLI in the same fleet. As of August 2026, Gemini CLI sessions have full parity with Claude lanes: state detection, memory bridging, usage-limit resume, and board integration all work identically. You can run a mixed fleet overnight: Claude Code for complex reasoning tasks, Codex for sandboxed code execution, and Gemini CLI for cost-effective batch work like test generation or documentation updates. Register each session with its runtime: <code>amux register myproject --dir ~/Dev/myproject --yolo --runtime gemini</code>.</p>
       </details>
 
       <details>
@@ -400,7 +400,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <h3>Related guides</h3>
       <ul>
         <li><a href="/guides/getting-started/">Getting started with amux</a></li>
-        <li><a href="/guides/self-healing-configuration/">Self-healing configuration reference</a></li>
+        <li><a href="/guides/self-healing-configuration/">Recovery configuration reference</a></li>
         <li><a href="/guides/setting-up-yolo-mode/">Setting up YOLO mode</a></li>
         <li><a href="/guides/mobile-management-pwa/">Managing your agent fleet from your phone</a></li>
         <li><a href="/guides/ai-coding-agents-overnight/">Overnight agent configuration guide</a></li>

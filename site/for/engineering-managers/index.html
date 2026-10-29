@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux for Engineering Managers — Give Your Dev Team AI Teammates (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard — built-in kanban, real-time output, phone monitoring, and self-healing overnight runs. MIT + Commons Clause.">
+  <meta name="description" content="Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard — built-in kanban, real-time output, phone monitoring, and overnight runs that resume after usage limits. MIT + Commons Clause.">
   <meta name="keywords" content="AI tools for engineering managers 2026, how to give your dev team AI agents, engineering manager AI coding tools, deploy AI coding agents for your team, AI team productivity tools for engineering leads, how to manage developers using AI agents, Claude Code for engineering teams">
   <link rel="canonical" href="https://amux.io/for/engineering-managers/">
   <meta property="og:title" content="amux for Engineering Managers — Give Your Dev Team AI Teammates (2026)">
@@ -41,7 +41,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux for Engineering Managers — Give Your Dev Team AI Teammates",
-    "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and self-healing overnight runs.",
+    "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and overnight runs that resume after usage limits.",
     "url": "https://amux.io/for/engineering-managers/",
     "datePublished": "2026-07-09",
     "dateModified": "2026-10-07",
@@ -102,7 +102,7 @@
         "name": "What happens when an agent crashes or runs out of context overnight?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow — when the conversation gets too long — triggers automatic compaction: the agent summarizes earlier context and continues without losing the thread of work. You can queue overnight runs before leaving the office and review completed pull requests the next morning."
+          "text": "The amux server does not restart a crashed agent process today. An optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does: when a usage limit hits, it holds delivery and resumes the agent at the provider's reset; Claude Code compacts its own context, and amux lets you set the compaction threshold; stall detection flags stuck work and alerts you. Queue overnight runs before leaving the office and review completed pull requests the next morning."
         }
       },
       {
@@ -243,9 +243,9 @@
     <p>The bottleneck in most sprints is not developer skill — it is context-switching. Developers jump between tasks, get blocked waiting on review, and lose flow state constantly. amux attacks this directly:</p>
     <ul>
       <li><strong>Parallel execution:</strong> While a developer works on the hard problem that needs their full attention, agents handle the adjacent tasks — tests, docs, small fixes — in parallel. Nothing waits in queue.</li>
-      <li><strong>Overnight throughput:</strong> Queue a batch of well-defined tasks before end of day. Agents run with self-healing while the team sleeps. The morning standup starts from completed pull requests, not from "still in progress."</li>
+      <li><strong>Overnight throughput:</strong> Queue a batch of well-defined tasks before end of day. Agents run while the team sleeps and resume on their own after usage limits. The morning standup starts from completed pull requests, not from "still in progress."</li>
       <li><strong>Backlog drain:</strong> Those low-priority "we'll get to it" tasks — test coverage gaps, stale docs, deprecated API migrations — can run as background agent work without displacing sprint priorities.</li>
-      <li><strong>No babysitting:</strong> amux's self-healing watchdog restarts crashed sessions and handles context overflow automatically. The EM does not need to monitor terminals — the dashboard surfaces status, and alerts go to your phone only when something needs attention.</li>
+      <li><strong>Less babysitting:</strong> amux resumes agents after usage limits and flags stalled work. The EM does not need to monitor terminals — the dashboard surfaces status, and alerts go to your phone only when something needs attention.</li>
     </ul>
 
     <h2>Without amux vs. With amux — Team Velocity Comparison</h2>
@@ -279,9 +279,9 @@
           <td style="text-align:center;padding:0.75rem;">Addressed as background agent work</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.75rem 1rem;">Agent crash recovery</td>
+          <td style="padding:0.75rem 1rem;">Usage limits</td>
           <td style="text-align:center;padding:0.75rem;">Manual restart needed</td>
-          <td style="text-align:center;padding:0.75rem;">Auto-restart in seconds</td>
+          <td style="text-align:center;padding:0.75rem;">Resumes at the provider's reset</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.75rem 1rem;">EM visibility into agent work</td>
@@ -315,7 +315,7 @@
       <li><strong>Write a team CLAUDE.md</strong> in the project root. Check it into version control so every agent session on every machine reads the same context: project architecture, branch conventions, test commands, what to avoid. This is the single highest-leverage thing you can do to ensure consistent agent output quality across the team.</li>
       <li><strong>Define sprint tasks as amux board cards.</strong> The shared board is the coordination layer — everyone can see what is in-progress, who owns what, and what agents have completed. Map existing sprint issues from Jira or Linear into the amux board at the start of each sprint, or run both in parallel during an evaluation period.</li>
       <li><strong>Launch agents from the dashboard or CLI.</strong> Each developer starts their agent sessions at the beginning of the day. The EM sees cross-team status from their own dashboard instance (or via the <a href="/guides/team-workflow-setup/">shared server setup</a> for full cross-team visibility in one view).</li>
-      <li><strong>Queue overnight runs</strong> before end of day. Developers define the next batch of tasks on the board before they sign off. Agents run with self-healing. Morning standup reviews completed PRs.</li>
+      <li><strong>Queue overnight runs</strong> before end of day. Developers define the next batch of tasks on the board before they sign off. Agents resume on their own after usage limits. Morning standup reviews completed PRs.</li>
     </ol>
     <p>For a guided setup, <a href="/concierge/">amux Concierge</a> installs and configures the full team workflow for you, including CLAUDE.md templates, board structure, and overnight run scheduling.</p>
 
@@ -346,12 +346,13 @@
       <li><strong>Horizontal scaling (50+ agents):</strong> Run multiple amux instances with separate project registrations, or use the shared board as a coordination layer across instances. The <a href="/guides/scaling-to-50-agents/">scaling to 50 agents guide</a> covers multi-instance coordination and task partitioning strategies.</li>
     </ul>
 
-    <h2>Self-Healing Means Agents Run Overnight Without a Babysitter</h2>
-    <p>The single most common concern EMs raise is: "what happens when something crashes at 2 AM and nobody's watching?" amux handles this automatically:</p>
+    <h2>What Keeps Agents Running Overnight</h2>
+    <p>The single most common concern EMs raise is: "what happens when something breaks at 2 AM and nobody's watching?" Here is what amux does today:</p>
     <ul>
-      <li><strong>Crash recovery:</strong> The watchdog detects a dead session within seconds, restarts it, and replays the last steering message. The agent resumes from the last checkpoint without manual intervention.</li>
-      <li><strong>Context overflow:</strong> When a long session fills the model's context window, amux triggers automatic compaction — the agent summarizes earlier context and continues. No session hangs waiting for a human to clear it.</li>
-      <li><strong>Stuck detection:</strong> Sessions that have produced no output for a configurable timeout are flagged as stale and restarted. Agents that get into a loop or wait forever for a tool response are recovered automatically.</li>
+      <li><strong>Usage limits:</strong> When a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the provider's reset time.</li>
+      <li><strong>Context overflow:</strong> Claude Code compacts its own context when the window fills, and amux lets you set the compaction threshold.</li>
+      <li><strong>Stall detection:</strong> Stalled board work and stuck orchestrators are detected and surfaced on the dashboard, and owner alerts go to your phone.</li>
+      <li><strong>Restarts:</strong> launchd or systemd restarts the amux server if it exits, and on macOS every worker comes back in its own conversation after a reboot. A crashed agent process is not restarted by the server; an optional macOS script does that for Claude Code workers.</li>
     </ul>
     <p>Queue your overnight batch at end of day. The agents run. You review pull requests at standup.</p>
 
@@ -389,7 +390,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p>Yes. The shared amux board gives the EM a cross-team view of every active task and its status. For session-level output — the live terminal stream of what an agent is actually doing — you can peek at any session from the dashboard without logging into the developer's machine. Available on mobile from anywhere via Tailscale.</p>
 
     <h3>What happens when an agent crashes or runs out of context overnight?</h3>
-    <p>amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow triggers automatic compaction — the agent summarizes earlier context and continues without losing the thread of work. Queue overnight runs before leaving the office. Review completed pull requests at standup.</p>
+    <p>The amux server does not restart a crashed agent process today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. What amux does: when a usage limit hits, it holds delivery and resumes the agent at the provider's reset; Claude Code compacts its own context, and amux lets you set the compaction threshold; stall detection flags stuck work and alerts you. Queue overnight runs before leaving the office and review completed pull requests the next morning.</p>
 
     <h2>Trends view: understand what your AI team accomplished by theme</h2>
     <p>Engineering managers spend too much time asking "what did we actually ship this sprint?" The amux Trends view answers that across your entire AI agent fleet — automatically. It groups all agent activity into themes (authentication work, API changes, test coverage, bug fixes) and shows counts of queued, in-progress, done, and blocked-on-you cards per theme, with evidence links.</p>

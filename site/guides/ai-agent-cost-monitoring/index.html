@@ -150,7 +150,7 @@ Total: ~$90.00/day</code></pre>
 
     <h3>3. Number of Parallel Sessions</h3>
 
-    <p>Each parallel agent is an independent API consumer. Ten agents running on Sonnet 4.5 cost ten times as much as one, all else equal. The risk compounds because idle sessions that were never stopped still consume tokens if they receive any stimulus &mdash; even a watchdog ping can trigger a response.</p>
+    <p>Each parallel agent is an independent API consumer. Ten agents running on Sonnet 4.5 cost ten times as much as one, all else equal. The risk compounds because idle sessions that were never stopped still consume tokens if they receive any stimulus &mdash; even a health-check ping can trigger a response.</p>
 
     <h3>4. Model Choice per Task</h3>
 
@@ -259,7 +259,7 @@ without narrowing to the relevant range.</code></pre>
 
     <h3>5. Session Hibernation</h3>
 
-    <p>Stop idle sessions rather than leaving them parked. An agent with an open context window that receives any input &mdash; even a watchdog health-check &mdash; will generate a response and incur tokens. amux's hibernation feature stops idle sessions automatically and restores them on demand, eliminating parasitic spend from sessions that finished their task hours ago but were never explicitly stopped.</p>
+    <p>Stop idle sessions rather than leaving them parked. An agent with an open context window that receives any input &mdash; even a scheduled health-check &mdash; will generate a response and incur tokens. amux's hibernation feature stops idle sessions automatically and restores them on demand, eliminating parasitic spend from sessions that finished their task hours ago but were never explicitly stopped.</p>
 
     <h3>6. Structured Output over Verbose Prose</h3>
 

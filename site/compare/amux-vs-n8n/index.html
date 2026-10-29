@@ -140,7 +140,7 @@
 
     <p><strong>n8n</strong> is a visual workflow automation platform. You connect nodes in a drag-and-drop editor — "when a Stripe webhook fires, look up the customer in HubSpot, update their status, and post a Slack message." n8n handles triggers (webhooks, schedules, polling), transformations (code nodes, built-in data manipulation), and destinations (500+ integrations). The target user is often a non-developer who needs to automate repetitive data flows between SaaS tools without writing a full application. n8n is self-hostable and open source (fair-code license); n8n cloud is a hosted version. It has ~90k GitHub stars and strong adoption among operations teams, RevOps, and no-code/low-code practitioners.</p>
 
-    <p><strong>amux</strong> is a control plane for AI coding agents. You register software projects, start Claude Code (or Codex, Gemini CLI) sessions that write and commit code, monitor their progress from a web dashboard or phone, and let the self-healing watchdog restart agents that get stuck. amux's built-in kanban, notes, CRM, email (Gmail API), browser automation, and scheduler are coordination primitives for a team of AI agents — not a visual pipeline editor. The target user is a developer or engineering team that wants to run multiple AI coding sessions in parallel without babysitting each one. amux is fully open source (MIT + Commons Clause), a single Rust binary, and zero external dependencies.</p>
+    <p><strong>amux</strong> is a control plane for AI coding agents. You register software projects, start Claude Code (or Codex, Gemini CLI) sessions that write and commit code, monitor their progress from a web dashboard or phone, and let stall detection flag agents that get stuck. amux's built-in kanban, notes, CRM, email (Gmail API), browser automation, and scheduler are coordination primitives for a team of AI agents — not a visual pipeline editor. The target user is a developer or engineering team that wants to run multiple AI coding sessions in parallel without babysitting each one. amux is fully open source (MIT + Commons Clause), a single Rust binary, and zero external dependencies.</p>
 
     <h2>Side-by-Side Comparison</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -170,13 +170,13 @@
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;"><strong>AI coding agent execution</strong></td>
-            <td style="padding:10px 16px;text-align:center;">Yes — full session lifecycle (start, monitor, self-heal, steer)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — full session lifecycle (start, monitor, resume after usage limits, steer)</td>
             <td style="padding:10px 16px;text-align:center;">No — can call AI APIs as nodes, but no persistent coding agent sessions</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:10px 16px;"><strong>Self-healing / watchdog</strong></td>
-            <td style="padding:10px 16px;text-align:center;">Yes — detects crashes, context exhaustion, stuck agents, auto-restarts</td>
-            <td style="padding:10px 16px;text-align:center;">No — workflow errors trigger alerts or retries, not agent restart logic</td>
+            <td style="padding:10px 16px;"><strong>Recovery</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
+            <td style="padding:10px 16px;text-align:center;">Workflow errors trigger alerts or retries</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;"><strong>Web dashboard</strong></td>
@@ -250,7 +250,7 @@ GET https://localhost:8824/api/board?status=done&amp;since=yesterday
     <h2>When to Choose amux</h2>
     <ul>
       <li>You want to run Claude Code, Codex CLI, or Gemini CLI in parallel across multiple projects</li>
-      <li>You need a self-healing watchdog that restarts stuck AI coding sessions automatically</li>
+      <li>You need AI coding sessions that resume on their own after usage limits, with alerts when one stalls</li>
       <li>You want to manage AI agent sessions from your phone (iOS app or mobile PWA)</li>
       <li>You need built-in CRM, notes, email (including file attachments), and a kanban board for an AI engineering team</li>
       <li>You want agents to send email reports with attached files automatically, from your domain</li>
@@ -305,12 +305,12 @@ GET https://localhost:8824/api/board?status=done&amp;since=yesterday
     </ul>
 
     <h2>How amux Fits Into the Bigger Picture</h2>
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit and reboot recovery, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
     <p>If you landed here looking for workflow automation, n8n is probably what you want. If you landed here because you are building software with AI coding agents and need a way to orchestrate, monitor, and steer them at scale, that is amux. Read <a href="/guides/getting-started/">the getting-started guide</a> or browse <a href="/guides/ai-agent-automations/">the automations guide</a> to see what amux's built-in automation layer can do.</p>
 
     <div class="cta-box">
       <h3>Run your AI engineering team — not just your SaaS flows</h3>
-      <p>amux is an open-source control plane for AI agent teams. Kanban, CRM, email, scheduler, browser automation, and self-healing watchdog — all in a single Rust binary. Claude Code, Codex, Gemini CLI. Free to use, MIT + Commons Clause.</p>
+      <p>amux is an open-source control plane for AI agent teams. Kanban, CRM, email, scheduler, browser automation, and usage-limit resume — all in a single Rust binary. Claude Code, Codex, Gemini CLI. Free to use, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject</code></pre>

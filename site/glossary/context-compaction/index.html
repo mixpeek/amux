@@ -48,7 +48,7 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>Context Compaction</span></div>
-    <h1>Context Compaction</h1><p class="subtitle">The process of summarizing conversation history to free up context window space in an AI agent.</p><p>When a Claude Code session's context window fills up, the <code>/compact</code> command summarizes the conversation to free space. amux's watchdog triggers this automatically when context drops below 20%.</p><h2>Why it matters</h2><p>Without compaction, agents stop working when they run out of context. With self-healing compaction, agents can work indefinitely on long tasks.</p><p><a href="/glossary/">← Back to glossary</a></p>
+    <h1>Context Compaction</h1><p class="subtitle">The process of summarizing conversation history to free up context window space in an AI agent.</p><p>When a Claude Code session's context window fills up, Claude Code compacts the conversation to free space. amux lets you set the threshold at which that happens.</p><h2>Why it matters</h2><p>Without compaction, agents stop working when they run out of context. With compaction, agents can keep going on long tasks, working from a summary.</p><p><a href="/glossary/">← Back to glossary</a></p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

@@ -122,7 +122,7 @@
         "name": "What happens if one agent crashes mid-feature?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux's self-healing watchdog automatically restarts crashed sessions and replays the last message. The agent resumes from its previous context without losing progress. You see a notification in the dashboard when a restart happens, and the feature card stays claimed on the board so no other agent picks it up."
+          "text": "The amux server does not restart a crashed agent process today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. The feature card stays claimed on the board so no other agent picks it up, and stall detection flags the stopped work so you can restart the session from the dashboard."
         }
       },
       {
@@ -169,7 +169,7 @@
 
     <p>Run one AI coding agent per feature branch simultaneously. amux coordinates each session on a shared kanban board, prevents git conflicts, and lets you monitor every agent from a single dashboard or your phone. A four-person sprint's worth of features — auth, search, payments, onboarding — runs in parallel and finishes together instead of one after another.</p>
 
-    <p>amux works with <a href="/compare/amux-vs-codex/">Claude Code</a>, <a href="/guides/claude-code-vs-codex-vs-gemini-cli/">Codex CLI, and Gemini CLI</a> in the same fleet. Each agent claims tasks atomically — no two agents pick the same feature card. If one crashes overnight, the <a href="/guides/self-healing-ai-agents/">self-healing watchdog</a> restarts it and replays the last message so work continues unattended.</p>
+    <p>amux works with <a href="/compare/amux-vs-codex/">Claude Code</a>, <a href="/guides/claude-code-vs-codex-vs-gemini-cli/">Codex CLI, and Gemini CLI</a> in the same fleet. Each agent claims tasks atomically — no two agents pick the same feature card. If one hits a usage limit overnight, amux holds delivery and resumes it at the provider's reset (see <a href=\"/guides/self-healing-ai-agents/\">recovery and restarts</a>); if one stalls, stall detection alerts you.</p>
 
     <p style="font-size:0.85rem;color:var(--fg-dim)">Last updated: August 2026</p>
 
@@ -195,9 +195,9 @@
           <td style="padding:0.6rem 0.8rem">Prevented by isolated branches + amux shared-checkout guard</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border-faint)">
-          <td style="padding:0.6rem 0.8rem">Crash recovery</td>
+          <td style="padding:0.6rem 0.8rem">Recovery</td>
           <td style="padding:0.6rem 0.8rem">Manual restart</td>
-          <td style="padding:0.6rem 0.8rem">Auto-restart with context replay</td>
+          <td style="padding:0.6rem 0.8rem">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border-faint)">
           <td style="padding:0.6rem 0.8rem">Monitoring</td>
@@ -249,7 +249,7 @@ curl -sk -X PATCH -d '{"blocked_on":"CARD-AUTH-ID"}' $AMUX_URL/api/board/CARD-PA
     <p>All registered sessions launch simultaneously. amux staggers startup by one second per agent to avoid a cold-boot memory spike. Each agent reads from the board, claims a task, creates a branch, and starts coding.</p>
 
     <h3>Step 4: Monitor from the dashboard or your iPhone</h3>
-    <p>Open <code>https://localhost:8824</code> or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>. Each agent's status, current card, branch, and most recent output appear in real time. If an agent goes quiet for too long, the self-healing watchdog flags it in the dashboard — and restarts it if it has crashed.</p>
+    <p>Open <code>https://localhost:8824</code> or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>. Each agent's status, current card, branch, and most recent output appear in real time. If an agent goes quiet for too long, stall detection flags it in the dashboard and alerts you.</p>
 
     <p>You can approve pull requests, send new instructions to a specific agent, or reassign a card — all from your phone, without touching a laptop.</p>
 
@@ -288,14 +288,14 @@ amux register onboard --model gemini-2-5-pro --dir ~/Dev/app</code></pre>
 
     <p>Set agents loose before you sleep. amux keeps them running unattended:</p>
     <ul>
-      <li>Context compaction fires automatically before any session hits its context limit — no stalled agents at 3am.</li>
-      <li>Crashed sessions restart themselves and replay the last prompt.</li>
+      <li>Claude Code compacts its own context, at a threshold you set in amux.</li>
+      <li>Agents that hit a usage limit resume at the provider's reset, and stalled work raises an alert.</li>
       <li>The board prevents any agent from picking up a task that was already completed by another.</li>
     </ul>
     <p>Wake up to a queue of pull requests, one per feature, ready to review. See <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> for the full overnight workflow.</p>
 
     <h2>What amux is</h2>
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit resume, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
 
     <div class="cta-box">
       <h3>Run your first parallel sprint</h3>

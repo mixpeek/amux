@@ -6,17 +6,17 @@
   <meta name="theme-color" content="#1e2330">
   <title>Running AI Agents 24/7 — Overnight Automation Guide (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How to run an AI engineering team unattended overnight: self-healing watchdog, Telegram notifications, phone monitoring, context management, and fleet recovery.">
-  <meta name="keywords" content="run AI agents 24/7, overnight AI coding agents, unattended Claude Code, AI agents while you sleep, AI agent overnight automation, self-healing AI agents, AI coding agent failure modes">
+  <meta name="description" content="How to run an AI engineering team unattended overnight: usage-limit resume, stall alerts, Telegram notifications, phone monitoring, and context management.">
+  <meta name="keywords" content="run AI agents 24/7, overnight AI coding agents, unattended Claude Code, AI agents while you sleep, AI agent overnight automation, AI agent recovery, AI coding agent failure modes">
   <link rel="canonical" href="https://amux.io/blog/running-ai-agents-24-7/">
   <meta property="og:title" content="Running AI Agents 24/7 — Overnight Automation Guide (2026)">
-  <meta property="og:description" content="How to run an AI engineering team unattended overnight: self-healing watchdog, Telegram notifications, phone monitoring, and fleet recovery.">
+  <meta property="og:description" content="How to run an AI engineering team unattended overnight: usage-limit resume, stall alerts, Telegram notifications, and phone monitoring.">
   <meta property="og:url" content="https://amux.io/blog/running-ai-agents-24-7/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Running AI Agents 24/7 — Overnight Automation Guide (2026)">
-  <meta name="twitter:description" content="How to run an AI engineering team unattended overnight: self-healing, Telegram alerts, phone monitoring, context management.">
+  <meta name="twitter:description" content="How to run an AI engineering team unattended overnight: usage-limit resume, stall alerts, Telegram, phone monitoring, context management.">
   <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -41,14 +41,14 @@
     "@context": "https://schema.org",
     "@type": "BlogPosting",
     "headline": "Running AI Agents 24/7 — Overnight Automation Guide (2026)",
-    "description": "How to run an AI engineering team unattended overnight: self-healing watchdog, Telegram notifications, phone monitoring, context management, and fleet recovery.",
+    "description": "How to run an AI engineering team unattended overnight: usage-limit resume, stall alerts, Telegram notifications, phone monitoring, and context management.",
     "url": "https://amux.io/blog/running-ai-agents-24-7/",
     "datePublished": "2026-02-26",
     "dateModified": "2026-09-02",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
-    "keywords": ["run AI agents 24/7", "overnight AI coding", "unattended Claude Code", "self-healing AI agents", "AI agent overnight automation"]
+    "keywords": ["run AI agents 24/7", "overnight AI coding", "unattended Claude Code", "AI agent recovery", "AI agent overnight automation"]
   }
   </script>
 
@@ -62,7 +62,7 @@
         "name": "How do I keep AI coding agents running overnight without crashing?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Use a self-healing orchestrator like amux that monitors for context exhaustion, crashes, and stalled prompts. amux's watchdog automatically compacts the context window when it nears the limit, restarts crashed sessions, and replays the last message so agents resume exactly where they stopped. No manual intervention needed for the three most common failure modes."
+          "text": "Use an orchestrator like amux. It holds message delivery through usage limits and resumes each agent at the provider's reset, lets you set the threshold at which Claude Code compacts its context, and on macOS brings every worker back in its own conversation after a reboot. Stall detection alerts you when board work stops moving. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. For stalled prompts, enable the Telegram connector so agents can reach you on your phone."
         }
       },
       {
@@ -70,7 +70,7 @@
         "name": "What causes AI coding agents to stop working overnight?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The five main failure modes are: (1) context exhaustion — the agent fills its context window and halts; (2) process crash — an uncaught error or OOM kills the session; (3) stalled prompt — the agent asks a question and waits indefinitely; (4) concurrent write conflicts — two agents try to modify the same file; and (5) rate limiting — API rate limits pause the agent silently. amux addresses the first three automatically; the last two require task design and agent group isolation."
+          "text": "The five main failure modes are: (1) context exhaustion — the agent fills its context window and halts; (2) process crash — an uncaught error or OOM kills the session; (3) stalled prompt — the agent asks a question and waits indefinitely; (4) concurrent write conflicts — two agents try to modify the same file; and (5) rate limiting — API rate limits pause the agent silently. amux resumes agents at the provider's reset after a rate limit, lets you set the compaction threshold, and alerts you to stalled work. A crashed process needs the optional macOS restart script or a manual restart, and write conflicts need task design and agent group isolation."
         }
       },
       {
@@ -102,7 +102,7 @@
         "name": "What is the best practice for assigning overnight tasks to AI agents?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Put all tasks on the amux board before you go to sleep. Use isolation between agents working on related code (separate worktrees or a branching strategy). Set continuation contracts on each task card so an agent that crashes can be picked up by another agent automatically. Scope tasks to 1-3 hours of expected work so context limits don't interrupt mid-task."
+          "text": "Put all tasks on the amux board before you go to sleep. Use isolation between agents working on related code (separate worktrees or a branching strategy). Set continuation contracts on each task card so another agent can pick up the work if one crashes. Scope tasks to 1-3 hours of expected work so context limits don't interrupt mid-task."
         }
       }
     ]
@@ -137,9 +137,9 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>Running AI Agents 24/7</span></div>
 
     <h1>Running AI Agents 24/7</h1>
-    <p class="subtitle">Continuous operation requires self-healing, not just auto-start. Updated September 2026.</p>
+    <p class="subtitle">Continuous operation requires recovery as well as auto-start. Updated September 2026.</p>
 
-    <p>An AI engineering team does not need to stop when you do. The practical ceiling on overnight runs has always been reliability: agents crash, context windows fill up, and prompts stall waiting for a human who has gone to bed. amux's self-healing watchdog addresses the three most common failure modes automatically, and the Telegram connector means your agents can reach you on your phone when something genuinely needs a decision. The result is a fleet that ships code while you sleep and hands you a morning summary over coffee.</p>
+    <p>An AI engineering team does not need to stop when you do. The practical ceiling on overnight runs has always been reliability: agents crash, context windows fill up, and prompts stall waiting for a human who has gone to bed. amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot. Stall detection flags work that stops moving, and the Telegram connector means your agents can reach you on your phone when something genuinely needs a decision. The result is a fleet that ships code while you sleep and hands you a morning summary over coffee.</p>
 
     <!-- ============================================================ -->
     <h2>The five failure modes of overnight AI runs</h2>
@@ -158,12 +158,12 @@
         <tr>
           <td><strong>Context exhaustion</strong></td>
           <td>The agent fills its context window and halts with a capacity error</td>
-          <td>Watchdog detects the threshold and triggers auto-compact. The agent resumes within seconds, losing only the most repetitive history.</td>
+          <td>Claude Code compacts its own context. amux lets you set the compaction threshold so it compacts before the window is full.</td>
         </tr>
         <tr>
           <td><strong>Process crash</strong></td>
           <td>An uncaught exception or OOM kill terminates the session</td>
-          <td>Watchdog detects the dead process and restarts it, replaying the last message so the agent picks up where it left off.</td>
+          <td>Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. Stall detection flags the stalled card and fires an owner alert so you see it.</td>
         </tr>
         <tr>
           <td><strong>Stalled prompt</strong></td>
@@ -184,22 +184,23 @@
     </table>
 
     <!-- ============================================================ -->
-    <h2>How the self-healing watchdog works</h2>
+    <h2>How amux keeps agents going</h2>
 
-    <p>The watchdog is a background process inside amux that polls every running session on a short interval. It tracks three signals:</p>
+    <p>amux handles four situations without you:</p>
 
     <ul>
-      <li><strong>Context fill level</strong>: when a session's context use crosses the auto-compact threshold (configurable, default 80%), the watchdog sends a compact request. The agent keeps working; users see no interruption.</li>
-      <li><strong>Process liveness</strong>: if the underlying tmux pane for a session exits, the watchdog logs the event and restarts the session within a few seconds, replaying the most recent message.</li>
-      <li><strong>Rate limit state</strong>: when a session hits a provider rate limit, the watchdog holds the session rather than retrying immediately, then resumes when the limit window clears.</li>
+      <li><strong>Usage limits</strong>: when a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the provider's reset time.</li>
+      <li><strong>Context fill level</strong>: Claude Code compacts its own context. amux lets you set the compaction threshold, so compaction happens before the window is nearly full.</li>
+      <li><strong>Server restarts</strong>: the OS service (launchd on macOS, a systemd user service on Linux) restarts the amux server process itself.</li>
+      <li><strong>Reboots</strong>: on macOS, a login job brings every non-archived worker back after a reboot, resumed in its own conversation.</li>
     </ul>
 
-    <p>The key property is that these three paths need no human attention. A developer can walk away from a 10-agent fleet running complex features and expect to find progress in the morning, not a set of blank terminals waiting for someone to press a key.</p>
+    <p>Stall detection covers the rest: it surfaces board work that stops moving and stuck orchestrators, and fires an owner alert. The amux server does not restart a crashed agent process; the optional macOS script <code>scripts/tmux-watchdog.sh</code> does that for Claude Code workers if you install it. A developer can walk away from a 10-agent fleet running complex features and expect to find progress in the morning, with an alert for anything that stopped.</p>
 
     <!-- ============================================================ -->
     <h2>Stay connected with Telegram</h2>
 
-    <p>Self-healing covers crashes and context exhaustion. The third failure mode, a stalled prompt, requires a human response. The amux Telegram connector makes that response frictionless: agents push their output to a Telegram chat, and you can reply from your phone to unblock them.</p>
+    <p>Usage limits, compaction and reboots are handled for you. A stalled prompt requires a human response. The amux Telegram connector makes that response frictionless: agents push their output to a Telegram chat, and you can reply from your phone to unblock them.</p>
 
     <p>Setup takes about five minutes:</p>
 
@@ -263,7 +264,7 @@
 
     <p>Check Telegram: any message from overnight tells you what the agents asked for and what you replied. Look at the git log for the last 8 hours to see what actually landed. Move done cards to verified after you confirm the output is correct.</p>
 
-    <p>A well-configured fleet of 10-20 agents running a full night can produce 30-60 commits of real code. The morning review takes 15-20 minutes and focuses on quality, not on restarting crashed processes.</p>
+    <p>A well-configured fleet of 10-20 agents running a full night can produce 30-60 commits of real code. The morning review takes 15-20 minutes and focuses on quality.</p>
 
     <!-- ============================================================ -->
     <h2>Frequently asked questions</h2>
@@ -271,7 +272,7 @@
     <div class="faq-list">
       <details>
         <summary>How do I keep AI coding agents running overnight without crashing?</summary>
-        <p>Use a self-healing orchestrator like amux. The watchdog automatically compacts context when it nears the limit, restarts crashed sessions, and replays the last message. The three most common failure modes require no manual intervention. For stalled prompts, enable the Telegram connector so agents can reach you on your phone.</p>
+        <p>Use an orchestrator like amux. It holds message delivery through usage limits and resumes each agent at the provider's reset, lets you set the threshold at which Claude Code compacts its context, and on macOS brings every worker back in its own conversation after a reboot. Stall detection alerts you when board work stops moving. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. For stalled prompts, enable the Telegram connector so agents can reach you on your phone.</p>
       </details>
       <details>
         <summary>What causes AI coding agents to stop working overnight?</summary>
@@ -291,14 +292,14 @@
       </details>
       <details>
         <summary>What should I put on the board before running agents overnight?</summary>
-        <p>Every task that needs to be done, with enough context for an agent to start without a clarifying question. Include acceptance criteria, relevant file paths, and any external dependencies. Set blocked-on relationships between tasks that share files. Add a continuation contract to each card so a crashed agent's replacement can resume without starting over.</p>
+        <p>Every task that needs to be done, with enough context for an agent to start without a clarifying question. Include acceptance criteria, relevant file paths, and any external dependencies. Set blocked-on relationships between tasks that share files. Add a continuation contract to each card so a replacement session can resume a crashed agent's work without starting over.</p>
       </details>
     </div>
 
     <!-- ============================================================ -->
     <div class="cta-box">
       <h3>Run your engineering team overnight</h3>
-      <p>amux is an open-source control plane for AI agent teams. Self-healing, Telegram connector, mobile dashboard, kanban, and scheduler. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+      <p>amux is an open-source control plane for AI agent teams. Usage-limit resume, stall alerts, Telegram connector, mobile dashboard, kanban, and scheduler. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
       <pre><code>curl -sSf https://amux.io/install.sh | sh
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub ★ 380+</a>

@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Self-Healing AI Agents — amux Watchdog &amp; Auto-Recovery (2026)</title>
+  <title>Recovery: What amux Does When AI Agents Stop (2026) | amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs — no babysitting required.">
-  <meta name="keywords" content="self-healing AI coding agent, auto-restart Claude Code agent, Claude Code crash recovery, AI agent context limit handling, agent watchdog, YOLO mode">
+  <meta name="description" content="amux keeps Claude Code agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, the OS service restarts the server, and on macOS every worker comes back after a reboot.">
+  <meta name="keywords" content="AI agent recovery, Claude Code usage limit resume, Claude Code reboot recovery, AI agent stall detection, Claude Code compaction threshold, YOLO mode">
   <link rel="canonical" href="https://amux.io/features/self-healing/">
-  <meta property="og:title" content="Self-Healing AI Agents — amux Watchdog &amp; Auto-Recovery (2026)">
-  <meta property="og:description" content="amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs — no babysitting required.">
+  <meta property="og:title" content="Recovery: What amux Does When AI Agents Stop (2026) | amux">
+  <meta property="og:description" content="amux keeps Claude Code agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, the OS service restarts the server, and on macOS every worker comes back after a reboot.">
   <meta property="og:url" content="https://amux.io/features/self-healing/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,9 +20,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Self-Healing AI Agents","item":"https://amux.io/features/self-healing/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Self-Healing AI Agents — amux Watchdog & Auto-Recovery (2026)","description":"amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs.","url":"https://amux.io/features/self-healing/","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux automatically restart Claude Code when it crashes?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux watchdog detects process exits and automatically restarts the Claude Code session within ~5 seconds. When YOLO mode is enabled, the agent resumes where it left off without any human intervention."}},{"@type":"Question","name":"What is YOLO mode in amux?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (--yolo flag) auto-approves all Claude Code tool calls, preventing the tool-approval stuck failure mode entirely. Enable it with: amux register myproject --dir ~/Dev/myproject --yolo, or set YOLO=1 in ~/.amux/server.env."}},{"@type":"Question","name":"How do I configure the context threshold for auto-compact?","acceptedAnswer":{"@type":"Answer","text":"Set WATCHDOG_CONTEXT_THRESHOLD in ~/.amux/server.env as a percentage (0-100). The default is 20, meaning amux sends /compact when Claude Code's context falls below 20% remaining capacity. Lower values trigger compaction later; higher values trigger it earlier."}},{"@type":"Question","name":"Can amux self-healing run completely unattended overnight?","acceptedAnswer":{"@type":"Answer","text":"Yes. Enable YOLO mode and set your watchdog thresholds in ~/.amux/server.env, then start your agents with amux start. The watchdog handles all four failure modes — context exhaustion, thinking-block corruption, tool-approval blocks, and silent hangs — without any human intervention."}},{"@type":"Question","name":"What happens if last-message replay causes an infinite loop?","acceptedAnswer":{"@type":"Answer","text":"The amux watchdog tracks restart counts per session. After consecutive restarts without forward progress (no new output), it marks the session as failed and stops auto-restarting. The session is flagged in the dashboard with a red status dot so you can investigate manually."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Recovery: what amux does when agents stop","item":"https://amux.io/features/self-healing/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "Recovery: what amux does when AI agents stop", "description": "amux keeps Claude Code agents going through usage limits and restarts: delivery is held and resumes at the provider's reset, the OS service restarts the server, and on macOS every worker comes back after a reboot.", "url": "https://amux.io/features/self-healing/", "datePublished": "2026-07-11", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does amux automatically restart Claude Code when it crashes?", "acceptedAnswer": {"@type": "Answer", "text": "No. Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, scripts/tmux-watchdog.sh, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers. What amux does do is keep the rest of the fleet going: it resumes agents after usage limits, the OS service restarts the amux server, on macOS every worker comes back after a reboot, and stall detection alerts you when work stops moving."}}, {"@type": "Question", "name": "What is YOLO mode?", "acceptedAnswer": {"@type": "Answer", "text": "YOLO mode is the --yolo flag, an alias for Claude Code's --dangerously-skip-permissions. Claude Code then skips its tool-approval prompts, so an unattended worker never waits on one. Set it per worker with amux register myproject --dir ~/Dev/myproject --yolo, or turn on \"YOLO by default for new workers\" in the dashboard's Settings, Workers tab."}}, {"@type": "Question", "name": "How do I set the compaction threshold?", "acceptedAnswer": {"@type": "Answer", "text": "Claude Code compacts its own context, and amux lets you set the threshold it compacts at. The value lives in Claude Code's settings (autoCompactWindow, globally or per model), and amux records the window each launch actually resolved and warns when a launch resolves a smaller one than the launch before."}}, {"@type": "Question", "name": "Can amux run agents unattended overnight?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, within these limits. Usage limits hold delivery and resume at the provider's reset, the amux server is restarted by launchd or systemd if it dies, and on macOS a login job brings every non-archived worker back after a reboot. Stall alerts tell you when board work or a goal stops moving. An agent whose process crashes stays down unless you run the optional macOS script."}}, {"@type": "Question", "name": "What happens when a provider usage limit hits?", "acceptedAnswer": {"@type": "Answer", "text": "amux holds message delivery to that agent and resumes it at the provider's reset time, on every platform. Automatic resume is on by default (AMUX_AUTO_RESUME). On Claude Code's usage-limit menu amux picks the wait option; set AMUX_RATE_LIMIT_ACTION=off to leave that menu for you."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -48,68 +48,73 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Self-Healing AI Agents</span></div>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Recovery</span></div>
 
-    <h1>Self-Healing AI Agents</h1>
-    <p class="subtitle">amux runs a background watchdog that recovers from every known Claude Code failure mode — automatically, overnight, without you.</p>
+    <h1>Recovery: what amux does when agents stop</h1>
+    <p class="subtitle">amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot.</p>
 
     <div class="quick-answer" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
       <div class="kicker" style="margin-bottom:0.35rem">// quick answer</div>
-      <p style="margin:0"><strong>Does amux restart Claude Code agents automatically?</strong> Yes. The watchdog monitors every session and recovers from four failure modes: context exhaustion (auto-compact), thinking-block corruption (restart + replay), tool-approval blocks (YOLO mode), and silent hangs (continue signal). Agents run unattended overnight.</p>
+      <p style="margin:0"><strong>Does amux restart Claude Code agents automatically?</strong> Not when an agent process crashes. Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers. amux does resume agents after usage limits, restarts its own server through launchd or systemd, brings every worker back after a macOS reboot, and alerts you when board work or a goal stalls.</p>
     </div>
 
-    <h2>The four failure modes Claude Code sessions hit</h2>
-    <p>Most developers running multiple Claude Code agents overnight encounter the same four failures. amux is built around detecting and recovering from all of them automatically.</p>
+    <h2>The ways an unattended agent stops</h2>
+    <p>Most people running several Claude Code agents overnight hit the same handful of stops. Here is what amux does about each one today, and where it leaves the job to you.</p>
 
-    <h3>1. Context exhaustion (most common)</h3>
-    <p>Claude Code has a finite context window. As a long-running session accumulates code edits, tool outputs, and conversation history, the context fills. When it reaches capacity, the session stalls — Claude can't continue because there's nowhere to put new tokens.</p>
-    <p><strong>amux recovery:</strong> When context falls below a configurable threshold (default: 20% remaining), the watchdog automatically sends <code>/compact</code>. Claude Code summarizes its full context into a compressed form and continues the task from where it left off.</p>
-    <pre><code># Configure the threshold in ~/.amux/server.env
-WATCHDOG_CONTEXT_THRESHOLD=20   # trigger /compact when below 20% remaining</code></pre>
+    <h3>1. Usage limits (most common)</h3>
+    <p>A provider's usage or rate limit stops every agent on that account. Without help, each one sits until somebody types "continue" after the reset.</p>
+    <p><strong>What amux does:</strong> it holds message delivery to the limited agent and resumes it at the provider's reset time. This works on every platform and is on by default.</p>
+    <pre><code># ~/.amux/server.env, or the worker's Scope tab for AMUX_AUTO_RESUME
+AMUX_AUTO_RESUME=1          # default on; 0 turns automatic resume off
+AMUX_RATE_LIMIT_ACTION=wait # default; "off" leaves Claude Code's usage-limit menu for you</code></pre>
 
-    <h3>2. Thinking-block corruption</h3>
-    <p>Certain Claude response patterns — particularly around extended thinking — can produce malformed output that hangs the UI. The session appears to be running but produces no more output. This failure mode is silent and easy to miss in a fleet of 10+ agents.</p>
-    <p><strong>amux recovery:</strong> The watchdog monitors output patterns. When it detects a thinking-block error signature, it kills and restarts the Claude Code process, then replays the last message sent to the session so the agent picks up where it left off.</p>
+    <h3>2. Restarts and reboots</h3>
+    <p>The amux server can die, and the machine can reboot under a fleet of running agents.</p>
+    <p><strong>What amux does:</strong> the installer runs the server as an OS service (launchd on macOS, a systemd user service on Linux), which restarts the server process if it exits. On macOS the installer also adds a login job, <code>com.amux.fleet-start</code>, that brings every non-archived worker back after a reboot, each resumed in its own conversation. It runs at login, so after an unattended reboot the workers start once someone logs in (or with automatic login turned on).</p>
 
-    <h3>3. Tool-approval stuck</h3>
-    <p>Unless YOLO mode is enabled, Claude Code pauses at every tool call (file write, bash command, etc.) and waits for the user to press Enter to approve. In an unattended session, this pause is indefinite — the agent just stops working and waits forever.</p>
-    <p><strong>amux recovery (YOLO mode):</strong> The <code>--yolo</code> flag pre-approves all tool calls at session start. This is the recommended setup for overnight or background agents — register your session with <code>--yolo</code> and the failure mode doesn't exist.</p>
+    <h3>3. Context filling up</h3>
+    <p>A long session fills its context window.</p>
+    <p><strong>What happens:</strong> Claude Code compacts its own context and continues. amux lets you set the threshold it compacts at; the value lives in Claude Code's <code>autoCompactWindow</code> setting, and amux records the window each launch resolved and warns when it shrinks between launches.</p>
+
+    <h3>4. Tool-approval prompts</h3>
+    <p>Unless permissions are skipped, Claude Code pauses at tool calls and waits for someone to approve them.</p>
+    <p><strong>What amux does (YOLO mode):</strong> the <code>--yolo</code> flag is an alias for Claude Code's <code>--dangerously-skip-permissions</code>, so the prompt never appears. Register overnight workers with it.</p>
     <pre><code>amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
 
-    <h3>4. Silent hang</h3>
-    <p>Sometimes Claude Code produces no output for an extended period for reasons unrelated to the above — a stuck network call, a paused subprocess, a model timeout. The session isn't crashed; it's just frozen.</p>
-    <p><strong>amux recovery:</strong> When no output is detected for the idle timeout period (configurable), the watchdog sends a continue signal to kick the agent back into action.</p>
-    <pre><code># Configure in ~/.amux/server.env
-WATCHDOG_IDLE_TIMEOUT=900   # 15 minutes of silence triggers a continue signal</code></pre>
+    <h3>5. Stalls</h3>
+    <p>Sometimes work just stops moving: a board card sits in progress, an orchestrator gets stuck, or a goal's progress count stops changing.</p>
+    <p><strong>What amux does:</strong> stall detection surfaces stalled board work and stuck orchestrators, and owner alerts fire. For a worker with a goal checker, the owner gets one push and one email when progress has not moved for <code>AMUX_GOAL_STALL_H</code> hours (default 6, 0 turns it off).</p>
 
-    <h2>Last-message replay</h2>
-    <p>When a session is restarted after a crash or thinking-block corruption, amux replays the last message that was sent to it. This means the agent picks up the task it was working on, not a blank slate. Combined with context compaction history, agents lose very little progress even after a hard restart.</p>
+    <h2>Crashed agent processes</h2>
+    <p>Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers. The script skips archived, paused and isolated workers, and holds a worker for a human after three restarts in 30 minutes rather than restarting it forever. Setup is in the <a href="/guides/self-healing-configuration/">recovery configuration guide</a>.</p>
 
-    <h2>Recovery vs. manual babysitting — comparison</h2>
+    <h2>Recovery vs. manual babysitting: comparison</h2>
     <table>
       <thead>
-        <tr><th>Failure scenario</th><th>Without amux</th><th>With amux self-healing</th></tr>
+        <tr><th>Scenario</th><th>Without amux</th><th>With amux</th></tr>
       </thead>
       <tbody>
-        <tr><td>Context fills overnight</td><td>Agent stops; you wake up to a dead session</td><td>Auto-compact; agent continues</td></tr>
-        <tr><td>Thinking-block corruption</td><td>Session hangs forever; requires manual kill + restart</td><td>Detected in ~2 s; auto-restart + replay</td></tr>
-        <tr><td>Tool-approval prompt</td><td>Agent waits indefinitely</td><td>Auto-approve (YOLO) or continue signal</td></tr>
-        <tr><td>Silent hang (&gt;15 min idle)</td><td>Session appears running but produces nothing</td><td>Watchdog sends continue signal</td></tr>
-        <tr><td>Process crash (exit code &ne;0)</td><td>Dead session until you notice</td><td>Auto-restart within ~5 s</td></tr>
-        <tr><td>Replay loop detection</td><td>N/A — you'd notice manually</td><td>Restart counter; marked failed after N consecutive restarts</td></tr>
+        <tr><td>Usage limit hits overnight</td><td>Agent waits until you type "continue" after the reset</td><td>Delivery held; agent resumes at the provider's reset</td></tr>
+        <tr><td>amux server exits</td><td>Dashboard and API are down until you notice</td><td>launchd or systemd restarts the server process</td></tr>
+        <tr><td>Mac reboots</td><td>Every agent is down until you start each one</td><td>Login job brings every non-archived worker back in its own conversation</td></tr>
+        <tr><td>Context fills</td><td>Claude Code compacts on its own default</td><td>Claude Code compacts at the threshold you set; amux reports each launch's window</td></tr>
+        <tr><td>Tool-approval prompt</td><td>Agent waits indefinitely</td><td>YOLO mode skips the prompt</td></tr>
+        <tr><td>Work stalls</td><td>You find out in the morning</td><td>Stall detection and an owner alert</td></tr>
+        <tr><td>Agent process crashes</td><td>Dead session until you notice</td><td>Not restarted by the server; optional macOS script for Claude Code workers</td></tr>
       </tbody>
     </table>
 
     <h2>Configuration reference</h2>
-    <p>All watchdog settings live in <code>~/.amux/server.env</code>. The server reads this file at startup (and after an auto-restart).</p>
+    <p>These settings go in <code>~/.amux/server.env</code>, which the server reads at startup. The ones marked scoped can also be set per worker, group or globally in the dashboard's Scope tab; the process environment wins over the Scope tab.</p>
     <table>
       <thead>
-        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+        <tr><th>Setting</th><th>Default</th><th>Description</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>WATCHDOG_CONTEXT_THRESHOLD</code></td><td>20</td><td>% context remaining that triggers auto-compact</td></tr>
-        <tr><td><code>WATCHDOG_IDLE_TIMEOUT</code></td><td>900</td><td>Seconds of silence before a continue signal is sent</td></tr>
-        <tr><td><code>YOLO</code></td><td>0</td><td>Set to 1 to auto-approve all tool calls globally</td></tr>
+        <tr><td><code>AMUX_AUTO_RESUME</code> (scoped)</td><td>on</td><td>Resume an agent after a usage limit resets</td></tr>
+        <tr><td><code>AMUX_RATE_LIMIT_ACTION</code></td><td>wait</td><td><code>wait</code> picks the wait option on Claude Code's usage-limit menu; <code>off</code> leaves it for you</td></tr>
+        <tr><td><code>AMUX_GOAL_STALL_H</code> (scoped)</td><td>6</td><td>Hours without goal progress before the owner alert; 0 turns it off</td></tr>
+        <tr><td><code>--yolo</code></td><td>off</td><td>Per-worker flag at <code>amux register</code>; skips tool-approval prompts</td></tr>
       </tbody>
     </table>
 
@@ -118,30 +123,30 @@ WATCHDOG_IDLE_TIMEOUT=900   # 15 minutes of silence triggers a continue signal</
     <div class="faq-list">
       <details open>
         <summary><strong>Does amux automatically restart Claude Code when it crashes?</strong></summary>
-        <p>Yes. The amux watchdog detects process exits and automatically restarts the Claude Code session within ~5 seconds. When YOLO mode is enabled, the agent resumes where it left off without any human intervention.</p>
+        <p>No. Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers. What amux does do is keep the rest of the fleet going: it resumes agents after usage limits, the OS service restarts the amux server, on macOS every worker comes back after a reboot, and stall detection alerts you when work stops moving.</p>
       </details>
       <details>
         <summary><strong>What is YOLO mode?</strong></summary>
-        <p>YOLO mode (<code>--yolo</code> flag) auto-approves all Claude Code tool calls, preventing the tool-approval stuck failure mode entirely. Enable it with <code>amux register myproject --dir ~/Dev/myproject --yolo</code>, or set <code>YOLO=1</code> in <code>~/.amux/server.env</code> to apply globally to all sessions.</p>
+        <p>YOLO mode is the <code>--yolo</code> flag, an alias for Claude Code's <code>--dangerously-skip-permissions</code>. Claude Code then skips its tool-approval prompts, so an unattended worker never waits on one. Set it per worker with <code>amux register myproject --dir ~/Dev/myproject --yolo</code>, or turn on "YOLO by default for new workers" in the dashboard's Settings, Workers tab.</p>
       </details>
       <details>
-        <summary><strong>How do I configure the context threshold for auto-compact?</strong></summary>
-        <p>Set <code>WATCHDOG_CONTEXT_THRESHOLD</code> in <code>~/.amux/server.env</code> as a percentage (0–100). The default is 20, meaning amux sends <code>/compact</code> when Claude Code's context falls below 20% remaining capacity. Lower values trigger compaction later (less frequent); higher values trigger it earlier (more frequent).</p>
+        <summary><strong>How do I set the compaction threshold?</strong></summary>
+        <p>Claude Code compacts its own context, and amux lets you set the threshold it compacts at. The value lives in Claude Code's settings (<code>autoCompactWindow</code>, globally or per model), and amux records the window each launch actually resolved and warns when a launch resolves a smaller one than the launch before.</p>
       </details>
       <details>
-        <summary><strong>Can amux self-healing run completely unattended overnight?</strong></summary>
-        <p>Yes. Enable YOLO mode and set your watchdog thresholds in <code>~/.amux/server.env</code>, then start your agents with <code>amux start</code>. The watchdog handles all four failure modes without any human intervention. Thousands of developers run amux fleets overnight this way.</p>
+        <summary><strong>Can amux run agents unattended overnight?</strong></summary>
+        <p>Yes, within these limits. Usage limits hold delivery and resume at the provider's reset, the amux server is restarted by launchd or systemd if it dies, and on macOS a login job brings every non-archived worker back after a reboot. Stall alerts tell you when board work or a goal stops moving. An agent whose process crashes stays down unless you run the optional macOS script.</p>
       </details>
       <details>
-        <summary><strong>What happens if last-message replay causes an infinite loop?</strong></summary>
-        <p>The amux watchdog tracks restart counts per session. After consecutive restarts without forward progress (no new output), it marks the session as failed and stops auto-restarting. The session is flagged in the dashboard with a red status dot so you can investigate manually.</p>
+        <summary><strong>What happens when a provider usage limit hits?</strong></summary>
+        <p>amux holds message delivery to that agent and resumes it at the provider's reset time, on every platform. Automatic resume is on by default (<code>AMUX_AUTO_RESUME</code>). On Claude Code's usage-limit menu amux picks the wait option; set <code>AMUX_RATE_LIMIT_ACTION=off</code> to leave that menu for you.</p>
       </details>
     </div>
 
     <p style="margin-top:2rem">See also: <a href="/guides/claude-code-plan-monitoring/">Monitor Claude Code plan progress</a> · <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> · <a href="/features/web-dashboard/">Web dashboard</a></p>
 
     <div class="cta-box">
-      <h3>Run Claude Code agents that never die overnight</h3>
+      <h3>Run Claude Code agents through usage limits and reboots</h3>
       <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. MIT + Commons Clause, single Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo

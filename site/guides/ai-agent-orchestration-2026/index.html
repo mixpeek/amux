@@ -336,7 +336,7 @@ approved?     compiles?      pass?          approved?</div>
     <div class="layer-card">
       <h4><span class="layer-num">L1</span> Runtime</h4>
       <p>Where agents physically execute. On a single machine, this is typically <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> sessions &mdash; each agent runs in its own tmux pane with its own shell, environment, and working directory. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> manages these sessions automatically. For cloud-hosted agents, the runtime is a container or VM: <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> runs in dedicated cloud sandboxes, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> Coding Agent runs in GitHub Actions runners, and <a href="https://github.com/openai/codex" target="_blank" rel="noopener">OpenAI Codex</a> cloud tasks run in isolated containers.</p>
-      <p>The runtime layer handles process lifecycle: starting agents, restarting them when they crash or exhaust their context window, and cleanly shutting them down when work is complete.</p>
+      <p>The runtime layer handles process lifecycle: starting agents, bringing them back after usage limits or a reboot, and cleanly shutting them down when work is complete.</p>
     </div>
 
     <div class="layer-card">
@@ -382,7 +382,7 @@ approved?     compiles?      pass?          approved?</div>
         <span class="tag">Python</span>
         <span class="tag">All 5 layers</span>
       </div>
-      <p>Full-stack agent control plane: tmux session management, SQLite task board with atomic claiming, inter-agent REST API, git worktree isolation, token spend tracking, web dashboard (desktop + mobile PWA), self-healing watchdog, and cron scheduler. Single Rust binary with SQLite. Works with any terminal-based agent (<a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/aaif-goose/goose" target="_blank" rel="noopener">Goose</a>). Supports all five patterns. <strong>Covers layers 1&ndash;5.</strong></p>
+      <p>Full-stack agent control plane: tmux session management, SQLite task board with atomic claiming, inter-agent REST API, git worktree isolation, token spend tracking, web dashboard (desktop + mobile PWA), usage-limit resume and reboot recovery, stall alerts, and cron scheduler. Single Rust binary with SQLite. Works with any terminal-based agent (<a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/aaif-goose/goose" target="_blank" rel="noopener">Goose</a>). Supports all five patterns. <strong>Covers layers 1&ndash;5.</strong></p>
     </div>
 
     <div class="tool-card">
@@ -670,7 +670,7 @@ approved?     compiles?      pass?          approved?</div>
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — orchestrate your AI agent fleet in one dashboard (313★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Five orchestration patterns, self-healing sessions, kanban task board, voice dictation, and multi-runtime support (Claude Code + Codex + Gemini CLI). Open source and free.</div>
+        <div style="color:var(--muted);font-size:.9rem">Five orchestration patterns, usage-limit resume, kanban task board, voice dictation, and multi-runtime support (Claude Code + Codex + Gemini CLI). Open source and free.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>

@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs dmux","item":"https://amux.io/compare/amux-vs-dmux/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs dmux: The Complete Comparison for Parallel AI Coding Agents","description":"Head-to-head comparison of amux and dmux — two parallel AI coding agent orchestrators. Feature matrix, architecture, workflows, migration tips.","url":"https://amux.io/compare/amux-vs-dmux/","datePublished":"2026-04-07","dateModified":"2026-08-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and dmux?","acceptedAnswer":{"@type":"Answer","text":"dmux is a worktree-focused tool that automates git worktree creation and lets you run multiple AI CLIs (Claude, Codex, Gemini, Aider) side by side. amux is a full orchestration platform — it adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern. dmux excels at the local 'spin up worktrees fast' use case. amux excels at unattended, monitored fleets you can run from your phone."}},{"@type":"Question","name":"Should I use amux or dmux?","acceptedAnswer":{"@type":"Answer","text":"Choose dmux if your workflow is interactive (you'll be at your desk), you want zero-config worktree management, and you mix multiple AI CLIs. Choose amux if you want to run agents unattended (overnight, while away from your desk), need a web dashboard accessible from your phone, want token cost visibility, or need a REST API to build custom automation."}},{"@type":"Question","name":"Can I use amux and dmux together?","acceptedAnswer":{"@type":"Answer","text":"Technically yes — they both use tmux underneath and don't conflict at the OS level. But there's no integration layer, so you'd be running two parallel orchestrators. Most people pick one. If you're moving from dmux to amux, the migration is straightforward: amux can register existing worktrees as sessions without recreating them."}},{"@type":"Question","name":"Does dmux have a web dashboard?","acceptedAnswer":{"@type":"Answer","text":"No. dmux is terminal-only. You manage agents through tmux panes and dmux's TUI. amux provides a full web dashboard at https://localhost:8824 with live status, token tracking, send bar, kanban board, and mobile PWA support."}},{"@type":"Question","name":"Does amux support Codex CLI and Gemini CLI like dmux does?","acceptedAnswer":{"@type":"Answer","text":"amux is primarily designed for Claude Code, but because each session is a tmux pane running an arbitrary command, you can register a Codex CLI or Gemini CLI session. The self-healing watchdog and token tracking are Claude Code-specific. dmux has first-class support for multiple AI CLIs out of the box."}},{"@type":"Question","name":"Is dmux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes, both amux and dmux are open source (MIT + Commons Clause). amux is a single Rust binary (amux-server-rs). dmux is a TypeScript/Node CLI with auto-generated git worktree management."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and dmux?","acceptedAnswer":{"@type":"Answer","text":"dmux is a worktree-focused tool that automates git worktree creation and lets you run multiple AI CLIs (Claude, Codex, Gemini, Aider) side by side. amux is a full orchestration platform — it adds a web dashboard, mobile PWA, usage-limit and reboot recovery, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern. dmux excels at the local 'spin up worktrees fast' use case. amux excels at unattended, monitored fleets you can run from your phone."}},{"@type":"Question","name":"Should I use amux or dmux?","acceptedAnswer":{"@type":"Answer","text":"Choose dmux if your workflow is interactive (you'll be at your desk), you want zero-config worktree management, and you mix multiple AI CLIs. Choose amux if you want to run agents unattended (overnight, while away from your desk), need a web dashboard accessible from your phone, want token cost visibility, or need a REST API to build custom automation."}},{"@type":"Question","name":"Can I use amux and dmux together?","acceptedAnswer":{"@type":"Answer","text":"Technically yes — they both use tmux underneath and don't conflict at the OS level. But there's no integration layer, so you'd be running two parallel orchestrators. Most people pick one. If you're moving from dmux to amux, the migration is straightforward: amux can register existing worktrees as sessions without recreating them."}},{"@type":"Question","name":"Does dmux have a web dashboard?","acceptedAnswer":{"@type":"Answer","text":"No. dmux is terminal-only. You manage agents through tmux panes and dmux's TUI. amux provides a full web dashboard at https://localhost:8824 with live status, token tracking, send bar, kanban board, and mobile PWA support."}},{"@type":"Question","name":"Does amux support Codex CLI and Gemini CLI like dmux does?","acceptedAnswer":{"@type":"Answer","text":"amux is primarily designed for Claude Code, but because each session is a tmux pane running an arbitrary command, you can register a Codex CLI or Gemini CLI session. Status detection and token tracking are Claude Code-specific. dmux has first-class support for multiple AI CLIs out of the box."}},{"@type":"Question","name":"Is dmux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes, both amux and dmux are open source (MIT + Commons Clause). amux is a single Rust binary (amux-server-rs). dmux is a TypeScript/Node CLI with auto-generated git worktree management."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -61,7 +61,7 @@
         <li><a href="#architecture" style="color:var(--dim);text-decoration:none;">Architecture Differences</a></li>
         <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Workflow Comparison</a></li>
         <li><a href="#dashboards" style="color:var(--dim);text-decoration:none;">Dashboards &amp; Remote Access</a></li>
-        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Self-Healing</a></li>
+        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Recovery</a></li>
         <li><a href="#multi-cli" style="color:var(--dim);text-decoration:none;">Multi-CLI Support</a></li>
         <li><a href="#which" style="color:var(--dim);text-decoration:none;">Which Should You Choose?</a></li>
         <li><a href="#migration" style="color:var(--dim);text-decoration:none;">Migrating Between Them</a></li>
@@ -73,7 +73,7 @@
     <p>Both amux and dmux solve the same problem &mdash; running multiple AI coding agents in parallel without them stepping on each other &mdash; but they take very different approaches.</p>
     <ul>
       <li><strong>dmux</strong> is a <em>worktree manager</em>. It automates <code>git worktree</code> creation and gives each agent a clean isolated branch with minimal config. Terminal-first, multi-CLI (Claude, Codex, Gemini, Aider), interactive use case.</li>
-      <li><strong>amux</strong> is an <em>orchestration platform</em>. It adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API. Built for unattended fleets you can monitor from anywhere.</li>
+      <li><strong>amux</strong> is an <em>orchestration platform</em>. It adds a web dashboard, mobile PWA, usage-limit and reboot recovery, kanban task board, token cost tracking, and a REST API. Built for unattended fleets you can monitor from anywhere.</li>
     </ul>
     <p><strong>Pick dmux</strong> if you want fast, frictionless worktree spin-up at your desk and you mix multiple AI CLIs.<br>
     <strong>Pick amux</strong> if you want to run agents while you're away (overnight, in meetings, on your phone), need spend visibility, or want a REST API for custom automation.</p>
@@ -97,7 +97,7 @@
     <ul>
       <li>Web dashboard at <code>https://localhost:8824</code> with live status, token spend, and a send bar</li>
       <li>Mobile PWA for managing the fleet from your phone</li>
-      <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions</li>
+      <li>Recovery: resume after usage limits, bring every worker back after a macOS reboot, detect stalled work and alert you</li>
       <li>SQLite-backed kanban task board with atomic claiming (no two agents work on the same task)</li>
       <li>Per-session token and cost tracking</li>
       <li>Full REST API for custom automation, scheduling, and integration</li>
@@ -138,8 +138,8 @@
           <td style="padding:0.6rem;">No</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.6rem;">Self-healing watchdog</td>
-          <td style="padding:0.6rem;color:var(--green);">Auto-restart, auto-compact, stuck detection</td>
+          <td style="padding:0.6rem;">Recovery</td>
+          <td style="padding:0.6rem;color:var(--green);">Usage-limit resume, macOS reboot recovery, stall alerts</td>
           <td style="padding:0.6rem;">No</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
@@ -236,7 +236,7 @@
 │           amux-server-rs (long-running)                  │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
-│  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
+│  │ Web UI   │  │ REST API │  │ Monitor  │  │  Board  │ │
 │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
@@ -249,11 +249,11 @@
         │ tmux 1 │  │ tmux 2 │  │ tmux N │
         │ Claude │  │ Claude │  │ Claude │
         └────────┘  └────────┘  └────────┘</code></pre>
-    <p>amux runs as a persistent server. It owns session lifecycle, restarts crashed agents, exposes a REST API, and serves a dashboard. The server is the source of truth for everything &mdash; sessions, tasks, costs, notes &mdash; and survives across reboots.</p>
+    <p>amux runs as a persistent server. It owns session lifecycle, resumes agents after usage limits, exposes a REST API, and serves a dashboard. The server is the source of truth for everything &mdash; sessions, tasks, costs, notes &mdash; and survives across reboots: launchd or systemd restarts the server process, and on macOS every worker comes back in its own conversation.</p>
 
     <h3>What this means in practice</h3>
     <p>dmux's stateless model is simpler. There's no daemon to restart, no port to manage, no database to back up. If you close your terminal, dmux is gone (the tmux sessions keep running, of course).</p>
-    <p>amux's server model is more powerful. The dashboard is always available, the watchdog is always running, and you can hit the API from any other process (cron jobs, mobile apps, custom scripts, even other agents). The trade-off: you have one more long-running process to manage.</p>
+    <p>amux's server model is more powerful. The dashboard is always available, stall detection is always running, and you can hit the API from any other process (cron jobs, mobile apps, custom scripts, even other agents). The trade-off: you have one more long-running process to manage.</p>
 
     <h2 id="workflows">Workflow Comparison</h2>
     <p>Same task, two tools. Goal: spin up 5 parallel agents, each working on a different test suite expansion task.</p>
@@ -297,8 +297,8 @@ amux start --all
 # Open the dashboard
 amux serve  # → https://localhost:8824
 # Watch all 5 agents simultaneously, see token spend, get phone alerts</code></pre>
-    <p><strong>Strengths:</strong> Tasks are persisted on the board, you can monitor all agents from one dashboard, the watchdog restarts crashes, you can check progress from your phone.<br>
-    <strong>Limitations:</strong> More setup ceremony than dmux. Need to think about the board, sessions, and watchdog config.</p>
+    <p><strong>Strengths:</strong> Tasks are persisted on the board, you can monitor all agents from one dashboard, usage limits pause and resume on their own, stalls raise an alert, you can check progress from your phone.<br>
+    <strong>Limitations:</strong> More setup ceremony than dmux. Need to think about the board, sessions, and alert config.</p>
 
     <h3>The takeaway</h3>
     <p>dmux optimizes for <em>time-to-first-agent</em>. amux optimizes for <em>time-to-fleet-visibility</em>. If your sessions are short and interactive, dmux wins on friction. If your sessions run for hours and you want to walk away, amux wins on observability.</p>
@@ -317,28 +317,28 @@ amux serve  # → https://localhost:8824
     <p>The dashboard works as a PWA on your phone, so you can install it like a native app. With Tailscale, you can access your home or office amux instance from anywhere on the internet without exposing ports. See the <a href="/guides/mobile-management-pwa/">Mobile Management PWA guide</a> and <a href="/guides/remote-access-tailscale/">Remote Access with Tailscale guide</a>.</p>
     <p>If you ever want to start an agent before bed and check on it from your phone in the morning, amux is the only one of the two that can do this.</p>
 
-    <h2 id="unattended">Unattended Operation &amp; Self-Healing</h2>
+    <h2 id="unattended">Unattended Operation &amp; Recovery</h2>
     <p>Running agents overnight is the canonical use case for parallel coding tools. Both can do it &mdash; but with very different reliability.</p>
 
     <h3>dmux: agents run, you hope they don't crash</h3>
     <p>dmux starts an agent in a tmux pane and walks away. If the agent crashes (segfault, OOM, network blip), the tmux pane shows the error and the agent is dead until you manually restart it. If the agent hits its context limit and freezes, dmux doesn't notice. If an agent gets stuck in a loop, dmux doesn't notice.</p>
     <p>This is fine for a 30-minute interactive sprint. It is not fine for a 6-hour overnight run.</p>
 
-    <h3>amux: self-healing watchdog</h3>
-    <p>amux's watchdog actively monitors every session and handles common failure modes automatically:</p>
+    <h3>amux: recovery and stall alerts</h3>
+    <p>amux actively monitors every session and handles these cases:</p>
     <ul>
-      <li><strong>Crash:</strong> Process dies &rarr; auto-restart, replay last user message</li>
-      <li><strong>Context overflow:</strong> Detected via output pattern &rarr; trigger <code>/compact</code> and continue</li>
-      <li><strong>Stuck:</strong> No new output for N minutes &rarr; send a nudge or restart</li>
-      <li><strong>Permission prompts:</strong> Auto-respond in YOLO mode</li>
-      <li><strong>Rate limits:</strong> Back off and retry transparently</li>
+      <li><strong>Crash:</strong> Process dies &rarr; the amux server does not restart it today; stall detection and owner alerts tell you. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</li>
+      <li><strong>Context overflow:</strong> Claude Code compacts its own context &rarr; amux lets you set the compaction threshold</li>
+      <li><strong>Stuck:</strong> Stalled board work and stuck orchestrators &rarr; surfaced on the dashboard, owner alert sent</li>
+      <li><strong>Permission prompts:</strong> Skipped when the session runs in YOLO mode</li>
+      <li><strong>Usage limits:</strong> Delivery is held and resumes at the provider's reset time</li>
     </ul>
-    <p>The watchdog is what makes overnight runs practical. Without it, one crash at 2am ends the session for the next 6 hours. With it, the agent restarts in 30 seconds and keeps going. See the <a href="/guides/self-healing-configuration/">Self-Healing Configuration guide</a> and <a href="/guides/ai-coding-agents-overnight/">Running AI Coding Agents Overnight guide</a> for details.</p>
+    <p>This is what makes overnight runs practical. Without it, a usage limit at 2am stalls the session until you notice. With it, the agent resumes at the provider's reset, and anything that stalls for another reason reaches you as an alert. See the <a href="/guides/self-healing-configuration/">Recovery and restarts guide</a> and <a href="/guides/ai-coding-agents-overnight/">Running AI Coding Agents Overnight guide</a> for details.</p>
 
     <h2 id="multi-cli">Multi-CLI Support</h2>
     <p>This is dmux's biggest strength.</p>
     <p>dmux ships with first-class support for Claude Code, Codex CLI, Gemini CLI, and Aider. You pick the agent type when you create a session, and dmux knows how to start each one. This is genuinely useful if you're comparing models on the same task or running a mixed fleet to leverage each model's strengths.</p>
-    <p>amux is Claude Code-first. The session manager, watchdog, and token tracking are all designed around Claude Code's CLI. You <em>can</em> register a session running Codex CLI or Gemini CLI &mdash; each session is just a tmux pane running an arbitrary command &mdash; but you'll lose the smart watchdog behaviors (which key off Claude Code's specific output patterns) and token tracking (which parses Claude's spend output).</p>
+    <p>amux is Claude Code-first. The session manager, status detection, and token tracking are all designed around Claude Code's CLI. You <em>can</em> register a session running Codex CLI or Gemini CLI &mdash; each session is just a tmux pane running an arbitrary command &mdash; but you'll lose the smart status detection (which keys off Claude Code's specific output patterns) and token tracking (which parses Claude's spend output).</p>
     <p>If you're a multi-model shop, dmux is the better fit. If you're 95%+ on Claude Code, amux's deep integration is more valuable than multi-CLI breadth.</p>
 
     <h2 id="which">Which Should You Choose?</h2>
@@ -357,7 +357,7 @@ amux serve  # → https://localhost:8824
     <ul>
       <li>You want to run agents unattended &mdash; overnight, while in meetings, while away from your desk</li>
       <li>You need a web dashboard you can check from any device, including your phone</li>
-      <li>You want self-healing recovery from crashes, context overflows, and stuck sessions</li>
+      <li>You want agents that resume after usage limits and reboots, with alerts when a session stalls</li>
       <li>You need token spend visibility per session</li>
       <li>You want a kanban task board with atomic task claiming so agents don't duplicate work</li>
       <li>You're building custom automation that needs a REST API (cron jobs, scripts, integrations)</li>
@@ -368,7 +368,7 @@ amux serve  # → https://localhost:8824
 
     <h3>The honest summary</h3>
     <p>If your mental model is "I want to run a bunch of agents in worktrees right now and merge them later," <strong>dmux is the right tool</strong>. It does that one thing extremely well with very little ceremony.</p>
-    <p>If your mental model is "I want to run a fleet of agents that I can monitor from anywhere, that recovers itself from failures, and that I can build custom automation around," <strong>amux is the right tool</strong>. It's a bigger surface area but it's solving a bigger problem.</p>
+    <p>If your mental model is "I want to run a fleet of agents that I can monitor from anywhere, that resumes after usage limits and tells me when something stalls, and that I can build custom automation around," <strong>amux is the right tool</strong>. It's a bigger surface area but it's solving a bigger problem.</p>
     <p>Neither tool is wrong. They're optimized for different points on the interactive &harr; unattended spectrum.</p>
 
     <h2 id="migration">Migrating Between Them</h2>
@@ -390,15 +390,15 @@ amux serve
     <p>Your git history, branches, and uncommitted work are untouched. amux just adds a monitoring and recovery layer on top.</p>
 
     <h3>From amux to dmux</h3>
-    <p>The reverse is also straightforward. amux's worktrees are standard git worktrees, so dmux can find and manage them. You'll lose the dashboard, watchdog, board, and token tracking &mdash; but the underlying git state is unchanged.</p>
+    <p>The reverse is also straightforward. amux's worktrees are standard git worktrees, so dmux can find and manage them. You'll lose the dashboard, stall alerts, board, and token tracking &mdash; but the underlying git state is unchanged.</p>
 
     <h2 id="faq">Frequently Asked Questions</h2>
 
     <h3>What is the main difference between amux and dmux?</h3>
-    <p>dmux is a worktree manager &mdash; it automates git worktree creation and lets you run multiple AI CLIs side by side. amux is a full orchestration platform &mdash; it adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern.</p>
+    <p>dmux is a worktree manager &mdash; it automates git worktree creation and lets you run multiple AI CLIs side by side. amux is a full orchestration platform &mdash; it adds a web dashboard, mobile PWA, usage-limit and reboot recovery, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern.</p>
 
     <h3>Should I use amux or dmux?</h3>
-    <p>Use dmux for fast interactive worktree management at your desk, especially if you mix multiple AI CLIs. Use amux when you need unattended operation, remote monitoring, self-healing, cost tracking, or a REST API.</p>
+    <p>Use dmux for fast interactive worktree management at your desk, especially if you mix multiple AI CLIs. Use amux when you need unattended operation, remote monitoring, usage-limit and reboot recovery, cost tracking, or a REST API.</p>
 
     <h3>Can I use amux and dmux together?</h3>
     <p>Technically yes &mdash; they don't conflict at the OS level &mdash; but most people pick one. amux can register existing dmux worktrees as sessions if you want to migrate.</p>
@@ -413,7 +413,7 @@ amux serve
     <p>Yes, dmux is MIT licensed. amux is MIT + Commons Clause: free to use, modify and self-host, but you cannot sell amux itself. amux is a single Rust binary. dmux is a Node/TypeScript CLI.</p>
 
     <h3>Which is more reliable for overnight runs?</h3>
-    <p>amux, by a wide margin. The self-healing watchdog handles crashes, context overflows, and stuck sessions automatically. dmux has no equivalent &mdash; if an agent dies overnight, it stays dead until you restart it manually.</p>
+    <p>amux, by a wide margin. It holds delivery through usage limits and resumes at the provider's reset, brings every worker back after a macOS reboot, and alerts you when a session stalls. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. dmux has none of this &mdash; if an agent dies overnight, nobody is told until you look.</p>
 
     <h3>Which has better cost tracking?</h3>
     <p>amux. It tracks token spend per session and shows cumulative cost on the dashboard. dmux has no cost tracking layer; you'd need to check Claude's billing dashboard separately.</p>
@@ -421,7 +421,7 @@ amux serve
     <h3>Are there other parallel AI agent tools I should consider?</h3>
     <p>Yes &mdash; the category is growing. Look at <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), cmux (native macOS), NTM (lightweight TUI), and the broader <a href="/compare/">comparison index</a>. The <a href="/guides/agentmaxxing/">agentmaxxing guide</a> includes a feature matrix across all of them.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with self-healing, mobile monitoring, and token tracking. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with usage-limit and reboot recovery, mobile monitoring, and token tracking. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>

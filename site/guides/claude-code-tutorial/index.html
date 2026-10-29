@@ -88,7 +88,7 @@
       {
         "@type": "Question",
         "name": "What is the difference between Claude Code and amux?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Claude Code is Anthropic's AI coding agent — it takes a task and autonomously reads, edits, and runs code. amux is an open-source control plane that runs, monitors, and self-heals dozens of Claude Code sessions in parallel. Claude Code is the individual agent; amux is the team of agents plus the dashboard to manage them. amux also works with Codex CLI and Gemini CLI." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Claude Code is Anthropic's AI coding agent — it takes a task and autonomously reads, edits, and runs code. amux is an open-source control plane that runs, monitors, and resumes dozens of Claude Code sessions in parallel. Claude Code is the individual agent; amux is the team of agents plus the dashboard to manage them. amux also works with Codex CLI and Gemini CLI." }
       },
       {
         "@type": "Question",
@@ -98,7 +98,7 @@
       {
         "@type": "Question",
         "name": "How do I handle context window limits in Claude Code?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Use the /compact command to summarize the conversation and free context space before hitting the limit. Write a detailed CLAUDE.md so the agent does not need to re-explore your codebase each session. Use amux's auto-compact feature, which triggers /compact automatically when the context reaches a configurable threshold. Scoping tasks tightly also reduces token usage." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Use the /compact command to summarize the conversation and free context space before hitting the limit. Write a detailed CLAUDE.md so the agent does not need to re-explore your codebase each session. Claude Code also compacts on its own, and amux lets you set the compaction threshold. Scoping tasks tightly also reduces token usage." }
       }
     ]
   }
@@ -189,7 +189,7 @@ claude</code></pre>
     <ul>
       <li><strong>CLAUDE.md files</strong> — Place a <code>CLAUDE.md</code> in your project root with architecture notes, conventions, and instructions. Claude Code reads this automatically at the start of every session. The better your CLAUDE.md, the fewer tokens the agent spends exploring the codebase.</li>
       <li><strong>The <code>/compact</code> command</strong> — When your context gets full, type <code>/compact</code> to summarize the conversation and free up space. Do this proactively before hitting the limit.</li>
-      <li><strong>Auto-compact</strong> — amux can trigger <code>/compact</code> automatically when context usage crosses a configurable threshold, so agents running overnight never stall from a full context window.</li>
+      <li><strong>Compaction threshold</strong>: Claude Code compacts its own context automatically, and amux lets you set the threshold at which it does, so agents running overnight compact before the window fills.</li>
       <li><strong>Focused prompts</strong> — Instead of "refactor the entire app," say "refactor the authentication module in src/auth/." Narrower scope means better results and lower token costs.</li>
       <li><strong>Git worktrees</strong> — Each Claude Code session should work on its own branch. Git worktrees let multiple sessions operate on the same repo without file conflicts.</li>
     </ul>
@@ -283,7 +283,7 @@ amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
     <p>Use the amux board to create dependency chains. An agent can mark its task done and create follow-up tasks for other agents. After the API session finishes the new endpoint, it adds a card to the board for the frontend session to build the UI — automatically, without you intervening.</p>
 
     <h3>Overnight runs</h3>
-    <p>With YOLO mode, auto-compact, and amux's self-healing watchdog (which restarts crashed or stalled sessions), you can kick off a batch of tasks before you go to sleep and check results from your phone in the morning. The amux scheduler lets you queue tasks for specific times, like "run the full test suite at 3am and create cards for any failures."</p>
+    <p>With YOLO mode, Claude Code's own compaction, and amux's recovery (agents resume after usage limits, and stalled work raises an alert), you can kick off a batch of tasks before you go to sleep and check results from your phone in the morning. The amux scheduler lets you queue tasks for specific times, like "run the full test suite at 3am and create cards for any failures."</p>
 
     <h3>Cost optimization</h3>
     <p>Running parallel sessions multiplies token spend. Ways to keep costs in check:</p>
@@ -313,7 +313,7 @@ amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
       <li>Read <a href="/guides/multi-runtime-agent-setup/">Multi-runtime agent setup</a> to run Claude Code, Codex, and Gemini CLI together</li>
     </ul>
 
-    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Self-healing, single Rust binary, zero external dependencies. MIT + Commons Clause.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">iOS App</a></div>
+    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Usage-limit resume, single Rust binary, zero external dependencies. MIT + Commons Clause.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">iOS App</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

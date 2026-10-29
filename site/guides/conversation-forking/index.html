@@ -181,7 +181,7 @@
 
     <p><strong>Conversation forking</strong> is the technique of cloning a running AI agent session — its entire JSONL conversation history, all accumulated context, and its working git state — into multiple new sessions that each proceed independently. Unlike starting fresh agents, forked sessions inherit everything the original session learned: the problem statement, constraints, prior decisions, code patterns, and any files already discussed. Each fork then takes that shared context in a different direction.</p>
 
-    <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Conversation forking is one of its core workflow primitives for engineering teams that need to evaluate multiple implementation options without wasting time re-briefing agents from scratch.</p>
+    <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. Conversation forking is one of its core workflow primitives for engineering teams that need to evaluate multiple implementation options without wasting time re-briefing agents from scratch.</p>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -525,7 +525,7 @@ the hot path, one prototyping the new search feature. Post results to board.",
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+      <p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. Single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

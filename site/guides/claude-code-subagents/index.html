@@ -245,7 +245,7 @@ Task(subagent_type="explorer", prompt="Map the notifications subsystem")
         <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">File system</td><td style="padding:0.6rem;">Same working directory as parent</td><td style="padding:0.6rem;">Separate git worktrees per session</td></tr>
         <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">Conflict risk</td><td style="padding:0.6rem;">High if multiple subagents write</td><td style="padding:0.6rem;">Zero — isolated branches</td></tr>
         <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">Observability</td><td style="padding:0.6rem;">Lives in parent transcript</td><td style="padding:0.6rem;">Web dashboard + mobile PWA</td></tr>
-        <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">Self-healing</td><td style="padding:0.6rem;">If parent dies, subagents die</td><td style="padding:0.6rem;">Watchdog auto-restarts crashed sessions</td></tr>
+        <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">Recovery</td><td style="padding:0.6rem;">If parent dies, subagents die</td><td style="padding:0.6rem;">Sessions are independent; resumes after usage limits; workers return after a macOS reboot; stall alerts</td></tr>
         <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.6rem;">Output</td><td style="padding:0.6rem;">One text reply each</td><td style="padding:0.6rem;">Full PRs, commits, branches</td></tr>
         <tr><td style="padding:0.6rem;">Best for</td><td style="padding:0.6rem;">Lookups, reviews, planning</td><td style="padding:0.6rem;">Shipping 10 tickets in parallel</td></tr>
       </tbody>
@@ -346,7 +346,7 @@ done
     <p>Project-level at <code>.claude/agents/</code> in your repo (checked into git, shared with the team) or user-level at <code>~/.claude/agents/</code> (personal, available across all projects). Project-level wins on name conflicts.</p>
 
     <h3>Should I use subagents or amux for parallel coding?</h3>
-    <p>Both. Subagents inside a session for context efficiency and concurrent lookups. amux outside for true parallel throughput across isolated git worktrees with self-healing, monitoring, and per-session token tracking. They compose; they do not compete.</p>
+    <p>Both. Subagents inside a session for context efficiency and concurrent lookups. amux outside for true parallel throughput across isolated git worktrees with usage-limit resume, monitoring, and per-session token tracking. They compose; they do not compete.</p>
 
     <div class="cta-box"><h3>Run dozens of Claude Code sessions in parallel with amux</h3><p>Subagents keep one session focused. amux multiplies sessions. Open source, one Rust binary, web dashboard + mobile PWA.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo

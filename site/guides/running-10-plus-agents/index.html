@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>Running 10+ AI Coding Agents in Parallel — amux Guide (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.">
+  <meta name="description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight operation that resumes after usage limits.">
   <meta name="keywords" content="run multiple Claude Code agents, parallel AI coding agents, scale AI engineering team, 10 agents parallel, Claude Code fleet, amux multi-agent, AI agent orchestration 2026">
   <link rel="canonical" href="https://amux.io/guides/running-10-plus-agents/">
   <meta property="og:title" content="Running 10+ AI Coding Agents in Parallel — amux">
-  <meta property="og:description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.">
+  <meta property="og:description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight operation that resumes after usage limits.">
   <meta property="og:url" content="https://amux.io/guides/running-10-plus-agents/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -38,7 +38,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "Running 10+ AI Coding Agents in Parallel",
-    "description": "How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.",
+    "description": "How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight operation that resumes after usage limits.",
     "url": "https://amux.io/guides/running-10-plus-agents/",
     "datePublished": "2026-02-26",
     "dateModified": "2026-09-07",
@@ -96,8 +96,8 @@
       {
         "@type": "HowToStep",
         "position": 6,
-        "name": "Enable self-healing for overnight operation",
-        "text": "Configure amux's watchdog: auto-compact on context overflow, auto-restart on crash with last-message replay. Now the fleet runs while you sleep."
+        "name": "Set up recovery for overnight operation",
+        "text": "Set the compaction threshold, keep usage-limit resume on (AMUX_RATE_LIMIT_ACTION=wait), and turn on stall alerts. amux resumes agents at the provider's reset and, on macOS, brings every worker back after a reboot. Now the fleet runs while you sleep."
       }
     ]
   }
@@ -137,7 +137,7 @@
         "name": "What happens if an agent crashes or hits a context limit?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux includes a self-healing watchdog. On context overflow, it auto-compacts the session and continues from where it left off. On crash, it auto-restarts and replays the last message so the agent resumes its task. This enables overnight and unattended operation without manual babysitting."
+          "text": "On context overflow, Claude Code compacts its own context, and amux lets you set the compaction threshold. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. amux's stall detection flags work that stops moving and fires an owner alert, so you see it. Usage limits hold delivery and resume at the provider's reset."
         }
       },
       {
@@ -191,10 +191,10 @@
 
     <!-- EXP-081: top-of-page CTA — running-10-plus-agents, September 2026 refresh, started 2026-09-07 -->
 
-    <p>You can run 10, 20, even 50 parallel Claude Code, Codex, or Gemini CLI agents from a single amux dashboard — and manage the whole fleet from your phone. The practical output: tasks that would take one agent a week ship in a day, overnight, while you sleep. This guide covers everything from machine requirements to fleet organization, atomic task distribution, git conflict prevention, and self-healing overnight operation.</p>
+    <p>You can run 10, 20, even 50 parallel Claude Code, Codex, or Gemini CLI agents from a single amux dashboard — and manage the whole fleet from your phone. The practical output: tasks that would take one agent a week ship in a day, overnight, while you sleep. This guide covers everything from machine requirements to fleet organization, atomic task distribution, git conflict prevention, and overnight operation.</p>
 
     <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> amux runs each agent as an isolated tmux session. The dashboard aggregates all sessions into one view. Agents pull tasks from a shared kanban board using atomic claims — no duplicated work. The self-healing watchdog auto-restarts crashed sessions and auto-compacts context-overflowed ones. Result: a fleet that runs unattended overnight.
+      <strong>Quick answer:</strong> amux runs each agent as an isolated tmux session. The dashboard aggregates all sessions into one view. Agents pull tasks from a shared kanban board using atomic claims — no duplicated work. Usage limits hold delivery and resume at the provider's reset, and stall alerts flag work that stops moving. Result: a fleet that runs unattended overnight.
     </div>
 
     <h2>What does "running 10+ agents in parallel" actually mean?</h2>
@@ -204,7 +204,7 @@
       <li>A <strong>kanban board</strong> where tasks queue up and agents pull work atomically</li>
       <li>A <strong>peek/tail view</strong> that lets you read any agent's last N lines of output without attaching to its terminal</li>
       <li>A <strong>steering queue</strong> that delivers instructions to agents between turns — no interruptions mid-task</li>
-      <li>A <strong>self-healing watchdog</strong> that auto-restarts crashed agents and replays their last message</li>
+      <li><strong>Recovery</strong>: resume after usage limits, workers back after a macOS reboot, and stall alerts</li>
     </ul>
     <p>That's the foundation of an AI engineering team. Not one agent iterating; dozens of agents shipping in parallel, managed from one place.</p>
 
@@ -370,10 +370,10 @@ amux register payments --dir ../project-feature-payments --yolo</code></pre>
 
     <p>The dashboard uses Server-Sent Events to push live updates to every connected client simultaneously — your phone sees the same state as your desktop within ~2 seconds of any change.</p>
 
-    <h2>Self-healing overnight operation</h2>
+    <h2>Recovery for overnight operation</h2>
     <p>Running 10+ agents overnight without babysitting requires the fleet to recover from the inevitable failures: context overflow, network blips, API rate limits, agent stuck in a loop.</p>
 
-    <p>amux's watchdog handles each case:</p>
+    <p>Here is what happens in each case:</p>
 
     <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
       <thead>
@@ -385,28 +385,32 @@ amux register payments --dir ../project-feature-payments --yolo</code></pre>
       <tbody>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Context window overflow</td>
-          <td style="padding:0.6rem 0.75rem">Auto-compact (triggers /compact), session continues</td>
+          <td style="padding:0.6rem 0.75rem">Claude Code compacts its own context; amux lets you set the threshold</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Process crash</td>
-          <td style="padding:0.6rem 0.75rem">Watchdog detects exit, restarts session, replays last message</td>
+          <td style="padding:0.6rem 0.75rem">Not restarted by the amux server today; stall alerts flag it. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">API rate limit (429)</td>
-          <td style="padding:0.6rem 0.75rem">Agent retries with backoff (Claude Code's built-in behavior)</td>
+          <td style="padding:0.6rem 0.75rem">Agent retries with backoff (Claude Code's built-in behavior); at a usage limit amux holds delivery and resumes at the provider's reset</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Agent stuck / no output</td>
           <td style="padding:0.6rem 0.75rem">Stale-session detector flags it on the dashboard</td>
         </tr>
-        <tr>
+        <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">amux server crash</td>
-          <td style="padding:0.6rem 0.75rem">Server auto-restarts (watches its own mtime + process supervisor)</td>
+          <td style="padding:0.6rem 0.75rem">The OS service (launchd on macOS, systemd on Linux) restarts the server</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">Machine reboot (macOS)</td>
+          <td style="padding:0.6rem 0.75rem">A login job brings every non-archived worker back, resumed in its own conversation</td>
         </tr>
       </tbody>
     </table>
 
-    <p>For a deep dive into overnight unattended operation, see <a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a> and <a href="/guides/self-healing-configuration/">self-healing configuration</a>.</p>
+    <p>For a deep dive into overnight unattended operation, see <a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a> and <a href="/guides/self-healing-configuration/">Recovery configuration</a>.</p>
 
     <h2>Token spend management at scale</h2>
     <p>20 agents generating tokens simultaneously can hit your API budget fast. Three practical controls:</p>
@@ -428,7 +432,7 @@ amux register payments --dir ../project-feature-payments --yolo</code></pre>
       <li><strong>Write a shared CLAUDE.md:</strong> include the task-claiming workflow, module boundaries, and PR conventions</li>
       <li><strong>Launch the fleet:</strong> <code>amux start myproject</code> and open the dashboard</li>
       <li><strong>Install the mobile app:</strong> iOS App Store → amux, or add the PWA to your home screen</li>
-      <li><strong>Let it run overnight:</strong> the watchdog handles failures; check the board in the morning</li>
+      <li><strong>Let it run overnight:</strong> usage limits resume on their own and stall alerts flag the rest; check the board in the morning</li>
     </ol>
 
     <div class="cta-box">
@@ -450,7 +454,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <li><a href="/guides/scaling-to-50-agents/">Scaling to 50 agents</a></li>
       <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>
       <li><a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a></li>
-      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/self-healing-configuration/">Recovery configuration</a></li>
       <li><a href="/guides/git-conflict-avoidance/">Git conflict avoidance with parallel agents</a></li>
       <li><a href="/guides/token-spend-tracking/">Token spend tracking</a></li>
       <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>

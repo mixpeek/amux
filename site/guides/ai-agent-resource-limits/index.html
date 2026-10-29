@@ -250,7 +250,7 @@ gainz               2%     0.4 GB  0.3 GB</div>
     <h3>What is the difference between amux resources and amux boundaries?</h3>
     <p><code>amux resources</code> is read-only: it shows real-time consumption across all workers. <code>amux boundaries</code> is read-write: it shows declared limits alongside actual usage and lets you edit limits inline. Use <code>amux resources</code> to observe, <code>amux boundaries</code> to govern.</p>
 
-    <div class="cta-box"><h3>amux is the harness</h3><p>Worker boundaries, orchestration, self-healing, and task history for your AI agent fleet. Open source. One Rust binary.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <div class="cta-box"><h3>amux is the harness</h3><p>Worker boundaries, orchestration, usage-limit resume, and task history for your AI agent fleet. Open source. One Rust binary.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>

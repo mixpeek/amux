@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Claude Code Resume Dialog: Auto-Answer Guide (2026) &mdash; amux</title>
+  <title>Claude Code Resume Dialog: Unattended Runs Guide (2026) &mdash; amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="The Claude Code resume dialog blocks unattended overnight runs. Here's what it is, why it matters for parallel agent automation, and how to auto-answer it with amux.">
-  <meta name="keywords" content="Claude Code resume dialog, Claude Code resume session prompt, auto-answer Claude Code session, Claude Code stuck on resume yes no, Claude Code resume hanging overnight, suppress Claude Code resume prompt, Claude Code unattended automation 2026">
+  <meta name="description" content="The Claude Code resume dialog blocks unattended overnight runs. Here's what it is, why it matters for parallel agent automation, how to avoid it, and how amux flags a session stuck on it.">
+  <meta name="keywords" content="Claude Code resume dialog, Claude Code resume session prompt, Claude Code stuck on resume yes no, Claude Code resume hanging overnight, suppress Claude Code resume prompt, Claude Code unattended automation 2026">
   <link rel="canonical" href="https://amux.io/guides/claude-code-resume-dialog/">
-  <meta property="og:title" content="Claude Code Resume Dialog: Auto-Answer Guide (2026) &mdash; amux">
-  <meta property="og:description" content="The Claude Code resume dialog blocks unattended overnight runs. Here's what it is, why it matters for parallel agent automation, and how to auto-answer it with amux.">
+  <meta property="og:title" content="Claude Code Resume Dialog: Unattended Runs Guide (2026) &mdash; amux">
+  <meta property="og:description" content="The Claude Code resume dialog blocks unattended overnight runs. Here's what it is, why it matters for parallel agent automation, how to avoid it, and how amux flags a session stuck on it.">
   <meta property="og:url" content="https://amux.io/guides/claude-code-resume-dialog/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,9 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Resume Dialog","item":"https://amux.io/guides/claude-code-resume-dialog/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Resume Dialog: What It Is and How to Auto-Answer It (2026)","description":"The Claude Code resume dialog blocks unattended overnight runs. Here's what triggers it, why it's a problem for parallel agents, and how amux auto-answers it.","url":"https://amux.io/guides/claude-code-resume-dialog/","datePublished":"2026-07-17","dateModified":"2026-07-17","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to auto-answer the Claude Code resume dialog in amux","description":"Configure amux to automatically answer the Claude Code resume dialog so overnight parallel agent runs proceed without human intervention.","step":[{"@type":"HowToStep","position":1,"name":"Open the amux dashboard","text":"Navigate to https://localhost:8824 in your browser after running amux serve."},{"@type":"HowToStep","position":2,"name":"Go to Settings","text":"Click the Settings tab in the amux navigation."},{"@type":"HowToStep","position":3,"name":"Find Auto-answer resume dialog","text":"Locate the 'Auto-answer resume dialog' toggle in the settings panel."},{"@type":"HowToStep","position":4,"name":"Enable the setting","text":"Ensure the toggle is ON (it is ON by default in new installs). This tells amux to automatically send 'Yes' when Claude Code shows the resume prompt."},{"@type":"HowToStep","position":5,"name":"Start your sessions","text":"Launch your Claude Code sessions normally via amux. The resume dialog is handled automatically — no human intervention needed."}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What triggers the Claude Code resume dialog?","acceptedAnswer":{"@type":"Answer","text":"The resume dialog appears when Claude Code detects existing conversation history in the .claude/ directory of the working directory. This happens on any subsequent run in the same project after at least one previous session."}},{"@type":"Question","name":"Does the resume dialog appear in headless mode?","acceptedAnswer":{"@type":"Answer","text":"Yes — even in headless mode with --print, Claude Code checks for existing session history and shows the dialog if found. This is a pre-execution check, not an interactive prompt within the session itself, so it blocks any automation that doesn't answer it."}},{"@type":"Question","name":"Can I tell amux to always start fresh sessions?","acceptedAnswer":{"@type":"Answer","text":"Yes — disable 'Auto-answer resume dialog' in amux Settings and clear the .claude/ directory before starting a session with rm -rf .claude/. This forces a fresh session with no prior context."}},{"@type":"Question","name":"What happens if the resume dialog appears and amux doesn't answer it?","acceptedAnswer":{"@type":"Answer","text":"The session hangs, waiting for keyboard input. The amux self-healing watchdog will detect the stalled session (no output within the timeout window) and restart it — but the restart will trigger the resume dialog again, creating a crash loop. Auto-answer prevents this."}},{"@type":"Question","name":"Does auto-answering Yes restore the full conversation context?","acceptedAnswer":{"@type":"Answer","text":"Yes — resuming picks up the full prior conversation history for that project. The agent has access to everything discussed in previous sessions. For a fresh start with no prior context, delete the .claude/ directory before running."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Resume Dialog: What It Is and How to Keep It From Blocking Unattended Runs (2026)","description":"The Claude Code resume dialog blocks unattended overnight runs. Here's what it is, why it matters for parallel agent automation, how to avoid it, and how amux flags a session stuck on it.","url":"https://amux.io/guides/claude-code-resume-dialog/","datePublished":"2026-07-17","dateModified":"2026-10-29","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to keep the Claude Code resume dialog from blocking amux sessions","description":"Avoid the Claude Code resume dialog in unattended runs, and find and answer a session that is stuck on it from the amux dashboard or your phone.","step":[{"@type":"HowToStep","position":1,"name":"Open the amux dashboard","text":"Navigate to https://localhost:8824 in your browser after running amux serve, or open the mobile app."},{"@type":"HowToStep","position":2,"name":"Look for waiting sessions","text":"A session stuck on the resume dialog shows as waiting rather than working. Peek at it to see the prompt."},{"@type":"HowToStep","position":3,"name":"Answer it","text":"Send the answer from the dashboard or your phone. amux does not answer the dialog automatically."},{"@type":"HowToStep","position":4,"name":"Turn on stall alerts","text":"Stall detection flags board work that stops moving for longer than AMUX_GOAL_STALL_H hours and fires an owner alert."},{"@type":"HowToStep","position":5,"name":"Avoid the dialog next time","text":"Start Claude Code with --continue or --resume, or clear the project .claude/ history before the run."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What triggers the Claude Code resume dialog?","acceptedAnswer":{"@type":"Answer","text":"The resume dialog appears when Claude Code detects existing conversation history in the .claude/ directory of the working directory. This happens on any subsequent run in the same project after at least one previous session."}},{"@type":"Question","name":"Does the resume dialog appear in headless mode?","acceptedAnswer":{"@type":"Answer","text":"Yes — even in headless mode with --print, Claude Code checks for existing session history and shows the dialog if found. This is a pre-execution check, not an interactive prompt within the session itself, so it blocks any automation that doesn't answer it."}},{"@type":"Question","name":"Can I make amux sessions always start fresh?","acceptedAnswer":{"@type":"Answer","text":"Yes. Clear the .claude/ directory before starting a session with rm -rf .claude/. With no history to detect, the dialog never appears and the session starts fresh."}},{"@type":"Question","name":"Does amux answer the resume dialog automatically?","acceptedAnswer":{"@type":"Answer","text":"No. amux does not answer the resume dialog or other prompts for you. A session stuck on it shows as waiting in the dashboard and on your phone, so you can answer it with one tap, and stall detection raises an owner alert when the board work it holds stops moving. To keep the dialog from appearing, start Claude Code with --continue or --resume, or clear the project history first."}},{"@type":"Question","name":"Does answering Yes restore the full conversation context?","acceptedAnswer":{"@type":"Answer","text":"Yes — resuming picks up the full prior conversation history for that project. The agent has access to everything discussed in previous sessions. For a fresh start with no prior context, delete the .claude/ directory before running."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -51,11 +51,11 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Resume Dialog</span></div>
 
-    <h1>Claude Code Resume Dialog: Auto-Answer Guide (2026)</h1>
-    <p class="subtitle">The Claude Code resume dialog blocks unattended overnight automation. Here&rsquo;s what it is, why it&rsquo;s a problem for parallel agent runs, and how amux auto-answers it &mdash; keeping your sessions flowing without human intervention. Updated July 2026.</p>
+    <h1>Claude Code Resume Dialog: Unattended Runs Guide (2026)</h1>
+    <p class="subtitle">The Claude Code resume dialog blocks unattended overnight automation. Here&rsquo;s what it is, why it&rsquo;s a problem for parallel agent runs, how to avoid it, and how amux shows you a session that is stuck on it. Updated October 2026.</p>
 
     <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
-      <strong>Quick answer:</strong> The Claude Code resume dialog appears when starting a session in a directory with prior conversation history. It asks &ldquo;Would you like to resume the most recent conversation for this project?&rdquo; &mdash; and blocks unattended automation if not answered. amux auto-answers this dialog by default, keeping overnight parallel agent runs flowing without human intervention. Configure it in the amux dashboard under Settings &rarr; Auto-answer resume dialog.
+      <strong>Quick answer:</strong> The Claude Code resume dialog appears when starting a session in a directory with prior conversation history. It asks &ldquo;Would you like to resume the most recent conversation for this project?&rdquo; and blocks unattended automation until someone answers. Avoid it by starting Claude Code with an explicit <code>--continue</code> or <code>--resume</code>, or by clearing the project history. amux does not answer the dialog for you: a blocked session shows as waiting in the dashboard and on your phone, and stall detection raises an owner alert when board work stops moving.
     </div>
 
     <h2 id="what-is-the-dialog">What is the Claude Code resume dialog?</h2>
@@ -72,21 +72,25 @@
 
     <h2 id="why-it-blocks-automation">Why it&rsquo;s a problem for overnight automation</h2>
     <p>For interactive sessions, answering the resume dialog takes half a second. For unattended overnight runs with 20 parallel agents, it is one of the most common and frustrating failure modes.</p>
-    <p>Here is what happens without auto-answer:</p>
+    <p>Here is what happens if nothing answers it:</p>
     <ol>
-      <li>You queue 20 amux sessions before going to sleep, each targeting a different project directory.</li>
+      <li>You queue 20 sessions before going to sleep, each targeting a different project directory.</li>
       <li>Each project has prior Claude Code history (from any previous run &mdash; even a single exploratory session).</li>
       <li>Every session starts, hits the resume dialog, and stops. The process is running, but waiting for a keystroke that never comes.</li>
       <li>You wake up to 20 sessions all paused at the same prompt. Zero work done. Zero tokens spent on actual tasks. Eight hours wasted.</li>
     </ol>
-    <p>The failure is especially deceptive because the sessions appear <em>alive</em> in the dashboard &mdash; they are not crashed, not timed out, not using CPU. They are simply waiting. Without a clear signal that they are blocked on input, you might assume they are thinking, or throttled, or doing slow work. It looks like progress; nothing is happening.</p>
-    <p>This is one of the most common failure modes for first-time amux users who come from interactive Claude Code use.</p>
+    <p>The failure is especially deceptive because the sessions appear <em>alive</em> &mdash; they are not crashed, not timed out, not using CPU. They are simply waiting. Without a clear signal that they are blocked on input, you might assume they are thinking, or throttled, or doing slow work.</p>
 
     <h2 id="three-ways-to-handle">Three ways to handle the resume dialog</h2>
 
-    <h3>Option A: amux auto-answer (recommended for overnight runs)</h3>
-    <p>amux detects the resume dialog in any Claude Code session it manages and automatically sends the &ldquo;Yes&rdquo; response. The session proceeds without human input. This is the default behavior in new amux installs &mdash; the setting ships enabled so overnight runs work out of the box.</p>
-    <p>See <a href="#how-to-enable">How to enable amux auto-answer</a> below for the exact steps.</p>
+    <h3>Option A: Pass the answer on the command line (recommended for overnight runs)</h3>
+    <p>Tell Claude Code what you want before it asks. <code>claude --continue</code> continues the most recent conversation in the directory, and <code>claude --resume &lt;session-id&gt;</code> resumes a specific one. Either way the dialog never appears.</p>
+    <pre><code># Continue the most recent conversation in this project
+claude --continue
+
+# Resume a specific conversation by id
+claude --resume &lt;session-id&gt;</code></pre>
+    <p>Check <code>claude --help</code> on your installed version for the exact flags it supports.</p>
 
     <h3>Option B: Delete <code>.claude/</code> history before starting</h3>
     <p>If the <code>.claude/</code> directory does not exist in the project, there is no prior history to resume and the dialog never appears. Deleting it before a session forces a cold start:</p>
@@ -94,59 +98,46 @@
 amux start myproject</code></pre>
     <p>This is appropriate when you want a completely fresh session with no prior context &mdash; for example, starting a new major task, recovering from a confusing conversation, or testing from a clean slate. The downside is that all prior context is gone permanently; there is no way to recover it after deletion.</p>
 
-    <h3>Option C: <code>--resume</code> / <code>--no-resume</code> CLI flags</h3>
-    <p>Some versions of Claude Code support <code>--resume</code> (to force resume without prompting) and <code>--no-resume</code> (to force a fresh session without prompting). Check your installed version with <code>claude --help</code> to see if these flags are available. When supported, they bypass the interactive dialog entirely by passing the answer as a CLI argument.</p>
-    <pre><code># Force resume without prompting (if supported by your Claude Code version)
-claude --resume
+    <h3>Option C: Answer it from your phone when amux flags it</h3>
+    <p>If a session does get stuck on the dialog, amux makes it visible instead of silent. The session shows as waiting in the dashboard and the mobile app, and you can send the answer with one tap or a steering message. If the stuck session holds a board card that stops moving, stall detection flags it and an owner alert fires.</p>
 
-# Force fresh session without prompting (if supported)
-claude --no-resume</code></pre>
-    <p>amux&rsquo;s auto-answer setting covers all Claude Code versions regardless of flag support &mdash; it works by monitoring session output and responding to the dialog as it appears, rather than relying on CLI flag availability.</p>
-
-    <h2 id="how-to-enable">How to enable amux auto-answer</h2>
-    <p>The &ldquo;Auto-answer resume dialog&rdquo; setting is enabled by default in new amux installs. Here is how to verify it is on and what each step does:</p>
+    <h2 id="how-to-enable">Seeing a blocked session in amux</h2>
+    <p>amux does not detect and answer the resume dialog automatically. What it does is keep the blocked session in front of you:</p>
 
     <p><strong>Step 1: Open the amux dashboard</strong></p>
-    <p>After running <code>amux serve</code>, navigate to <a href="https://localhost:8824" target="_blank" rel="noopener">https://localhost:8824</a> in your browser. The dashboard shows all active and registered sessions.</p>
+    <p>After running <code>amux serve</code>, navigate to <a href="https://localhost:8824" target="_blank" rel="noopener">https://localhost:8824</a> in your browser, or open the mobile app. The dashboard shows all active and registered sessions with their status.</p>
 
-    <p><strong>Step 2: Go to Settings</strong></p>
-    <p>Click the <strong>Settings</strong> tab in the amux navigation bar at the top of the dashboard.</p>
+    <p><strong>Step 2: Look for waiting sessions</strong></p>
+    <p>A session stuck on the dialog shows as waiting rather than working. Peek at it to see the prompt:</p>
+    <pre><code>curl -sk "$AMUX_URL/api/sessions/myproject/peek?lines=40"</code></pre>
 
-    <p><strong>Step 3: Find &ldquo;Auto-answer resume dialog&rdquo;</strong></p>
-    <p>In the settings panel, locate the <strong>Auto-answer resume dialog</strong> toggle. It is in the session behavior section.</p>
+    <p><strong>Step 3: Answer it</strong></p>
+    <p>Send the answer from the dashboard or your phone. The session continues from there.</p>
 
-    <p><strong>Step 4: Ensure the toggle is ON</strong></p>
-    <p>The toggle should be <strong>ON</strong> (enabled) for overnight runs. When on, amux monitors each session&rsquo;s output for the resume prompt pattern and automatically sends the &ldquo;Yes&rdquo; response as soon as the dialog appears. The session continues without delay.</p>
-    <p>This setting is global and applies to all sessions managed by amux. If you want a specific project session to start fresh (force &ldquo;No&rdquo; instead of &ldquo;Yes&rdquo;), the cleanest approach is to delete that project&rsquo;s <code>.claude/</code> directory before starting, rather than toggling the global setting off.</p>
+    <p><strong>Step 4: Turn on stall alerts for unattended runs</strong></p>
+    <p>Stall detection flags board work that stops moving for longer than <code>AMUX_GOAL_STALL_H</code> hours and stuck orchestrators, and fires an owner alert, so a session blocked overnight does not stay hidden until morning.</p>
 
-    <p><strong>Step 5: Start your sessions</strong></p>
-    <p>Launch your Claude Code sessions normally via amux:</p>
-    <pre><code>amux start myproject
-# or to start all registered sessions:
-amux start --all</code></pre>
-    <p>The resume dialog is handled automatically. You will see the auto-answer event in the session log: amux records when it detected the prompt and what it sent, so you can verify the behavior in the execution log.</p>
+    <p>Two related things amux does handle on its own: after a macOS reboot, a login job (<code>com.amux.fleet-start</code>) brings every non-archived worker back, resumed in its own conversation; and when a provider usage limit hits, amux holds delivery and resumes the agent at the reset time.</p>
 
-    <h2 id="when-not-to-auto-resume">When NOT to auto-resume</h2>
-    <p>Auto-answer defaults to &ldquo;Yes&rdquo; (resume), which is the right default for multi-day tasks where the agent needs prior context to continue effectively. But there are cases where resuming is the wrong choice:</p>
+    <h2 id="when-not-to-auto-resume">When NOT to resume</h2>
+    <p>Resuming is the right default for multi-day tasks where the agent needs prior context to continue effectively. But there are cases where resuming is the wrong choice:</p>
     <ul>
       <li><strong>Starting a completely new task:</strong> If the agent&rsquo;s prior conversation was about a different feature or a task that is now closed, resuming loads irrelevant context that can confuse the next run. Delete <code>.claude/</code> and start fresh.</li>
       <li><strong>Recovering from a corrupted or misleading conversation:</strong> Occasionally a conversation history contains incorrect assumptions or failed attempts that the agent should not continue from. A fresh start is cleaner than trying to override the old context.</li>
       <li><strong>Testing with a clean slate:</strong> Benchmarking, reproducibility testing, or verifying that a task can be done end-to-end from scratch requires a fresh session with no prior context.</li>
       <li><strong>Switching agent goals mid-project:</strong> If the task direction has changed significantly since the last session, carrying forward the old context adds noise rather than value.</li>
     </ul>
-    <p>In these cases, turn off the auto-answer setting globally <em>or</em> (more precisely) delete the project&rsquo;s <code>.claude/</code> directory before starting. Deleting <code>.claude/</code> is usually the better option because it targets the specific project without changing the global setting for other sessions.</p>
+    <p>In these cases, delete the project&rsquo;s <code>.claude/</code> directory before starting. It targets the specific project without changing anything for other sessions.</p>
 
-    <h2 id="execution-log">Event-sourced execution log</h2>
-    <p>amux maintains an event-sourced, append-only execution log for every session. Each log entry is a timestamped event: session started, resume dialog detected, auto-answer sent, first tool call, etc. This log is how you debug overnight runs after the fact &mdash; you can reconstruct exactly what happened in each session, in order, without relying on fragile terminal scroll buffers.</p>
-    <p>When the auto-answer feature fires, it writes an event to the session log:</p>
-    <pre><code># View a session's execution log via the API
-curl -sk https://localhost:8824/api/events/log?session=myproject | python3 -c "
+    <h2 id="execution-log">Debugging a blocked overnight run</h2>
+    <p>When a run stalls, start with the session&rsquo;s recent output. The peek API returns the scrollback, so you can see whether the session is sitting at the resume dialog, a permission prompt, or an error:</p>
+    <pre><code># Read a session's recent history via the API
+curl -sk "$AMUX_URL/api/sessions/myproject/peek?lines=600" | python3 -c "
 import json, sys
-for e in json.load(sys.stdin).get('events', []):
-    print(e['ts'], e['type'], e.get('detail', ''))
-" | head -20</code></pre>
-    <p>Look for events of type <code>resume_dialog_detected</code> and <code>resume_dialog_answered</code> to confirm that auto-answer fired as expected. If you see <code>resume_dialog_detected</code> without a corresponding <code>resume_dialog_answered</code>, the auto-answer setting was off at the time the session started &mdash; check the Settings tab and re-enable it before the next run.</p>
-    <p>The execution log is also essential for diagnosing the crash-loop failure mode described in the FAQ below: if auto-answer was off and the watchdog restarted a stalled session, the log will show the restart event immediately followed by another resume dialog detection, confirming the loop.</p>
+d = json.load(sys.stdin)
+print(d.get('history') or d.get('output', ''))
+" | tail -40</code></pre>
+    <p>If the last lines show the resume prompt, answer it and add <code>--continue</code> or a history cleanup to your pre-run setup so the next run does not hit it.</p>
 
     <h2 id="faq">Frequently Asked Questions</h2>
 
@@ -161,26 +152,26 @@ for e in json.load(sys.stdin).get('events', []):
     </details>
 
     <details class="faq-item">
-      <summary>Can I tell amux to always start fresh sessions (force No)?</summary>
-      <p>Yes &mdash; disable the &ldquo;Auto-answer resume dialog&rdquo; setting in the amux Settings tab and clear the <code>.claude/</code> directory before starting a session:</p>
+      <summary>Can I make amux sessions always start fresh?</summary>
+      <p>Yes. Clear the <code>.claude/</code> directory before starting a session:</p>
       <pre><code>rm -rf ~/Dev/myproject/.claude/
 amux start myproject</code></pre>
-      <p>With no history to detect, the dialog never appears and the session starts fresh. If you want fresh starts for <em>all</em> projects, you can script this deletion as part of your pre-run setup. amux does not currently support a &ldquo;always answer No&rdquo; mode &mdash; the auto-answer setting sends &ldquo;Yes&rdquo;; turning it off means the dialog will block until a human answers or the history is deleted.</p>
+      <p>With no history to detect, the dialog never appears and the session starts fresh. If you want fresh starts for <em>all</em> projects, script this deletion as part of your pre-run setup.</p>
     </details>
 
     <details class="faq-item">
-      <summary>What happens if the resume dialog appears and amux doesn&rsquo;t answer it?</summary>
-      <p>The session hangs indefinitely, waiting for keyboard input. The amux self-healing watchdog detects the stalled session (no output produced within its configured silence timeout) and restarts it &mdash; but the restart itself triggers a new Claude Code process in the same directory, which finds the same <code>.claude/</code> history and shows the resume dialog again. This creates a crash loop: detect stall, restart, hit dialog, stall, detect, restart, repeat. The loop continues until someone manually answers the dialog or deletes the <code>.claude/</code> directory. Enabling auto-answer breaks the loop by answering the dialog on the very first occurrence, before the watchdog timeout is ever reached.</p>
+      <summary>Does amux answer the resume dialog automatically?</summary>
+      <p>No. amux does not answer the resume dialog or other prompts for you. A session stuck on it shows as waiting in the dashboard and on your phone, so you can answer it with one tap, and stall detection raises an owner alert when the board work it holds stops moving. To keep the dialog from appearing, start Claude Code with <code>--continue</code> or <code>--resume</code>, or clear the project history first.</p>
     </details>
 
     <details class="faq-item">
-      <summary>Does auto-answering &ldquo;Yes&rdquo; restore the full conversation context?</summary>
+      <summary>Does answering &ldquo;Yes&rdquo; restore the full conversation context?</summary>
       <p>Yes &mdash; resuming picks up the full prior conversation history for that project. The agent has access to everything discussed in previous sessions: the files it read, the code it wrote, the errors it encountered, and the decisions it made. For multi-day or multi-step tasks, this is usually what you want &mdash; the agent can continue directly rather than rediscovering context it already has. For a fresh start with no prior context, delete the <code>.claude/</code> directory before running rather than answering &ldquo;No&rdquo; at the prompt (both have the same effect on context, but deleting the directory also prevents the dialog from appearing on future runs).</p>
     </details>
 
     <div class="cta-box">
       <h3>Run overnight agents without getting stuck</h3>
-      <p>amux auto-answers the resume dialog, self-heals crashed sessions, and lets you monitor everything from your phone.</p>
+      <p>amux shows you sessions stuck on a prompt, resumes agents after usage limits, and lets you answer everything from your phone.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # &rarr; https://localhost:8824</code></pre>
@@ -204,7 +195,7 @@ amux serve  # &rarr; https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents. amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler.</p>
+          <p>Open-source control plane for AI agents. amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and resumes dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

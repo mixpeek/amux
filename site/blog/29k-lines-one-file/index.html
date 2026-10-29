@@ -7,7 +7,7 @@
   <title>29,000 Lines of Python in a Single File: How amux Runs an AI Agent Fleet — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="We ship a Python HTTP server, dashboard, kanban board, CRM, file browser, video player, torrent client, and AI agent orchestrator in one file. Here's why.">
-  <meta name="keywords" content="single file architecture, Python server, AI agent orchestration, Claude Code, tmux multiplexer, self-healing agents">
+  <meta name="keywords" content="single file architecture, Python server, AI agent orchestration, Claude Code, tmux multiplexer, agent monitoring">
   <link rel="canonical" href="https://amux.io/blog/29k-lines-one-file/">
   <meta property="og:title" content="29,000 Lines of Python in a Single File: How amux Runs an AI Agent Fleet">
   <meta property="og:description" content="We ship a Python HTTP server, dashboard, kanban board, CRM, file browser, video player, torrent client, and AI agent orchestrator in one file. Here's why.">
@@ -51,7 +51,7 @@
     <h1>29,000 Lines of Python in a Single File: How amux Runs an AI Agent Fleet</h1>
 
     <div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:0.9rem 1.1rem;border-radius:0 6px 6px 0;margin:1.25rem 0;font-size:0.9rem">
-      <strong>Historical note (August 2026):</strong> This post describes amux&rsquo;s original Python architecture, which was removed at commit <code>792ce1f</code>. amux is now a 4-crate Rust workspace that compiles to a single binary. See <a href="/features/single-file-architecture/">the current architecture page</a> for how amux is built today.
+      <strong>Historical note (August 2026):</strong> This post describes amux&rsquo;s original Python architecture, which was removed at commit <code>792ce1f</code>. amux is now a 4-crate Rust workspace that compiles to a single binary. See <a href="/features/single-file-architecture/">the current architecture page</a> for how amux is built today.<br><em>Correction, 2026-10-29: the watchdog behavior described below is not in amux today. The amux server does not restart crashed agent processes, replay messages, or auto-answer prompts. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em>
     </div>
 
 <p class="subtitle">A Python HTTP server, real-time dashboard, kanban board, CRM, file browser, video player, torrent client, and AI agent orchestrator. One file. No build step. No framework. Here's why we did it, and what we learned.</p>

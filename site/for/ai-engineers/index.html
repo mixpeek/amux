@@ -6,17 +6,17 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux for AI Engineers — Workflow Orchestration, Multi-Model Routing &amp; Harness Engineering (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets (Claude Code, Codex, Gemini CLI), tracking token spend, integrating MCP servers, and running self-healing pipelines overnight. Open source, single Rust binary, zero external dependencies.">
-  <meta name="keywords" content="AI engineer tools 2026, AI engineer workflow orchestration, agent control plane AI engineers, multi-model agent routing, harness engineering Claude Code, AI agent observability, MCP server integration, self-healing AI pipeline, amux for AI engineers">
+  <meta name="description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets (Claude Code, Codex, Gemini CLI), tracking token spend, integrating MCP servers, and running pipelines overnight that resume after usage limits. Open source, single Rust binary, zero external dependencies.">
+  <meta name="keywords" content="AI engineer tools 2026, AI engineer workflow orchestration, agent control plane AI engineers, multi-model agent routing, harness engineering Claude Code, AI agent observability, MCP server integration, AI agent usage limit resume, amux for AI engineers">
   <link rel="canonical" href="https://amux.io/for/ai-engineers/">
   <meta property="og:title" content="amux for AI Engineers — Workflow Orchestration, Multi-Model Routing &amp; Harness Engineering (2026)">
-  <meta property="og:description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets, tracking token spend, integrating MCP servers, and running self-healing pipelines overnight.">
+  <meta property="og:description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets, tracking token spend, integrating MCP servers, and running pipelines overnight that resume after usage limits.">
   <meta property="og:url" content="https://amux.io/for/ai-engineers/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="amux for AI Engineers — Workflow Orchestration &amp; Harness Engineering 2026">
-  <meta name="twitter:description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets, tracking token spend, integrating MCP servers, and running self-healing pipelines overnight.">
+  <meta name="twitter:description" content="AI engineers use amux as their agent control plane — orchestrating multi-model fleets, tracking token spend, integrating MCP servers, and running pipelines overnight that resume after usage limits.">
   <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -41,7 +41,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux for AI Engineers — Workflow Orchestration, Multi-Model Routing &amp; Harness Engineering",
-    "description": "AI engineers use amux as their agent control plane — orchestrating multi-model fleets (Claude Code, Codex, Gemini CLI), tracking token spend, integrating MCP servers, and building self-healing pipelines.",
+    "description": "AI engineers use amux as their agent control plane — orchestrating multi-model fleets (Claude Code, Codex, Gemini CLI), tracking token spend, integrating MCP servers, and building pipelines that resume after usage limits.",
     "url": "https://amux.io/for/ai-engineers/",
     "datePublished": "2026-07-05",
     "dateModified": "2026-09-30",
@@ -70,7 +70,7 @@
         "name": "How does amux handle multi-model routing across Claude Code, Codex, and Gemini CLI?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is model-agnostic at the session level. Each tmux session runs whatever CLI you configure it with — claude, codex, or gemini (Gemini CLI). You can run a fleet of mixed-model sessions simultaneously. In the bulk actions panel, you can switch the active model for a group of sessions at once. For cost routing, the pattern is: assign complex implementation tasks to Claude Opus or Codex, high-context batch tasks to Gemini CLI, and fast/cheap tasks (test generation, docstrings) to Claude Haiku. amux tracks token spend per session from JSONL transcripts regardless of which model runs. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging, self-healing, and board integration all work identically."
+          "text": "amux is model-agnostic at the session level. Each tmux session runs whatever CLI you configure it with — claude, codex, or gemini (Gemini CLI). You can run a fleet of mixed-model sessions simultaneously. In the bulk actions panel, you can switch the active model for a group of sessions at once. For cost routing, the pattern is: assign complex implementation tasks to Claude Opus or Codex, high-context batch tasks to Gemini CLI, and fast/cheap tasks (test generation, docstrings) to Claude Haiku. amux tracks token spend per session from JSONL transcripts regardless of which model runs. As of August 2026, Gemini CLI sessions have full parity with Claude lanes — state detection, memory bridging, usage-limit resume, and board integration all work identically."
         }
       },
       {
@@ -83,10 +83,10 @@
       },
       {
         "@type": "Question",
-        "name": "How does amux's self-healing watchdog work at the process level?",
+        "name": "What does amux recover from at the process level?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The amux watchdog monitors each tmux session's last-output timestamp and process status. On context overflow, it sends the /compact command to the session and resumes. On crash (process exit), it restarts the CLI process and replays the last message from the session's JSONL transcript. On stale output (no new output for a configurable interval), it flags the session on the dashboard as potentially stuck. The watchdog runs as a background thread in the amux server process — independent of any network connection or client state."
+          "text": "When a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the reset time. If the amux server process exits, launchd (macOS) or a systemd user service (Linux) restarts it. On macOS a login job brings every non-archived worker back after a reboot, resumed in its own conversation. Claude Code compacts its own context, and amux lets you set the compaction threshold. Stall detection surfaces stalled board work and stuck orchestrators and fires owner alerts. The server does not restart an agent whose CLI process crashed or was killed; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) does that for Claude Code workers."
         }
       },
       {
@@ -143,7 +143,7 @@
     </div>
     <p class="subtitle">The open-source control plane AI engineers deploy once and build their entire agent infrastructure on top of. Updated September 2026.</p>
 
-    <p>AI engineers don't just use agent tools — they build, orchestrate, and operate them. amux is the infrastructure layer: it runs your agent fleet as isolated processes with real supervision, exposes a clean REST API any agent or external system can call, tracks token spend from JSONL transcripts, integrates MCP servers fleet-wide, and self-heals sessions overnight without babysitting. Open source, single Rust binary, zero external dependencies — you can read the entire source, modify it, and deploy it on any Linux or macOS machine in under five minutes.</p>
+    <p>AI engineers don't just use agent tools — they build, orchestrate, and operate them. amux is the infrastructure layer: it runs your agent fleet as isolated processes with real supervision, exposes a clean REST API any agent or external system can call, tracks token spend from JSONL transcripts, integrates MCP servers fleet-wide, and resumes sessions after usage limits without babysitting. Open source, single Rust binary, zero external dependencies — you can read the entire source, modify it, and deploy it on any Linux or macOS machine in under five minutes.</p>
 
     <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>For AI engineers specifically:</strong> amux is not a Python orchestration SDK. Each agent is an independent OS process with its own PID, JSONL transcript, tmux window, and resource envelope. The control plane is a REST API. This gives you real isolation, real process supervision, and real observability — not async tasks inside a shared Python event loop.
@@ -183,8 +183,8 @@
           <td style="padding:0.6rem 0.75rem">JSONL transcript parsing + token tracking endpoint</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
-          <td style="padding:0.6rem 0.75rem">Self-healing overnight pipeline</td>
-          <td style="padding:0.6rem 0.75rem">Watchdog (auto-compact + restart + message replay)</td>
+          <td style="padding:0.6rem 0.75rem">Overnight pipeline</td>
+          <td style="padding:0.6rem 0.75rem">Usage-limit resume, reboot recovery (macOS), stall alerts</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">MCP server fleet integration</td>
@@ -332,14 +332,14 @@ for s in sessions:
 
     <p>For session-specific MCP config (e.g., one agent needs a database MCP that others don't), place a <code>.claude/settings.json</code> in that agent's project directory. Session-level config overrides the shared fleet config.</p>
 
-    <h2>Self-healing pipeline design</h2>
-    <p>A self-healing agent pipeline expects failures and recovers from them automatically. The design pattern:</p>
+    <h2>Pipeline design for unattended runs</h2>
+    <p>An unattended agent pipeline expects failures and makes them visible. The design pattern:</p>
 
     <ol>
       <li><strong>Idempotent tasks:</strong> every task should be safe to retry. Agents should check whether work was already done before starting.</li>
       <li><strong>Board as circuit breaker:</strong> a task that fails stays in <code>doing</code> until you (or a monitor agent) reset it to <code>todo</code>. Don't auto-retry failing tasks without investigation — you'll burn tokens on the same error.</li>
-      <li><strong>Watchdog for process failures:</strong> amux restarts crashed sessions and replays their last message. The agent picks up where it left off.</li>
-      <li><strong>Compaction for context overflow:</strong> amux auto-compacts sessions that hit the context limit. The agent continues; context is summarized and reset.</li>
+      <li><strong>Usage limits and reboots:</strong> amux holds delivery through a usage limit and resumes the agent at the reset; on macOS every worker comes back in its own conversation after a reboot. The server does not restart a crashed agent process, so pair this with the monitor agent below.</li>
+      <li><strong>Compaction for context overflow:</strong> Claude Code compacts its own context, and amux lets you set the compaction threshold. The agent continues with a summarized context.</li>
       <li><strong>Monitor agent pattern:</strong> dedicate one session as a monitor agent. Its job: scan the board every 30 minutes for tasks stuck in <code>doing</code> for more than 2 hours, report them, and optionally reset stale claims.</li>
     </ol>
 
@@ -379,7 +379,7 @@ Every 30 minutes:
     <p>AI engineers deploying amux in production-adjacent environments need to understand the permission model:</p>
 
     <ul>
-      <li><strong>YOLO mode</strong> (<code>--yolo</code>): Claude Code auto-approves all tool calls. Use for trusted, well-scoped tasks in isolated environments. See <a href="/guides/setting-up-yolo-mode/">YOLO mode guide</a>.</li>
+      <li><strong>YOLO mode</strong> (<code>--yolo</code>): Claude Code runs with <code>--dangerously-skip-permissions</code>, so tool calls are not prompted. Use for trusted, well-scoped tasks in isolated environments. See <a href="/guides/setting-up-yolo-mode/">YOLO mode guide</a>.</li>
       <li><strong>Hooks</strong>: Claude Code hooks (PreToolUse, PostToolUse, Notification, Stop) let you intercept every tool call and enforce policies — block dangerous commands, log all file writes, require approval for certain operations. Configured per-session in .claude/settings.json.</li>
       <li><strong>Allowed paths</strong>: Claude Code's <code>allowed_paths</code> restricts which directories an agent can access. Use this to isolate agents to their module boundary.</li>
       <li><strong>amux server TLS</strong>: amux generates a self-signed cert by default. For remote access, either place it behind a reverse proxy with a real cert or use Tailscale for network-level security.</li>
@@ -419,7 +419,7 @@ jobs:
     <ul>
       <li><strong>State detection</strong> — amux correctly identifies when a Gemini CLI session is waiting, thinking, or idle. Before parity, Gemini CLI sessions were invisible to the status loop.</li>
       <li><strong>Memory bridge</strong> — the shared memory system that lets one session's findings persist as context for others now works across Gemini CLI sessions. A Claude Code session can write to amux notes; a Gemini CLI session picks it up.</li>
-      <li><strong>Self-healing</strong> — context overflow detection and auto-restart work the same way for Gemini CLI sessions as for Claude Code.</li>
+      <li><strong>Usage limits</strong> — delivery is held through a usage limit and resumes at the reset for Gemini CLI sessions as for Claude Code.</li>
       <li><strong>Board integration</strong> — Gemini CLI sessions claim tasks, update board status, and trigger peer-review routing identically to Claude sessions.</li>
     </ul>
     <p>This makes Gemini CLI a first-class runtime for AI engineers building mixed-model pipelines. Typical pattern: Claude Code for complex reasoning tasks that benefit from extended thinking, Gemini CLI for high-context batch work (large codebase analysis, bulk refactoring, documentation generation) where Gemini's large context window is the deciding factor.</p>
@@ -487,8 +487,8 @@ jobs:
           <td style="padding:0.6rem 0.75rem">Managed dashboard only</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
-          <td style="padding:0.6rem 0.75rem">Self-healing</td>
-          <td style="padding:0.6rem 0.75rem">Watchdog (crash + context)</td>
+          <td style="padding:0.6rem 0.75rem">Recovery</td>
+          <td style="padding:0.6rem 0.75rem">Usage-limit resume, reboot recovery (macOS), stall alerts</td>
           <td style="padding:0.6rem 0.75rem">Manual / custom retry</td>
           <td style="padding:0.6rem 0.75rem">None documented</td>
           <td style="padding:0.6rem 0.75rem">Managed (opaque)</td>
@@ -531,7 +531,7 @@ jobs:
 
     <div class="cta-box">
       <h3>Deploy your agent control plane</h3>
-      <p>amux is the open-source infrastructure AI engineers deploy once and build their entire agent stack on top of. Single Rust binary, REST API, JSONL observability, self-healing watchdog, MIT + Commons Clause.</p>
+      <p>amux is the open-source infrastructure AI engineers deploy once and build their entire agent stack on top of. Single Rust binary, REST API, JSONL observability, usage-limit resume, MIT + Commons Clause.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -554,7 +554,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <li><a href="/guides/token-spend-tracking/">Token spend tracking</a></li>
       <li><a href="/guides/claude-code-hooks-cookbook/">Claude Code hooks cookbook</a></li>
       <li><a href="/guides/using-mcp-servers/">Using MCP servers with amux</a></li>
-      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/self-healing-configuration/">Recovery and restarts configuration</a></li>
       <li><a href="/guides/ai-agent-security-hardening/">AI agent security hardening</a></li>
       <li><a href="/guides/claude-code-headless/">Claude Code headless mode for CI/CD</a></li>
       <li><a href="/guides/multi-runtime-agent-setup/">Multi-runtime fleet setup (Claude Code + Codex + Gemini CLI)</a></li>

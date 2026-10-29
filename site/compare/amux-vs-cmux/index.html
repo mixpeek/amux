@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs cmux","item":"https://amux.io/compare/amux-vs-cmux/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs cmux: The Complete Comparison for AI Agent Multiplexers","description":"Head-to-head comparison of amux and cmux: two AI agent multiplexers for running parallel coding sessions. Feature matrix, architecture, platform support, workflows.","url":"https://amux.io/compare/amux-vs-cmux/","datePublished":"2026-04-29","dateModified":"2026-10-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and cmux?","acceptedAnswer":{"@type":"Answer","text":"cmux is a native macOS terminal application built with Swift and libghostty that replaces your existing terminal: it is the terminal. amux is one Rust binary with SQLite that serves a web dashboard that runs alongside your existing terminal and manages tmux sessions via a REST API. cmux is a desktop app you look at. amux is a platform you access from any browser, including your phone."}},{"@type":"Question","name":"Does cmux work on Linux?","acceptedAnswer":{"@type":"Answer","text":"No. cmux is macOS-only (Swift + AppKit). Community forks like wmux (Windows) and cmux-linux exist but are not officially supported. amux runs anywhere tmux runs: macOS, Linux, cloud VMs, and WSL on Windows, or hosted on amux Cloud."}},{"@type":"Question","name":"Can I access cmux from my phone?","acceptedAnswer":{"@type":"Answer","text":"Not currently. cmux is a desktop application with no web interface. An iOS companion app is listed on the Founder's Edition roadmap but is not yet available. amux has a full web dashboard that works as a mobile PWA: install it on your phone home screen and monitor agents from anywhere."}},{"@type":"Question","name":"Does cmux have a REST API?","acceptedAnswer":{"@type":"Answer","text":"cmux has a Unix socket API at /tmp/cmux.sock for local programmatic control, but no REST API. This means external tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for sessions, board, notes, browser automation, email, and more: accessible from any device on the network."}},{"@type":"Question","name":"Which supports more AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Both support any terminal-based AI coding agent (Claude Code, Codex, Gemini CLI, Aider, Goose, etc.). cmux provides first-class support via its embedded browser's agent-aware features. amux's self-healing watchdog and token tracking are Claude Code-specific, though other agents run fine as regular sessions."}},{"@type":"Question","name":"Is cmux free?","acceptedAnswer":{"@type":"Answer","text":"cmux's core is GPL-3.0 open source and free. A paid Founder's Edition subscription adds priority support, early access to cmux AI, iOS app sync, cloud VMs, and voice mode. amux is open source under MIT plus the Commons Clause and free to self-host with every feature. The optional paid tier is amux Cloud, your own always-on hosted amux server from $39/month."}},{"@type":"Question","name":"Which is better for overnight agent runs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, detects stuck sessions, and handles rate limits. cmux has no equivalent recovery system: if an agent crashes at 2am, it stays dead. cmux also does not restore live terminal processes across app restarts (layout only)."}},{"@type":"Question","name":"Can I use amux and cmux together?","acceptedAnswer":{"@type":"Answer","text":"Not in a meaningful way. cmux is a standalone terminal application that manages its own panes. amux manages tmux sessions. They operate in separate worlds. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux)."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and cmux?","acceptedAnswer":{"@type":"Answer","text":"cmux is a native macOS terminal application built with Swift and libghostty that replaces your existing terminal: it is the terminal. amux is one Rust binary with SQLite that serves a web dashboard that runs alongside your existing terminal and manages tmux sessions via a REST API. cmux is a desktop app you look at. amux is a platform you access from any browser, including your phone."}},{"@type":"Question","name":"Does cmux work on Linux?","acceptedAnswer":{"@type":"Answer","text":"No. cmux is macOS-only (Swift + AppKit). Community forks like wmux (Windows) and cmux-linux exist but are not officially supported. amux runs anywhere tmux runs: macOS, Linux, cloud VMs, and WSL on Windows, or hosted on amux Cloud."}},{"@type":"Question","name":"Can I access cmux from my phone?","acceptedAnswer":{"@type":"Answer","text":"Not currently. cmux is a desktop application with no web interface. An iOS companion app is listed on the Founder's Edition roadmap but is not yet available. amux has a full web dashboard that works as a mobile PWA: install it on your phone home screen and monitor agents from anywhere."}},{"@type":"Question","name":"Does cmux have a REST API?","acceptedAnswer":{"@type":"Answer","text":"cmux has a Unix socket API at /tmp/cmux.sock for local programmatic control, but no REST API. This means external tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for sessions, board, notes, browser automation, email, and more: accessible from any device on the network."}},{"@type":"Question","name":"Which supports more AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Both support any terminal-based AI coding agent (Claude Code, Codex, Gemini CLI, Aider, Goose, etc.). cmux provides first-class support via its embedded browser's agent-aware features. amux's status detection and token tracking are Claude Code-specific, though other agents run fine as regular sessions."}},{"@type":"Question","name":"Is cmux free?","acceptedAnswer":{"@type":"Answer","text":"cmux's core is GPL-3.0 open source and free. A paid Founder's Edition subscription adds priority support, early access to cmux AI, iOS app sync, cloud VMs, and voice mode. amux is open source under MIT plus the Commons Clause and free to self-host with every feature. The optional paid tier is amux Cloud, your own always-on hosted amux server from $39/month."}},{"@type":"Question","name":"Which is better for overnight agent runs?","acceptedAnswer":{"@type":"Answer","text":"amux. When a usage limit hits, it holds delivery and resumes at the provider's reset; on macOS every worker comes back in its own conversation after a reboot; and stall detection alerts you when a session stops. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. cmux has none of these: no usage-limit handling and no stall alerts, so an agent that crashes at 2am stays dead and unnoticed. cmux also does not restore live terminal processes across app restarts (layout only)."}},{"@type":"Question","name":"Can I use amux and cmux together?","acceptedAnswer":{"@type":"Answer","text":"Not in a meaningful way. cmux is a standalone terminal application that manages its own panes. amux manages tmux sessions. They operate in separate worlds. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux)."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -63,7 +63,7 @@
         <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Workflow Comparison</a></li>
         <li><a href="#dashboards" style="color:var(--dim);text-decoration:none;">Dashboards &amp; Remote Access</a></li>
         <li><a href="#browser" style="color:var(--dim);text-decoration:none;">Browser Automation</a></li>
-        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Self-Healing</a></li>
+        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Recovery</a></li>
         <li><a href="#api" style="color:var(--dim);text-decoration:none;">API &amp; Extensibility</a></li>
         <li><a href="#orchestration" style="color:var(--dim);text-decoration:none;">Agent-to-Agent Orchestration</a></li>
         <li><a href="#licensing" style="color:var(--dim);text-decoration:none;">Licensing &amp; Pricing</a></li>
@@ -77,10 +77,10 @@
     <p>amux and cmux both run parallel AI coding agents, but they are fundamentally different tools built on different architectures for different workflows.</p>
     <ul>
       <li><strong>cmux</strong> is a <em>native macOS terminal application</em> built with Swift and libghostty. It replaces your terminal entirely: GPU-accelerated rendering, vertical tabs, embedded browser, notification rings, and native macOS integration. Desktop-first, visually polished, macOS-only.</li>
-      <li><strong>amux</strong> is an open-source <em>control plane for running an AI engineering team</em> from one dashboard or your phone. Built as a single Rust binary, it runs a local HTTPS server with a web dashboard, REST API, self-healing watchdog, kanban board, mobile PWA, and native iOS app. Orchestrates Claude Code, Codex, Gemini CLI, OpenCode and Ollama sessions side by side. Platform-agnostic, API-first, accessible from any device.</li>
+      <li><strong>amux</strong> is an open-source <em>control plane for running an AI engineering team</em> from one dashboard or your phone. Built as a single Rust binary, it runs a local HTTPS server with a web dashboard, REST API, stall detection, kanban board, mobile PWA, and native iOS app. Orchestrates Claude Code, Codex, Gemini CLI, OpenCode and Ollama sessions side by side. Platform-agnostic, API-first, accessible from any device.</li>
     </ul>
     <p><strong>Pick cmux</strong> if you work on macOS, want a beautiful native terminal experience, and prefer managing agents visually at your desk.<br>
-    <strong>Pick amux</strong> if you need cross-platform support, remote access from your phone, self-healing overnight runs, agent-to-agent orchestration, or a REST API for custom automation.</p>
+    <strong>Pick amux</strong> if you need cross-platform support, remote access from your phone, overnight runs that resume after usage limits, agent-to-agent orchestration, or a REST API for custom automation.</p>
 
     <div class="cta-box" data-cta-loc="cloud-inline-top">
       <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
@@ -114,7 +114,7 @@
     <ul>
       <li>Web dashboard at <code>https://localhost:8824</code> with live session status, token spend, and a send bar</li>
       <li>Native iOS app (<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">App Store</a>) and mobile PWA for monitoring and controlling the fleet from anywhere</li>
-      <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions</li>
+      <li>Recovery: resume after usage limits, bring every worker back after a macOS reboot, detect stalled work and alert you</li>
       <li>Auto-resume dialog: automatically handles the "resume session?" prompt for unattended runs</li>
       <li>Multi-runtime orchestration: runs Claude Code, Codex CLI, and Gemini CLI sessions side-by-side</li>
       <li>SQLite-backed kanban task board with atomic claiming and done-vs-verified quality gates</li>
@@ -177,8 +177,8 @@
           <td style="padding:0.6rem;">Unix socket API (local only)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.6rem;">Self-healing watchdog</td>
-          <td style="padding:0.6rem;color:var(--green);">Auto-restart, auto-compact, stuck detection</td>
+          <td style="padding:0.6rem;">Recovery</td>
+          <td style="padding:0.6rem;color:var(--green);">Usage-limit resume, macOS reboot recovery, stall alerts</td>
           <td style="padding:0.6rem;">No</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
@@ -303,7 +303,7 @@
 │           amux-server-rs (long-running)                   │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
-│  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
+│  │ Web UI   │  │ REST API │  │ Monitor  │  │  Board  │ │
 │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
@@ -367,9 +367,9 @@ amux start --all
 amux serve  # → https://localhost:8824
 
 # Monitor from any device: laptop, phone, tablet
-# Watchdog auto-restarts crashes, auto-compacts context overflows
+# Usage limits pause and resume at reset; stalls raise an alert
 # Check progress from bed at midnight via PWA on your phone</code></pre>
-    <p><strong>Strengths:</strong> Tasks are persisted on the board, accessible from any device, self-healing handles failures overnight, agents can delegate to each other via the shared board.<br>
+    <p><strong>Strengths:</strong> Tasks are persisted on the board, accessible from any device, usage-limit resume and stall alerts cover the night, agents can delegate to each other via the shared board.<br>
     <strong>Limitations:</strong> More setup ceremony. No GPU-rendered terminal UI: the dashboard shows session output, but it's a web view, not a native terminal.</p>
 
     <h3>The takeaway</h3>
@@ -399,24 +399,24 @@ amux serve  # → https://localhost:8824
     <p>amux drives a Playwright browser via its REST API. Start a browser with a saved auth profile, navigate, screenshot, click, type, evaluate JS: all via HTTP calls. The browser runs headless (or headed if you want), and screenshots are viewable from the dashboard.</p>
     <p>This is ideal for automated workflows, CI/CD, and unattended operation. Any agent can drive the browser via the API, and multiple sessions can share the same browser instance. The trade-off: you don't see the browser visually alongside your terminal the way cmux shows it.</p>
 
-    <h2 id="unattended">Unattended Operation &amp; Self-Healing</h2>
+    <h2 id="unattended">Unattended Operation &amp; Recovery</h2>
     <p>Running agents overnight or while you're away from your desk is where these two tools diverge most sharply.</p>
 
     <h3>cmux: no recovery</h3>
     <p>cmux does not monitor agent health or recover from failures. If an agent crashes, the pane shows the error and the agent is dead until you restart it. If the agent hits its context limit, cmux doesn't notice. If cmux itself is quit and reopened, it restores the layout (directories, scrollback, browser URLs) but <em>does not restore live terminal processes</em>: your agents are gone.</p>
     <p>For interactive use at your desk, this is fine: you see the crash immediately and restart it. For overnight runs, a crash at 2am means 6 hours of dead time.</p>
 
-    <h3>amux: self-healing watchdog</h3>
-    <p>amux's watchdog runs continuously and handles common failure modes:</p>
+    <h3>amux: recovery and stall alerts</h3>
+    <p>amux watches every session continuously and handles these cases:</p>
     <ul>
-      <li><strong>Crash:</strong> Process dies &rarr; auto-restart, replay last user message</li>
-      <li><strong>Context overflow:</strong> Detected via output pattern &rarr; trigger <code>/compact</code> and continue</li>
-      <li><strong>Stuck:</strong> No new output for N minutes &rarr; send a nudge or restart</li>
-      <li><strong>Permission prompts:</strong> Auto-respond in YOLO mode</li>
-      <li><strong>Rate limits:</strong> Back off and retry transparently</li>
+      <li><strong>Crash:</strong> Process dies &rarr; the amux server does not restart it today; stall detection and owner alerts tell you. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</li>
+      <li><strong>Context overflow:</strong> Claude Code compacts its own context &rarr; amux lets you set the compaction threshold</li>
+      <li><strong>Stuck:</strong> Stalled board work and stuck orchestrators &rarr; surfaced on the dashboard, owner alert sent</li>
+      <li><strong>Permission prompts:</strong> Skipped when the session runs in YOLO mode</li>
+      <li><strong>Usage limits:</strong> Delivery is held and resumes at the provider's reset time</li>
     </ul>
-    <p>Because amux uses tmux underneath, sessions persist across everything: the amux server restarting, your terminal closing, SSH disconnects, even machine reboots (if tmux is configured to persist). The watchdog picks sessions back up automatically.</p>
-    <p>If you run agents for hours at a time, the self-healing watchdog is the single most important feature differentiator between these two tools.</p>
+    <p>Because amux uses tmux underneath, sessions persist across everything: the amux server restarting, your terminal closing, SSH disconnects, even machine reboots: on macOS a login job brings every non-archived worker back, resumed in its own conversation.</p>
+    <p>If you run agents for hours at a time, this recovery layer is the single most important feature differentiator between these two tools.</p>
 
     <h2 id="api">API &amp; Extensibility</h2>
     <p>Both tools offer programmatic control, but the scope and accessibility differ significantly.</p>
@@ -511,7 +511,7 @@ amux serve  # → https://localhost:8824
       <li>You need cross-platform support: Linux servers, cloud VMs, or WSL</li>
       <li>You want to run agents unattended: overnight, while in meetings, while away from your desk</li>
       <li>You need a web dashboard you can check from any device, including your phone or the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a></li>
-      <li>You want self-healing recovery from crashes, context overflows, and stuck sessions</li>
+      <li>You want agents that resume after usage limits and reboots, with alerts when a session stalls</li>
       <li>You need agent-to-agent orchestration: shared board, delegation, task claiming</li>
       <li>You need a REST API for custom automation, cron jobs, or CI/CD integration</li>
       <li>You orchestrate multiple runtimes: Claude Code, Codex CLI, and Gemini CLI sessions together</li>
@@ -525,7 +525,7 @@ amux serve  # → https://localhost:8824
     <p>cmux and amux are not really competing for the same user. They solve the same high-level problem: "I want to run multiple AI coding agents": but their answers reflect very different philosophies.</p>
     <p><strong>cmux says:</strong> "The terminal is the interface. Make it beautiful, fast, and integrated. If you're running agents, you should be <em>looking</em> at them."</p>
     <p><strong>amux says:</strong> "The platform is the interface. Make it accessible from anywhere, resilient to failures, and programmable. If you're running agents, you should be able to <em>forget about them</em> and check in when it's convenient."</p>
-    <p>If your workflow is "sit at my Mac and manage agents visually," cmux is genuinely excellent at that. If your workflow is "start agents, walk away, check from my phone, and trust that crashes are handled," amux is built for exactly that.</p>
+    <p>If your workflow is "sit at my Mac and manage agents visually," cmux is genuinely excellent at that. If your workflow is "start agents, walk away, check from my phone, and trust that you will hear about failures," amux is built for exactly that.</p>
 
     <h2 id="faq">Frequently Asked Questions</h2>
 
@@ -542,13 +542,13 @@ amux serve  # → https://localhost:8824
     <p>cmux has a Unix socket API at <code>/tmp/cmux.sock</code> for local programmatic control, but no REST API. External tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for everything.</p>
 
     <h3>Which supports more AI coding agents?</h3>
-    <p>Both support any terminal-based AI agent: Claude Code, Codex CLI, Gemini CLI, Aider, Goose, and more. cmux provides first-class support via its embedded browser's agent-aware features. amux's self-healing watchdog and token tracking are Claude Code-specific, though other agents run fine as regular sessions.</p>
+    <p>Both support any terminal-based AI agent: Claude Code, Codex CLI, Gemini CLI, Aider, Goose, and more. cmux provides first-class support via its embedded browser's agent-aware features. amux's status detection and token tracking are Claude Code-specific, though other agents run fine as regular sessions.</p>
 
     <h3>Is cmux free?</h3>
     <p>cmux's core is GPL-3.0 open source and free. A paid Founder's Edition adds priority support, early access to the cmux AI context engine, iOS app sync, cloud VMs, and voice mode. amux is open source under MIT plus the Commons Clause and free to self-host with every feature. The optional paid tier is amux Cloud, your own always-on hosted amux server from $39/month.</p>
 
     <h3>Which is better for overnight agent runs?</h3>
-    <p>amux, by a wide margin. Its self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, detects stuck sessions, and handles rate limits. cmux has no recovery system: if an agent crashes at 2am, it stays dead until you manually restart it.</p>
+    <p>amux. When a usage limit hits, it holds delivery and resumes at the provider's reset; on macOS every worker comes back in its own conversation after a reboot; and stall detection alerts you when a session stops. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. cmux has none of these: no usage-limit handling and no stall alerts, so an agent that crashes at 2am stays dead and unnoticed until you manually restart it.</p>
 
     <h3>Can I use amux and cmux together?</h3>
     <p>Not in a meaningful way. cmux is a standalone terminal app that manages its own panes. amux manages tmux sessions. They operate independently. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux).</p>
@@ -559,7 +559,7 @@ amux serve  # → https://localhost:8824
     <h3>Are there other parallel AI agent tools I should consider?</h3>
     <p>Yes. Look at <a href="/compare/amux-vs-dmux/">dmux</a> (worktree-focused CLI), <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), <a href="/compare/amux-vs-codex/">OpenAI Codex</a> (cloud-based), and the broader <a href="/compare/">comparison index</a>.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run an AI engineering team from one dashboard or your phone. Self-healing, a shared board, and Claude Code, Codex and Gemini CLI side by side. Works on macOS, Linux and cloud VMs.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre><p>Then open <code>https://localhost:8824</code>.</p><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run an AI engineering team from one dashboard or your phone. Usage-limit and reboot recovery, a shared board, and Claude Code, Codex and Gemini CLI side by side. Works on macOS, Linux and cloud VMs.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre><p>Then open <code>https://localhost:8824</code>.</p><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
     <div class="cta-box" data-cta-loc="cloud-inline-end">
       <h3>Or let amux Cloud run it for you</h3>
       <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>

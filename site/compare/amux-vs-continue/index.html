@@ -51,7 +51,7 @@
       {
         "@type": "Question",
         "name": "What is the difference between amux and Continue.dev?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Continue.dev is an open-source AI coding assistant that lives inside your IDE (VS Code, JetBrains). It helps with code completions, inline edits, and chat while you are actively coding. amux is an open-source control plane that runs, monitors, and self-heals dozens of autonomous AI coding agents in parallel — without you being at the keyboard. amux agents run Claude Code, Codex CLI, or Gemini CLI; Continue.dev integrates with any model via its config. They serve different moments: Continue.dev when you are writing code yourself, amux when you want agents to handle the work while you are away." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Continue.dev is an open-source AI coding assistant that lives inside your IDE (VS Code, JetBrains). It helps with code completions, inline edits, and chat while you are actively coding. amux is an open-source control plane that runs and monitors dozens of autonomous AI coding agents in parallel — without you being at the keyboard. amux agents run Claude Code, Codex CLI, or Gemini CLI; Continue.dev integrates with any model via its config. They serve different moments: Continue.dev when you are writing code yourself, amux when you want agents to handle the work while you are away." }
       },
       {
         "@type": "Question",
@@ -66,7 +66,7 @@
       {
         "@type": "Question",
         "name": "Does Continue.dev run agents in the background?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Continue.dev focuses on interactive, in-IDE assistance. It does not run autonomous agents overnight or manage fleets of parallel sessions. amux is built specifically for that use case: unattended, parallel, self-healing agent runs you can monitor from your phone." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Continue.dev focuses on interactive, in-IDE assistance. It does not run autonomous agents overnight or manage fleets of parallel sessions. amux is built specifically for that use case: unattended, parallel agent runs that resume after usage limits, which you can monitor from your phone." }
       },
       {
         "@type": "Question",
@@ -113,7 +113,7 @@
     <p class="subtitle">Continue.dev is an open-source AI coding assistant inside your IDE. amux is an open-source control plane for running a team of AI agents overnight. They are complementary tools, not direct competitors. Here is what each does well.</p>
     <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated September 2026</p>
 
-    <p><strong>Short answer:</strong> If you are writing code yourself and want an AI assistant in your IDE, Continue.dev is excellent and free. If you want AI agents to work on your backlog while you are away — running overnight, in parallel, self-healing when they crash — that is amux's job. Many teams use both: Continue.dev for interactive coding, amux for background agent work.</p>
+    <p><strong>Short answer:</strong> If you are writing code yourself and want an AI assistant in your IDE, Continue.dev is excellent and free. If you want AI agents to work on your backlog while you are away — running overnight, in parallel, resuming after usage limits — that is amux's job. Many teams use both: Continue.dev for interactive coding, amux for background agent work.</p>
 
     <h2>What is Continue.dev?</h2>
     <p><a href="https://continue.dev" target="_blank" rel="noopener">Continue.dev</a> is an open-source AI coding assistant that integrates with VS Code and JetBrains. It provides tab completions, inline code editing via a chat interface, and the ability to use any AI model through a flexible provider config file (<code>config.json</code>). Continue.dev is built for developers who are actively coding and want AI assistance inline with their workflow.</p>
@@ -128,13 +128,13 @@
     </ul>
 
     <h2>What is amux?</h2>
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit and reboot recovery, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
     <p>Key amux capabilities:</p>
     <ul>
       <li>Run 10–100 parallel AI coding agent sessions simultaneously</li>
       <li>Dashboard accessible from any browser, including your phone (PWA + iOS app)</li>
       <li>Built-in kanban board for task assignment, tracking, and cross-agent handoffs</li>
-      <li>Self-healing: auto-restarts crashed sessions, auto-compacts context, replays last message after a rate-limit reset</li>
+      <li>Recovery: delivery held at usage limits and resumed at the provider's reset; every worker back after a macOS reboot; stall alerts</li>
       <li>Scheduler for recurring tasks and overnight runs</li>
       <li>Built-in CRM, Gmail email, and browser automation (so agents can log in to SaaS tools on your behalf)</li>
       <li>Works with Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google)</li>
@@ -155,7 +155,7 @@
         <tr><td><strong>Parallel sessions</strong></td><td>One (your active IDE session)</td><td>10–100+ simultaneous agent sessions</td></tr>
         <tr><td><strong>Model support</strong></td><td>Anthropic, OpenAI, Gemini, Ollama, Mistral, Cohere, and more via config</td><td>Claude Code, Codex CLI, Gemini CLI (full autonomous runtimes)</td></tr>
         <tr><td><strong>Background / overnight runs</strong></td><td>No</td><td>Yes — core use case</td></tr>
-        <tr><td><strong>Self-healing</strong></td><td>No</td><td>Yes — watchdog restarts crashed/stalled sessions</td></tr>
+        <tr><td><strong>Recovery</strong></td><td>No</td><td>Yes: resumes after usage limits, workers return after a macOS reboot, stall alerts</td></tr>
         <tr><td><strong>Mobile monitoring</strong></td><td>No</td><td>Yes — PWA + native iOS app</td></tr>
         <tr><td><strong>Task tracking</strong></td><td>No built-in</td><td>Kanban board (create, assign, and track tasks across all agents)</td></tr>
         <tr><td><strong>Scheduler</strong></td><td>No</td><td>Yes — cron-style scheduler for recurring agent tasks</td></tr>
@@ -182,7 +182,7 @@
       <li>You need to run 5, 10, or 50 tasks in parallel and cannot approve prompts for each one</li>
       <li>You want to monitor your agents from your phone without opening a laptop</li>
       <li>Your agents need task coordination, a shared kanban board, and cross-agent handoffs</li>
-      <li>You want self-healing — if a session crashes or hits a rate limit, it restarts automatically</li>
+      <li>You want recovery: if a session hits a usage limit it resumes at the provider's reset, and if it stalls you get an alert</li>
     </ul>
 
     <h2>Using amux and Continue.dev together</h2>
@@ -190,7 +190,7 @@
     <ol>
       <li>You use Continue.dev in VS Code while writing a feature interactively</li>
       <li>When you have a backlog of tasks (refactors, test generation, bug fixes), you queue them in amux</li>
-      <li>amux runs the tasks overnight — multiple agents in parallel, self-healing if anything crashes</li>
+      <li>amux runs the tasks overnight — multiple agents in parallel, resuming after usage limits and alerting you on stalls</li>
       <li>You wake up, open the amux iOS app to see which tasks are done, and review the branches</li>
       <li>Continue.dev helps you review and refine what the agents produced, inline in your IDE</li>
     </ol>
@@ -219,7 +219,7 @@
     <h3>Can I run Continue.dev without an IDE?</h3>
     <p>No. Continue.dev is an IDE extension for VS Code and JetBrains. amux is terminal-native and runs in any browser or on your phone, with no IDE required.</p>
 
-    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Self-healing, single Rust binary, zero external dependencies.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="/guides/claude-code-tutorial/" style="margin-left:0.5rem">Claude Code tutorial</a></div>
+    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Usage-limit and reboot recovery, single Rust binary, zero external dependencies.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="/guides/claude-code-tutorial/" style="margin-left:0.5rem">Claude Code tutorial</a></div>
 
     <div style="margin-top:2rem"><a href="/compare/">&larr; All comparisons</a></div>
   </main>

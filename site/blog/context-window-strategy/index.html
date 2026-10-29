@@ -51,7 +51,7 @@
     <h1>Context Window Strategy for Long-Running Agents</h1>
 <p class="subtitle">Context exhaustion is the #1 failure mode for long-running agents. Here's how to design around it.</p>
 <h2>The Context Problem</h2>
-<p>Claude Code has a finite context window. In a long-running session — hours of coding, many files read, many outputs generated — the context window fills up. When it does, either the agent stops working or (with amux) it auto-compacts. Auto-compact helps, but poorly structured sessions lose important context during compaction and produce lower-quality output afterward.</p>
+<p>Claude Code has a finite context window. In a long-running session — hours of coding, many files read, many outputs generated — the context window fills up. When it does, either the agent stops working or Claude Code compacts its own context (amux lets you set the threshold). Compaction helps, but poorly structured sessions lose important context during compaction and produce lower-quality output afterward.</p>
 <p>The solution is to design tasks and sessions so that context usage is efficient from the start — not treating compaction as a fix for poor session hygiene.</p>
 <h2>Task Scoping Rules</h2>
 <ul>
@@ -60,13 +60,8 @@
 <li><strong>Set scope boundaries:</strong> Tell the agent what to ignore. "Don't read test files unless needed for understanding the interface" prevents unnecessary context loading.</li>
 <li><strong>Short task horizons:</strong> Tasks that take 30 minutes are better than tasks that take 3 hours. Short tasks complete within one healthy context window. Long tasks risk degradation.</li>
 </ul>
-<h2>amux's Auto-Compact</h2>
-<p>When amux detects context exhaustion, it:</p>
-<ol>
-<li>Sends <code>/compact</code> to summarize the conversation</li>
-<li>Monitors for the summary confirmation</li>
-<li>Resumes the agent</li>
-</ol>
+<h2>Compaction in amux</h2>
+<p>Claude Code compacts its own context when the window fills: it summarizes the conversation and continues. amux lets you set the threshold at which that happens, and stall detection alerts you if a session stops making progress afterwards.</p>
 <p>This keeps agents running, but compacted context loses detail. After a compaction, agents are working from a summary, not the full conversation. Quality can drop. The goal is to design tasks that complete before compaction is needed.</p>
 <h2>Context Checkpointing Patterns</h2>
 <p>For genuinely long tasks that can't be broken up:</p>

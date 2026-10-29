@@ -22,8 +22,8 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Running AI Coding Agents Overnight","item":"https://amux.io/guides/ai-coding-agents-overnight/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Running AI Coding Agents Overnight","description":"Step-by-step guide to running AI coding agents unattended while you sleep. Task queues, guardrails, monitoring, and morning review workflows.","url":"https://amux.io/guides/ai-coding-agents-overnight/","datePublished":"2026-04-03","dateModified":"2026-09-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run AI Coding Agents Overnight","description":"Set up a fleet of AI coding agents that work while you sleep, with guardrails and monitoring.","step":[{"@type":"HowToStep","name":"Decompose tasks","text":"Break work into atomic, verifiable tasks that agents can complete independently."},{"@type":"HowToStep","name":"Configure your fleet","text":"Register sessions, assign directories, and set model preferences per task complexity."},{"@type":"HowToStep","name":"Set guardrails","text":"Configure CLAUDE.md rules, git hooks, file permissions, and cost caps."},{"@type":"HowToStep","name":"Set up owner alerts","text":"Configure amux to send push notifications and email when any agent needs attention. Use amux alert or the built-in owner-alert channel."},{"@type":"HowToStep","name":"Launch and monitor","text":"Start all agents, verify initial progress, then let the watchdog handle failures."},{"@type":"HowToStep","name":"Morning review","text":"Triage overnight output, review PRs, and merge completed work."}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is it safe to run AI coding agents overnight on production codebases?","acceptedAnswer":{"@type":"Answer","text":"Yes, with proper guardrails. Use separate git branches per agent, restrict file access via CLAUDE.md, enforce pre-commit hooks with linting and tests, and set cost caps. Never give overnight agents access to deployment pipelines, auth systems, or payment code."}},{"@type":"Question","name":"How many AI coding agents can I run overnight?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-7 agents comfortably (constrained by RAM and API rate limits). On a cloud VM (4+ cores, 16GB RAM): 20-50 agents. The bottleneck is usually API rate limits, not local compute. Stagger agent starts by 10-30 seconds to avoid hitting limits simultaneously."}},{"@type":"Question","name":"What tasks should I NOT give to overnight AI agents?","acceptedAnswer":{"@type":"Answer","text":"Avoid tasks that touch authentication, payment processing, infrastructure/deployment, database migrations on production, or anything requiring human judgment about business logic. Also avoid open-ended tasks like 'refactor the codebase' — agents need specific, bounded scope to work unattended."}},{"@type":"Question","name":"How much does it cost to run AI agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code on the Max plan ($200/month), you get unlimited usage — running 10 agents for 8 hours costs the same flat rate. On API pricing, expect $5-15 per agent-hour for Opus, $0.50-2 per agent-hour for Sonnet. A typical 8-hour overnight run with 10 agents on mixed models costs $50-100 on API pricing."}},{"@type":"Question","name":"What happens if an agent gets stuck or crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"With amux's self-healing watchdog, crashed agents are automatically restarted and their last message is replayed. Context overflow triggers auto-compaction. Stuck agents (no output for a configurable timeout) are detected and restarted. You can also set hard time limits per agent."}},{"@type":"Question","name":"How do I get notified when an overnight AI agent needs attention?","acceptedAnswer":{"@type":"Answer","text":"amux has a built-in owner-alert channel that sends push notifications and email when agents page you. Agents call amux alert from their CLAUDE.md instructions for situations that warrant waking you up: a blocker, an unexpected error, or a finished queue. Alerts go to your phone via push and email simultaneously. The health invariant alert.channel_can_deliver verifies delivery works before your next overnight run."}},{"@type":"Question","name":"How do I stop AI agents from pausing overnight to ask for permission?","acceptedAnswer":{"@type":"Answer","text":"Use standing approvals (AMUX-5270). You pre-authorize specific action categories — filesystem writes, git commits, test runners, API calls — before the overnight run starts. Agents proceed without interruption. Each category has a per-day cap and an optional dollar limit, so you retain meaningful control. When a cap is hit, the agent sends you an alert instead of silently stalling."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run AI Coding Agents Overnight","description":"Set up a fleet of AI coding agents that work while you sleep, with guardrails and monitoring.","step":[{"@type":"HowToStep","name":"Decompose tasks","text":"Break work into atomic, verifiable tasks that agents can complete independently."},{"@type":"HowToStep","name":"Configure your fleet","text":"Register sessions, assign directories, and set model preferences per task complexity."},{"@type":"HowToStep","name":"Set guardrails","text":"Configure CLAUDE.md rules, git hooks, file permissions, and cost caps."},{"@type":"HowToStep","name":"Set up owner alerts","text":"Configure amux to send push notifications and email when any agent needs attention. Use amux alert or the built-in owner-alert channel."},{"@type":"HowToStep","name":"Launch and monitor","text":"Start all agents, verify initial progress, then let stall detection and owner alerts flag anything that stops."},{"@type":"HowToStep","name":"Morning review","text":"Triage overnight output, review PRs, and merge completed work."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is it safe to run AI coding agents overnight on production codebases?","acceptedAnswer":{"@type":"Answer","text":"Yes, with proper guardrails. Use separate git branches per agent, restrict file access via CLAUDE.md, enforce pre-commit hooks with linting and tests, and set cost caps. Never give overnight agents access to deployment pipelines, auth systems, or payment code."}},{"@type":"Question","name":"How many AI coding agents can I run overnight?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-7 agents comfortably (constrained by RAM and API rate limits). On a cloud VM (4+ cores, 16GB RAM): 20-50 agents. The bottleneck is usually API rate limits, not local compute. Stagger agent starts by 10-30 seconds to avoid hitting limits simultaneously."}},{"@type":"Question","name":"What tasks should I NOT give to overnight AI agents?","acceptedAnswer":{"@type":"Answer","text":"Avoid tasks that touch authentication, payment processing, infrastructure/deployment, database migrations on production, or anything requiring human judgment about business logic. Also avoid open-ended tasks like 'refactor the codebase' — agents need specific, bounded scope to work unattended."}},{"@type":"Question","name":"How much does it cost to run AI agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code on the Max plan ($200/month), you get unlimited usage — running 10 agents for 8 hours costs the same flat rate. On API pricing, expect $5-15 per agent-hour for Opus, $0.50-2 per agent-hour for Sonnet. A typical 8-hour overnight run with 10 agents on mixed models costs $50-100 on API pricing."}},{"@type":"Question","name":"What happens if an agent gets stuck or crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"amux holds delivery when a usage limit hits and resumes the agent at the provider's reset. Restarting a crashed agent process is not built into the amux server today; on macOS an optional script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does do is make the stop visible: stall detection flags board work that stops moving and stuck orchestrators, and owner alerts reach your phone. Claude Code compacts its own context, and amux lets you set the compaction threshold."}},{"@type":"Question","name":"How do I get notified when an overnight AI agent needs attention?","acceptedAnswer":{"@type":"Answer","text":"amux has a built-in owner-alert channel that sends push notifications and email when agents page you. Agents call amux alert from their CLAUDE.md instructions for situations that warrant waking you up: a blocker, an unexpected error, or a finished queue. Alerts go to your phone via push and email simultaneously. The health invariant alert.channel_can_deliver verifies delivery works before your next overnight run."}},{"@type":"Question","name":"How do I stop AI agents from pausing overnight to ask for permission?","acceptedAnswer":{"@type":"Answer","text":"Use standing approvals (AMUX-5270). You pre-authorize specific action categories — filesystem writes, git commits, test runners, API calls — before the overnight run starts. Agents proceed without interruption. Each category has a per-day cap and an optional dollar limit, so you retain meaningful control. When a cap is hit, the agent sends you an alert instead of silently stalling."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -79,7 +79,7 @@
     <h2 id="promise">The Overnight Agent Promise (and Reality)</h2>
     <p>The dream is simple: queue 20 tasks before bed, and wake up to 20 reviewed pull requests. No more choosing between sleep and shipping.</p>
     <p>A year ago, this was fantasy. AI coding agents would crash from context overflow at 3am, silently loop on the wrong approach for hours, or produce code that looked right but broke in subtle ways. Running agents unattended was a gamble.</p>
-    <p>That has changed. Modern AI models (Claude Opus 4, Sonnet 4) are dramatically more reliable at long-running tasks. And tooling has caught up -- self-healing watchdogs, atomic task boards, and fleet monitoring mean you can set real guardrails instead of crossing your fingers.</p>
+    <p>That has changed. Modern AI models (Claude Opus 4, Sonnet 4) are dramatically more reliable at long-running tasks. And tooling has caught up -- usage-limit resume, stall alerts, atomic task boards, and fleet monitoring mean you can set real guardrails instead of crossing your fingers.</p>
     <p>This guide is the missing manual. Not the pitch -- the playbook. You will learn exactly how to decompose work, configure agents, set safety boundaries, and build a morning review workflow that makes overnight coding practical and safe.</p>
     <p><strong>Who this is for:</strong> Developers who are already using AI coding agents (Claude Code, Codex CLI, Gemini CLI) and want to run them unattended at scale. If you have never used an AI coding agent, start with <a href="/guides/getting-started/">Getting Started</a> first.</p>
 
@@ -99,18 +99,18 @@
  │ TASK-1   │───────▶│  Agent 1     │─────────▶│ branch-1 │─────────▶│ PR 1 │
  │ TASK-2   │───────▶│  Agent 2     │─────────▶│ branch-2 │─────────▶│ PR 2 │
  │ TASK-3   │───────▶│  Agent 3     │─────────▶│ branch-3 │─────────▶│ PR 3 │
- │  ...     │        │  Watchdog    │          │  ...     │          │ ...  │
+ │  ...     │        │  Monitor     │          │  ...     │          │ ...  │
  └─────────┘        └──────────────┘          └──────────┘          └──────┘
    SQLite              tmux + amux              git worktrees          GitHub</code></pre>
     <p><strong>Task Board</strong> -- a shared queue (amux's SQLite-backed board, GitHub Issues, or Linear) where each task is atomic and independently verifiable.</p>
-    <p><strong>Agent Orchestrator</strong> -- manages agent lifecycle, restarts crashed sessions, and prevents duplicate work. This is where amux lives -- it wraps tmux with a watchdog, REST API, and web dashboard.</p>
+    <p><strong>Agent Orchestrator</strong> -- manages agent lifecycle, flags stalled sessions, and prevents duplicate work. This is where amux lives -- it wraps tmux with stall detection, a REST API, and a web dashboard.</p>
     <p><strong>Isolated Worktrees</strong> -- each agent works on its own git branch (ideally a <code>git worktree</code>) so agents never conflict with each other.</p>
     <p><strong>Output</strong> -- each agent produces a PR, a commit, or a well-defined artifact that you review in the morning.</p>
 
     <h3>Why tmux alone is not enough</h3>
     <p>You can open 10 tmux panes and start 10 Claude Code sessions. But without an orchestration layer:</p>
     <ul>
-      <li>If one crashes at 2am, nobody restarts it</li>
+      <li>If one stops at 2am, nobody notices until morning</li>
       <li>Two agents might claim the same task</li>
       <li>You have no idea which agents are still working vs. stuck</li>
       <li>There is no spending visibility until you check billing the next day</li>
@@ -421,14 +421,15 @@ amux peek ts-migration
 # Or open the dashboard on your phone
 amux serve  # https://localhost:8824 (or your Tailscale address)</code></pre>
 
-    <h3>The watchdog</h3>
-    <p>amux's self-healing watchdog runs automatically and handles the three most common overnight failures:</p>
+    <h3>Recovery</h3>
+    <p>amux handles the overnight failures it can, and flags the rest:</p>
     <ol>
-      <li><strong>Context overflow:</strong> Watchdog detects context nearing the limit and triggers <code>/compact</code> automatically</li>
-      <li><strong>Crash/corruption:</strong> Detects thinking-block corruption, restarts the session, and replays the last message</li>
-      <li><strong>Stuck agent:</strong> Detects tool-approval prompts (the "Esc to cancel" marker) and auto-responds, keeping the agent moving</li>
+      <li><strong>Usage limits:</strong> when a provider limit hits, amux holds delivery and resumes the agent at the provider's reset (<code>AMUX_RATE_LIMIT_ACTION=wait</code>)</li>
+      <li><strong>Context:</strong> Claude Code compacts its own context; amux lets you set the compaction threshold</li>
+      <li><strong>Stalls:</strong> stall detection flags board work that stops moving and stuck orchestrators, and an owner alert fires</li>
+      <li><strong>Reboots:</strong> on macOS a login job brings every non-archived worker back, resumed in its own conversation</li>
     </ol>
-    <p>No configuration needed -- the watchdog is always on. It is what makes overnight runs practical instead of theoretical.</p>
+    <p>Restarting a crashed agent process is not built into the amux server. On macOS, the optional <code>scripts/tmux-watchdog.sh</code> (not installed by default) restarts crashed Claude Code workers. To keep approval prompts from stopping an agent, launch it with <code>--yolo</code> or use standing approvals.</p>
 
     <h3>Mobile monitoring</h3>
     <p>Install the amux PWA on your phone. If you wake up at 3am and want to check status without opening your laptop:</p>
@@ -463,7 +464,7 @@ amux alert "All tasks done -- ready for more" "queue empty"</code></pre>
     <ul>
       <li><span style="color:var(--green);">Green (idle)</span> -- agent finished and is waiting. This is the ideal state.</li>
       <li><span style="color:var(--amber);">Amber (working)</span> -- still running. Check if it is making progress or stuck.</li>
-      <li><span style="color:var(--red);">Red (stopped)</span> -- crashed and the watchdog could not recover. Review logs.</li>
+      <li><span style="color:var(--red);">Red (stopped)</span> -- the agent stopped or crashed. Review logs and restart it.</li>
     </ul>
 
     <h3>Step 2: Quick-accept simple tasks (10 minutes)</h3>
@@ -600,7 +601,7 @@ amux board add "Convert src/utils/*.js to TypeScript with strict types"</code></
     <h3>Context window exhaustion</h3>
     <p><strong>Symptom:</strong> Agent slows down, loses track of earlier work, or crashes with a context error.</p>
     <p><strong>Cause:</strong> Long-running task filled the context window.</p>
-    <p><strong>Fix:</strong> amux's watchdog auto-compacts before this happens. For very long tasks, break them into smaller sub-tasks. Tell the agent to commit frequently: "Commit after each completed function."</p>
+    <p><strong>Fix:</strong> Claude Code compacts its own context; in amux you can lower the compaction threshold so it compacts earlier. For very long tasks, break them into smaller sub-tasks. Tell the agent to commit frequently: "Commit after each completed function."</p>
 
     <h3>Rate limit cascades</h3>
     <p><strong>Symptom:</strong> All agents stop responding simultaneously.</p>
@@ -660,17 +661,17 @@ amux cron add --schedule "0 23 * * *" \
     <p>With Claude Code on the Max plan ($200/month), you get unlimited usage -- running 10 agents for 8 hours costs the same flat rate. On API pricing, expect $0.50-2 per agent-hour for Sonnet, $5-15 per agent-hour for Opus. A typical 8-hour overnight run with 10 agents on mixed models costs $50-100 on API pricing.</p>
 
     <h3>What happens if an agent gets stuck or crashes overnight?</h3>
-    <p>With amux's self-healing watchdog, crashed agents are automatically restarted and their last message is replayed. Context overflow triggers auto-compaction. Stuck agents (no output for a configurable timeout) are detected and restarted. You can also set hard time limits per agent.</p>
+    <p>amux holds delivery when a usage limit hits and resumes the agent at the provider's reset. Restarting a crashed agent process is not built into the amux server today; on macOS an optional script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does do is make the stop visible: stall detection flags board work that stops moving and stuck orchestrators, and owner alerts reach your phone. Claude Code compacts its own context, and amux lets you set the compaction threshold.</p>
 
     <h3>Can I use this with agents other than Claude Code?</h3>
-    <p>amux works with any CLI agent that runs in a terminal: Claude Code, Codex CLI, Gemini CLI, Aider, and others. The orchestration layer (task board, watchdog, dashboard) is agent-agnostic.</p>
+    <p>amux works with any CLI agent that runs in a terminal: Claude Code, Codex CLI, Gemini CLI, Aider, and others. The orchestration layer (task board, stall detection, dashboard) is agent-agnostic.</p>
 
     <h3>How do I stop AI agents from pausing overnight to ask for permission?</h3>
     <p>Use <a href="/guides/ai-agent-standing-approvals/">standing approvals</a> (AMUX-5270). Before the run, you pre-authorize the action categories you trust -- filesystem writes, git commits, test runners, API calls. Agents proceed without prompting you. Each category has a per-day cap and an optional dollar limit, so a cap hit sends you an alert instead of a prompt at 3am.</p>
 
     <div class="cta-box">
       <h3>Start running agents overnight</h3>
-      <p>amux is the orchestration layer that makes unattended AI coding practical. Self-healing watchdog, atomic task board, mobile dashboard, and fleet monitoring.</p>
+      <p>amux is the orchestration layer that makes unattended AI coding practical. Usage-limit resume, atomic task board, mobile dashboard, and fleet monitoring.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

@@ -7,7 +7,7 @@
   <title>Every way Claude Code crashes (and what we learned fixing them) — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="After running 30+ Claude Code agents continuously for months, we catalogued every failure mode. Most are deterministic, not random — and all are recoverable.">
-  <meta name="keywords" content="Claude Code, crash, failure modes, context compaction, redacted thinking, self-healing, reliability">
+  <meta name="keywords" content="Claude Code, crash, failure modes, context compaction, redacted thinking, agent recovery, reliability">
   <link rel="canonical" href="https://amux.io/blog/every-way-claude-code-crashes/">
   <meta property="og:title" content="Every way Claude Code crashes (and what we learned fixing them)">
   <meta property="og:description" content="After running 30+ Claude Code agents continuously for months, we catalogued every failure mode. Most are deterministic, not random — and all are recoverable.">
@@ -50,8 +50,9 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>Every way Claude Code crashes</span></div>
     <h1>Every way Claude Code crashes (and what we learned fixing them)</h1>
     <p class="subtitle">After running 30+ agents continuously for months, we found that Claude Code sessions don&rsquo;t die randomly. They fail in specific, deterministic patterns &mdash; and every one is recoverable if you catch it in time.</p>
+    <p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
 
-    <p>We built <a href="https://github.com/mixpeek/amux">amux</a> to run dozens of Claude Code agents in parallel. The self-healing system checks every session every 60 seconds, parsing raw tmux output to detect state. Over months of running agents 24/7 across real codebases, we catalogued every failure mode we hit. Here&rsquo;s the full list, what causes each one, and what actually fixes it.</p>
+    <p>We built <a href="https://github.com/mixpeek/amux">amux</a> to run dozens of Claude Code agents in parallel. Its original Python watchdog checked every session every 60 seconds, parsing raw tmux output to detect state. Over months of running agents 24/7 across real codebases, we catalogued every failure mode we hit. Here&rsquo;s the full list, what causes each one, and what actually fixes it.</p>
 
     <h2>1. The thinking block corruption</h2>
     <p>This is the worst one. The session emits <code>redacted_thinking &hellip; cannot be modified</code> in the terminal and becomes completely unrecoverable. No amount of retrying or continuing will fix it &mdash; the conversation state is corrupted.</p>
@@ -105,8 +106,8 @@
     <p>If you&rsquo;re running Claude Code agents at scale, the most important thing you can do is instrument your sessions. Parse the output, detect the state, and react programmatically. The failure modes are finite and the fixes are mechanical.</p>
 
     <div class="cta-box">
-      <h3>amux handles all of this automatically</h3>
-      <p>Open-source self-healing multiplexer for Claude Code. Monitors every session every 60 seconds, handles all six failure modes, runs on your machine. One Rust binary.</p>
+      <h3>Run your Claude Code fleet with amux</h3>
+      <p>Open-source multiplexer for Claude Code. Resumes agents after usage limits, brings every worker back in its own conversation after a macOS reboot, and alerts you when board work stalls. Runs on your machine. One Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

@@ -69,7 +69,7 @@
     </div>
 
     <h2 id="what">What are amux and Open Session?</h2>
-    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and restarts them after crashes and usage limits. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
+    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and resumes them after usage limits and, on macOS, after a reboot. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
     <p><strong><a href="https://www.opensession.com/" target="_blank" rel="noopener">Open Session</a></strong> describes itself as "your team's control room for coding agents" and "the open-source workspace for teams running coding agents together on their own infrastructure." The site lists Tella as the organization behind it. Its <a href="https://github.com/tellahq/opensession" target="_blank" rel="noopener">README</a> calls it a self-hosted agent-infrastructure server: a web UI plus Slack, Linear, Plain and GitHub agents, driving coding sessions through the Pi engine in git worktrees on your own box or in isolated sandboxes, with support for multiple Codex and Claude subscriptions and model APIs. It is MIT licensed. On October 29, 2026 the repository had 404 stars; it was created on June 8, 2026 and last pushed on October 29, 2026.</p>
 
     <h2 id="table">amux vs Open Session comparison table</h2>
@@ -105,7 +105,7 @@
     <p>amux installs with <code>curl -fsSL https://amux.io/install.sh | bash</code> on macOS or Linux and needs tmux 3.2+ and one agent CLI. Callers other than localhost need a bearer token. For Tailscale, run <code>tailscale cert</code> for the server's ts.net name and restart amux: it then serves a browser-trusted certificate at <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code>, which you add as a connection in the iOS or Mac app. Two optional switches let your own devices, or invited tailnet members, sign in by Tailscale identity. amux Cloud servers can join your tailnet from the dashboard. Neither needs public ports.</p>
 
     <h2 id="team">Running a team of agents</h2>
-    <p>Open Session is shaped around team intake and review: requests arrive from Slack, Linear, Plain or GitHub, each session gets a git worktree or an isolated sandbox, and the team reviews diffs and pull requests together. amux is shaped around a standing fleet: agents claim tasks from a shared board, message each other, run on schedules and loops, and recover on their own from crashes and usage limits, while you steer and approve from your phone.</p>
+    <p>Open Session is shaped around team intake and review: requests arrive from Slack, Linear, Plain or GitHub, each session gets a git worktree or an isolated sandbox, and the team reviews diffs and pull requests together. amux is shaped around a standing fleet: agents claim tasks from a shared board, message each other, run on schedules and loops, and resume on their own after usage limits, while you steer and approve from your phone.</p>
 
     <h2 id="choose">When should you choose amux or Open Session?</h2>
     <h3 id="other">Choose Open Session if</h3>
@@ -119,7 +119,7 @@
     <ul>
       <li>You want a published iPhone and iPad app and a Mac app that connect to your own server.</li>
       <li>You run Gemini CLI, OpenCode or Ollama-backed local models next to Claude Code and Codex.</li>
-      <li>You want many agents claiming work from one shared board, with messages, schedules and self-healing restarts.</li>
+      <li>You want many agents claiming work from one shared board, with messages, schedules and automatic resume after usage limits.</li>
       <li>You want an always-on server without running one: <a href="/start/?source=amux-vs-open-session">amux Cloud</a> from $39/mo.</li>
     </ul>
     <p>Related: <a href="/compare/amux-vs-paseo/">amux vs Paseo</a>, <a href="/compare/amux-vs-conductor/">amux vs Conductor</a>, <a href="/guides/best-phone-apps-for-coding-agents-2026/">best phone apps to control coding agents</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a></p>

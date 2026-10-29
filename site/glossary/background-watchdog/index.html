@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Background Watchdog — amux</title>
+  <title>Background Watchdog: Definition and What amux Has | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Background Watchdog: A monitoring process that detects and recovers from AI agent failures automatically.">
+  <meta name="description" content="Background Watchdog: a process that runs alongside your agents, watches for failures and acts on them. amux&#x27;s server restarts are handled by launchd or systemd, and an optional macOS script restarts crashed Claude Code workers.">
   <meta name="keywords" content="background watchdog, AI agent glossary, amux, claude code">
   <link rel="canonical" href="https://amux.io/glossary/background-watchdog/">
-  <meta property="og:title" content="Background Watchdog — amux">
-  <meta property="og:description" content="Background Watchdog: A monitoring process that detects and recovers from AI agent failures automatically.">
+  <meta property="og:title" content="Background Watchdog: Definition and What amux Has | amux">
+  <meta property="og:description" content="Background Watchdog: a process that runs alongside your agents, watches for failures and acts on them. amux&#x27;s server restarts are handled by launchd or systemd, and an optional macOS script restarts crashed Claude Code workers.">
   <meta property="og:url" content="https://amux.io/glossary/background-watchdog/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"Background Watchdog","item":"https://amux.io/glossary/background-watchdog/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Background Watchdog","description":"Background Watchdog: A monitoring process that detects and recovers from AI agent failures automatically.","url":"https://amux.io/glossary/background-watchdog/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "DefinedTerm", "name": "Background Watchdog", "description": "Background Watchdog: a process that runs alongside your agents, watches for failures and acts on them. amux's server restarts are handled by launchd or systemd, and an optional macOS script restarts crashed Claude Code workers.", "url": "https://amux.io/glossary/background-watchdog/", "inDefinedTermSet": {"@type": "DefinedTermSet", "name": "amux Glossary", "url": "https://amux.io/glossary/"}}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -48,7 +48,7 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>Background Watchdog</span></div>
-    <h1>Background Watchdog</h1><p class="subtitle">A monitoring process that detects and recovers from AI agent failures automatically.</p><p>amux's watchdog runs on every status check cycle. It monitors terminal output for known failure patterns and takes corrective action — compacting context, restarting sessions, or auto-responding to stuck prompts.</p><p><a href="/glossary/">← Back to glossary</a></p>
+    <h1>Background Watchdog</h1><p class="subtitle">A process that runs alongside your agents, watches for failures, and acts on them.</p><p>A watchdog checks something on a timer (is the process alive, is output still moving) and takes an action when the check fails: restart, alert, or both. Watchdogs differ a lot in what they watch and what they are allowed to do.</p><h2>What amux has</h2><ul><li><strong>Server supervision:</strong> the installer runs the amux server under launchd (macOS) or a systemd user service (Linux), which restarts the server process if it exits.</li><li><strong>Usage-limit resume:</strong> when a provider limit hits, amux holds delivery and resumes the agent at the provider's reset.</li><li><strong>Reboot recovery on macOS:</strong> a login job brings every non-archived worker back, resumed in its own conversation.</li><li><strong>Stall detection:</strong> stalled board work and stuck orchestrators are surfaced, and owner alerts fire.</li></ul><p>Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers.</p><p>Setup details: <a href="/guides/self-healing-configuration/">Recovery configuration guide</a>.</p><p><a href="/glossary/">← Back to glossary</a></p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

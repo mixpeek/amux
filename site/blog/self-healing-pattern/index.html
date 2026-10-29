@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>The Self-Healing Agent Pattern — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Design patterns for building AI agents that automatically recover from failures.">
+  <meta name="description" content="Design patterns for AI agents that keep going through known interruptions and surface the rest.">
   <meta name="keywords" content="self-healing AI pattern, agent recovery, resilient AI agents, fault tolerant agents">
   <link rel="canonical" href="https://amux.io/blog/self-healing-pattern/">
   <meta property="og:title" content="The Self-Healing Agent Pattern — amux">
-  <meta property="og:description" content="Design patterns for building AI agents that automatically recover from failures.">
+  <meta property="og:description" content="Design patterns for AI agents that keep going through known interruptions and surface the rest.">
   <meta property="og:url" content="https://amux.io/blog/self-healing-pattern/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"The Self-Healing Agent Pattern","item":"https://amux.io/blog/self-healing-pattern/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"The Self-Healing Agent Pattern","description":"Design patterns for building AI agents that automatically recover from failures.","url":"https://amux.io/blog/self-healing-pattern/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/self-healing-pattern/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"The Self-Healing Agent Pattern","description":"Design patterns for AI agents that keep going through known interruptions and surface the rest.","url":"https://amux.io/blog/self-healing-pattern/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/blog/self-healing-pattern/"}}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -49,10 +49,11 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>The Self-Healing Agent Pattern</span></div>
     <h1>The Self-Healing Agent Pattern</h1>
-<p class="subtitle">Why reliable agents need automatic recovery, not just error handling.</p>
-<p>Traditional error handling assumes you can predict failure modes. Self-healing agents monitor for symptoms and apply corrective actions — even for failures you didn't anticipate.</p>
+<p class="subtitle">Why reliable agents need automatic recovery as well as error handling.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
+<p>Traditional error handling assumes you can predict failure modes. Self-healing agents handle the interruptions you can predict and tell a person about the ones they cannot.</p>
 <h2>amux's approach</h2>
-<p>The watchdog runs on every status check cycle, parsing terminal output for known patterns. When it detects a problem, it applies the least-disruptive fix.</p>
+<p>amux holds delivery during usage limits and resumes at the provider's reset. The OS service restarts the amux server process. On macOS, a login job brings every worker back after a reboot, resumed in its own conversation. Stall detection surfaces stalled board work and stuck orchestrators and fires an owner alert.</p>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 # then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>

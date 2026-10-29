@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs Cline (Roo Code) — Fleet Orchestrator vs VS Code AI Coding Assistant (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs Cline 2026: amux is a headless fleet orchestrator for parallel Claude Code / Codex / Gemini CLI agents (web dashboard, iOS app, self-healing). Cline is an interactive VS Code AI coding assistant with per-step approval. Complementary tools — most serious AI builders use both.">
+  <meta name="description" content="amux vs Cline 2026: amux is a headless fleet orchestrator for parallel Claude Code / Codex / Gemini CLI agents (web dashboard, iOS app, usage-limit and reboot recovery). Cline is an interactive VS Code AI coding assistant with per-step approval. Complementary tools — most serious AI builders use both.">
   <meta name="keywords" content="amux vs cline, amux vs roo code, cline alternative, roo code alternative, parallel AI agents vs cline, VS Code AI coding assistant, claude code orchestration, multi-agent fleet management, headless AI agents 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-cline/">
   <meta property="og:title" content="amux vs Cline (Roo Code) — Fleet Orchestrator vs VS Code AI Coding Assistant (2026)">
@@ -36,7 +36,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux vs Cline (Roo Code) — Fleet Orchestrator vs VS Code AI Coding Assistant (2026)",
-    "description": "Cline is an interactive VS Code AI coding assistant with per-step tool approval and multi-model support. amux is the headless fleet orchestrator for running dozens of parallel Claude Code, Codex, or Gemini CLI agents overnight — web dashboard, iOS app, self-healing watchdog. Complementary tools: use Cline for interactive feature work, amux for parallel batch fleet management.",
+    "description": "Cline is an interactive VS Code AI coding assistant with per-step tool approval and multi-model support. amux is the headless fleet orchestrator for running dozens of parallel Claude Code, Codex, or Gemini CLI agents overnight — web dashboard, iOS app, usage-limit and reboot recovery. Complementary tools: use Cline for interactive feature work, amux for parallel batch fleet management.",
     "url": "https://amux.io/compare/amux-vs-cline/",
     "datePublished": "2026-07-15",
     "dateModified": "2026-09-27",
@@ -61,7 +61,7 @@
         "name": "Can Cline run multiple agents in parallel?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "No — Cline runs one agent per VS Code window. Each instance has its own conversation context and operates independently. There is no shared task board, no inter-agent communication, no self-healing if a session crashes, and no fleet monitoring. For parallel agent workloads, you would need to manually open multiple VS Code windows with separate Cline sessions — without any coordination layer between them. amux is purpose-built for this use case."
+          "text": "No — Cline runs one agent per VS Code window. Each instance has its own conversation context and operates independently. There is no shared task board, no inter-agent communication, no recovery layer if a session crashes, and no fleet monitoring. For parallel agent workloads, you would need to manually open multiple VS Code windows with separate Cline sessions — without any coordination layer between them. amux is purpose-built for this use case."
         }
       },
       {
@@ -163,14 +163,14 @@
 
     <p>
       <strong>amux</strong> (~367 GitHub stars) is the open-source control plane for
-      running an AI engineering team from a single dashboard or your phone. It launches, monitors,
-      and self-heals dozens of parallel
+      running an AI engineering team from a single dashboard or your phone. It launches and monitors
+      dozens of parallel
       <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
       OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no VS Code,
       no desktop required. The web dashboard shows live terminal output from every session at once.
       The iOS app gives you remote monitoring and approval from anywhere. A built-in kanban board
-      lets agents atomically claim tasks so no two sessions duplicate work. Self-healing handles
-      context exhaustion, crashes, and stuck prompts automatically. Install:
+      lets agents atomically claim tasks so no two sessions duplicate work. Delivery pauses at usage limits and
+      resumes at the provider's reset, and stall alerts tell you when a session stops. Install:
       <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Open source (MIT + Commons Clause, single Rust binary, zero external dependencies) at
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
@@ -190,9 +190,9 @@
     <p>
       amux is built for the queue: load 20 tasks onto the kanban board before bed, 10 agents claim
       tasks atomically and work in parallel overnight, and you review 20 completed branches in the
-      morning from your iPhone over coffee. The self-healing watchdog handles context exhaustion
-      (auto-compact and resume), crashes (restart and replay), and stuck prompts (detection and reset)
-      without any human intervention. No IDE, no VS Code, no desktop presence required.
+      morning from your iPhone over coffee. Usage limits pause delivery
+      until the provider's reset, on macOS every worker comes back in its own conversation after a reboot,
+      and stall detection alerts you when a session stops. No IDE, no VS Code, no desktop presence required.
       The fleet runs whether or not you are at your desk.
     </p>
 
@@ -237,7 +237,7 @@
         </tr>
         <tr>
           <td>Unattended operation</td>
-          <td>Self-healing watchdog, YOLO auto-approve mode, runs overnight without user</td>
+          <td>Usage-limit resume, stall alerts, YOLO auto-approve mode, runs overnight without user</td>
           <td>Requires VS Code open and user present to approve each step</td>
         </tr>
         <tr>
@@ -261,8 +261,8 @@
           <td>Desktop VS Code only — agent stops when VS Code closes</td>
         </tr>
         <tr>
-          <td>Self-healing</td>
-          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>Recovery</td>
+          <td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           <td>User must manually restart; no automated recovery</td>
         </tr>
         <tr>
@@ -347,10 +347,9 @@
     </p>
 
     <p>
-      When an agent's context window fills up, amux's watchdog detects it, sends the appropriate
-      compact command, waits for the agent to resume, and replays any pending messages — all
-      automatically, without requiring human intervention. When an agent crashes, the watchdog
-      restarts it. When an agent finishes a task and marks it done on the board, the next available
+      When an agent's context window fills up, Claude Code compacts it on its own, at a threshold
+      you set in amux. When a provider usage limit hits, amux holds message delivery and resumes
+      the agent at the reset time. When an agent stalls, stall detection surfaces it and alerts you. When an agent finishes a task and marks it done on the board, the next available
       agent picks up the next todo item via an atomic compare-and-swap operation so no work is
       duplicated across the fleet.
     </p>
@@ -404,7 +403,7 @@
       </li>
       <li>
         <strong>Unattended batch operations — test generation, docs, refactoring at scale.</strong>
-        The self-healing watchdog handles context exhaustion, crashes, and stuck prompts automatically.
+        Usage limits pause delivery until the provider's reset, and stall alerts tell you when a session stops.
         amux YOLO mode lets agents auto-approve safe actions so the fleet keeps moving without a human
         at the keyboard. Cline pauses for approval at every step and stops when VS Code closes.
       </li>
@@ -517,7 +516,7 @@
         </tr>
         <tr>
           <td>Running agents while you travel or are away from your desk</td>
-          <td>amux — iOS app for monitoring, self-healing keeps fleet alive</td>
+          <td>amux — iOS app for monitoring, usage-limit resume and stall alerts</td>
         </tr>
         <tr>
           <td>Coordinating 10 agents working on related features simultaneously</td>
@@ -569,7 +568,7 @@
         <dt style="font-weight:600;margin-bottom:0.35rem">Can Cline run multiple agents in parallel?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           No. Cline runs one agent per VS Code window with no shared task board, no inter-agent
-          communication, and no self-healing. You can open multiple VS Code windows, but there is
+          communication, and no recovery layer. You can open multiple VS Code windows, but there is
           no coordination layer between them — they are isolated sessions with no way to share tasks
           or results. amux is purpose-built for parallel fleet work. See
           <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
@@ -649,7 +648,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <div class="cta-box">
       <h3>Run an AI engineering team with amux</h3>
       <p>
-        Parallel agents, self-healing, web dashboard, and a remote-control iOS app.
+        Parallel agents, usage-limit and reboot recovery, web dashboard, and a remote-control iOS app.
         Open source, MIT + Commons Clause. Complements Cline for the work that can't wait for you to be
         at your desk.
       </p>

@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Self-Healing Watchdog — amux</title>
+  <title>Status Detection and Recovery Demo | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="A background watchdog monitors every session and recovers automatically — context compaction, crash restart, stuck prompt unblocking.">
-  <meta name="keywords" content="self-healing AI agent, claude code auto-restart, context compaction fix, amux watchdog, autonomous AI coding">
+  <meta name="description" content="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
+  <meta name="keywords" content="AI agent status detection, Claude Code usage limit resume, Claude Code reboot recovery, amux dashboard, unattended AI coding">
   <link rel="canonical" href="https://amux.io/demos/self-healing-watchdog/">
-  <meta property="og:title" content="Self-Healing Watchdog — amux">
-  <meta property="og:description" content="A background watchdog monitors every session and recovers automatically — context compaction, crash restart, stuck prompt unblocking.">
+  <meta property="og:title" content="Status Detection and Recovery Demo | amux">
+  <meta property="og:description" content="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
   <meta property="og:url" content="https://amux.io/demos/self-healing-watchdog/">
   <meta property="og:image" content="https://amux.io/demos/self-healing-watchdog/demo.mp4">
   <meta property="og:type" content="article">
@@ -48,32 +48,36 @@
     <div class="breadcrumb">
       <a href="/">amux</a> <span class="sep">›</span>
       <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Self-Healing Watchdog</span>
+      <span>Status Detection and Recovery</span>
     </div>
-    <h1>Self-Healing Watchdog</h1>
-    <p class="subtitle">A background watchdog monitors every session and recovers automatically — context compaction, crash restart, stuck prompt unblocking.</p>
+    <h1>Status Detection and Recovery</h1>
+    <p class="subtitle">amux reads every session's terminal to show Working, Needs Input or Idle, and keeps agents going through usage limits and restarts.</p>
 
-    <video src="demo.mp4" autoplay loop muted playsinline title="Self-Healing Watchdog demo"></video>
+    <video src="demo.mp4" autoplay loop muted playsinline title="amux dashboard session status demo"></video>
+    <p class="video-note"><em>This recording shows the dashboard's session status detection. Its on-screen captions come from an older release and describe a background watchdog that restarts sessions and answers prompts; the amux server does not do either today.</em></p>
 
     <h2>How it works</h2>
 <ol class="step-list">
   <li>amux parses ANSI-stripped tmux output to detect: Working / Needs Input / Idle</li>
-  <li>Context < 20%: sends <code>/compact</code> automatically (5-minute cooldown)</li>
-  <li>Thinking-block corruption: restarts session and replays the last message</li>
-  <li>YOLO mode: tool-approval prompts are auto-answered — fully headless operation</li>
+  <li>Usage limits: amux holds message delivery and resumes the agent at the provider's reset time</li>
+  <li>Reboots: the OS service restarts the amux server, and on macOS a login job brings every non-archived worker back in its own conversation</li>
+  <li>Context: Claude Code compacts its own context; amux lets you set the compaction threshold</li>
+  <li>YOLO mode: <code>--yolo</code> skips Claude Code's tool-approval prompts, so unattended workers never wait on one</li>
+  <li>Stalls: stalled board work and stuck orchestrators are surfaced, and owner alerts fire</li>
 </ol>
+    <p>Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers.</p>
     <h2>When to use this</h2>
 <ul>
   <li>Running agents overnight while you sleep</li>
-  <li>Claude Code keeps crashing from context compaction</li>
+  <li>Agents that keep hitting provider usage limits</li>
   <li>Agents getting stuck on tool-approval prompts in batch work</li>
 </ul>
-    
+
     <h2>Related demos</h2>
 <div class="related">
   <a href="/demos/session-cards-overview/">Session cards overview</a>
   <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a>
-  <a href="/guides/self-healing-configuration/">Self-healing guide</a>
+  <a href="/guides/self-healing-configuration/">Recovery configuration guide</a>
 </div>
     <div class="cta-box">
   <h3>Try amux</h3>

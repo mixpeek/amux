@@ -57,11 +57,11 @@
 <ul>
 <li><strong>Background execution:</strong> Runs as a persistent process, not tied to a terminal session that requires user presence.</li>
 <li><strong>Remote management:</strong> Controlled via REST API or web UI rather than keyboard input.</li>
-<li><strong>Self-healing:</strong> A well-designed headless agent recovers from crashes, context exhaustion, and stuck prompts automatically.</li>
+<li><strong>Recovery:</strong> A well-designed headless agent keeps going through known interruptions, such as usage limits and restarts, and reports what it cannot fix.</li>
 <li><strong>Unattended operation:</strong> Can run overnight, over weekends, or across timezones without a human watching.</li>
 </ul>
 <h2>How amux Implements Headless Agents</h2>
-<p>amux runs Claude Code inside tmux sessions (which persist across terminal disconnects), provides a web dashboard for monitoring and control, and implements a self-healing watchdog that handles failure modes autonomously. This combination makes Claude Code — which is normally an interactive tool — fully headless and unattended.</p>
+<p>amux runs Claude Code inside tmux sessions (which persist across terminal disconnects), provides a web dashboard for monitoring and control, resumes agents after usage limits, brings workers back after a macOS reboot, and alerts you when work stalls. This combination makes Claude Code — which is normally an interactive tool — fully headless and unattended.</p>
 <h2>Contrast with Interactive Agents</h2>
 <p>An interactive coding agent (like Claude Code running directly in your terminal) requires the user to be present — to confirm actions, answer questions, and redirect the agent. A headless agent is designed to operate independently, with the user checking in periodically via a dashboard rather than watching in real time.</p>
 <p>Most production agent workflows combine both: interactive sessions for complex decisions and exploratory work, headless sessions for long-running batch tasks and overnight execution.</p>

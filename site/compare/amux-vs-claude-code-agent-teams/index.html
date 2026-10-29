@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs Claude Code Agent Teams (2026) — Fleet Orchestration vs Sub-Agent Fan-Out</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux and Claude Code Agent Teams for running parallel Claude Code sessions. Agent Teams fans out within a single task; amux runs independent long-lived fleets with a web dashboard, self-healing, and mobile access.">
+  <meta name="description" content="Compare amux and Claude Code Agent Teams for running parallel Claude Code sessions. Agent Teams fans out within a single task; amux runs independent long-lived fleets with a web dashboard, usage-limit and reboot recovery, and mobile access.">
   <meta name="keywords" content="amux vs claude code agent teams, claude code agent teams alternative, parallel claude code sessions, multi-agent claude, claude code orchestration, agent teams experimental, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-claude-code-agent-teams/">
   <meta property="og:title" content="amux vs Claude Code Agent Teams (2026) — Fleet Orchestration vs Sub-Agent Fan-Out">
-  <meta property="og:description" content="Both run parallel Claude Code sessions. Agent Teams fans out within one task; amux runs independent long-lived fleets with dashboard, self-healing, and mobile control.">
+  <meta property="og:description" content="Both run parallel Claude Code sessions. Agent Teams fans out within one task; amux runs independent long-lived fleets with dashboard, usage-limit and reboot recovery, and mobile control.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-claude-code-agent-teams/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -36,7 +36,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux vs Claude Code Agent Teams (2026): Fleet Orchestration vs Sub-Agent Fan-Out",
-    "description": "Both run parallel Claude Code sessions. Claude Code Agent Teams fans out within a single task using git worktrees. amux runs independent long-lived fleets with a web dashboard, self-healing watchdog, mobile access, and support for multiple AI runtimes.",
+    "description": "Both run parallel Claude Code sessions. Claude Code Agent Teams fans out within a single task using git worktrees. amux runs independent long-lived fleets with a web dashboard, usage-limit and reboot recovery, mobile access, and support for multiple AI runtimes.",
     "url": "https://amux.io/compare/amux-vs-claude-code-agent-teams/",
     "datePublished": "2026-07-18",
     "dateModified": "2026-07-18",
@@ -67,7 +67,7 @@
         "name": "Can I use Claude Code Agent Teams and amux together?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a single Claude Code session, while amux manages the fleet of independent top-level sessions and provides the dashboard, self-healing, mobile access, kanban, and scheduling layer on top. You can use Agent Teams for tightly-coupled decomposition inside an amux-managed session and still benefit from amux's observability and self-healing across the whole fleet."
+          "text": "Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a single Claude Code session, while amux manages the fleet of independent top-level sessions and provides the dashboard, usage-limit and reboot recovery, mobile access, kanban, and scheduling layer on top. You can use Agent Teams for tightly-coupled decomposition inside an amux-managed session and still benefit from amux's observability and usage-limit and reboot recovery across the whole fleet."
         }
       },
       {
@@ -75,7 +75,7 @@
         "name": "Does amux replace Claude Code Agent Teams?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work within a single parent session. amux is a fleet-level control plane for long-running, independent sessions across many projects, with a web dashboard, self-healing watchdog, mobile app, and support for Claude Code, Codex CLI, and Gemini CLI side by side."
+          "text": "No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work within a single parent session. amux is a fleet-level control plane for long-running, independent sessions across many projects, with a web dashboard, usage-limit and reboot recovery, mobile app, and support for Claude Code, Codex CLI, and Gemini CLI side by side."
         }
       },
       {
@@ -145,7 +145,7 @@
       parallel sub-tasks with one Claude Code parent coordinating the children,
       <strong>Claude Code Agent Teams</strong> is built for that. If you want to run dozens of
       <em>independent</em> long-lived sessions across many projects — with a web dashboard,
-      self-healing, mobile monitoring, a shared kanban, and support for Codex CLI or Gemini CLI
+      usage-limit and reboot recovery, mobile monitoring, a shared kanban, and support for Codex CLI or Gemini CLI
       alongside Claude Code — <strong>amux</strong> is the right layer. Both run parallel Claude
       Code sessions but serve different scale and oversight needs.
     </div>
@@ -161,21 +161,21 @@
       parent. The coordination model is hierarchical: one parent, N children, all sharing the
       same task context originating from the parent session. As of July 2026, Agent Teams is
       not default-enabled — it requires the experimental flag and a recent Claude Code version.
-      There is no external dashboard, no mobile interface, and no self-healing if the parent
+      There is no external dashboard, no mobile interface, and no recovery layer if the parent
       session crashes or the context window fills up.
     </p>
 
     <p>
       <strong>amux</strong> (304 GitHub stars, MIT + Commons Clause) is the open-source control plane for
-      running an AI engineering team from a single dashboard or your phone. It launches, monitors,
-      and self-heals dozens of parallel
+      running an AI engineering team from a single dashboard or your phone. It launches and monitors
+      dozens of parallel
       <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
       OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — each session fully independent,
       not parent/child. The web dashboard streams live terminal output from every session via
       Server-Sent Events. The iOS app gives you remote monitoring and control from anywhere.
       A built-in kanban board lets agents atomically claim tasks so no two sessions ever duplicate
-      work. The self-healing watchdog handles context exhaustion, crashes, and stuck prompts
-      automatically, enabling true overnight unattended operation. Install via
+      work. Delivery pauses at usage limits and resumes at the provider's reset,
+      and stall detection alerts you when a session stops, so overnight runs need no one watching. Install via
       <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Single Rust binary, zero external dependencies —
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
@@ -200,8 +200,8 @@
       different tasks across different projects, potentially overnight, potentially from multiple
       AI runtimes. Sessions are not parent/child — each one is an autonomous worker that claims
       the next available task from a shared SQLite kanban board using an atomic compare-and-swap
-      operation. No two agents can claim the same task. Sessions survive independently: if one
-      crashes, the watchdog restarts it; if its context fills, it is auto-compacted and resumed.
+      operation. No two agents can claim the same task. Sessions run independently: if one
+      stalls, stall detection flags it; if it hits a usage limit, it resumes at the provider's reset.
       The fleet runs whether or not you are at your desk. You monitor from your phone. When all
       tasks are done, the board is empty and every session is idle — no parent to coordinate,
       no hierarchy to maintain.
@@ -273,8 +273,8 @@
           <td>Limited by parent session context and Anthropic concurrency limits</td>
         </tr>
         <tr>
-          <td>Self-healing</td>
-          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>Recovery</td>
+          <td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           <td>None — if the parent crashes, children are orphaned; no automated recovery</td>
         </tr>
         <tr>
@@ -309,7 +309,7 @@
         </tr>
         <tr>
           <td>Session persistence</td>
-          <td>Survives restarts — UUID-tracked sessions resume after crash or reboot</td>
+          <td>Survives restarts: UUID-tracked sessions resume in their own conversation after a macOS reboot</td>
           <td>Tied to parent session lifecycle — parent crash = coordination lost</td>
         </tr>
         <tr>
@@ -319,7 +319,7 @@
         </tr>
         <tr>
           <td>Overnight unattended operation</td>
-          <td>Core use case — watchdog keeps the fleet alive and productive while you sleep</td>
+          <td>Core use case: usage-limit resume and stall alerts keep the fleet working while you sleep</td>
           <td>Not designed for unattended use — no recovery if session exits overnight</td>
         </tr>
         <tr>
@@ -382,14 +382,14 @@
         Queue work before bed, agents claim tasks from the shared board, work in parallel through
         the night, and you review completed branches in the morning from your phone. Agent Teams
         has no fleet model — if the parent session dies overnight, the whole coordination layer
-        is lost. amux's watchdog keeps the fleet alive and productive without any human at the
+        is lost. amux holds work through usage limits and alerts you to stalls, so the fleet keeps working without anyone at the
         keyboard. See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
       </li>
       <li>
-        <strong>Long-lived sessions that must survive context overflow and crashes.</strong>
-        The self-healing watchdog detects context overflow and automatically compacts and resumes
-        the session. If an agent crashes, it is restarted and its pending message is replayed.
-        Stuck prompts are unstuck. None of this is available with Agent Teams — if the parent
+        <strong>Long-lived sessions that must survive usage limits and reboots.</strong>
+        When a usage limit hits, amux holds delivery and resumes at the provider's reset. On macOS every worker
+        comes back in its own conversation after a reboot, and stall detection alerts you when a session stops.
+        None of this is available with Agent Teams — if the parent
         session hits its context limit or crashes, the fan-out is over.
       </li>
       <li>
@@ -462,7 +462,7 @@
         </tr>
         <tr>
           <td>Run agents overnight while you sleep</td>
-          <td>amux — self-healing fleet, iOS monitoring, no desktop required</td>
+          <td>amux — usage-limit resume, stall alerts, iOS monitoring, no desktop required</td>
         </tr>
         <tr>
           <td>Zero-infrastructure parallelism within Claude Code</td>
@@ -473,8 +473,8 @@
           <td>amux — native iOS app and installable PWA</td>
         </tr>
         <tr>
-          <td>Self-healing sessions that survive context overflow</td>
-          <td>amux — auto-compact, crash restart, stuck-prompt detection</td>
+          <td>Sessions that resume after usage limits and reboots</td>
+          <td>amux — usage-limit resume, macOS reboot recovery, stall detection</td>
         </tr>
         <tr>
           <td>Run Codex CLI or Gemini CLI alongside Claude Code</td>
@@ -526,9 +526,9 @@
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a
           single Claude Code session, while amux manages the fleet of independent top-level sessions
-          and provides the dashboard, self-healing, mobile access, kanban, and scheduling layer on
+          and provides the dashboard, usage-limit and reboot recovery, mobile access, kanban, and scheduling layer on
           top. You can use Agent Teams for tightly-coupled decomposition inside an amux-managed
-          session and still benefit from amux's observability and self-healing across the whole fleet.
+          session and still benefit from amux's observability and usage-limit and reboot recovery across the whole fleet.
         </dd>
       </div>
       <div>
@@ -537,7 +537,7 @@
           No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a
           sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work
           within a single parent session. amux is a fleet-level control plane for long-running,
-          independent sessions across many projects, with a web dashboard, self-healing watchdog,
+          independent sessions across many projects, with a web dashboard, usage-limit and reboot recovery,
           mobile app, and support for Claude Code, Codex CLI, and Gemini CLI side by side.
         </dd>
       </div>
@@ -580,7 +580,7 @@ amux serve  # → https://localhost:8824</code></pre>
       operations, and the <a href="/guides/ai-agent-quality-gates/">quality gates guide</a> for
       human-in-the-loop checkpoints at fleet scale. If you are already experimenting with
       Agent Teams for sub-task fan-out, amux adds the outer fleet lifecycle layer — dashboard,
-      self-healing, mobile access, multi-runtime support — without conflicting with what
+      usage-limit and reboot recovery, mobile access, multi-runtime support — without conflicting with what
       Agent Teams does inside a single session.
     </p>
 

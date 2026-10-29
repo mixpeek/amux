@@ -67,7 +67,7 @@
         "name": "Can Windsurf run multiple agents in parallel?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Windsurf runs one SWE-2 autonomous agent at a time per window. To run 10+ agents in parallel, you would need to open 10+ Windsurf windows manually, with no shared coordination. amux is purpose-built for this: it launches dozens of Claude Code or Codex CLI agents simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."
+          "text": "Windsurf runs one SWE-2 autonomous agent at a time per window. To run 10+ agents in parallel, you would need to open 10+ Windsurf windows manually, with no shared coordination. amux is purpose-built for this: it launches dozens of Claude Code or Codex CLI agents simultaneously, with a shared kanban board for task coordination, and resumes them after usage limits so they keep running overnight."
         }
       },
       {
@@ -83,7 +83,7 @@
         "name": "Which is better for solo developers shipping overnight?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux. Its core use case is running 10–50 parallel AI coding agents overnight while you sleep, with a self-healing watchdog that automatically recovers from context exhaustion and crashed sessions. You wake up to finished PRs instead of crashed terminals. Windsurf is optimized for interactive coding sessions where you are present."
+          "text": "amux. Its core use case is running 10–50 parallel AI coding agents overnight while you sleep, with usage-limit resume and stall alerts so the run keeps going or tells you when it stops. You wake up to finished PRs instead of idle terminals. Windsurf is optimized for interactive coding sessions where you are present."
         }
       },
       {
@@ -171,13 +171,13 @@
     <p>
       <strong>amux</strong> (~367 GitHub stars, purpose-built for orchestration) is the
       open-source control plane for running an AI engineering team from a single dashboard or your
-      phone. It launches, monitors, and self-heals dozens of parallel
+      phone. It launches and monitors dozens of parallel
       <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
       OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no VS Code,
       no desktop required. The web dashboard shows live terminal output from every session at once.
       The iOS app gives you remote monitoring and control from anywhere. A built-in kanban board
-      lets agents atomically claim tasks so no two sessions ever duplicate work. Self-healing handles
-      context exhaustion, crashes, and stuck prompts automatically. Install:
+      lets agents atomically claim tasks so no two sessions ever duplicate work. Agents resume on
+      their own after usage limits, and stall detection flags any that stop. Install:
       <code>curl -fsSL https://amux.io/install.sh | bash</code>.
       Open source (MIT + Commons Clause) — single Rust binary, zero external dependencies — at
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
@@ -197,9 +197,9 @@
     <p>
       amux is built for the overnight queue: load 20 tasks onto the kanban board before bed, 10 agents
       claim tasks atomically and work in parallel overnight, and you review 20 completed branches in the
-      morning from your iPhone over coffee. The self-healing watchdog handles context exhaustion
-      (auto-compact and resume), crashes (restart and replay), and stuck prompts without any human
-      intervention. No IDE, no VS Code, no desktop presence required. The fleet runs whether or not
+      morning from your iPhone over coffee. Delivery is held through usage
+      limits and resumes at the provider's reset, Claude Code compacts its own context at a threshold
+      you set, and stall detection alerts you if an agent stops making progress. No IDE, no VS Code, no desktop presence required. The fleet runs whether or not
       you are at your desk — and the iOS app keeps you in control when you are anywhere else.
     </p>
 
@@ -238,12 +238,12 @@
         </tr>
         <tr>
           <td>Unattended operation</td>
-          <td>Self-healing watchdog — runs overnight without the user present</td>
+          <td>Usage-limit resume and stall alerts — runs overnight without the user present</td>
           <td>Requires Windsurf IDE open and running; closes when IDE closes</td>
         </tr>
         <tr>
-          <td>Self-healing</td>
-          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>Recovery</td>
+          <td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           <td>No automated recovery — user must manually restart if agent gets stuck</td>
         </tr>
         <tr>
@@ -278,7 +278,7 @@
         </tr>
         <tr>
           <td>Overnight batch jobs</td>
-          <td>Core use case — agents run and self-heal through the night unattended</td>
+          <td>Core use case — agents run through the night unattended and resume after usage limits</td>
           <td>Not supported — IDE must stay open; no fleet or batch model</td>
         </tr>
         <tr>
@@ -381,9 +381,10 @@
     </p>
 
     <p>
-      When an agent's context window fills up, amux's watchdog detects it, sends the compact command,
-      waits for the agent to resume, and replays any pending messages — all automatically, without
-      human intervention. When an agent crashes, the watchdog restarts it. When an agent finishes a
+      When an agent hits a provider usage limit, amux holds its pending messages and resumes it at the
+      provider's reset time, without human intervention. Claude Code compacts its own context, and
+      amux lets you set the compaction threshold. When an agent stalls, stall detection flags it and
+      an alert fires. When an agent finishes a
       task and marks it done on the board, the next available agent picks up the next todo item via
       an atomic compare-and-swap claim so no work is ever duplicated across the fleet.
     </p>
@@ -445,7 +446,7 @@
       </li>
       <li>
         <strong>Unattended batch operations — test generation, docs, refactoring at scale.</strong>
-        The self-healing watchdog handles context exhaustion, crashes, and stuck prompts automatically.
+        Agents resume on their own after usage limits, and stall detection flags any that stop.
         YOLO mode lets agents auto-approve safe actions so the fleet keeps moving without a human
         at the keyboard. Windsurf's agents stop when the IDE closes.
       </li>
@@ -518,7 +519,7 @@
     <p>
       The tools cover the full spectrum. Windsurf for the interactive coding hours where codebase
       awareness, completions, and IDE integration matter. amux for the unattended hours where
-      throughput, self-healing, and remote monitoring are the bottleneck.
+      throughput, usage-limit resume, and remote monitoring are the bottleneck.
     </p>
 
     <h2>Use case decision guide</h2>
@@ -537,7 +538,7 @@
         </tr>
         <tr>
           <td>Run agents overnight while you sleep</td>
-          <td>amux — self-healing fleet, no desktop required, iOS monitoring</td>
+          <td>amux — fleet resumes after usage limits, no desktop required, iOS monitoring</td>
         </tr>
         <tr>
           <td>Manage your agents from your phone</td>
@@ -552,8 +553,8 @@
           <td>amux — parallel fleet with shared kanban and atomic task claiming</td>
         </tr>
         <tr>
-          <td>Self-healing unattended sessions</td>
-          <td>amux — auto-compact, crash restart, stuck-prompt detection</td>
+          <td>Unattended sessions that keep going</td>
+          <td>amux — usage-limit resume, reboot recovery on macOS, stall alerts</td>
         </tr>
         <tr>
           <td>Autonomous in-editor multi-step task completion</td>
@@ -595,10 +596,10 @@
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           Windsurf runs one SWE-2 autonomous agent at a time per IDE window. To run 10+ agents in
           parallel, you would need to open 10+ Windsurf windows manually, with no shared task board,
-          no inter-agent coordination, and no self-healing if a session gets stuck. amux is
+          no inter-agent coordination, and no alert if a session gets stuck. amux is
           purpose-built for this use case: it launches dozens of Claude Code or Codex CLI agents
-          simultaneously with a shared kanban board for task coordination and a self-healing watchdog
-          that keeps them all running overnight. See
+          simultaneously with a shared kanban board for task coordination, and resumes them after usage
+          limits so they keep running overnight. See
           <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
         </dd>
       </div>
@@ -616,9 +617,9 @@
         <dt style="font-weight:600;margin-bottom:0.35rem">Which is better for solo developers shipping overnight?</dt>
         <dd style="color:var(--fg-mute,var(--fg-mute));line-height:1.6">
           amux. Its core use case is running 10–50 parallel AI coding agents overnight while you
-          sleep, with a self-healing watchdog that automatically recovers from context exhaustion
-          and crashed sessions. You wake up to finished PRs and completed tasks instead of crashed
-          terminals and blank screens. Windsurf is optimized for interactive coding sessions where
+          sleep, with usage-limit resume and stall alerts so the run keeps going or tells you when
+          it stops. You wake up to finished PRs and completed tasks instead of idle terminals and
+          blank screens. Windsurf is optimized for interactive coding sessions where
           you are present at your desk.
         </dd>
       </div>

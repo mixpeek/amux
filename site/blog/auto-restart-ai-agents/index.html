@@ -7,7 +7,7 @@
   <title>Detecting When Your AI Agent Dies (By Reading the Terminal) — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="How to build a watchdog that detects when Claude Code exhausts its context window and exits — by parsing terminal output for shell prompts.">
-  <meta name="keywords" content="ai agent watchdog, claude code auto restart, terminal monitoring, agent reliability">
+  <meta name="keywords" content="ai agent watchdog, claude code crash detection, terminal monitoring, agent reliability">
   <link rel="canonical" href="https://amux.io/blog/auto-restart-ai-agents/">
   <meta property="og:title" content="Detecting When Your AI Agent Dies (By Reading the Terminal) — amux">
   <meta property="og:description" content="How to build a watchdog that detects when Claude Code exhausts its context window and exits — by parsing terminal output for shell prompts.">
@@ -49,11 +49,12 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>Auto-Restart AI Agents</span></div>
     <h1>Detecting When Your AI Agent Dies (By Reading the Terminal)</h1>
-<p class="subtitle">A watchdog that screen-scrapes tmux to detect crashed agents and restart them. It's crude and it works.</p>
+<p class="subtitle">A watchdog that screen-scrapes tmux to detect crashed agents and restart them. It's crude and it worked.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
 
 <p>When you run AI coding agents in long-running sessions, they eventually hit a wall. Claude Code exhausts its context window, prints a farewell message, and exits to a bare shell prompt. If you're running one agent interactively, you notice immediately. If you're running 20 overnight, you wake up to find half of them have been sitting at a <code>$</code> prompt for 6 hours.</p>
 
-<p>amux solves this with a watchdog that periodically reads the terminal output, detects the shell prompt pattern, and auto-restarts the agent. The detection is a screen scrape. It's the kind of thing that feels wrong but works surprisingly well.</p>
+<p>amux's original Python server handled this with a watchdog that periodically reads the terminal output, detects the shell prompt pattern, and auto-restarts the agent. The detection is a screen scrape. It's the kind of thing that feels wrong but works surprisingly well.</p>
 
 <h2>The detection problem</h2>
 

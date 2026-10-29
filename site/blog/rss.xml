@@ -24,7 +24,7 @@
   </item>
   <item>
     <title><![CDATA[Best Multi-Agent Coding Orchestrators in 2026: Claude Squad, Conductor, Codex & More]]></title>
-    <description><![CDATA[9 orchestrators compared on parallel capacity, git isolation, self-healing, dashboards, and unattended overnight operation. The definitive guide to running agent fleets.]]></description>
+    <description><![CDATA[9 orchestrators compared on parallel capacity, git isolation, recovery, dashboards, and unattended overnight operation. The definitive guide to running agent fleets.]]></description>
     <link>https://amux.io/blog/best-multi-agent-orchestrators-2026/</link>
     <guid isPermaLink="true">https://amux.io/blog/best-multi-agent-orchestrators-2026/</guid>
     <pubDate>Thu, 01 May 2026 12:00:00 GMT</pubDate>
@@ -38,7 +38,7 @@
   </item>
   <item>
     <title><![CDATA[Ship Features While You Sleep]]></title>
-    <description><![CDATA[How to run AI coding agents overnight with self-healing to wake up to completed features.]]></description>
+    <description><![CDATA[How to run AI coding agents overnight, resume them after usage limits, and wake up to completed features.]]></description>
     <link>https://amux.io/blog/ship-features-while-you-sleep/</link>
     <guid isPermaLink="true">https://amux.io/blog/ship-features-while-you-sleep/</guid>
     <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
@@ -52,14 +52,14 @@
   </item>
   <item>
     <title><![CDATA[The Self-Healing Agent Pattern]]></title>
-    <description><![CDATA[Design patterns for building AI agents that automatically recover from failures.]]></description>
+    <description><![CDATA[Design patterns for AI agents that keep going through known interruptions and surface the rest.]]></description>
     <link>https://amux.io/blog/self-healing-pattern/</link>
     <guid isPermaLink="true">https://amux.io/blog/self-healing-pattern/</guid>
     <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
   </item>
   <item>
     <title><![CDATA[Why Claude Code Sessions Crash (and How to Fix It)]]></title>
-    <description><![CDATA[Common Claude Code failure modes and how amux's self-healing handles each one automatically.]]></description>
+    <description><![CDATA[Common Claude Code failure modes, what amux handles today, and what it surfaces for you.]]></description>
     <link>https://amux.io/blog/why-claude-code-sessions-crash/</link>
     <guid isPermaLink="true">https://amux.io/blog/why-claude-code-sessions-crash/</guid>
     <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>

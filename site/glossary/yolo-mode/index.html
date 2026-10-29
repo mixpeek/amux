@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>YOLO Mode — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="YOLO Mode: A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.">
+  <meta name="description" content="YOLO Mode: A configuration that launches Claude Code without tool-approval prompts for unattended operation.">
   <meta name="keywords" content="yolo mode, AI agent glossary, amux, claude code">
   <link rel="canonical" href="https://amux.io/glossary/yolo-mode/">
   <meta property="og:title" content="YOLO Mode — amux">
-  <meta property="og:description" content="YOLO Mode: A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.">
+  <meta property="og:description" content="YOLO Mode: A configuration that launches Claude Code without tool-approval prompts for unattended operation.">
   <meta property="og:url" content="https://amux.io/glossary/yolo-mode/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"YOLO Mode","item":"https://amux.io/glossary/yolo-mode/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"YOLO Mode","description":"YOLO Mode: A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.","url":"https://amux.io/glossary/yolo-mode/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"YOLO Mode","description":"YOLO Mode: A configuration that launches Claude Code without tool-approval prompts for unattended operation.","url":"https://amux.io/glossary/yolo-mode/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -48,7 +48,7 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>YOLO Mode</span></div>
-    <h1>YOLO Mode</h1><p class="subtitle">A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.</p><p>YOLO mode detects blocking tool-approval prompts (identified by the "Esc to cancel" marker) and auto-answers them. This enables truly headless operation — agents never block waiting for human approval.</p><h2>Safety</h2><p>The detection specifically targets tool-approval prompts. It never fires on open-ended model questions, ensuring agents don't auto-answer when human judgment is needed.</p><p><a href="/glossary/">← Back to glossary</a></p>
+    <h1>YOLO Mode</h1><p class="subtitle">A configuration that launches Claude Code without tool-approval prompts for unattended operation.</p><p>YOLO mode launches Claude Code with <code>--dangerously-skip-permissions</code>, so tool-approval prompts never appear and agents do not block waiting for approval.</p><h2>Safety</h2><p>Open-ended questions from the model still wait for you. Run YOLO agents on a branch, in a scoped directory, without production credentials.</p><p><a href="/glossary/">← Back to glossary</a></p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

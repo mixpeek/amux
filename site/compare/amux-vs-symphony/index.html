@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs OpenAI Symphony: Agent Orchestration for Claude Code vs Codex (2026) — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs OpenAI Symphony head-to-head: architecture, agent support, issue tracking, self-healing, and when to choose each. The complete 2026 comparison of Claude Code orchestration vs Codex orchestration.">
+  <meta name="description" content="amux vs OpenAI Symphony head-to-head: architecture, agent support, issue tracking, recovery, and when to choose each. The complete 2026 comparison of Claude Code orchestration vs Codex orchestration.">
   <meta name="keywords" content="amux vs symphony, openai symphony alternative, symphony vs amux, openai symphony comparison, symphony alternative claude code, codex orchestration vs claude code, agent orchestrator comparison 2026, symphony linear alternative, openai symphony review, coding agent orchestrator">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-symphony/">
   <meta property="og:title" content="amux vs OpenAI Symphony: Agent Orchestration Compared (2026) — amux">
@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Symphony","item":"https://amux.io/compare/amux-vs-symphony/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenAI Symphony: Agent Orchestration for Claude Code vs Codex","description":"Head-to-head comparison of amux and OpenAI Symphony — two agent orchestrators taking fundamentally different approaches. Developer-driven dashboard vs ticket-driven pipeline.","url":"https://amux.io/compare/amux-vs-symphony/","datePublished":"2026-04-30","dateModified":"2026-08-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and OpenAI Symphony?","acceptedAnswer":{"@type":"Answer","text":"Symphony is a ticket-driven pipeline: it polls a Linear board, claims issues, spawns Codex agents, and produces pull requests — fully autonomous with no human interaction during execution. amux is a developer-driven platform: you manage Claude Code sessions from a web dashboard, send messages to agents, track tasks on a built-in kanban board, and monitor everything from your phone. Symphony automates the issue-to-PR pipeline. amux gives you a cockpit for managing a fleet of agents."}},{"@type":"Question","name":"Does Symphony work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not out of the box. Symphony's reference implementation is built around the Codex App Server protocol (JSON-RPC 2.0 over stdio). A community developer has ported the Symphony design to Claude Code using TypeScript, but this is not an official feature. amux is built natively for Claude Code with deep integration — self-healing watchdog, token tracking, context overflow detection, and auto-compact are all Claude Code-specific."}},{"@type":"Question","name":"Does Symphony require Linear?","acceptedAnswer":{"@type":"Answer","text":"Yes. The reference implementation only supports Linear as its issue tracker. The SPEC is designed to be pluggable, and a community GitHub Issues adapter is in development, but as of April 2026 Linear is the only supported tracker. amux has a built-in SQLite-backed kanban board — no external issue tracker required — and can integrate with any tracker via its REST API."}},{"@type":"Question","name":"Is Symphony actively maintained?","acceptedAnswer":{"@type":"Answer","text":"OpenAI has explicitly stated that Symphony is a reference implementation, not a standalone product they plan to maintain. The GitHub repo has 12 commits and no versioned releases. amux is actively developed with regular commits, an iOS app, cloud deployment support, and ongoing feature development."}},{"@type":"Question","name":"Which has better fault tolerance?","acceptedAnswer":{"@type":"Answer","text":"Both handle agent failures, but differently. Symphony uses Elixir/OTP supervision trees — if an agent process crashes, the BEAM VM supervisor restarts it automatically with exponential backoff. amux uses a built-in watchdog that monitors tmux sessions — it detects crashes, context overflows, stuck sessions, and rate limits, then auto-restarts with the last user message replayed. Symphony's approach is architecturally elegant. amux's approach handles more failure modes specific to AI coding agents (context overflow, permission prompts, stuck detection)."}},{"@type":"Question","name":"Can I use amux and Symphony together?","acceptedAnswer":{"@type":"Answer","text":"In theory, yes. Symphony manages Codex agents and pushes PRs. amux manages Claude Code agents and tracks work on its built-in board. They don't share state, but you could use Symphony for autonomous ticket-to-PR workflows on your Codex tasks and amux for interactive Claude Code sessions that need human oversight. In practice, most teams pick one model ecosystem (Claude or GPT) and one orchestrator."}},{"@type":"Question","name":"Which is easier to set up?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary that needs only tmux 3.2+ and an agent CLI. Run the one-line installer and you're live. Symphony requires an Elixir/OTP runtime (not in most developers' toolboxes), a Linear API key, Codex access, and mise for version management. The Elixir ecosystem is powerful but unfamiliar to most teams."}},{"@type":"Question","name":"What about the 500% PR increase claim?","acceptedAnswer":{"@type":"Answer","text":"OpenAI reported that some internal teams saw a 500% increase in landed pull requests during the first three weeks of using Symphony. Important caveats: 'some teams' (not all), 'first three weeks' (honeymoon period), and no published baseline (going from 2 PRs/week to 12 is technically 500%). More PRs does not necessarily mean more productivity if review burden scales proportionally."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and OpenAI Symphony?","acceptedAnswer":{"@type":"Answer","text":"Symphony is a ticket-driven pipeline: it polls a Linear board, claims issues, spawns Codex agents, and produces pull requests — fully autonomous with no human interaction during execution. amux is a developer-driven platform: you manage Claude Code sessions from a web dashboard, send messages to agents, track tasks on a built-in kanban board, and monitor everything from your phone. Symphony automates the issue-to-PR pipeline. amux gives you a cockpit for managing a fleet of agents."}},{"@type":"Question","name":"Does Symphony work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not out of the box. Symphony's reference implementation is built around the Codex App Server protocol (JSON-RPC 2.0 over stdio). A community developer has ported the Symphony design to Claude Code using TypeScript, but this is not an official feature. amux is built natively for Claude Code with deep integration: usage-limit detection, token tracking, stall detection, and the configurable compaction threshold are all Claude Code-specific."}},{"@type":"Question","name":"Does Symphony require Linear?","acceptedAnswer":{"@type":"Answer","text":"Yes. The reference implementation only supports Linear as its issue tracker. The SPEC is designed to be pluggable, and a community GitHub Issues adapter is in development, but as of April 2026 Linear is the only supported tracker. amux has a built-in SQLite-backed kanban board — no external issue tracker required — and can integrate with any tracker via its REST API."}},{"@type":"Question","name":"Is Symphony actively maintained?","acceptedAnswer":{"@type":"Answer","text":"OpenAI has explicitly stated that Symphony is a reference implementation, not a standalone product they plan to maintain. The GitHub repo has 12 commits and no versioned releases. amux is actively developed with regular commits, an iOS app, cloud deployment support, and ongoing feature development."}},{"@type":"Question","name":"Which has better fault tolerance?","acceptedAnswer":{"@type":"Answer","text":"Symphony uses OTP supervision trees, which restart a crashed agent process with exponential backoff. amux covers a different set of failures: it holds delivery through usage limits and resumes at the provider's reset, flags stalled sessions with stall detection and alerts, lets you set Claude Code's compaction threshold, and on macOS brings every worker back in its own conversation after a reboot. Restarting a crashed agent process is not built into the amux server; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers."}},{"@type":"Question","name":"Can I use amux and Symphony together?","acceptedAnswer":{"@type":"Answer","text":"In theory, yes. Symphony manages Codex agents and pushes PRs. amux manages Claude Code agents and tracks work on its built-in board. They don't share state, but you could use Symphony for autonomous ticket-to-PR workflows on your Codex tasks and amux for interactive Claude Code sessions that need human oversight. In practice, most teams pick one model ecosystem (Claude or GPT) and one orchestrator."}},{"@type":"Question","name":"Which is easier to set up?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary that needs only tmux 3.2+ and an agent CLI. Run the one-line installer and you're live. Symphony requires an Elixir/OTP runtime (not in most developers' toolboxes), a Linear API key, Codex access, and mise for version management. The Elixir ecosystem is powerful but unfamiliar to most teams."}},{"@type":"Question","name":"What about the 500% PR increase claim?","acceptedAnswer":{"@type":"Answer","text":"OpenAI reported that some internal teams saw a 500% increase in landed pull requests during the first three weeks of using Symphony. Important caveats: 'some teams' (not all), 'first three weeks' (honeymoon period), and no published baseline (going from 2 PRs/week to 12 is technically 500%). More PRs does not necessarily mean more productivity if review burden scales proportionally."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -62,7 +62,7 @@
         <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Workflow Comparison</a></li>
         <li><a href="#agents" style="color:var(--dim);text-decoration:none;">Agent Support &amp; Model Ecosystem</a></li>
         <li><a href="#tracking" style="color:var(--dim);text-decoration:none;">Issue Tracking &amp; Task Management</a></li>
-        <li><a href="#healing" style="color:var(--dim);text-decoration:none;">Fault Tolerance &amp; Self-Healing</a></li>
+        <li><a href="#healing" style="color:var(--dim);text-decoration:none;">Fault Tolerance &amp; Recovery</a></li>
         <li><a href="#dashboards" style="color:var(--dim);text-decoration:none;">Dashboards &amp; Remote Access</a></li>
         <li><a href="#review" style="color:var(--dim);text-decoration:none;">Code Review &amp; PR Handling</a></li>
         <li><a href="#setup" style="color:var(--dim);text-decoration:none;">Setup &amp; Maintenance</a></li>
@@ -102,7 +102,7 @@
     <ul>
       <li>Web dashboard at <code>https://localhost:8824</code> with live session status, token spend, a send bar, and a kanban board</li>
       <li>Mobile PWA for managing the fleet from your phone, plus a native iOS app</li>
-      <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions, handle rate limits</li>
+      <li>Recovery: resumes after usage limits, workers return after a macOS reboot, stall detection with alerts, configurable Claude Code compaction threshold</li>
       <li>Built-in SQLite-backed kanban board with atomic task claiming &mdash; no external issue tracker required</li>
       <li>Full REST API for sessions, board, notes, CRM, email, browser automation, and cron</li>
       <li>Inter-session messaging so agents can discover peers, delegate work, and coordinate via the shared board</li>
@@ -156,8 +156,8 @@
           <td style="padding:0.6rem;">JSON API for status only</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.6rem;">Crash recovery</td>
-          <td style="padding:0.6rem;color:var(--green);">Watchdog: crash, context overflow, stuck, rate limit</td>
+          <td style="padding:0.6rem;">Recovery</td>
+          <td style="padding:0.6rem;color:var(--green);">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           <td style="padding:0.6rem;color:var(--green);">OTP supervision trees + exponential backoff</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
@@ -270,7 +270,7 @@
 │           amux-server-rs (long-running)                   │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
-│  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
+│  │ Web UI   │  │ REST API │  │ Monitor  │  │  Board  │ │
 │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
@@ -289,7 +289,7 @@
 
     <h3>What this means in practice</h3>
     <p>Symphony is optimized for <em>hands-off throughput</em>. Write well-scoped tickets, let agents grind, review the PRs. This works when your codebase has excellent test coverage, your tickets are unambiguous, and you trust the agent to make good architectural decisions without guidance.</p>
-    <p>amux is optimized for <em>hands-on control</em>. Start agents, watch them work, redirect when they go off track, send context they're missing, and let them coordinate with each other. This works when tasks are exploratory, when you want to steer agents in real time, or when you're running agents overnight and need self-healing recovery.</p>
+    <p>amux is optimized for <em>hands-on control</em>. Start agents, watch them work, redirect when they go off track, send context they're missing, and let them coordinate with each other. This works when tasks are exploratory, when you want to steer agents in real time, or when you're running agents overnight and need them to resume after usage limits.</p>
 
     <h2 id="workflows">Workflow Comparison</h2>
     <p>Same goal: implement 5 features across your codebase in parallel.</p>
@@ -341,9 +341,9 @@ amux serve  # → https://localhost:8824
 #   - Send a message to redirect an agent going off track
 #   - See token spend per session in real time
 #   - Check progress from your phone via the PWA
-#   - Trust the watchdog to restart any crash at 3am
+#   - Let agents resume on their own after a usage limit resets
 #   - Let agents delegate sub-tasks to each other via the board</code></pre>
-    <p><strong>Strengths:</strong> Interactive control. You can steer agents, monitor spend, check from your phone, and trust the self-healing watchdog for overnight runs. No external dependencies &mdash; the task board is built in.<br>
+    <p><strong>Strengths:</strong> Interactive control. You can steer agents, monitor spend, check from your phone, and let usage-limit resume and stall alerts carry overnight runs. No external dependencies &mdash; the task board is built in.<br>
     <strong>Limitations:</strong> More hands-on than Symphony's fire-and-forget model. You're managing a fleet, not just reviewing output. No automated PR generation pipeline (agents open PRs as part of their work, but it's not orchestrated at the system level).</p>
 
     <h2 id="agents">Agent Support &amp; Model Ecosystem</h2>
@@ -354,8 +354,8 @@ amux serve  # → https://localhost:8824
     <p>If you're on GPT/Codex, Symphony speaks your language natively. If you're on Claude Code, it does not.</p>
 
     <h3>amux: Claude Code-native</h3>
-    <p>amux is built around Claude Code. The self-healing watchdog, token tracking, context overflow detection, auto-compact triggers, and permission prompt handling are all specific to Claude Code's CLI output patterns. Other agents (Codex CLI, Aider, Gemini CLI) can run as amux sessions &mdash; each session is just a tmux pane &mdash; but they won't get the Claude-specific recovery features.</p>
-    <p>If you're on Claude Code, amux gives you deep, model-aware integration. If you're on Codex, the watchdog features are limited.</p>
+    <p>amux is built around Claude Code. Usage-limit detection, token tracking, stall detection, and the compaction threshold setting are all specific to Claude Code's CLI output patterns. Other agents (Codex CLI, Aider, Gemini CLI) can run as amux sessions &mdash; each session is just a tmux pane &mdash; but they won't get the Claude-specific recovery features.</p>
+    <p>If you're on Claude Code, amux gives you deep, model-aware integration. If you're on Codex, the Claude-specific features are limited.</p>
 
     <h3>The takeaway</h3>
     <p>The orchestrator you choose is largely determined by the model ecosystem you're in. Claude Code users should use amux. Codex users should use Symphony (or fork the spec for their agent of choice).</p>
@@ -372,23 +372,24 @@ amux serve  # → https://localhost:8824
     <p>You don't need Linear, Jira, or any external tool. The board lives in amux's dashboard, is accessible via the REST API, and works from your phone. Agents can create and claim board items programmatically, enabling agent-to-agent delegation.</p>
     <p>If you want to integrate with an external tracker, you can &mdash; amux's REST API makes it easy to build a sync. But it's not required.</p>
 
-    <h2 id="healing">Fault Tolerance &amp; Self-Healing</h2>
+    <h2 id="healing">Fault Tolerance &amp; Recovery</h2>
     <p>Both tools handle agent failures, but they address different failure modes.</p>
 
     <h3>Symphony: OTP supervision trees</h3>
     <p>Symphony leverages Elixir/OTP's supervision model. Each agent runs as a supervised process. If it crashes, the supervisor restarts it with exponential backoff (<code>delay = min(10000 &times; 2^(attempt-1), max_backoff)</code>). The Orchestrator GenServer reconciles state every tick, killing workers for terminal-state issues and detecting stalls.</p>
     <p>This is architecturally elegant and well-proven &mdash; OTP has decades of production reliability behind it. The trade-off: it handles process-level crashes but not AI-agent-level failures like context overflow, permission prompts, or model-specific stuck states.</p>
 
-    <h3>amux: AI-agent-aware watchdog</h3>
-    <p>amux's watchdog is purpose-built for the failure modes specific to AI coding agents:</p>
+    <h3>amux: AI-agent-aware recovery</h3>
+    <p>amux focuses on the failure modes specific to AI coding agents:</p>
     <ul>
-      <li><strong>Crash:</strong> Process dies &rarr; auto-restart, replay last user message</li>
-      <li><strong>Context overflow:</strong> Detected via Claude Code's output pattern &rarr; trigger <code>/compact</code> and continue</li>
-      <li><strong>Stuck:</strong> No new output for N minutes &rarr; send a nudge or restart</li>
-      <li><strong>Permission prompts:</strong> Auto-respond in YOLO mode so agents don't stall on <code>y/n</code> confirmations</li>
-      <li><strong>Rate limits:</strong> Back off and retry transparently</li>
+      <li><strong>Usage limits:</strong> Provider limit hits &rarr; amux holds delivery and resumes the agent at the provider's reset time</li>
+      <li><strong>Context:</strong> Claude Code compacts its own context; amux lets you set the compaction threshold per session</li>
+      <li><strong>Stuck:</strong> Stalled board work and stuck orchestrators &rarr; stall detection surfaces them and an owner alert fires</li>
+      <li><strong>Permission prompts:</strong> YOLO mode starts agents with approvals skipped so they don't stall on <code>y/n</code> confirmations</li>
+      <li><strong>Reboot and server crash:</strong> The amux server restarts through launchd or systemd; on macOS every worker comes back in its own conversation after a reboot</li>
+      <li><strong>Agent process crash:</strong> Not restarted by the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers</li>
     </ul>
-    <p>Symphony's OTP supervision handles "the process crashed." amux's watchdog handles "the AI agent is stuck, out of context, rate-limited, or waiting for a prompt it'll never get." For overnight coding agent runs, the latter set of failure modes is more common than the former.</p>
+    <p>Symphony's OTP supervision handles "the process crashed." amux handles "the AI agent hit a usage limit, stalled, or the machine rebooted." Pick based on which failures you expect most.</p>
 
     <h2 id="dashboards">Dashboards &amp; Remote Access</h2>
     <p><strong>Symphony has a minimal status surface.</strong> An optional Phoenix LiveView dashboard shows agent states and a JSON API exposes <code>/api/v1/state</code> and per-issue status. This is observability, not control &mdash; you can see what agents are doing but you can't interact with them from the dashboard. No mobile support.</p>
@@ -447,7 +448,7 @@ mise exec -- ./bin/symphony ./WORKFLOW.md</code></pre>
       <li>You use <strong>Claude Code</strong> and want native, model-aware integration</li>
       <li>You want a <strong>web dashboard</strong> you can access from any device, including your phone</li>
       <li>You want <strong>interactive control</strong> &mdash; send messages to agents, steer them in real time</li>
-      <li>You need <strong>self-healing</strong> for context overflows, stuck sessions, and permission prompts, not just process crashes</li>
+      <li>You need agents that <strong>resume after usage limits</strong> and alerts for stalled sessions</li>
       <li>You want a <strong>built-in task board</strong> without depending on Linear or any external tracker</li>
       <li>You want agents that can <strong>coordinate with each other</strong> via the shared board and REST API</li>
       <li>You need <strong>token spend visibility</strong> per session</li>
@@ -458,7 +459,7 @@ mise exec -- ./bin/symphony ./WORKFLOW.md</code></pre>
     <h3>The honest summary</h3>
     <p>Symphony and amux are not competing for the same workflow. They represent two different answers to the question "how should humans interact with a fleet of coding agents?"</p>
     <p><strong>Symphony says:</strong> "Humans shouldn't interact with agents at all. Write tickets, review PRs. The middle is automated." This is the factory model &mdash; issues are raw material, PRs are finished goods, agents are the machines.</p>
-    <p><strong>amux says:</strong> "Humans should have a cockpit. See everything, steer when needed, let agents coordinate, and trust self-healing for the overnight shift." This is the fleet management model &mdash; agents are collaborators, not assembly lines.</p>
+    <p><strong>amux says:</strong> "Humans should have a cockpit. See everything, steer when needed, let agents coordinate, and let agents resume after usage limits on the overnight shift." This is the fleet management model &mdash; agents are collaborators, not assembly lines.</p>
     <p>Neither is wrong. Symphony's model works when tasks are well-defined and your test suite catches mistakes. amux's model works when tasks are exploratory, when context matters, or when you want the peace of mind that comes from being able to check your phone and see that all 15 agents are still running at 3am.</p>
     <p>The most telling difference: Symphony optimizes for <em>PR throughput</em>. amux optimizes for <em>developer confidence</em>.</p>
 
@@ -491,7 +492,7 @@ amux serve</code></pre>
     <p>OpenAI explicitly states Symphony is a reference implementation, not a standalone product they plan to maintain. The repo has 12 commits and no versioned releases. The SPEC.md is the durable artifact. amux is actively developed with regular releases.</p>
 
     <h3>Which has better fault tolerance?</h3>
-    <p>Symphony uses OTP supervision trees &mdash; architecturally elegant for process crashes. amux uses a built-in watchdog tuned for AI-agent-specific failures: context overflow, stuck sessions, permission prompts, rate limits. For coding agent operations, amux covers more failure modes.</p>
+    <p>Symphony uses OTP supervision trees, which restart a crashed agent process with exponential backoff. amux covers a different set of failures: it holds delivery through usage limits and resumes at the provider's reset, flags stalled sessions with stall detection and alerts, lets you set Claude Code's compaction threshold, and on macOS brings every worker back in its own conversation after a reboot. Restarting a crashed agent process is not built into the amux server; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers.</p>
 
     <h3>Which is easier to set up?</h3>
     <p>amux. Single Rust binary that needs only tmux 3.2+ and an agent CLI. Symphony requires Elixir/OTP runtime, mise, a Linear API key, and Codex access.</p>
@@ -508,7 +509,7 @@ amux serve</code></pre>
     <h3>Are there other orchestrators I should consider?</h3>
     <p>Yes. See <a href="/compare/amux-vs-cmux/">cmux</a> (native macOS terminal), <a href="/compare/amux-vs-dmux/">dmux</a> (worktree-focused CLI), <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), and the full <a href="/compare/">comparison index</a>.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with self-healing, mobile monitoring, token tracking, and a built-in task board. One Rust binary. No Linear required. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with usage-limit resume, mobile monitoring, token tracking, and a built-in task board. One Rust binary. No Linear required. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>

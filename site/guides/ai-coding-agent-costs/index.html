@@ -161,7 +161,7 @@
 <ul>
   <li>Track per-session token spend over time. Flag sessions that burn tokens without producing commits.</li>
   <li>Set kill thresholds: if a session exceeds X tokens without a git commit, pause it for human review.</li>
-  <li>Use a self-healing watchdog that detects repeated error patterns and intervenes.</li>
+  <li>Use stall detection that flags sessions whose work stops moving and alerts you.</li>
 </ul>
 
 <h3>4. Redundant work across agents</h3>
@@ -305,7 +305,7 @@ print(f\"  {'TOTAL':20s} \${total:.2f}\")
 
 <p>AI model costs drop 50&ndash;70% per year. In 2024, running 10 agents overnight was impractical — it would cost $500+ per run on GPT-4. In 2026, the same workload costs $50&ndash;$120 with Sonnet. By 2027, expect another 50% drop.</p>
 
-<p>The implication: <strong>invest in the orchestration infrastructure now</strong>. The per-token cost is falling fast, which means the ROI of running more agents keeps improving. The bottleneck isn't cost — it's having the coordination layer to make those agents productive. Task boards, inter-agent messaging, cost tracking, and self-healing are the infrastructure that turns cheaper tokens into cheaper features.</p>
+<p>The implication: <strong>invest in the orchestration infrastructure now</strong>. The per-token cost is falling fast, which means the ROI of running more agents keeps improving. The bottleneck isn't cost — it's having the coordination layer to make those agents productive. Task boards, inter-agent messaging, cost tracking, and recovery after usage limits are the infrastructure that turns cheaper tokens into cheaper features.</p>
 
 <div class="cta-box">
   <h3>Track costs across your agent fleet</h3>

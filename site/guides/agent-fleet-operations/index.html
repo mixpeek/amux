@@ -132,7 +132,7 @@
         "name": "What does the status dot color mean on each agent session card?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Green = the agent is actively producing output (working). Yellow = the agent is idle or waiting for input — it may be waiting for a permission prompt, have hit a context limit, or have finished its task. Red = the session has errored or crashed. The amux self-healing watchdog auto-restarts crashed (red) sessions if configured. For idle (yellow) sessions, use 'Continue all idle sessions' in the bulk-actions modal to restart the whole fleet at once."
+          "text": "Green = the agent is actively producing output (working). Yellow = the agent is idle or waiting for input — it may be waiting for a permission prompt, have hit a context limit, or have finished its task. Red = the session has errored or crashed. The amux server does not restart crashed (red) sessions; restart them by hand, or install the optional macOS script (scripts/tmux-watchdog.sh, not installed by default) that restarts crashed Claude Code workers. For idle (yellow) sessions, use 'Continue all idle sessions' in the bulk-actions modal to restart the whole fleet at once."
         }
       }
     ]
@@ -174,7 +174,7 @@
       <strong>Quick answer:</strong> amux provides three fleet operation primitives — the <strong>bulk-actions modal</strong> for fleet-wide commands (including "Continue all idle sessions"), the <strong>peek panel</strong> for per-agent deep inspection including subagent transcripts and historical scrollback, and the <strong>session list</strong> for at-a-glance health via color-coded status dots. You can wake up, inspect, or redirect a fleet of 10–50 agents from a single dashboard tab or your phone — without touching a terminal.
     </div>
 
-    <p>amux is an open-source control plane for AI agent teams — it runs dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Once you're <a href="/guides/running-10-plus-agents/">running 10+ agents</a>, the individual-session mental model breaks down. You need fleet-level operations: bulk actions that apply to all agents simultaneously, fast triage to identify which sessions need attention, and deep inspection capabilities for when something goes wrong.</p>
+    <p>amux is an open-source control plane for AI agent teams — it runs dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. Once you're <a href="/guides/running-10-plus-agents/">running 10+ agents</a>, the individual-session mental model breaks down. You need fleet-level operations: bulk actions that apply to all agents simultaneously, fast triage to identify which sessions need attention, and deep inspection capabilities for when something goes wrong.</p>
 
     <p>This guide covers the moment-to-moment work of fleet operations — reading the health view, taking bulk actions, inspecting individual agents, monitoring subagents, loading historical output, and doing all of it from your phone.</p>
 
@@ -290,7 +290,7 @@ done
       <li><strong>Morning diagnosis</strong> — understand what happened overnight by reading from the point where an agent went quiet, then paging backward to find the root cause</li>
       <li><strong>Audit trail</strong> — verify what decisions an agent made during a complex migration before merging its changes</li>
       <li><strong>Subagent history</strong> — after switching to a subagent's transcript, load its earlier output to understand how it approached its subtask from the start</li>
-      <li><strong>Post-incident review</strong> — after a crash and restart, read the pre-crash output to understand what the agent was doing when it failed</li>
+      <li><strong>Post-incident review</strong> — after a crash and a manual restart, read the pre-crash output to understand what the agent was doing when it failed</li>
     </ul>
 
     <h2>Responsive monitoring from your phone (v0.9.85)</h2>
@@ -365,9 +365,9 @@ done
           <td style="padding:0.6rem 0.75rem">Bulk-actions → "Continue all idle sessions" (v0.9.78)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
-          <td style="padding:0.6rem 0.75rem">Restart crashed agents automatically</td>
-          <td style="padding:0.6rem 0.75rem">Manual — check for dead tmux sessions, restart by hand</td>
-          <td style="padding:0.6rem 0.75rem">Self-healing watchdog auto-restarts on crash and replays last message</td>
+          <td style="padding:0.6rem 0.75rem">Recovery</td>
+          <td style="padding:0.6rem 0.75rem">Manual: wait out usage limits, restart sessions by hand after a reboot</td>
+          <td style="padding:0.6rem 0.75rem">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">Inspect individual subagent transcripts</td>
@@ -412,7 +412,7 @@ done
     <p>Yes. The amux iOS app and PWA provide the full fleet operations surface on any screen size. As of v0.9.85, the peek panel reflows to your phone's character width — no double-wrapping. Use Tailscale for secure remote access from anywhere, or run <a href="/cloud/">amux Cloud</a>, your own always-on server at <code>yourname.amux.io</code>.</p>
 
     <h3>What does the status dot color mean?</h3>
-    <p><span style="color:var(--c-green)">Green</span> = actively working. <span style="color:light-dark(oklch(0.48 0.150 86.0), #eab308)">Yellow</span> = idle or waiting for input (needs attention or just finished). <span style="color:#ef4444">Red</span> = crashed or errored. The self-healing watchdog auto-restarts red sessions if configured. For yellow sessions, use "Continue all idle sessions" from the bulk-actions modal.</p>
+    <p><span style="color:var(--c-green)">Green</span> = actively working. <span style="color:light-dark(oklch(0.48 0.150 86.0), #eab308)">Yellow</span> = idle or waiting for input (needs attention or just finished). <span style="color:#ef4444">Red</span> = crashed or errored. The amux server does not restart red sessions; restart them by hand, or install the optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) that restarts crashed Claude Code workers. For yellow sessions, use "Continue all idle sessions" from the bulk-actions modal.</p>
 
     <h3>How do I see what my AI team accomplished this week?</h3>
     <p>Open the Review tab. It shows a weekly synthesis across all sessions: total tasks, total tokens, per-epic card breakdown, and blockers. Generated automatically from the board — no prompting required. For a theme-based view, open the Messages tab and switch to Trends. See the <a href="/guides/ai-agent-team-review/">AI agent team review guide</a> for a full walkthrough.</p>
@@ -425,7 +425,7 @@ done
 
     <div class="cta-box">
       <h3>Run an AI engineering team from one dashboard</h3>
-      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
+      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -441,7 +441,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <ul>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ AI coding agents in parallel</a></li>
       <li><a href="/guides/claude-code-plan-monitoring/">Claude Code monitoring — plan strip, peek panel, and live output</a></li>
-      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/self-healing-configuration/">Recovery configuration</a></li>
       <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
       <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>
       <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a></li>

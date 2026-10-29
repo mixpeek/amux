@@ -329,7 +329,7 @@
     <p>Claude Code in non-YOLO mode pauses and waits for you to approve certain actions. Open the peek panel and scroll to the bottom — if you see a permission prompt, send "yes" or "approve" via the send bar, or configure <a href="/guides/setting-up-yolo-mode/">YOLO mode</a> to auto-approve for trusted contexts.</p>
 
     <h3>Context window full</h3>
-    <p>When the context window fills, Claude Code stops. The output will contain a message about the context limit. Use the "compact" quick-action chip in the peek panel to trigger <code>/compact</code>, which summarizes the context and continues. amux's <a href="/guides/self-healing-configuration/">self-healing watchdog</a> can auto-compact on context overflow if configured.</p>
+    <p>When the context window fills, Claude Code stops. The output will contain a message about the context limit. Use the "compact" quick-action chip in the peek panel to trigger <code>/compact</code>, which summarizes the context and continues. Claude Code also compacts on its own, and amux lets you set the compaction threshold (see <a href="/guides/self-healing-configuration/">Recovery configuration</a>).</p>
 
     <h3>Multiple agents idle at once</h3>
     <p>If you see several sessions go yellow at the same time (common after an overnight run), don't click into each one individually. Open the bulk-actions modal and use "Continue all idle sessions" to wake up the entire fleet in one tap.</p>
@@ -341,7 +341,7 @@
     <p>Check the plan strip — if all tasks show as completed, the agent may have finished and is waiting for you to review. Look at the output for a summary or a prompt for next steps. The session status dot will typically be yellow (waiting) rather than green (active) in this case.</p>
 
     <h3>Process crash</h3>
-    <p>The session status dot goes red. The amux watchdog detects the exit and can auto-restart the session, replaying the last message so the agent picks up where it left off. Enable this in your <a href="/guides/self-healing-configuration/">self-healing configuration</a>.</p>
+    <p>The session status dot goes red. Restarting a crashed agent process is not built into the amux server, so restart the session from the dashboard. On macOS, the optional <code>scripts/tmux-watchdog.sh</code> (not installed by default) restarts crashed Claude Code workers. See <a href="/guides/self-healing-configuration/">Recovery configuration</a>.</p>
 
     <h2>Monitoring with amux vs. without it</h2>
 
@@ -438,7 +438,7 @@
     <p>Open the bulk-actions modal from the main dashboard toolbar and tap "Continue all idle sessions" (v0.9.78). This sends a "continue" message to every session currently showing as idle — waking up the whole fleet in one tap. Particularly useful in the morning after an overnight run where multiple agents hit context limits simultaneously.</p>
 
     <h3>What do I do when an agent stops producing output?</h3>
-    <p>Open the peek panel and check the last few lines of output. Common causes: waiting for a permission prompt (send "yes"), context window full (use the compact chip), genuinely stuck (send a steering message asking it to report its current state), or crashed (the watchdog auto-restarts if configured). See the full decision tree in the "What to do when an agent goes quiet" section above.</p>
+    <p>Open the peek panel and check the last few lines of output. Common causes: waiting for a permission prompt (send "yes"), context window full (use the compact chip), genuinely stuck (send a steering message asking it to report its current state), or crashed (restart it from the dashboard). See the full decision tree in the "What to do when an agent goes quiet" section above.</p>
 
     <h3>Is there an API to read agent plan data programmatically?</h3>
     <p>Yes: <code>GET /api/sessions/{name}/plan</code> returns structured JSON with the agent's task list including status for each task (pending, in_progress, completed). Useful for CI integration, custom dashboards, or scripts that trigger on task completion.</p>
@@ -462,7 +462,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <li><a href="/guides/getting-started/">Getting started with amux</a></li>
       <li><a href="/guides/agent-fleet-operations/">AI Agent Fleet Operations — bulk actions and fleet-level visibility</a></li>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ AI coding agents in parallel</a></li>
-      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/self-healing-configuration/">Recovery configuration</a></li>
       <li><a href="/guides/setting-up-yolo-mode/">Setting up YOLO mode</a></li>
       <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
       <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>

@@ -76,7 +76,7 @@
         "@type": "HowToStep",
         "position": 2,
         "name": "Set up an agent control plane",
-        "text": "Install a control plane like amux to launch, monitor, and coordinate your agents from a single dashboard. Run: curl -fsSL https://amux.io/install.sh | bash. The control plane gives you a web dashboard, mobile PWA, self-healing watchdog, and a shared kanban board, replacing the manual tmux juggling that breaks down past 3-4 agents."
+        "text": "Install a control plane like amux to launch, monitor, and coordinate your agents from a single dashboard. Run: curl -fsSL https://amux.io/install.sh | bash. The control plane gives you a web dashboard, mobile PWA, usage-limit resume and stall alerts, and a shared kanban board, replacing the manual tmux juggling that breaks down past 3-4 agents."
       },
       {
         "@type": "HowToStep",
@@ -87,8 +87,8 @@
       {
         "@type": "HowToStep",
         "position": 4,
-        "name": "Enable self-healing for overnight operation",
-        "text": "Configure the self-healing watchdog to detect and recover from common failure modes automatically: context compaction (agent rewrites its own context when it fills up), crash recovery (restart on unexpected exit), stall detection (replay the last message if an agent goes silent), and credit-gate handling (pause and alert instead of losing progress when API credits run out). With self-healing enabled, you can start your agents at night and review finished work in the morning."
+        "name": "Set up recovery for overnight operation",
+        "text": "Set up recovery for the failure modes of long runs: context compaction (Claude Code compacts its own context, and amux lets you set the threshold), usage limits (amux holds delivery and resumes the agent at the provider's reset), reboots (on macOS a login job brings every worker back in its own conversation), and stall detection (stalled board work is surfaced and an owner alert fires). Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. With this in place, you can start your agents at night and review finished work in the morning."
       },
       {
         "@type": "HowToStep",
@@ -125,7 +125,7 @@
       "name": "What tools do you need to run an AI engineering team?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "The core stack is: (1) a terminal AI coding agent — Claude Code, Codex CLI, or Antigravity CLI — that does the actual coding; (2) a control plane like amux that launches, monitors, self-heals, and coordinates your agent fleet; (3) a task management system — amux includes a built-in kanban board, or you can integrate with GitHub Issues, Linear, or Jira; (4) a version control workflow that supports parallel branches — typically one git branch per agent, merged via PR after review; and optionally (5) a CI/CD pipeline that agents can trigger to run tests and deploy. Most teams start with just items 1 and 2 and add the rest as they scale."
+        "text": "The core stack is: (1) a terminal AI coding agent — Claude Code, Codex CLI, or Antigravity CLI — that does the actual coding; (2) a control plane like amux that launches, monitors, and coordinates your agent fleet and resumes it after usage limits; (3) a task management system — amux includes a built-in kanban board, or you can integrate with GitHub Issues, Linear, or Jira; (4) a version control workflow that supports parallel branches — typically one git branch per agent, merged via PR after review; and optionally (5) a CI/CD pipeline that agents can trigger to run tests and deploy. Most teams start with just items 1 and 2 and add the rest as they scale."
       }
     },
     {
@@ -141,7 +141,7 @@
       "name": "Can AI agents run overnight unattended?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes — with the right setup. The two most common failure modes for overnight runs are context exhaustion (the agent fills its context window and stops) and API rate limits or credit gates (the agent's API calls start failing). Both are solvable: modern agents like Claude Code auto-compact their context; a control plane like amux detects context compaction events and triggers a clean restart. For rate limits, amux's watchdog detects when an agent is stalled on an API response and alerts you rather than silently hanging. Teams running overnight agents typically: (1) start agents after a final task review; (2) set up alert notifications for stalls or failures; (3) review output the next morning. With self-healing in place, most 8-hour runs complete without intervention."
+        "text": "Yes — with the right setup. The two most common failure modes for overnight runs are context exhaustion (the agent fills its context window and stops) and API rate limits or credit gates (the agent's API calls start failing). Both are solvable: Claude Code compacts its own context, and amux lets you set the compaction threshold. For usage limits, amux holds message delivery and resumes the agent at the provider's reset time, and stall detection alerts you if work stops moving. Teams running overnight agents typically: (1) start agents after a final task review; (2) set up alert notifications for stalls or failures; (3) review output the next morning. With this in place, most 8-hour runs complete without intervention."
       }
     },
     {
@@ -207,7 +207,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>How to Run an AI Engineering Team</span></div>
 
     <h1>How to Run an AI Engineering Team</h1>
-    <p class="subtitle">To run an AI engineering team, you run several AI coding agents (Claude Code, Codex, Gemini CLI) in parallel, give them one shared task board, and supervise them from a single dashboard or your phone. One developer directing 10 to 50 agents can out-ship a traditional five-person team, and with a self-healing control plane the agents keep working overnight. This guide covers the stack, the setup, team sizes, overnight operation and the self-host vs hosted choice.</p>
+    <p class="subtitle">To run an AI engineering team, you run several AI coding agents (Claude Code, Codex, Gemini CLI) in parallel, give them one shared task board, and supervise them from a single dashboard or your phone. One developer directing 10 to 50 agents can out-ship a traditional five-person team, and with a control plane that resumes them after usage limits the agents keep working overnight. This guide covers the stack, the setup, team sizes, overnight operation and the self-host vs hosted choice.</p>
     <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated October 2026 &middot; 16 min read</p>
 
     <!-- EXP-088: top-of-page CTA on run-ai-engineering-team guide (Sept 2026) -->
@@ -264,7 +264,7 @@
         </tr>
         <tr>
           <td><strong>Control plane</strong></td>
-          <td>Launches, monitors, self-heals, and coordinates agent sessions; provides the dashboard</td>
+          <td>Launches, monitors, and coordinates agent sessions, resumes them after usage limits; provides the dashboard</td>
           <td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (open source), DIY tmux scripts (manual)</td>
         </tr>
         <tr>
@@ -335,7 +335,7 @@
 
     <h3>Step 2 — Set up a control plane</h3>
 
-    <p>The control plane is what transforms a collection of terminal sessions into an actual team. Without it, you're manually watching tmux windows and hoping nothing crashes. With it, you have a real-time view of every agent, automatic crash recovery, and a shared task board.</p>
+    <p>The control plane is what transforms a collection of terminal sessions into an actual team. Without it, you're manually watching tmux windows and hoping nothing crashes. With it, you have a real-time view of every agent, stall alerts, and a shared task board.</p>
 
     <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the leading open-source control plane for AI agent fleets (541★, open source, one Rust binary plus SQLite):</p>
 
@@ -348,7 +348,7 @@ for i in 1 2 3 4 5; do amux register myproject-$i --dir ~/Dev/myproject --yolo; 
 <span class="dim"># Open the web dashboard</span>
 amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
 
-    <p>Once the control plane is running, you get: a web dashboard showing all agents and their live output, a mobile PWA so you can check in from your phone, a shared kanban board for task distribution, and a watchdog that detects stalls and crashes and recovers automatically.</p>
+    <p>Once the control plane is running, you get: a web dashboard showing all agents and their live output, a mobile PWA so you can check in from your phone, a shared kanban board for task distribution, stall detection with owner alerts, and resume after usage limits.</p>
 
     <p><strong>New in September 2026:</strong> Auto-drain lets idle workers pull from the backlog automatically when their todo queue empties (set <code>AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1</code> in worker scope). The board hygiene runtime job ages and auto-archives stale cards, keeping large fleets from accumulating noise. The new <code>amux board shepherd</code> command is the escape hatch for cards stuck in bad states.</p>
 
@@ -373,15 +373,15 @@ git worktree add ../agent-1 main
 git worktree add ../agent-2 main
 <span class="dim"># Each agent works in its own directory, no file conflicts</span></code></pre>
 
-    <h3>Step 4 — Enable self-healing for overnight operation</h3>
+    <h3>Step 4 — Set up recovery for overnight operation</h3>
 
     <p>The two main failure modes for long-running agents are context exhaustion and API stalls. Both need to be handled automatically, because you won't be watching.</p>
 
     <ul>
-      <li><strong>Context compaction</strong>: Claude Code auto-compacts when the context window fills. amux's watchdog detects the compaction event and ensures the agent continues cleanly rather than hanging mid-task.</li>
-      <li><strong>Crash recovery</strong>: The watchdog restarts crashed sessions and replays the last message so the agent picks up where it left off.</li>
+      <li><strong>Context compaction</strong>: Claude Code compacts its own context when the window fills, and amux lets you set the compaction threshold.</li>
+      <li><strong>Crashes and reboots</strong>: Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. The OS service restarts the amux server itself, and on macOS a login job brings every non-archived worker back after a reboot, each resumed in its own conversation.</li>
       <li><strong>Stall detection</strong>: If an agent stops responding for too long (typically a credit gate or network issue), amux surfaces a "stalled Nm" badge and sends an alert rather than silently hanging.</li>
-      <li><strong>Credit gate handling</strong>: When Anthropic's usage limits are hit, amux pauses the agent and alerts you via push notification — it does not retry in a loop that burns tokens after the gate.</li>
+      <li><strong>Usage limits</strong>: When a provider's usage limit hits, amux holds message delivery and resumes the agent at the provider's reset time, so it does not retry in a loop that burns tokens.</li>
     </ul>
 
     <h3>Step 5 — Monitor from your phone</h3>
@@ -465,8 +465,8 @@ git worktree add ../agent-2 main
     <ul>
       <li><strong>Task clarity:</strong> Each task must be fully self-contained — specs, file locations, acceptance criteria. Agents that need to ask a clarifying question will stall.</li>
       <li><strong>Worktree isolation:</strong> Use one git worktree per agent. Merges happen in the morning after your review.</li>
-      <li><strong>Watchdog active:</strong> Confirm the self-healing watchdog is running before you sleep. In amux, this is on by default.</li>
-      <li><strong>Notifications set up:</strong> Configure push alerts for stalls or failures so you can check in if something breaks — but also trust the watchdog to handle most recoveries automatically.</li>
+      <li><strong>Usage-limit resume on:</strong> Confirm <code>AMUX_RATE_LIMIT_ACTION</code> is <code>wait</code> so agents resume at the provider's reset.</li>
+      <li><strong>Notifications set up:</strong> Configure push alerts for stalls or failures so you can check in if something breaks. A crashed agent process stays down until you restart it.</li>
       <li><strong>Small tasks:</strong> Tasks that take 2-4 hours complete reliably overnight. Tasks that take 8+ hours are more likely to hit a context limit or edge case that needs human judgment. Break large tasks down.</li>
       <li><strong>Review gates:</strong> If your CI is set up, failed tests automatically flag the task for review. Agents that pass tests can have their branches auto-merged if you trust the CI signal.</li>
     </ul>
@@ -490,7 +490,7 @@ git worktree add ../agent-2 main
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — the open-source control plane for AI engineering teams (440★ GitHub)</div>
-        <div style="color:var(--muted);font-size:.9rem">Launch, monitor, and self-heal your Claude Code, Codex, or Antigravity CLI fleet. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT + Commons Clause, single Rust binary, zero external dependencies.</div>
+        <div style="color:var(--muted);font-size:.9rem">Launch and monitor your Claude Code, Codex, or Antigravity CLI fleet, with resume after usage limits. Shared kanban board, mobile PWA, offline scrollback, voice dictation. MIT + Commons Clause, single Rust binary, zero external dependencies.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
@@ -499,7 +499,7 @@ git worktree add ../agent-2 main
 
     <h2 id="hosting">Self-Host or Hosted: Where Should Your AI Team Run?</h2>
 
-    <p>An AI engineering team only works overnight if the machine running it stays on. You have two options with amux, and the product is the same in both: the same board, messages, schedules and self-healing.</p>
+    <p>An AI engineering team only works overnight if the machine running it stays on. You have two options with amux, and the product is the same in both: the same board, messages, schedules and recovery.</p>
 
     <table>
       <thead>
@@ -546,7 +546,7 @@ git worktree add ../agent-2 main
     <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
       <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">What tools do you need to run an AI engineering team?</summary>
       <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-        <p>The core stack: (1) a terminal AI coding agent like Claude Code, Codex CLI, or Antigravity CLI; (2) a control plane like amux for launch, monitoring, and self-healing; (3) git worktrees for file isolation between agents; (4) a task board (amux includes one built in) for coordination. CI/CD integration is optional but closes the feedback loop. Start with just items 1 and 2.</p>
+        <p>The core stack: (1) a terminal AI coding agent like Claude Code, Codex CLI, or Antigravity CLI; (2) a control plane like amux for launch, monitoring, and recovery after usage limits; (3) git worktrees for file isolation between agents; (4) a task board (amux includes one built in) for coordination. CI/CD integration is optional but closes the feedback loop. Start with just items 1 and 2.</p>
       </div>
     </details>
 
@@ -560,7 +560,7 @@ git worktree add ../agent-2 main
     <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
       <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">Can AI agents run overnight unattended?</summary>
       <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-        <p>Yes, with the right setup. The main failure modes are context exhaustion (Claude Code auto-compacts; amux watchdog ensures a clean restart) and API stalls (amux detects stalls and alerts you rather than hanging). Use small, self-contained tasks (2-4 hour scope), enable the watchdog, and set up push notifications for failures. Most 8-hour runs complete without intervention when the self-healing stack is in place.</p>
+        <p>Yes, with the right setup. The main failure modes are context exhaustion (Claude Code compacts its own context; amux lets you set the threshold) and usage limits or stalls (amux resumes at the provider's reset and alerts you when work stalls). Use small, self-contained tasks (2-4 hour scope) and set up push notifications for failures. Most 8-hour runs complete without intervention with this in place.</p>
       </div>
     </details>
 
@@ -596,9 +596,9 @@ git worktree add ../agent-2 main
     <ul>
       <li><a href="/guides/getting-started/">Getting Started with amux</a> — install amux and launch your first agent fleet</li>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents in Parallel</a> — scaling beyond 10 agents: coordination, worktrees, and review cadence</li>
-      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> — reliable unattended operation with self-healing and watchdog alerts</li>
+      <li><a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> — reliable unattended operation with usage-limit resume and stall alerts</li>
       <li><a href="/guides/mobile-management-pwa/">Managing Your Agent Fleet from Mobile</a> — iOS and Android PWA setup and workflow</li>
-      <li><a href="/guides/self-healing-configuration/">Self-Healing Agent Configuration</a> — watchdog setup, stall detection, crash recovery</li>
+      <li><a href="/guides/self-healing-configuration/">Recovery configuration</a> — usage-limit resume, reboot restore, stall detection</li>
       <li><a href="/guides/team-workflow-setup/">Team Workflow Setup</a> — multi-person teams using a shared amux instance</li>
       <li><a href="/guides/voice-dictation-ai-agents/">Voice Dictation for AI Agents</a> — dictate to your fleet using Whisper on iOS or desktop</li>
       <li><a href="/blog/best-terminal-ai-coding-agents-2026/">Best Terminal AI Coding Agents in 2026</a> — full comparison of Claude Code, Codex CLI, Antigravity CLI, Aider, and more</li>

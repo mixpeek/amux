@@ -67,7 +67,7 @@
 <ul>
 <li><strong>Vague task descriptions:</strong> An agent that goes in the wrong direction and needs to backtrack uses 3-5x more tokens than one that executes correctly the first time. Write clear, specific task descriptions.</li>
 <li><strong>Agents reading the whole codebase:</strong> If an agent reads 500k tokens of source code for a 10-line fix, your cost explodes. Keep task scope tight and specify relevant files explicitly.</li>
-<li><strong>Long error loops:</strong> An agent stuck in a loop trying to fix a compilation error can burn thousands of tokens on unproductive iterations. amux's watchdog detects stuck agents and interrupts them.</li>
+<li><strong>Long error loops:</strong> An agent stuck in a loop trying to fix a compilation error can burn thousands of tokens on unproductive iterations. amux's stall detection flags board work that stops moving and alerts you, so you can stop the loop early.</li>
 <li><strong>No context boundaries:</strong> Running agents on huge context windows when smaller ones would suffice. Use session checkpointing and compact summaries to keep context efficient.</li>
 </ul>
 <h2>The Real ROI Calculation</h2>

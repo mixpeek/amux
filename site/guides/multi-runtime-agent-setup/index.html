@@ -403,7 +403,7 @@ Claiming workflow:
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Can amux run Claude Code, Codex, and Gemini CLI at the same time?</summary>
-      <p style="margin:0.8rem 0 0;">Yes. amux is runtime-agnostic. Any CLI tool registers as a session and gets the same watchdog, board integration, and dashboard visibility. All three major AI coding runtimes are supported as of July 2026, including Antigravity CLI (Google's Gemini successor).</p>
+      <p style="margin:0.8rem 0 0;">Yes. amux is runtime-agnostic. Any CLI tool registers as a session and gets the same stall detection, board integration, and dashboard visibility. All three major AI coding runtimes are supported as of July 2026, including Antigravity CLI (Google's Gemini successor).</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -425,7 +425,7 @@ Claiming workflow:
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is the open-source control plane for running Claude Code, Codex, and Gemini CLI agents together — shared kanban, self-healing watchdog, iOS app. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
+      <p>amux is the open-source control plane for running Claude Code, Codex, and Gemini CLI agents together — shared kanban, resume after usage limits, iOS app. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 # Register Claude + Codex + Gemini sessions
 amux register claude-1 --cmd "claude" --yolo
@@ -439,7 +439,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p style="margin-top:2rem;"><strong>Related guides:</strong>
       <a href="/guides/scaling-to-50-agents/">Scaling to 50+ Agents</a> ·
       <a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> ·
-      <a href="/guides/self-healing-configuration/">Self-Healing Configuration</a> ·
+      <a href="/guides/self-healing-configuration/">Recovery configuration</a> ·
       <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a> ·
       <a href="/guides/setting-up-yolo-mode/">YOLO Mode Setup</a>
     </p>

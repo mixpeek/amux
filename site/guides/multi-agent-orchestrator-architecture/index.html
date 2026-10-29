@@ -6,25 +6,25 @@
   <meta name="theme-color" content="#1e2330">
   <title>How to Build a Multi-Agent Coding Orchestrator — Architecture Guide</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="The architecture behind multi-agent coding systems: task boards, inter-agent messaging, atomic claiming, self-healing, and cost control. Build the coordination layer that Claude Code Agent Teams doesn't include.">
+  <meta name="description" content="The architecture behind multi-agent coding systems: task boards, inter-agent messaging, atomic claiming, recovery, and cost control. Build the coordination layer that Claude Code Agent Teams doesn't include.">
   <meta name="keywords" content="multi-agent orchestrator, multi-agent coding architecture, agent coordination layer, agent task board, inter-agent messaging, claude code orchestration, agent fleet management, build agent orchestrator, multi-agent system design, AI agent infrastructure, agent control plane architecture, parallel agent coordination">
   <link rel="canonical" href="https://amux.io/guides/multi-agent-orchestrator-architecture/">
   <meta property="og:title" content="How to Build a Multi-Agent Coding Orchestrator — Architecture Guide">
-  <meta property="og:description" content="The architecture behind multi-agent coding systems. Task boards, inter-agent messaging, self-healing, and cost control — the layer that turns parallel agents into a coordinated system.">
+  <meta property="og:description" content="The architecture behind multi-agent coding systems. Task boards, inter-agent messaging, recovery, and cost control — the layer that turns parallel agents into a coordinated system.">
   <meta property="og:url" content="https://amux.io/guides/multi-agent-orchestrator-architecture/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="How to Build a Multi-Agent Coding Orchestrator">
-  <meta name="twitter:description" content="The missing infrastructure layer for parallel AI coding agents. Task boards, messaging, self-healing, and cost control.">
+  <meta name="twitter:description" content="The missing infrastructure layer for parallel AI coding agents. Task boards, messaging, recovery, and cost control.">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Build a Multi-Agent Coding Orchestrator — Architecture Guide","description":"The architecture behind multi-agent coding systems: task boards, inter-agent messaging, atomic claiming, self-healing, and cost control.","datePublished":"2026-04-18","dateModified":"2026-04-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/multi-agent-orchestrator-architecture/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Build a Multi-Agent Coding Orchestrator — Architecture Guide","description":"The architecture behind multi-agent coding systems: task boards, inter-agent messaging, atomic claiming, recovery, and cost control.","datePublished":"2026-04-18","dateModified":"2026-04-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/multi-agent-orchestrator-architecture/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Multi-Agent Orchestrator Architecture","item":"https://amux.io/guides/multi-agent-orchestrator-architecture/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a multi-agent coding orchestrator?","acceptedAnswer":{"@type":"Answer","text":"A multi-agent coding orchestrator is the infrastructure layer that coordinates parallel AI coding agents. It handles task distribution, inter-agent messaging, conflict avoidance, fault tolerance, and cost tracking — the problems that emerge when you run more than one agent at a time."}},{"@type":"Question","name":"Why can't I just use Claude Code Agent Teams?","acceptedAnswer":{"@type":"Answer","text":"Agent Teams handles spawning and worktree isolation, but it doesn't provide persistent task tracking, inter-session messaging, a web dashboard, mobile access, cost control, or self-healing for long-running sessions. It's the runtime layer — you still need the orchestration layer on top."}},{"@type":"Question","name":"How do agents coordinate without conflicts?","acceptedAnswer":{"@type":"Answer","text":"Through three mechanisms: atomic task claiming (SQLite CAS prevents two agents from taking the same work), git worktree isolation (each agent works on a separate branch), and inter-agent messaging (agents can notify peers about shared state changes)."}},{"@type":"Question","name":"What happens when an agent crashes at 3am?","acceptedAnswer":{"@type":"Answer","text":"A self-healing watchdog monitors all sessions. Context overflow triggers automatic compaction. Process crashes trigger restart with message replay. Stuck permission prompts get auto-answered in YOLO mode. The agent resumes without human intervention."}},{"@type":"Question","name":"How much does it cost to run 10 agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code Max subscription, 10 agents typically cost $0 beyond the subscription. With API keys, expect $30-150 per overnight run depending on task complexity. Per-session token tracking lets you identify expensive agents and set kill thresholds."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a multi-agent coding orchestrator?","acceptedAnswer":{"@type":"Answer","text":"A multi-agent coding orchestrator is the infrastructure layer that coordinates parallel AI coding agents. It handles task distribution, inter-agent messaging, conflict avoidance, fault tolerance, and cost tracking — the problems that emerge when you run more than one agent at a time."}},{"@type":"Question","name":"Why can't I just use Claude Code Agent Teams?","acceptedAnswer":{"@type":"Answer","text":"Agent Teams handles spawning and worktree isolation, but it doesn't provide persistent task tracking, inter-session messaging, a web dashboard, mobile access, cost control, or recovery for long-running sessions (resume after usage limits, stall alerts). It's the runtime layer — you still need the orchestration layer on top."}},{"@type":"Question","name":"How do agents coordinate without conflicts?","acceptedAnswer":{"@type":"Answer","text":"Through three mechanisms: atomic task claiming (SQLite CAS prevents two agents from taking the same work), git worktree isolation (each agent works on a separate branch), and inter-agent messaging (agents can notify peers about shared state changes)."}},{"@type":"Question","name":"What happens when an agent crashes at 3am?","acceptedAnswer":{"@type":"Answer","text":"Restarting a crashed agent process is not built into the amux server today. An optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does: stall detection flags board work that stops moving and an owner alert fires, so you see it. Usage limits hold delivery and resume at the provider's reset. The OS service restarts the amux server process, and on macOS a login job brings every worker back after a reboot. YOLO mode launches Claude Code with --dangerously-skip-permissions, so approval prompts never appear."}},{"@type":"Question","name":"How much does it cost to run 10 agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code Max subscription, 10 agents typically cost $0 beyond the subscription. With API keys, expect $30-150 per overnight run depending on task complexity. Per-session token tracking lets you identify expensive agents and set kill thresholds."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -68,7 +68,7 @@
 <tr><td><strong>1. Runtime</strong></td><td>Start/stop agent processes, isolate workspaces</td><td>Can't run more than one agent</td></tr>
 <tr><td><strong>2. Task distribution</strong></td><td>Assign work, prevent duplicates, track progress</td><td>Agents duplicate each other's work</td></tr>
 <tr><td><strong>3. Communication</strong></td><td>Inter-agent messaging, shared state, notifications</td><td>Agents work in silos, miss dependencies</td></tr>
-<tr><td><strong>4. Fault tolerance</strong></td><td>Crash recovery, context compaction, self-healing</td><td>Overnight runs die at 2am, you wake up to nothing</td></tr>
+<tr><td><strong>4. Fault tolerance</strong></td><td>Usage-limit resume, compaction threshold, stall alerts</td><td>Overnight runs die at 2am, you wake up to nothing</td></tr>
 <tr><td><strong>5. Governance</strong></td><td>Cost tracking, kill switches, observability</td><td>Runaway costs, no visibility into what agents are doing</td></tr>
 </tbody>
 </table>
@@ -176,35 +176,39 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 # Any other agent can read it
 curl -sk $AMUX_URL/api/notes/auth-migration</code></pre>
 
-<h2>Layer 4: Fault tolerance — self-healing</h2>
+<h2>Layer 4: Fault tolerance and recovery</h2>
 
 <p>This is the layer that separates "I ran 10 agents for a demo" from "I run 10 agents every night and ship the PRs in the morning."</p>
 
 <h3>Failure mode 1: Context overflow</h3>
 
-<p>Claude Code has a context window. Long-running agents hit it. When they do, the agent stalls with a compaction prompt. An unattended agent that hits context overflow at 2am just stops.</p>
+<p>Claude Code has a context window. Long-running agents hit it.</p>
 
-<p><strong>Solution:</strong> A watchdog process monitors terminal output. When it detects context overflow patterns (e.g., "context is getting large"), it automatically triggers the <code>/compact</code> command. The agent resumes with a compressed context.</p>
-
-<pre><code># Watchdog detects context overflow and triggers compaction
-# The agent sees: "Context compacted. Resuming from turn 42."
-# No human intervention needed.</code></pre>
+<p><strong>Solution:</strong> Claude Code compacts its own context as it nears the limit. amux lets you set the compaction threshold, so long runs compact at the point you choose and keep going.</p>
 
 <h3>Failure mode 2: Process crashes</h3>
 
 <p>Claude Code crashes. The tmux pane dies. An unattended setup loses the session permanently.</p>
 
-<p><strong>Solution:</strong> The watchdog detects dead sessions and restarts them. It replays the last message to restore the agent's state. The agent picks up where it left off.</p>
+<p><strong>What amux does:</strong> Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. amux's stall detection flags board work that stops moving, and an owner alert fires, so a dead agent does not go unnoticed until morning. The OS service (launchd on macOS, systemd on Linux) restarts the amux server process itself, and on macOS a login job brings every non-archived worker back after a reboot, each resumed in its own conversation.</p>
 
 <h3>Failure mode 3: Stuck permission prompts</h3>
 
-<p>Claude Code asks "Allow this tool?" The agent can't proceed because nobody is there to approve. In YOLO mode, the orchestrator auto-answers these prompts.</p>
+<p>Claude Code asks "Allow this tool?" The agent can't proceed because nobody is there to approve.</p>
+
+<p><strong>Solution:</strong> YOLO mode (<code>--yolo</code>) launches Claude Code with <code>--dangerously-skip-permissions</code>, so approval prompts never appear.</p>
 
 <h3>Failure mode 4: Circular behavior</h3>
 
 <p>An agent gets stuck in a loop — refactoring the same file, running the same failing test, or writing and deleting the same code. Without monitoring, this burns tokens forever.</p>
 
 <p><strong>Solution:</strong> Track per-session token spend. Set kill thresholds. If an agent burns more than X tokens without producing a commit or moving a task to "done," flag it for human review.</p>
+
+<h3>Failure mode 5: Usage limits</h3>
+
+<p>A provider usage or rate limit hits mid-run and every message sent to the agent fails until the reset.</p>
+
+<p><strong>Solution:</strong> amux holds message delivery and resumes the agent at the provider's reset time. <code>AMUX_RATE_LIMIT_ACTION</code> (<code>wait</code> or <code>off</code>) controls it.</p>
 
 <h2>Layer 5: Governance — cost control and observability</h2>
 
@@ -251,9 +255,9 @@ for s in json.load(sys.stdin):
         │                   Orchestrator                       │
         │                                                      │
         │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-        │  │ Task      │  │ Messaging│  │ Self-Healing     │   │
-        │  │ Board     │  │ Bus      │  │ Watchdog         │   │
-        │  │ (SQLite)  │  │ (REST)   │  │ (process monitor)│   │
+        │  │ Task      │  │ Messaging│  │ Stall Detection  │   │
+        │  │ Board     │  │ Bus      │  │ + Owner Alerts   │   │
+        │  │ (SQLite)  │  │ (REST)   │  │ (board, monitor) │   │
         │  └──────────┘  └──────────┘  └──────────────────┘   │
         │                                                      │
         │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
@@ -282,8 +286,8 @@ for s in json.load(sys.stdin):
 <tr><td>Persistent task board</td><td>No</td><td>Yes</td></tr>
 <tr><td>Atomic task claiming</td><td>No</td><td>Yes (SQLite CAS)</td></tr>
 <tr><td>Inter-agent messaging</td><td>No</td><td>Yes (REST API)</td></tr>
-<tr><td>Self-healing / crash recovery</td><td>No</td><td>Yes (watchdog)</td></tr>
-<tr><td>Context overflow handling</td><td>No</td><td>Yes (auto-compact)</td></tr>
+<tr><td>Recovery</td><td>No</td><td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td></tr>
+<tr><td>Context overflow handling</td><td>Claude Code's built-in compaction</td><td>Claude Code's compaction, with a threshold you set</td></tr>
 <tr><td>Per-session cost tracking</td><td>No</td><td>Yes</td></tr>
 <tr><td>Web dashboard</td><td>No</td><td>Yes</td></tr>
 <tr><td>Mobile access</td><td>No</td><td>Yes (PWA + iOS)</td></tr>
@@ -343,7 +347,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 <ol>
   <li><strong>Process manager</strong> — start/stop agents in tmux sessions with env var injection</li>
   <li><strong>Task board with atomic claiming</strong> — SQLite is perfect for single-machine orchestration</li>
-  <li><strong>Watchdog</strong> — monitor terminal output, detect crashes and context overflow, auto-recover</li>
+  <li><strong>Stall detection</strong> — watch board progress and terminal output, flag stalled work, alert the owner</li>
   <li><strong>REST API</strong> — so agents can interact with the board and each other</li>
   <li><strong>Token tracking</strong> — parse JSONL transcripts for cost visibility</li>
   <li><strong>Dashboard</strong> — web UI for monitoring all sessions at a glance</li>

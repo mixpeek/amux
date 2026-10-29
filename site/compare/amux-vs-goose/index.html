@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs Goose (Block) 2026: AI Agent Fleet vs Single Agent — amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs Goose (by Block) 2026 comparison. Goose is a single open-source AI coding agent with MCP tool support. amux runs a fleet of parallel agents — Claude Code, Codex, and Gemini CLI — with self-healing, kanban, and a web dashboard. Both open source. Different problems solved.">
+  <meta name="description" content="amux vs Goose (by Block) 2026 comparison. Goose is a single open-source AI coding agent with MCP tool support. amux runs a fleet of parallel agents — Claude Code, Codex, and Gemini CLI — with usage-limit and reboot recovery, kanban, and a web dashboard. Both open source. Different problems solved.">
   <meta name="keywords" content="amux vs goose, goose alternative 2026, block goose AI coding agent, goose vs claude code orchestrator, open source AI agent comparison, goose block ai agent, ai agent fleet vs single agent">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-goose/">
   <meta property="og:title" content="amux vs Goose (Block) 2026: AI Agent Fleet vs Single Agent — amux">
-  <meta property="og:description" content="Goose (by Block) runs one AI coding agent. amux runs dozens in parallel — with self-healing, a shared kanban board, and a web + mobile dashboard. Both open source.">
+  <meta property="og:description" content="Goose (by Block) runs one AI coding agent. amux runs dozens in parallel — with usage-limit and reboot recovery, a shared kanban board, and a web + mobile dashboard. Both open source.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-goose/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Goose","item":"https://amux.io/compare/amux-vs-goose/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Goose (Block) 2026: AI Agent Fleet vs Single Agent","description":"Detailed comparison of amux (AI agent fleet control plane) and Goose by Block (single-agent AI coding assistant). Both open source, different architectural goals.","url":"https://amux.io/compare/amux-vs-goose/","datePublished":"2026-08-04","dateModified":"2026-09-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and Goose?","acceptedAnswer":{"@type":"Answer","text":"Goose (by Block) is a single AI coding agent — you run one instance, give it a task, it works. amux is an AI agent fleet control plane — you run 10, 20, or 50 agents in parallel, all coordinated through a shared board, web dashboard, and REST API. Goose solves 'how do I run one agent well.' amux solves 'how do I run many agents together without chaos.'"}},{"@type":"Question","name":"Does Goose support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"No. Goose is designed as a single-agent system. You can run multiple Goose processes manually in separate terminals, but there is no shared coordination layer — no shared task board, no fleet visibility, no self-healing watchdog, no inter-agent messaging. amux was built specifically to solve the multi-agent coordination problem."}},{"@type":"Question","name":"Can amux run Goose agents?","acceptedAnswer":{"@type":"Answer","text":"Not natively. amux manages Claude Code, Codex (OpenAI), and Gemini CLI (Antigravity) runtimes via tmux. Goose uses its own runtime and extension system. They do not currently integrate. If you want a fleet of Goose-like MCP-capable agents, the closest amux analog is running Claude Code sessions with MCP configured via mcp.json."}},{"@type":"Question","name":"Which is better for solo developers?","acceptedAnswer":{"@type":"Answer","text":"Goose is simpler for a solo developer who wants one agent handling tasks interactively. amux is better for solo developers who want to run multiple agents in parallel — one fixing bugs while another writes tests while a third does code review — all from a single web dashboard they can monitor from their phone."}},{"@type":"Question","name":"Which is open source?","acceptedAnswer":{"@type":"Answer","text":"Both. Goose is Apache 2.0 licensed, published by Block (formerly Square). amux is MIT + Commons Clause licensed, published by Mixpeek. Both can be self-hosted."}},{"@type":"Question","name":"What is Goose's MCP support vs amux's tool system?","acceptedAnswer":{"@type":"Answer","text":"Goose is built around the Model Context Protocol (MCP) — you extend its capabilities by adding MCP servers, and it supports any MCP-compatible model provider. amux uses Claude Code's native tool system (which also has MCP support via mcp.json) and extends it with fleet-level capabilities: shared board, inter-agent messaging, browser automation, and scheduler. Goose optimizes for tool variety; amux optimizes for agent scale."}},{"@type":"Question","name":"Can I use amux and Goose together?","acceptedAnswer":{"@type":"Answer","text":"Yes. Use Goose for interactive single-agent tasks where MCP tool variety matters (e.g., connecting to a custom data source via MCP). Use amux for parallel workloads requiring fleet coordination, self-healing, mobile monitoring, or overnight unattended operation. They target different workflow shapes and do not compete directly."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and Goose?","acceptedAnswer":{"@type":"Answer","text":"Goose (by Block) is a single AI coding agent — you run one instance, give it a task, it works. amux is an AI agent fleet control plane — you run 10, 20, or 50 agents in parallel, all coordinated through a shared board, web dashboard, and REST API. Goose solves 'how do I run one agent well.' amux solves 'how do I run many agents together without chaos.'"}},{"@type":"Question","name":"Does Goose support parallel agents?","acceptedAnswer":{"@type":"Answer","text":"No. Goose is designed as a single-agent system. You can run multiple Goose processes manually in separate terminals, but there is no shared coordination layer — no shared task board, no fleet visibility, no recovery layer, no inter-agent messaging. amux was built specifically to solve the multi-agent coordination problem."}},{"@type":"Question","name":"Can amux run Goose agents?","acceptedAnswer":{"@type":"Answer","text":"Not natively. amux manages Claude Code, Codex (OpenAI), and Gemini CLI (Antigravity) runtimes via tmux. Goose uses its own runtime and extension system. They do not currently integrate. If you want a fleet of Goose-like MCP-capable agents, the closest amux analog is running Claude Code sessions with MCP configured via mcp.json."}},{"@type":"Question","name":"Which is better for solo developers?","acceptedAnswer":{"@type":"Answer","text":"Goose is simpler for a solo developer who wants one agent handling tasks interactively. amux is better for solo developers who want to run multiple agents in parallel — one fixing bugs while another writes tests while a third does code review — all from a single web dashboard they can monitor from their phone."}},{"@type":"Question","name":"Which is open source?","acceptedAnswer":{"@type":"Answer","text":"Both. Goose is Apache 2.0 licensed, published by Block (formerly Square). amux is MIT + Commons Clause licensed, published by Mixpeek. Both can be self-hosted."}},{"@type":"Question","name":"What is Goose's MCP support vs amux's tool system?","acceptedAnswer":{"@type":"Answer","text":"Goose is built around the Model Context Protocol (MCP) — you extend its capabilities by adding MCP servers, and it supports any MCP-compatible model provider. amux uses Claude Code's native tool system (which also has MCP support via mcp.json) and extends it with fleet-level capabilities: shared board, inter-agent messaging, browser automation, and scheduler. Goose optimizes for tool variety; amux optimizes for agent scale."}},{"@type":"Question","name":"Can I use amux and Goose together?","acceptedAnswer":{"@type":"Answer","text":"Yes. Use Goose for interactive single-agent tasks where MCP tool variety matters (e.g., connecting to a custom data source via MCP). Use amux for parallel workloads requiring fleet coordination, usage-limit and reboot recovery, mobile monitoring, or overnight unattended operation. They target different workflow shapes and do not compete directly."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -52,7 +52,7 @@
 
 
     <h1>amux vs Goose (Block) — September 2026</h1>
-    <p class="subtitle">Both open source. Goose is a single AI coding agent with an MCP extension ecosystem. amux runs a fleet of them in parallel — with self-healing, a shared kanban board, and a web + mobile dashboard.</p>
+    <p class="subtitle">Both open source. Goose is a single AI coding agent with an MCP extension ecosystem. amux runs a fleet of them in parallel — with usage-limit and reboot recovery, a shared kanban board, and a web + mobile dashboard.</p>
     <p style="font-size:0.82rem;color:var(--muted);margin-top:-0.5rem">Updated September 2026</p>
 
     <p style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.4rem;font-size:0.88rem;margin:1.5rem 0;"><strong>Short answer:</strong> If you want one agent to help you work, use Goose (or Claude Code directly). If you want 10&ndash;50 agents working in parallel on separate tasks while you sleep, use amux. They solve different problems and can be used together.</p>
@@ -93,9 +93,9 @@
           <td style="padding:0.65rem;color:var(--c-red);">&#10007; No mobile interface</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.65rem;font-weight:600;">Self-healing watchdog</td>
-          <td style="padding:0.65rem;color:var(--c-green);">&#10003; Auto-compact on context overflow, restart on crash, replay last message</td>
-          <td style="padding:0.65rem;color:var(--c-red);">&#10007; Manual recovery; no watchdog</td>
+          <td style="padding:0.65rem;font-weight:600;">Recovery</td>
+          <td style="padding:0.65rem;color:var(--c-green);">&#10003; Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
+          <td style="padding:0.65rem;color:var(--c-red);">&#10007; Manual recovery; no stall alerts</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border);">
           <td style="padding:0.65rem;font-weight:600;">Kanban board + task coordination</td>
@@ -156,7 +156,7 @@
     <h2>When to use amux</h2>
     <ul>
       <li><strong>You want to run parallel agents.</strong> 10 agents working different tasks simultaneously, coordinated through a shared board — that is the amux use case. There is no Goose equivalent for this.</li>
-      <li><strong>You want overnight unattended operation.</strong> Self-healing watchdog, stall detection, auto-restart, resume dialog handling, rate-limit management, and mobile alerts are all built in. Goose has none of these.</li>
+      <li><strong>You want overnight unattended operation.</strong> Stall detection, usage-limit resume, workers that return after a macOS reboot, and mobile alerts are all built in. Goose has none of these.</li>
       <li><strong>You manage from your phone.</strong> amux has a native iOS app and installable PWA. Monitor your fleet, approve pull requests, and steer agents from anywhere. Goose has no mobile interface.</li>
       <li><strong>You want a control plane beyond code.</strong> amux includes a kanban board, notes, CRM, Gmail integration, browser automation, cron scheduler, and cost tracking — the full stack for running a software business with AI agents.</li>
       <li><strong>You prefer Claude Code.</strong> amux is purpose-built for Claude Code fleet management (with Codex and Gemini CLI support added). If Claude Code is your primary agent, amux is the right orchestration layer.</li>
@@ -166,8 +166,8 @@
     <p>Goose and amux target different workflow shapes and do not directly compete. A natural split:</p>
     <ul>
       <li><strong>Interactive exploration:</strong> Goose &mdash; one agent, your IDE, back-and-forth conversation, MCP tools for data access</li>
-      <li><strong>Parallel execution:</strong> amux &mdash; task decomposition → board → fleet of agents → each claims and executes → amux monitors and self-heals</li>
-      <li><strong>Overnight automation:</strong> amux &mdash; agents scheduled, context managed, stalls auto-recovered, morning summary pushed to your phone</li>
+      <li><strong>Parallel execution:</strong> amux &mdash; task decomposition → board → fleet of agents → each claims and executes → amux monitors and flags stalls</li>
+      <li><strong>Overnight automation:</strong> amux &mdash; agents scheduled, stalls flagged, usage limits resumed, morning summary pushed to your phone</li>
     </ul>
     <p>You might use Goose to explore a codebase or prototype a solution, then hand the breakdown to an amux fleet to execute in parallel. The output of Goose exploration becomes the input to amux's task board.</p>
 
@@ -232,10 +232,10 @@
     <h2>FAQ</h2>
 
     <h3>What is the main difference between amux and Goose?</h3>
-    <p>Goose is a single AI coding agent with an MCP extension ecosystem. amux is an AI agent fleet control plane &mdash; it runs dozens of Claude Code, Codex, or Gemini CLI sessions in parallel with shared coordination, self-healing, and a web + mobile dashboard. Goose solves "how do I run one agent well." amux solves "how do I run many agents together."</p>
+    <p>Goose is a single AI coding agent with an MCP extension ecosystem. amux is an AI agent fleet control plane &mdash; it runs dozens of Claude Code, Codex, or Gemini CLI sessions in parallel with shared coordination, usage-limit and reboot recovery, and a web + mobile dashboard. Goose solves "how do I run one agent well." amux solves "how do I run many agents together."</p>
 
     <h3>Does Goose support parallel agents?</h3>
-    <p>No. Goose is designed as a single-agent system. You can run multiple Goose processes manually, but there is no shared coordination layer &mdash; no shared task board, no fleet visibility, no self-healing. amux was built specifically for the multi-agent coordination problem.</p>
+    <p>No. Goose is designed as a single-agent system. You can run multiple Goose processes manually, but there is no shared coordination layer &mdash; no shared task board, no fleet visibility, no recovery layer. amux was built specifically for the multi-agent coordination problem.</p>
 
     <h3>Can amux run Goose agents?</h3>
     <p>Not natively. amux manages Claude Code, Codex, and Gemini CLI runtimes via tmux. Goose uses its own runtime. For MCP-capable agents in amux, configure Claude Code sessions with <code>mcp.json</code> pointing at your MCP servers &mdash; you get the same tool extensibility with amux's fleet coordination on top.</p>
@@ -249,7 +249,7 @@
     <h3>Can I use amux and Goose together?</h3>
     <p>Yes. Use Goose for interactive single-agent work where MCP tool variety matters. Use amux for parallel fleet execution, overnight unattended runs, and mobile monitoring. They target different workflow shapes and complement each other naturally.</p>
 
-    <div class="cta-box"><h3>Run an AI engineering team with amux</h3><p>Open-source AI agent fleet control plane. Claude Code, Codex, and Gemini CLI sessions, all from one dashboard. Self-healing built in. Free, MIT + Commons Clause, single Rust binary.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
+    <div class="cta-box"><h3>Run an AI engineering team with amux</h3><p>Open-source AI agent fleet control plane. Claude Code, Codex, and Gemini CLI sessions, all from one dashboard. Usage-limit and reboot recovery built in. Free, MIT + Commons Clause, single Rust binary.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View amux on GitHub ★</a></div>
   </main>

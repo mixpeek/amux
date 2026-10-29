@@ -148,10 +148,10 @@
             <td>Claude Code (your choice of model)</td>
           </tr>
           <tr>
-            <td><strong>Crash recovery</strong></td>
+            <td><strong>Recovery</strong></td>
             <td>Managed by Anthropic</td>
             <td>Managed by OpenAI</td>
-            <td>Self-healing watchdog</td>
+            <td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           </tr>
           <tr>
             <td><strong>Cost</strong></td>
@@ -267,7 +267,7 @@ $ for task in "Update auth module" "Refactor config" "Add API tests"; do
 
 <span class="comment"># Agents claim tasks automatically via atomic /claim endpoint</span></code></pre>
 
-    <p>All four primitives share the same persistent session infrastructure: agents maintain full conversation history across runs, cost is tracked per-session, and crashes auto-recover via the <a href="/guides/self-healing-configuration/">self-healing watchdog</a>.</p>
+    <p>All four primitives share the same persistent session infrastructure: agents maintain full conversation history across runs, cost is tracked per-session, and agents resume after usage limits and come back after a macOS reboot (see <a href="/guides/self-healing-configuration/">Recovery configuration</a>).</p>
 
     <!-- ───────────────────────────── SECTION: WHEN TO USE ───────────────────────────── -->
     <h2 id="when-to-use">When to Use What</h2>

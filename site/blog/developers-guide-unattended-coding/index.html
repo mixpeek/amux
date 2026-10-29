@@ -53,11 +53,11 @@
 <h2>Prerequisites for unattended operation</h2>
 <ol>
 <li><strong>YOLO mode:</strong> Auto-approve tool-use prompts</li>
-<li><strong>Self-healing:</strong> Recover from crashes automatically</li>
+<li><strong>Recovery:</strong> Keep going through usage limits and reboots, and surface stalled work</li>
 <li><strong>Task board:</strong> Agents know what to work on</li>
 <li><strong>Git isolation:</strong> Agents don't conflict with each other</li>
 </ol>
-<p>amux provides all four. Register sessions with <code>--yolo</code>, and the watchdog handles the rest.</p>
+<p>amux provides all four. Register sessions with <code>--yolo</code>, which launches Claude Code with <code>--dangerously-skip-permissions</code>. amux holds delivery through usage limits and resumes at the provider's reset, brings every worker back in its own conversation after a macOS reboot, and flags stalled board work with an alert.</p>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary, MIT + Commons Clause, free to self-host on macOS or Linux.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 # then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>

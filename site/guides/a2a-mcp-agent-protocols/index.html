@@ -433,7 +433,7 @@ cat ~/Dev/myproject/.claude/settings.json
   <li><strong>Add local coordination.</strong> Use amux's REST API (or your own) for session discovery, message passing, and task tracking. Verify agents can delegate to each other.</li>
   <li><strong>Add a task board.</strong> Atomic task claiming prevents duplicate work. SQLite CAS is sufficient for single-machine orchestration.</li>
   <li><strong>Add observability.</strong> Dashboard showing all sessions, token spend per session, and terminal peek. You need to see what agents are doing.</li>
-  <li><strong>Add fault tolerance.</strong> Watchdog for crash recovery, context compaction, and message replay. Agents will fail — the system shouldn't.</li>
+  <li><strong>Add fault tolerance.</strong> Resume after usage limits, bring workers back after a reboot, and alert on stalled work. Agents will fail — the system shouldn't.</li>
   <li><strong>Add A2A (if needed).</strong> Only when you need cross-machine or cross-model agent coordination. Publish Agent Cards, implement the task endpoint, and bridge to your existing coordination layer.</li>
 </ol>
 

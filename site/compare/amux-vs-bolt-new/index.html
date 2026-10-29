@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Bolt.new","item":"https://amux.io/compare/amux-vs-bolt-new/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Bolt.new (2026): Existing Codebase vs Greenfield AI Coding","description":"amux runs parallel AI agents on your existing codebase overnight. Bolt.new generates new apps in the browser. Different tools for different moments.","datePublished":"2026-08-13","dateModified":"2026-10-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/compare/amux-vs-bolt-new/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents (Claude Code, Codex, Gemini CLI) on your existing local codebase with overnight self-healing, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale."}},{"@type":"Question","name":"Can amux replace Bolt.new for prototyping?","acceptedAnswer":{"@type":"Answer","text":"Not directly. Bolt.new's strength is zero-setup, instant full-stack generation from a blank canvas. amux requires a local environment and existing codebase. For rapid prototyping without any local setup, Bolt.new is the right tool. For extending a prototype into a production codebase with parallel agents, switch to amux."}},{"@type":"Question","name":"Does Bolt.new support parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"No. Bolt.new is a single-session, single-agent tool. One conversation, one editing window. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and the self-healing watchdog keeps every session alive overnight."}},{"@type":"Question","name":"Is there an open-source version of Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Yes. Bolt.diy (formerly oai-like) is an open-source fork of the Bolt interface that you can self-host. It supports multiple AI providers. However, it is still a single-session tool and runs in the browser — it does not add fleet orchestration, overnight runs, or a shared kanban board."}},{"@type":"Question","name":"Is amux a Bolt.new alternative?","acceptedAnswer":{"@type":"Answer","text":"For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with self-healing, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no equivalent in amux. Most developers use both: Bolt.new to draft a prototype quickly, then amux to run parallel agents on the exported code."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents (Claude Code, Codex, Gemini CLI) on your existing local codebase with overnight usage-limit resume, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale."}},{"@type":"Question","name":"Can amux replace Bolt.new for prototyping?","acceptedAnswer":{"@type":"Answer","text":"Not directly. Bolt.new's strength is zero-setup, instant full-stack generation from a blank canvas. amux requires a local environment and existing codebase. For rapid prototyping without any local setup, Bolt.new is the right tool. For extending a prototype into a production codebase with parallel agents, switch to amux."}},{"@type":"Question","name":"Does Bolt.new support parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"No. Bolt.new is a single-session, single-agent tool. One conversation, one editing window. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and stall detection flags any session that stops overnight."}},{"@type":"Question","name":"Is there an open-source version of Bolt.new?","acceptedAnswer":{"@type":"Answer","text":"Yes. Bolt.diy (formerly oai-like) is an open-source fork of the Bolt interface that you can self-host. It supports multiple AI providers. However, it is still a single-session tool and runs in the browser — it does not add fleet orchestration, overnight runs, or a shared kanban board."}},{"@type":"Question","name":"Is amux a Bolt.new alternative?","acceptedAnswer":{"@type":"Answer","text":"For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with usage-limit and reboot recovery, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no equivalent in amux. Most developers use both: Bolt.new to draft a prototype quickly, then amux to run parallel agents on the exported code."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -55,12 +55,12 @@
 
 
     <div style="background:var(--surface-2,var(--panel));border-left:3px solid var(--accent,var(--c-green));padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> Bolt.new generates brand-new web apps in a browser sandbox with zero local setup. amux runs a fleet of parallel Claude Code, Codex, and Gemini CLI agents on your existing local codebase overnight, with self-healing, a kanban board, and mobile management. They target fundamentally different moments: Bolt.new for greenfield prototypes, amux for iterating on production code at fleet scale. Most developers use both.
+      <strong>Quick answer:</strong> Bolt.new generates brand-new web apps in a browser sandbox with zero local setup. amux runs a fleet of parallel Claude Code, Codex, and Gemini CLI agents on your existing local codebase overnight, with usage-limit and reboot recovery, a kanban board, and mobile management. They target fundamentally different moments: Bolt.new for greenfield prototypes, amux for iterating on production code at fleet scale. Most developers use both.
     </div>
 
     <p><strong>Bolt.new</strong> (from StackBlitz) is a browser-based AI coding environment. You describe what you want; it generates a full-stack app in a WebContainer sandbox, with a live preview, Figma integration, and instant deployment. No local environment needed. Code stays in the cloud.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously against your local codebase, coordinated via a shared kanban board, with a web dashboard and a native iOS app. Single Rust binary, MIT + Commons Clause, zero external runtime dependencies beyond tmux.</p>
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard. It launches and monitors dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously against your local codebase, coordinated via a shared kanban board, with a web dashboard and a native iOS app. Single Rust binary, MIT + Commons Clause, zero external runtime dependencies beyond tmux.</p>
 
     <h2 id="oct-2026">What's new in amux (October 2026)</h2>
     <p>Since the August 2026 version of this comparison, amux shipped several major features relevant to teams that use both Bolt.new and amux in their workflow:</p>
@@ -77,7 +77,7 @@
 
     <p>Bolt.new is a creation tool. Its power is speed-to-first-prototype: describe an app, get a working skeleton in seconds, iterate by chatting, preview in the browser. The WebContainer sandbox means nothing touches your local machine and there is no setup friction. That is the right model when you are validating an idea or onboarding a non-developer.</p>
 
-    <p>amux is an iteration tool. Its power is throughput on an existing codebase: queue 20 tickets on the board, have 10 agents claim tasks atomically, work overnight in parallel, and wake up to 20 pull requests. The self-healing watchdog handles context compaction, crash recovery, and tool-approval dialogs so you do not have to babysit the fleet. That is the right model when you have shipped code and need to ship more of it, faster.</p>
+    <p>amux is an iteration tool. Its power is throughput on an existing codebase: queue 20 tickets on the board, have 10 agents claim tasks atomically, work overnight in parallel, and wake up to 20 pull requests. Delivery pauses at usage limits and resumes at the provider's reset, and stall alerts tell you when a session needs you, so you do not have to babysit the fleet. That is the right model when you have shipped code and need to ship more of it, faster.</p>
 
     <h2>Feature comparison</h2>
     <div style="overflow-x:auto">
@@ -89,8 +89,8 @@
           <tr><td>Environment</td><td>Local machine, your codebase</td><td>Browser WebContainer sandbox</td></tr>
           <tr><td>Existing codebase support</td><td>Full (local files, git, any tool)</td><td>No — starts from blank slate</td></tr>
           <tr><td>Parallel agents</td><td>Dozens simultaneously (10-50+)</td><td>Single session only</td></tr>
-          <tr><td>Unattended overnight runs</td><td>Yes — self-healing watchdog</td><td>No — browser tab must stay open</td></tr>
-          <tr><td>Self-healing / crash recovery</td><td>Yes — auto-restarts, replays last message</td><td>No</td></tr>
+          <tr><td>Unattended overnight runs</td><td>Yes: usage-limit resume, stall alerts</td><td>No — browser tab must stay open</td></tr>
+          <tr><td>Recovery</td><td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td><td>No</td></tr>
           <tr><td>Local file &amp; database access</td><td>Full — runs native commands, reads any file</td><td>No — sandboxed WebContainer only</td></tr>
           <tr><td>Data privacy</td><td>Local only, code never leaves your machine</td><td>Code runs in cloud sandbox</td></tr>
           <tr><td>Cost</td><td>Free (API tokens only, no platform fee)</td><td>Free tier + $20/month Pro + Team plans</td></tr>
@@ -117,7 +117,7 @@
     <ul>
       <li><strong>You have an existing codebase</strong> and need to parallelize work across it overnight</li>
       <li><strong>You want to run 10+ agents simultaneously</strong> on different branches or tasks without manual coordination</li>
-      <li><strong>You need unattended overnight runs</strong> — amux keeps every session alive while you sleep</li>
+      <li><strong>You need unattended overnight runs</strong> — amux holds work through usage limits and alerts you to stalls while you sleep</li>
       <li><strong>You want fleet visibility from your phone</strong> — check agent status, send messages, and review results from the iOS app</li>
       <li><strong>You are building beyond web apps</strong> — native apps, CLI tools, backend services, data pipelines, anything a terminal can run</li>
       <li><strong>Data privacy is non-negotiable</strong> — your code never leaves your machine</li>
@@ -147,23 +147,23 @@
     <h2>Frequently asked questions</h2>
 
     <h3>What is the main difference between amux and Bolt.new?</h3>
-    <p>Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents on your existing local codebase with overnight self-healing, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale.</p>
+    <p>Bolt.new generates brand-new web applications from prompts inside a browser sandbox. amux runs a fleet of parallel AI coding agents on your existing local codebase with overnight usage-limit resume, a shared kanban board, and mobile management. Bolt.new is for greenfield prototypes; amux is for iterating on real production codebases at fleet scale.</p>
 
     <h3>Can amux replace Bolt.new for prototyping?</h3>
     <p>Not directly. Bolt.new's strength is zero-setup, instant full-stack generation from a blank canvas in the browser. amux requires a local environment and an existing codebase. For rapid prototyping without any local setup, Bolt.new is the right tool. Once a prototype is solid enough to export and commit, switching to amux enables parallel agent iteration at far higher throughput.</p>
 
     <h3>Does Bolt.new support parallel AI agents?</h3>
-    <p>No. Bolt.new is a single-session, single-agent tool. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and the self-healing watchdog keeps every session alive overnight.</p>
+    <p>No. Bolt.new is a single-session, single-agent tool. amux is purpose-built for parallelism: atomic task claiming via SQLite compare-and-swap prevents two agents from duplicating work, git worktree isolation prevents merge conflicts, and stall detection flags any session that stops overnight.</p>
 
     <h3>Is there an open-source version of Bolt.new?</h3>
     <p>Yes. <strong>Bolt.diy</strong> (formerly oai-like) is an open-source fork of the Bolt interface that you can self-host and configure with multiple AI providers. However, it is still a single-session browser tool and does not add fleet orchestration, overnight runs, or a shared kanban board. amux and Bolt.diy solve different problems.</p>
 
     <h3>Is amux a Bolt.new alternative?</h3>
-    <p>For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with self-healing, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no direct equivalent in amux. Most developers use both at different stages of their projects.</p>
+    <p>For existing codebases: yes. amux runs parallel Claude Code, Codex, and Gemini CLI agents against your local repository, with usage-limit and reboot recovery, a shared kanban board, and mobile monitoring. For greenfield prototyping in the browser with zero local setup, Bolt.new has no direct equivalent in amux. Most developers use both at different stages of their projects.</p>
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is an open-source control plane for AI coding agents — self-healing, phone-first, MIT + Commons Clause, single compiled binary. 525+ stars on GitHub.</p>
+      <p>amux is an open-source control plane for AI coding agents: usage-limit and reboot recovery, phone-first, MIT + Commons Clause, single compiled binary. 525+ stars on GitHub.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject
 amux start myproject

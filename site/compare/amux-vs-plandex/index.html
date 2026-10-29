@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs Plandex: compare the open-source multi-agent control plane with Plandex's single-task AI coding engine. Parallel fleet vs sequential execution, mobile-first vs CLI-only, self-healing vs manual restart.">
+  <meta name="description" content="amux vs Plandex: compare the open-source multi-agent control plane with Plandex's single-task AI coding engine. Parallel fleet vs sequential execution, mobile-first vs CLI-only, usage-limit resume vs manual restart.">
   <meta name="keywords" content="amux vs plandex, plandex alternative, plandex ai coding, plandex vs claude code, open source ai coding agent comparison, ai coding agent fleet vs single task, plandex 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-plandex/">
   <meta property="og:title" content="amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)">
@@ -16,7 +16,7 @@
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)">
-  <meta name="twitter:description" content="amux runs a fleet of 10-50 parallel coding agents with self-healing, mobile monitoring, and built-in CRM. Plandex manages long-running single tasks. Compare.">
+  <meta name="twitter:description" content="amux runs a fleet of 10-50 parallel coding agents with usage-limit resume, mobile monitoring, and built-in CRM. Plandex manages long-running single tasks. Compare.">
   <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -69,7 +69,7 @@
         "name": "What is the main difference between amux and Plandex?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Scale and scope. Plandex manages one long-running coding task at a time with careful staged review. amux manages a fleet of 10-50 parallel Claude Code, Codex, or Gemini CLI agents, each working on a separate task simultaneously. amux adds a self-healing watchdog, built-in kanban board, CRM, Gmail API email, browser automation, scheduler, and a native iOS app for phone-first monitoring. Plandex is a task engine; amux is a team control plane."
+          "text": "Scale and scope. Plandex manages one long-running coding task at a time with careful staged review. amux manages a fleet of 10-50 parallel Claude Code, Codex, or Gemini CLI agents, each working on a separate task simultaneously. amux adds usage-limit resume, stall alerts, a built-in kanban board, CRM, Gmail API email, browser automation, scheduler, and a native iOS app for phone-first monitoring. Plandex is a task engine; amux is a team control plane."
         }
       },
       {
@@ -162,7 +162,7 @@
         <tr><td>Parallel agents</td><td>10-50 simultaneous sessions</td><td>1 session at a time</td></tr>
         <tr><td>Execution model</td><td>Parallel fleet (tmux sessions)</td><td>Sequential long-running task</td></tr>
         <tr><td>AI models supported</td><td>Claude Code, Codex CLI, Gemini CLI</td><td>Claude, GPT-4, Gemini, Llama (API)</td></tr>
-        <tr><td>Self-healing watchdog</td><td>Yes — auto-compact, restart, replay</td><td>No — manual restart required</td></tr>
+        <tr><td>Recovery</td><td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td><td>No — manual restart required</td></tr>
         <tr><td>YOLO mode (unattended)</td><td>Yes — default for new sessions</td><td>Not applicable (interactive review)</td></tr>
         <tr><td>Mobile app</td><td>iOS App Store + PWA</td><td>No</td></tr>
         <tr><td>Kanban board</td><td>Built-in SQLite board with atomic claiming</td><td>No</td></tr>
@@ -172,7 +172,7 @@
         <tr><td>Scheduler</td><td>Cron-style recurring tasks</td><td>No</td></tr>
         <tr><td>Staged diff review</td><td>No (agents push directly)</td><td>Yes — sandbox + review before apply</td></tr>
         <tr><td>Rollback</td><td>Git-based (agent opens PRs)</td><td>Built-in undo/rewind</td></tr>
-        <tr><td>Overnight runs</td><td>Primary use case (self-healing)</td><td>Possible but requires staying at terminal</td></tr>
+        <tr><td>Overnight runs</td><td>Primary use case (usage-limit resume, stall alerts)</td><td>Possible but requires staying at terminal</td></tr>
         <tr><td>Session cloning</td><td>Clone any live session via dashboard or <code>POST /api/sessions/&lt;name&gt;/clone</code></td><td>No session cloning</td></tr>
         <tr><td>Isolated workers</td><td>ISOLATED option at create time — stripped worker with no harness tools injected</td><td>N/A (single terminal session)</td></tr>
         <tr><td>Remote management</td><td>amux-remote: connect to a remote amux server over Tailscale or SSH</td><td>Local CLI only</td></tr>
@@ -188,8 +188,8 @@
     <p>Plandex is well-suited for high-risk tasks where you want to review every file change before it lands: large refactors, schema migrations, security-sensitive code changes.</p>
 
     <h2>What is amux?</h2>
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
-    <p>amux's primary use case is <strong>parallel fleet management for overnight autonomous work</strong>. You queue up 10-20 tasks before bed, assign one agent per task, and wake up to pull requests. The self-healing watchdog handles context overflow, process crashes, stuck tool-approval prompts, and silent hangs — all without you being present.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Usage-limit and reboot recovery, single Rust binary, zero external dependencies, MIT + Commons Clause.</p>
+    <p>amux's primary use case is <strong>parallel fleet management for overnight autonomous work</strong>. You queue up 10-20 tasks before bed, assign one agent per task, and wake up to pull requests. Delivery is held through usage limits and resumes at the provider's reset, YOLO mode approves tool prompts, and stall detection alerts you if an agent stops making progress, all without you being present.</p>
 
     <h2>Where Plandex beats amux</h2>
     <p>If you have a single, complex, high-risk coding job that touches many files and needs careful incremental review, Plandex is stronger. Its sandbox model means no change lands in your working tree until you approve it. The rewind feature lets you backtrack without hunting through git history. And because Plandex supports local models (Llama via Ollama), you can run it fully air-gapped at zero API cost.</p>
@@ -205,7 +205,7 @@
     <p>If your goal is to maximize throughput — running many tasks in parallel, overnight, without supervision — amux is the right tool. The gap widens when you need business-layer features (CRM, email, browser automation) that Plandex doesn't have, or when you want to manage your agents from your phone while away from your desk.</p>
     <ul>
       <li><strong>Parallel fleet</strong> — 10-50 agents running simultaneously, not sequentially</li>
-      <li><strong>Self-healing watchdog</strong> — auto-compact on context overflow, restart on crash, replay last message</li>
+      <li><strong>Recovery</strong> — resumes after usage limits, workers return after a macOS reboot, stall alerts, and a configurable Claude Code compaction threshold</li>
       <li><strong>YOLO mode (default)</strong> — auto-approves tool prompts so agents never block overnight</li>
       <li><strong>Plan strip visibility</strong> — read Claude Code's native task list in real time from the dashboard</li>
       <li><strong>Mobile-first</strong> — native iOS app + PWA for phone management, Plandex has neither</li>
@@ -222,8 +222,8 @@
     <p>The practical consequence: in one night, amux can complete 10-50 tasks; Plandex completes 1-3 (sequentially, with review pauses). If throughput is the bottleneck, amux wins. If quality-of-review on a single critical task is the bottleneck, Plandex wins.</p>
 
     <h2>Overnight autonomy</h2>
-    <p>Plandex is designed for interactive use — you guide it, review its diffs, and approve changes. Running it unattended overnight is technically possible but not its intended use: it will pause waiting for your review and there is no watchdog to restart it if something goes wrong.</p>
-    <p>amux is purpose-built for overnight autonomy. YOLO mode (now the default for new sessions in July 2026) auto-approves all tool-approval prompts. The watchdog monitors every session for idle hangs, context overflow, thinking-block corruption, and process crashes. If any occur, it handles them automatically. You can queue work at 11pm and wake up at 7am to 10 completed PRs.</p>
+    <p>Plandex is designed for interactive use — you guide it, review its diffs, and approve changes. Running it unattended overnight is technically possible but not its intended use: it will pause waiting for your review.</p>
+    <p>amux is purpose-built for overnight autonomy. YOLO mode (now the default for new sessions in July 2026) auto-approves all tool-approval prompts. When an agent hits a usage limit, amux holds delivery and resumes it at the provider's reset, and stall detection alerts you if an agent stops making progress. You can queue work at 11pm and wake up at 7am to 10 completed PRs.</p>
     <p>From your phone — via the amux iOS app or PWA — you can check which tasks each agent completed, peek at the last 100 lines of any session's output, and send one-tap canned messages to redirect agents without touching your laptop.</p>
 
     <h2>Business tooling</h2>
@@ -241,7 +241,7 @@
     <p><strong>Choose amux if:</strong></p>
     <ul>
       <li>You want 10-50 parallel agents running overnight</li>
-      <li>You need self-healing autonomy (no babysitting)</li>
+      <li>You need agents that resume on their own after usage limits (no babysitting)</li>
       <li>You manage your agents from your phone</li>
       <li>You need CRM, email, browser automation, or a scheduler alongside your coding agents</li>
       <li>You want a shared kanban board with atomic task claiming for a team of agents</li>
@@ -264,7 +264,7 @@
     </details>
     <details>
       <summary><strong>Can amux run Plandex sessions?</strong></summary>
-      <p>Not directly. amux manages Claude Code, Codex CLI, and Gemini CLI sessions via tmux. Plandex has its own execution environment. You could run a Plandex CLI session inside a tmux pane and observe it via amux's terminal peek, but amux's watchdog and task-claiming logic won't integrate with Plandex's internal state.</p>
+      <p>Not directly. amux manages Claude Code, Codex CLI, and Gemini CLI sessions via tmux. Plandex has its own execution environment. You could run a Plandex CLI session inside a tmux pane and observe it via amux's terminal peek, but amux's stall detection and task-claiming logic won't integrate with Plandex's internal state.</p>
     </details>
     <details>
       <summary><strong>Does amux support local models like Ollama?</strong></summary>

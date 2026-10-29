@@ -456,7 +456,7 @@ amux register myproject --dir ~/Dev/myproject --yolo
         <li><strong>Token cap:</strong> Set a per-session token budget. If the agent burns through its allocation, something went wrong.</li>
         <li><strong>File write limit:</strong> Alert if an agent writes more than N files in a single session &mdash; could indicate a hallucination loop</li>
       </ul>
-      <p>In <a href="https://github.com/mixpeek/amux">amux</a>, the watchdog's stuck detection catches runaway sessions automatically. Configure it to restart (not continue) when a session exceeds its expected duration.</p>
+      <p>In <a href="https://github.com/mixpeek/amux">amux</a>, stall detection flags sessions whose work stops moving and fires an owner alert, so you can stop a runaway session before it exceeds its expected duration.</p>
     </div>
 
     <!-- ═══════════════ NETWORK ISOLATION ═══════════════ -->
@@ -691,7 +691,7 @@ done</code></pre>
       <p>Enable audit logging so you have a forensic record of every action every agent took:</p>
       <ul>
         <li><strong>Git history:</strong> Every agent commit is timestamped and attributed. Use <code>git log --author=</code> to trace agent actions.</li>
-        <li><strong><a href="https://github.com/mixpeek/amux">amux</a> session logs:</strong> The server logs every API call, session start/stop, and watchdog intervention.</li>
+        <li><strong><a href="https://github.com/mixpeek/amux">amux</a> session logs:</strong> The server logs every API call and session start/stop.</li>
         <li><strong><a href="https://github.com/anthropics/claude-code">Claude Code</a> conversation logs:</strong> Stored locally in <code>~/.claude/</code> &mdash; contains the full conversation including every tool call and result.</li>
         <li><strong>System-level auditing:</strong> On Linux, use <code>auditd</code> to log file access and process execution by agent user accounts.</li>
       </ul>
@@ -804,7 +804,7 @@ done</code></pre>
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824 — dashboard with fleet monitoring</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
-      <a class="btn" href="/guides/self-healing-configuration/" style="margin-left:0.5rem;">Self-healing guide</a>
+      <a class="btn" href="/guides/self-healing-configuration/" style="margin-left:0.5rem;">Recovery configuration</a>
     </div>
   </main>
   <footer class="sub-footer">

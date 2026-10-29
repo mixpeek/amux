@@ -155,7 +155,7 @@
         <tr>
           <td>Restarts crashed sessions automatically</td>
           <td>No</td>
-          <td>Yes (self-healing watchdog)</td>
+          <td>Not built in (optional macOS script for Claude Code workers; stall alerts flag the rest)</td>
         </tr>
         <tr>
           <td>Shared kanban board across all agents</td>
@@ -199,7 +199,7 @@ for i in 1 2 3 4 5; do amux register myproject-$i --dir ~/Dev/myproject --yolo; 
 <span class="dim"># Open the web dashboard</span>
 amux serve  <span class="dim"># https://localhost:8824</span></code></pre>
 
-    <p>The dashboard opens at port 8824. From there you can see every session's live status, send messages, move kanban cards, and set up the self-healing watchdog for overnight runs. The same interface is available as a mobile PWA.</p>
+    <p>The dashboard opens at port 8824. From there you can see every session's live status, send messages, move kanban cards, and set the compaction threshold and owner alerts for overnight runs. The same interface is available as a mobile PWA.</p>
 
     <p>Docs: <a href="/docs/">amux documentation</a>. Guides: <a href="/guides/run-ai-engineering-team/">How to Run an AI Engineering Team</a>.</p>
 
@@ -237,7 +237,7 @@ amux serve  <span class="dim"># https://localhost:8824</span></code></pre>
     <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
       <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">What is the best tool for running 10+ Claude Code agents overnight?</summary>
       <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-        <p>amux is purpose-built for this. It handles crash recovery, stall detection, task distribution via a shared kanban board, mobile monitoring, and owner alerts when something needs attention. See the <a href="/guides/ai-coding-agents-overnight/">overnight guide</a> for the full setup.</p>
+        <p>amux is purpose-built for this. It resumes agents after usage limits, brings workers back after a macOS reboot, and handles stall detection, task distribution via a shared kanban board, mobile monitoring, and owner alerts when something needs attention. See the <a href="/guides/ai-coding-agents-overnight/">overnight guide</a> for the full setup.</p>
       </div>
     </details>
 

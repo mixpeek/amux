@@ -412,7 +412,7 @@ done
 #  Run the acceptance criteria. Commit when all pass."</code></pre>
 
     <h3>Phase 4: Agents work (1&ndash;3 hours, unattended)</h3>
-    <p>Each agent claims a task atomically (no duplicates), reads the spec from the task description, implements in its isolated worktree, runs the acceptance criteria, and commits. The self-healing watchdog restarts any agent that crashes.</p>
+    <p>Each agent claims a task atomically (no duplicates), reads the spec from the task description, implements in its isolated worktree, runs the acceptance criteria, and commits. Stall detection flags a task that stops moving so you can step in.</p>
 
     <h3>Phase 5: Review (30&ndash;45 minutes)</h3>
     <pre><code># Check results on the board
@@ -578,7 +578,7 @@ amux board add "add-cursor-pagination" --desc "$(cat specs/add-cursor-pagination
 
     <div class="cta-box" data-cta-loc="cloud-inline-end">
       <h3>Run specs across a fleet of parallel agents</h3>
-      <p>amux turns specs into board tasks, gives each agent its own worktree, lets agents claim tasks atomically and restarts any that crash. Write ten specs, push them to the board, and check the results from your phone. Self-host it free with <code>curl -fsSL https://amux.io/install.sh | bash</code>, or let amux Cloud run it on your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <p>amux turns specs into board tasks, gives each agent its own worktree, lets agents claim tasks atomically and flags work that stalls. Write ten specs, push them to the board, and check the results from your phone. Self-host it free with <code>curl -fsSL https://amux.io/install.sh | bash</code>, or let amux Cloud run it on your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
         <a class="btn btn-primary" href="/start/?source=spec-driven-development">Start amux Cloud</a>
         <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>

@@ -77,7 +77,7 @@
       {"@type":"Question","name":"What is the best AI coding tool in 2026?","acceptedAnswer":{"@type":"Answer","text":"There is no single best tool — it depends on your workflow. For interactive editing in an IDE, Cursor and Windsurf lead. For autonomous terminal-based coding, Claude Code produces the highest-quality output. For running multiple agents in parallel, amux and Claude Squad are purpose-built orchestrators. For generating full apps from a prompt, Bolt.new and v0 are the fastest. Most productive developers combine 2-3 tools: an IDE assistant for real-time work and a terminal agent for complex tasks."}},
       {"@type":"Question","name":"Is Claude Code better than Cursor?","acceptedAnswer":{"@type":"Answer","text":"They serve different purposes. Claude Code is a terminal-based autonomous agent — it reads your codebase, writes code, runs tests, and commits without a GUI. It excels at complex multi-file changes and can run unattended. Cursor is an AI-enhanced IDE with inline completions, visual diffs, and a chat panel. It excels at interactive, visual editing. Many developers use both: Cursor for real-time editing and Claude Code (via amux) for batch operations and overnight work."}},
       {"@type":"Question","name":"What is the cheapest AI coding tool?","acceptedAnswer":{"@type":"Answer","text":"Several excellent tools are free and open source: Aider, Cline, Goose, Gemini CLI (with free tier), Zed, amux, Claude Squad, dmux, and OpenHands. You pay only for the underlying LLM API usage. GitHub Copilot starts at $10/month. Cursor starts at $20/month. Usage-based tools like Claude Code typically cost $50-200/month depending on intensity. The most expensive option is Devin at $500+/month."}},
-      {"@type":"Question","name":"Can I run multiple AI coding agents at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes, but you need an orchestrator. Tools like amux, Claude Squad, Conductor, Kilo Code, and dmux manage multiple AI agents running in parallel on different tasks. amux can run 20-50+ agents simultaneously with crash recovery and a web dashboard. Without an orchestrator, running multiple agents manually leads to merge conflicts, silent failures, and wasted tokens. See our detailed comparison of orchestrators."}},
+      {"@type":"Question","name":"Can I run multiple AI coding agents at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes, but you need an orchestrator. Tools like amux, Claude Squad, Conductor, Kilo Code, and dmux manage multiple AI agents running in parallel on different tasks. amux can run 20-50+ agents simultaneously with usage-limit resume, stall alerts, and a web dashboard. Without an orchestrator, running multiple agents manually leads to merge conflicts, silent failures, and wasted tokens. See our detailed comparison of orchestrators."}},
       {"@type":"Question","name":"What is an AI agent orchestrator?","acceptedAnswer":{"@type":"Answer","text":"An agent orchestrator manages multiple AI coding agents running in parallel. It handles session management, git isolation (so agents don't create merge conflicts), task coordination, monitoring, and crash recovery. Think of it as a control plane between you and your fleet of AI coding agents. Examples include amux, Claude Squad, Conductor, Kilo Code, and dmux."}},
       {"@type":"Question","name":"Should I use an AI code editor or a terminal agent?","acceptedAnswer":{"@type":"Answer","text":"Use an AI code editor (Cursor, Windsurf, Zed) for interactive work where you want to see changes in real time, review diffs visually, and maintain control over each edit. Use a terminal agent (Claude Code, Aider, Gemini CLI) for autonomous tasks where the agent plans and executes multi-file changes independently. Terminal agents can run unattended and are easier to parallelize. The trend in 2026 is toward using both: editors for hands-on work, terminal agents for delegation."}},
       {"@type":"Question","name":"What are AI app builders and when should I use them?","acceptedAnswer":{"@type":"Answer","text":"AI app builders like Bolt.new, v0, Lovable, and Replit generate full working applications from natural language prompts in a browser. Use them for rapid prototyping, MVPs, landing pages, and internal tools where speed matters more than code architecture. They are not designed for large existing codebases — for that, use a terminal agent or IDE. Many developers use app builders for initial scaffolding, then switch to Claude Code or Cursor for iteration."}},
@@ -662,7 +662,7 @@
             <th>Tool</th>
             <th>Interface</th>
             <th>Agents</th>
-            <th>Self-Healing</th>
+            <th>Recovery</th>
             <th>Dashboard</th>
             <th>Task Board</th>
             <th>Unattended</th>
@@ -673,7 +673,7 @@
             <td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="tl">amux</a></td>
             <td>Web + PWA</td>
             <td>20&ndash;50+</td>
-            <td class="y">Watchdog</td>
+            <td class="y">Usage limits, reboots, stall alerts</td>
             <td class="y">Web + mobile</td>
             <td class="y">Kanban</td>
             <td class="y">Yes</td>
@@ -725,16 +725,16 @@
         <span>Rust server + web dashboard</span>
         <span>MIT + Commons Clause</span>
       </div>
-      <p>One Rust binary that manages session lifecycle, a web dashboard, REST API, kanban board, self-healing watchdog, mobile PWA, and real-time SSE updates. Purpose-built for running agent fleets overnight without supervision.</p>
+      <p>One Rust binary that manages session lifecycle, a web dashboard, REST API, kanban board, usage-limit resume and stall alerts, mobile PWA, and real-time SSE updates. Purpose-built for running agent fleets overnight without supervision.</p>
       <ul>
-        <li><strong>Self-healing watchdog</strong> &mdash; detects context overflow, session corruption, and API errors, then automatically recovers</li>
+        <li><strong>Recovery</strong> &mdash; holds delivery through usage limits and resumes at the provider's reset, brings every worker back in its own conversation after a macOS reboot, and flags stalled board work with an owner alert</li>
         <li><strong>Web dashboard + mobile PWA</strong> &mdash; monitor all agents from any device with push notifications on failures</li>
         <li><strong>Kanban board</strong> &mdash; shared task board with atomic claiming so agents don&rsquo;t duplicate work</li>
         <li><strong>REST API</strong> &mdash; everything is API-driven: sessions, board, notes, CRM. Build custom automations on top</li>
         <li><strong>Zero dependencies</strong> &mdash; single Rust binary, no npm, no Docker. SQLite for state.</li>
       </ul>
       <div class="tool-verdict">
-        <strong>Best for:</strong> Developers who want to run 10&ndash;50 agents overnight with automatic crash recovery, mobile monitoring, and a task board. The most complete open-source orchestrator.<br>
+        <strong>Best for:</strong> Developers who want to run 10&ndash;50 agents overnight with usage-limit resume, stall alerts, mobile monitoring, and a task board. The most complete open-source orchestrator.<br>
         <strong>Limitation:</strong> Newer project with a smaller community than <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>. Web dashboard rather than TUI. <a href="/blog/best-multi-agent-orchestrators-2026/">Read the full orchestrator comparison &rarr;</a>
       </div>
     </div>
@@ -912,7 +912,7 @@
     <div class="verdict-box">
       <h3>I want to run 10+ agents in parallel</h3>
       <ul>
-        <li><strong><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></strong> for self-hosted fleet management with crash recovery and mobile monitoring</li>
+        <li><strong><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></strong> for self-hosted fleet management with usage-limit resume and mobile monitoring</li>
         <li><strong><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a></strong> for the simplest terminal-only multi-agent setup</li>
         <li><strong><a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex</a></strong> for cloud-native parallel execution on OpenAI infrastructure</li>
       </ul>
@@ -921,7 +921,7 @@
     <div class="verdict-box">
       <h3>I want AI to run overnight without supervision</h3>
       <ul>
-        <li><strong><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></strong> for self-hosted with watchdog crash recovery and push notifications</li>
+        <li><strong><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></strong> for self-hosted with usage-limit resume, stall alerts, and push notifications</li>
         <li><strong><a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a></strong> for fully autonomous ticket-to-PR with zero intervention</li>
         <li><strong><a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex</a></strong> for cloud sandbox tasks that don&rsquo;t need local resources</li>
       </ul>
@@ -975,7 +975,7 @@
       </div>
       <div class="axis-card">
         <h4>Layer 4: Orchestrator</h4>
-        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> to run 10+ Claude Code agents in parallel overnight with crash recovery and a task board.</p>
+        <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> to run 10+ Claude Code agents in parallel overnight with usage-limit resume and a task board.</p>
       </div>
     </div>
     <p>Each layer handles a different scale of work. Completions handle keystrokes. Interactive agents handle files. Autonomous agents handle features. Orchestrators handle projects. A developer using all four layers can accomplish in a day what used to take a team a week.</p>
@@ -1010,7 +1010,7 @@
       <details style="background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem;">
         <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.92rem;">Can I run multiple AI coding agents at the same time?</summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          <p>Yes, but you need an orchestrator. Tools like <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>, <a href="https://www.conductor.build/" target="_blank" rel="noopener">Conductor</a>, <a href="https://kilo.ai/" target="_blank" rel="noopener">Kilo Code</a>, and <a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener">dmux</a> manage multiple AI agents running in parallel on different tasks. amux can run 20&ndash;50+ agents simultaneously with crash recovery and a web dashboard. Without an orchestrator, running multiple agents manually leads to merge conflicts, silent failures, and wasted tokens. See our <a href="/blog/best-multi-agent-orchestrators-2026/">detailed orchestrator comparison</a>.</p>
+          <p>Yes, but you need an orchestrator. Tools like <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>, <a href="https://www.conductor.build/" target="_blank" rel="noopener">Conductor</a>, <a href="https://kilo.ai/" target="_blank" rel="noopener">Kilo Code</a>, and <a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener">dmux</a> manage multiple AI agents running in parallel on different tasks. amux can run 20&ndash;50+ agents simultaneously with usage-limit resume, stall alerts, and a web dashboard. Without an orchestrator, running multiple agents manually leads to merge conflicts, silent failures, and wasted tokens. See our <a href="/blog/best-multi-agent-orchestrators-2026/">detailed orchestrator comparison</a>.</p>
         </div>
       </details>
 

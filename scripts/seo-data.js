@@ -21,11 +21,11 @@ const comparisons = [
   keywords: 'amux vs agent teams, claude code agent teams, parallel claude code, multi-agent claude',
   content: `<h1>amux vs Claude Code Agent Teams</h1>
 <p class="subtitle">Both run multiple Claude Code sessions in parallel. Here's how they differ.</p>
-<p>Anthropic's <strong>Agent Teams</strong> is an experimental built-in feature that lets Claude Code spawn sub-agents. amux takes a different approach: it manages independent tmux sessions with a web dashboard, self-healing watchdog, and shared kanban board.</p>
+<p>Anthropic's <strong>Agent Teams</strong> is an experimental built-in feature that lets Claude Code spawn sub-agents. amux takes a different approach: it manages independent tmux sessions with a web dashboard, stall alerts, and a shared kanban board. Agents resume after usage limits, and on macOS every worker comes back after a reboot.</p>
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Agent Teams','Parallel sessions','Unlimited independent sessions','Sub-agents spawned by parent'],
-['Agent Teams','Self-healing','Auto-compact, restart, unstick','Relies on parent session'],
+['Agent Teams','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Relies on parent session'],
 ['Agent Teams','Web dashboard','Full UI with peek, board, calendar','CLI only'],
 ['Agent Teams','Mobile access','PWA with offline support','No mobile support'],
 ['Agent Teams','Task coordination','SQLite kanban with atomic claiming','Parent delegates to children'],
@@ -36,9 +36,9 @@ ${comparisonTable([
 <h2>When to use Agent Teams</h2>
 <p>Agent Teams works well for <strong>short-lived, tightly-coupled tasks</strong> where a parent agent needs to fan out work and collect results. It requires no setup beyond Claude Code itself.</p>
 <h2>When to use amux</h2>
-<p>amux is built for <strong>long-running, independent agents</strong> that work on separate concerns. The web dashboard, self-healing, and mobile access make it ideal for running agents overnight or managing a fleet of workers across multiple projects.</p>
+<p>amux is built for <strong>long-running, independent agents</strong> that work on separate concerns. The web dashboard, recovery from usage limits and reboots, and mobile access make it ideal for running agents overnight or managing a fleet of workers across multiple projects.</p>
 <ul>
-<li>You want agents that survive context compaction crashes</li>
+<li>You want agents that resume after usage limits and come back after a reboot</li>
 <li>You need a visual dashboard to monitor 10+ sessions</li>
 <li>You want to manage agents from your phone</li>
 <li>You need a shared task board with atomic claiming</li>
@@ -58,7 +58,7 @@ ${CTA}`,
 ${comparisonTable([
 ['Cursor','Architecture','Headless CLI agents + web dashboard','GUI IDE with AI features'],
 ['Cursor','Parallel agents','Dozens of independent sessions','Single agent per window'],
-['Cursor','Unattended operation','Self-healing watchdog, runs overnight','Requires IDE to be open'],
+['Cursor','Unattended operation','Runs overnight; resumes after usage limits; stall alerts','Requires IDE to be open'],
 ['Cursor','Mobile management','PWA on iOS/Android','Desktop only'],
 ['Cursor','Task coordination','Shared kanban board + REST API','No built-in coordination'],
 ['Cursor','Agent model','Claude Code (any model)','Proprietary + Claude/GPT'],
@@ -75,13 +75,13 @@ ${CTA}`
   description: 'Compare amux with Aider, the popular open-source AI pair programming tool, for parallel development.',
   keywords: 'amux vs aider, aider alternative, AI pair programming, claude code multiplexer',
   content: `<h1>amux vs Aider</h1>
-<p class="subtitle">Both are CLI-first. amux adds orchestration, self-healing, and a web dashboard.</p>
-<p><strong>Aider</strong> is an excellent open-source AI pair programming tool that works with many LLM providers. <strong>amux</strong> orchestrates multiple Claude Code sessions with monitoring, self-healing, and a shared task board.</p>
+<p class="subtitle">Both are CLI-first. amux adds orchestration, recovery from usage limits and reboots, and a web dashboard.</p>
+<p><strong>Aider</strong> is an excellent open-source AI pair programming tool that works with many LLM providers. <strong>amux</strong> orchestrates multiple Claude Code sessions with monitoring, stall alerts, and a shared task board.</p>
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Aider','Focus','Multi-agent orchestration','Single-session pair programming'],
 ['Aider','Parallel sessions','Dozens with shared coordination','One per terminal'],
-['Aider','Self-healing','Auto-compact, restart, unstick','Manual restart on errors'],
+['Aider','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Manual restart on errors'],
 ['Aider','Web dashboard','Full UI with live peek','CLI only'],
 ['Aider','LLM support','Claude Code (Opus, Sonnet, Haiku)','Many providers (OpenAI, Claude, etc.)'],
 ['Aider','Task board','SQLite kanban with iCal sync','No built-in task management'],
@@ -108,7 +108,7 @@ ${comparisonTable([
 ['Devin','Environment','Full access to your tools/env','Isolated sandbox'],
 ['Devin','Cost','Pay per Claude API token','$500/mo subscription'],
 ['Devin','Open source','Yes (MIT)','No'],
-['Devin','Self-healing','Auto-compact, restart, unstick','Proprietary recovery'],
+['Devin','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Proprietary recovery'],
 ['Devin','Customization','Full control over session config','Limited configuration'],
 ])}
 <h2>The trade-off</h2>
@@ -126,9 +126,9 @@ ${CTA}`
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Copilot','Paradigm','Autonomous agents working in parallel','IDE assistant (completions + chat)'],
-['Copilot','Autonomy','Fully autonomous with self-healing','Requires developer in the loop'],
+['Copilot','Autonomy','Runs autonomously; resumes after usage limits','Requires developer in the loop'],
 ['Copilot','Parallel tasks','Dozens of simultaneous agents','One suggestion at a time'],
-['Copilot','Unattended','Runs overnight, recovers from crashes','Requires IDE open'],
+['Copilot','Unattended','Runs overnight; workers return after a macOS reboot','Requires IDE open'],
 ['Copilot','Task coordination','Kanban board with atomic claiming','No coordination features'],
 ['Copilot','Price','Pay per API token','$10-39/mo subscription'],
 ])}
@@ -143,12 +143,12 @@ ${CTA}`
   keywords: 'amux vs windsurf, windsurf alternative, codeium vs claude code, AI coding tools',
   content: `<h1>amux vs Windsurf</h1>
 <p class="subtitle">Windsurf is an AI IDE. amux is a headless agent fleet manager.</p>
-<p><strong>Windsurf</strong> (formerly Codeium) is an AI-powered IDE with Cascade, its agentic coding flow. <strong>amux</strong> manages dozens of Claude Code sessions with a web dashboard and self-healing.</p>
+<p><strong>Windsurf</strong> (formerly Codeium) is an AI-powered IDE with Cascade, its agentic coding flow. <strong>amux</strong> manages dozens of Claude Code sessions with a web dashboard and stall alerts.</p>
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Windsurf','Interface','Web dashboard + CLI','Desktop IDE'],
 ['Windsurf','Parallel agents','Unlimited headless sessions','Single Cascade flow'],
-['Windsurf','Unattended mode','Self-healing, runs overnight','Requires IDE open'],
+['Windsurf','Unattended mode','Runs overnight; resumes after usage limits','Requires IDE open'],
 ['Windsurf','Mobile','PWA on iOS/Android','Desktop only'],
 ['Windsurf','Model','Claude Code (any Anthropic model)','Multiple providers'],
 ['Windsurf','Price','Pay per API token','$15/mo subscription'],
@@ -168,13 +168,13 @@ ${CTA}`
 ${comparisonTable([
 ['OpenHands','Environment','Direct machine access','Docker sandbox'],
 ['OpenHands','Agent count','Unlimited parallel tmux sessions','Typically single agent'],
-['OpenHands','Self-healing','Auto-compact, restart, unstick','Relies on sandbox isolation'],
+['OpenHands','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Relies on sandbox isolation'],
 ['OpenHands','Dashboard','Built-in web UI with peek/board','Web UI for single agent'],
 ['OpenHands','Dependencies','One Rust binary + tmux','Docker required'],
 ['OpenHands','Model lock-in','Claude Code specific','Multi-provider'],
 ])}
 <h2>When to choose amux</h2>
-<p>If you're already using Claude Code and want to <strong>scale to many parallel agents</strong> with self-healing and coordination, amux is purpose-built for that. OpenHands is better if you need provider flexibility or sandboxed execution.</p>
+<p>If you're already using Claude Code and want to <strong>scale to many parallel agents</strong> with stall alerts and coordination, amux is purpose-built for that. OpenHands is better if you need provider flexibility or sandboxed execution.</p>
 ${CTA}`
 },
 {
@@ -184,7 +184,7 @@ ${CTA}`
   keywords: 'amux vs tmux scripts, claude code tmux, manage claude code sessions, tmux automation',
   content: `<h1>amux vs DIY tmux Scripts</h1>
 <p class="subtitle">You can manage Claude Code in tmux manually. Here's why amux exists anyway.</p>
-<p>Many developers start by writing bash scripts to manage Claude Code in tmux. It works — until you need self-healing, a dashboard, or coordination between agents.</p>
+<p>Many developers start by writing bash scripts to manage Claude Code in tmux. It works until you need usage-limit resume, stall alerts, a dashboard, or coordination between agents.</p>
 <h2>What you get with DIY scripts</h2>
 <ul>
 <li><code>tmux new-session -d -s agent1 "claude"</code> — starts a session</li>
@@ -193,7 +193,7 @@ ${CTA}`
 </ul>
 <h2>What you're missing</h2>
 ${comparisonTable([
-['DIY tmux','Self-healing','Auto-compact + restart + unstick','Manual monitoring'],
+['DIY tmux','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Manual monitoring'],
 ['DIY tmux','Dashboard','Web UI with live peek, search, files','Terminal only'],
 ['DIY tmux','Mobile access','PWA on any device','SSH + tmux attach'],
 ['DIY tmux','Task board','SQLite kanban with atomic claiming','External tool needed'],
@@ -219,7 +219,7 @@ ${comparisonTable([
 ['CrewAI','Agent type','Claude Code (full dev environment)','Custom agents with defined tools'],
 ['CrewAI','Setup','3 commands to start','Python code to define agents/tasks'],
 ['CrewAI','Coding capability','Full Claude Code (edit, test, git)','Depends on custom tools'],
-['CrewAI','Self-healing','Built-in watchdog','Custom error handling'],
+['CrewAI','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Custom error handling'],
 ['CrewAI','Dashboard','Web UI included','Separate monitoring needed'],
 ['CrewAI','Flexibility','Claude Code only','Any LLM provider'],
 ])}
@@ -239,7 +239,7 @@ ${CTA}`
 ${comparisonTable([
 ['Cline','Interface','Web dashboard + CLI','VS Code extension'],
 ['Cline','Parallel agents','Unlimited headless sessions','One per VS Code window'],
-['Cline','Unattended','Self-healing, runs overnight','Requires VS Code open'],
+['Cline','Unattended','Runs overnight; resumes after usage limits','Requires VS Code open'],
 ['Cline','Agent model','Claude Code CLI','Multi-provider API'],
 ['Cline','Task board','Built-in kanban','No built-in coordination'],
 ['Cline','Mobile','PWA access','Desktop only'],
@@ -257,7 +257,7 @@ ${CTA}`
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Goose','Agent count','Dozens in parallel','Single agent'],
-['Goose','Self-healing','Auto-compact + restart','Manual recovery'],
+['Goose','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Manual recovery'],
 ['Goose','Dashboard','Web UI with live monitoring','CLI only'],
 ['Goose','Coordination','Kanban board + REST API','No multi-agent coordination'],
 ['Goose','Tool system','Claude Code built-in tools','MCP protocol'],
@@ -278,7 +278,7 @@ ${comparisonTable([
 ['Codex','Hosting','Local machine','Cloud sandbox'],
 ['Codex','Environment','Your tools, configs, credentials','Isolated container'],
 ['Codex','Parallel agents','Unlimited local sessions','Cloud-based parallelism'],
-['Codex','Self-healing','Auto-compact, restart, unstick','Cloud infrastructure'],
+['Codex','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Cloud infrastructure'],
 ['Codex','LLM','Claude (Opus, Sonnet, Haiku)','GPT-4o, o3'],
 ['Codex','Open source','Yes (MIT)','CLI open source, cloud proprietary'],
 ['Codex','Cost','API tokens only','OpenAI pricing'],
@@ -298,7 +298,7 @@ ${comparisonTable([
 ['sandboxed.sh','Isolation','Direct machine access (tmux)','Linux workspace containers'],
 ['sandboxed.sh','Setup','One Rust binary + tmux','Docker + infrastructure'],
 ['sandboxed.sh','Agent type','Claude Code CLI','Multi-provider agents'],
-['sandboxed.sh','Self-healing','Built-in watchdog','Container restart'],
+['sandboxed.sh','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Container restart'],
 ['sandboxed.sh','Mobile','PWA (works offline)','iOS native app'],
 ['sandboxed.sh','Task board','SQLite kanban built-in','Separate task management'],
 ])}
@@ -311,11 +311,11 @@ ${CTA}`
   keywords: 'claude code web ui, claude code dashboard, claude code gui, remote claude code',
   content: `<h1>amux vs Claude Code Web UIs</h1>
 <p class="subtitle">Several projects add web interfaces to Claude Code. Here's how amux differs.</p>
-<p>Projects like <strong>CloudCLI</strong>, <strong>claude-code-web</strong>, and <strong>Remote Code</strong> add web frontends to Claude Code. amux goes further with self-healing, agent orchestration, and a full productivity suite.</p>
+<p>Projects like <strong>CloudCLI</strong>, <strong>claude-code-web</strong>, and <strong>Remote Code</strong> add web frontends to Claude Code. amux goes further with usage-limit resume, stall alerts, agent orchestration, and a full productivity suite.</p>
 <h2>What other web UIs provide</h2>
 <ul><li>Basic web terminal for Claude Code</li><li>Session listing and switching</li><li>Some offer multi-session support</li></ul>
 <h2>What amux adds</h2>
-<ul><li><strong>Self-healing watchdog</strong> — auto-compact, restart, unstick</li><li><strong>Kanban board</strong> with atomic task claiming</li><li><strong>Agent-to-agent orchestration</strong> via REST API</li><li><strong>Mobile PWA</strong> with offline support</li><li><strong>Conversation forking</strong> — clone history to new branches</li><li><strong>Token spend tracking</strong> per session</li><li><strong>Git conflict detection</strong> across agents</li><li><strong>Built-in cron scheduler</strong></li><li><strong>iCal sync</strong> for board due dates</li></ul>
+<ul><li><strong>Recovery</strong>: resumes after usage limits, workers return after a macOS reboot, stall alerts</li><li><strong>Kanban board</strong> with atomic task claiming</li><li><strong>Agent-to-agent orchestration</strong> via REST API</li><li><strong>Mobile PWA</strong> with offline support</li><li><strong>Conversation forking</strong> — clone history to new branches</li><li><strong>Token spend tracking</strong> per session</li><li><strong>Git conflict detection</strong> across agents</li><li><strong>Built-in cron scheduler</strong></li><li><strong>iCal sync</strong> for board due dates</li></ul>
 ${CTA}`
 },
 {
@@ -331,7 +331,7 @@ ${comparisonTable([
 ['LangGraph','Purpose','Orchestrate Claude Code sessions','Build custom agent graphs'],
 ['LangGraph','Agent capability','Full dev environment (files, git, shell)','Custom tools per node'],
 ['LangGraph','Setup','3 shell commands','Python code + LangChain ecosystem'],
-['LangGraph','Self-healing','Built-in watchdog','Custom error edges'],
+['LangGraph','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Custom error edges'],
 ['LangGraph','State management','SQLite + tmux sessions','Checkpointed graph state'],
 ['LangGraph','Flexibility','Claude Code specific','Any LLM/tool combination'],
 ])}
@@ -379,7 +379,7 @@ ${CTA}`
 amux start reviewer
 amux send reviewer "Review PR #42: check for security issues, race conditions, and missing error handling"</code></pre>
 <h2>Scale it up</h2>
-<p>With amux, you can run a reviewer agent per PR. The self-healing watchdog ensures they keep working even if Claude Code hits context limits.</p>
+<p>With amux, you can run a reviewer agent per PR. If a reviewer hits a usage limit, amux holds its messages and resumes it at the provider's reset.</p>
 ${CTA}`
 },
 {
@@ -406,7 +406,7 @@ ${CTA}`
   keywords: 'AI test generation, parallel test generation, automated testing AI, claude code testing',
   content: `<h1>Test Generation at Scale</h1>
 <p class="subtitle">One agent per module. Full test coverage by morning.</p>
-<p>Low test coverage? Assign one Claude Code agent per module or file. Each agent writes unit tests, integration tests, and edge cases. amux's self-healing ensures they keep working through context resets.</p>
+<p>Low test coverage? Assign one Claude Code agent per module or file. Each agent writes unit tests, integration tests, and edge cases. amux resumes them after usage limits and flags any that stall.</p>
 <h2>Workflow</h2>
 <ol>
 <li>List your untested modules</li>
@@ -414,8 +414,8 @@ ${CTA}`
 <li>Start agents: they claim tasks atomically from the board</li>
 <li>Monitor from the dashboard — check coverage as agents complete work</li>
 </ol>
-<h2>Why self-healing matters here</h2>
-<p>Test generation is token-intensive. Agents frequently hit context limits. amux's watchdog automatically runs <code>/compact</code> and restarts agents that crash — so your test generation runs don't stall at 3am.</p>
+<h2>Why recovery matters here</h2>
+<p>Test generation is token-intensive. Agents hit usage limits and fill their context. amux holds delivery and resumes each agent at the provider's reset, Claude Code compacts its own context at the threshold you set in amux, and stall detection alerts you if a task stops moving at 3am.</p>
 ${CTA}`
 },
 {
@@ -459,7 +459,7 @@ ${CTA}`
   keywords: 'automated dependency updates, AI dependency management, parallel dependency upgrade, renovate alternative',
   content: `<h1>Automated Dependency Updates</h1>
 <p class="subtitle">Upgrade every dependency in parallel. Fix breaking changes automatically.</p>
-<p>Major version bumps break things. Assign each dependency update to its own agent. It upgrades, fixes breaking changes, runs tests, and reports results. Self-healing keeps agents running through long update cycles.</p>
+<p>Major version bumps break things. Assign each dependency update to its own agent. It upgrades, fixes breaking changes, runs tests, and reports results. amux resumes agents after usage limits, so long update cycles keep going.</p>
 ${CTA}`
 },
 {
@@ -522,26 +522,27 @@ ${CTA}`
   content: `<h1>Legacy Code Modernization</h1>
 <p class="subtitle">Tackle technical debt with a fleet of agents.</p>
 <p>Legacy code is intimidating. Break it into modules, assign each to an agent, and let them modernize in parallel — updating patterns, adding types, replacing deprecated APIs, and writing tests.</p>
-<h2>Self-healing for long-running tasks</h2>
-<p>Modernizing a large module can exhaust Claude Code's context window. amux's watchdog automatically compacts context and restarts on corruption, so agents keep making progress through days-long refactoring work.</p>
+<h2>Recovery for long-running tasks</h2>
+<p>Modernizing a large module can exhaust Claude Code's context window. Claude Code compacts its own context, and amux lets you set the compaction threshold. amux also resumes agents after usage limits and alerts you when work stalls, so days-long refactoring keeps moving.</p>
 ${CTA}`
 },
 {
   slug: 'ai-coding-while-you-sleep',
   title: 'AI Coding While You Sleep',
-  description: 'Run autonomous AI coding agents overnight with self-healing. Wake up to completed features.',
+  description: 'Run autonomous AI coding agents overnight. amux resumes them after usage limits and alerts you on stalls. Wake up to completed features.',
   keywords: 'AI coding while you sleep, unattended AI coding, autonomous coding overnight, AI agents 24/7',
   content: `<h1>AI Coding While You Sleep</h1>
 <p class="subtitle">Queue up work before bed. Wake up to pull requests.</p>
-<p>The dream of autonomous coding requires one thing DIY setups can't deliver: <strong>reliability</strong>. Claude Code sessions crash from context compaction, get stuck on prompts, and silently hang. amux's self-healing watchdog handles all of this automatically.</p>
-<h2>What goes wrong at 3am (and how amux fixes it)</h2>
+<p>The dream of autonomous coding requires one thing DIY setups can't deliver: <strong>reliability</strong>. Claude Code sessions hit usage limits, fill their context, wait on prompts, and stall. amux covers the cases it can and tells you about the rest.</p>
+<h2>What goes wrong at 3am (and what amux does)</h2>
 <table>
 <thead><tr><th>Problem</th><th>amux's response</th></tr></thead>
 <tbody>
-<tr><td>Context window fills up</td><td>Auto-sends <code>/compact</code> (5-min cooldown)</td></tr>
-<tr><td>Thinking-block corruption</td><td>Restarts session + replays last message</td></tr>
-<tr><td>Stuck on tool-approval prompt</td><td>Auto-responds in YOLO mode</td></tr>
-<tr><td>Silent hang / no output</td><td>Detects idle + sends continue signal</td></tr>
+<tr><td>Usage limit hits</td><td>Holds delivery, resumes at the provider's reset</td></tr>
+<tr><td>Context window fills up</td><td>Claude Code compacts its own context; you set the threshold in amux</td></tr>
+<tr><td>Tool-approval prompts</td><td>YOLO mode launches Claude Code with <code>--dangerously-skip-permissions</code>, so they never appear</td></tr>
+<tr><td>Board work stalls</td><td>Stall detection surfaces it and sends an owner alert</td></tr>
+<tr><td>Mac reboots overnight</td><td>A login job brings every worker back in its own conversation</td></tr>
 </tbody>
 </table>
 <h2>Morning routine</h2>
@@ -607,23 +608,25 @@ ${CTA}`
 },
 {
   slug: 'self-healing-configuration',
-  title: 'Self-Healing Configuration',
-  description: 'Configure amux\'s self-healing watchdog for auto-compaction, restart, and prompt recovery.',
-  keywords: 'self-healing AI agent, auto recovery claude code, context compaction, amux watchdog',
-  content: `<h1>Self-Healing Configuration</h1>
-<p class="subtitle">How amux keeps your agents running through crashes, hangs, and context exhaustion.</p>
-<h2>What the watchdog does</h2>
+  title: 'Recovery and Restarts Configuration',
+  description: 'What amux recovers from today: usage-limit resume, server restarts, worker return after a macOS reboot, the compaction threshold, and stall alerts.',
+  keywords: 'AI agent recovery, claude code usage limit resume, context compaction threshold, amux stall detection',
+  content: `<h1>Recovery and Restarts Configuration</h1>
+<p class="subtitle">How amux keeps your agents going through usage limits, restarts, and stalls.</p>
+<h2>What amux does</h2>
 <table>
 <thead><tr><th>Condition</th><th>Action</th></tr></thead>
 <tbody>
-<tr><td>Context below 20%</td><td>Sends <code>/compact</code> (5-min cooldown)</td></tr>
-<tr><td>Thinking-block corruption</td><td>Restarts + replays last message</td></tr>
-<tr><td>Stuck on tool-approval prompt</td><td>Auto-responds in YOLO mode</td></tr>
-<tr><td>Idle too long with pending work</td><td>Sends continue signal</td></tr>
+<tr><td>Provider usage limit</td><td>Holds message delivery, resumes the agent at the provider's reset</td></tr>
+<tr><td>amux server process exits</td><td>launchd (macOS) or a systemd user service (Linux) restarts it</td></tr>
+<tr><td>Mac reboots</td><td>A login job brings every non-archived worker back, resumed in its own conversation</td></tr>
+<tr><td>Context fills up</td><td>Claude Code compacts its own context; amux lets you set the compaction threshold</td></tr>
+<tr><td>Board work or an orchestrator stalls</td><td>Stall detection surfaces it and fires an owner alert</td></tr>
 </tbody>
 </table>
+<p>Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>
 <h2>YOLO mode</h2>
-<p>Register sessions with <code>--yolo</code> to enable automatic tool-approval responses. The watchdog detects the "Esc to cancel" marker (which only appears on tool-approval prompts, never on open-ended questions) and auto-answers.</p>
+<p>Register sessions with <code>--yolo</code> to launch Claude Code with <code>--dangerously-skip-permissions</code>, so tool-approval prompts never appear.</p>
 <pre><code>amux register myproject --dir ~/Dev/app --yolo</code></pre>
 ${CTA}`
 },
@@ -857,28 +860,28 @@ function glossaryEntry(slug, term, definition, details) {
 const glossary = [
   glossaryEntry('agent-multiplexer', 'Agent Multiplexer', 'A tool that runs and manages multiple AI coding agents simultaneously.',
     `<p>An agent multiplexer manages the lifecycle of multiple AI coding sessions — starting, stopping, monitoring, and coordinating them from a single interface. amux is an agent multiplexer for Claude Code, built on tmux.</p><h2>Why multiplex?</h2><p>Running one agent at a time is a bottleneck. With a multiplexer, you assign different tasks to different agents and they work in parallel, dramatically increasing throughput.</p>${CTA}`),
-  glossaryEntry('self-healing-agent', 'Self-Healing AI Agent', 'An AI agent that automatically recovers from crashes, context exhaustion, and stuck states.',
-    `<p>Self-healing agents detect when something goes wrong and fix it without human intervention. In amux, the watchdog monitors for context exhaustion, thinking-block corruption, and stuck prompts — automatically recovering from each.</p><h2>Common failure modes</h2><ul><li>Context window fills up → auto-compact</li><li>Thinking-block corruption → restart + replay</li><li>Tool-approval stuck → auto-respond (YOLO mode)</li></ul>${CTA}`),
+  glossaryEntry('self-healing-agent', 'Self-Healing AI Agent', 'An AI agent setup that keeps working through known interruptions, such as usage limits and restarts, and reports what it cannot fix.',
+    `<p>A self-healing agent setup handles known interruptions without a person stepping in, and tells a person about the ones it cannot handle. In amux that means: usage limits hold delivery and resume at the provider's reset, the OS service restarts the amux server, on macOS every worker comes back in its own conversation after a reboot, and stall detection alerts you when work stops moving.</p><h2>Common failure modes</h2><ul><li>Usage limit hits → delivery held, resumes at reset</li><li>Context window fills up → Claude Code compacts; you set the threshold in amux</li><li>Mac reboots → workers return, each in its own conversation</li><li>Work stalls → stall detection and an owner alert</li></ul><p>Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>${CTA}`),
   glossaryEntry('context-compaction', 'Context Compaction', 'The process of summarizing conversation history to free up context window space in an AI agent.',
-    `<p>When a Claude Code session's context window fills up, the <code>/compact</code> command summarizes the conversation to free space. amux's watchdog triggers this automatically when context drops below 20%.</p><h2>Why it matters</h2><p>Without compaction, agents stop working when they run out of context. With self-healing compaction, agents can work indefinitely on long tasks.</p>`),
-  glossaryEntry('yolo-mode', 'YOLO Mode', 'A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.',
-    `<p>YOLO mode detects blocking tool-approval prompts (identified by the "Esc to cancel" marker) and auto-answers them. This enables truly headless operation — agents never block waiting for human approval.</p><h2>Safety</h2><p>The detection specifically targets tool-approval prompts. It never fires on open-ended model questions, ensuring agents don't auto-answer when human judgment is needed.</p>`),
+    `<p>When a Claude Code session's context window fills up, Claude Code compacts the conversation to free space. amux lets you set the threshold at which that happens.</p><h2>Why it matters</h2><p>Without compaction, agents stop working when they run out of context. With compaction, agents can keep going on long tasks, working from a summary.</p>`),
+  glossaryEntry('yolo-mode', 'YOLO Mode', 'A configuration that launches Claude Code without tool-approval prompts for unattended operation.',
+    `<p>YOLO mode launches Claude Code with <code>--dangerously-skip-permissions</code>, so tool-approval prompts never appear and agents do not block waiting for approval.</p><h2>Safety</h2><p>Open-ended questions from the model still wait for you. Run YOLO agents on a branch, in a scoped directory, without production credentials.</p>`),
   glossaryEntry('agent-orchestration', 'Agent Orchestration', 'Coordinating multiple AI agents to work together on complex tasks.',
     `<p>Agent orchestration involves managing task distribution, communication, and coordination across multiple AI agents. amux provides orchestration through a shared kanban board, REST API, and global memory.</p><h2>Orchestration patterns</h2><ul><li><strong>Manager + workers</strong> — one agent delegates, others execute</li><li><strong>Peer review</strong> — agents review each other's work</li><li><strong>Pipeline</strong> — sequential handoff between specialized agents</li><li><strong>Swarm</strong> — agents claim tasks from a shared queue</li></ul>${CTA}`),
   glossaryEntry('parallel-coding-agents', 'Parallel Coding Agents', 'Multiple AI agents working on different coding tasks at the same time.',
-    `<p>Instead of one agent working sequentially, parallel coding agents tackle different tasks simultaneously. This can multiply development throughput by 10x or more.</p><h2>Requirements for parallel agents</h2><ul><li>Session management (start, stop, monitor)</li><li>Git isolation (prevent conflicts)</li><li>Task coordination (prevent duplicate work)</li><li>Self-healing (recover from crashes)</li></ul><p>amux provides all four out of the box.</p>${CTA}`),
+    `<p>Instead of one agent working sequentially, parallel coding agents tackle different tasks simultaneously. This can multiply development throughput by 10x or more.</p><h2>Requirements for parallel agents</h2><ul><li>Session management (start, stop, monitor)</li><li>Git isolation (prevent conflicts)</li><li>Task coordination (prevent duplicate work)</li><li>Recovery (resume after usage limits and reboots, alert on stalls)</li></ul><p>amux provides all four out of the box.</p>${CTA}`),
   glossaryEntry('token-accounting', 'Token Accounting', 'Tracking token usage and costs across multiple AI coding sessions.',
     `<p>Token accounting measures how many input/output tokens each agent consumes. amux parses JSONL conversation logs and deduplicates by signature to provide accurate per-session daily spend.</p>`),
   glossaryEntry('atomic-task-claiming', 'Atomic Task Claiming', 'A concurrent-safe mechanism for agents to claim tasks without duplicating work.',
     `<p>amux's <code>POST /api/board/:id/claim</code> is a SQLite compare-and-swap operation. Even with 20+ agents racing for the same queue, each task gets assigned exactly once. No Redis or external lock broker needed.</p>`),
   glossaryEntry('session-persistence', 'Session Persistence', 'The ability for AI agent sessions to survive restarts and maintain their identity.',
     `<p>Each amux session has a UUID that persists across stop/start cycles. Conversation history, memory, and metadata survive restarts. Stopped sessions can still be peeked to review their last output.</p>`),
-  glossaryEntry('prompt-replay', 'Prompt Replay', 'Automatically re-sending the last message after an AI agent crash to recover progress.',
-    `<p>When amux detects thinking-block corruption (a known Claude Code failure mode), it restarts the session and replays the last user message. The agent picks up roughly where it left off.</p>`),
+  glossaryEntry('prompt-replay', 'Prompt Replay', 'Re-sending a message to an AI agent after an interruption so work continues.',
+    `<p>amux does not replay the last message after a crash. What it does: when a provider usage limit hits, it holds message delivery and sends queued messages when the agent resumes at the provider's reset. On macOS after a reboot, each worker comes back resumed in its own conversation.</p>`),
   glossaryEntry('global-memory', 'Global Memory', 'A shared knowledge base accessible to all AI agents in a multiplexer.',
     `<p>amux's global memory is a markdown file shared across all sessions. It contains the REST API reference and orchestration patterns. Every agent reads it at startup, giving them the knowledge to coordinate with peers.</p>`),
-  glossaryEntry('background-watchdog', 'Background Watchdog', 'A monitoring process that detects and recovers from AI agent failures automatically.',
-    `<p>amux's watchdog runs on every status check cycle. It monitors terminal output for known failure patterns and takes corrective action — compacting context, restarting sessions, or auto-responding to stuck prompts.</p>`),
+  glossaryEntry('background-watchdog', 'Background Watchdog', 'A monitoring process that watches AI agents and surfaces failures.',
+    `<p>amux monitors its agents in the background. It holds delivery during usage limits and resumes at the provider's reset, and its stall detection surfaces stalled board work and stuck orchestrators with an owner alert. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>`),
   glossaryEntry('conversation-fork', 'Conversation Fork', 'Cloning an AI session\'s history into multiple new sessions for parallel exploration.',
     `<p>Forking creates new sessions that inherit the full conversation context of the parent. Each fork can explore a different approach from the same starting point, enabling parallel experimentation.</p>`),
   glossaryEntry('terminal-peek', 'Terminal Peek', 'Viewing an AI agent\'s live terminal output without attaching to the session.',
@@ -886,7 +889,7 @@ const glossary = [
   glossaryEntry('pwa-progressive-web-app', 'PWA (Progressive Web App)', 'A web application installable on mobile devices with offline support.',
     `<p>amux's dashboard is a PWA — install it on your phone for native-like access. Background Sync replays queued commands when you reconnect. Manage your agent fleet from anywhere.</p>`),
   glossaryEntry('tmux-session-management', 'tmux Session Management', 'Using tmux terminal multiplexer to run persistent background processes.',
-    `<p>amux uses tmux to run Claude Code sessions in persistent background terminals. tmux sessions survive SSH disconnects and system restarts. amux adds monitoring, self-healing, and a web dashboard on top.</p>`),
+    `<p>amux uses tmux to run Claude Code sessions in persistent background terminals. tmux sessions survive SSH disconnects and system restarts. amux adds monitoring, usage-limit resume, stall alerts, and a web dashboard on top.</p>`),
   glossaryEntry('rest-api-orchestration', 'REST API Orchestration', 'Using HTTP endpoints to coordinate AI agent communication and task management.',
     `<p>amux exposes REST endpoints for session management, board operations, memory access, and inter-agent communication. Agents use <code>curl</code> calls to discover peers, send messages, claim tasks, and report progress.</p>`),
   glossaryEntry('ical-sync', 'iCal Sync', 'Exporting task deadlines as calendar events via the iCal format.',
@@ -914,7 +917,7 @@ const solutions = [
 <li><strong>Morning:</strong> Queue up the day's tasks on the board</li>
 <li><strong>Start agents:</strong> Each claims a task and gets to work</li>
 <li><strong>Your job:</strong> Review PRs, make architectural decisions, handle the parts only you can do</li>
-<li><strong>Evening:</strong> Queue overnight tasks. Self-healing keeps agents working while you sleep</li>
+<li><strong>Evening:</strong> Queue overnight tasks. amux resumes agents after usage limits and alerts you on stalls while you sleep</li>
 </ol>
 ${CTA}`
 },
@@ -1025,15 +1028,16 @@ const blog = [
 {
   slug: 'ship-features-while-you-sleep',
   title: 'Ship Features While You Sleep',
-  description: 'How to run AI coding agents overnight with self-healing to wake up to completed features.',
+  description: 'How to run AI coding agents overnight, resume them after usage limits, and wake up to completed features.',
   keywords: 'AI coding overnight, ship while sleeping, unattended AI development, autonomous coding',
   content: `<h1>Ship Features While You Sleep</h1>
 <p class="subtitle">The economics of autonomous overnight development.</p>
-<p>A developer reported waking up to a fully tested REST API. Total cost: $3.47 in API tokens. The catch? It only works if your agents don't crash at 3am.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
+<p>A developer reported waking up to a fully tested REST API. Total cost: $3.47 in API tokens. The catch? It only works if your agents keep going at 3am.</p>
 <h2>The reliability problem</h2>
-<p>Claude Code sessions fail in predictable ways: context compaction crashes, thinking-block corruption, and stuck tool-approval prompts. Without recovery, your overnight agent is dead by midnight.</p>
-<h2>Self-healing changes the equation</h2>
-<p>amux's watchdog handles every known failure mode automatically. Context low? Auto-compact. Corruption? Restart and replay. Stuck prompt? Auto-respond. Your agents work through the night.</p>
+<p>Claude Code sessions stop in predictable ways: usage limits, full context windows, tool-approval prompts, and stalls. Without a plan for each, your overnight agent is idle by midnight.</p>
+<h2>Recovery changes the equation</h2>
+<p>Usage limit? amux holds delivery and resumes at the provider's reset. Context full? Claude Code compacts at the threshold you set in amux. Approval prompts? YOLO mode skips them. Stalled work? Stall detection sends you an alert. Mac rebooted? Every worker comes back in its own conversation.</p>
 <h2>The morning routine</h2>
 <p>Check the board from your phone. See what shipped. Review PRs. Merge. Your overnight agents just saved you a day of work.</p>
 ${CTA}`
@@ -1073,28 +1077,32 @@ ${CTA}`
 {
   slug: 'self-healing-pattern',
   title: 'The Self-Healing Agent Pattern',
-  description: 'Design patterns for building AI agents that automatically recover from failures.',
+  description: 'Design patterns for AI agents that keep going through known interruptions and surface the rest.',
   keywords: 'self-healing AI pattern, agent recovery, resilient AI agents, fault tolerant agents',
   content: `<h1>The Self-Healing Agent Pattern</h1>
-<p class="subtitle">Why reliable agents need automatic recovery, not just error handling.</p>
-<p>Traditional error handling assumes you can predict failure modes. Self-healing agents monitor for symptoms and apply corrective actions — even for failures you didn't anticipate.</p>
+<p class="subtitle">Why reliable agents need automatic recovery as well as error handling.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
+<p>Traditional error handling assumes you can predict failure modes. Self-healing agents handle the interruptions you can predict and tell a person about the ones they cannot.</p>
 <h2>amux's approach</h2>
-<p>The watchdog runs on every status check cycle, parsing terminal output for known patterns. When it detects a problem, it applies the least-disruptive fix.</p>
+<p>amux holds delivery during usage limits and resumes at the provider's reset. The OS service restarts the amux server process. On macOS, a login job brings every worker back after a reboot, resumed in its own conversation. Stall detection surfaces stalled board work and stuck orchestrators and fires an owner alert.</p>
 ${CTA}`
 },
 {
   slug: 'why-claude-code-sessions-crash',
   title: 'Why Claude Code Sessions Crash (and How to Fix It)',
-  description: 'Common Claude Code failure modes and how amux\'s self-healing handles each one automatically.',
+  description: 'Common Claude Code failure modes, what amux handles today, and what it surfaces for you.',
   keywords: 'claude code crashes, claude code context error, claude code stuck, claude code recovery',
   content: `<h1>Why Claude Code Sessions Crash</h1>
-<p class="subtitle">And how amux fixes each one automatically.</p>
-<h2>Context compaction failures</h2>
-<p>When Claude Code's context window fills up, it attempts to compact. This can hang or crash. amux proactively triggers <code>/compact</code> before the window fills, with a 5-minute cooldown to prevent loops.</p>
-<h2>Thinking-block corruption</h2>
-<p>A known failure where Claude Code produces corrupted thinking blocks. amux detects the error message, restarts the session, and replays the last user message.</p>
-<h2>Stuck prompts</h2>
-<p>Tool-approval prompts block the session waiting for human input. In YOLO mode, amux auto-responds to these (detected via the "Esc to cancel" marker).</p>
+<p class="subtitle">And what amux does about each one.</p>
+<p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
+<h2>Context compaction</h2>
+<p>When Claude Code's context window fills up, it compacts its own context. amux lets you set the compaction threshold.</p>
+<h2>Usage limits</h2>
+<p>When a provider's usage limit hits, amux holds message delivery and resumes the agent at the provider's reset.</p>
+<h2>Crashed processes</h2>
+<p>Restarting a crashed agent process is not built into the amux server today. An optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. Stall detection surfaces stalled board work and fires an owner alert so you see it.</p>
+<h2>Approval prompts</h2>
+<p>Tool-approval prompts block the session waiting for human input. YOLO mode launches Claude Code with <code>--dangerously-skip-permissions</code>, so they never appear.</p>
 ${CTA}`
 },
 {
@@ -1169,7 +1177,7 @@ ${CTA}`
 <p class="subtitle">The most common way AI agents die — and how to prevent it.</p>
 <p>When an AI agent's context window fills up, it must compact (summarize) its history to continue. This process frequently crashes or hangs, silently killing your agent.</p>
 <h2>How amux prevents this</h2>
-<p>The watchdog monitors context usage and proactively triggers compaction before the window fills. A 5-minute cooldown prevents compaction loops. If compaction crashes, the session restarts with the last message replayed.</p>
+<p>Claude Code compacts its own context, and amux lets you set the threshold so compaction happens before the window is full. If a session stops making progress, stall detection surfaces it and fires an owner alert.</p>
 ${CTA}`
 },
 {
@@ -1178,8 +1186,8 @@ ${CTA}`
   description: 'Architecture and best practices for running Claude Code agents continuously.',
   keywords: 'AI agents 24/7, continuous AI coding, always-on agents, persistent AI development',
   content: `<h1>Running AI Agents 24/7</h1>
-<p class="subtitle">Continuous operation requires self-healing, not just auto-start.</p>
-<p>Running agents continuously isn't hard — keeping them productive is. amux's self-healing addresses every failure mode that would otherwise require manual intervention.</p>
+<p class="subtitle">Continuous operation requires recovery as well as auto-start.</p>
+<p>Running agents continuously isn't hard. Keeping them productive is. amux resumes agents after usage limits, restarts its own server through launchd or systemd, brings every worker back after a macOS reboot, and alerts you when work stalls.</p>
 ${CTA}`
 },
 {
@@ -1191,12 +1199,12 @@ ${CTA}`
 <p class="subtitle">Set it up right, and you only check in once a day.</p>
 <h2>Prerequisites for unattended operation</h2>
 <ol>
-<li><strong>YOLO mode:</strong> Auto-approve tool-use prompts</li>
-<li><strong>Self-healing:</strong> Recover from crashes automatically</li>
+<li><strong>YOLO mode:</strong> No tool-approval prompts</li>
+<li><strong>Recovery:</strong> Resume after usage limits and reboots, with stall alerts</li>
 <li><strong>Task board:</strong> Agents know what to work on</li>
 <li><strong>Git isolation:</strong> Agents don't conflict with each other</li>
 </ol>
-<p>amux provides all four. Register sessions with <code>--yolo</code>, and the watchdog handles the rest.</p>
+<p>amux provides all four. Register sessions with <code>--yolo</code>, post tasks to the board, and watch from the dashboard.</p>
 ${CTA}`
 },
 {
@@ -1247,22 +1255,24 @@ ${CTA}`
 const features = [
 {
   slug: 'self-healing',
-  title: 'Self-Healing AI Agents',
-  description: 'amux\'s self-healing watchdog automatically recovers from crashes, context exhaustion, and stuck states.',
-  keywords: 'self-healing AI agent, auto recovery, context compaction, agent watchdog, claude code crash fix',
-  content: `<h1>Self-Healing AI Agents</h1>
-<p class="subtitle">The #1 reason to use amux: your agents never silently die.</p>
-<p>Claude Code sessions fail in predictable ways. amux's background watchdog detects every known failure mode and recovers automatically — no human intervention needed.</p>
+  title: 'Recovery and Restarts',
+  description: 'amux keeps agents going through usage limits and restarts: delivery resumes at the provider\'s reset, and on macOS every worker comes back after a reboot.',
+  keywords: 'AI agent recovery, claude code usage limit, agent restart after reboot, context compaction threshold, stall detection',
+  content: `<h1>Recovery and Restarts</h1>
+<p class="subtitle">amux keeps agents going through usage limits and restarts, and tells you when work stalls.</p>
+<p>Claude Code sessions stop in predictable ways. Here is what amux handles today and what it surfaces for you.</p>
 <h2>Failure modes and responses</h2>
 <table>
-<thead><tr><th>Failure</th><th>Detection</th><th>Recovery</th></tr></thead>
+<thead><tr><th>Event</th><th>Detection</th><th>Response</th></tr></thead>
 <tbody>
-<tr><td>Context exhaustion</td><td>Context below 20%</td><td>Auto-send <code>/compact</code></td></tr>
-<tr><td>Thinking-block corruption</td><td>Error message pattern</td><td>Restart + replay last message</td></tr>
-<tr><td>Tool-approval stuck</td><td>"Esc to cancel" marker</td><td>Auto-respond (YOLO mode)</td></tr>
-<tr><td>Silent hang</td><td>No output for extended period</td><td>Continue signal</td></tr>
+<tr><td>Provider usage limit</td><td>Limit message from the provider</td><td>Hold delivery, resume at the provider's reset (all platforms)</td></tr>
+<tr><td>amux server process exits</td><td>OS service manager</td><td>launchd (macOS) or a systemd user service (Linux) restarts it</td></tr>
+<tr><td>Mac reboot</td><td>Login job</td><td>Every non-archived worker comes back, resumed in its own conversation</td></tr>
+<tr><td>Context fills up</td><td>Claude Code</td><td>Claude Code compacts its own context; you set the threshold in amux</td></tr>
+<tr><td>Stalled board work or stuck orchestrator</td><td>Stall detection</td><td>Surfaced on the board, owner alert fires</td></tr>
 </tbody>
 </table>
+<p>Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>
 ${CTA}`
 },
 {
@@ -1340,17 +1350,17 @@ ${CTA}`
 // FAQ (1 page)
 // ═══════════════════════════════════════════════════════════════════
 const faqItems = [
-  ['What is amux?', 'amux is an open-source agent multiplexer that runs dozens of Claude Code sessions in parallel from a web dashboard. It adds self-healing, task coordination, and mobile access on top of Claude Code + tmux.'],
+  ['What is amux?', 'amux is an open-source agent multiplexer that runs dozens of Claude Code sessions in parallel from a web dashboard. It adds usage-limit resume, stall alerts, task coordination, and mobile access on top of Claude Code + tmux.'],
   ['What do I need to run amux?', 'Python 3, tmux, and Claude Code (the <code>claude</code> CLI) installed and authenticated. That\'s it.'],
   ['How many agents can I run?', 'As many as your machine can handle. Each agent uses ~200-400MB RAM. On a 32GB machine, 50+ agents is practical.'],
   ['Does amux modify Claude Code?', 'No. amux manages Claude Code sessions externally via tmux. It parses terminal output to detect status — no hooks, patches, or modifications.'],
-  ['What happens when an agent crashes?', 'amux\'s self-healing watchdog detects crashes and recovers automatically. Context exhaustion triggers auto-compaction. Thinking-block corruption triggers restart with message replay. Stuck prompts get auto-answered in YOLO mode.'],
+  ['What happens when an agent crashes?', 'Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers. What amux does do: stall detection surfaces stalled work and fires an owner alert, usage limits hold delivery and resume at the provider\'s reset, and on macOS every worker comes back in its own conversation after a reboot.'],
   ['Can I use amux from my phone?', 'Yes. The dashboard is a PWA — install it on iOS or Android. Works offline with Background Sync.'],
   ['How do agents coordinate?', 'Via REST API. Every agent gets the API reference in global memory. They can send messages to peers, claim tasks from the board, and peek at each other\'s output.'],
   ['What does it cost?', 'amux is free and open source (MIT). You pay only for Claude API tokens. Running 10 agents typically costs $20-100/day depending on task complexity.'],
   ['Is it secure?', 'amux is local-first with no auth built in. Use Tailscale or bind to localhost. Never expose port 8824 to the internet.'],
-  ['Can I use it with models other than Claude?', 'amux is specifically built for Claude Code (the <code>claude</code> CLI). It relies on Claude Code\'s specific terminal output patterns for status detection and self-healing.'],
-  ['How is amux different from Claude Code Agent Teams?', 'Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, self-healing, and shared task board. <a href="/compare/amux-vs-claude-code-agent-teams/">See detailed comparison</a>.'],
+  ['Can I use it with models other than Claude?', 'amux is specifically built for Claude Code (the <code>claude</code> CLI). It relies on Claude Code\'s specific terminal output patterns for status and stall detection.'],
+  ['How is amux different from Claude Code Agent Teams?', 'Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, usage-limit resume, and a shared task board. <a href="/compare/amux-vs-claude-code-agent-teams/">See detailed comparison</a>.'],
   ['Can I self-host it?', 'Yes — that\'s the only way to run it. amux runs on your own machine or server. No cloud service, no account needed.'],
 ];
 
@@ -1399,7 +1409,7 @@ const geoPages = [
 <table>
 <thead><tr><th>Need</th><th>amux solution</th></tr></thead>
 <tbody>
-<tr><td>Run agents overnight</td><td>Self-healing watchdog restarts crashes automatically</td></tr>
+<tr><td>Run agents overnight</td><td>Resumes after usage limits; stall alerts; workers return after a macOS reboot</td></tr>
 <tr><td>Monitor from anywhere</td><td>PWA dashboard works on iPhone from BART</td></tr>
 <tr><td>Coordinate across sessions</td><td>Shared SQLite kanban with atomic task claiming</td></tr>
 <tr><td>Stay in flow</td><td>Delegate entire feature branches to agent fleets</td></tr>
@@ -1427,7 +1437,7 @@ ${CTA}`,
 <li><strong>Test coverage blitzes:</strong> Assign 10 agents to write unit tests across a legacy codebase. Done before morning standup.</li>
 </ul>
 <h2>Timezone Advantage</h2>
-<p>Being on EST means you're 3 hours ahead of SF. Launch agent fleets at 6pm your time and your West Coast teammates see the output in their morning. amux's self-healing watchdog keeps agents running overnight without babysitting.</p>
+<p>Being on EST means you're 3 hours ahead of SF. Launch agent fleets at 6pm your time and your West Coast teammates see the output in their morning. amux resumes agents after usage limits and alerts you on stalls, so overnight runs need no babysitting.</p>
 ${CTA}`,
 },
 {
@@ -1439,7 +1449,7 @@ ${CTA}`,
 <p class="subtitle">Home to Amazon and Microsoft — Seattle developers know how to build at scale. amux brings that mindset to AI coding.</p>
 <h2>Seattle's Engineering Culture</h2>
 <p>Seattle is defined by systems-scale thinking. Amazon's leadership principles, Microsoft's engineering culture, and a thriving independent startup scene (Stripe, Tableau, Redfin, Outreach) all share a focus on operational excellence. Engineers here aren't afraid of complexity — they want tools that match their ambition.</p>
-<p>amux fits naturally: it's a systems-level tool for AI coding. Instead of one chatbot, you get a coordinated fleet of agents with a REST API, shared task board, and self-healing infrastructure.</p>
+<p>amux fits naturally: it's a systems-level tool for AI coding. Instead of one chatbot, you get a coordinated fleet of agents with a REST API, shared task board, and recovery from usage limits and reboots.</p>
 <h2>Workflows for Seattle Developers</h2>
 <ul>
 <li><strong>Microservices coverage:</strong> Seattle companies often run sprawling microservice architectures. Assign one amux agent per service for parallel refactoring, migration, or test generation.</li>
@@ -1637,7 +1647,7 @@ ${CTA}`,
 <li><strong>CST overnight advantage:</strong> CST puts Chicago 1-2 hours ahead of SF. Launch agent fleets at 5pm CST and they complete work while your West Coast teammates are still in afternoon meetings.</li>
 </ul>
 <h2>Midwest Reliability</h2>
-<p>Chicago engineering culture values reliability over hype. amux's self-healing watchdog, atomic SQLite task claiming, and local-first architecture reflect the same values: it just works, without drama.</p>
+<p>Chicago engineering culture values reliability over hype. amux's usage-limit resume, stall alerts, atomic SQLite task claiming, and local-first architecture reflect the same values: it just works, without drama.</p>
 ${CTA}`,
 },
 {
@@ -1664,7 +1674,7 @@ ${CTA}`,
 {
   slug: 'remote-developers',
   title: 'AI Coding Agents for Remote Developers',
-  description: 'Remote developers use amux to run parallel Claude Code agents across timezones — async-first, self-healing, mobile-accessible.',
+  description: 'Remote developers use amux to run parallel Claude Code agents across timezones: async-first, resumes after usage limits, mobile-accessible.',
   keywords: 'remote AI coding, remote developer tools, distributed team claude code',
   content: `<h1>AI Coding Agents for Remote Developers</h1>
 <p class="subtitle">Remote developers already work async. amux makes your AI agents async too.</p>
@@ -1674,7 +1684,7 @@ ${CTA}`,
 <h2>Features Built for Remote Workflows</h2>
 <ul>
 <li><strong>Mobile PWA:</strong> Monitor your agents from your phone — on a walk, at a coffee shop, from a different continent. The dashboard works on iOS and Android with offline support.</li>
-<li><strong>Self-healing watchdog:</strong> Agents auto-recover from crashes, context exhaustion, and stuck prompts. No need to babysit.</li>
+<li><strong>Recovery:</strong> Agents resume after usage limits, workers return after a macOS reboot, and stall detection alerts you when work stops moving.</li>
 <li><strong>Shared kanban board:</strong> Coordinate work across timezones via a shared task board with atomic claiming. No Slack required for task handoff.</li>
 <li><strong>REST API:</strong> Integrate amux into your existing async workflows — Zapier webhooks, GitHub Actions, custom scripts.</li>
 <li><strong>iCal sync:</strong> Board items with due dates sync to Google Calendar or Apple Calendar — stay on top of deadlines from any device.</li>
@@ -1684,7 +1694,7 @@ ${CTA}`,
 <table>
 <thead><tr><th>Remote challenge</th><th>amux solution</th></tr></thead>
 <tbody>
-<tr><td>Agent crashes while you're asleep</td><td>Self-healing watchdog auto-restarts</td></tr>
+<tr><td>Agent stalls while you're asleep</td><td>Stall detection and an owner alert; usage limits resume at reset</td></tr>
 <tr><td>Can't check desktop from phone</td><td>PWA dashboard with full mobile support</td></tr>
 <tr><td>Task handoff across timezones</td><td>Shared SQLite kanban board</td></tr>
 <tr><td>Need to peek at agent output</td><td>Live peek via web dashboard</td></tr>
@@ -2040,7 +2050,7 @@ amux register db --dir ~/myapp --yolo          # Migrations/models
 amux register tests --dir ~/myapp --yolo       # E2E + unit tests
 amux register infra --dir ~/myapp --yolo       # Docker/CI/Terraform</code></pre>
 <h2>One Developer, Team Output</h2>
-<p>Fullstack developers using amux agent fleets routinely ship what would normally require a 4-5 person team. The board coordination, self-healing, and mobile monitoring let you manage the fleet from anywhere — without anyone dropping the ball.</p>
+<p>Fullstack developers using amux agent fleets routinely ship what would normally require a 4-5 person team. The board coordination, stall alerts, and mobile monitoring let you manage the fleet from anywhere — without anyone dropping the ball.</p>
 ${CTA}`,
 },
 {
@@ -2265,7 +2275,7 @@ ${CTA}`,
 <ul>
 <li><strong>Vague task descriptions:</strong> An agent that goes in the wrong direction and needs to backtrack uses 3-5x more tokens than one that executes correctly the first time. Write clear, specific task descriptions.</li>
 <li><strong>Agents reading the whole codebase:</strong> If an agent reads 500k tokens of source code for a 10-line fix, your cost explodes. Keep task scope tight and specify relevant files explicitly.</li>
-<li><strong>Long error loops:</strong> An agent stuck in a loop trying to fix a compilation error can burn thousands of tokens on unproductive iterations. amux's watchdog detects stuck agents and interrupts them.</li>
+<li><strong>Long error loops:</strong> An agent stuck in a loop trying to fix a compilation error can burn thousands of tokens on unproductive iterations. amux's stall detection surfaces stuck work so you can step in.</li>
 <li><strong>No context boundaries:</strong> Running agents on huge context windows when smaller ones would suffice. Use session checkpointing and compact summaries to keep context efficient.</li>
 </ul>
 <h2>The Real ROI Calculation</h2>
@@ -2380,7 +2390,7 @@ ${CTA}`,
 <tbody>
 <tr><td>Compilation error loop</td><td>Same error in peek output, repeated attempts</td><td>Send the correct import path or dependency name</td></tr>
 <tr><td>Wrong file modified</td><td>Git diff shows unexpected changes</td><td>Reset branch, re-specify file paths explicitly</td></tr>
-<tr><td>Context exhausted</td><td>amux auto-compact triggered</td><td>Self-healed automatically; check output quality after</td></tr>
+<tr><td>Context exhausted</td><td>Claude Code compacted its context</td><td>Check output quality after; tune the compaction threshold in amux</td></tr>
 <tr><td>Task too ambiguous</td><td>Agent asking many clarifying questions</td><td>Send a more specific task description via dashboard</td></tr>
 <tr><td>Dependency not available</td><td>Package not found errors</td><td>Run the install command, or tell agent to add to package.json first</td></tr>
 </tbody>
@@ -2414,7 +2424,7 @@ amux register auth-agent --dir ~/mvp --yolo     # Auth flow
 amux register frontend-agent --dir ~/mvp --yolo # Pages + components
 amux register deploy-agent --dir ~/mvp --yolo   # Vercel config + CI</code></pre>
 <h2>Phase 3: Overnight Run (8-12 hours, agents)</h2>
-<p>This is the part where you sleep. amux's self-healing watchdog keeps agents running. By morning:</p>
+<p>This is the part where you sleep. amux resumes agents after usage limits and alerts you on stalls. By morning:</p>
 <ul>
 <li>Database schema is migrated and seeded</li>
 <li>API routes are implemented and tested</li>
@@ -2436,7 +2446,7 @@ ${CTA}`,
   content: `<h1>Context Window Strategy for Long-Running Agents</h1>
 <p class="subtitle">Context exhaustion is the #1 failure mode for long-running agents. Here's how to design around it.</p>
 <h2>The Context Problem</h2>
-<p>Claude Code has a finite context window. In a long-running session — hours of coding, many files read, many outputs generated — the context window fills up. When it does, either the agent stops working or (with amux) it auto-compacts. Auto-compact helps, but poorly structured sessions lose important context during compaction and produce lower-quality output afterward.</p>
+<p>Claude Code has a finite context window. In a long-running session — hours of coding, many files read, many outputs generated — the context window fills up. When it does, either the agent stops working or Claude Code compacts it. Compaction helps, but poorly structured sessions lose important context during compaction and produce lower-quality output afterward.</p>
 <p>The solution is to design tasks and sessions so that context usage is efficient from the start — not treating compaction as a fix for poor session hygiene.</p>
 <h2>Task Scoping Rules</h2>
 <ul>
@@ -2445,13 +2455,8 @@ ${CTA}`,
 <li><strong>Set scope boundaries:</strong> Tell the agent what to ignore. "Don't read test files unless needed for understanding the interface" prevents unnecessary context loading.</li>
 <li><strong>Short task horizons:</strong> Tasks that take 30 minutes are better than tasks that take 3 hours. Short tasks complete within one healthy context window. Long tasks risk degradation.</li>
 </ul>
-<h2>amux's Auto-Compact</h2>
-<p>When amux detects context exhaustion, it:</p>
-<ol>
-<li>Sends <code>/compact</code> to summarize the conversation</li>
-<li>Monitors for the summary confirmation</li>
-<li>Resumes the agent</li>
-</ol>
+<h2>Compaction in amux</h2>
+<p>Claude Code compacts its own context when it reaches a threshold, and amux lets you set that threshold per worker. Compaction summarizes the conversation and the agent continues.</p>
 <p>This keeps agents running, but compacted context loses detail. After a compaction, agents are working from a summary, not the full conversation. Quality can drop. The goal is to design tasks that complete before compaction is needed.</p>
 <h2>Context Checkpointing Patterns</h2>
 <p>For genuinely long tasks that can't be broken up:</p>
@@ -2493,7 +2498,7 @@ ${CTA}`,
 <ul>
 <li><strong>Model quality:</strong> Which underlying model? How well does it handle your codebase's language and patterns?</li>
 <li><strong>Autonomy:</strong> How much can it do without asking for confirmation? Constant interruptions destroy the value of autonomous agents.</li>
-<li><strong>Self-healing:</strong> What happens when the agent crashes or gets stuck? Does it recover automatically?</li>
+<li><strong>Recovery:</strong> What happens when the agent hits a usage limit, crashes, or gets stuck? What recovers automatically, and what alerts you?</li>
 <li><strong>Context management:</strong> How does the tool handle long sessions and large codebases?</li>
 <li><strong>Cost transparency:</strong> Can you see what you're spending per session?</li>
 </ul>
@@ -2515,13 +2520,13 @@ const moreCompare = [
   keywords: 'amux vs bolt new, bolt.new alternative, AI coding comparison',
   content: `<h1>amux vs Bolt.new</h1>
 <p class="subtitle">Bolt.new generates apps in the browser. amux runs agents against your existing codebase. Different tools for different moments.</p>
-<p><strong>Bolt.new</strong> is a browser-based AI coding environment that generates full-stack applications from prompts — instant, no setup, great for prototypes. <strong>amux</strong> is a local agent orchestrator that runs Claude Code sessions against your own codebase, with a web dashboard, self-healing, and parallel execution.</p>
+<p><strong>Bolt.new</strong> is a browser-based AI coding environment that generates full-stack applications from prompts — instant, no setup, great for prototypes. <strong>amux</strong> is a local agent orchestrator that runs Claude Code sessions against your own codebase, with a web dashboard, usage-limit resume, and parallel execution.</p>
 <h2>Key differences</h2>
 ${comparisonTable([
 ['Bolt.new','Environment','Local machine, your codebase','Browser sandbox'],
 ['Bolt.new','Parallel agents','Dozens of independent sessions','Single session'],
 ['Bolt.new','Existing codebases','Full access to your files, git, tools','Starts from scratch'],
-['Bolt.new','Unattended operation','Self-healing watchdog, overnight runs','Browser tab must stay open'],
+['Bolt.new','Unattended operation','Overnight runs; resumes after usage limits; stall alerts','Browser tab must stay open'],
 ['Bolt.new','Data privacy','Local only, code never leaves your machine','Code runs in cloud sandbox'],
 ['Bolt.new','Cost','API tokens only (no platform fee)','Subscription + token credits'],
 ['Bolt.new','Open source','Yes (MIT)','No'],
@@ -2530,7 +2535,7 @@ ${comparisonTable([
 <h2>When to use Bolt.new</h2>
 <p>Bolt.new is ideal for <strong>generating a new project from scratch</strong> when you want instant setup and don't have an existing codebase. It's a great prototyping tool for validating ideas quickly without any local configuration.</p>
 <h2>When to use amux</h2>
-<p>amux is the right choice when you're working on an <strong>existing codebase</strong> and want to run multiple autonomous agents in parallel — overnight, from your phone, with a shared task board and self-healing infrastructure. If you're past the prototype stage, amux is the tool for the long run.</p>
+<p>amux is the right choice when you're working on an <strong>existing codebase</strong> and want to run multiple autonomous agents in parallel — overnight, from your phone, with a shared task board and recovery from usage limits and reboots. If you're past the prototype stage, amux is the tool for the long run.</p>
 ${CTA}`,
 },
 {
@@ -2547,7 +2552,7 @@ ${comparisonTable([
 ['Replit Agent','Parallel agents','Dozens of independent sessions','Single agent per project'],
 ['Replit Agent','Existing codebase','Full local access + git integration','Import or start from scratch'],
 ['Replit Agent','Data ownership','Your code stays on your machine','Code stored on Replit servers'],
-['Replit Agent','Self-healing','Auto-compact, restart, unstick agents','Managed by Replit'],
+['Replit Agent','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Managed by Replit'],
 ['Replit Agent','Open source','Yes (MIT)','No'],
 ['Replit Agent','Offline capability','PWA works offline','Cloud-dependent'],
 ['Replit Agent','Pricing','API tokens only','Subscription required'],
@@ -2571,7 +2576,7 @@ ${comparisonTable([
 ['v0','Scope','Full-stack: code, tests, infra, docs','UI component generation'],
 ['v0','Parallel agents','Dozens of independent sessions','Single generation session'],
 ['v0','Codebase access','Full local filesystem access','Isolated generation sandbox'],
-['v0','Unattended runs','Self-healing overnight agent fleet','Interactive prompt-response'],
+['v0','Unattended runs','Overnight agent fleet; resumes after usage limits','Interactive prompt-response'],
 ['v0','Technology scope','Any language or framework','React/Next.js/Tailwind focused'],
 ['v0','Open source','Yes (MIT)','No'],
 ['v0','Pricing','API tokens only','Credits system'],
@@ -2591,14 +2596,14 @@ ${CTA}`,
   keywords: 'amux vs autogen, autogen alternative, multi-agent framework comparison',
   content: `<h1>amux vs AutoGen (Microsoft)</h1>
 <p class="subtitle">AutoGen is a framework for building multi-agent systems. amux is an orchestrator for running Claude Code agents. Different levels of abstraction.</p>
-<p><strong>AutoGen</strong> is Microsoft's open-source framework for building multi-agent conversation systems — you program agent interactions in Python. <strong>amux</strong> is an operational tool for running Claude Code (AI coding agents) in parallel with a web dashboard, shared board, and self-healing infrastructure.</p>
+<p><strong>AutoGen</strong> is Microsoft's open-source framework for building multi-agent conversation systems — you program agent interactions in Python. <strong>amux</strong> is an operational tool for running Claude Code (AI coding agents) in parallel with a web dashboard, shared board, and recovery from usage limits and reboots.</p>
 <h2>Key differences</h2>
 ${comparisonTable([
 ['AutoGen','Purpose','Operational agent fleet management','Agent interaction framework'],
 ['AutoGen','Agent type','Claude Code (coding-specialized)','General-purpose LLM agents'],
 ['AutoGen','Setup','Clone + run, web dashboard in minutes','Requires Python programming'],
 ['AutoGen','Web UI','Full dashboard with peek, board, mobile','No built-in UI'],
-['AutoGen','Self-healing','Built-in watchdog for coding agents','Custom implementation needed'],
+['AutoGen','Recovery','Resumes after usage limits; workers return after a macOS reboot; stall alerts','Custom implementation needed'],
 ['AutoGen','Task coordination','SQLite kanban with atomic claiming','Custom implementation needed'],
 ['AutoGen','User type','Developers using Claude Code','Developers building agent systems'],
 ])}
@@ -2607,7 +2612,7 @@ ${comparisonTable([
 <h2>When to use AutoGen</h2>
 <p>When you're building a custom multi-agent application — research tools, complex reasoning systems, automated workflows that require programming custom agent interactions. AutoGen gives you the primitives to build whatever you need.</p>
 <h2>When to use amux</h2>
-<p>When you want to run Claude Code agents to actually write code in your repositories — right now, with a UI, self-healing, and a task board. amux is operational where AutoGen is foundational.</p>
+<p>When you want to run Claude Code agents to actually write code in your repositories — right now, with a UI, stall alerts, and a task board. amux is operational where AutoGen is foundational.</p>
 ${CTA}`,
 },
 {
@@ -2623,7 +2628,7 @@ ${comparisonTable([
 ['Claude Desktop','Agent type','Claude Code (autonomous coding CLI)','Claude chat (conversational)'],
 ['Claude Desktop','Parallel sessions','Dozens of independent coding sessions','Single conversation window'],
 ['Claude Desktop','Codebase access','Direct filesystem, git, bash access','MCP filesystem (read-heavy)'],
-['Claude Desktop','Unattended operation','Self-healing overnight runs','Interactive, requires user prompts'],
+['Claude Desktop','Unattended operation','Overnight runs; resumes after usage limits','Interactive, requires user prompts'],
 ['Claude Desktop','Task coordination','Shared kanban board','No task management'],
 ['Claude Desktop','Open source','Yes (MIT)','No'],
 ['Claude Desktop','Mobile','PWA dashboard','iOS/Android app'],
@@ -2631,7 +2636,7 @@ ${comparisonTable([
 <h2>When to use Claude Desktop</h2>
 <p>Claude Desktop is excellent for <strong>general-purpose AI assistance</strong>: drafting documents, analyzing files, researching topics, having extended conversations. If you need Claude to help you think through a problem, write a document, or analyze data, Claude Desktop is the right tool.</p>
 <h2>When to use amux</h2>
-<p>When you need Claude to <strong>actually execute code changes</strong> in your repository — autonomously, in parallel, with self-healing, overnight. amux runs Claude Code, which has direct filesystem and shell access and is specifically optimized for long-horizon coding tasks. It's the right tool when the output is code, not conversation.</p>
+<p>When you need Claude to <strong>actually execute code changes</strong> in your repository — autonomously, in parallel, overnight, resuming after usage limits. amux runs Claude Code, which has direct filesystem and shell access and is specifically optimized for long-horizon coding tasks. It's the right tool when the output is code, not conversation.</p>
 ${CTA}`,
 },
 ];
@@ -2643,7 +2648,7 @@ const moreGuides = [
 {
   slug: 'setting-up-yolo-mode',
   title: 'Setting Up YOLO Mode for Headless Agents',
-  description: 'Configure amux sessions to run fully unattended — auto-approve tools, auto-respond to prompts, zero babysitting.',
+  description: 'Configure amux sessions to run fully unattended: no tool-approval prompts, zero babysitting.',
   keywords: 'yolo mode setup, headless claude code, auto approve claude, unattended AI agent',
   content: `<h1>Setting Up YOLO Mode for Headless Agents</h1>
 <p class="subtitle">YOLO mode lets Claude Code agents run without any confirmation prompts. Here's how to configure it safely.</p>
@@ -2853,7 +2858,7 @@ ${CTA}`,
 <p><strong>Diagnosis:</strong> The task is too open-ended. The agent is stuck deciding between approaches.</p>
 <p><strong>Fix:</strong> Break the impasse by sending a specific direction: "Use approach X. Start by editing file Y."</p>
 <h3>Context compaction degraded output quality</h3>
-<p><strong>Symptom:</strong> After an auto-compact, the agent's output quality drops — it seems to have forgotten important context about the codebase.</p>
+<p><strong>Symptom:</strong> After a compaction, the agent's output quality drops — it seems to have forgotten important context about the codebase.</p>
 <p><strong>Fix:</strong> After compaction, send a brief context summary: "You're implementing the users API in src/api/users/. The User model is in src/models/user.ts. The coding style uses async/await with try-catch error handling."</p>
 ${CTA}`,
 },
@@ -2878,11 +2883,11 @@ const moreGlossary = [
 <ul>
 <li><strong>Background execution:</strong> Runs as a persistent process, not tied to a terminal session that requires user presence.</li>
 <li><strong>Remote management:</strong> Controlled via REST API or web UI rather than keyboard input.</li>
-<li><strong>Self-healing:</strong> A well-designed headless agent recovers from crashes, context exhaustion, and stuck prompts automatically.</li>
+<li><strong>Recovery:</strong> A well-designed headless agent keeps going through known interruptions, such as usage limits and restarts, and alerts a person about the rest.</li>
 <li><strong>Unattended operation:</strong> Can run overnight, over weekends, or across timezones without a human watching.</li>
 </ul>
 <h2>How amux Implements Headless Agents</h2>
-<p>amux runs Claude Code inside tmux sessions (which persist across terminal disconnects), provides a web dashboard for monitoring and control, and implements a self-healing watchdog that handles failure modes autonomously. This combination makes Claude Code — which is normally an interactive tool — fully headless and unattended.</p>
+<p>amux runs Claude Code inside tmux sessions (which persist across terminal disconnects), provides a web dashboard for monitoring and control, resumes agents after usage limits, brings workers back after a macOS reboot, and alerts you on stalls. This combination makes Claude Code — which is normally an interactive tool — fully headless and unattended.</p>
 <h2>Contrast with Interactive Agents</h2>
 <p>An interactive coding agent (like Claude Code running directly in your terminal) requires the user to be present — to confirm actions, answer questions, and redirect the agent. A headless agent is designed to operate independently, with the user checking in periodically via a dashboard rather than watching in real time.</p>
 <p>Most production agent workflows combine both: interactive sessions for complex decisions and exploratory work, headless sessions for long-running batch tasks and overnight execution.</p>
@@ -2942,7 +2947,7 @@ ${CTA}`,
 </tbody>
 </table>
 <h2>amux as Fleet Infrastructure</h2>
-<p>amux provides all the infrastructure needed for a production agent fleet: tmux session management, a web dashboard with live peek, a SQLite kanban board with atomic claiming, a REST API for agent coordination, and a self-healing watchdog that keeps agents running unattended. It's the operational layer that turns individual Claude Code sessions into a coordinated fleet.</p>
+<p>amux provides all the infrastructure needed for a production agent fleet: tmux session management, a web dashboard with live peek, a SQLite kanban board with atomic claiming, a REST API for agent coordination, and recovery that resumes agents after usage limits and reboots and alerts you on stalls. It's the operational layer that turns individual Claude Code sessions into a coordinated fleet.</p>
 ${CTA}`,
 },
 {
@@ -2967,7 +2972,7 @@ ${CTA}`,
 <li><strong>Short-horizon tasks:</strong> Design tasks to complete within a fraction of the context window. This leaves headroom for error recovery and iteration.</li>
 <li><strong>Explicit file references:</strong> Tell agents exactly which files to read rather than letting them search. Reduces speculative context loading.</li>
 <li><strong>Frequent commits:</strong> Committing progress externalizes it — the agent can reference the committed code without keeping it all in context.</li>
-<li><strong>Auto-compact:</strong> amux automatically sends <code>/compact</code> when context fills, summarizing the conversation and continuing. Quality can drop after compaction — design tasks to avoid it.</li>
+<li><strong>Compaction threshold:</strong> Claude Code compacts its own context when it fills, and amux lets you set the threshold. Quality can drop after compaction — design tasks to avoid it.</li>
 </ul>
 <h2>Context vs. Memory</h2>
 <p>LLM context is not the same as long-term memory. Context is everything within the current session's window. Long-term memory (persisting information across sessions) requires external storage — files, databases, or dedicated memory systems. amux uses <code>.md</code> memory files and a global memory API for cross-session persistence.</p>
@@ -2976,20 +2981,20 @@ ${CTA}`,
 {
   slug: 'unattended-coding',
   title: 'Unattended Coding',
-  description: 'Running AI coding agents without human supervision — enabled by self-healing, YOLO mode, and atomic task management.',
+  description: 'Running AI coding agents without human supervision, enabled by usage-limit resume, stall alerts, YOLO mode, and atomic task management.',
   keywords: 'unattended AI coding, autonomous coding agent, headless development',
   content: `<h1>Unattended Coding</h1>
 <p class="subtitle">AI coding agents that run without supervision — completing tasks, recovering from failures, and reporting results without a human present.</p>
 <h2>Definition</h2>
 <p><strong>Unattended coding</strong> refers to AI coding agents that operate autonomously without requiring a human to monitor or intervene during execution. The agent receives a task, executes it, handles failures, and completes or reports a failure — all without a human in the loop.</p>
-<p>True unattended coding requires four capabilities that most AI coding tools lack: YOLO mode (no confirmation prompts), self-healing (automatic recovery from crashes), task management (knowing what to do next), and remote monitoring (visibility without physical presence).</p>
+<p>True unattended coding requires four capabilities that most AI coding tools lack: YOLO mode (no confirmation prompts), recovery (resuming after usage limits and reboots, alerting on stalls), task management (knowing what to do next), and remote monitoring (visibility without physical presence).</p>
 <h2>Requirements for Unattended Operation</h2>
 <table>
 <thead><tr><th>Requirement</th><th>Why it matters</th><th>amux feature</th></tr></thead>
 <tbody>
 <tr><td>No confirmation prompts</td><td>Confirmations require human presence</td><td>YOLO mode (--dangerously-skip-permissions)</td></tr>
-<tr><td>Crash recovery</td><td>Agents crash; a crashed agent does nothing</td><td>Self-healing watchdog</td></tr>
-<tr><td>Context management</td><td>Context exhaustion stops agents</td><td>Auto-compact on context fill</td></tr>
+<tr><td>Recovery</td><td>Agents stop at usage limits and reboots; a stopped agent does nothing</td><td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td></tr>
+<tr><td>Context management</td><td>Context exhaustion stops agents</td><td>Claude Code compacts; amux sets the compaction threshold</td></tr>
 <tr><td>Task queuing</td><td>Agents need a task source when current task is done</td><td>SQLite kanban board with atomic claiming</td></tr>
 <tr><td>Remote monitoring</td><td>Human needs visibility without being present</td><td>Web dashboard + PWA</td></tr>
 </tbody>

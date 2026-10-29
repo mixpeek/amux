@@ -69,7 +69,7 @@
     </div>
 
     <h2 id="what">What are amux and AI Maestro?</h2>
-    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and restarts them after crashes and usage limits. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
+    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, resumes them after usage limits and, on macOS, after a reboot. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
     <p><strong><a href="https://fluidmind.ai/products/ai-maestro/" target="_blank" rel="noopener">AI Maestro</a></strong> is an agent orchestration dashboard from FluidMind, made in partnership with 23Blocks. Its tagline is "Stop juggling terminals. Conduct your agents." The <a href="https://github.com/23blocks-OS/ai-maestro" target="_blank" rel="noopener">README</a> describes a peer mesh of machines with no central server, agent-to-agent messaging over its Agent Messaging Protocol (AMP), persistent agent memory, a code graph, teams with a Kanban board, per-agent schedules, and gateways to Slack, Discord, email and WhatsApp. It is MIT licensed. On October 29, 2026 the repository had 839 stars; it was created on October 10, 2025, last pushed on October 29, 2026, and its latest release was v0.106.10 on October 28, 2026.</p>
 
     <h2 id="table">amux vs AI Maestro comparison table</h2>
@@ -105,7 +105,7 @@
     <p>amux runs as one server per machine that you self-host on macOS or Linux, or rent as an amux Cloud server at yourname.amux.io. For remote access it documents a Tailscale setup: <code>tailscale cert</code> for the ts.net name, after which amux serves a browser-trusted certificate at <code>https://&lt;host&gt;.&lt;tailnet&gt;.ts.net:8824</code>. Optional switches let your own devices or invited tailnet members sign in by Tailscale identity, and amux Cloud servers can join your tailnet. No public ports or SSH exposure are needed.</p>
 
     <h2 id="team">Coordinating the team</h2>
-    <p>Both treat agents as a standing team. AI Maestro gives each agent long-term memory built from its own conversations, a code graph of the codebase, signed messages over AMP, a shared Kanban board and per-agent boards, and schedules that travel with the agent. amux gives agents a shared task board with atomic claiming so two agents never take the same task, agent-to-agent messages, schedules and loops, automatic recovery from crashes and usage limits, owner approval for outbound email, and browser automation with saved sign-in profiles.</p>
+    <p>Both treat agents as a standing team. AI Maestro gives each agent long-term memory built from its own conversations, a code graph of the codebase, signed messages over AMP, a shared Kanban board and per-agent boards, and schedules that travel with the agent. amux gives agents a shared task board with atomic claiming so two agents never take the same task, agent-to-agent messages, schedules and loops, automatic resume after usage limits and macOS reboots, owner approval for outbound email, and browser automation with saved sign-in profiles.</p>
 
     <h2 id="choose">When should you choose amux or AI Maestro?</h2>
     <h3 id="other">Choose AI Maestro if</h3>
@@ -119,7 +119,7 @@
     <ul>
       <li>You want native iPhone, iPad and Mac apps that connect to your own server.</li>
       <li>You run Gemini CLI, OpenCode or Ollama-backed local models next to Claude Code and Codex.</li>
-      <li>You want atomic task claiming on one shared board and self-healing restarts.</li>
+      <li>You want atomic task claiming on one shared board and agents that resume after usage limits and reboots.</li>
       <li>You want an always-on server without running one: <a href="/start/?source=amux-vs-ai-maestro">amux Cloud</a> from $39/mo.</li>
     </ul>
     <p>Related: <a href="/compare/amux-vs-paseo/">amux vs Paseo</a>, <a href="/compare/amux-vs-conductor/">amux vs Conductor</a>, <a href="/guides/best-phone-apps-for-coding-agents-2026/">best phone apps to control coding agents</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a></p>

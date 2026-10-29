@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux vs CrewAI (2026) — AI Engineering Fleet Operator vs Multi-Agent Python Framework</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux vs CrewAI 2026: amux runs an AI engineering team from a dashboard (Claude Code + Codex + Gemini CLI, iOS app, self-healing). CrewAI is a Python framework for building custom multi-agent workflows. Not competitors — they compose. Here's the full breakdown.">
+  <meta name="description" content="amux vs CrewAI 2026: amux runs an AI engineering team from a dashboard (Claude Code + Codex + Gemini CLI, iOS app, usage-limit and reboot recovery). CrewAI is a Python framework for building custom multi-agent workflows. Not competitors — they compose. Here's the full breakdown.">
   <meta name="keywords" content="amux vs crewai, crewai alternative, multi-agent orchestration comparison, crewai vs claude code orchestration, run coding agents in parallel, crewai framework vs amux dashboard, ai engineering team management 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-crewai/">
   <meta property="og:title" content="amux vs CrewAI (2026) — AI Engineering Fleet Operator vs Multi-Agent Python Framework">
-  <meta property="og:description" content="CrewAI is a Python framework for building custom multi-agent AI workflows. amux is a control plane for running a fleet of AI coding agents (Claude Code, Codex, Gemini CLI) with a dashboard, iOS app, and self-healing. Not competitors — they compose beautifully.">
+  <meta property="og:description" content="CrewAI is a Python framework for building custom multi-agent AI workflows. amux is a control plane for running a fleet of AI coding agents (Claude Code, Codex, Gemini CLI) with a dashboard, iOS app, and usage-limit and reboot recovery. Not competitors — they compose beautifully.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-crewai/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -38,7 +38,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux vs CrewAI (2026): AI Engineering Fleet Operator vs Multi-Agent Python Framework",
-    "description": "CrewAI is a Python framework for building custom multi-agent AI workflows. amux is a control plane for running a fleet of AI coding agents (Claude Code, Codex, Gemini CLI) with a dashboard, iOS app, and self-healing. Not competitors — they compose beautifully.",
+    "description": "CrewAI is a Python framework for building custom multi-agent AI workflows. amux is a control plane for running a fleet of AI coding agents (Claude Code, Codex, Gemini CLI) with a dashboard, iOS app, and usage-limit and reboot recovery. Not competitors — they compose beautifully.",
     "url": "https://amux.io/compare/amux-vs-crewai/",
     "datePublished": "2026-07-22",
     "dateModified": "2026-07-22",
@@ -62,7 +62,7 @@
         "name": "Can I use CrewAI with amux?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — they compose well. A CrewAI agent (e.g. a research or coordination agent) can POST tasks to the amux REST API at /api/board to queue work for Claude Code agents running inside amux. In the other direction, Claude Code agents managed by amux can execute CrewAI workflows as part of their task. amux provides the operational layer (fleet management, dashboard, iOS app, self-healing); CrewAI provides the workflow logic and multi-LLM routing."
+          "text": "Yes — they compose well. A CrewAI agent (e.g. a research or coordination agent) can POST tasks to the amux REST API at /api/board to queue work for Claude Code agents running inside amux. In the other direction, Claude Code agents managed by amux can execute CrewAI workflows as part of their task. amux provides the operational layer (fleet management, dashboard, iOS app, usage-limit and reboot recovery); CrewAI provides the workflow logic and multi-LLM routing."
         }
       },
       {
@@ -70,7 +70,7 @@
         "name": "What is the main difference between amux and CrewAI?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "CrewAI is a Python framework: you define agents with roles, backstories, and tools in Python code, wire them into crews and tasks, and run them programmatically against any LLM API. amux is an operational control plane: you point it at existing full-capability AI coding agents (Claude Code, Codex CLI, Gemini CLI), and it runs, monitors, self-heals, and coordinates them from a web dashboard and iOS app — no Python code required. CrewAI is about building workflows; amux is about operating a fleet."
+          "text": "CrewAI is a Python framework: you define agents with roles, backstories, and tools in Python code, wire them into crews and tasks, and run them programmatically against any LLM API. amux is an operational control plane: you point it at existing full-capability AI coding agents (Claude Code, Codex CLI, Gemini CLI), and it runs, monitors, and coordinates them from a web dashboard and iOS app — no Python code required. CrewAI is about building workflows; amux is about operating a fleet."
         }
       },
       {
@@ -78,7 +78,7 @@
         "name": "Does amux replace CrewAI?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "No. amux does not replace CrewAI and CrewAI does not replace amux — they solve different problems at different layers. If you need to build a custom multi-agent pipeline (research agent + writer agent + reviewer agent) with full control over each agent's role, tools, and task dependencies, CrewAI is the right tool. If you need to run a fleet of full-capability AI coding agents in parallel with a dashboard, iOS monitoring, and self-healing, amux is the right tool. Many teams use both."
+          "text": "No. amux does not replace CrewAI and CrewAI does not replace amux — they solve different problems at different layers. If you need to build a custom multi-agent pipeline (research agent + writer agent + reviewer agent) with full control over each agent's role, tools, and task dependencies, CrewAI is the right tool. If you need to run a fleet of full-capability AI coding agents in parallel with a dashboard, iOS monitoring, and usage-limit and reboot recovery, amux is the right tool. Many teams use both."
         }
       },
       {
@@ -94,7 +94,7 @@
         "name": "Which is better for managing coding agents?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux. If your goal is to run 10–50 Claude Code, Codex CLI, or Gemini CLI sessions in parallel — with a web dashboard showing live terminal output from every session, an iOS app for mobile monitoring, a shared kanban board for task coordination, and a self-healing watchdog that auto-compacts context and restarts crashed sessions — amux is built exactly for this. CrewAI can orchestrate LLM calls but does not provide operational infrastructure for managing long-running terminal-based coding agents."
+          "text": "amux. If your goal is to run 10–50 Claude Code, Codex CLI, or Gemini CLI sessions in parallel — with a web dashboard showing live terminal output from every session, an iOS app for mobile monitoring, a shared kanban board for task coordination, and recovery that resumes agents after usage limits and alerts you to stalls — amux is built exactly for this. CrewAI can orchestrate LLM calls but does not provide operational infrastructure for managing long-running terminal-based coding agents."
         }
       }
     ]
@@ -147,7 +147,7 @@
     <!-- Answer-first block -->
     <div style="background:var(--surface-2,var(--panel));border-left:3px solid var(--accent,var(--c-green));padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
       <strong>Quick answer:</strong> CrewAI is a Python framework for <em>building</em> custom multi-agent workflows — you define agents with roles, tools, and tasks in code and run them against any LLM API.
-      amux is a control plane for <em>operating</em> a fleet of full-capability AI coding agents (Claude Code, Codex CLI, Gemini CLI) — you get a web dashboard, iOS app, self-healing watchdog, and built-in kanban board without writing any orchestration code.
+      amux is a control plane for <em>operating</em> a fleet of full-capability AI coding agents (Claude Code, Codex CLI, Gemini CLI) — you get a web dashboard, iOS app, usage-limit and reboot recovery, and built-in kanban board without writing any orchestration code.
       These tools solve different jobs at different layers of the AI stack. A CrewAI crew can queue work for amux agents via REST; amux agents can run CrewAI workflows as tasks. Most advanced AI engineering teams end up using both.
     </div>
 
@@ -168,15 +168,15 @@
 
       <p>
         <strong>amux</strong> (~311 GitHub stars, much newer) is the open-source control plane for
-        running an AI engineering team from a single dashboard or your phone. It launches, monitors,
-        and self-heals dozens of parallel
+        running an AI engineering team from a single dashboard or your phone. It launches and monitors
+        dozens of parallel
         <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
         OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no Python framework,
         no custom agent code required. The web dashboard streams live terminal output from every session
         simultaneously. The native iOS app gives you remote monitoring, session steering, and push alerts
         from anywhere. A built-in kanban board lets agents atomically claim tasks so no two sessions
-        duplicate work. A self-healing watchdog handles context exhaustion, crashes, and stuck prompts
-        automatically. Single Rust binary, MIT + Commons Clause. Install:
+        duplicate work. Usage limits pause delivery and resume at the provider's reset, and stall alerts tell you
+        when a session stops. Single Rust binary, MIT + Commons Clause. Install:
         <code>curl -fsSL https://amux.io/install.sh | bash</code>.
         Source at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
       </p>
@@ -253,8 +253,8 @@
               <td>No built-in dashboard — use CrewAI+ cloud UI or integrate your own observability</td>
             </tr>
             <tr>
-              <td><strong>Self-healing</strong></td>
-              <td>Built-in watchdog: auto-compacts context on overflow, restarts crashed sessions, replays last message</td>
+              <td><strong>Recovery</strong></td>
+              <td>Built in: resumes after usage limits, workers return after a macOS reboot, stall alerts</td>
               <td>Custom error handling in Python code — no built-in crash recovery or context management</td>
             </tr>
             <tr>
@@ -349,13 +349,13 @@
         When you run <code>amux register myproject</code>, amux stores a lightweight session config
         (project path, runtime, flags). When you start agents, amux launches tmux windows running
         Claude Code (or Codex/Gemini) in <code>--yolo</code> (auto-approve) mode, so they work
-        without requiring human sign-off on every action. The watchdog polls each session's output
-        every few seconds, detecting context limit warnings and crash signals, and responds automatically:
+        without requiring human sign-off on every action. amux watches each session's output
+        every few seconds and handles these cases:
       </p>
 
       <ul>
-        <li><strong>Context auto-compact</strong> — when a session approaches its token limit, the watchdog sends the appropriate compact command, waits for the model to summarize and compress its context, and lets the session continue working without stopping.</li>
-        <li><strong>Crash recovery</strong> — when a session exits unexpectedly, the watchdog restarts it and replays the last message so the agent picks up where it left off.</li>
+        <li><strong>Context compaction</strong> — Claude Code compacts its own context as it nears the limit, and amux lets you set the compaction threshold.</li>
+        <li><strong>Usage limits and stalls</strong> — when a provider usage limit hits, amux holds delivery and resumes the agent at the reset time; stalled work raises an owner alert. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</li>
         <li><strong>Task queue</strong> — sessions pull tasks from the shared kanban board via REST using an atomic compare-and-swap. No two agents ever claim the same task — even when 20 sessions are polling simultaneously.</li>
       </ul>
 
@@ -407,7 +407,7 @@
         <li>
           <strong>Operating Claude Code, Codex CLI, or Gemini CLI agents at fleet scale.</strong>
           These are full-capability coding agents: they read the filesystem, run tests, make commits,
-          open PRs. amux is the operational layer that manages them: launch, monitor, self-heal,
+          open PRs. amux is the operational layer that manages them: launch, monitor, resume after usage limits,
           coordinate. No custom Python code required.
         </li>
         <li>
@@ -418,9 +418,9 @@
         </li>
         <li>
           <strong>Unattended overnight batch coding — tests, docs, refactors at scale.</strong>
-          The self-healing watchdog is specifically designed for long-running unattended operation.
-          Context exhaustion, crashes, and stuck prompts are handled automatically without human
-          intervention. Queue 50 tasks and wake up to 50 pull requests.
+          amux is built for long-running unattended operation.
+          Usage limits pause delivery and resume at the provider's reset, and stall alerts tell you
+          when a session needs you. Queue 50 tasks and wake up to 50 pull requests.
         </li>
       </ul>
     </section>
@@ -478,7 +478,7 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
 })
 </code></pre>
       <p>
-        The CrewAI agent handles triage reasoning; amux handles the persistent, self-healing
+        The CrewAI agent handles triage reasoning; amux handles the persistent
         agent sessions that execute the fixes.
       </p>
 
@@ -522,7 +522,7 @@ requests.post(f"{amux_url}/api/sessions/myproject-1/send", json={
               <td><strong>CrewAI</strong></td>
             </tr>
             <tr>
-              <td>Self-healing agents that recover from crashes and context limits at 2am</td>
+              <td>Agents that resume after usage limits and alert you to stalls at 2am</td>
               <td><strong>amux</strong></td>
             </tr>
             <tr>
@@ -578,7 +578,7 @@ amux serve  # → https://localhost:8824</code></pre>
         kanban board (<code>/api/board</code>) so that Claude Code agents pick them up and execute
         them. Conversely, a Claude Code agent inside amux can run a CrewAI Python script as part
         of its work. amux provides the operational infrastructure (fleet management, dashboard, iOS
-        app, self-healing); CrewAI provides the workflow logic and multi-LLM routing within those
+        app, usage-limit and reboot recovery); CrewAI provides the workflow logic and multi-LLM routing within those
         workflows.
       </p>
 
@@ -588,7 +588,7 @@ amux serve  # → https://localhost:8824</code></pre>
         define agents, their roles, their tools, and their task dependencies in code. amux is an
         operations platform for <em>running</em> a fleet of full-capability AI coding agents
         (Claude Code, Codex CLI, Gemini CLI) without writing any orchestration code — you get a
-        web dashboard, iOS app, self-healing watchdog, and shared kanban board out of the box.
+        web dashboard, iOS app, usage-limit and reboot recovery, and shared kanban board out of the box.
         CrewAI is about what your agents do; amux is about how they are operated.
       </p>
 
@@ -597,7 +597,7 @@ amux serve  # → https://localhost:8824</code></pre>
         No. amux does not replace CrewAI and CrewAI does not replace amux. If you need to build a
         custom multi-agent pipeline with fine-grained control over each agent's behavior and tool
         access, CrewAI is the right tool. If you need to operate a fleet of existing CLI-based
-        coding agents in parallel — with a dashboard, phone monitoring, and self-healing —
+        coding agents in parallel — with a dashboard, phone monitoring, and usage-limit and reboot recovery —
         amux is purpose-built for that. Many teams use both at different layers of their AI
         engineering stack.
       </p>
@@ -615,8 +615,8 @@ amux serve  # → https://localhost:8824</code></pre>
       <p>
         amux. If your goal is to run 10–50 Claude Code, Codex CLI, or Gemini CLI sessions in
         parallel — with a web dashboard showing live terminal output, an iOS app for mobile
-        monitoring, a shared kanban board for task coordination, and a watchdog that auto-compacts
-        context and restarts crashed sessions — amux is built exactly for this. CrewAI can
+        monitoring, a shared kanban board for task coordination, and recovery that resumes agents
+        after usage limits and alerts you to stalls — amux is built exactly for this. CrewAI can
         orchestrate LLM calls but does not provide operational infrastructure for managing
         long-running terminal-based coding agents.
       </p>

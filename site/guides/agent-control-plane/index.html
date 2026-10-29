@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent Control Plane","item":"https://amux.io/guides/agent-control-plane/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents (2026)","description":"An agent control plane manages the lifecycle of AI agents: starting, monitoring, governing, and stopping them. The developer's guide to the missing infrastructure layer.","url":"https://amux.io/guides/agent-control-plane/","datePublished":"2026-04-15","dateModified":"2026-09-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents."}},{"@type":"Question","name":"How is an agent control plane different from an agent framework?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent. You can swap frameworks without changing your control plane, and vice versa."}},{"@type":"Question","name":"Do I need an agent control plane if I only run one agent?","acceptedAnswer":{"@type":"Answer","text":"No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation — typically around 3-5 concurrent agents. At that point, you cannot manually monitor each agent's terminal, and the failure modes multiply: agents crash, context windows overflow, costs spike, and tasks get duplicated. A control plane automates the responses to these failure modes."}},{"@type":"Question","name":"What is the difference between agent observability and agent governance?","acceptedAnswer":{"@type":"Answer","text":"Observability answers 'what is happening?' — dashboards, logs, token tracking, session replay. Governance answers 'what is allowed to happen?' — budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both. Most tools today focus on observability (Langfuse, Helicone) or governance (Microsoft Agent Governance Toolkit) but not both together."}},{"@type":"Question","name":"Is an agent control plane the same as an orchestration framework?","acceptedAnswer":{"@type":"Answer","text":"No. Orchestration frameworks like LangGraph and CrewAI define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A crashed, restart it. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime. You can use both together — orchestration defines what should happen, the control plane ensures it actually happens."}},{"@type":"Question","name":"What are the core components of an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Five core components: (1) Agent lifecycle management — start, stop, restart agents programmatically. (2) Observability — real-time status, output streaming, token/cost tracking. (3) Fault tolerance — automatic crash recovery, context compaction, stuck-agent detection. (4) Orchestration — task assignment, inter-agent messaging, work queues with atomic claiming. (5) Governance — budget limits, concurrency caps, kill switches, audit logs."}},{"@type":"Question","name":"Can I build my own agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes, and many teams start with shell scripts and tmux. The typical progression: (1) bash scripts that start/stop agents, (2) a shared task file agents read from, (3) a simple dashboard to see what's running, (4) automatic crash recovery. By stage 3, you've rebuilt half of what dedicated tools provide. The question is whether you want to maintain that infrastructure yourself. Open-source options like amux provide all five control plane layers as a single Rust binary with zero dependencies."}},{"@type":"Question","name":"How does amux implement an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"amux implements all five control plane layers as a single Rust binary with zero external dependencies: lifecycle management via tmux sessions, observability via a real-time web dashboard with SSE, fault tolerance via a watchdog that auto-compacts context and replays failed messages, orchestration via a REST API with a SQLite-backed kanban board for atomic task claiming, and governance via session-level controls and cost tracking. Manage the whole fleet from a browser or the iOS app. No Docker, no cloud, no config files."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents."}},{"@type":"Question","name":"How is an agent control plane different from an agent framework?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent. You can swap frameworks without changing your control plane, and vice versa."}},{"@type":"Question","name":"Do I need an agent control plane if I only run one agent?","acceptedAnswer":{"@type":"Answer","text":"No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation — typically around 3-5 concurrent agents. At that point, you cannot manually monitor each agent's terminal, and the failure modes multiply: agents crash, context windows overflow, costs spike, and tasks get duplicated. A control plane automates the responses to these failure modes."}},{"@type":"Question","name":"What is the difference between agent observability and agent governance?","acceptedAnswer":{"@type":"Answer","text":"Observability answers 'what is happening?' — dashboards, logs, token tracking, session replay. Governance answers 'what is allowed to happen?' — budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both. Most tools today focus on observability (Langfuse, Helicone) or governance (Microsoft Agent Governance Toolkit) but not both together."}},{"@type":"Question","name":"Is an agent control plane the same as an orchestration framework?","acceptedAnswer":{"@type":"Answer","text":"No. Orchestration frameworks like LangGraph and CrewAI define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A hit a usage limit, resume it at the reset. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime. You can use both together — orchestration defines what should happen, the control plane ensures it actually happens."}},{"@type":"Question","name":"What are the core components of an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Five core components: (1) Agent lifecycle management — start, stop, restart agents programmatically. (2) Observability — real-time status, output streaming, token/cost tracking. (3) Fault tolerance — recovery after usage limits and restarts, context compaction, stuck-agent detection. (4) Orchestration — task assignment, inter-agent messaging, work queues with atomic claiming. (5) Governance — budget limits, concurrency caps, kill switches, audit logs."}},{"@type":"Question","name":"Can I build my own agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes, and many teams start with shell scripts and tmux. The typical progression: (1) bash scripts that start/stop agents, (2) a shared task file agents read from, (3) a simple dashboard to see what's running, (4) automatic crash recovery. By stage 3, you've rebuilt half of what dedicated tools provide. The question is whether you want to maintain that infrastructure yourself. Open-source options like amux provide all five control plane layers as a single Rust binary with zero dependencies."}},{"@type":"Question","name":"How does amux implement an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"amux implements all five control plane layers as a single Rust binary with zero external dependencies: lifecycle management via tmux sessions, observability via a real-time web dashboard with SSE, fault tolerance that resumes agents after usage limits, brings workers back after a macOS reboot, and alerts on stalled work, orchestration via a REST API with a SQLite-backed kanban board for atomic task claiming, and governance via session-level controls and cost tracking. Manage the whole fleet from a browser or the iOS app. No Docker, no cloud, no config files."}}]}</script>
   <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -51,7 +51,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agent Control Plane</span></div>
     <h1>What Is an Agent Control Plane?</h1>
     <div class="cta-top" style="background:color-mix(in oklab, var(--green) 8%, transparent);border:1px solid var(--green,var(--c-green));border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-      <span style="font-size:14px;color:var(--fg);">Run an AI engineering team from one dashboard. Self-healing, phone-manageable, open source.</span>
+      <span style="font-size:14px;color:var(--fg);">Run an AI engineering team from one dashboard. Resumes after usage limits, phone-manageable, open source.</span>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
          onclick="typeof posthog!=='undefined'&&posthog.capture('exp073_agent_control_plane_topofpage_cta_click')"
          style="background:var(--green,var(--c-green));color:var(--bg);padding:0.45rem 1.1rem;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;">Get started free</a>
@@ -145,7 +145,7 @@
         <tbody>
           <tr><td><strong>Lifecycle Management</strong></td><td>Start, stop, restart agents programmatically</td><td>3+ agents</td></tr>
           <tr><td><strong>Observability</strong></td><td>Real-time status, output streaming, cost tracking</td><td>3+ agents</td></tr>
-          <tr><td><strong>Fault Tolerance</strong></td><td>Auto-recovery from crashes, context overflow, stuck prompts</td><td>Overnight / unattended</td></tr>
+          <tr><td><strong>Fault Tolerance</strong></td><td>Recovery from usage limits, reboots, context overflow, and stalled work</td><td>Overnight / unattended</td></tr>
           <tr><td><strong>Orchestration</strong></td><td>Task assignment, inter-agent messaging, work queues</td><td>5+ agents on shared codebase</td></tr>
           <tr><td><strong>Governance</strong></td><td>Budget limits, concurrency caps, kill switches, audit logs</td><td>Team use / production</td></tr>
         </tbody>
@@ -216,18 +216,18 @@ $ amux start api worker-1 worker-2 worker-3 tests docs
       <table class="data-table">
         <thead><tr><th>Failure Mode</th><th>What Happens</th><th>Control Plane Response</th></tr></thead>
         <tbody>
-          <tr><td><strong>Context overflow</strong></td><td>Conversation exceeds model&rsquo;s token limit</td><td>Auto-compact the conversation and continue</td></tr>
-          <tr><td><strong>Thinking-block corruption</strong></td><td>Runtime hits an internal error on extended thinking</td><td>Restart the session and replay the last message</td></tr>
-          <tr><td><strong>Stuck waiting for input</strong></td><td>Agent asks a permission question at 3am</td><td>Auto-respond based on configured policy (YOLO mode)</td></tr>
-          <tr><td><strong>Process crash</strong></td><td>Agent process exits unexpectedly</td><td>Restart with conversation state intact</td></tr>
-          <tr><td><strong>Rate limit hit</strong></td><td>API returns 429, agent retries in a tight loop</td><td>Exponential backoff or pause until quota resets</td></tr>
+          <tr><td><strong>Context overflow</strong></td><td>Conversation exceeds model&rsquo;s token limit</td><td>Compact the conversation at a set threshold and continue</td></tr>
+          <tr><td><strong>Machine reboot</strong></td><td>The host restarts overnight and every terminal is gone</td><td>Bring every worker back, resumed in its own conversation</td></tr>
+          <tr><td><strong>Stuck waiting for input</strong></td><td>Agent asks a permission question at 3am</td><td>Skip permission prompts up front (YOLO mode) and alert on stalled work</td></tr>
+          <tr><td><strong>Process crash</strong></td><td>Agent process exits unexpectedly</td><td>Surface it and alert the owner so it can be restarted with conversation state intact</td></tr>
+          <tr><td><strong>Rate limit hit</strong></td><td>API returns 429, agent retries in a tight loop</td><td>Hold delivery and resume when the quota resets</td></tr>
         </tbody>
       </table>
     </div>
 
-    <p>A control plane with a <strong>watchdog</strong> monitors each agent for these conditions and applies the appropriate response automatically. The developer sets the policy once (&ldquo;auto-compact when context drops below 20%, restart on corruption, auto-continue when stuck&rdquo;) and the watchdog handles it all night.</p>
+    <p>A control plane monitors each agent for these conditions and applies the policy you set once. In amux that policy is a few settings: the compaction threshold, <code>AMUX_RATE_LIMIT_ACTION</code> (<code>wait</code> or <code>off</code>) for usage limits, and <code>AMUX_GOAL_STALL_H</code> for how long work can sit before it raises a stall alert.</p>
 
-    <p>Without fault tolerance, unattended agents are a gamble. One crash at 2am means that agent&rsquo;s entire overnight allocation is wasted. With a watchdog, the agent recovers in seconds and keeps working. Over a typical 8-hour overnight run, the difference is often 3&ndash;5 crashes recovered automatically &mdash; work that would otherwise be lost.</p>
+    <p>Without fault tolerance, unattended agents are a gamble. One usage limit or reboot at 2am can idle the whole fleet until morning. With a control plane, agents resume at the provider&rsquo;s reset or come back after the reboot, and anything that stalls shows up as an alert. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (<code>scripts/tmux-watchdog.sh</code>, not installed by default) restarts crashed Claude Code workers.</p>
 
     <!-- ───────────────────────────────── PILLAR 4: ORCHESTRATION ───────────────────────────────── -->
     <h2 id="orchestration">4. Orchestration</h2>
@@ -299,9 +299,9 @@ $ curl -sk -X PATCH -H 'Content-Type: application/json' \
             <td><code>amux start</code> all 8, tasks already on the board</td>
           </tr>
           <tr>
-            <td><strong>Agent 3 crashes at 1am</strong></td>
-            <td>Dead until you wake up. 7 hours of work lost.</td>
-            <td>Watchdog restarts it in 10 seconds. Replays the last message. No work lost.</td>
+            <td><strong>Agent 3 hits a usage limit at 1am</strong></td>
+            <td>Idle until you wake up and re-prompt it. 7 hours of work lost.</td>
+            <td>Delivery is held and the agent resumes at the provider&rsquo;s reset. No work lost.</td>
           </tr>
           <tr>
             <td><strong>Agent 5 enters a retry loop</strong></td>
@@ -316,7 +316,7 @@ $ curl -sk -X PATCH -H 'Content-Type: application/json' \
           <tr>
             <td><strong>Morning review</strong></td>
             <td>Scroll through 8 terminal histories trying to understand what happened</td>
-            <td>Dashboard shows: 6 completed, 1 recovered from crash, 1 stopped for cost. Click into any for full output.</td>
+            <td>Dashboard shows: 6 completed, 1 resumed after a usage limit, 1 stopped for cost. Click into any for full output.</td>
           </tr>
           <tr>
             <td><strong>Net result</strong></td>
@@ -419,15 +419,15 @@ $ amux start api worker-1 worker-2 tests
 $ amux serve
 <span class="ok">  ▸ https://localhost:8824</span>
 
-<span class="comment"># Agents self-heal overnight</span>
-<span class="dim">  ⚡ api: context 17% → /compact queued</span>
-<span class="dim">  ⚡ worker-1: stuck → auto-continued</span>
-<span class="dim">  ⚡ tests: crashed → restarted, message replayed</span>
+<span class="comment"># Agents keep going overnight</span>
+<span class="dim">  ⚡ api: usage limit → resumes at reset</span>
+<span class="dim">  ⚡ worker-1: no progress 2h → stall alert</span>
+<span class="dim">  ⚡ tests: host rebooted → worker resumed</span>
 
 <span class="comment"># Morning: check what happened from your phone</span>
-<span class="dim">  Dashboard shows: 3 completed, 1 recovered, $12 spent</span></code></pre>
+<span class="dim">  Dashboard shows: 3 completed, 1 resumed, $12 spent</span></code></pre>
 
-    <p>The dashboard provides real-time fleet status, terminal peek, kanban board for task assignment, token/cost tracking, and mobile access via PWA or native iOS app. The watchdog handles context compaction, crash recovery, and stuck-prompt resolution. The REST API enables agent-to-agent messaging and atomic task claiming. The board auto-drain toggle lets idle agents pick up new work from the backlog automatically, turning your fleet into a <a href="/guides/autonomous-ai-agent-workflow/" style="color:var(--accent);">self-managing engineering team</a>.</p>
+    <p>The dashboard provides real-time fleet status, terminal peek, kanban board for task assignment, token/cost tracking, and mobile access via PWA or native iOS app. Agents resume after usage limits, every worker comes back after a macOS reboot, and stall detection alerts you to stuck work. The REST API enables agent-to-agent messaging and atomic task claiming. The board auto-drain toggle lets idle agents pick up new work from the backlog automatically, turning your fleet into a <a href="/guides/autonomous-ai-agent-workflow/" style="color:var(--accent);">self-managing engineering team</a>.</p>
 
     <p>No Docker. No config files. No cloud dependency. Single Rust binary, zero external dependencies.</p>
 
@@ -457,11 +457,11 @@ $ amux serve
       </details>
       <details class="faq-item">
         <summary>Is a control plane the same as an orchestration framework?</summary>
-        <p>No. Orchestration frameworks define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A crashed, restart it. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime.</p>
+        <p>No. Orchestration frameworks define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A hit a usage limit, resume it at the reset. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime.</p>
       </details>
       <details class="faq-item">
         <summary>What are the core components of an agent control plane?</summary>
-        <p>Five components: (1) lifecycle management &mdash; start, stop, restart agents. (2) Observability &mdash; status, output streaming, cost tracking. (3) Fault tolerance &mdash; crash recovery, context compaction, stuck-agent detection. (4) Orchestration &mdash; task assignment, messaging, atomic work claiming. (5) Governance &mdash; budget limits, concurrency caps, kill switches, audit logs.</p>
+        <p>Five components: (1) lifecycle management &mdash; start, stop, restart agents. (2) Observability &mdash; status, output streaming, cost tracking. (3) Fault tolerance &mdash; recovery after usage limits and restarts, context compaction, stuck-agent detection. (4) Orchestration &mdash; task assignment, messaging, atomic work claiming. (5) Governance &mdash; budget limits, concurrency caps, kill switches, audit logs.</p>
       </details>
       <details class="faq-item">
         <summary>Can I build my own agent control plane?</summary>
@@ -469,7 +469,7 @@ $ amux serve
       </details>
       <details class="faq-item">
         <summary>How does amux implement a control plane?</summary>
-        <p>amux implements all five layers as a single Rust binary with zero external dependencies: lifecycle management via tmux, observability via a real-time web dashboard with SSE, fault tolerance via a watchdog that auto-compacts context and replays stuck messages, orchestration via a REST API with SQLite-backed atomic task claiming, and governance via session-level controls and cost tracking. Manage the full fleet from a browser or the iOS app. No Docker, no cloud, no config files.</p>
+        <p>amux implements all five layers as a single Rust binary with zero external dependencies: lifecycle management via tmux, observability via a real-time web dashboard with SSE, fault tolerance that resumes agents after usage limits, brings workers back after a macOS reboot, and alerts on stalled work, orchestration via a REST API with SQLite-backed atomic task claiming, and governance via session-level controls and cost tracking. Manage the full fleet from a browser or the iOS app. No Docker, no cloud, no config files.</p>
       </details>
     </div>
 
@@ -479,7 +479,7 @@ $ amux serve
         <li><a href="/guides/autonomous-ai-agent-workflow/" style="color:var(--dim);">Autonomous AI Agent Workflow: Self-Managing Teams</a></li>
         <li><a href="/guides/agentic-engineering/" style="color:var(--dim);">Agentic Engineering: The Practical Guide</a></li>
         <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Agents in Parallel</a></li>
-        <li><a href="/guides/self-healing-configuration/" style="color:var(--dim);">Self-Healing Configuration</a></li>
+        <li><a href="/guides/self-healing-configuration/" style="color:var(--dim);">Recovery configuration</a></li>
         <li><a href="/guides/agent-to-agent-orchestration/" style="color:var(--dim);">Agent-to-Agent Orchestration</a></li>
         <li><a href="/guides/cost-optimization/" style="color:var(--dim);">Cost Optimization</a></li>
         <li><a href="/guides/claude-code-max-plan/" style="color:var(--dim);">How to 10x Your Claude Code Max Plan</a></li>

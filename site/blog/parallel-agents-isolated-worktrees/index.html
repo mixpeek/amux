@@ -50,6 +50,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>Running 30 agents on one repo</span></div>
     <h1>Running 30 Claude Code agents on one repo without them stomping each other</h1>
     <p class="subtitle">Git worktrees for isolation, SQLite CAS for task claiming, SSE for real-time progress. No Redis, no Kubernetes, no microservices.</p>
+    <p class="correction"><em>Correction, 2026-10-29: the amux server does not restart crashed agent processes today. It resumes agents after usage limits, restarts its own server process through launchd or systemd, and on macOS brings every worker back after a reboot. An optional macOS script restarts crashed Claude Code workers; it is not installed by default.</em></p>
 
 <h2>The problem</h2>
 
@@ -253,10 +254,10 @@ if not claude_ui_visible(output) and recently_alive(name):
 <li>Register 8 sessions, each pointing at the same repo but with <code>worktree=true</code></li>
 <li>Post tasks to the board: "Fix flaky test suite", "Add rate limiting to API", "Migrate users table", etc.</li>
 <li>Start all sessions. Each one checks the board, claims a task atomically, and starts working in its own worktree</li>
-<li>Dashboard shows all 8 agents in real-time via SSE &mdash; active, idle, compacting, restarting</li>
+<li>Dashboard shows all 8 agents in real-time via SSE &mdash; active, idle, compacting, waiting</li>
 <li>When an agent finishes a task, it marks it done and claims the next one from the queue</li>
 <li>When an agent discovers work that another session should handle, it posts a new task to the board with that session's name</li>
-<li>Watchdog keeps everything alive. Context fills up? Auto-compact. Claude crashes? Auto-restart.</li>
+<li>Recovery keeps the fleet going. Usage limit? Delivery resumes at the provider's reset. Context fills up? Claude Code compacts at the threshold you set. Something stalls? You get an alert.</li>
 <li>Wake up to 8 branches with completed work, ready for review</li>
 </ol>
 

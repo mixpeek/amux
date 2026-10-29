@@ -6,17 +6,17 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux for CTOs — Run an AI Engineering Team from One Dashboard (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="CTOs use amux to run AI engineering teams at scale — parallel Claude Code, Codex, and Gemini CLI sessions with a shared kanban board, self-healing overnight operation, mobile oversight, and full audit trail. Open source, self-hosted.">
+  <meta name="description" content="CTOs use amux to run AI engineering teams at scale — parallel Claude Code, Codex, and Gemini CLI sessions with a shared kanban board, overnight runs that resume after usage limits, mobile oversight, and full audit trail. Open source, self-hosted.">
   <meta name="keywords" content="amux for CTOs, AI engineering team dashboard, CTO AI agent management, parallel coding agents for engineering leaders, AI team productivity 2026, open source AI team orchestration">
   <link rel="canonical" href="https://amux.io/for/ctos/">
   <meta property="og:title" content="amux for CTOs — Run an AI Engineering Team from One Dashboard">
-  <meta property="og:description" content="Run dozens of parallel Claude Code, Codex, and Gemini CLI coding sessions from one dashboard. Shared kanban, mobile oversight, self-healing, and a full audit trail for your engineering leadership.">
+  <meta property="og:description" content="Run dozens of parallel Claude Code, Codex, and Gemini CLI coding sessions from one dashboard. Shared kanban, mobile oversight, usage-limit resume, and a full audit trail for your engineering leadership.">
   <meta property="og:url" content="https://amux.io/for/ctos/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="amux for CTOs — AI Engineering Team Dashboard (2026)">
-  <meta name="twitter:description" content="Run dozens of parallel Claude Code sessions with a shared kanban board, mobile oversight, and self-healing. Open source.">
+  <meta name="twitter:description" content="Run dozens of parallel Claude Code sessions with a shared kanban board, mobile oversight, and usage-limit resume. Open source.">
   <meta name="twitter:image" content="https://amux.io/og-image.png">
 
   <script type="application/ld+json">
@@ -36,7 +36,7 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "amux for CTOs — Run an AI Engineering Team from One Dashboard (2026)",
-    "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, self-healing overnight operation, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
+    "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, overnight runs that resume after usage limits, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
     "url": "https://amux.io/for/ctos/",
     "datePublished": "2026-07-24",
     "dateModified": "2026-10-13",
@@ -56,7 +56,7 @@
         "name": "What is amux and how does it help CTOs manage AI engineering teams?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux is an open-source control plane for AI coding agent fleets. CTOs deploy it on their own infrastructure and their developers use it to run Claude Code, Codex, and Gemini CLI sessions in parallel — coordinated through a shared kanban board with atomic task claiming, monitored via a web dashboard or iOS app, and self-healed automatically on crash or context overflow. The result is engineering velocity that scales with agent count, not headcount. MIT + Commons Clause, single Rust binary, zero external dependencies."
+          "text": "amux is an open-source control plane for AI coding agent fleets. CTOs deploy it on their own infrastructure and their developers use it to run Claude Code, Codex, and Gemini CLI sessions in parallel — coordinated through a shared kanban board with atomic task claiming, monitored via a web dashboard or iOS app, and resumed automatically after usage limits. The result is engineering velocity that scales with agent count, not headcount. MIT + Commons Clause, single Rust binary, zero external dependencies."
         }
       },
       {
@@ -80,7 +80,7 @@
         "name": "What happens when a Claude Code agent crashes or hits a context limit overnight?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux's self-healing watchdog detects four failure modes: context exhaustion (auto-compacts with /compact), thinking-block corruption (restarts and replays the last message), tool-approval blocks (YOLO mode auto-approves), and silent hangs (idle timeout kick). Agents are automatically recovered without manual intervention — you wake up to finished work, not crashed sessions."
+          "text": "When a usage or rate limit hits, amux holds delivery and resumes the agent at the provider's reset. Claude Code compacts its own context, and amux lets you set the compaction threshold. Stall detection surfaces stalled board work and stuck orchestrators and alerts you. On macOS every worker comes back in its own conversation after a reboot. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers."
         }
       },
       {
@@ -135,12 +135,12 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>CTOs</span></div>
 
     <h1>amux for CTOs</h1>
-    <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated October 2026.</em></p>
+    <p class="subtitle">Run an AI engineering team from one dashboard — parallel agents that resume after usage limits, shared kanban, mobile oversight, and a full audit trail. <em>Updated October 2026.</em></p>
 
     <!-- EXP-129: /for/ctos/ top-of-page green CTA — October 2026 refresh -->
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
-      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, self-healing watchdog, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
+      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, usage-limit resume, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
     </div>
 
     <h2>The problem amux solves for engineering leaders</h2>
@@ -166,15 +166,15 @@
     </ol>
     <p>Git conflicts are handled at the session level: each agent registers with its own branch (amux register feature-agent-1 --dir ~/Dev/myproject --yolo), and the CLAUDE.md template instructs agents to commit before switching context. Combined with git worktree isolation for truly independent parallel work, merge conflicts in parallel-agent repos are rare.</p>
 
-    <h2>Self-healing overnight operation</h2>
-    <p>amux's watchdog monitors every session for four failure modes:</p>
+    <h2>Overnight operation</h2>
+    <p>amux keeps agents going through usage limits and restarts:</p>
     <ul>
-      <li><strong>Context exhaustion:</strong> Detects the "approaching context limit" signal and auto-fires <code>/compact</code> before Claude Code's own resume dialog blocks the session</li>
-      <li><strong>Thinking-block corruption:</strong> Detects malformed thinking blocks in session output, restarts the process, and replays the last steering message</li>
-      <li><strong>Tool-approval blocks:</strong> In YOLO mode, the watchdog detects the unique "Esc to cancel" approval marker and sends the approval keystroke automatically</li>
-      <li><strong>Silent hangs:</strong> Idle timeout detection kicks unresponsive sessions after a configurable window</li>
+      <li><strong>Usage limits:</strong> When a provider's usage or rate limit hits, amux holds message delivery and resumes the agent at the provider's reset time</li>
+      <li><strong>Context:</strong> Claude Code compacts its own context, and amux lets you set the compaction threshold</li>
+      <li><strong>Stalls:</strong> Stall detection surfaces stalled board work and stuck orchestrators, and owner alerts fire</li>
+      <li><strong>Restarts:</strong> launchd or systemd restarts the amux server if it exits, and on macOS every non-archived worker comes back in its own conversation after a reboot</li>
     </ul>
-    <p>In practice, a 10-agent overnight run that previously required a developer to babysit (or produced incomplete work) now completes with 2-8 automatic recoveries handled by the watchdog — visible in the session's recovery log the next morning.</p>
+    <p>Restarting an agent whose process crashed or was killed is not built into the amux server today. On macOS an optional script (<code>scripts/tmux-watchdog.sh</code>, a separate launchd job the installer does not set up) restarts crashed Claude Code workers. For everything else, stall alerts tell you which session needs a look in the morning.</p>
 
     <h2>Multi-runtime rate-limit distribution</h2>
     <p>Hitting Claude Code rate limits is the single biggest throughput bottleneck for teams running parallel agents on Max plans. amux solves this structurally:</p>
@@ -285,7 +285,7 @@ schedules:
     <ol>
       <li><strong>Day 1:</strong> Install amux on a team server (<code>curl -fsSL https://amux.io/install.sh | bash</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
       <li><strong>Day 2:</strong> Create the first shared task queue on the board. Five developers add their current sprinted tasks as board issues. The first two developers with Claude Code sessions running claim and complete tasks while the CTO monitors from their phone in a meeting.</li>
-      <li><strong>Day 3:</strong> First overnight run. 8 sessions start at midnight. The watchdog fires twice for context compaction, once for a crash recovery. In the morning: 6 of 8 tasks completed, 2 in doing (picked up second tasks after finishing their first). The CTO's morning board review takes 10 minutes from the iOS app.</li>
+      <li><strong>Day 3:</strong> First overnight run. 8 sessions start at midnight. Claude Code compacts context twice, and one agent pauses at a usage limit and resumes at the reset. In the morning: 6 of 8 tasks completed, 2 in doing (picked up second tasks after finishing their first). The CTO's morning board review takes 10 minutes from the iOS app.</li>
       <li><strong>Week 1:</strong> The team writes shared CLAUDE.md rules for their coding style and branching conventions, checked into the repo. All sessions now follow them automatically. Cost tracking in the dashboard shows $180 in Claude API spend for the week — CTO sets a per-session daily budget threshold in server.env.</li>
     </ol>
 
@@ -333,7 +333,7 @@ schedules:
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;">Overnight reliability</td>
             <td style="padding:10px 16px;">Sessions crash or stall on context limits; discovered in the morning</td>
-            <td style="padding:10px 16px;">Self-healing watchdog handles 4 failure modes automatically</td>
+            <td style="padding:10px 16px;">Resumes after usage limits; stall detection alerts you; workers return after a macOS reboot</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;">Mobile oversight</td>
@@ -382,7 +382,7 @@ schedules:
     <h2>FAQ</h2>
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Is amux production-ready for an engineering team?</summary>
-      <p style="margin:0.8rem 0 0;">Yes — it runs in production at companies ranging from two-person startups to 15-developer teams. The server is a single Rust binary that self-adopts new builds in place (no restart window — the binary swaps live when a new build lands), storing all state in a local SQLite database. Stability concerns are addressed by the self-healing architecture: even if Claude Code crashes mid-session, amux auto-recovers. The main operational risk is the host machine going down — mitigated by running on a server (not a developer laptop) with standard uptime practices.</p>
+      <p style="margin:0.8rem 0 0;">Yes — it runs in production at companies ranging from two-person startups to 15-developer teams. The server is a single Rust binary that self-adopts new builds in place (no restart window — the binary swaps live when a new build lands), storing all state in a local SQLite database. The server process is restarted by launchd or systemd if it exits, and on macOS every worker comes back after a reboot. If a Claude Code process itself crashes, the server does not restart it; stall detection alerts you. The main operational risk is the host machine going down — mitigated by running on a server (not a developer laptop) with standard uptime practices.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -402,14 +402,14 @@ schedules:
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Does amux work with LangGraph or other orchestration frameworks?</summary>
-      <p style="margin:0.8rem 0 0;">Yes — amux's REST API is designed for programmatic integration. LangGraph nodes can call /api/sessions/NAME/send to issue tasks to amux-managed coding sessions, then poll /api/sessions/NAME/peek for results. A common pattern: LangGraph handles the high-level decision graph (which tasks, in what order, with what dependencies), while amux handles the actual Claude Code session fleet (spawning, self-healing, monitoring). See <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a> for detailed patterns.</p>
+      <p style="margin:0.8rem 0 0;">Yes — amux's REST API is designed for programmatic integration. LangGraph nodes can call /api/sessions/NAME/send to issue tasks to amux-managed coding sessions, then poll /api/sessions/NAME/peek for results. A common pattern: LangGraph handles the high-level decision graph (which tasks, in what order, with what dependencies), while amux handles the actual Claude Code session fleet (spawning, monitoring, usage-limit resume). See <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a> for detailed patterns.</p>
     </details>
 
     <!-- EXP-014 / updated Oct 2026 -->
 
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
-      <p>Get a shared dashboard, self-healing agents, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
+      <p>Get a shared dashboard, agents that resume after usage limits, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # → https://your-server:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>

@@ -130,7 +130,7 @@
         "name": "Can I resume an agent's task if the agent crashes or context window fills?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. amux's continuation contract stores what each claimed card was doing at the time of any interruption. When the session restarts (automatically via the self-healing watchdog), it reads the continuation and picks up from the same point. For context window exhaustion, amux auto-compacts the session before it hits the limit, keeping the agent running without losing progress."
+          "text": "Yes. amux's continuation contract stores what each claimed card was doing at the time of any interruption. When you restart the session or hand the card to another agent, it reads the continuation and picks up from the same point. For context window exhaustion, Claude Code compacts its own context, and amux lets you set the compaction threshold."
         }
       }
     ]
@@ -169,7 +169,7 @@
 
     <p>A team of AI coding agents completes a sprint's worth of features in hours instead of days — but only if the work is split correctly. Split it wrong and agents block each other, duplicate effort, or create git conflicts that cost more time than parallelism saves. This guide covers how to decompose a project into parallel workstreams, model dependencies, prevent duplicate work, and coordinate from a single dashboard or your phone.</p>
 
-    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It handles session management, a shared kanban board with atomic task claiming, a dependency graph, and self-healing — for any runtime: Claude Code, Codex CLI, or Gemini CLI.</p>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It handles session management, a shared kanban board with atomic task claiming, a dependency graph, and resume after usage limits — for any runtime: Claude Code, Codex CLI, or Gemini CLI.</p>
 
     <p style="font-size:0.85rem;color:var(--fg-dim)">Last updated: August 2026</p>
 
@@ -302,7 +302,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
     <ol>
       <li><strong>Sequence them.</strong> The first agent completes the shared file, the second starts only after the first card is done.</li>
-      <li><strong>Use the continuation contract.</strong> If the first agent crashes mid-write, the card stores what it was doing at the time of interruption. When the session restarts (auto, via the self-healing watchdog), it reads the continuation and resumes. The second agent's blocked-on dependency means it does not start until the first fully completes.</li>
+      <li><strong>Use the continuation contract.</strong> If the first agent crashes mid-write, the card stores what it was doing at the time of interruption. When you restart the session or hand the card to another agent, it reads the continuation and resumes. The second agent's blocked-on dependency means it does not start until the first fully completes.</li>
       <li><strong>Never use <code>git add -A</code> in a shared directory.</strong> amux's shared-checkout guard blocks it. Stage specific files by name.</li>
     </ol>
 
@@ -312,7 +312,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
 
     <p>amux's continuation contract lets a claimed card record exactly what the working agent was doing: which files it had edited, what the next step was, and any context a fresh agent needs to resume cleanly. When the card is eventually handed off (due to a crash, context exhaustion, or an explicit reassignment), the new agent reads the continuation and picks up at the same point.</p>
 
-    <p>This makes the fleet robust to single-agent failures without requiring human intervention. The owner of the board card does not need to be the same session throughout the task's lifetime.</p>
+    <p>This makes a single-agent failure cheap to recover from. The owner of the board card does not need to be the same session throughout the task's lifetime.</p>
 
     <h2>Reading the board ready queue from an agent</h2>
 

@@ -69,7 +69,7 @@
     </div>
 
     <h2 id="what">What are amux and Orquesta?</h2>
-    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and restarts them after crashes and usage limits. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
+    <p><strong>amux</strong> (amux.io, github.com/mixpeek/amux) is the agent control plane from Mixpeek. It runs dozens of Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agent sessions in parallel, gives them a shared task board with atomic claiming and agent-to-agent messages, and resumes them after usage limits and, on macOS, after a reboot. You reach it from a web dashboard or PWA, a native iPhone and iPad app or a native Mac app. It is one Rust binary with SQLite that you self-host for free on a Mac or Linux machine, or rent as an always-on amux Cloud server. The license is MIT + Commons Clause.</p>
     <p><strong><a href="https://getorquesta.com/" target="_blank" rel="noopener">Orquesta</a></strong> calls itself "the PromptOps collaboration layer for teams that build with AI." It has a hosted product, Orquesta Cloud, and a self-hosted edition, <a href="https://getorquesta.com/oss" target="_blank" rel="noopener">Orquesta OSS</a>. On the OSS page, the team submits prompts in a dashboard, agents on your machines connect to a Socket.io server with a token, run the prompt through Claude CLI and stream the logs back, and "nothing leaves your network." The <a href="https://github.com/Getorquesta/orquesta-oss" target="_blank" rel="noopener">OSS README</a> describes it as the self-hosted backend that the Orquesta Terminal app connects to, with projects, multi-user auth, agent tokens and prompt history. Orquesta OSS is MIT licensed. On October 29, 2026 the repository had 2 stars; it was created on March 3, 2026 and last pushed on July 22, 2026.</p>
 
     <h2 id="table">amux vs Orquesta comparison table</h2>
@@ -118,7 +118,7 @@
     <ul>
       <li>You want the iPhone, iPad and Mac apps to connect to the server you host yourself.</li>
       <li>You run Codex, Gemini CLI, OpenCode or Ollama-backed local models next to Claude Code.</li>
-      <li>You want many agents claiming work from one shared board, with messages, schedules and self-healing restarts.</li>
+      <li>You want many agents claiming work from one shared board, with messages, schedules and automatic resume after usage limits.</li>
       <li>You want a flat-priced always-on server: <a href="/start/?source=amux-vs-orquesta">amux Cloud</a> from $39/mo.</li>
     </ul>
     <p>Related: <a href="/compare/amux-vs-paseo/">amux vs Paseo</a>, <a href="/compare/amux-vs-conductor/">amux vs Conductor</a>, <a href="/guides/best-phone-apps-for-coding-agents-2026/">best phone apps to control coding agents</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a></p>

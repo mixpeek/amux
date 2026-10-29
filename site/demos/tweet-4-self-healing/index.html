@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Self-Healing Agents — amux</title>
-<meta name="description" content="Your agents don't need you as much as you think.">
+<title>Agents That Keep Going | amux</title>
+<meta name="description" content="amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, and on macOS every worker comes back in its own conversation after a reboot.">
   <link rel="canonical" href="https://amux.io/demos/tweet-4-self-healing/">
-<meta property="og:title" content="Self-Healing Agents — amux">
-<meta property="og:description" content="Your agents don't need you as much as you think.">
-<meta property="og:image" content="https://amux.io/demos/tweet-4-self-healing/demo.mp4">
+<meta property="og:title" content="Agents That Keep Going | amux">
+<meta property="og:description" content="amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, and on macOS every worker comes back in its own conversation after a reboot.">
+<meta property="og:image" content="https://amux.io/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://amux.io/demos/tweet-4-self-healing/demo.mp4">
+<meta name="twitter:image" content="https://amux.io/og-image.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -41,24 +41,24 @@
   </header>
 <div class="wrap">
   <div class="tweet-badge">🧵 4 of 7</div>
-  <h1>Self-Healing Agents</h1>
-  <p class="tagline">Your agents don't need you as much as you think.</p>
-  <div class="gif-wrap"><video src="demo.mp4" autoplay loop muted playsinline title="Self-Healing Agents demo"></video></div>
-  <p class="body-text">amux is self-healing — context window low? Auto-compacts. Thinking-block corruption? Restarts and replays. Stuck on a tool-approval prompt? Auto-responds.
+  <h1>Agents That Keep Going</h1>
+  <p class="tagline">Your agents need you less than you think.</p>
+  <p class="body-text">amux keeps agents going through usage limits and restarts. Hit a usage limit? Delivery is held and the agent resumes at the provider's reset. Mac rebooted? Every worker comes back in its own conversation. Work stalled? You get an alert.
 
-Your fleet runs truly unattended. The phone is for when you <em>want</em> to check in, not because you have to.</p>
-  
-  <ul><li>Context window low → auto-compacts before hitting the limit</li>
-<li>Thinking-block corruption → detected, session restarted, last prompt replayed</li>
-<li>Stuck on tool-approval prompt → auto-responds via the Esc-to-cancel marker</li>
-<li>All silent — no notifications, no babysitting required</li></ul>
+The phone is for when you <em>want</em> to check in. Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers.</p>
+
+  <ul><li>Usage limit → delivery held, agent resumes at the provider's reset (all platforms)</li>
+<li>Server exits → launchd or systemd restarts it</li>
+<li>macOS reboot → a login job brings every non-archived worker back, resumed in its own conversation</li>
+<li>Context fills → Claude Code compacts, at a threshold you can set</li>
+<li>Stalled board work or a stuck orchestrator → surfaced, and owner alerts fire</li></ul>
   <div class="ctas">
     <a class="btn btn-green" href="https://github.com/mixpeek/amux">Get amux →</a>
     <a class="btn btn-gray" href="/demos/">All demos</a>
     <a class="btn btn-gray" href="/demos/tweet-5-agent-orchestration/">Next: Agent Orchestration →</a>
   </div>
   <div class="nav">
-    <a href="/demos/tweet-1-agent-fleet/" >1. Agent Fleet Overview</a><a href="/demos/tweet-2-mobile-command-center/" >2. Mobile Command Center</a><a href="/demos/tweet-3-offline-sync/" >3. Offline-First Sync</a><a href="/demos/tweet-4-self-healing/" style="color:var(--c-green);font-weight:600;">4. Self-Healing Agents</a><a href="/demos/tweet-5-agent-orchestration/" >5. Agents That Coordinate Themselves</a><a href="/demos/tweet-6-power-features/" >6. Everything Else</a><a href="/demos/tweet-7-quick-start/" >7. Up and Running in 60 Seconds</a>
+    <a href="/demos/tweet-1-agent-fleet/" >1. Agent Fleet Overview</a><a href="/demos/tweet-2-mobile-command-center/" >2. Mobile Command Center</a><a href="/demos/tweet-3-offline-sync/" >3. Offline-First Sync</a><a href="/demos/tweet-4-self-healing/" style="color:var(--c-green);font-weight:600;">4. Agents That Keep Going</a><a href="/demos/tweet-5-agent-orchestration/" >5. Agents That Coordinate Themselves</a><a href="/demos/tweet-6-power-features/" >6. Everything Else</a><a href="/demos/tweet-7-quick-start/" >7. Up and Running in 60 Seconds</a>
   </div>
 </div>
 <footer>

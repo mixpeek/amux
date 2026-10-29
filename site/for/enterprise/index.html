@@ -135,7 +135,7 @@
       <strong>Quick answer:</strong> amux is a self-hosted, single-binary control plane that gives enterprise engineering teams a shared dashboard for running dozens of parallel AI coding agents (Claude Code, Codex CLI, Gemini CLI) with atomic task coordination, per-repo CLAUDE.md style enforcement, append-only audit logs, and zero external dependencies. It deploys on any Linux server your team controls. Code never leaves your network.
     </div>
 
-    <p>amux is an open-source control plane for AI agent teams. It launches, monitors, and self-heals simultaneous AI coding sessions across every repository your team owns — with a shared kanban board for task coordination, event-sourced execution logs for compliance, and CLAUDE.md&ndash;enforced code quality standards. One Rust binary. Zero external services. Deploy on a VM inside your VPC. 503+ GitHub stars, MIT + Commons Clause licensed.</p>
+    <p>amux is an open-source control plane for AI agent teams. It launches and monitors simultaneous AI coding sessions across every repository your team owns — with a shared kanban board for task coordination, event-sourced execution logs for compliance, and CLAUDE.md&ndash;enforced code quality standards. One Rust binary. Zero external services. Deploy on a VM inside your VPC. 503+ GitHub stars, MIT + Commons Clause licensed.</p>
 
     <h2>What enterprise engineering teams are solving with AI agents in 2026</h2>
     <p>The question most engineering leaders are navigating right now is not whether to use AI coding agents — it is how to use them at team scale without losing code quality, introducing security risk, or creating an ungoverned shadow-IT situation where individual engineers run agents however they prefer.</p>
@@ -256,8 +256,8 @@ amux board add "Write integration tests for PaymentProcessor class"
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;">Unattended overnight runs</td>
-            <td style="padding:10px 16px;">Fragile — no watchdog, no resume on crash</td>
-            <td style="padding:10px 16px;">Self-healing watchdog + auto-resume dialog handling</td>
+            <td style="padding:10px 16px;">Fragile — no resume after limits or reboots</td>
+            <td style="padding:10px 16px;">Resumes after usage limits; workers return after a macOS reboot</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;">Multi-repo / multi-team coordination</td>

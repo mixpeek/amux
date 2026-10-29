@@ -66,7 +66,7 @@
         "name": "Can I use amux and LangChain together?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes, and they don't conflict. LangChain defines what an agent does (the logic, tool calls, chain of reasoning). amux handles where agents run and what happens to them over time (self-healing, board coordination, phone monitoring, overnight operation). A common pattern: LangChain-built custom agents running as amux-managed sessions alongside Claude Code sessions, all visible in one dashboard."
+          "text": "Yes, and they don't conflict. LangChain defines what an agent does (the logic, tool calls, chain of reasoning). amux handles where agents run and what happens to them over time (usage-limit resume, board coordination, phone monitoring, overnight operation). A common pattern: LangChain-built custom agents running as amux-managed sessions alongside Claude Code sessions, all visible in one dashboard."
         }
       },
       {
@@ -90,7 +90,7 @@
         "name": "Does amux work with LangChain agents?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux manages tmux sessions running any CLI process, including Python scripts that drive LangChain agents. If your LangChain agent runs from the terminal, it can run as an amux session. You get the same dashboard visibility, peek output, steering queue, and self-healing watchdog as any other amux session."
+          "text": "amux manages tmux sessions running any CLI process, including Python scripts that drive LangChain agents. If your LangChain agent runs from the terminal, it can run as an amux session. You get the same dashboard visibility, peek output, steering queue, and stall detection as any other amux session."
         }
       },
       {
@@ -98,7 +98,7 @@
         "name": "What does amux offer that LangGraph doesn't?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "LangGraph (LangChain's graph-based agent framework) defines agent topology (states, edges, conditional routing). amux handles the operational layer: process lifecycle, multi-session coordination, phone monitoring, a kanban board for task distribution, and built-in self-healing. LangGraph answers 'what does the agent do?'; amux answers 'how do I run a fleet of agents reliably at 2am?'"
+          "text": "LangGraph (LangChain's graph-based agent framework) defines agent topology (states, edges, conditional routing). amux handles the operational layer: process lifecycle, multi-session coordination, phone monitoring, a kanban board for task distribution, and usage-limit resume with stall alerts. LangGraph answers 'what does the agent do?'; amux answers 'how do I run a fleet of agents reliably at 2am?'"
         }
       }
     ]
@@ -135,11 +135,11 @@
     <p class="subtitle">Runtime fleet management vs Python agent framework: they answer different questions. Here's when to use each, and when to use both. Updated September 2026.</p>
 
     <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> amux manages live agent processes on your machine: self-healing, board coordination, phone monitoring, overnight operation. LangChain is a Python SDK for composing agent logic: tool calls, chains, retrievers. They sit at different layers and many teams use both.
+      <strong>Quick answer:</strong> amux manages live agent processes on your machine: usage-limit resume, board coordination, phone monitoring, overnight operation. LangChain is a Python SDK for composing agent logic: tool calls, chains, retrievers. They sit at different layers and many teams use both.
     </div>
 
     <h2>What each tool actually is</h2>
-    <p><strong>amux</strong> is an open-source control plane for AI agent teams. It runs Claude Code, Codex CLI, or Gemini CLI sessions in isolated tmux windows, aggregates all sessions into one web dashboard, and keeps agents alive with a self-healing watchdog that auto-compacts context overflows and replays crashed sessions. It also ships built-in coordination primitives: a kanban board with atomic task claiming, a CRM, Gmail, a browser controller, and a scheduler. Single Rust binary, zero external dependencies.</p>
+    <p><strong>amux</strong> is an open-source control plane for AI agent teams. It runs Claude Code, Codex CLI, or Gemini CLI sessions in isolated tmux windows, aggregates all sessions into one web dashboard, and keeps agents going through usage limits: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot. It also ships built-in coordination primitives: a kanban board with atomic task claiming, a CRM, Gmail, a browser controller, and a scheduler. Single Rust binary, zero external dependencies.</p>
     <p><strong>LangChain</strong> is a Python (and JavaScript) SDK for building agent logic: composing sequences of LLM calls, tool invocations, retrievers, and memory into chains or graphs. LangGraph, LangChain's graph-based extension, lets you define agent state machines with conditional routing. LangSmith provides tracing and evaluation. The framework handles what the agent does; it doesn't manage the process running it.</p>
 
     <h2>Side-by-side comparison</h2>
@@ -183,8 +183,8 @@
           <td style="padding:0.6rem 0.75rem">LangSmith traces (separate service, API key required); no phone dashboard</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
-          <td style="padding:0.6rem 0.75rem"><strong>Self-healing</strong></td>
-          <td style="padding:0.6rem 0.75rem">Auto-compacts context overflows, auto-restarts crashes, replays last message</td>
+          <td style="padding:0.6rem 0.75rem"><strong>Recovery</strong></td>
+          <td style="padding:0.6rem 0.75rem">Resumes after usage limits; workers return after a macOS reboot; stall alerts</td>
           <td style="padding:0.6rem 0.75rem">No built-in process supervision; you handle retries in your agent code</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
@@ -224,7 +224,7 @@
     <p>amux is the right layer when your goal is to run agents, not build them. It answers operational questions:</p>
     <ul>
       <li><strong>How do I run 20 agents at once?</strong> amux manages parallel tmux sessions, each with its own context, task, and output stream.</li>
-      <li><strong>What happens when an agent crashes at 3am?</strong> amux's watchdog auto-restarts and replays the last message. The agent picks up where it left off.</li>
+      <li><strong>What happens when an agent stops at 3am?</strong> If it hit a usage limit, amux holds delivery and resumes it at the provider's reset. If it stalls, stall detection flags it and you get an alert. Restarting a crashed agent process is not built into the amux server; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers.</li>
       <li><strong>How do 20 agents avoid working on the same task?</strong> The kanban board uses atomic claiming: once an agent claims a card, it's locked.</li>
       <li><strong>How do I check on agents from my phone?</strong> The iOS app and PWA give you the full dashboard: peek output, send instructions, move tasks.</li>
       <li><strong>How do agents hand off work to each other?</strong> Inter-session messaging, group routing, and the board's dependency tracking handle cross-agent coordination without custom code.</li>
@@ -236,7 +236,7 @@
       <li>LangChain-built custom agents handle specialized logic (document processing, RAG, API workflows)</li>
       <li>Claude Code sessions handle general software development tasks</li>
       <li>All sessions (LangChain and Claude Code) run as amux sessions in the same fleet</li>
-      <li>All are visible in the amux dashboard, coordinate via the same kanban board, and benefit from the same self-healing watchdog</li>
+      <li>All are visible in the amux dashboard, coordinate via the same kanban board, and get the same usage-limit handling and stall detection</li>
     </ol>
     <p>The amux control plane doesn't care what's running in a tmux session. If your LangChain script runs from the terminal, it can run as an amux session.</p>
 
@@ -263,7 +263,7 @@
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
           <td style="padding:0.6rem 0.75rem">What happens when a session crashes?</td>
-          <td style="padding:0.6rem 0.75rem">Self-healing watchdog restarts and replays</td>
+          <td style="padding:0.6rem 0.75rem">Stall detection and alerts; crash restart is not built into the server</td>
           <td style="padding:0.6rem 0.75rem">You handle it in your graph error nodes</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,var(--rule))">
@@ -295,7 +295,7 @@
     </details>
     <details style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin:0.5rem 0">
       <summary style="cursor:pointer;font-weight:600">Can I use amux and LangChain together?</summary>
-      <p style="margin-top:0.75rem">Yes. LangChain defines what your agent does; amux handles where it runs and what happens to it. If your LangChain script runs from the terminal, it can be an amux session, with the same dashboard visibility, self-healing watchdog, and phone monitoring as any other session.</p>
+      <p style="margin-top:0.75rem">Yes. LangChain defines what your agent does; amux handles where it runs and what happens to it. If your LangChain script runs from the terminal, it can be an amux session, with the same dashboard visibility, stall detection, and phone monitoring as any other session.</p>
     </details>
     <details style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin:0.5rem 0">
       <summary style="cursor:pointer;font-weight:600">Is LangChain better than Claude Code for coding tasks?</summary>
@@ -303,7 +303,7 @@
     </details>
     <details style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin:0.5rem 0">
       <summary style="cursor:pointer;font-weight:600">Does amux support Python agents, not just Claude Code?</summary>
-      <p style="margin-top:0.75rem">Yes. amux manages tmux sessions (any terminal process). Python scripts, Node.js servers, custom agent CLIs all run as amux sessions. You get the same dashboard, peek output, steering queue, and self-healing as Claude Code sessions.</p>
+      <p style="margin-top:0.75rem">Yes. amux manages tmux sessions (any terminal process). Python scripts, Node.js servers, custom agent CLIs all run as amux sessions. You get the same dashboard, peek output, steering queue, and stall detection as Claude Code sessions.</p>
     </details>
     <details style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin:0.5rem 0">
       <summary style="cursor:pointer;font-weight:600">What does amux cost vs LangSmith?</summary>
@@ -312,7 +312,7 @@
 
     <div class="cta-box">
       <h3>Run your AI engineering team with amux</h3>
-      <p>Open-source control plane for Claude Code, Codex, and Gemini CLI agents. Self-healing, kanban board, phone monitoring. Single Rust binary.</p>
+      <p>Open-source control plane for Claude Code, Codex, and Gemini CLI agents. Usage-limit resume, kanban board, phone monitoring. Single Rust binary.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>

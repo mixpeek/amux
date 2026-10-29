@@ -49,8 +49,8 @@
     <loc>https://amux.io/demos/self-healing-watchdog/</loc>
     <video:video>
       <video:thumbnail_loc>https://amux.io/demos/self-healing-watchdog/demo.gif</video:thumbnail_loc>
-      <video:title>Self-Healing Watchdog — amux Demo</video:title>
-      <video:description>Auto-restarts stalled or crashed Claude Code sessions silently.</video:description>
+      <video:title>amux Demo: Status Detection and Recovery</video:title>
+      <video:description>amux status detection on the dashboard. Captions are from an older release; the server does not restart crashed agents.</video:description>
       <video:content_loc>https://amux.io/demos/self-healing-watchdog/demo.mp4</video:content_loc>
       <video:publication_date>2026-02-26</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>

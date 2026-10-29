@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>Unattended Coding — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Running AI coding agents without human supervision — enabled by self-healing, YOLO mode, and atomic task management.">
+  <meta name="description" content="Running AI coding agents without human supervision, enabled by usage-limit resume, YOLO mode, and atomic task management.">
   <meta name="keywords" content="unattended AI coding, autonomous coding agent, headless development">
   <link rel="canonical" href="https://amux.io/glossary/unattended-coding/">
   <meta property="og:title" content="Unattended Coding — amux">
-  <meta property="og:description" content="Running AI coding agents without human supervision — enabled by self-healing, YOLO mode, and atomic task management.">
+  <meta property="og:description" content="Running AI coding agents without human supervision, enabled by usage-limit resume, YOLO mode, and atomic task management.">
   <meta property="og:url" content="https://amux.io/glossary/unattended-coding/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"Unattended Coding","item":"https://amux.io/glossary/unattended-coding/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Unattended Coding","description":"Running AI coding agents without human supervision — enabled by self-healing, YOLO mode, and atomic task management.","url":"https://amux.io/glossary/unattended-coding/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Unattended Coding","description":"Running AI coding agents without human supervision, enabled by usage-limit resume, YOLO mode, and atomic task management.","url":"https://amux.io/glossary/unattended-coding/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
     <link rel="stylesheet" href="/nav.css">
   <script src="/site.js"></script>
 </head>
@@ -52,14 +52,14 @@
 <p class="subtitle">AI coding agents that run without supervision — completing tasks, recovering from failures, and reporting results without a human present.</p>
 <h2>Definition</h2>
 <p><strong>Unattended coding</strong> refers to AI coding agents that operate autonomously without requiring a human to monitor or intervene during execution. The agent receives a task, executes it, handles failures, and completes or reports a failure — all without a human in the loop.</p>
-<p>True unattended coding requires four capabilities that most AI coding tools lack: YOLO mode (no confirmation prompts), self-healing (automatic recovery from crashes), task management (knowing what to do next), and remote monitoring (visibility without physical presence).</p>
+<p>True unattended coding requires four capabilities that most AI coding tools lack: YOLO mode (no confirmation prompts), recovery (resuming after usage limits and reboots), task management (knowing what to do next), and remote monitoring (visibility without physical presence).</p>
 <h2>Requirements for Unattended Operation</h2>
 <table>
 <thead><tr><th>Requirement</th><th>Why it matters</th><th>amux feature</th></tr></thead>
 <tbody>
 <tr><td>No confirmation prompts</td><td>Confirmations require human presence</td><td>YOLO mode (--dangerously-skip-permissions)</td></tr>
-<tr><td>Crash recovery</td><td>Agents crash; a crashed agent does nothing</td><td>Self-healing watchdog</td></tr>
-<tr><td>Context management</td><td>Context exhaustion stops agents</td><td>Auto-compact on context fill</td></tr>
+<tr><td>Recovery</td><td>A paused or stalled agent does nothing</td><td>Usage-limit resume at the provider's reset; workers return after a macOS reboot; stall alerts. Crashed agent processes are not restarted by the server.</td></tr>
+<tr><td>Context management</td><td>Context exhaustion stops agents</td><td>Claude Code compacts its own context; amux sets the threshold</td></tr>
 <tr><td>Task queuing</td><td>Agents need a task source when current task is done</td><td>SQLite kanban board with atomic claiming</td></tr>
 <tr><td>Remote monitoring</td><td>Human needs visibility without being present</td><td>Web dashboard + PWA</td></tr>
 </tbody>

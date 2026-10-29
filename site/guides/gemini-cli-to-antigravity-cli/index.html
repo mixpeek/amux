@@ -350,7 +350,7 @@ tmux new-session -s antigravity-agent -d 'agy -p "work on feature branch"'</code
     <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for managing multiple AI coding agent sessions from a single web dashboard. It works with any terminal-based agent &mdash; including Antigravity CLI. If you run Antigravity sessions alongside <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> sessions, amux coordinates them through shared <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> windows.</p>
 
     <div class="info-box">
-      <strong>amux is agent-agnostic.</strong> The web dashboard, <a href="/guides/kanban-board-for-agents/">kanban board</a>, REST API, <a href="/guides/self-healing-configuration/">self-healing watchdog</a>, and inter-session messaging all work with any process running in a tmux session. Replacing <code>gemini</code> with <code>agy</code> in your amux session launch commands is all that is required.
+      <strong>amux is agent-agnostic.</strong> The web dashboard, <a href="/guides/kanban-board-for-agents/">kanban board</a>, REST API, <a href="/guides/self-healing-configuration/">stall detection and alerts</a>, and inter-session messaging all work with any process running in a tmux session. Replacing <code>gemini</code> with <code>agy</code> in your amux session launch commands is all that is required.
     </div>
 
     <p>To launch an Antigravity CLI session via amux:</p>
@@ -373,7 +373,7 @@ tmux new-session -s agy-worker-1 -d 'agy'
 # and monitor output in the web dashboard at http://localhost:8824</code>
     </div>
 
-    <p>With amux, you can run 5–20 Antigravity CLI agents in parallel, assign them tasks from a shared board, inspect their output without switching terminals, and set up a <a href="/guides/self-healing-configuration/">self-healing watchdog</a> to restart crashed sessions automatically. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub repo</a> for setup instructions.</p>
+    <p>With amux, you can run 5–20 Antigravity CLI agents in parallel, assign them tasks from a shared board, inspect their output without switching terminals, and set up <a href="/guides/self-healing-configuration/">stall detection and owner alerts</a> so a stopped session gets flagged. See the <a href="/guides/getting-started/">getting started guide</a> or <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub repo</a> for setup instructions.</p>
 
     <!-- ─── FAQ ─── -->
     <h2 id="faq">Frequently Asked Questions</h2>
@@ -416,7 +416,7 @@ tmux new-session -s agy-worker-1 -d 'agy'
     <!-- ─── CTA ─── -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;margin:3rem 0;text-align:center;">
       <h3 style="margin:0 0 0.75rem;">Orchestrate Antigravity CLI alongside Claude Code</h3>
-      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux is a free, open-source control plane for running multiple AI coding agent sessions in parallel — including Antigravity CLI. Web dashboard, self-healing watchdog, kanban board, mobile app.</p>
+      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux is a free, open-source control plane for running multiple AI coding agent sessions in parallel — including Antigravity CLI. Web dashboard, stall alerts, kanban board, mobile app.</p>
       <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
         <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:var(--c-green);color:var(--code-bg);font-weight:700;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">View on GitHub</a>
         <a href="/guides/getting-started/" style="border:1px solid var(--border);color:var(--dim);font-weight:600;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">Getting Started Guide</a>
