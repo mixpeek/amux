@@ -30157,9 +30157,16 @@ function _mdxToggleTask(i) {
     _mdxChanged();
   }
   // A box ticked in Preview is saved straight away, as long as nothing else
-  // was waiting to be saved: then it waits with the rest.
-  if (wasClean && typeof _fileSave === 'function') _fileSave();
-  _mdxBeacon('task_toggled', { saved: wasClean ? 1 : 0 });
+  // was waiting to be saved: then it waits with the rest. A tick made while
+  // an earlier tick is still saving is saved too: until that save lands the
+  // file reads as unsaved, and two quick ticks lost the second (CI on main,
+  // 2026-10-29). Typing ends that run (the input listener clears it).
+  const save = wasClean || _mdx.tickSaving;
+  if (save && typeof _fileSave === 'function') {
+    _mdx.tickSaving = true;
+    Promise.resolve(_fileSave()).finally(() => { if (!_fileSaveWaiting) _mdx.tickSaving = false; });
+  }
+  _mdxBeacon('task_toggled', { saved: save ? 1 : 0 });
 }
 
 // ── Source: highlighting, line numbers, status ──
@@ -30509,7 +30516,7 @@ function _mdxBind() {
   if (_mdxBound) return;
   _mdxBound = true;
   const ta = document.getElementById('file-edit-ta');
-  ta.addEventListener('input', () => { if (_mdxActive()) _mdxChanged(); });
+  ta.addEventListener('input', e => { if (_mdxActive()) { if (e.isTrusted) _mdx.tickSaving = false; _mdxChanged(); } });
   ta.addEventListener('scroll', () => { if (_mdxActive()) _mdxSyncScroll(); });
   ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) _mdxStatus(); }));
   ta.addEventListener('keydown', e => { if (_mdxActive()) _mdxKeydown(e); });

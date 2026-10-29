@@ -65,7 +65,7 @@ test('Split: the source with line numbers beside a live preview, and a status li
   await page.screenshot({ path: test.info().outputPath('md-split.png') });
 });
 
-test('the formatting bar and keys edit the source, and ⌘Z undoes them', async ({ page }) => {
+test('the formatting bar and keys edit the source, and ⌘Z undoes them', async ({ page, browserName }) => {
   const f = freshFile('fmt.md', 'hello world\n');
   await open(page, f);
   await mode(page, 'edit');
@@ -76,6 +76,13 @@ test('the formatting bar and keys edit the source, and ⌘Z undoes them', async 
   await page.locator('#mdx-tools [data-t="heading"]').click();
   await expect(ta).toHaveValue('# hello **world**\n');
   await page.keyboard.press('ControlOrMeta+z');
+  // WebKit merges back-to-back edits into one undo step, so there ⌘Z takes
+  // both back; Chromium undoes the heading alone.
+  if (browserName === 'webkit') {
+    await expect(ta).toHaveValue('hello world\n');
+    await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(6, 11); });
+    await page.locator('#mdx-tools [data-t="bold"]').click();
+  }
   await expect(ta).toHaveValue('hello **world**\n');
   // A task, then Enter carries the list on, and Enter on an empty item ends it.
   await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
@@ -86,10 +93,12 @@ test('the formatting bar and keys edit the source, and ⌘Z undoes them', async 
   await page.keyboard.type('test it');
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
-  await expect(ta).toHaveValue('hello **world**\n- [ ] ship it\n- [ ] test it\n');
+  // Ending the list leaves a final newline in Chromium and none in WebKit.
+  await expect(ta).toHaveValue(/^hello \*\*world\*\*\n- \[ \] ship it\n- \[ \] test it\n?$/);
+  const shown = await ta.inputValue();
   // Save writes the file.
   await page.keyboard.press('ControlOrMeta+s');
-  await expect.poll(() => readFileSync(f, 'utf8')).toBe('hello **world**\n- [ ] ship it\n- [ ] test it\n');
+  await expect.poll(() => readFileSync(f, 'utf8')).toBe(shown);
   await expect(page.locator('#mdx-dirty')).toHaveText('Saved');
 });
 

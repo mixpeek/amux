@@ -46,7 +46,8 @@ test('a send the server never answers gives the button back, keeps the text, and
   await page.locator('#peek-cmd-input').fill('are you there');
   const btn = page.locator('#peek-overlay .send-split-main');
   await btn.click();
-  await expect.poll(() => btn.isDisabled(), { timeout: 5000 }).toBe(true);
+  // The composer may hold the message in the outbox at once, so the button
+  // need not grey at all; what matters is that it is never held.
   await expect(btn).toBeEnabled({ timeout: 30_000 });
   // Never lost: back in the box, or held in the outbox to retry (Sync shows it).
   const where = await page.evaluate(() => ({

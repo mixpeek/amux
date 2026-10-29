@@ -32,7 +32,7 @@ test('a local save goes through past a window that froze holding the storage loc
   const verdicts: string[] = [];
   await page.route(/\/api\/client-debug$/, async route => {
     try { const b = route.request().postDataJSON(); if (b && b.verdict) verdicts.push(b.verdict); } catch (_) {}
-    await route.fulfill({ json: { ok: true } });
+    await route.continue();
   });
   await boot(page);
   const t0 = Date.now();
@@ -47,7 +47,16 @@ test('a local save goes through past a window that froze holding the storage loc
   const waited = Date.now() - t0;
   expect(saved, 'the save landed in the queue').toBe(true);
   expect(waited, 'within seconds, not after the holder wakes').toBeLessThan(15_000);
-  await expect.poll(() => verdicts, { message: 'the takeover is reported' }).toContain('outbox_storage_lock_stolen');
+  // A beacon sent through the service worker never meets page.route (WebKit
+  // always, Chromium sometimes: red on main on every engine, 2026-10-29), so
+  // the server's own beacon log is read too.
+  const reported = async () => verdicts.includes('outbox_storage_lock_stolen') || await page.evaluate(async () => {
+    const tok = (window as any)._AMUX_AUTH_TOKEN;
+    const r = await fetch('/api/client-debug', { headers: tok ? { Authorization: 'Bearer ' + tok } : {} });
+    const d = await r.json();
+    return (d.beacons || []).some((b: any) => b.body && b.body.verdict === 'outbox_storage_lock_stolen');
+  });
+  await expect.poll(reported, { message: 'the takeover is reported', timeout: 15_000 }).toBe(true);
   await page.evaluate(async () => { await (window as any)._mutateQueue((rows: any[]) => {
     const at = rows.findIndex((q: any) => q.id === 'storage-stalled-1'); if (at >= 0) rows.splice(at, 1); }); });
 });
