@@ -23891,7 +23891,18 @@ function _expandAtMentions(text) {
   const hints = mentioned.map(n =>
     `  @${n} → POST ${base}/api/sessions/${n}/send  {"text":"<msg>"}`
   ).join('\n');
-  return rewritten + '\n\n[amux: @-mentions above are amux workers, NOT files. Reach them via HTTP API, never tmux directly]\n' + hints;
+  return rewritten + _MENTION_NOTE + hints;
+}
+const _MENTION_NOTE = '\n\n[amux: @-mentions above are amux workers, NOT files. Reach them via HTTP API, never tmux directly]\n';
+// The text as typed: _expandAtMentions undone. The worker gets the note; the
+// owner's own Messages show what they wrote, and the sent copy matches the
+// local one (owner, 2026-10-29: the peek's Messages showed one send twice,
+// "direct?" beside the note-carrying echo).
+function _mentionNoteStrip(text) {
+  const s = String(text || '');
+  const i = s.indexOf(_MENTION_NOTE.trimEnd());
+  if (i < 0) return s;
+  return s.slice(0, i).replace(/`(@[\w][\w.-]*)`/g, '$1');
 }
 
 // ── @mention helpers ──
@@ -26987,7 +26998,7 @@ function _cmdHistItemHTML(e, ctx) {
   const session = typeof e === 'string' ? '' : (e.session || '');
   const origin = typeof e === 'string' ? '' : (e.origin || '');
   const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
-  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const safe = _mentionNoteStrip(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   // Highlight the active PEEK message search (Ethan: "all search should have
   // highlighting to show where it is"). Read from the input rather than a
   // global, because this row builder is shared by the peek list and there is
@@ -27443,7 +27454,7 @@ function _mergeUnechoed(serverRows, session) {
   // mentions; the local row keeps only what was typed. Compared as typed text,
   // MSG-92727 (two screenshots) never matched its echo and showed a second,
   // ghost "queued" row beside the delivered one (2026-10-22).
-  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
+  const canonical = text => _mentionNoteStrip(text).replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
     .replace(/(?:\s+@\/\S+)+\s*$/, '').trim();
   const echoed = local => serverRows.some(row =>
     (row.session || '') === (local.session || '')
