@@ -326,11 +326,27 @@ let currentViewJS = "(() => {\n" + viewHashBody + "\n})()"
 let windowLabelJS = """
 (() => {
   let last = null;
+  // A file shown is named by its file (owner, 2026-10-29: "files should have
+  // a name based on the file thats open"), a folder in Files by its folder.
+  const base = p => String(p || '').replace(/[/]+$/, '').split('/').pop() || '';
   const label = () => {
     try {
+      const fo = document.getElementById('file-overlay');
+      if (fo && fo.classList.contains('active')) {
+        let p = '';
+        try { if (typeof _fileData !== 'undefined' && _fileData && _fileData.path) p = _fileData.path; } catch (e) {}
+        const n = base(p || fo.dataset.path);
+        if (n) return n;
+      }
+      const mo = document.getElementById('mdai-overlay');
+      if (mo && mo.classList.contains('active')) {
+        try { if (typeof _mdaiCur !== 'undefined' && _mdaiCur && _mdaiCur.abs) return base(_mdaiCur.abs); } catch (e) {}
+      }
       const peek = document.getElementById('peek-overlay');
       if (peek && peek.classList.contains('active') && typeof peekSession !== 'undefined' && peekSession) return peekSession;
       if (typeof activeView !== 'undefined' && activeView) {
+        try { if (activeView === 'files' && _filesPath && _filesPath !== '/') return base(_filesPath); } catch (e) {}
+        try { if (activeView === 'draw') { const d = _drawS(), dp = (d && (d.path || d.pendingOpen)) || ''; if (dp.startsWith('/')) return base(dp); } } catch (e) {}
         const tab = document.getElementById('tab-' + activeView);
         const t = tab ? tab.textContent.replace(/[^\\p{L}\\p{N} &'-]/gu, ' ').replace(/\\s+/g, ' ').trim() : '';
         return t || activeView;
