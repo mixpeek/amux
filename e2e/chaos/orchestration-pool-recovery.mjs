@@ -33,6 +33,10 @@ try{
  await amux.down();await amux.up();
  await new Promise(r=>setTimeout(r,2000));
  check('another restart does not repeat the pickup command',amux.fakeLog().filter(r=>r.text?.startsWith(`[amux auto-pickup] Claimed ${root.body.id} `)).length===1,amux.fakeLog());
-}catch(e){console.error(JSON.stringify((await amux.req('GET','/api/debug/board-drive')).body,null,2));checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-15000));}
+}catch(e){
+ // Record the failure first: when the server is the thing that died, the
+ // diagnostic read below throws too and used to hide the real error.
+ checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});
+ try{console.error(JSON.stringify((await amux.req('GET','/api/debug/board-drive')).body,null,2));}catch(d){console.error('board-drive diagnostics unavailable: '+(d.code||d.message));}console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-15000));}
 finally{await amux.stop();}
 const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);

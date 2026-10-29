@@ -90,9 +90,17 @@ fn quote(arg: &str) -> String {
 }
 
 /// The command line for `args`, or None when control mode cannot carry it.
+///
+/// An argument ending in `;` is tmux's separator between two commands
+/// (`send-keys -l line ; send-keys Enter` types a line and submits it), and a
+/// trailing `\;` loses its backslash. Quoted here, the `;` would be literal and
+/// the second command typed as text, never run; bare, it answers with two
+/// blocks for one waiter. Either way it spawns.
 pub fn command_line(args: &[&str]) -> Option<String> {
     let sub = *args.first()?;
-    if !ROUTED.contains(&sub) || args.iter().any(|a| a.chars().any(|c| c.is_control())) {
+    if !ROUTED.contains(&sub)
+        || args.iter().any(|a| a.chars().any(|c| c.is_control()) || a.ends_with(';'))
+    {
         return None;
     }
     Some(args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
@@ -366,6 +374,16 @@ mod tests {
         assert!(command_line(&["send-keys", "-l", "tab\there"]).is_none());
         assert!(command_line(&["new-session", "-d", "-s", "x"]).is_none());
         assert!(command_line(&[]).is_none());
+    }
+
+    #[test]
+    fn a_command_separator_spawns() {
+        // session_verbs::shell_line_args: type a line, then press Enter.
+        assert!(command_line(&["send-keys", "-t", "x", "-l", "ls", ";", "send-keys", "-t", "x", "Enter"]).is_none());
+        assert!(command_line(&["send-keys", "-t", "x", "Enter;"]).is_none());
+        assert!(command_line(&["send-keys", "-t", "x", "-l", "a\\;"]).is_none());
+        // A `;` inside text is typed literally and stays on the connection.
+        assert!(command_line(&["send-keys", "-l", "a; b"]).is_some());
     }
 
     #[test]
