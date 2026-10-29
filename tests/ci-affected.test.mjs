@@ -105,6 +105,42 @@ test('dashboard: a changed function, and ids on changed lines, select the specs 
   assert.equal(v.spa, true);
 });
 
+// AF-984: the land gate runs the head of this list, so a routing change must
+// put the specs that navigate there (5297440a6 ran 12 of 39 by name and missed
+// lifecycle/journey, which it broke).
+test('a navigation-core change orders the specs that navigate first; any other change keeps name order', () => {
+  const app = ['function routeTo(v) {', '  showPane(v);', '}', ''].join('\n');
+  const repo = fakeRepo({
+    'crates/amux-dashboard/static/app.js': app,
+    'e2e/a-plain.spec.ts': 'routeTo(1)',
+    'e2e/m-reload.spec.ts': 'routeTo(1); await page.reload();',
+    'e2e/z-deeplink.spec.ts': "routeTo(1); await page.goto('/#peek=lane');",
+  });
+  const hunk = (line) => ({ path: 'crates/amux-dashboard/static/app.js', deleted: false,
+    hunks: [{ newStart: 2, newCount: 1, added: [line], removed: [] }] });
+  const nav = pr([hunk("  window.addEventListener('popstate', () => showPane(v));")], repo);
+  assert.equal(nav.e2e.nav_core, true);
+  assert.ok(nav.e2e.reasons.some(r => r.includes('navigation core')), nav.e2e.reasons.join('; '));
+  const at = (s) => nav.e2e.specs.indexOf(s);
+  assert.ok(at('z-deeplink.spec.ts') < at('a-plain.spec.ts'), nav.e2e.specs.join(', '));
+  assert.ok(at('m-reload.spec.ts') < at('a-plain.spec.ts'), nav.e2e.specs.join(', '));
+  assert.ok(at('lifecycle/board-header.spec.ts') < at('a-plain.spec.ts'), 'a lifecycle journey counts as navigating');
+  const plain = pr([hunk('  showPane(v + 1);')], repo);
+  assert.equal(plain.e2e.nav_core, false);
+  assert.deepEqual(plain.e2e.specs, [...plain.e2e.specs].sort(), 'name order when routing is untouched');
+  assert.deepEqual([...nav.e2e.specs].sort(), [...plain.e2e.specs].sort(), 'ordering changes, selection does not');
+});
+
+test('a changed spec leads even when a dashboard token picked it first', () => {
+  const app = ['function routeTo(v) {', '  history.replaceState(null, "", "#x");', '}', ''].join('\n');
+  const repo = fakeRepo({ 'crates/amux-dashboard/static/app.js': app, 'e2e/zz-own.spec.ts': 'routeTo(1)' });
+  const v = pr([
+    { path: 'crates/amux-dashboard/static/app.js', deleted: false, hunks: [{ newStart: 2, newCount: 1, added: ['  history.replaceState(null, "", "#y");'], removed: [] }] },
+    change('e2e/zz-own.spec.ts', ['x']),
+  ], repo);
+  assert.equal(v.e2e.specs[0], 'zz-own.spec.ts', v.e2e.specs.join(', '));
+});
+
 test('changedFunctions pins a deletion-only hunk to the function it sat in', () => {
   const src = 'function a() {\n  1;\n}\nconst b = () => {\n  2;\n};\n';
   assert.deepEqual(changedFunctions(src, [{ newStart: 5, newCount: 0 }], espree).names, ['b']);

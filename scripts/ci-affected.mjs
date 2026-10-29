@@ -38,6 +38,19 @@ export const MAX_SELECTED_SPECS = 40;
 // worker; shards run --workers=2, so ~240s planned is ~2 min of execution).
 export const SECONDS_PER_SHARD = 240;
 
+// THE NAVIGATION CORE (AF-984). The land gate runs the changed specs and then
+// the first 12 of this list (scripts/land_gate.py, MAX_LOCAL_SPECS), so the
+// ORDER of the selection decides what is tested before main. 5297440a6 (the
+// back button) wrapped switchView/openPeek and added a popstate handler; 39
+// specs were selected, the gate ran the 12 that sort first by name, and
+// lifecycle/journey, tasks-tab and scratchpad-durability-parity, which it
+// broke, were not among them. Main stayed red about 4 hours. A dashboard line
+// that touches routing puts the specs that navigate (lifecycle journeys, deep
+// links, reloads, back and forward) at the front.
+export const NAV_CORE = /\bhistory\.(pushState|replaceState|back|forward|go)\b|\bpopstate\b|\bhashchange\b|\b_handleDeeplink\b|\blocation\.hash\b|\b(switchView|openPeek|openFilePreview)\s*=(?!=)/;
+export const NAV_SPEC = /goto\(\s*[`'"][^`'"]*#|\.reload\(|\.goBack\(|\.goForward\(|\bpopstate\b|\bhashchange\b/;
+const navigates = (spec, text) => spec.startsWith('lifecycle/') || NAV_SPEC.test(text);
+
 // Changing any of these changes how EVERY spec runs, or how the run is planned
 // and judged, so a selection cannot be trusted to cover them.
 export const E2E_INFRA = [
@@ -320,7 +333,8 @@ export function classify({ event, files, repo }) {
   const specText = new Map(specs.map(s => [s, repo.read('e2e/' + s) || '']));
   const selected = new Map();
   const pick = (spec, why) => { if (specSet.has(spec) && !selected.has(spec)) selected.set(spec, why); };
-  let fullE2e = false, e2eRelevant = false, spa = false;
+  let fullE2e = false, e2eRelevant = false, spa = false, navCore = false;
+  const changedSpecs = new Set();
 
   for (const p of allPaths) if (E2E_INFRA.some(r => r.test(p))) { fullE2e = true; reasons.e2e.push(`${p}: e2e infrastructure`); }
   for (const f of files) {
@@ -332,12 +346,16 @@ export function classify({ event, files, repo }) {
     if (p.startsWith('e2e/') && p.endsWith('.spec.ts')) {
       e2eRelevant = true;
       if (f.deleted) reasons.e2e.push(`${p}: deleted; nothing to run`);
-      else pick(p.slice(4), 'changed spec');
+      else { pick(p.slice(4), 'changed spec'); changedSpecs.add(p.slice(4)); }
       continue;
     }
     // (b) dashboard: functions on changed hunks, ids/actions/classes on changed lines
     if (p.startsWith('crates/amux-dashboard/static/')) {
       e2eRelevant = true;
+      if (!navCore && /\.m?js$/.test(p) && f.hunks.some(h => [...h.added, ...h.removed].some(l => NAV_CORE.test(l)))) {
+        navCore = true;
+        reasons.e2e.push(`${p}: touches the navigation core; specs that navigate run first`);
+      }
       const tokens = new Map();
       const kind = p.endsWith('.css') ? 'css' : 'markup';
       for (const h of f.hunks) for (const l of [...h.added, ...h.removed]) for (const t of lineTokens(l, kind)) tokens.set(t, 'line token');
@@ -403,7 +421,12 @@ export function classify({ event, files, repo }) {
     if (!fullE2e && selected.size > MAX_SELECTED_SPECS) {
       fullE2e = true; reasons.e2e.push(`${selected.size} spec files selected (> ${MAX_SELECTED_SPECS}); running the whole desktop+mobile suite`);
     }
-    const picked = [...selected.keys()].sort();
+    // Changed specs first, then (for a navigation-core change) the selected
+    // specs that navigate, then the rest by name: a runner that can only take
+    // the head of this list takes the specs most likely to catch the change.
+    const rank = s => changedSpecs.has(s) ? 0
+      : navCore && navigates(s, specText.get(s) || '') ? 1 : 2;
+    const picked = [...selected.keys()].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
     if (!fullE2e) e2eSpecs = picked;
     // ios-safari: the iOS-relevant part of what the change selected, even when
     // desktop+mobile went full on volume. Only an infrastructure change runs
@@ -420,7 +443,7 @@ export function classify({ event, files, repo }) {
     none,
     rust: { scope: rust, filter, shards: rust === 'full' ? RUST_SHARDS : rust === 'targeted' ? 1 : 0, reasons: reasons.rust },
     e2e: {
-      run: e2eRelevant, full: fullE2e, specs: e2eSpecs, ios_specs: iosSpecs,
+      run: e2eRelevant, full: fullE2e, specs: e2eSpecs, ios_specs: iosSpecs, nav_core: navCore,
       selected: Object.fromEntries(selected),
       planned_seconds: Math.round(planned.seconds), planned_units: planned.units, shards: e2eRelevant ? shardTotal : 0,
       not_run: { 'desktop+mobile spec files': e2eSpecs ? specs.length - e2eSpecs.length : 0,
