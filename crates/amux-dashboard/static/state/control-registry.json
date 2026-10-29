@@ -4992,6 +4992,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_syncUrlHash": {
+      "kind": "command._syncUrlHash",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_sysJobToggle": {
       "kind": "command._sysJobToggle",
       "feedback_required": true,
@@ -5486,6 +5492,24 @@
     },
     "_watchPeekTabAnchor": {
       "kind": "command._watchPeekTabAnchor",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_whereReport": {
+      "kind": "command._whereReport",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_whereSoon": {
+      "kind": "command._whereSoon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_whoOpen": {
+      "kind": "command._whoOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

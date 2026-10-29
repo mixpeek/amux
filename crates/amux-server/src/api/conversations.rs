@@ -115,6 +115,17 @@ fn who(headers: &HeaderMap, lanes: &[Lane]) -> Who {
     Who::Person { email: "owner".into(), scope: MemberScope::Global }
 }
 
+/// The person behind a request (`person:<email>`, or `person:owner`) and
+/// whether their access is workspace-wide, or None for a worker or a refused
+/// claim. Used by whereabouts.rs, which keys people the way Messages does so
+/// an avatar's key finds them.
+pub(crate) fn person_of(headers: &HeaderMap) -> Option<(String, bool)> {
+    match identify(headers, &lanes()) {
+        Ok(Who::Person { email, scope }) => Some((format!("person:{email}"), scope.is_global())),
+        _ => None,
+    }
+}
+
 /// `who`, refusing a worker claim that names no worker. Such a claim used to
 /// read as the owner, so any caller with a stale or mistyped X-Amux-Session
 /// (or an isolated worker, which has no Messages route) read and wrote the

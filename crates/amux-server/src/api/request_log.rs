@@ -2306,6 +2306,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/avatars/{email}",
         methods: &["GET", "PUT", "DELETE"],
     },
+    // What each person has open right now (whereabouts.rs).
+    RouteEntry {
+        path: "/api/presence/where",
+        methods: &["GET", "POST"],
+    },
     // Copied file and worker links build on this (deep_links.rs).
     RouteEntry {
         path: "/api/deep-link",

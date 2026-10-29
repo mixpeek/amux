@@ -1343,6 +1343,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Close | `_modalClose` | onclick |
 | app.js | Close | `_modalClose` | onclick |
 | app.js | OK | `_modalClose` | onclick |
+| app.js | OK | `_modalClose` | onclick |
 | app.js | ${esc(label)} | `_msgContextOpen` | onclick |
 | app.js | Copy text | `_msgCopyBtn` | onclick |
 | app.js | Actions | `_msgMenu` | onclick |

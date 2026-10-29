@@ -9,6 +9,7 @@ pub mod alerts;
 pub mod aliases;
 pub mod auth;
 pub mod avatars;
+pub mod whereabouts;
 pub mod board;
 pub mod boundaries;
 pub mod bridge;
@@ -409,6 +410,8 @@ pub fn router_with_connector_transport(
         .merge(vault_secrets::routes())
         // People's pictures beside their names (avatars.rs).
         .merge(avatars::routes())
+        // What each person has open right now, behind every avatar (whereabouts.rs).
+        .merge(whereabouts::routes())
         .merge(chatgpt_app::routes())
         .merge(chat_delegate::routes())
         .merge(self_update::routes())

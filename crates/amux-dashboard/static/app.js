@@ -3786,6 +3786,16 @@ function showAlert(msg) {
     document.getElementById('modal-backdrop').classList.add('open');
   });
 }
+// A titled, read-only modal on the same chrome: OK closes it.
+function showAlertHtml(title, innerHTML) {
+  return new Promise(resolve => {
+    _modalResolve = resolve;
+    document.getElementById('modal-msg').innerHTML =
+      '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-3);">' + esc(title) + '</div>' + innerHTML;
+    document.getElementById('modal-btns').innerHTML = '<button class="btn primary" onclick="_modalClose(true)">OK</button>';
+    document.getElementById('modal-backdrop').classList.add('open');
+  });
+}
 // Modal with arbitrary form HTML (reuses the shared modal chrome). Resolves
 // true on confirm, false on cancel — read your inputs before awaiting resolve.
 function showFormModal(title, innerHTML, confirmLabel = 'Save') {
@@ -12643,6 +12653,85 @@ function _draftSave(session, text) {
   return record.rev;
 }
 
+// ── Where each person is (server: api/whereabouts.rs) ──
+// Ethan, 2026-10-29: "click a users avatar and know what screen(s)/window(s)
+// are active for them ... anytime i can view avatars/users". Each tab reports
+// the screen it shows when it moves and every 30s; clicking any avatar
+// (_cvAvatar marks them data-who) opens one modal listing that person's open
+// windows, or a worker's state. Ephemeral: the server forgets a window after 90s.
+const _whereTab = (() => {
+  try { let t = sessionStorage.getItem('amux_where_tab'); if (!t) { t = Math.random().toString(36).slice(2, 12); sessionStorage.setItem('amux_where_tab', t); } return t; }
+  catch (e) { return Math.random().toString(36).slice(2, 12); }
+})();
+function _whereNow() {
+  // The same test the address bar uses (_syncUrlHash): a worker is open.
+  if (peekSession) {
+    const tab = (_peekTab && _peekTab !== 'terminal') ? ' · ' + _peekTab : '';
+    return { view: 'worker', worker: peekSession, label: 'Worker · ' + peekSession + tab };
+  }
+  const v = (typeof activeView !== 'undefined' && activeView) || 'sessions';
+  if (v === 'messages' && typeof _cv !== 'undefined' && _cv.sel) {
+    const s = _cv.sel;
+    const where = s[0] === '@' ? ({ '@mentions': 'Mentions', '@unread': 'Unread', '@all': 'All messages' }[s] || 'Search')
+      : (typeof _cvFindName === 'function' ? _cvFindName(s) : s);
+    return { view: 'messages', worker: s.indexOf('w:') === 0 ? s.slice(2) : '', label: 'Messages · ' + where };
+  }
+  const tab = document.querySelector('#tab-' + CSS.escape(v) + ' .tab-lbl') || document.getElementById('tab-' + v);
+  const name = (tab && tab.textContent.trim()) || (v === 'sessions' ? 'Workers' : v.charAt(0).toUpperCase() + v.slice(1));
+  return { view: v, label: name };
+}
+var _whereT = 0, _whereLast = '';  // var: _syncUrlHash can run before this line
+function _whereSoon() { clearTimeout(_whereT); _whereT = setTimeout(() => _whereReport(false), 400); }
+function _whereReport(force) {
+  if (window._peekSplitChild || window._peekEmbed) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  const w = _whereNow();
+  const body = { tab: _whereTab, view: w.view, label: w.label, worker: w.worker || '', focused: !document.hidden && document.hasFocus() };
+  const sig = JSON.stringify(body);
+  if (!force && sig === _whereLast) return;
+  _whereLast = sig;
+  // _background/_skipOutbox: this is the page's own report, never a press, and
+  // a replayed "where I was" from the offline outbox would be a lie.
+  fetch(API + '/api/presence/where', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: sig, _skipOutbox: true, _background: true }).catch(() => {});
+}
+setInterval(() => _whereReport(true), 30000);
+['visibilitychange', 'focus', 'blur'].forEach(ev => (ev === 'visibilitychange' ? document : window).addEventListener(ev, () => _whereReport(false)));
+window.addEventListener('pagehide', () => {
+  try { navigator.sendBeacon(API + '/api/presence/where', new Blob([JSON.stringify({ tab: _whereTab, closed: true })], { type: 'application/json' })); } catch (e) {}
+});
+setTimeout(() => _whereReport(true), 1500);
+function _whoAgo(s) { return s < 45 ? 'now' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; }
+async function _whoOpen(key, name) {
+  if (key.indexOf('worker:') === 0) {
+    const w = key.slice(7);
+    const s = (typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions : []).find(x => x.name === w) || {};
+    const ok = await showFormModal(w,
+      '<div class="who-modal"><div class="who-row"><span class="cv-dot' + (/active|working|running/i.test(String(s.status || '')) ? ' on' : '') + '"></span>'
+      + '<span>' + esc(s.status ? 'Worker · ' + s.status : 'Worker') + '</span></div>'
+      + (s.desc ? '<div class="cx-dim cx-small">' + esc(s.desc) + '</div>' : '') + '</div>', 'Open worker');
+    if (ok && typeof openPeek === 'function') openPeek(w);
+    return;
+  }
+  let d = null;
+  try { const r = await fetch(API + '/api/presence/where?key=' + encodeURIComponent(key)); d = await r.json(); if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status)); }
+  catch (e) { showToast('Could not load where ' + (name || 'they') + ' is: ' + e.message, 'error'); return; }
+  const wins = d.windows || [];
+  const rows = !wins.length ? '<div class="cx-dim">No amux windows open right now.</div>'
+    : wins.map(w => '<div class="who-row"><span class="cv-dot' + (w.focused ? ' on' : '') + '" title="' + (w.focused ? 'in front' : 'in the background') + '"></span>'
+      + '<span class="who-what">' + esc(d.detail ? (w.label || w.view || 'amux') : (w.focused ? 'Using amux' : 'amux open')) + '</span>'
+      + '<span class="cx-dim cx-small">' + esc([d.detail ? w.device : '', w.focused ? 'in front' : 'background', _whoAgo(w.age_s || 0)].filter(Boolean).join(' · ')) + '</span></div>').join('');
+  const title = (name || key.replace(/^person:/, '')) + (wins.length ? ' · ' + wins.length + (wins.length === 1 ? ' window' : ' windows') : '');
+  showAlertHtml(title, '<div class="who-modal">' + rows + '</div>');
+}
+document.addEventListener('click', e => {
+  const av = e.target.closest && e.target.closest('[data-who]');
+  // Not where the avatar is itself a control: your own picture button, the
+  // @ picker and the New message picker choose by clicking the row.
+  if (!av || av.closest('.cv-me, #cv-ac, #cv-new-list, label')) return;
+  e.preventDefault(); e.stopPropagation();
+  _whoOpen(av.dataset.who, av.dataset.whoName || '');
+}, true);
+
 // ── Multiplayer typing presence (AC-474, server: api/typing.rs) ──
 // Another account typing to a worker shows as "elliot is typing…" under that
 // worker's composers. The server owns identity (member email, lane, owner)
@@ -17884,6 +17973,7 @@ function _viewFromHashName(v) { return v === 'apps' ? 'pages' : v; }
 
 function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
+  _whereSoon();
   const cur = location.hash;
   if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur)) return;
   try {
@@ -66106,12 +66196,24 @@ function _avatarUrl(key) {
 function _cvAvatar(name, worker, key) {
   // A picture set in Messages (profiles: workers, and an owner with no
   // email), else a person's own picture (avatars), else initial or robot.
+  // Every avatar says who it is (data-who), so a click anywhere opens what
+  // that person or worker has open right now (_whoOpen).
+  const who = _whoKey(name, worker, key);
+  const w = who ? ' data-who="' + esc(who) + '" data-who-name="' + esc(name || '') + '"' : '';
   const prof = key && _cvProfiles[key];
-  if (prof && prof.avatar) return '<img class="cv-av cv-av-img" alt="" loading="lazy" src="' + esc(_authUrl(API + prof.avatar)) + '">';
-  if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)">&#x1F916;</span>';
+  if (prof && prof.avatar) return '<img class="cv-av cv-av-img" alt="" loading="lazy"' + w + ' src="' + esc(_authUrl(API + prof.avatar)) + '">';
+  if (worker) return '<span class="cv-av" style="background:var(--border);color:var(--text)"' + w + '>&#x1F916;</span>';
   const pic = _avatarUrl(key);
-  if (pic) return '<img class="cv-av cv-av-img" src="' + esc(pic) + '" alt="" title="' + esc(name || '') + '">';
-  return '<span class="cv-av" style="background:' + _cvColor(name) + '">' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
+  if (pic) return '<img class="cv-av cv-av-img" src="' + esc(pic) + '" alt="" title="' + esc(name || '') + '"' + w + '>';
+  return '<span class="cv-av" style="background:' + _cvColor(name) + '"' + w + '>' + esc((name || '?').charAt(0).toUpperCase()) + '</span>';
+}
+// "person:<email>", "person:owner" or "worker:<name>" for an avatar, or ''.
+function _whoKey(name, worker, key) {
+  key = String(key || '');
+  if (/^(person|worker):/.test(key)) return key;
+  if (worker) return name ? 'worker:' + name : '';
+  if (key.indexOf('@') > 0) return 'person:' + key.toLowerCase();
+  return '';
 }
 // Every author's picture this page has seen (posts responses carry them).
 const _cvProfiles = {};
@@ -66439,6 +66541,7 @@ function _cvEnter() {
 }
 function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
+  setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
   if (_cv.sel !== sel) _cv.editing = null;
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
