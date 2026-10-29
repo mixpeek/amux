@@ -483,19 +483,24 @@ pub(crate) async fn preflight(dir: &Path) -> Option<serde_json::Value> {
     None
 }
 
+/// What to tell a copy installed by a retired package channel. Homebrew and
+/// PyPI are retired (site/llms.txt), so `brew upgrade amux` and `pipx upgrade
+/// amux` no longer bring a new version; the installer replaces the old copy.
+fn retired_channel_hint(channel: &str) -> String {
+    let how = if channel == "brew" { "Homebrew" } else { "pip/pipx" };
+    format!(
+        "Installed via {how}, which no longer publishes amux. Update with the installer, \
+         which replaces this copy: curl -fsSL https://amux.io/install.sh | bash"
+    )
+}
+
 async fn pull_checkout() -> Response {
-    match install_channel().0 {
-        "brew" => {
-            return Json(json!({"ok": false, "channel": "brew",
-                "output": "Installed via Homebrew — update with: brew upgrade amux"}))
-            .into_response()
-        }
-        "pip" => {
-            return Json(json!({"ok": false, "channel": "pip",
-                "output": "Installed via pip/pipx — update with: pipx upgrade amux (or pip install -U amux)"}))
-            .into_response()
-        }
-        _ => {}
+    let channel = install_channel().0;
+    if matches!(channel, "brew" | "pip") {
+        tracing::warn!(channel, measured = true, n_considered = 1, verdict = "pull_retired_install_channel",
+            "Pull pressed on a copy installed by a retired package channel; pointed at the installer");
+        return Json(json!({"ok": false, "channel": channel, "output": retired_channel_hint(channel)}))
+            .into_response();
     }
 
     let Some(dir) = repo_dir() else {
@@ -662,6 +667,17 @@ mod deploy_summary_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_retired_package_install_is_pointed_at_the_installer() {
+        for channel in ["brew", "pip"] {
+            let hint = super::retired_channel_hint(channel);
+            assert!(hint.contains("curl -fsSL https://amux.io/install.sh | bash"), "{hint}");
+            for dead in ["brew upgrade", "pipx upgrade", "pip install -U"] {
+                assert!(!hint.contains(dead), "{channel} hint still says {dead}: {hint}");
+            }
+        }
+    }
+
     use super::*;
 
     /// A throwaway repo with one commit and an upstream, so `@{u}..HEAD` is a
