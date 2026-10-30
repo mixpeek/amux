@@ -203,5 +203,17 @@ wider than `provider.quota`.
 - **Version drift is the norm here**, not the exception: three releases in four days. The
   SSE capture taken during M3.2 is pinned to 2.1.4 and has not been re-measured on
   ≥2.2.1 (it lives in the local memory bank, which this repo does not track).
-- **No fleet-level change yet.** Process count for N workers is still ~2N because nothing
-  launches the shared serve in production; M3 built the transport, not the supervisor.
+- **No fleet-level change yet, and the server already exists.** Measured
+  2026-10-30 on opencode 2.2.3: a bare `opencode` **attaches** to one background
+  service (`opencode serve --service`, `~/.local/state/opencode/service.json`
+  carries `{url, pid, password}`), and new servers appear only on `--standalone`
+  or `opencode acp` — which has no `--server` flag and therefore always spawns a
+  private `serve --stdio` child. So `acp` (still the default) is the thing that
+  breaks one-server-per-box: N acp workers = N private servers, 2 processes each.
+  `serve` can join the shared one via `AMUX_OPENCODE_SERVICE_URL`, and
+  `opencode service start|stop|status` is the supervisor — amux does not need to
+  build one. What is still true: nothing in amux points workers at it yet.
+- **The shared server's spike is the whole box's spike.** Re-measured while
+  answering that question: `~5.8 GiB` RSS during a turn, back to `356 MiB` within
+  a minute (D1 recorded 1.8–3.6 GB; the real number is larger), with 2.4 GB of
+  swap already in use. One process contains it; it does not make it free.

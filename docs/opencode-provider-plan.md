@@ -214,7 +214,7 @@ What changed, and the measured fact behind each decision:
 | **Real interrupt** | **Yes.** `POST …/interrupt` → `{"interrupted":true}`; the turn closes `idle outcome=interrupted` and **0 of 25** requested files were written. |
 | **Permissions** | **Yes.** `GET …/permission` + `POST …/permission/{id}/reply` (`once｜always｜reject`); amux policy answers, and a `reject` actually stops the tool. |
 | **Typed errors** | **Yes.** `SessionBusyError` is a rejection, not a failure (the queue retries at the turn boundary); `provider.quota`/429 → `RateLimited`, with `reset_at` **only** when `retryAfterMs` exists; everything else → `Failed{retryable}` naming the endpoint (4xx no, 5xx/refused yes). |
-| **One process for the fleet** | **Designed, not deployed.** Measured: a serve is ~135–188 MB idle and spikes to 1.8–3.6 GB *during a turn*; extra sessions cost ~0 MB. So the fleet cost is `(serves × idle) + (concurrent turn spikes)` — one shared serve contains the spike to one process. M3 built the transport; nothing yet launches or supervises that serve, so production process count is still ~2N. |
+| **One process for the fleet** | **The server exists; amux does not use it.** Measured 2026-10-30: a bare `opencode` attaches to ONE background service (`opencode serve --service`, registered in `~/.local/state/opencode/service.json` with `{url, pid, password}`); only `--standalone` and `opencode acp` spawn private `serve --stdio` children, and `acp` has no `--server` flag so it never shares. Memory: ~135–188 MB idle, **~5.8 GiB during a turn**, back to 356 MiB a minute later; extra sessions ~0 MB. So one shared serve contains the spike to one process — and `serve` can join the one already running via `AMUX_OPENCODE_SERVICE_URL` (implemented in `ServeClient::from_env()`). `opencode service start\|stop\|status` is the supervisor, so amux needs configuration, not a new daemon. |
 
 The architectural finding worth carrying forward: **`POST …/prompt` is asynchronous** — it
 returns the admitted message immediately and the turn runs in the background. ACP's
@@ -235,12 +235,21 @@ Two measured limits, stated rather than buried:
   spawn output. Auth is HTTP Basic `opencode:<password>` — Bearer, empty-user Basic and
   `?password=` all measure 401.
 
-This is why `serve` is **not** the default yet. D2 said the flip happens once a live smoke
-proves a real worker turn end to end; that smoke passed on 2026-10-30 (`outcome=succeeded`,
-131 SSE frames, a steered message in the history — see the spike record), but the flip is
-a behaviour change for every existing OpenCode worker and wants peer verification plus two
-one-probe gaps closed (the busy-response HTTP status, and what a 404 on a dead `ses_` ref
-means from the serve path). Until then: `acp` by default, `serve` on request.
+This is why `serve` is **not** the default yet — but the reason narrowed on
+2026-10-30, when the owner asked whether a freshly started `opencode` shares the
+fleet's server. Measured: it **does** — a bare `opencode` is a client of the one
+background service, and only `--standalone` or `opencode acp` spawns a private
+one. That makes the default `acp` a **cost** decision rather than a caution: every
+acp worker pays for a private `serve --stdio` child (2 processes each) beside the
+shared service that already exists. Flipping still wants peer verification and the
+two one-probe gaps closed (busy-response HTTP status, and what a 404 on a dead
+`ses_` ref means from the serve path), and it needs `AMUX_OPENCODE_SERVICE_URL`
+pointed at the running service. That join already exists — `ServeClient::from_env()`
+takes the URL from that env var and the password from
+`AMUX_OPENCODE_SERVICE_PASSWORD` or `~/.config/opencode/service.json` — but the URL
+is **hand-set**, which is the actual remaining gap: the registry file below has
+`{url, pid, password}` together, so reading it would remove the manual step.
+Until then: `acp` by default, `serve` on request.
 
 ---
 
