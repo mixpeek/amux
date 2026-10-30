@@ -58572,15 +58572,15 @@ function _velocityShowWorker(name) {
     fetch(API + '/api/velocity/' + w + '/projection?days=30&include=backlog').then(r => r.ok ? r.json() : null),
   ]).then(([s, p]) => {
     if (!s) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
-    const back = `<button class="btn" id="velocity-back" onclick="_velocityWorker=null;_velocityLoad()">All workers</button>`;
+    const back = `<button class="btn" id="velocity-back" style="white-space:nowrap;flex-shrink:0;" onclick="_velocityWorker=null;_velocityLoad()">All workers</button>`;
     const fmt = v => v == null ? '–' : Math.round(v);
     const m = (s.per_finished_card || {}).minutes || {}, t = (s.per_finished_card || {}).tokens || {};
     const waste = (s.waste || []).slice().sort((a, b) => b.hours - a.hours).map(x =>
-      `<div class="reclaim-safe-text velocity-waste" data-kind="${esc(x.kind)}"><b>${esc(x.kind)}</b> (${esc(x.owner || '–')}) · ${x.attempts} attempts · ${x.hours} h · ${x.share_of_time}%<br><span style="color:var(--dim);">${esc(x.what_it_means || '')}</span></div>`).join('');
+      `<div class="reclaim-safe-text velocity-waste" data-kind="${esc(x.kind)}" style="margin-bottom:var(--space-2);"><b>${esc(x.kind)}</b> (${esc(x.owner || '–')}) · ${x.attempts} attempts · ${x.hours} h · ${x.share_of_time}%<br><span style="color:var(--dim);">${esc(x.what_it_means || '')}</span></div>`).join('');
     const waits = (s.waited_on || []).map(x => `<div class="reclaim-safe-text" style="overflow-wrap:anywhere;">${x.hours} h · ${esc(x.waiting)}</div>`).join('');
     let proj = '';
     if (p && p.measured) {
-      const cards = (p.cards || []).map(c => `<div class="reclaim-safe-text velocity-card" data-card="${esc(c.card)}" style="overflow-wrap:anywhere;">${esc(c.card)} · ${esc(c.status)} · ~${fmt(c.minutes_p50)} min${(c.blocked_by || []).length ? ' · waits on ' + esc(c.blocked_by.join(', ')) : ''}${c.over_estimate ? ` · <span style="color:var(--red);">over estimate: ${c.over_estimate.elapsed_minutes} of ${c.over_estimate.expected_minutes_p75} min</span>` : ''}<br><span style="color:var(--dim);">${esc((c.title || '').slice(0, 90))}</span></div>`).join('');
+      const cards = (p.cards || []).map(c => `<div class="reclaim-safe-text velocity-card" data-card="${esc(c.card)}" style="overflow-wrap:anywhere;margin-top:var(--space-2);">${esc(c.card)} · ${esc(c.status)} · ~${fmt(c.minutes_p50)} min${(c.blocked_by || []).length ? ' · waits on ' + esc(c.blocked_by.join(', ')) : ''}${c.over_estimate ? ` · <span style="color:var(--red);">over estimate: ${c.over_estimate.elapsed_minutes} of ${c.over_estimate.expected_minutes_p75} min</span>` : ''}<br><span style="color:var(--dim);">${esc((c.title || '').slice(0, 90))}</span></div>`).join('');
       const fb = p.finish_by || {}, cal = p.calibration, pace = p.pace;
       proj = `<div class="metrics-section-title">When the open cards land (${p.n_considered}, with backlog)</div>
         <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-finish">${pace ? `At the recent pace (${pace.days_per_finished_card} days per finished card): by ${esc((fb.p50 || '').slice(0, 10))}, ${esc((fb.p75 || '').slice(0, 10))} if slower.` : 'No pace yet: no finished cards in the window.'} Work time ${fmt(p.work_minutes.p50)} min${cal ? `, scaled ${cal.actual_over_estimate}x (past cards against their estimates)` : ''}.${(p.blocked_by_outside || []).length ? ' Waits on ' + esc(p.blocked_by_outside.join(', ')) + ' outside this queue; the dates assume it lands in time.' : ''}</div>${cards}</div>`;

@@ -84,6 +84,7 @@ test('phone: the Metrics modes stay one row and scroll sideways', async ({ page 
     expect(b.height, id + ' touch target').toBeGreaterThanOrEqual(44);
   }
   await page.locator('.velocity-row').first().click();
+  expect((await page.locator('#velocity-back').boundingBox())!.height, 'the back button is one line').toBeLessThanOrEqual(48);
   const doc = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
   expect(doc, 'the worker view does not overflow the phone').toBe(true);
 });
