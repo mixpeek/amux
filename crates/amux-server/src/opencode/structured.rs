@@ -1153,7 +1153,7 @@ impl StructuredCliProtocol {
                     &shared,
                     &key,
                     &turn,
-                    &e,
+                    e,
                     already_running,
                     "session unavailable",
                 ));
@@ -1172,7 +1172,7 @@ impl StructuredCliProtocol {
                     &shared,
                     &key,
                     &turn,
-                    &e,
+                    e,
                     already_running,
                     "outcome baseline unreadable",
                 ));
@@ -1205,7 +1205,7 @@ impl StructuredCliProtocol {
                 &shared,
                 &key,
                 &turn,
-                &e,
+                e,
                 already_running,
                 "prompt admission failed",
             )),
@@ -1214,39 +1214,63 @@ impl StructuredCliProtocol {
 
     /// A serve start that never admitted a turn, in the shape the ACP arm
     /// already uses: un-burn the idempotency key so the queue can retry (a
-    /// failed start must not swallow a redelivery), report the failure, and
+    /// failed start must not swallow a redelivery), classify and report the
+    /// failure (M3.6), and — when THIS call opened the turn — close it and
     /// leave the worker `Idle`. A turn that was ALREADY running (a steer that
-    /// never landed) is left completely alone — reporting it failed would be
+    /// never landed) is left completely alone: reporting it failed would be
     /// inventing an outcome, which is D3's cardinal sin.
     fn serve_start_failed(
         &self,
         shared: &Arc<WorkerShared>,
         key: &str,
         turn: &TurnId,
-        error: &ProtocolError,
+        error: ProtocolError,
         already_running: bool,
         what: &str,
     ) -> ProtocolError {
         shared.seen_keys.lock().unwrap().remove(key);
+        // M3.6: classify BEFORE reporting. `None` means the server REJECTED
+        // us (a `SessionBusyError` while our own state said idle) — not a
+        // failure, so no `Failed` event goes out; the queue's turn-boundary
+        // retry is the whole handling.
+        let event = serve::serve_worker_event(&error);
         tracing::warn!(
             worker = %shared.worker,
             error = %error,
             stage = what,
+            classified = match &event {
+                Some(WorkerEvent::RateLimited(_)) => "rate_limited",
+                Some(WorkerEvent::Failed(_)) => "failed",
+                Some(_) => "other",
+                None => "rejected (no event; queue retries at the boundary)",
+            },
             verdict = "serve turn could not start; key released for retry",
             "serve turn start failed"
         );
+        let outcome = match &event {
+            Some(WorkerEvent::RateLimited(rl)) => format!(
+                "rate limited{}",
+                rl.reset_at
+                    .map(|t| format!(" until {t}"))
+                    .unwrap_or_default()
+            ),
+            Some(WorkerEvent::Failed(f)) => format!("failed: {}", f.reason),
+            _ => format!("rejected: {error}"),
+        };
+        if let Some(ev) = event {
+            shared.emit(ev);
+        }
         if !already_running {
-            shared.emit(WorkerEvent::Failed(Failure {
-                reason: format!("serve {what}: {error}"),
-                retryable: true,
-            }));
+            // The turn THIS call opened must close: a `TurnStarted` with no
+            // `TurnCompleted` leaves the worker `Working` forever, which is a
+            // diagnosis nobody can make (ethos rule 4).
             shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
                 turn_id: turn.clone(),
-                outcome: format!("failed: {what}: {error}"),
+                outcome,
             }));
             shared.set_state(AgentState::Idle);
         }
-        ProtocolError::Transport(format!("serve {what}: {error}"))
+        error
     }
 }
 

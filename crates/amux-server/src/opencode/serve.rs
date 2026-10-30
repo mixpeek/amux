@@ -284,7 +284,89 @@ fn serve_failure(method: &str, endpoint: &str, status: u16, body: &str) -> Proto
 /// read). Still names method and endpoint — there is no status to name.
 fn transport_failure(method: &str, endpoint: &str, e: &reqwest::Error) -> ProtocolError {
     tracing::error!(method, endpoint, error = %e, "serve: request could not be completed");
-    ProtocolError::Transport(format!("serve {method} {endpoint}: request failed: {e}"))
+    ProtocolError::Transport(transport_failure_msg(method, endpoint, &e.to_string()))
+}
+
+/// [`transport_failure`]'s message, factored out so the M3.6 table test can
+/// exercise the connection-refused shape (there is no public way to build a
+/// `reqwest::Error`) **without** the template drifting from production.
+fn transport_failure_msg(method: &str, endpoint: &str, detail: &str) -> String {
+    format!("serve {method} {endpoint}: request failed: {detail}")
+}
+
+/// The HTTP status a `ProtocolError` came from, if it came from an HTTP call.
+///
+/// This parses a message **we** construct, in the fixed format
+/// `serve {method} {endpoint} -> HTTP {status} …` — not a provider's prose.
+/// A transport failure has no status, and that absence is meaningful (see
+/// [`serve_worker_event`]).
+fn http_status(msg: &str) -> Option<u16> {
+    msg.split("HTTP ")
+        .nth(1)?
+        .get(0..3)?
+        .parse::<u16>()
+        .ok()
+}
+
+/// How a serve-side [`ProtocolError`] surfaces to the harness (M3.6).
+///
+/// `structured.rs` only holds the `ProtocolError` by the time it reports a
+/// failure — the [`ServeError`] that classified the response is gone — so this
+/// reads back the fields [`serve_failure`] wrote, in a format this module owns:
+/// `serve {method} {endpoint} -> HTTP {status} …`, optionally suffixed with
+/// `provider.quota retryAfterMs={ms}` or `: {body}`.
+///
+/// - **`None` = not a failure.** A rejection (the guard's busy refusal or a
+///   `SessionBusyError`) is handled by the queue's `AtTurnBoundary` retry, so
+///   emitting a `Failed` for it would send the fleet chasing a turn boundary.
+/// - **Rate limits become `RateLimited`**, typed first (`provider.quota`,
+///   HTTP 402/429) with [`is_rate_limit_message`] kept as the wording
+///   fallback (the repo's sanctioned backup — and the only thing that catches
+///   `provider.free-limit`, measured 2026-10-30). `reset_at` comes from
+///   `retryAfterMs` **only**; a limit with no clock gets `None` rather than an
+///   invented one, and `kind` stays `Unknown` for the same reason M3.2's SSE
+///   path keeps it: `Credit` explicitly has no clock.
+/// - **Everything else is `Failed{retryable}`** naming method+endpoint:
+///   4xx will not fix itself (`false`), a 5xx or a missing status — a
+///   connection refused — says `true`.
+pub fn serve_worker_event(error: &ProtocolError) -> Option<WorkerEvent> {
+    let msg: &str = match error {
+        ProtocolError::Rejected(_) => return None,
+        ProtocolError::NoSession(w) => {
+            return Some(WorkerEvent::Failed(Failure {
+                reason: format!("no live agent session for {w}"),
+                retryable: false,
+            }));
+        }
+        ProtocolError::Transport(m) => m,
+    };
+    let status = http_status(msg);
+    let rate_limited = msg.contains("provider.quota")
+        || status == Some(402)
+        || status == Some(429)
+        || is_rate_limit_message(msg);
+    if rate_limited {
+        // `split().nth(1)` is None when the marker is absent — `rsplit` would
+        // hand back the whole message and parse "402" out of `HTTP 402`.
+        let reset_at = msg
+            .split("retryAfterMs=")
+            .nth(1)
+            .and_then(|tail| tail.split(|c: char| !c.is_ascii_digit()).next())
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(chrono::Duration::try_milliseconds)
+            .map(|d| chrono::Utc::now() + d);
+        return Some(WorkerEvent::RateLimited(RateLimit {
+            kind: RateLimitKind::Unknown,
+            reset_at,
+            provider: ProviderId::new("opencode"),
+            raw: Some(summarize(msg)),
+        }));
+    }
+    Some(WorkerEvent::Failed(Failure {
+        reason: summarize(msg),
+        retryable: !matches!(status, Some(s) if (400..500).contains(&s)),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1846,6 +1928,10 @@ mod tests {
     const QUOTA_BODY: &str = r#"{"type":"provider.quota","status":402,"message":"You have exceeded your monthly quota","retryAfterMs":429981254}"#;
     /// The measured `SessionBusyErrorEncoded` shape (openapi), fixture status 409.
     const BUSY_BODY: &str = r#"{"_tag":"SessionBusyError","sessionID":"ses_busy","message":"session is busy"}"#;
+    /// The refusal the **M3.5 live smoke** hit (2026-10-30, opencode 2.2.3):
+    /// the free-model quota. Kept verbatim because it is the case that proved
+    /// `provider.quota` alone was too narrow a classifier.
+    const FREE_LIMIT_BODY: &str = r#"{"type":"provider.free-limit","status":429,"message":"Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.","response":{"body":"{\"type\":\"error\",\"error\":{\"type\":\"FreeUsageLimitError\"}}"}}"#;
 
     fn expected_auth() -> String {
         format!(
@@ -3176,5 +3262,123 @@ mod tests {
             "reject",
             "the wire carries the refusal, not an invented `once`"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // M3.6 — typed error → WorkerEvent (table-driven)
+    // ------------------------------------------------------------------
+
+    /// M3.6's done-when: every **measured** error tag maps to the right
+    /// `WorkerEvent`. Each row runs through the REAL path — `serve_failure`
+    /// classifies the response, [`serve_worker_event`] surfaces it — so the
+    /// assertions can never drift from the message format they read back.
+    ///
+    /// The bodies are the real shapes: the quota body is the M3.0 spike's 402,
+    /// `provider.free-limit` is what the M3.5 live smoke hit on 2026-10-30
+    /// (opencode 2.2.3), busy/401/404 come from the openapi, and 503 is a
+    /// plain server error.
+    #[test]
+    fn every_measured_error_tag_maps_to_the_right_worker_event() {
+        let cases: &[(u16, &str, &str)] = &[
+            (402, QUOTA_BODY, "rate_limited_with_clock"),
+            (409, BUSY_BODY, "rejected_no_event"),
+            (429, FREE_LIMIT_BODY, "rate_limited_no_clock"),
+            (
+                401,
+                r#"{"_tag":"UnauthorizedErrorEncoded","message":"unauthorized"}"#,
+                "failed_no_retry",
+            ),
+            (503, r#"{"message":"upstream exploded"}"#, "failed_retryable"),
+            (
+                404,
+                r#"{"_tag":"SessionNotFoundErrorEncoded","message":"no such session"}"#,
+                "failed_no_retry",
+            ),
+        ];
+        for &(status, body, expected) in cases {
+            let err = serve_failure("POST", "/api/session/ses_x/prompt", status, body);
+            let event = serve_worker_event(&err);
+            match expected {
+                // Milestone bullet 1: a rejection is NOT a failure — the
+                // queue's turn-boundary retry is the whole handling.
+                "rejected_no_event" => assert_eq!(
+                    event, None,
+                    "HTTP {status}: a rejection must surface as no event at all"
+                ),
+                // Bullet 2: rate limits wait. Typed first (provider.quota /
+                // 402 / 429), and a clock ONLY when retryAfterMs was given —
+                // inventing a reset time is how a fleet schedules a wait for
+                // something a timer cannot fix (AF-14).
+                "rate_limited_with_clock" => match event {
+                    Some(WorkerEvent::RateLimited(rl)) => {
+                        assert_eq!(rl.kind, RateLimitKind::Unknown, "{status}");
+                        assert_eq!(rl.provider, ProviderId::new("opencode"), "{status}");
+                        assert!(
+                            rl.reset_at.is_some(),
+                            "provider.quota carries retryAfterMs, so a real clock exists"
+                        );
+                        assert!(rl.raw.is_some(), "the original message stays for diagnosis");
+                    }
+                    other => panic!("HTTP {status}: want RateLimited with a clock, got {other:?}"),
+                },
+                "rate_limited_no_clock" => match event {
+                    Some(WorkerEvent::RateLimited(rl)) => {
+                        assert_eq!(rl.reset_at, None, "no retryAfterMs → no invented clock");
+                        assert_eq!(rl.kind, RateLimitKind::Unknown, "{status}");
+                    }
+                    other => panic!("HTTP {status}: want RateLimited without a clock, got {other:?}"),
+                },
+                // Bullet 3: everything else is Failed, and 4xx vs 5xx decides
+                // whether saying so helps anyone.
+                "failed_no_retry" => match event {
+                    Some(WorkerEvent::Failed(f)) => {
+                        assert!(!f.retryable, "HTTP {status} is a client error: {f:?}");
+                        assert!(
+                            f.reason.contains("/api/session/ses_x/prompt"),
+                            "the failing endpoint is named: {f:?}"
+                        );
+                    }
+                    other => panic!("HTTP {status}: want Failed{{retryable:false}}, got {other:?}"),
+                },
+                "failed_retryable" => match event {
+                    Some(WorkerEvent::Failed(f)) => {
+                        assert!(f.retryable, "HTTP {status} is a server error: {f:?}");
+                        assert!(f.reason.contains("/api/session/ses_x/prompt"), "{f:?}");
+                    }
+                    other => panic!("HTTP {status}: want Failed{{retryable:true}}, got {other:?}"),
+                },
+                other => unreachable!("unknown verdict {other}"),
+            }
+        }
+
+        // No status at all — a connection refused: retryable, endpoint named,
+        // and NOT a rate limit no matter what the URL looks like.
+        let refused = ProtocolError::Transport(transport_failure_msg(
+            "GET",
+            "/api/session/ses_x/message",
+            "error sending request for url (http://127.0.0.1:1/api/session/ses_x/message)",
+        ));
+        match serve_worker_event(&refused) {
+            Some(WorkerEvent::Failed(f)) => {
+                assert!(f.retryable, "a refused connection is worth retrying: {f:?}");
+                assert!(f.reason.contains("/api/session/ses_x/message"), "{f:?}");
+            }
+            other => panic!("connection refused → Failed{{retryable:true}}, got {other:?}"),
+        }
+
+        // A rejection that never came from an HTTP status — the guard's own
+        // busy refusal — is just as much "not a failure".
+        assert_eq!(
+            serve_worker_event(&ProtocolError::Rejected(
+                "worker has a turn in progress; redeliver at the turn boundary".into()
+            )),
+            None
+        );
+        // And a worker with no session at all is not retryable: there is no
+        // endpoint to retry until something registers it.
+        match serve_worker_event(&ProtocolError::NoSession("wrk_1".into())) {
+            Some(WorkerEvent::Failed(f)) => assert!(!f.retryable, "{f:?}"),
+            other => panic!("NoSession → Failed{{retryable:false}}, got {other:?}"),
+        }
     }
 }
