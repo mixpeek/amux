@@ -67931,9 +67931,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@all') { _cvShowPane('log'); return; }
   _cvShowPane('conv');
   _cvFit();
-  const compose = document.getElementById('cv-compose'), hint = document.getElementById('cv-hint');
-  const isConv = sel[0] !== '@';
-  compose.style.display = isConv ? '' : 'none'; hint.style.display = isConv ? '' : 'none';
+  document.getElementById('cv-compose').style.display = sel[0] !== '@' ? '' : 'none';
   document.getElementById('cv-typing').textContent = '';
   document.getElementById('cv-head-people').innerHTML = '';
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');

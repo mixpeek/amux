@@ -9047,7 +9047,9 @@ button.cv-sec:hover { color:var(--text); }
 .cv-deliv span.ok { color:var(--green); border-color:color-mix(in srgb, var(--green) 45%, transparent); }
 .cv-deliv span.bad { color:var(--red); border-color:color-mix(in srgb, color-mix(in srgb, var(--red) 93%, var(--card)) 45%, transparent); }
 .cv-typing { min-height:18px; padding:0 var(--space-4); font-size:var(--fs-sm); color:var(--dim); }
-.cv-compose { position:relative; display:flex; gap:var(--space-2); align-items:flex-end; padding:var(--space-1-5) var(--space-4) var(--space-1); flex-shrink:0; }
+/* No hint row under the box (Ethan, 2026-10-30: "get rid of this row at the
+   bottom"); the placeholder already says what @ does. */
+.cv-compose { position:relative; display:flex; gap:var(--space-2); align-items:flex-end; padding:var(--space-1-5) var(--space-4) calc(var(--space-2) + env(safe-area-inset-bottom)); flex-shrink:0; }
 /* The worker input's box, menu and Send (index.html #cv-compose); only the row layout is Messages'. */
 .cv-compose .peek-composer-input { flex:1; min-width:0; position:relative; }
 .cv-compose .send-input { display:block; width:100%; box-sizing:border-box; }
@@ -9057,8 +9059,6 @@ button.cv-sec:hover { color:var(--text); }
 .cv-compose > .peek-more-wrap { align-self:flex-end; }
 .cv-compose .peek-attach-btn { width:44px; height:44px; justify-content:center; }
 .cv-compose .cv-send-split .send-split-main { border-radius:var(--radius-lg); padding-right:var(--space-3); min-height:44px; }
-.cv-hint { display:flex; gap:var(--space-4); padding:0 var(--space-4) calc(var(--space-2) + env(safe-area-inset-bottom));
-  font-size:var(--fs-2xs); color:var(--dim); flex-wrap:wrap; }
 .cv-ac { display:none; position:absolute; left:16px; bottom:100%; z-index:50; min-width:220px; max-width:calc(100% - 32px);
   max-height:240px; overflow-y:auto; background:var(--card); border:1px solid var(--border);
   border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:var(--space-1); }
@@ -9081,7 +9081,6 @@ button.cv-sec:hover { color:var(--text); }
   .cv-head { padding:var(--space-1-5) var(--space-2-5); }
   .cv-posts { padding:var(--space-2) var(--space-2-5); }
   .cv-compose { padding:var(--space-1-5) var(--space-2-5) var(--space-1); }
-  .cv-hint { display:none; }
   .cv-head-people { display:none; }
   /* An admin's channel settings stay in the one header row; the avatars do not. */
   .cv-head-people:has(.cv-chan-gear) { display:flex; }
@@ -10686,6 +10685,8 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-mic { min-width:44px; min-height:44px; }
 .cv-mic.recording { color:var(--red); border-color:currentColor; }
 .cv-voice-bar { display:flex; align-items:center; gap:var(--space-2); padding:0 var(--space-4) var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
+/* display:flex beat the hidden attribute, so an idle bar kept its 4px of padding under the box. */
+.cv-voice-bar[hidden] { display:none; }
 .cv-rec-dot { width:9px; height:9px; border-radius:var(--radius-round); background:var(--red); animation:cvpulse 1s infinite; }
 @keyframes cvpulse { 50% { opacity:0.3; } }
 .cv-av-img { object-fit:cover; padding:0; }
