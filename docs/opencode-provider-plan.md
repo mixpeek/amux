@@ -320,6 +320,36 @@ one for opencode asks) and can drift. The mitigation is one registry plus a
 parity corpus over the registry's own `block_examples` where they are
 path-decidable — not a claim that they cannot drift.
 
+### M7 — hot model switch
+
+Measured on 2.2.4 (`operationId: session.switchModel`): `POST
+/api/session/{id}/model` with `{"model": Model.Ref}` answers **204 No Content**
+and "switch[es] the model used by subsequent provider turns" — an in-flight turn
+keeps the model it started with. 400 `InvalidRequestError`, 401, 404
+`SessionNotFoundError`.
+
+`AgentProtocol::set_model(worker, model)` now exists (default: an error naming
+that the protocol cannot, because a silent `Ok` would look like a switch that
+never happened). OpenCode overrides it on both transports, with **one behaviour
+for two situations**, so a caller never has to know which it is in:
+
+- a **live** session is told now — serve via the measured POST, ACP via
+  `session/set_config_option`;
+- **no live session** → the switch is remembered (`model_override`) and the next
+  session is CREATED with it, which is exactly where the model was previously
+  pinned.
+
+The override outranks the registered model, and every switch logs
+`live = true|false` with a verdict, so "why is this worker still on the old
+model" is answerable from the log.
+
+**Honest limit:** the capability has no HTTP route of its own yet. `amux`'s model
+change paths write the worker's config and let the lane restart, which still
+works; what is new is that any caller holding the protocol (a future route, the
+board, a script) can now switch a live worker without ending its session.
+Shipping a route was deliberately left out: it needs the dashboard's
+confirmation flow, and a route nobody calls is worse than a tested capability.
+
 ---
 
 ## Risks / honest limits

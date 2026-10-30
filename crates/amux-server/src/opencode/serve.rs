@@ -597,6 +597,26 @@ impl ServeClient {
         }
     }
 
+    /// Switch the model for SUBSEQUENT turns of a live session.
+    ///
+    /// MEASURED shape (openapi 2.2.4, `operationId: session.switchModel`):
+    /// `POST /api/session/{id}/model` with `{"model": Model.Ref}` →
+    /// **204 No Content**; 400 `InvalidRequestError`, 401, 404
+    /// `SessionNotFoundError`. "Switch the model used by subsequent provider
+    /// turns" — an in-flight turn keeps the model it started with.
+    pub async fn set_model(&self, session_id: &str, model: &str) -> Result<()> {
+        let endpoint = format!("/api/session/{session_id}/model");
+        let body = json!({ "model": model_ref(model) });
+        let (status, text) = self
+            .request(reqwest::Method::POST, &endpoint, Some(body))
+            .await?;
+        if (200..=299).contains(&status) {
+            Ok(())
+        } else {
+            Err(serve_failure("POST", &endpoint, status, &text))
+        }
+    }
+
     /// Delete a session. Measured 2026-10-26 (M3.0 spike): `DELETE
     /// /api/session/{id}` answers ok.
     ///
@@ -1005,6 +1025,11 @@ impl ServeSession {
     /// order the server returned them (see [`idle_outcomes`]).
     pub async fn turn_outcomes(&self) -> Result<Vec<String>> {
         Ok(idle_outcomes(&self.messages().await?))
+    }
+
+    /// Switch this session's model for subsequent turns (M7).
+    pub async fn set_model(&self, model: &str) -> Result<()> {
+        self.client.set_model(&self.session_id, model).await
     }
 
     /// This session's pending permission asks, decoded into the shape the

@@ -413,9 +413,23 @@ struct WorkerShared {
     /// (spawned once on first session acquisition — a second one would
     /// duplicate every event).
     serve_events: std::sync::atomic::AtomicBool,
+    /// M7: a model switched at runtime. Outranks the registered model and is
+    /// consulted when the next session is created, so "switch now" (a live
+    /// session is told) and "switch for later" are one behaviour.
+    model_override: Mutex<Option<String>>,
 }
 
 impl WorkerShared {
+    /// The model the NEXT session should use: a runtime switch wins over the
+    /// registered model, which itself falls back to the fleet default.
+    fn effective_model_now(&self) -> Option<String> {
+        self.model_override
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.config.effective_model())
+    }
+
     fn emit(&self, ev: WorkerEvent) {
         // No receivers is fine — broadcast keeps working when they arrive.
         let _ = self.events.send(ev);
@@ -697,6 +711,7 @@ impl StructuredCliProtocol {
                 acp: tokio::sync::Mutex::new(None),
                 serve: tokio::sync::Mutex::new(None),
                 serve_events: std::sync::atomic::AtomicBool::new(false),
+                model_override: Mutex::new(None),
             }),
         );
     }
@@ -1014,7 +1029,7 @@ impl StructuredCliProtocol {
             binary,
             shared.events.clone(),
         );
-        start.model = cfg.effective_model();
+        start.model = shared.effective_model_now();
         start.resume = resume.clone();
         start.turn_timeout = acp_turn_timeout();
         // M6: boundaries.toml answers the ask. Without this an opencode worker
@@ -1126,7 +1141,7 @@ impl StructuredCliProtocol {
         let client = self.serve_client()?;
         let hub = self.serve_hub()?;
         let resume = shared.conversation.lock().unwrap().clone();
-        let model = shared.config.effective_model();
+        let model = shared.effective_model_now();
         let (session, opened) = serve::ServeSession::open(
             client,
             &shared.config.cwd,
@@ -1949,6 +1964,66 @@ impl AgentProtocol for StructuredCliProtocol {
                 "could not confirm paused protocol process stopped".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// M7: switch the model for subsequent turns, without ending the session.
+    ///
+    /// Two cases, one behaviour:
+    /// - a LIVE session is told now (`POST /api/session/{id}/model`, measured
+    ///   204; ACP `session/set_config_option`), so the next turn uses it;
+    /// - no live session — the override is remembered and the next session is
+    ///   CREATED with it, which is why "switch now" and "switch for later" do
+    ///   not need two code paths.
+    ///
+    /// The override always wins over the registered model, and the log says
+    /// which of the two happened, because "the model is still the old one" must
+    /// be answerable from the log alone.
+    async fn set_model(&self, worker: &WorkerId, model: &str) -> Result<()> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(ProtocolError::Rejected(
+                "a model switch needs a non-empty model name".to_string(),
+            ));
+        }
+        let shared = self.shared(worker)?;
+        *shared.model_override.lock().unwrap() = Some(model.to_string());
+
+        // A live speak: apply it to the session the next turn will use.
+        let serve_session = shared.serve.lock().await.clone();
+        let acp_session = shared.acp.lock().await.clone();
+        if let Some(session) = serve_session {
+            session.set_model(model).await?;
+            tracing::info!(
+                worker = %shared.worker,
+                model,
+                transport = "serve",
+                live = true,
+                verdict = "model switched on the live session; subsequent turns use it",
+                "worker model switched"
+            );
+            return Ok(());
+        }
+        if let Some(session) = acp_session {
+            session.set_model(model).await?;
+            tracing::info!(
+                worker = %shared.worker,
+                model,
+                transport = "acp",
+                live = true,
+                verdict = "model switched on the live session; subsequent turns use it",
+                "worker model switched"
+            );
+            return Ok(());
+        }
+        tracing::info!(
+            worker = %shared.worker,
+            model,
+            transport = self.transport(&shared.config).as_str(),
+            live = false,
+            verdict = "no live session; the override applies when the next one is created",
+            "worker model switched"
+        );
         Ok(())
     }
 
@@ -3449,6 +3524,162 @@ mod tests {
 
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
+    }
+
+    // ------------------------------------------------------------------
+    // M7 — switch a model on a live serve session
+    // ------------------------------------------------------------------
+
+    /// Spins a fixture serve whose `/model` records the body it received.
+    /// Returns (base_url, models_seen, create_bodies).
+    async fn model_fixture() -> (
+        String,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        let models: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let creates: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let models = Arc::clone(&models);
+            let creates = Arc::clone(&creates);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                        let creates = Arc::clone(&creates);
+                        async move {
+                            creates.lock().unwrap().push(body);
+                            axum::Json(json!({"data": {"id": "ses_m7"}})).into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/prompt",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "msg_m7"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/message",
+                    axum::routing::get(|| async {
+                        axum::Json(json!({"data": [{"type": "idle", "outcome": "succeeded"}]}))
+                            .into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/model",
+                    axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                        let models = Arc::clone(&models);
+                        async move {
+                            models.lock().unwrap().push(body);
+                            axum::http::StatusCode::NO_CONTENT.into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/event",
+                    axum::routing::get(|| async {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            ": heartbeat\n\n",
+                        )
+                    }),
+                );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+        (format!("http://{addr}"), models, creates)
+    }
+
+    /// The capability M7 adds: a LIVE session is told to switch, in the measured
+    /// wire shape (`{"model": {providerID, id}}`), and the call is synchronous —
+    /// a caller learns whether it landed.
+    #[tokio::test]
+    async fn a_live_serve_session_switches_its_model_on_the_wire() {
+        let (base, models, _creates) = model_fixture().await;
+        let client = serve::ServeClient::connect(base, "pw").unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client);
+        let w = worker_id("M7001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+        // One turn so a session exists (the model switch needs something live).
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("m7-1")).await.expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        proto
+            .set_model(&w, "opencode-go/deepseek-v4.1-flash")
+            .await
+            .expect("a live session must accept a model switch");
+
+        let seen = models.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "exactly one switch on the wire: {seen:?}");
+        assert_eq!(
+            seen[0]["model"],
+            serde_json::json!({"providerID": "opencode-go", "id": "deepseek-v4.1-flash"}),
+            "Model.Ref is {{providerID, id}} — a bare {{providerID, modelID}} is rejected upstream"
+        );
+    }
+
+    /// Switched BEFORE any session exists: the override is remembered and the
+    /// session is CREATED with it. One behaviour, so a caller never has to know
+    /// whether a session happened to be live.
+    #[tokio::test]
+    async fn a_model_switched_with_no_live_session_applies_to_the_next_one() {
+        let (base, models, creates) = model_fixture().await;
+        let client = serve::ServeClient::connect(base, "pw").unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client);
+        let w = worker_id("M7002");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                // The registered model differs from the switch, so the test
+                // proves the OVERRIDE wins rather than coincidence.
+                model: Some("opencode/deepseek-v4.1-flash-free".to_string()),
+                conversation: None,
+            },
+        );
+        proto
+            .set_model(&w, "opencode-go/deepseek-v4.1-flash")
+            .await
+            .expect("no session yet is not an error");
+
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("m7-2")).await.expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        assert!(
+            models.lock().unwrap().is_empty(),
+            "with no live session there is nothing to POST to"
+        );
+        let created = creates.lock().unwrap().clone();
+        assert_eq!(created.len(), 1, "{created:?}");
+        assert_eq!(
+            created[0]["model"],
+            serde_json::json!({"providerID": "opencode-go", "id": "deepseek-v4.1-flash"}),
+            "the session must be CREATED with the switched model, not the registered one"
+        );
     }
 
     // ------------------------------------------------------------------
