@@ -1358,7 +1358,10 @@ pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64
 pub(crate) fn own_turn_stop(events: &[(f64, String, String)], asked_at: f64, next: f64) -> Option<(f64, f64, String)> {
     let began = events.iter().find(|(ts, ev, _)| *ts >= asked_at - 5.0 && ev == "UserPromptSubmit")?.0;
     let (stop, _, sid) = events.iter().find(|(ts, ev, _)| *ts > began && ev == "Stop")?;
-    (*stop < next).then(|| (began, *stop, sid.clone()))
+    // The Stop must come after the question too (land review F3): the 5 s
+    // tolerance on the submit would otherwise admit a short turn that began
+    // just before the question and ended before it arrived.
+    (*stop > asked_at && *stop < next).then(|| (began, *stop, sid.clone()))
 }
 
 /// Find a Claude Code transcript by its session id under ~/.claude/projects.
@@ -4391,6 +4394,8 @@ mod subagent_walk_tests {
         assert_eq!(own_turn_stop(&busy, 100.0, 150.0), Some((121.0, 140.0, "s".to_string())), "not the earlier turn's Stop at 120");
         assert_eq!(own_turn_stop(&busy, 100.0, 130.0), None, "the next message (130) joined the question's turn");
         assert_eq!(own_turn_stop(&[e(101.0, "UserPromptSubmit", "s")], 100.0, f64::INFINITY), None, "a turn that never stopped");
+        assert_eq!(own_turn_stop(&[e(97.0, "UserPromptSubmit", "p"), e(99.0, "Stop", "p")], 100.0, 150.0), None,
+            "a turn that began within the tolerance but ended before the question arrived");
         let w = question_windows(&ms, &|id| id == 21);
         assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
     }
