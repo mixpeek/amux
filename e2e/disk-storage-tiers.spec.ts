@@ -35,18 +35,21 @@ function makeTree(root: string, ageDays = 0) {
   fs.writeFileSync(path.join(root, 'runs/2026-10/output.bin'), Buffer.alloc(256 * 1024, 7));
   fs.writeFileSync(path.join(root, 'runs/notes.txt'), 'notes');
   fs.linkSync(path.join(root, 'README.md'), path.join(root, 'runs/README.hardlink'));
-  if (ageDays) {
-    const t = Date.now() / 1000 - ageDays * DAY;
-    const walk = (d: string) => {
-      for (const e of fs.readdirSync(d, {withFileTypes: true})) {
-        const p = path.join(d, e.name);
-        if (e.isDirectory()) walk(p);
-        fs.utimesSync(p, t, t);
-      }
-      fs.utimesSync(d, t, t);
-    };
-    walk(root);
-  }
+  if (ageDays) ageTree(root, ageDays);
+}
+
+/** Set every file and folder's atime and mtime `ageDays` back. */
+function ageTree(root: string, ageDays: number) {
+  const t = Date.now() / 1000 - ageDays * DAY;
+  const walk = (d: string) => {
+    for (const e of fs.readdirSync(d, {withFileTypes: true})) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      fs.utimesSync(p, t, t);
+    }
+    fs.utimesSync(d, t, t);
+  };
+  walk(root);
 }
 
 /** relative path -> sha256, reading through a link at the root. */
@@ -139,8 +142,13 @@ test('watch a folder, move it to the cold drive and back, from the Disk tab', as
 
 test('the policy moves an idle folder out, and brings it back once it is used', async ({page}) => {
   const src = path.join(base, 'projects/customer-b/archive');
-  makeTree(src, 30);
+  makeTree(src);
+  // digest() reads every file, and on Linux (relatime) that read sets an atime
+  // older than the mtime to now, so the folder looked used a moment ago and the
+  // policy rightly kept it (red on all three engines on CI, 50d4a37f8). Age the
+  // tree after reading it.
   const before = digest(src);
+  ageTree(src, 30);
   await openDisk(page);
   await expect(page.locator('#tier-drive-text')).toContainText(cold);
   await expect(page.locator('#tier-auto')).toBeChecked();
