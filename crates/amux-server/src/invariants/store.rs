@@ -56,6 +56,66 @@ const TRIM_BATCH_ROWS: i64 = 20_000;
 /// written.
 const RESULTS_PER_WRITE: usize = 100;
 
+/// An all-pass invariant whose entities have not changed is re-written at most
+/// this often (AF-1005). Under the 300 s after which a reader calls a check
+/// stale, so a quiet check never reads as one that stopped running.
+const PASS_REFRESH_S: f64 = 240.0;
+
+/// Drop the rows of each invariant that is all `pass`, has the same entities as
+/// the last time it was written, and was written under [`PASS_REFRESH_S`] ago.
+///
+/// A pass wrote ~1,090 rows, 95% of them `pass` (route.callers_have_routes 552,
+/// conversation.one_lane_each 212, schema.timestamp_units_declared 142), as 11
+/// writer transactions of ~0.9 s each, roughly 10 s of the single writer every
+/// 46 s while every non-GET request in the fleet queued behind it. Those rows
+/// are deleted an hour later and say nothing the previous ones did not.
+///
+/// WHOLE INVARIANTS, never single entities: `latest_per_invariant` returns the
+/// newest batch per invariant, so a partial batch would hide the entities that
+/// did not change. Any non-pass row writes the invariant every pass, so
+/// incident occurrences still count; any change writes it at once, so a
+/// recovery still resolves its incident on the pass that observed it.
+fn drop_unchanged_passes(db: &std::path::Path, results: Vec<InvariantResult>, now: f64) -> Vec<InvariantResult> {
+    use std::collections::{BTreeMap, HashMap};
+    type Seen = HashMap<(std::path::PathBuf, String), (u64, f64)>;
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
+    let mut by_inv: BTreeMap<String, Vec<InvariantResult>> = BTreeMap::new();
+    for r in results {
+        by_inv.entry(r.invariant_id.clone()).or_default().push(r);
+    }
+    let Ok(mut seen) = SEEN.get_or_init(Default::default).lock() else {
+        return by_inv.into_values().flatten().collect();
+    };
+    let mut kept = Vec::new();
+    let mut skipped = 0usize;
+    for (id, rows) in by_inv {
+        let all_pass = rows.iter().all(|r| r.status == Status::Pass);
+        let mut entities: Vec<&str> = rows.iter().map(|r| r.entity_key.as_str()).collect();
+        entities.sort_unstable();
+        let shape = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            all_pass.hash(&mut h);
+            entities.hash(&mut h);
+            h.finish()
+        };
+        let key = (db.to_path_buf(), id);
+        let fresh = seen.get(&key).is_some_and(|(prev, at)| *prev == shape && now - at < PASS_REFRESH_S);
+        if all_pass && fresh {
+            skipped += rows.len();
+            continue;
+        }
+        seen.insert(key, (shape, now));
+        kept.extend(rows);
+    }
+    if skipped > 0 {
+        tracing::debug!(verdict = "invariant_pass_rows_skipped", skipped, kept = kept.len(),
+            measured = true, n_considered = skipped + kept.len(),
+            "unchanged all-pass invariants not re-written this pass");
+    }
+    kept
+}
+
 fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -71,6 +131,7 @@ fn now() -> f64 {
 /// before. Returns the number of incidents newly OPENED, which is the signal a
 /// caller acts on.
 pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration_ms: i64) -> usize {
+    let results = drop_unchanged_passes(store.db_path(), results, now());
     if results.is_empty() {
         return 0;
     }
@@ -438,6 +499,30 @@ pub fn result_log_stats(store: &SharedStore) -> anyhow::Result<(i64, f64)> {
 mod tests {
     use super::*;
     use crate::invariants::InvariantResult;
+
+    /// AF-1005: an unchanged all-pass invariant is skipped inside the refresh
+    /// window and written again after it; failures always write; any change
+    /// (a recovery, a new entity) writes at once; stores do not share memory.
+    #[test]
+    fn unchanged_passes_are_skipped_and_every_change_is_written() {
+        let db = std::path::Path::new("/af1005/a.db");
+        let pass = |e: &str| InvariantResult::pass("af1005.p").entity(e);
+        let n = |rows: Vec<InvariantResult>, at: f64| drop_unchanged_passes(db, rows, at).len();
+        assert_eq!(n(vec![pass("x"), pass("y")], 1000.0), 2, "first sight writes");
+        assert_eq!(n(vec![pass("x"), pass("y")], 1030.0), 0, "unchanged inside the window is skipped");
+        assert_eq!(n(vec![pass("x"), pass("y")], 1000.0 + PASS_REFRESH_S + 1.0), 2, "refreshed before it reads stale");
+        assert_eq!(n(vec![pass("x")], 1250.0), 1, "a changed entity set writes at once");
+        assert_eq!(
+            drop_unchanged_passes(std::path::Path::new("/af1005/b.db"), vec![pass("x")], 1251.0).len(),
+            1,
+            "another store keeps its own memory"
+        );
+        let fail = || InvariantResult::fail("af1005.f", "e", "o").entity("z");
+        assert_eq!(n(vec![fail()], 2000.0), 1);
+        assert_eq!(n(vec![fail()], 2001.0), 1, "a failure writes every pass, so occurrences count");
+        let healed = InvariantResult::pass("af1005.f").entity("z");
+        assert_eq!(n(vec![healed], 2002.0), 1, "the pass after a failure writes, so the incident resolves");
+    }
 
     #[tokio::test]
     async fn invariant_record_does_not_rehash_the_binary_inside_the_writer() {

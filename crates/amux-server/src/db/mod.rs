@@ -814,6 +814,12 @@ impl Store {
     }
 
     /// Health must report pool exhaustion without waiting behind fleet probes.
+    /// The database file this store opened; identifies the store in
+    /// process-wide caches without relying on an address that can be reused.
+    pub(crate) fn db_path(&self) -> &Path {
+        self.db_path.as_path()
+    }
+
     /// Not attributed: r2d2's `try_get` fires no checkout event, so these
     /// show as the gap between `holders_attributed` and `connections`.
     pub fn try_read(&self) -> Option<r2d2::PooledConnection<SqliteConnectionManager>> {
