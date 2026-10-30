@@ -369,6 +369,14 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    {
+        let dir = crate::api::session_verbs::tmux_fleet_shim_dir();
+        match crate::api::session_verbs::refresh_fleet_shims(&dir) {
+            Ok(true) => tracing::info!(dir = %dir.display(), measured = true, n_considered = 3, verdict = "fleet_shims_refreshed", "installed fleet shims match this build"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(dir = %dir.display(), error = %e, measured = false, n_considered = 0, verdict = "fleet_shims_refresh_failed", "installed fleet shims could not be refreshed; workers keep the old copies until a launch rewrites them"),
+        }
+    }
     tracing::info!(stack_bytes = worker_stack_bytes(), measured = true, n_considered = 2,
         verdict = "runtime_stack_configured", "runtime worker threads use this stack size");
     // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR

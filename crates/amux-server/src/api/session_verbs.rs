@@ -241,6 +241,21 @@ pub(crate) fn tmux_fleet_shim_dir() -> PathBuf {
     home().join("shims").join("tmux-fleet")
 }
 
+/// Bring the installed fleet shims up to this build's bytes. They were written
+/// only when a worker launched, so a deploy that fixed a shim left every
+/// running worker on the old copy until some unrelated launch: 13b4d3a6b (a
+/// shim exec'ing another copy of itself) was live for minutes with the old
+/// copies still installed. Called at server start. A home with no shim dir
+/// yet is left alone; the first launch creates it.
+pub(crate) fn refresh_fleet_shims(dir: &Path) -> std::io::Result<bool> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    install_shims(dir, &["pkill", "pgrep"], PKILL_GUARD_SHIM)?;
+    install_shims(dir, &["tmux"], TMUX_FLEET_SHIM)?;
+    Ok(true)
+}
+
 /// The shell exports that put the fleet tmux shim first on a worker's PATH.
 /// Goes last in the launch line so a profile that reorders PATH cannot bury it.
 pub(crate) fn tmux_fleet_exports(name: &str) -> String {
@@ -57430,4 +57445,22 @@ pub(crate) async fn relaunch_key_workers_onto_subscription(state: &AppState) -> 
         }
     }
     (considered, relaunched)
+}
+
+#[cfg(test)]
+mod refresh_fleet_shims_tests {
+    use super::*;
+
+    #[test]
+    fn server_start_replaces_a_stale_installed_shim_and_creates_no_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("shims").join("tmux-fleet");
+        assert!(!refresh_fleet_shims(&dir).unwrap(), "no shim dir: nothing to refresh");
+        assert!(!dir.exists(), "server start created a shim dir nobody launched");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pgrep"), "#!/bin/bash\n# an older amux pkill/pgrep guard\n").unwrap();
+        assert!(refresh_fleet_shims(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join("pgrep")).unwrap(), PKILL_GUARD_SHIM, "the stale pgrep shim was kept");
+        assert_eq!(std::fs::read_to_string(dir.join("tmux")).unwrap(), TMUX_FLEET_SHIM);
+    }
 }
