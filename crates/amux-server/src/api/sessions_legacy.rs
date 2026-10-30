@@ -3951,6 +3951,17 @@ fn scan_subagent_activity_walk(now: f64) -> (BTreeMap<String, f64>, usize) {
 /// this (Python: `_session_prev_status[sess] == "active"`, py:15671-15697).
 /// Shares `FleetSignals` with the session list: one derivation, two readers.
 pub fn active_python_sessions(conn: &rusqlite::Connection) -> BTreeSet<String> {
+    // NO REGISTERED LANE, NOTHING TO PROBE (AF-1027). The answer is built from
+    // the sessions directory below, so with no `.env` there it is empty
+    // whatever tmux and the process table say. Probing them anyway made
+    // GET /api/board/derived wait on a fleet scan in a hermetic test home, and
+    // route_table's probe timed out at 15 s under the land gate's load.
+    let has_lane = std::fs::read_dir(amux_home().join("sessions"))
+        .map(|d| d.flatten().any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("env")))
+        .unwrap_or(false);
+    if !has_lane {
+        return BTreeSet::new();
+    }
     let mut signals = FleetSignals::load(conn);
     // The board must see the same evidence the session list sees, or a lane
     // reads active on one screen and idle on the other. Bounded: only lanes
