@@ -231,6 +231,10 @@ pub struct Choice {
     /// False when the chosen profile has no live login for the site: the
     /// worker should expect a sign-in page.
     pub signed_in: bool,
+    /// The site binds its session to the browser that signed in (Google's
+    /// DBSC): cookies in an amux profile prove nothing, and the login sync
+    /// never copies them (`browser_login_sync::SESSION_BOUND_SITES`).
+    pub session_bound: bool,
     pub alternatives: Vec<String>,
 }
 
@@ -239,6 +243,27 @@ pub struct Choice {
 /// registry lists the site; then the default. Deprecated and test profiles
 /// are only chosen when nothing else covers the site.
 pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) -> Choice {
+    let mut choice = resolve_by_cookies(site, cands, default_profile);
+    // A DEVICE-BOUND SESSION IS NEVER REPORTED AS SIGNED IN (AF-1022). Google
+    // revokes a session whose cookies appear in a second browser, so a 390-day
+    // cookie in the `ethan` profile read as "login-cookie evidence" while
+    // myaccount.google.com showed the signed-out page, and every "Continue
+    // with Google" stopped at a password (MG-1988, MG-2071, MG-2079). Same
+    // profile pick; the claim and the next step change.
+    if crate::integrations::browser_login_sync::is_session_bound(site) {
+        choice.session_bound = true;
+        choice.signed_in = false;
+        choice.why = format!(
+            "{site} binds its session to the browser that signed in, so cookie evidence in an amux profile \
+             does not mean signed in (and the login sync never copies it). For a {site} sign-in, act in the \
+             owner's real Chrome (`amux cdp open <url>`), or expect a sign-in page in {}",
+            choice.profile
+        );
+    }
+    choice
+}
+
+fn resolve_by_cookies(site: &str, cands: &[Candidate], default_profile: &str) -> Choice {
     let usable: Vec<&Candidate> = cands.iter().filter(|c| c.allowed).collect();
     let mut live: Vec<&Candidate> = usable.iter().copied().filter(|c| c.jar.login_for(site).is_some()).collect();
     live.sort_by(|a, b| {
@@ -261,6 +286,7 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
                 if best.role.is_empty() { String::new() } else { format!(" (role: {})", best.role) }
             ),
             signed_in: true,
+            session_bound: false,
             alternatives: alternatives(&best.name),
             login,
         };
@@ -280,6 +306,7 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
                 best.name
             ),
             signed_in: false,
+            session_bound: false,
             alternatives: registered.iter().skip(1).map(|c| c.name.clone()).take(5).collect(),
             login: None,
         };
@@ -292,6 +319,7 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
              the login sync carries it over"
         ),
         signed_in: false,
+        session_bound: false,
         alternatives: Vec::new(),
         login: None,
     }
@@ -371,6 +399,24 @@ mod tests {
 
     fn cand(name: &str, role: &str, domains: &[&str], allowed: bool, jar: JarSummary) -> Candidate {
         Candidate { name: name.into(), role: role.into(), domains: domains.iter().map(|s| s.to_string()).collect(), allowed, jar }
+    }
+
+    /// AF-1022: a live-looking google.com cookie is never reported as signed
+    /// in, because Google revokes a session copied into a second browser. The
+    /// pick is unchanged; github.com is unaffected.
+    #[test]
+    fn a_device_bound_site_is_never_reported_signed_in() {
+        let far = Some(4_000_000_000);
+        let jar = summarize(&[row(".google.com", "SID", far), row(".github.com", "user_session", far)], 1_700_000_000);
+        let cands = vec![cand("ethan", "primary", &[], true, jar)];
+        let g = resolve_for_site("google.com", &cands, "ethan");
+        assert_eq!(g.profile, "ethan", "the same profile is still chosen");
+        assert!(g.session_bound && !g.signed_in, "{g:?}");
+        assert!(g.why.contains("amux cdp open"), "the reason names the route that works: {}", g.why);
+        let accounts = resolve_for_site("accounts.google.com", &cands, "ethan");
+        assert!(accounts.session_bound && !accounts.signed_in, "a subdomain is bound too");
+        let gh = resolve_for_site("github.com", &cands, "ethan");
+        assert!(gh.signed_in && !gh.session_bound, "{gh:?}");
     }
 
     #[test]

@@ -6065,7 +6065,8 @@ card = d.get("selection") or {}
 print("  identity: " + (card.get("identity") or "unknown") + "; role: " + (card.get("role") or "ordinary"), file=sys.stderr)
 print("  use for: " + (card.get("use_for") or "purpose not recorded"), file=sys.stderr)
 print("  avoid: " + (card.get("avoid") or "verify identity before acting"), file=sys.stderr)
-state = "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence"
+state = ("device-bound session: cookie evidence does not mean signed in" if d.get("session_bound")
+         else "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence")
 lg = d.get("login") or {}
 exp = f", login expires in {lg['days_left']} day(s)" if lg.get("days_left") is not None else ""
 print(f"  {d['site']}: {state}{exp}", file=sys.stderr)
@@ -6073,7 +6074,8 @@ print(f"  why: {d.get('why','')}", file=sys.stderr)
 if d.get("alternatives"):
     # Live-login alternatives when the pick is signed in; otherwise these are
     # only REGISTERED for the site, which is not the same claim.
-    what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
+    what = ("also holds its cookies (device-bound, not proof)" if d.get("session_bound")
+            else "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)")
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
 import shlex
 target = os.environ["TARGET"]
