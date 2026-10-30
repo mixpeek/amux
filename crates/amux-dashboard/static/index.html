@@ -3824,6 +3824,13 @@
       <span id="peek-sched-stats" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"></span>
       <button class="btn" onclick="_peekNewSchedule()" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);flex:none;min-height:36px;">+ New</button>
     </div>
+    <div class="sx-bulk" id="peek-sched-bulk" hidden>
+      <span id="peek-sched-bulk-n"></span>
+      <button class="btn" onclick="_sxBulk('pause', peekSession)">Pause</button>
+      <button class="btn" onclick="_sxBulk('resume', peekSession)">Resume</button>
+      <button class="btn danger" onclick="_sxBulk('delete', peekSession)">Delete</button>
+      <button class="btn" onclick="_sxClearSelection(peekSession)">Clear</button>
+    </div>
     <div class="peek-tasks-list" id="peek-schedules-list" style="padding:var(--space-2-5) var(--space-3);"></div>
     <details id="peek-sched-runs-details" style="border-top:1px solid var(--border);padding:0 var(--space-3);padding-bottom:max(var(--space-2-5),env(safe-area-inset-bottom));flex-shrink:0;">
       <summary style="cursor:pointer;font-size:var(--fs-base);font-weight:600;color:var(--dim);padding:var(--space-2) 0 var(--space-1);list-style:none;display:flex;align-items:center;gap:var(--space-1);">

@@ -9262,6 +9262,7 @@ button.cv-sec:hover { color:var(--text); }
 .sx-bulk { display:flex; align-items:center; gap:var(--space-2); margin:0 var(--space-4) var(--space-2-5); padding:var(--space-2) var(--space-3); border:1px solid var(--accent);
   border-radius:var(--radius-control); background:color-mix(in srgb, var(--accent) 8%, var(--card)); flex-wrap:wrap; }
 .sx-bulk[hidden] { display:none; }
+#peek-sched-bulk { margin:var(--space-2) var(--space-3) 0; }
 .sx-bulk > span { font-weight:600; margin-right:auto; }
 .sx-list { display:flex; flex-direction:column; gap:var(--space-3-5); padding:var(--space-0-5) var(--space-4) var(--space-3-5); }
 #peek-schedules-list.sx-list, #peek-schedules-list { gap:var(--space-3); }
@@ -9289,7 +9290,7 @@ button.cv-sec:hover { color:var(--text); }
 .sx-table { container-type:inline-size; container-name:sxt; }
 .sx-row { display:grid; align-items:center; column-gap:var(--space-2-5); padding:var(--space-2) var(--space-2-5) var(--space-2) var(--space-1-5); border-bottom:1px solid var(--border);
   grid-template-columns:36px minmax(170px,2.4fr) minmax(120px,1.3fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; font-size:var(--fs-lg); }
-.sx-scoped .sx-row { grid-template-columns:minmax(150px,2.4fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; padding-left:var(--space-3); }
+.sx-scoped .sx-row { grid-template-columns:36px minmax(150px,2.4fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; }
 .sx-table > .sx-row:last-child { border-bottom:none; }
 .sx-row.sched-item { cursor:pointer; overflow:hidden; }
 .sx-row.sched-item:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
@@ -9447,6 +9448,7 @@ button.cv-sec:hover { color:var(--text); }
   .sx-filter { max-width:none; width:100% !important; }
   .sx-list { padding:var(--space-0-5) var(--space-3) var(--space-3-5); }
   .sx-bulk { margin:0 var(--space-3) var(--space-2-5); }
+  #peek-sched-bulk { flex-wrap:nowrap; overflow-x:auto; }
   .sx-group-head { padding:var(--space-2-5) var(--space-3); }
   .sx-viewall, .sx-showmore, .sx-linkbtn { min-height:44px; }
   .sx-detail { width:100%; border-left:none; box-shadow:none; padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right); }
@@ -9572,6 +9574,9 @@ button.cv-sec:hover { color:var(--text); }
   .sx-row .sx-nextc { order:6; margin-left:0; padding-right:0; }
   .sx-row .sx-stat { order:7; margin-left:auto; padding-right:var(--space-1-5); }
   .sx-scoped .sx-row .sx-freq { padding-left:var(--space-8); }
+  /* Selecting stays possible on a narrow list and a phone, so a worker's
+     schedules can be deleted in bulk (2026-10-30). */
+  .sx-row .sx-sel { display:flex; order:0; align-items:center; justify-content:center; min-width:44px; min-height:44px; margin:calc(-1 * var(--space-2)) 0; }
 }
 @media (max-width: 600px) {
   #sched-overlay.board-edit-overlay { padding:0 0 var(--sw-fail-h, 0px) 0; }

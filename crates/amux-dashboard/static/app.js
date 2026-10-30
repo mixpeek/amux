@@ -44063,7 +44063,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
   const freqTitle = s.cadence_class ? (s.schedule_expr || s.sched_type || '') : (s.schedule_expr || '') + ' (group guessed in the browser: this payload has no cadence_class)';
   return `<div class="sx-row sched-item${sel ? ' selected' : ''}" data-sched-id="${id}" data-status="${st.key}" role="button" tabindex="0"
       onclick="openSchedDetail('${idJs}')" onkeydown="if(event.key==='Enter'&&event.target===this)openSchedDetail('${idJs}')">
-    ${scoped ? '' : `<label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>`}
+    <label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>
     <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code>${_sxToldHTML(s)}</div></div>
     ${scoped ? '' : `<div class="sx-cell sx-worker">${_sxWorkerChip(s, sessMap)}</div>`}
     <div class="sx-cell sx-freq"><span title="${esc(freqTitle)}">${esc(_sxFreq(s))}</span>${_schedLastRunHTML(s)}</div>
@@ -44076,7 +44076,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
 }
 function _sxHeadRow(scoped) {
   return `<div class="sx-row sx-row-head" aria-hidden="true">
-    ${scoped ? '' : '<span class="sx-cell sx-sel"></span>'}
+    <span class="sx-cell sx-sel"></span>
     <span class="sx-cell sx-name">Name</span>
     ${scoped ? '' : '<span class="sx-cell sx-worker">Worker</span>'}
     <span class="sx-cell sx-freq">Frequency</span><span class="sx-cell sx-nextc">Next run</span>
@@ -44092,22 +44092,37 @@ function _sxSetGroup(g) {
 }
 function _sxToggleSel(id, on) {
   if (on) _sxSelected.add(id); else _sxSelected.delete(id);
-  const row = document.querySelector('#scheduler-list [data-sched-id="' + CSS.escape(id) + '"]');
-  if (row) row.classList.toggle('selected', on);
+  // The Scheduler page and a worker's Schedules tab can both show the row.
+  document.querySelectorAll('.sx-row[data-sched-id="' + CSS.escape(id) + '"]').forEach(row => row.classList.toggle('selected', on));
   _sxRenderBulk();
 }
-function _sxClearSelection() { _sxSelected.clear(); renderScheduler(); }
+function _sxClearSelection(session) {
+  for (const id of _sxSelectedIds(session)) _sxSelected.delete(id);
+  renderScheduler(); _peekRenderSchedules();
+}
+// The selected schedules, or only one worker's: a worker's Schedules tab acts
+// on its own rows, never on rows picked earlier on the Scheduler page.
+function _sxSelectedIds(session) {
+  if (!session) return [..._sxSelected];
+  const mine = new Set((schedules || []).filter(s => s.session === session).map(s => s.id));
+  return [..._sxSelected].filter(id => mine.has(id));
+}
 function _sxRenderBulk() {
-  const bar = document.getElementById('sched-bulk');
-  if (!bar) return;
   const live = new Set((schedules || []).map(s => s.id));
   for (const id of [..._sxSelected]) if (!live.has(id)) _sxSelected.delete(id);
-  bar.hidden = !_sxSelected.size;
-  const n = document.getElementById('sched-bulk-n');
-  if (n) n.textContent = _sxSelected.size + ' selected';
+  // The Scheduler page's bar and the open worker's (Ethan, 2026-10-30: "make
+  // it so i can do multiselect on a workers' schedules like bulk delete").
+  for (const [barId, nId, session] of [['sched-bulk', 'sched-bulk-n', null], ['peek-sched-bulk', 'peek-sched-bulk-n', peekSession || '']]) {
+    const bar = document.getElementById(barId);
+    if (!bar) continue;
+    const n = session === '' ? 0 : _sxSelectedIds(session).length;
+    bar.hidden = !n;
+    const label = document.getElementById(nId);
+    if (label) label.textContent = n + ' selected';
+  }
 }
-async function _sxBulk(action) {
-  const ids = [..._sxSelected];
+async function _sxBulk(action, session) {
+  const ids = _sxSelectedIds(session);
   if (!ids.length) return;
   if (action === 'delete') {
     const ok = await showConfirm('Delete ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's') + '? They stop firing. Each is a soft delete, recorded in Change history.', 'Delete', true);
@@ -44125,7 +44140,7 @@ async function _sxBulk(action) {
   const verb = { pause: 'Paused', resume: 'Resumed', delete: 'Deleted' }[action];
   showToast(verb + ' ' + done + ' of ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's')
     + (done < ids.length ? '; the rest were refused (see the messages above)' : ''));
-  _sxSelected.clear();
+  for (const id of ids) _sxSelected.delete(id);
   await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
   renderScheduler(); renderSchedulerAudit(); renderCalendar();
   _peekRefreshSchedIfActive();
