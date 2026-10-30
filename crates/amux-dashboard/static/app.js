@@ -18685,7 +18685,7 @@ async function _psfViewFile(filePath) {
       // Same as the file overlay: load from the file's own URL so in-page
       // anchors and relative links stay inside the document (see _htmlPreviewUrl).
       const _pu = _htmlPreviewUrl(data.path || filePath);
-      if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content;
+      _htmlSiteFrame(iframe, data.path || filePath, () => { if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content; });
     } else if (data.content != null) {
       content.className = 'file-overlay-body file-code';
       content.innerHTML = typeof _fileHighlightHTML === 'function' ? _fileHighlightHTML(data) : '<pre>' + esc(data.content) + '</pre>';
@@ -29991,7 +29991,7 @@ function _renderFileBody(data, mode) {
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
     const _purl = _htmlPreviewUrl(data.path);   // own URL: anchors/links stay in the document
-    if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content;
+    _htmlSiteFrame(iframe, data.path, () => { if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content; });
     iframe.onload = function() {
       // Bind anchor links to scroll within the iframe. Cross-origin under the
       // sandbox above → contentDocument access throws; the try/catch makes this a
@@ -61590,7 +61590,10 @@ async function _pagesEnter() {
   const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
   const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
   await _pubList();
-  if (open) { _pubOpenInternal(open[1]); return; }
+  // &at=<path> opens it at that page: an app page opened in a tab of its own
+  // without its session is sent here (apps_origin.rs).
+  const at = /[#&]at=([^&]*)/.exec(h);
+  if (open) { let p = null; try { p = at ? decodeURIComponent(at[1]) : null; } catch (_) {} _pubOpenInternal(open[1], p); return; }
   if (add) {
     const port = parseInt(add[1], 10);
     const have = _pubLinks.find(l => l.kind === 'internal' && l.port === port);
@@ -61880,36 +61883,126 @@ async function _pubHandoff(id) {
   const d = await _pubFetch('/' + encodeURIComponent(id) + '/open', { method: 'POST' });
   return d.url;
 }
-async function _pubOpenInternal(id) {
+async function _pubOpenInternal(id, at) {
   const l = _pubLinks.find(x => x.id === id);
   if (!l) return;
   if (l.pending) { showToast('Approve it first: it does not open until you do.'); return; }
   let url;
-  try { url = await _pubHandoff(id); } catch (e) { showToast('Could not open: ' + e.message); return; }
+  try { url = _appUrlAt(await _pubHandoff(id), at); } catch (e) { showToast('Could not open: ' + e.message); return; }
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
   _pagesCur = 'app:' + id; _pagesMeta = null;
   document.getElementById('pages-list-wrap').style.display = 'none';
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-page-actions').style.display = 'none';
   document.getElementById('pages-title').textContent = _pubName(l);
+  const where = l.file ? l.file : 'port ' + l.port;
+  const status = document.getElementById('pages-status');
+  const back = document.getElementById('pages-app-back');
+  // Pages the app went through, so Back shows only when there is a page to go back to.
+  const trail = [];
+  let goingBack = false;
   const standalone = document.getElementById('pages-standalone');
   standalone.href = '#';
-  // Each handoff opens once, so a new tab asks for its own.
+  // Each handoff opens once, so a new tab asks for its own, at the page shown.
   standalone.onclick = async (e) => {
     e.preventDefault();
     const w = window.open('', '_blank');
-    try { const u = await _pubHandoff(id); if (w) { w.opener = null; w.location = u; } }
+    try { const u = _appUrlAt(await _pubHandoff(id), trail[trail.length - 1]); if (w) { w.opener = null; w.location = u; } }
     catch (err) { if (w) w.close(); showToast('Could not open: ' + err.message); }
   };
-  document.getElementById('pages-status').textContent = l.file ? l.file : 'port ' + l.port;
+  status.textContent = where;
   const host = document.getElementById('pages-frame');
   const f = document.createElement('iframe');
   f.className = 'pub-app-frame';
   f.title = _pubName(l);
   f.src = url;
   host.replaceChildren(f);
-  _pagesMounted = { destroy() { f.remove(); } };
+  _appFrameWatch(f, {
+    nav(p) {
+      if (goingBack && trail.length > 1) trail.pop(); else if (trail[trail.length - 1] !== p) trail.push(p);
+      goingBack = false;
+      status.textContent = p === '/' ? where : p;
+      status.title = where + ' ' + p;
+      if (back) back.style.display = trail.length > 1 ? '' : 'none';
+    },
+    async reopen(p) {
+      try { _appFrameReplace(f, _appUrlAt(await _pubHandoff(id), p)); }
+      catch (e) { showToast('Could not open the page again: ' + e.message); }
+    },
+  });
+  if (back) {
+    back.style.display = 'none';
+    back.onclick = () => { if (trail.length > 1) { goingBack = true; history.back(); } };
+  }
+  _pagesMounted = { destroy() { f.remove(); if (back) back.style.display = 'none'; } };
   _pagesFit();
+}
+// Pages on the apps origin (static_files/app_viewer.js) tell the frame that
+// holds them which page they are on, and a page whose session is gone asks to
+// be opened again. Only a message from a frame registered here counts.
+const _appFrames = new Map();
+function _appFrameWatch(f, hooks) {
+  for (const k of _appFrames.keys()) if (!k.isConnected) _appFrames.delete(k);
+  _appFrames.set(f, Object.assign({ reopens: [] }, hooks));
+}
+// Load `url` in place of the page the frame shows, so the "opening again" page
+// does not stay in history (Back from the reopened page would land on it and
+// reopen it again).
+function _appFrameReplace(f, url) {
+  try { f.contentWindow.location.replace(url); } catch (_) { f.src = url; }
+}
+function _appPathOk(p) {
+  return typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.includes('\\');
+}
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || typeof d !== 'object' || !(d.amux_app_nav || d.amux_app_reopen)) return;
+  for (const [f, h] of _appFrames) {
+    if (f.contentWindow !== e.source) continue;
+    const p = _appPathOk(d.at) ? d.at : '/';
+    if (d.amux_app_nav) { if (h.nav) h.nav(p); return; }
+    // At most three reopens a minute, so a page that cannot open does not loop.
+    const now = Date.now();
+    h.reopens = h.reopens.filter(t => now - t < 60000);
+    if (h.reopens.length >= 3) { showToast('This page did not open again. Open it from Apps.'); return; }
+    h.reopens.push(now);
+    h.reopen(p);
+    return;
+  }
+});
+// A handoff URL opens the app's first page; point it at page `at` instead.
+// The one-time token stays in the query (apps_origin.rs takes it out).
+function _appUrlAt(url, at) {
+  if (!_appPathOk(at) || at === '/') return url;
+  const u = new URL(url);
+  const m = /^\/app\/[0-9a-f]{32}/.exec(u.pathname);
+  if (!m) return url;
+  const t = new URL(at, 'https://x.invalid');
+  const q = new URLSearchParams(t.search);
+  for (const [k, v] of u.searchParams) q.set(k, v);
+  u.pathname = m[0] + t.pathname;
+  u.search = q.toString();
+  u.hash = t.hash;
+  return u.toString();
+}
+// An HTML file in the Files tab opens as part of its folder's website on the
+// apps origin, so its relative CSS, scripts and links work and the pages run
+// sandboxed, away from the dashboard. `fallback` shows the file alone when
+// amux will not serve its folder.
+async function _htmlSiteFrame(iframe, path, fallback) {
+  const mint = (p) => _pubFetch('/site-view', { method: 'POST', body: JSON.stringify({ path: p }) });
+  let view;
+  try { view = await mint(path); } catch (e) { fallback(); return; }
+  iframe.src = view.url;
+  _appFrameWatch(iframe, {
+    async reopen(p) {
+      const page = p.split(/[?#]/)[0];
+      let file = page === '/' ? path : view.root + decodeURIComponent(page);
+      if (file.endsWith('/')) file += 'index.html';
+      try { view = await mint(file); _appFrameReplace(iframe, view.url + p.slice(page.length)); }
+      catch (e) { fallback(); }
+    },
+  });
 }
 async function _pubRevoke(id) {
   const l = _pubLinks.find(x => x.id === id);
