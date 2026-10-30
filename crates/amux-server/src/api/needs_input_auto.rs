@@ -1561,12 +1561,19 @@ async fn read_view(state: &AppState, worker: String) -> Response {
     let home = crate::config::amux_home();
     let now = now_f64();
     let h2 = home.clone();
+    let store = state.store.clone();
+    // The queue comes from the shared read (needs_input::shared_queue, AF-1029),
+    // taken BEFORE the ledger read so no pooled connection is held while this
+    // call waits for another caller's build.
+    let items = tokio::task::spawn_blocking(move || needs_input::shared_queue(&store, &h2, now))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|q| q.items.clone())
+        .unwrap_or_default();
     let res = state
         .store
-        .read_async(move |conn| {
-            let items = needs_input::build(conn, &h2, now).map(|q| q.items).unwrap_or_default();
-            Ok((load_ledger(conn).unwrap_or_default(), items))
-        })
+        .read_async(move |conn| Ok((load_ledger(conn).unwrap_or_default(), items)))
         .await;
     match res {
         Ok((led, items)) => Json(crate::api::measured::measured(

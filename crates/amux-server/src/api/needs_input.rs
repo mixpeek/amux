@@ -511,17 +511,58 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
     })
 }
 
+/// One queue shared by every READ of it for [`QUEUE_TTL`] (AF-1029).
+///
+/// The dashboard polls GET /api/needs-input and /api/needs-input/auto, and
+/// each call scanned the board (33k rows, no usable index) on a pooled read
+/// connection. Nothing collapsed overlapping calls: in the 2026-10-30 02:10Z
+/// read-pool saturation the holder attribution (7e3ec346f) named 27 of the 56
+/// connections as needs_input::get_queue (14, up to 3.6 s) and
+/// needs_input_auto::read_view (13, up to 4.0 s). The lock is held while one
+/// caller builds, so the others wait on a blocking thread rather than each
+/// taking a connection, then reuse the answer. Paths that ACT on the queue
+/// (auto-approval) still build their own. A snooze clears it.
+const QUEUE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+type SharedQueues = std::collections::HashMap<std::path::PathBuf, (std::time::Instant, std::sync::Arc<Queue>)>;
+static QUEUE: std::sync::Mutex<Option<SharedQueues>> = std::sync::Mutex::new(None);
+
+/// Drop `store`'s shared queue so the next read rebuilds (a triage write changed it).
+pub(crate) fn invalidate_queue(store: &crate::db::SharedStore) {
+    if let Some(m) = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(store.db_path());
+    }
+}
+
+/// The queue for `store`, built at most once per [`QUEUE_TTL`]. Blocking: call
+/// it off the async runtime.
+pub(crate) fn shared_queue(store: &crate::db::SharedStore, home: &Path, now: f64) -> anyhow::Result<std::sync::Arc<Queue>> {
+    let mut held = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = held.get_or_insert_with(Default::default);
+    if let Some((at, q)) = map.get(store.db_path()) {
+        if at.elapsed() < QUEUE_TTL {
+            return Ok(q.clone());
+        }
+    }
+    let conn = store.read()?;
+    let q = std::sync::Arc::new(build(&conn, home, now)?);
+    drop(conn);
+    map.insert(store.db_path().to_path_buf(), (std::time::Instant::now(), q.clone()));
+    Ok(q)
+}
+
 async fn get_queue(State(state): State<AppState>) -> Response {
     let home = crate::integrations::email::default_amux_home();
     let now = now_f64();
-    let res = state
-        .store
-        .read_async(move |conn| Ok(build(conn, &home, now)?))
-        .await;
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || shared_queue(&store, &home, now))
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r);
     match res {
         Ok(q) => {
             let body = json!({
-                "items": q.items, "count": q.items.len(),
+                "items": &q.items, "count": q.items.len(),
                 "snoozed": q.snoozed.iter().map(|v| json!({"key": v["key"], "until": v["snoozed_until"], "card": v["card"]})).collect::<Vec<_>>(),
                 "snoozed_count": q.snoozed.len(),
                 "excluded_peer_actor": q.excluded_peer_actor,
@@ -629,6 +670,7 @@ async fn snooze(
         .await;
     match res {
         Ok(_) => {
+            invalidate_queue(&state.store);
             let cleared = until <= now;
             tracing::info!(verdict = "triage_action", action = if cleared { "unsnooze" } else { "snooze" },
                 card = %key, until, outcome = "ok", "needs-input snooze stored");
@@ -693,6 +735,26 @@ async fn log_action(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AF-1029: reads inside the TTL share one build; a snooze's
+    /// invalidation forces a rebuild; another store never reads this one's.
+    #[test]
+    fn overlapping_reads_share_one_queue_and_a_snooze_rebuilds_it() {
+        let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = std::sync::Arc::new(crate::db::Store::open(&d1.path().join("a.db")).unwrap());
+        let b = std::sync::Arc::new(crate::db::Store::open(&d2.path().join("b.db")).unwrap());
+        let home = d1.path();
+        let first = shared_queue(&a, home, 1.0).unwrap();
+        let again = shared_queue(&a, home, 1.0).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "a read inside the TTL reuses the build");
+        let other = shared_queue(&b, home, 1.0).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &other), "another store builds its own");
+        let a2 = shared_queue(&a, home, 1.0).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &a2), "another store's read does not evict this one's");
+        invalidate_queue(&a);
+        let a3 = shared_queue(&a, home, 1.0).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&a2, &a3), "invalidate (a snooze) forces a rebuild");
+    }
 
     #[test]
     fn the_owner_bar_is_one_rule_for_pill_queue_and_status() {
