@@ -297,6 +297,20 @@ def gh_get(path):
         return 0, {"message": str(e)[:300]}
 
 
+def full_sha(repo, sha):
+    """The 40-char sha GitHub's runs filter needs (AF-1063). /actions/runs?head_sha=
+    matches only a full sha: a watch on "695628d9b" saw 0 runs every minute for 3 h
+    while that commit's rust run succeeded, then expired unfired. The commits API
+    takes a short one. Returns (sha, error)."""
+    if re.fullmatch(r"[0-9a-f]{40}", sha or ""):
+        return sha, ""
+    code, d = gh_get("/repos/%s/commits/%s" % (repo, sha))
+    full = (d or {}).get("sha") if code == 200 and isinstance(d, dict) else None
+    if full and re.fullmatch(r"[0-9a-f]{40}", full):
+        return full, ""
+    return None, "GitHub could not resolve %s in %s (%s %s)" % (sha, repo, code, str((d or {}).get("message", ""))[:120])
+
+
 def _run_summary(r):
     return {"id": r.get("id"), "name": r.get("name"), "status": r.get("status"), "conclusion": r.get("conclusion"),
             "url": r.get("html_url"), "head_sha": r.get("head_sha"), "created_at": r.get("created_at"),
@@ -309,7 +323,11 @@ def ci_poll(w):
     if w.get("run"):
         code, d = gh_get("/repos/%s/actions/runs/%s" % (repo, w["run"]))
     elif w.get("sha"):
-        code, d = gh_get("/repos/%s/actions/runs?head_sha=%s&per_page=100" % (repo, w["sha"]))
+        # A watch saved before AF-1063 may hold a short sha: resolve it here too.
+        sha, why = full_sha(repo, w["sha"])
+        if not sha:
+            return {"polled_at": now(), "rc": 1, "measured": False, "why_unmeasured": why}
+        code, d = gh_get("/repos/%s/actions/runs?head_sha=%s&per_page=100" % (repo, sha))
     else:
         code, d = gh_get("/repos/%s/actions/workflows/%s/runs?per_page=10" % (repo, w["workflow"]))
     rec = {"polled_at": now(), "rc": 0 if code == 200 else 1, "http": code}
@@ -461,7 +479,12 @@ def cmd_add(a):
                 raise SystemExit("wake-watch add ci: pass --run ID, --sha SHA or --workflow W")
             if a.run and not str(a.run).isdigit():
                 raise SystemExit("wake-watch add ci: --run must be a number")
-            w.update(repo=a.repo, run=a.run or "", sha=a.sha or "", workflow=a.workflow or "")
+            sha = a.sha or ""
+            if sha:
+                sha, why = full_sha(a.repo, sha)
+                if not sha:
+                    raise SystemExit("wake-watch add ci: %s; a watch on it could never fire (AF-1063)" % why)
+            w.update(repo=a.repo, run=a.run or "", sha=sha, workflow=a.workflow or "")
         save(w)
     log("watch_registered", lane=lane, watch=w["id"], kind=w["kind"], target=describe(w), every=every,
         expires_at=iso(w["expires_at"]))

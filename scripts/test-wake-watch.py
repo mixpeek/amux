@@ -300,7 +300,9 @@ class WakeWatch(unittest.TestCase):
         self.assertIn("attempt 2 completed success", out)
 
     def test_a_sha_with_no_runs_yet_is_pending_never_success(self):
-        q = "/repos/o/r/actions/runs?head_sha=abc123&per_page=100"
+        full = "abc123" + "0" * 34
+        FakeGitHub.runs["/repos/o/r/commits/abc123"] = {"sha": full}
+        q = "/repos/o/r/actions/runs?head_sha=%s&per_page=100" % full
         FakeGitHub.runs[q] = {"workflow_runs": []}
         self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--sha", "abc123")[0], 0)
         self.assertEqual(self.check(advance=61)[0], 0)
@@ -314,6 +316,24 @@ class WakeWatch(unittest.TestCase):
         rc, out, _ = self.check(advance=61)
         self.assertEqual(rc, 10)
         self.assertIn("checks success u2", out)
+
+    def test_a_short_sha_is_resolved_so_the_watch_can_fire(self):
+        # AF-1063: head_sha= matches only the full sha. W-1cbd60 on "695628d9b"
+        # saw 0 runs for 3 h while its rust run succeeded, then expired unfired.
+        full = "695628d9b8" + "1" * 30
+        FakeGitHub.runs["/repos/o/r/commits/695628d9b"] = {"sha": full}
+        FakeGitHub.runs["/repos/o/r/actions/runs?head_sha=%s&per_page=100" % full] = {"workflow_runs": [
+            {"id": 9, "name": "rust", "status": "completed", "conclusion": "success", "html_url": "u9"}]}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--sha", "695628d9b", "--workflow", "rust")[0], 0)
+        self.assertEqual(self.status()["lanes"]["lane-a"][0]["target"], "ci o/r sha %s workflow rust" % full)
+        rc, out, _ = self.check(advance=61)
+        self.assertEqual(rc, 10, "the watch fires on the run of the commit it named")
+        self.assertIn("rust success u9", out)
+
+    def test_a_sha_github_cannot_resolve_is_refused(self):
+        rc, _, err = self.run_ww("add", "ci", "--repo", "o/r", "--sha", "deadbee")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("could never fire", err)
 
     def test_github_unreadable_is_unmeasured_not_concluded(self):
         FakeGitHub.status_code = 401
