@@ -3174,6 +3174,31 @@ pub struct ArgvSecret {
     /// traced to whatever launched it. Names only; never an argument.
     pub exe: String,
     pub ppid: String,
+    /// The first words of the carrier's command line, each credential masked
+    /// (AF/AMUX-6586). `exe` alone said "bash under pid 1" for a detached
+    /// carrier, which names no script. See [`argv_command_head`].
+    pub cmd_head: String,
+}
+
+/// The first [`CMD_HEAD_WORDS`] words of a command line, each capped at 40
+/// characters, with every `NAME=VALUE` word whose NAME is env-shaped reduced
+/// to `NAME=<len N>`. Short on purpose: the scanner only recognises
+/// `NAME=VALUE`, so a longer excerpt could carry a secret in another form
+/// (`--password x`); five short words name a script without that risk.
+pub const CMD_HEAD_WORDS: usize = 5;
+
+pub fn argv_command_head(command: &str) -> String {
+    command
+        .split_whitespace()
+        .take(CMD_HEAD_WORDS)
+        .map(|w| match w.split_once('=') {
+            Some((k, v)) if argv_key_is_env_shaped(k.trim_start_matches(['\'', '"'])) => {
+                format!("{}=<len {}>", k, v.len())
+            }
+            _ => w.chars().take(40).collect(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Is this argv value a shell expansion rather than a value? (AMUX-6586)
@@ -3244,6 +3269,7 @@ pub fn no_secrets_in_process_argv(
         .iter()
         .map(|f| {
             let what = if f.exe.is_empty() { String::new() } else { format!(", {} under pid {}", f.exe, f.ppid) };
+            let what = if f.cmd_head.is_empty() { what } else { format!("{what}, `{}`", f.cmd_head) };
             match f.age_s {
                 Some(a) => format!("pid {} {} (len {}, alive {}s{what})", f.pid, f.key, f.value_len, a),
                 None => format!("pid {} {} (len {}, age unknown{what})", f.pid, f.key, f.value_len),
@@ -3270,7 +3296,7 @@ pub fn no_secrets_in_process_argv(
         "measured": true,
         "keys": found.iter().map(|f| json!({
             "pid": f.pid, "key": f.key, "value_len": f.value_len, "age_s": f.age_s,
-            "exe": f.exe, "ppid": f.ppid}))
+            "exe": f.exe, "ppid": f.ppid, "cmd_head": f.cmd_head}))
             .collect::<Vec<_>>(),
         "max_age_s": found.iter().filter_map(|f| f.age_s).max(),
     }))]
@@ -11361,6 +11387,7 @@ mod argv_secret_invariant_tests {
             age_s: Some(340_800),
             exe: "docker".into(),
             ppid: "77".into(),
+            cmd_head: String::new(),
         };
         let r = no_secrets_in_process_argv(&[long], 900);
         let msg = format!("{:?}", r[0]);
@@ -11393,6 +11420,7 @@ mod argv_secret_invariant_tests {
             age_s: None,
             exe: String::new(),
             ppid: String::new(),
+            cmd_head: String::new(),
         };
         let r = no_secrets_in_process_argv(&[unknown], 900);
         let msg = format!("{:?}", r[0]);
@@ -11403,6 +11431,15 @@ mod argv_secret_invariant_tests {
         assert_eq!(r[0].evidence["max_age_s"], serde_json::Value::Null);
     }
 
+    /// AMUX-6586: the head names the command, and never carries a value.
+    #[test]
+    fn the_command_head_names_the_carrier_and_masks_every_value() {
+        let h = argv_command_head("bash -c export APOLLO_KEY=sk-live-123456 CLAUDE_LOGIN_PASSWORD='hunter2-xyz' && ./deploy.sh --all");
+        assert_eq!(h, "bash -c export APOLLO_KEY=<len 14> CLAUDE_LOGIN_PASSWORD=<len 13>");
+        assert!(!h.contains("sk-live") && !h.contains("hunter2"), "{h}");
+        assert_eq!(argv_command_head("/usr/bin/python3 scripts/sync.py ADMIN_TEST_KEY=abc"), "/usr/bin/python3 scripts/sync.py ADMIN_TEST_KEY=<len 3>");
+    }
+
     fn secret(pid: &str, key: &str, len: usize) -> ArgvSecret {
         ArgvSecret {
             pid: pid.into(),
@@ -11411,6 +11448,7 @@ mod argv_secret_invariant_tests {
             age_s: None,
             exe: String::new(),
             ppid: String::new(),
+            cmd_head: String::new(),
         }
     }
 

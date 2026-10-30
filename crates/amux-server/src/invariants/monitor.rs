@@ -3381,6 +3381,7 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                             age_s,
                             exe: exe.clone(),
                             ppid: ppid.to_string(),
+                            cmd_head: checks::argv_command_head(rest),
                         });
                     }
                 }
