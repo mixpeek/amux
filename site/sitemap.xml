@@ -57,7 +57,7 @@
   <url><loc>https://amux.io/guides/ai-coding-agent-safety-checklist/</loc><lastmod>2026-05-19</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/best-ai-model-for-coding-2026/</loc><lastmod>2026-05-20</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://amux.io/blog/ai-coding-tools-pricing-2026/</loc><lastmod>2026-09-06</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://amux.io/guides/harness-engineering/</loc><lastmod>2026-10-23</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://amux.io/guides/harness-engineering/</loc><lastmod>2026-10-30</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-resource-limits/</loc><lastmod>2026-10-17</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/measuring-ai-coding-agent-roi/</loc><lastmod>2026-07-20</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/claude-code-context-compaction/</loc><lastmod>2026-07-20</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
@@ -78,11 +78,10 @@
   <url><loc>https://amux.io/blog/github-copilot-alternatives-2026/</loc><lastmod>2026-05-11</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/blog/best-terminal-ai-coding-agents-2026/</loc><lastmod>2026-07-28</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/run-ai-engineering-team/</loc><lastmod>2026-10-18</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://amux.io/blog/claude-code-agent-view-2026/</loc><lastmod>2026-09-11</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/blog/claude-code-vs-cursor-vs-windsurf/</loc><lastmod>2026-05-09</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/blog/best-ai-agent-sdks-2026/</loc><lastmod>2026-05-08</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/blog/best-ai-coding-tools-2026/</loc><lastmod>2026-05-06</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://amux.io/guides/ai-agent-security-hardening/</loc><lastmod>2026-05-05</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://amux.io/guides/ai-agent-security-hardening/</loc><lastmod>2026-10-30</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-offline-review/</loc><lastmod>2026-07-27</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/voice-dictation-ai-agents/</loc><lastmod>2026-07-26</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-orchestration-2026/</loc><lastmod>2026-08-01</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
@@ -420,6 +419,7 @@
   <url><loc>https://amux.io/compare/amux-vs-sculptor/</loc><lastmod>2026-10-25</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-nimbalyst/</loc><lastmod>2026-10-27</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-opcode/</loc><lastmod>2026-10-28</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-claude-code-agent-view/</loc><lastmod>2026-10-30</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-cloudcli/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-open-session/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-ai-maestro/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
