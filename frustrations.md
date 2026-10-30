@@ -6168,3 +6168,29 @@ FIX: (proposed) when the gate's workspace build fails only in files outside
   "also fails on origin/main here" (as it already does for failing tests),
   so a local target problem is named instead of blocking. Separately, the
   shared target is past its size budget and needs a reclaim.
+
+## The land gate blames a change for a test that also fails on main under the gate's own load
+AREA: land-gate
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-30
+SESSION: desktop
+CARD: none (desktop is isolated and has no board; the land-gate owner should take it)
+SYMPTOM: route_table route_table_matches_the_real_router_both_directions failed
+  in four land gates in a row for storage-tiers commits (a3ed51598, 08e83f6e6,
+  2a96c9178 and its rebase), marked FAIL, not inherited, because the gate's one
+  origin/main run of it passed. Its assertion, captured by rerunning the gate's
+  own nextest filter in its tree: "GET /api/board/derived: no answer in 15s —
+  this route BLOCKS". The same filter on the gate's main-only tree
+  (desktop-base at eabcad27c) failed it twice out of two, once on
+  /api/board/derived and once on /api/debug/legacy-port. Run alone it passes
+  in 13 to 36 seconds on either tree. The receipt keeps the test name but not
+  the assertion, so none of this was visible from the gate's output.
+COST: about 1.5 hours of reruns and diagnosis, and a push with
+  AMUX_SKIP_LAND_GATE in the end. Any lane whose change selects route_table
+  can hit it.
+FIX: (proposed) decide "inherited" from more than one base run when the test
+  is timing-bound (or rerun the base as many times as the change was rerun),
+  and keep the panic text of a FAIL in the receipt. Separately, the routes that
+  block past 15s under load (/api/board/derived, /api/debug/legacy-port) are
+  the real defect.
