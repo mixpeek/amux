@@ -32022,7 +32022,7 @@ pub(crate) fn workers_with_changed_context(workers: &[String]) -> (usize, Vec<St
         }
         let Ok(on_disk) = std::fs::read_to_string(worker_rules_file(w)) else { continue };
         compared += 1;
-        if compose_worker_context(w, false) != on_disk {
+        if crate::api::velocity::without_section(&compose_worker_context(w, false)) != crate::api::velocity::without_section(&on_disk) {
             changed.push(w.clone());
         }
     }

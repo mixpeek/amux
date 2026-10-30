@@ -320,6 +320,19 @@ pub(crate) fn context_section(worker: &str) -> String {
     context_lines(&summarize(worker, &d.attempts, &d.tokens, days), &chrono::Local::now().format("%Y-%m-%d").to_string())
 }
 
+/// `context` with its "# Your velocity" section removed. The section's
+/// numbers move whenever any attempt ends, so the after-update reconcile,
+/// which re-sends a worker its instructions when they differ from its rules
+/// file, compares contexts without it: with it, the first deploy after
+/// 140ff3b8b told 14 running workers to re-read their context, and every
+/// later deploy would have done the same for nearly all of them.
+pub(crate) fn without_section(context: &str) -> String {
+    let Some(start) = context.find("# Your velocity (") else { return context.to_string() };
+    let rest = &context[start..];
+    let end = rest[1..].find("\n# ").map(|i| start + 1 + i + 1).unwrap_or(context.len());
+    format!("{}{}", &context[..start], &context[end..])
+}
+
 pub(crate) fn context_lines(s: &Value, as_of: &str) -> String {
     if s["attempts"].as_u64().unwrap_or(0) < MIN_ATTEMPTS as u64 {
         return String::new();
@@ -673,6 +686,15 @@ mod tests {
         assert_eq!(p["work_minutes"]["p50"].as_f64(), Some(30.0), "three cards at the worker's 10-minute median, calibration 1");
         assert_eq!(p["pace"]["days_per_finished_card"].as_f64(), Some(2.0), "4 finished in 8 days");
         assert_eq!(p["finish_by"]["p50"].as_str().map(|s| s.starts_with("1970-01-07")), Some(true), "three cards at 2 days each");
+    }
+
+    #[test]
+    fn the_reconcile_compares_contexts_without_the_velocity_numbers() {
+        let a = "# Rules\n\nx\n\n# Your velocity (last 30 days, as of 2026-10-30)\n\nYou finished 4 of 5 cards.\n\n# Browser\n\ny";
+        let b = "# Rules\n\nx\n\n# Your velocity (last 30 days, as of 2026-10-31)\n\nYou finished 9 of 9 cards.\n\n# Browser\n\ny";
+        assert_eq!(without_section(a), without_section(b), "moving numbers are not a change of instructions");
+        assert_ne!(without_section(a), without_section(&a.replace("# Browser", "# Browsers")), "a real change still is");
+        assert_eq!(without_section("# Rules\n\nx"), "# Rules\n\nx");
     }
 
     #[test]
