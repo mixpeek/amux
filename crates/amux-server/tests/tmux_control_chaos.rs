@@ -25,6 +25,17 @@ fn tmux_at(sock: &str, args: &[&str]) -> std::process::Output {
     Command::new("tmux").arg("-S").arg(sock).args(args).output().expect("tmux runs")
 }
 
+/// Stops the private server when the test ends, failed asserts included. A
+/// leaked server outlives the test holding every fd it inherited, among them
+/// cargo's build-target reclaim lock: six leaked servers wedged that lock for
+/// the fleet for 1.5 h on 2026-10-30.
+struct StopServer(String);
+impl Drop for StopServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux").arg("-S").arg(&self.0).arg("kill-server").output();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_control_client_survives_closing_sessions_and_its_own_kill() {
     let Ok(v) = Command::new("tmux").arg("-V").output() else {
@@ -43,6 +54,7 @@ async fn the_control_client_survives_closing_sessions_and_its_own_kill() {
     let uid = String::from_utf8_lossy(&Command::new("id").arg("-u").output().unwrap().stdout).trim().to_string();
     let sock_dir = dir.path().join(format!("tmux-{uid}"));
     let sock = sock_dir.join("default").to_string_lossy().to_string();
+    let _stop = StopServer(sock.clone());
     assert!(tmux_at(&sock, &["new-session", "-d", "-s", "amux-anchor", "-x", "100", "-y", "30", "cat"]).status.success());
     // The control client's fallback may have recorded a failed connect above; wait out its retry window.
     tokio::time::sleep(Duration::from_millis(2100)).await;
@@ -111,5 +123,4 @@ async fn the_control_client_survives_closing_sessions_and_its_own_kill() {
     assert!(s["connects"].as_u64().unwrap_or(0) > kills as u64, "it reconnected after each kill: {s}");
     assert!(run(&["display-message", "-p", "still"], T).await.is_some_and(|o| o.status.success()), "{s}");
     eprintln!("{ROUNDS} rounds on {version}: {kills} control-client kills, server alive; {s}");
-    let _ = tmux_at(&sock, &["kill-server"]);
 }

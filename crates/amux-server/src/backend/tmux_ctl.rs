@@ -134,7 +134,14 @@ fn guard(line: &[u8], kind: &str) -> Option<String> {
 async fn connect() -> Option<Conn> {
     // Never the thing that starts a tmux server: with none running, "no
     // server" stays what every probe reads.
-    let up = tokio::time::timeout(Duration::from_secs(3), tokio::process::Command::new("tmux")
+    //
+    // 10 s, not 3 (AF-1056): tmux serves commands one at a time, so when the
+    // client has just died and every caller is on the spawn fallback, this
+    // probe waits behind them. At 3 s it timed out every retry under that load
+    // (tmux_control_chaos: connect_failures 4-5 a run) and the client stayed on
+    // spawns until tmux went quiet; tests/tmux_control.rs failed the same way
+    // whenever another tmux test ran beside it.
+    let up = tokio::time::timeout(Duration::from_secs(10), tokio::process::Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .status()).await;

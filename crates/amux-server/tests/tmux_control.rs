@@ -13,6 +13,16 @@ fn tmux(args: &[&str]) -> std::process::Output {
     Command::new("tmux").args(args).output().expect("tmux runs")
 }
 
+/// Stops the private server when the test ends, failed asserts included: a
+/// leaked server holds every fd it inherited, cargo's reclaim lock among them
+/// (AF-1056).
+struct StopServer(std::path::PathBuf);
+impl Drop for StopServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux").env("TMUX_TMPDIR", &self.0).arg("kill-server").output();
+    }
+}
+
 fn text(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stdout).to_string()
 }
@@ -25,6 +35,7 @@ async fn the_control_connection_answers_as_spawned_tmux_does() {
     }
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("TMUX_TMPDIR", dir.path());
+    let _stop = StopServer(dir.path().to_path_buf());
     // Off by default since the 2026-10-29 tmux crash; this test exercises it.
     std::env::set_var("AMUX_TMUX_CONTROL", "1");
     std::env::remove_var("TMUX");
