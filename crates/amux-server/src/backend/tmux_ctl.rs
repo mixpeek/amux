@@ -72,6 +72,9 @@ struct Stats {
     connects: AtomicU64,
     connect_failures: AtomicU64,
     lost: AtomicU64,
+    /// The control client's tmux process, so a test (and a person reading
+    /// /api/debug/send-profile) can find exactly it (AF-1056). 0 = none yet.
+    client_pid: AtomicU64,
 }
 
 static STATS: OnceLock<Stats> = OnceLock::new();
@@ -146,6 +149,7 @@ async fn connect() -> Option<Conn> {
         .kill_on_drop(true)
         .spawn()
         .ok()?;
+    stats_ref().client_pid.store(child.id().unwrap_or(0) as u64, Ordering::Relaxed);
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
     let alive = Arc::new(AtomicBool::new(true));
@@ -369,6 +373,7 @@ pub fn stats() -> serde_json::Value {
         "connects": g(&st.connects),
         "connect_failures": g(&st.connect_failures),
         "lost_in_flight": g(&st.lost),
+        "client_pid": g(&st.client_pid),
     })
 }
 
