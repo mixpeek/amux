@@ -100,6 +100,9 @@ test('watch a folder, move it to the cold drive and back, from the Disk tab', as
 
   await chooseColdRoot(page, cold);
   await expect(page.locator('#tier-drive-text')).toContainText(cold);
+  // A folder not created yet still reports its drive's space (live bug, 2026-10-29).
+  await expect(page.locator('#tier-drive-text')).not.toContainText('0 B free of 0 B');
+  expect(fs.statSync(cold).isDirectory()).toBe(true);
 
   await watch(page, src);
   const c = card(page, src);

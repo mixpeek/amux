@@ -741,6 +741,20 @@ fn ensure_cold_root(cold_root: &Path) -> Result<(), String> {
 /// Human size for notes a person reads, in the same units the Disk tab shows
 /// (its `_fmtBytes`, binary, plus decimal TB): a 272 KB folder once said
 /// "0.0 GB", then "279 KB" beside a card reading "272.0 KB" (e2e, 2026-10-29).
+/// The nearest existing folder at or above `p`. A cold folder that has not been
+/// created yet has no free space of its own to read; its drive does. Reading the
+/// missing path itself showed "0 B free of 0 B" on the live Disk tab.
+pub(crate) fn nearest_existing(p: &Path) -> PathBuf {
+    let mut cur = Some(p);
+    while let Some(c) = cur {
+        if c.exists() {
+            return c.to_path_buf();
+        }
+        cur = c.parent();
+    }
+    PathBuf::from("/")
+}
+
 fn gb(b: u64) -> String {
     let f = b as f64;
     if b >= 1_000_000_000_000 {
@@ -1179,8 +1193,9 @@ async fn status() -> Response {
     let cold_status = if cfg.cold_root.is_empty() {
         json!(null)
     } else {
-        let m = std::fs::metadata(&cold).ok();
-        let (free, total) = df_bytes(&cold).unwrap_or((0, 0));
+        let probe = nearest_existing(&cold);
+        let m = std::fs::metadata(&probe).ok();
+        let (free, total) = df_bytes(&probe).unwrap_or((0, 0));
         json!({
             "path": cfg.cold_root,
             "available": m.as_ref().map(|m| m.is_dir()).unwrap_or(false) || ensure_parent_mounted(&cold),
@@ -1252,7 +1267,13 @@ async fn set_config(headers: HeaderMap, Json(body): Json<ConfigReq>) -> Response
             Ok(p) if !ensure_parent_mounted(&p) && !p.is_dir() => {
                 return err(StatusCode::UNPROCESSABLE_ENTITY, format!("{} is not on a connected drive", p.display()))
             }
-            Ok(p) => Some(p.to_string_lossy().to_string()),
+            Ok(p) => {
+                // Create it now, so it exists before the first move needs it.
+                if let Err(e) = ensure_cold_root(&p) {
+                    return err(StatusCode::UNPROCESSABLE_ENTITY, e);
+                }
+                Some(p.to_string_lossy().to_string())
+            }
             Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
         },
         None => None,
@@ -1767,6 +1788,15 @@ mod tests {
         let _ = fs::read_dir(d.path().join("a")).unwrap().count();
         let again = measure(d.path(), Duration::from_secs(10));
         assert_eq!(before.last_used, again.last_used, "listing a folder is not a use");
+    }
+
+    #[test]
+    fn free_space_of_a_cold_folder_not_yet_created_is_read_from_its_drive() {
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("not/yet/created");
+        assert_eq!(nearest_existing(&missing), d.path());
+        assert!(df_bytes(&nearest_existing(&missing)).is_some_and(|(_, total)| total > 0));
+        assert_eq!(nearest_existing(d.path()), d.path());
     }
 
     #[test]
