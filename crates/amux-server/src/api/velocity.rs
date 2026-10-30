@@ -292,6 +292,48 @@ fn waiting_from(card_end: &str) -> Option<String> {
     Some(parts.join(" | "))
 }
 
+/// The few lines a worker's scoped context carries about its own velocity
+/// (step 4 of docs/design/worker-velocity.md): reach the worker by default,
+/// not behind an endpoint it has to know to ask. Composed when the context
+/// is (launch, rules change), so it says when; `amux velocity` reads it live.
+/// Empty with too little history, so a new worker gets no noise.
+pub(crate) fn context_section(worker: &str) -> String {
+    let path = crate::config::ServerConfig::from_process_env().db_path;
+    let Ok(conn) = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return String::new();
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+    let days = 30.0;
+    let since = chrono::Utc::now().timestamp() - (days * 86400.0) as i64;
+    let Ok(d) = load(&conn, since) else { return String::new() };
+    context_lines(&summarize(worker, &d.attempts, &d.tokens, days), &chrono::Local::now().format("%Y-%m-%d").to_string())
+}
+
+pub(crate) fn context_lines(s: &Value, as_of: &str) -> String {
+    if s["attempts"].as_u64().unwrap_or(0) < MIN_ATTEMPTS as u64 {
+        return String::new();
+    }
+    let mut out = format!(
+        "# Your velocity (last 30 days, as of {as_of})\n\nYou finished {} of {} cards ({} a day); {}% of your attempt time went to attempts that finished, and you averaged {} attempts per card.",
+        s["finished_cards"], s["cards"], s["finished_per_day"], s["finished_share_of_time"], s["attempts_per_card"]
+    );
+    if let Some(t) = s["top_bottleneck"].as_object() {
+        out.push_str(&format!(
+            "\nYour biggest waste: {} ({} attempts, {} h, {}% of your time). {}.",
+            t.get("kind").and_then(Value::as_str).unwrap_or(""),
+            t.get("attempts").cloned().unwrap_or_default(),
+            t.get("hours").cloned().unwrap_or_default(),
+            t.get("share_of_time").cloned().unwrap_or_default(),
+            t.get("what_it_means").and_then(Value::as_str).unwrap_or("")
+        ));
+    }
+    if let Some(w) = s["waited_on"].as_array().and_then(|a| a.first()) {
+        out.push_str(&format!("\nParked work waited longest on: \"{}\" ({} h).", w["waiting"].as_str().unwrap_or(""), w["hours"]));
+    }
+    out.push_str("\n`amux velocity` shows this live with every category; `amux velocity --card <ID>` estimates a card's minutes and tokens from your finished cards like it.");
+    out
+}
+
 fn window(q: &Q) -> (f64, i64) {
     let days = q.days.unwrap_or(30.0).clamp(1.0, 365.0);
     (days, chrono::Utc::now().timestamp() - (days * 86400.0) as i64)
@@ -413,6 +455,20 @@ mod tests {
         assert_eq!(s["waited_on"][0]["waiting"], "after the b13b roll serves on the TS shard", "what it waited on is listed");
         assert_eq!(waiting_from(r#"{"waiting":{"blocked_on":"MG-2292","source_ref":"shard hold","depends_on":""}}"#).as_deref(), Some("MG-2292 | shard hold"));
         assert_eq!(waiting_from(r#"{"status":"backlog"}"#), None, "an older snapshot falls back to the card's fields now");
+    }
+
+    #[test]
+    fn the_context_section_names_the_biggest_waste_and_skips_a_thin_history() {
+        let mut rows: Vec<Attempt> = (0..4).map(|i| a(&format!("D{i}"), "w", 20, "done", "")).collect();
+        let mut parked = a("P1", "w", 180, "parked", "");
+        parked.waiting = "MG-2292 shard hold".into();
+        rows.push(parked);
+        let text = context_lines(&summarize("w", &rows, &HashMap::new(), 30.0), "2026-10-30");
+        assert!(text.contains("You finished 4 of 5 cards"), "{text}");
+        assert!(text.contains("Your biggest waste: parked_waiting"), "{text}");
+        assert!(text.contains("\"MG-2292 shard hold\""), "{text}");
+        assert!(text.contains("amux velocity"), "{text}");
+        assert_eq!(context_lines(&summarize("w", &rows[..2], &HashMap::new(), 30.0), "2026-10-30"), "", "too little history adds nothing");
     }
 
     #[test]

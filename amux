@@ -8930,6 +8930,66 @@ LAND_BEHAVIOR_VERSION="2026-10-18.56"
 # MSG-<id>` trailer, or MSG-<id> anywhere in the message), LIVE when that commit
 # is in the running build, CLOSED when someone closed it with a reason. All of
 # it is computed from the message history, git and /health; no model call.
+# amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet
+# Where a worker's time goes, what wastes it and who can fix it, and with
+# --card an estimate of that card's minutes and tokens from the worker's own
+# finished cards (docs/design/worker-velocity.md). WORKER defaults to you.
+cmd_velocity() {
+  local worker="" card="" days=30 raw="" fleet=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --card)  card="${2:-}"; shift 2 ;;
+      --days)  days="${2:-30}"; shift 2 ;;
+      --json)  raw=1; shift ;;
+      --fleet) fleet=1; shift ;;
+      -h|--help) sed -n '/^# amux velocity/,/^cmd_velocity/p' "$0" | sed '$d'; return 0 ;;
+      *)       worker="$1"; shift ;;
+    esac
+  done
+  local base="${AMUX_API:-$(cmd_url)}" url
+  if [[ -n "$fleet" ]]; then
+    url="$base/api/velocity?days=$days"
+  else
+    worker="${worker:-${AMUX_SESSION:-}}"
+    [[ -n "$worker" ]] || die "usage: amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet  (no WORKER and no \$AMUX_SESSION)"
+    url="$base/api/velocity/$worker?days=$days"
+    [[ -n "$card" ]] && url="$url&card=$card"
+  fi
+  local body
+  body=$(_curl -sk --max-time 30 -H "X-Amux-Session: ${AMUX_SESSION:-}" "$url") || die "amux velocity: the server did not answer ($url)"
+  if [[ -n "$raw" ]]; then printf '%s\n' "$body"; return 0; fi
+  python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+if "workers" in d:
+    print("Fleet velocity, last %s days (%s attempts). Most wasted hours first." % (d.get("window_days"), d.get("n_considered")))
+    for r in d["workers"]:
+        print("  %-26s finished %4s  %5s/day  %3s%% of time finished  %5.1f h wasted  top: %s" % (
+            r["worker"], r["finished_cards"], r["finished_per_day"], r["finished_share_of_time"], r["wasted_hours"], r.get("top_bottleneck") or "-"))
+    sys.exit(0)
+if not d.get("measured", True):
+    print(d.get("why_unmeasured") or d.get("error") or d); sys.exit(1)
+print("%s, last %s days: finished %s of %s cards (%s a day), %s attempts, %s per card." % (
+    d["worker"], d["window_days"], d["finished_cards"], d["cards"], d["finished_per_day"], d["attempts"], d["attempts_per_card"]))
+print("Time: %s h in all, %s h (%s%%) on attempts that finished." % (d["hours"]["total"], d["hours"]["finished"], d["finished_share_of_time"]))
+m = d["per_finished_card"]["minutes"]; t = d["per_finished_card"]["tokens"]
+fmt = lambda v: "-" if v is None else ("%.0f" % v)
+print("A finished card: %s min median (%s to %s), %s tokens median, over %s cards." % (fmt(m["p50"]), fmt(m["p25"]), fmt(m["p75"]), fmt(t["p50"]), m["n"]))
+print("Waste, by who can fix it:")
+for w in sorted(d["waste"], key=lambda w: -w["hours"]):
+    print("  %-22s %-10s %4s attempts %6.1f h %3s%%  %s" % (w["kind"], w["owner"] or "-", w["attempts"], w["hours"], w["share_of_time"], w["what_it_means"]))
+if d.get("waited_on"):
+    print("Parked work waited on:")
+    for x in d["waited_on"]:
+        print("  %5.1f h  %s attempts  %s" % (x["hours"], x["attempts"], x["waiting"]))
+e = d.get("estimate")
+if e:
+    em, et = e["minutes"], e["tokens"]
+    print("Estimate for %s (%s): %s min (%s to %s), %s tokens, from %s %s." % (
+        e["card"], (e.get("title") or "")[:60], fmt(em["p50"]), fmt(em["p25"]), fmt(em["p75"]), fmt(et["p50"]), e["n"], e["basis"]))
+' "$body"
+}
+
 cmd_requests() {
   local days=7 only_open="" raw="" all="" workers=()
   if [[ "${1:-}" == "close" ]]; then
@@ -11601,6 +11661,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     contribute)       shift; cmd_contribute "$@" ;;
     github)           shift; cmd_github "$@" ;;
     requests)         shift; cmd_requests "$@" ;;
+    velocity)         shift; cmd_velocity "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;
     computer|cu)     shift; cmd_computer "$@" ;;

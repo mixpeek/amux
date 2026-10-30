@@ -31895,6 +31895,8 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
     let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}");
+    let velocity = crate::api::velocity::context_section(name);
+    let block = if velocity.is_empty() { block } else { format!("{block}\n\n{velocity}") };
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\
