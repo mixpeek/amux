@@ -33,7 +33,9 @@ bounded() { # <PATH> <tool> <args...>; prints output, then "rc=N" or "LOOP"
   # An exited child stays a zombie until waited for, and kill -0 still
   # succeeds on a zombie, so ask ps whether it is still running.
   alive() { case "$(ps -o stat= -p "$pid" 2>/dev/null)" in ''|Z*) return 1 ;; esac; }
-  for i in $(seq 1 100); do alive || break; sleep 0.1; done
+  # 60 s: a loop never ends, and the first launch of a freshly written script
+  # took 13 s on a loaded Mac (load 32) while a second run took 0.9 s.
+  for i in $(seq 1 600); do alive || break; sleep 0.1; done
   if alive; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; cat "$T/out.txt"; echo LOOP; return; fi
   wait "$pid"; local rc=$?; cat "$T/out.txt"; echo "rc=$rc"
 }
@@ -42,7 +44,13 @@ out=$(run pgrep -x nothing-by-this-name); [[ "$out" == *REAL-pgrep* ]] && ok "pg
 out=$(run tmux -V); [[ "$out" == *REAL-tmux* ]] && ok "tmux: two shim copies reach the real tmux" || bad "tmux looped or failed: $out"
 out=$(run docker version); [[ "$out" == *REAL-docker* ]] && ok "docker: two shim copies reach the real docker" || bad "docker looped or failed: $out"
 # With only shims on PATH there is no real binary: a clear error, not a loop.
-out=$(bounded "$T/a:$T/b:/usr/bin:/bin" tmux -V)
+# The utilities the shims call, without tmux: a Linux runner has a real tmux
+# in /usr/bin, which the shim rightly found ("tmux 3.4", run 41047171299).
+mkdir -p "$T/util"
+for u in bash sh env dirname basename grep id cat mkdir printf date; do
+  w=$(command -v "$u") && ln -sf "$w" "$T/util/$u"
+done
+out=$(bounded "$T/a:$T/b:$T/util" tmux -V)
 [[ "$out" == *rc=127* ]] && ok "shims and no real tmux: exit 127, no loop" || bad "shims only: $out"
 echo "test-shim-copies: $pass passed, $fail failed"
 [ "$fail" = 0 ]
