@@ -1333,7 +1333,12 @@ pub async fn owner_requests(
             .filter_map(|(id, c)| Some((id.parse().ok()?, (c["reason"].as_str().unwrap_or("").to_string(), c["sha"].as_str().map(str::to_string)))))
             .collect();
     let sess = session.clone();
-    let closed_shas: Vec<String> = closed.values().filter_map(|c| c.1.clone()).collect();
+    // Only THIS worker's requests: the log names every MSG id any lane cited,
+    // and requests-closed.json holds every lane's closes; checking all of them
+    // spawned hundreds of git processes a request (GET for desktop and amux-app
+    // took over 60 s on 2026-10-30).
+    let mine: std::collections::HashSet<i64> = msgs.iter().map(|m| m.0).collect();
+    let closed_shas: Vec<String> = closed.iter().filter(|(id, _)| mine.contains(id)).filter_map(|(_, c)| c.1.clone()).collect();
     let git = tokio::task::spawn_blocking(move || {
         let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
         let mut cmd = std::process::Command::new("git");
@@ -1348,7 +1353,9 @@ pub async fn owner_requests(
             let Some((sha, body)) = rec.trim_start_matches('\n').split_once('\x1f') else { continue };
             for c in msg_id.captures_iter(body) {
                 if let Ok(n) = c[1].parse::<i64>() {
-                    landed.entry(n).or_insert_with(|| sha.trim().to_string());
+                    if mine.contains(&n) {
+                        landed.entry(n).or_insert_with(|| sha.trim().to_string());
+                    }
                 }
             }
         }
@@ -1368,7 +1375,23 @@ pub async fn owner_requests(
         let deploys = repo.join("crates").join("amux-server").is_dir() && !build.is_empty();
         let mut live = std::collections::HashMap::new();
         if deploys {
-            for sha in landed.values().chain(closed_shas.iter()) {
+            // One rev-list over the window the log read, not a merge-base per
+            // sha: a landed sha came from that window, so it is in the build
+            // exactly when the build's history over the window lists it.
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["rev-list", &build])
+                .arg(format!("--since={} days ago", days as i64 + 3))
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+            if let Some(o) = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success()) {
+                let in_build: std::collections::HashSet<String> =
+                    String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect();
+                for sha in landed.values() {
+                    live.insert(sha.clone(), in_build.contains(sha));
+                }
+            }
+            // A closed request's sha may be older than the window: ask per sha (few).
+            let pending: Vec<String> = closed_shas.iter().filter(|s| !live.contains_key(*s)).cloned().collect();
+            for sha in &pending {
                 let mut cmd = std::process::Command::new("git");
                 cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, &build])
                     .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
