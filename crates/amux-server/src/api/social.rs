@@ -60,7 +60,7 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
     ("devto", "built", "devto connector (DEVTO_API_KEY). Articles are saved as drafts until AMUX_SOCIAL_PUBLIC=1."),
     ("instagram", "not_built", "Graph API content publishing: @amux_io as a Business account linked to a Facebook Page, and a Meta app with publishing approved."),
     ("tiktok", "not_built", "Content Posting API: posts are visible only to the account until TikTok audits the app."),
-    ("x", "not_built", "API v2 posting needs a paid tier, which is the owner's decision."),
+    ("x", "built", "browser publisher on the `ethan` profile, posting as @ethansteininger only with account \"ethan\" (his sign-off per post); needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). No amux X account is signed in; metrics are not built."),
     ("linkedin", "built", "browser publisher on the `ethan` profile: account \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). Metrics are not built."),
 ];
 

@@ -94,16 +94,25 @@ fn target(account: &str) -> Option<&'static Target> {
     [&PERSONAL, &PAGE].into_iter().find(|t| t.account == account.trim())
 }
 
-/// Run a JavaScript expression in the page and return its value.
+/// Run a JavaScript expression in the LinkedIn session's page.
 async fn eval(state: &AppState, script: &str) -> Result<Value, String> {
-    let v = super::browser::drive(state, SESSION, "eval", json!({"script": script})).await?;
+    eval_in(state, SESSION, script).await
+}
+
+/// Run a JavaScript expression in `session`'s page and return its value.
+async fn eval_in(state: &AppState, session: &str, script: &str) -> Result<Value, String> {
+    let v = super::browser::drive(state, session, "eval", json!({"script": script})).await?;
     Ok(v.get("result").cloned().or_else(|| v.pointer("/data/result").cloned()).unwrap_or(Value::Null))
 }
 
-/// Poll `script` until it returns true, up to `secs`.
+/// Poll `script` in the LinkedIn session until it returns true, up to `secs`.
 async fn until(state: &AppState, script: &str, secs: u64) -> Result<bool, String> {
+    until_in(state, SESSION, script, secs).await
+}
+
+async fn until_in(state: &AppState, session: &str, script: &str, secs: u64) -> Result<bool, String> {
     for _ in 0..secs * 2 {
-        if eval(state, script).await? == json!(true) {
+        if eval_in(state, session, script).await? == json!(true) {
             return Ok(true);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -310,5 +319,178 @@ mod tests {
         let mut d = draft("hi", None);
         d.file = "/nonexistent/clip.mp4".into();
         assert!(p.check(&open, &d).unwrap_err().error.contains("no such file"));
+    }
+}
+
+// ── X ──────────────────────────────────────────────────────────────────────
+
+/// X (Twitter) through the same `ethan` profile, which is signed in as
+/// @ethansteininger: Ethan's own account, so `account` must say "ethan" and
+/// each post is his to approve (amux-gtm, 2026-10-30). The composer is
+/// x.com/compose/post, found by data-testid (tweetTextarea_0, fileInput,
+/// tweetButton) and read 2026-10-30 from the live page, nothing typed.
+/// API v2 posting needs a paid tier, which is the owner's decision.
+pub struct X;
+
+const X_SESSION: &str = "social-x";
+const X_HANDLE: &str = "ethansteininger";
+const X_COMPOSE: &str = "https://x.com/compose/post";
+/// The limit for an account without Premium.
+const X_MAX_CHARS: usize = 280;
+const X_EDITOR: &str = "[role=dialog] [data-testid=tweetTextarea_0]";
+const X_POST_JS: &str = "(()=>{const b=document.querySelector('[role=dialog] [data-testid=tweetButton]');return b&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'?b:null})()";
+
+async fn x_discard(state: &AppState) {
+    let _ = eval_in(state, X_SESSION, "(()=>{const b=document.querySelector('[data-testid=app-bar-close]');if(b)b.click();return !!b})()").await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let _ = eval_in(state, X_SESSION, "(()=>{const b=[...document.querySelectorAll('[role=button],button')].find(b=>/^\\s*discard\\s*$/i.test(b.innerText||''));if(b){b.click();return true}return false})()").await;
+}
+
+async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
+    let drive = |verb: &'static str, body: Value| super::browser::drive(state, X_SESSION, verb, body);
+    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": X_SESSION})).await.map_err(Failure::retry)?;
+    drive("navigate", json!({"url": X_COMPOSE})).await.map_err(Failure::retry)?;
+    if !until_in(state, X_SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
+        return Err(Failure::refused(
+            StatusCode::FAILED_DEPENDENCY,
+            format!("X showed no composer at {X_COMPOSE}: is the `{PROFILE}` browser profile signed in?"),
+        ));
+    }
+    let who = format!("(document.querySelector('a[data-testid=AppTabBar_Profile_Link]')?.getAttribute('href')||'').toLowerCase()==='/{X_HANDLE}'");
+    if eval_in(state, X_SESSION, &who).await.map_err(Failure::retry)? != json!(true) {
+        x_discard(state).await;
+        return Err(Failure::refused(StatusCode::CONFLICT, format!("X is not signed in as @{X_HANDLE}; nothing was typed")));
+    }
+    drive("click", json!({"selector": X_EDITOR})).await.map_err(Failure::retry)?;
+    drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
+    let head: String = d.caption.trim().chars().take(40).collect();
+    if eval_in(state, X_SESSION, &format!("(document.querySelector({})?.innerText||'').includes({})", json!(X_EDITOR), json!(head)))
+        .await
+        .map_err(Failure::retry)?
+        != json!(true)
+    {
+        x_discard(state).await;
+        return Err(Failure::retry("the caption did not land in X's composer"));
+    }
+    if !d.file.is_empty() {
+        drive("files", json!({"selector": "[role=dialog] input[data-testid=fileInput]", "files": [d.file]})).await.map_err(Failure::retry)?;
+        // Post is enabled again once the upload finishes.
+        if !until_in(state, X_SESSION, &format!("!!{X_POST_JS}"), 180).await.map_err(Failure::retry)? {
+            x_discard(state).await;
+            return Err(Failure::retry("the media did not finish uploading to X"));
+        }
+    }
+    Ok(())
+}
+
+impl Publisher for X {
+    fn platform(&self) -> &'static str {
+        "x"
+    }
+
+    fn check(&self, ctx: &SocialCtx, d: &Draft) -> Result<(), Failure> {
+        if d.account.trim() != PROFILE {
+            return Err(Failure::refused(
+                StatusCode::BAD_REQUEST,
+                format!("name the X account: \"ethan\" posts as @{X_HANDLE}, Ethan's own account (his sign-off per post); {:?} is not one", d.account),
+            ));
+        }
+        let n = d.caption.trim().chars().count();
+        if n == 0 {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, "an X post needs a caption"));
+        }
+        if n > X_MAX_CHARS {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, format!("an X post is at most {X_MAX_CHARS} characters; this one is {n}")));
+        }
+        if !d.file.is_empty() && !std::path::Path::new(&d.file).is_file() {
+            return Err(Failure::refused(StatusCode::BAD_REQUEST, format!("no such file: {}", d.file)));
+        }
+        let public_ok = social::env_val(ctx, "AMUX_SOCIAL_PUBLIC").as_deref() == Some("1");
+        if !public_ok && !is_draft(d) {
+            return Err(Failure::refused(
+                StatusCode::FORBIDDEN,
+                "an X post is public: set AMUX_SOCIAL_PUBLIC=1 (the owner's switch), or privacy \"draft\" to compose and discard",
+            ));
+        }
+        Ok(())
+    }
+
+    fn publish<'a>(&'a self, ctx: &'a SocialCtx, state: &'a AppState, _headers: HeaderMap, d: &'a Draft)
+        -> BoxFut<'a, Result<Published, Failure>> {
+        Box::pin(async move {
+            self.check(ctx, d)?;
+            x_compose(state, d).await?;
+            if is_draft(d) {
+                x_discard(state).await;
+                tracing::info!(platform = "x", account = PROFILE, chars = d.caption.chars().count(), file = !d.file.is_empty(),
+                    verdict = "social_browser_draft_composed", "X post composed and discarded (privacy draft)");
+                return Err(Failure::refused(StatusCode::OK, "composed in X's composer and discarded: privacy was draft, nothing was posted")
+                    .with(json!({"draft": true, "composed": true})));
+            }
+            let clicked = eval_in(state, X_SESSION, &format!("(()=>{{const b={X_POST_JS};if(!b)return false;b.click();return true}})()"))
+                .await
+                .map_err(|e| Failure::uncertain(format!("clicking Post: {e}")))?;
+            if clicked != json!(true) {
+                x_discard(state).await;
+                return Err(Failure::retry("X's Post button was not enabled"));
+            }
+            // The "Your post was sent" toast links to the post.
+            let link_js = format!("(()=>{{const a=[...document.querySelectorAll('[data-testid=toast] a[href*=\"/status/\"]')].find(a=>a.getAttribute('href').toLowerCase().startsWith('/{X_HANDLE}/status/'));return a?a.href:''}})()");
+            let mut url = String::new();
+            for _ in 0..60 {
+                if let Ok(Value::String(h)) = eval_in(state, X_SESSION, &link_js).await {
+                    if !h.is_empty() {
+                        url = h;
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let Some(id) = url.split("/status/").nth(1).map(|s| s.split(['/', '?']).next().unwrap_or("").to_string()).filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())) else {
+                return Err(Failure::uncertain(format!("clicked Post, but X showed no link to the post within 30 s: check @{X_HANDLE} before resending")));
+            };
+            tracing::info!(platform = "x", account = PROFILE, post_id = %id, verdict = "social_browser_posted", "X post published through the browser");
+            Ok(Published {
+                post_id: id,
+                url,
+                visibility: "public".into(),
+                title: String::new(),
+                notes: vec![format!("posted through the amux browser as @{X_HANDLE}")],
+                extra: json!({"via": "browser", "profile": PROFILE, "account": PROFILE}),
+            })
+        })
+    }
+
+    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
+        -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { Err("X metrics are not built for the browser publisher".to_string()) })
+    }
+}
+
+#[cfg(test)]
+mod x_tests {
+    use super::*;
+
+    fn ctx(pairs: &'static [(&'static str, &'static str)]) -> SocialCtx {
+        SocialCtx {
+            env: std::sync::Arc::new(move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())),
+            ..SocialCtx::live()
+        }
+    }
+
+    fn draft(account: &str, caption: &str, privacy: Option<&str>) -> Draft {
+        Draft { platform: "x".into(), account: account.into(), caption: caption.into(), privacy: privacy.map(String::from), ..Default::default() }
+    }
+
+    #[test]
+    fn x_names_its_account_and_the_public_switch_is_the_owners() {
+        let shut = ctx(&[]);
+        let open = ctx(&[("AMUX_SOCIAL_PUBLIC", "1")]);
+        assert!(X.check(&open, &draft("ethan", "hello", None)).is_ok());
+        assert!(X.check(&open, &draft("", "hello", None)).unwrap_err().error.contains("name the X account"), "posting as a person is never the default");
+        assert!(X.check(&open, &draft("amux", "hello", None)).is_err(), "no amux X account is signed in");
+        assert!(X.check(&shut, &draft("ethan", "hello", None)).unwrap_err().error.contains("AMUX_SOCIAL_PUBLIC"));
+        assert!(X.check(&shut, &draft("ethan", "hello", Some("draft"))).is_ok());
+        assert!(X.check(&open, &draft("ethan", &"x".repeat(X_MAX_CHARS + 1), None)).is_err());
     }
 }
