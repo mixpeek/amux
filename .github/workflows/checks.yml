@@ -426,8 +426,10 @@ jobs:
       - name: the scheduled disk reclaim moves only idle, unowned build output, through the server (SCHED-783)
         run: |
           set -uo pipefail
-          ./scripts/test-disk-reclaim-tick.sh
-          ./scripts/test-pkill-guard-shim.sh
+          # No -e here, so each line carries its own exit: only the last one counted.
+          ./scripts/test-disk-reclaim-tick.sh || exit 1
+          ./scripts/test-pkill-guard-shim.sh || exit 1
+          ./scripts/test-shim-copies.sh
       - name: a red main rust run is re-run once only for a flaky e2e spec or a truncated test archive
         run: ./scripts/test-rust-flake-rerun-classify.sh
       - name: orch-pace projects the proof rate to its checkpoint
