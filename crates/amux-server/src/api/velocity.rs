@@ -366,6 +366,8 @@ pub(crate) struct QCard {
     pub status: String,
     pub depends_on: Vec<String>,
     pub blocked_on: String,
+    /// Start of the card's open attempt, when one is running.
+    pub attempt_started_at: Option<i64>,
 }
 
 /// How a worker's finished cards compared with what this estimator would have
@@ -441,7 +443,20 @@ pub(crate) fn project(
         p50_sum += p50;
         p75_sum += p75;
         let blocked_by: Vec<&String> = c.depends_on.iter().filter(|d| open_elsewhere.contains(*d)).collect();
+        // Running past what the worker's similar cards took (Devin's session
+        // cap, as a flag): the open attempt has run longer than the
+        // pessimistic estimate, scaled by the worker's calibration.
+        let over = c.attempt_started_at.and_then(|t| {
+            let elapsed = (now - t).max(0) as f64 / 60.0;
+            let limit = p75 * factor;
+            (limit > 0.0 && elapsed > limit).then(|| json!({"elapsed_minutes": elapsed.round(), "expected_minutes_p75": limit.round()}))
+        });
+        if over.is_some() {
+            tracing::info!(card = %c.id, verdict = "velocity_card_over_estimate", measured = true, n_considered = 1,
+                "a card's open attempt has run past its estimate");
+        }
         rows.push(json!({
+            "over_estimate": over,
             "card": c.id, "title": c.title, "status": c.status,
             "minutes_p50": p50, "minutes_p75": p75, "basis": e["basis"], "n": e["n"],
             "work_done_after_minutes": (p50_sum * factor).round(),
@@ -486,7 +501,8 @@ async fn projection(State(state): State<AppState>, Path(worker): Path<String>, Q
         let conn = store.read()?;
         let statuses = if with_backlog { "'doing','todo','backlog'" } else { "'doing','todo'" };
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, COALESCE(title,''), status, COALESCE(depends_on,''), COALESCE(blocked_on,'') FROM issues
+            "SELECT id, COALESCE(title,''), status, COALESCE(depends_on,''), COALESCE(blocked_on,''),
+                    (SELECT MAX(started_at) FROM task_episodes e WHERE e.card = issues.id AND e.ended_at IS NULL) FROM issues
              WHERE session = ?1 AND status IN ({statuses}) AND COALESCE(archived,0) = 0 AND deleted IS NULL
              ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, pos"
         ))?;
@@ -494,7 +510,8 @@ async fn projection(State(state): State<AppState>, Path(worker): Path<String>, Q
             .query_map([&w], |r| {
                 let deps: String = r.get(3)?;
                 Ok(QCard { id: r.get(0)?, title: r.get(1)?, status: r.get(2)?,
-                    depends_on: serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default(), blocked_on: r.get(4)? })
+                    depends_on: serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default(), blocked_on: r.get(4)?,
+                    attempt_started_at: r.get(5)? })
             })?
             .collect::<Result<_, _>>()?;
         let ids: BTreeSet<&str> = queue.iter().map(|c| c.id.as_str()).collect();
@@ -673,7 +690,7 @@ mod tests {
     #[test]
     fn a_projection_orders_by_dependency_names_outside_blockers_and_dates_at_the_workers_pace() {
         let q = |id: &str, deps: &[&str]| QCard { id: id.into(), title: format!("move {id}"), status: "todo".into(),
-            depends_on: deps.iter().map(|d| d.to_string()).collect(), blocked_on: String::new() };
+            depends_on: deps.iter().map(|d| d.to_string()).collect(), blocked_on: String::new(), attempt_started_at: None };
         // C depends on B, which comes later in board order; B waits on X outside the queue.
         let queue = vec![q("C", &["B"]), q("B", &["X"]), q("A", &[])];
         let own: Vec<DoneCard> = (0..4).map(|i| DoneCard { card: format!("D{i}"), minutes: 10.0, tokens: None }).collect();
@@ -686,6 +703,14 @@ mod tests {
         assert_eq!(p["work_minutes"]["p50"].as_f64(), Some(30.0), "three cards at the worker's 10-minute median, calibration 1");
         assert_eq!(p["pace"]["days_per_finished_card"].as_f64(), Some(2.0), "4 finished in 8 days");
         assert_eq!(p["finish_by"]["p50"].as_str().map(|s| s.starts_with("1970-01-07")), Some(true), "three cards at 2 days each");
+        // A card in doing whose open attempt ran 25 min against a 10 min p75 is flagged; 5 min is not.
+        let mut doing = q("D", &[]);
+        doing.attempt_started_at = Some(-25 * 60);
+        let p = project(&[doing.clone()], &own, &own, &titles, &BTreeSet::new(), &Pace { finished_cards: 4, days: 8.0, now: 0 });
+        assert_eq!(p["cards"][0]["over_estimate"]["elapsed_minutes"].as_f64(), Some(25.0));
+        doing.attempt_started_at = Some(-5 * 60);
+        let p = project(&[doing], &own, &own, &titles, &BTreeSet::new(), &Pace { finished_cards: 4, days: 8.0, now: 0 });
+        assert!(p["cards"][0]["over_estimate"].is_null(), "inside its estimate");
     }
 
     #[test]

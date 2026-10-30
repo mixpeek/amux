@@ -8978,6 +8978,8 @@ if "work_minutes" in d:
     print("%s: %s open cards%s." % (d["worker"], d["n_considered"], " (with backlog)" if d.get("include_backlog") else ""))
     for x in d["cards"]:
         b = (" blocked by " + ", ".join(x["blocked_by"])) if x["blocked_by"] else ""
+        if x.get("over_estimate"):
+            b += "  OVER ESTIMATE: %s min so far, %s expected" % (x["over_estimate"]["elapsed_minutes"], x["over_estimate"]["expected_minutes_p75"])
         print("  %-10s %-7s %4.0f min (to %4.0f)  done after %5.0f min%s  %s" % (x["card"], x["status"], x["minutes_p50"], x["minutes_p75"], x["work_done_after_minutes"], b, x["title"][:50]))
     print("Work time: %s min (pessimistic %s)%s." % (wm["p50"], wm["p75"], (", after scaling by %sx: your past cards took that many times their estimate" % c["actual_over_estimate"]) if c else ""))
     if pace:
