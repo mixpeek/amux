@@ -10,7 +10,10 @@ never a second log. Retention: `AMUX_REQLOG_RETAIN_DAYS` (default 14).
 
 All queries are GET against the rust origin. `SINCE=$(( $(date +%s) - 86400 ))`.
 `total_matched` is the pre-limit count — use it for volumes; never infer volume
-from a capped `events` page (limit max 2000).
+from a capped `events` page (limit max 2000). It is `null`, with
+`total_matched_unmeasured` saying why, when the count ran past its time budget
+(`AMUX_LOGS_COUNT_BUDGET_MS`, default 5000; AF-1044). A null is not a zero:
+narrow `since`, or read the volume from `/api/logs/stats`.
 
 **COVERAGE (changed 2026-08-09, AF-36 — read this before trusting an all-clear.)**
 The table now carries BOTH origins. It used to hold only rust-served requests, and
