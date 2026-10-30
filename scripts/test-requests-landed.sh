@@ -27,14 +27,15 @@ cat > "$T/api.py" <<PY
 import http.server, json, sys
 import os
 SESS = [{"name": "w-other", "dir": "$T/other"}, {"name": "w-srv", "dir": "$T/srv"}]
-HEALTH = {} if os.path.exists("$T/no-commit") else {"commit": "0" * 40}
+def health():  # read per request: the test flips it between runs
+    return {} if os.path.exists("$T/no-commit") else {"commit": "0" * 40}
 HIST = [{"id": 101, "ts": $NOW - 3600000, "session": "w-other", "sender": "owner", "kind": "human", "text": "post the launch thread"},
         {"id": 202, "ts": $NOW - 3600000, "session": "w-srv", "sender": "owner", "kind": "human", "text": "fix the card count"}]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         p = self.path
-        body = SESS if p.startswith("/api/sessions") else (HEALTH if p.startswith("/health") else None) if p.startswith("/health") \
+        body = SESS if p.startswith("/api/sessions") else health() if p.startswith("/health") \
             else (HIST if "offset=0" in p else []) if p.startswith("/api/history") \
             else {"measured": True, "tasks": {}} if p.startswith("/api/task-history/at") else {}
         b = json.dumps(body).encode()
