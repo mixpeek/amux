@@ -60,6 +60,9 @@ pub(crate) struct Attempt {
     pub ended_at: i64,
     pub outcome: String,
     pub reason: String,
+    /// What the card said it waited on when the attempt closed (or, for an
+    /// attempt recorded before that was captured, the card's fields now).
+    pub waiting: String,
 }
 
 /// What an attempt's time went to, and who can fix it.
@@ -72,7 +75,8 @@ pub(crate) fn category(a: &Attempt) -> (&'static str, &'static str) {
         _ if r.starts_with("auto-claim released") => ("harness_claim_release", "amux"),
         _ if r.starts_with("Auto-reclaimed: lease expired") => ("lease_expired", "worker"),
         _ if r.starts_with("Auto-parked from Doing") => ("blocked", "board"),
-        "parked" | "released" | "discarded" => ("self_parked", "worker"),
+        "parked" | "released" | "discarded" if !a.waiting.trim().is_empty() => ("parked_waiting", "dependency"),
+        "parked" | "released" | "discarded" => ("parked_no_reason", "worker"),
         _ => ("abandoned", "worker"),
     }
 }
@@ -83,7 +87,8 @@ fn advice(kind: &str) -> &'static str {
         "harness_claim_release" => "amux claimed cards it could not deliver (the lane was held, usually at its usage limit); amux should not claim for a held lane",
         "lease_expired" => "cards were held while the worker sat idle or was not running, until amux reclaimed them; release a card before going idle",
         "blocked" => "cards were started before their dependencies were done; pick cards whose depends_on are done",
-        "self_parked" => "attempts the worker set aside itself; split cards that are too big and ask early when one is unclear",
+        "parked_waiting" => "attempts parked on something the card names (another card, a build, a person); the reasons below say what, and clearing them is where this time comes back",
+        "parked_no_reason" => "attempts the worker set aside without saying what it waits on; say it on the card when parking, and split cards that are too big",
         "abandoned" => "attempts that ended without an outcome",
         "needs_input" => "time waiting on the owner; batch questions and keep working on another card meanwhile",
         "review" => "time waiting in review",
@@ -171,6 +176,7 @@ pub(crate) fn estimate(title: &str, own: &[DoneCard], fleet: &[DoneCard], titles
 pub(crate) fn summarize(worker: &str, attempts: &[Attempt], tokens: &HashMap<String, f64>, days: f64) -> Value {
     let mine: Vec<&Attempt> = attempts.iter().filter(|a| a.worker == worker).collect();
     let mut by: BTreeMap<&str, (usize, f64, &str, Vec<String>)> = BTreeMap::new();
+    let mut waits: BTreeMap<String, (usize, f64)> = BTreeMap::new();
     let mut per_card: BTreeMap<&str, usize> = BTreeMap::new();
     let mut total_h = 0.0;
     for a in &mine {
@@ -184,7 +190,15 @@ pub(crate) fn summarize(worker: &str, attempts: &[Attempt], tokens: &HashMap<Str
             e.3.push(a.card.clone());
         }
         *per_card.entry(&a.card).or_default() += 1;
+        if kind == "parked_waiting" {
+            let w: String = a.waiting.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+            let e = waits.entry(w).or_default();
+            e.0 += 1;
+            e.1 += h;
+        }
     }
+    let mut waited_on: Vec<(String, (usize, f64))> = waits.into_iter().collect();
+    waited_on.sort_by(|a, b| b.1 .1.partial_cmp(&a.1 .1).unwrap_or(std::cmp::Ordering::Equal));
     let owned: Vec<Attempt> = mine.iter().map(|a| (*a).clone()).collect();
     let done = done_cards(&owned, tokens);
     let rework: usize = per_card.values().map(|n| n.saturating_sub(1)).sum();
@@ -221,6 +235,8 @@ pub(crate) fn summarize(worker: &str, attempts: &[Attempt], tokens: &HashMap<Str
                               "tokens": spread(done.iter().filter_map(|d| d.tokens).collect())},
         "waste": waste,
         "top_bottleneck": top,
+        // What parked attempts were waiting on, costliest first.
+        "waited_on": waited_on.iter().take(8).map(|(w, (n, h))| json!({"waiting": w, "attempts": n, "hours": (h * 10.0).round() / 10.0})).collect::<Vec<_>>(),
     })
 }
 
@@ -232,13 +248,19 @@ struct Data {
 
 fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
     let mut stmt = conn.prepare(
-        "SELECT card, worker, started_at, ended_at, outcome, COALESCE(reason, '') FROM task_episodes
-         WHERE started_at >= ?1 AND ended_at IS NOT NULL",
+        "SELECT e.card, e.worker, e.started_at, e.ended_at, e.outcome, COALESCE(e.reason, ''),
+                COALESCE(e.card_end, ''),
+                TRIM(COALESCE(i.blocked_on, '') || ' ' || COALESCE(i.waiting_on, '') || ' ' || COALESCE(i.source_ref, ''))
+         FROM task_episodes e LEFT JOIN issues i ON i.id = e.card
+         WHERE e.started_at >= ?1 AND e.ended_at IS NOT NULL",
     )?;
     let attempts = stmt
         .query_map([since], |r| {
+            let end: String = r.get(6)?;
+            let now: String = r.get(7)?;
             Ok(Attempt { card: r.get(0)?, worker: r.get(1)?, started_at: r.get(2)?, ended_at: r.get(3)?,
-                outcome: r.get::<_, Option<String>>(4)?.unwrap_or_default(), reason: r.get(5)? })
+                outcome: r.get::<_, Option<String>>(4)?.unwrap_or_default(), reason: r.get(5)?,
+                waiting: waiting_from(&end).unwrap_or(now) })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut stmt = conn.prepare(
@@ -254,6 +276,20 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
         }
     }
     Ok(Data { attempts, tokens, titles })
+}
+
+/// What a card said it waited on, from the attempt's end snapshot; None when
+/// the snapshot predates that capture.
+fn waiting_from(card_end: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(card_end).ok()?;
+    let w = v.get("waiting")?;
+    let parts: Vec<&str> = ["blocked_on", "waiting_on", "depends_on", "source_ref"]
+        .iter()
+        .filter_map(|k| w.get(*k).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some(parts.join(" | "))
 }
 
 fn window(q: &Q) -> (f64, i64) {
@@ -336,7 +372,7 @@ mod tests {
     use super::*;
 
     fn a(card: &str, worker: &str, minutes: i64, outcome: &str, reason: &str) -> Attempt {
-        Attempt { card: card.into(), worker: worker.into(), started_at: 1_000, ended_at: 1_000 + minutes * 60, outcome: outcome.into(), reason: reason.into() }
+        Attempt { card: card.into(), worker: worker.into(), started_at: 1_000, ended_at: 1_000 + minutes * 60, outcome: outcome.into(), reason: reason.into(), waiting: String::new() }
     }
 
     #[test]
@@ -358,11 +394,25 @@ mod tests {
         assert_eq!(kind("harness_claim_release")["owner"], "amux");
         assert_eq!(kind("lease_expired")["owner"], "worker");
         assert_eq!(kind("blocked")["owner"], "board");
-        assert_eq!(kind("self_parked")["hours"], 1.5);
-        assert_eq!(s["top_bottleneck"]["kind"], "self_parked", "the costliest waste leads");
+        assert_eq!(kind("parked_no_reason")["hours"], 1.5);
+        assert_eq!(s["top_bottleneck"]["kind"], "parked_no_reason", "the costliest waste leads");
         // A finished card's minutes include its rework: C2 is 90 + 20.
         assert_eq!(s["per_finished_card"]["minutes"]["p25"].as_f64(), Some(30.0));
         assert_eq!(s["per_finished_card"]["minutes"]["p75"].as_f64(), Some(110.0));
+    }
+
+    #[test]
+    fn a_park_that_names_what_it_waits_on_is_told_apart_from_one_that_does_not() {
+        let mut waiting = a("W1", "w", 60, "parked", "");
+        waiting.waiting = "after the b13b roll serves on the TS shard".into();
+        let rows = vec![waiting, a("W2", "w", 30, "parked", ""), a("W3", "w", 10, "done", "")];
+        let s = summarize("w", &rows, &HashMap::new(), 30.0);
+        let kind = |k: &str| s["waste"].as_array().unwrap().iter().find(|w| w["kind"] == k).cloned();
+        assert_eq!(kind("parked_waiting").unwrap()["owner"], "dependency");
+        assert_eq!(kind("parked_no_reason").unwrap()["hours"], 0.5);
+        assert_eq!(s["waited_on"][0]["waiting"], "after the b13b roll serves on the TS shard", "what it waited on is listed");
+        assert_eq!(waiting_from(r#"{"waiting":{"blocked_on":"MG-2292","source_ref":"shard hold","depends_on":""}}"#).as_deref(), Some("MG-2292 | shard hold"));
+        assert_eq!(waiting_from(r#"{"status":"backlog"}"#), None, "an older snapshot falls back to the card's fields now");
     }
 
     #[test]

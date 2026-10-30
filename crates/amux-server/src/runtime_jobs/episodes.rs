@@ -190,7 +190,8 @@ fn clip_text(s: &str) -> (String, usize) {
 fn card_snapshot(conn: &Connection, card: &str, end: bool) -> Value {
     let row = conn.query_row(
         "SELECT title, COALESCE(desc,''), COALESCE(type,''), COALESCE(status,''), \
-                acceptance_criteria, evidence, COALESCE(epic,''), COALESCE(depends_on,'') \
+                acceptance_criteria, evidence, COALESCE(epic,''), COALESCE(depends_on,''), \
+                COALESCE(blocked_on,''), COALESCE(waiting_on,''), COALESCE(source_ref,''), COALESCE(next_action,'') \
          FROM issues WHERE id = ?1",
         [card],
         |r| {
@@ -203,17 +204,23 @@ fn card_snapshot(conn: &Connection, card: &str, end: bool) -> Value {
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, String>(6)?,
                 r.get::<_, String>(7)?,
+                [r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, String>(10)?, r.get::<_, String>(11)?],
             ))
         },
     );
-    let Ok((title, desc, typ, status, criteria, evidence, epic, deps)) = row else {
+    let Ok((title, desc, typ, status, criteria, evidence, epic, deps, [blocked_on, waiting_on, source_ref, next_action])) = row else {
         return json!({"missing": true});
     };
     let (desc, desc_chars) = clip_text(&desc);
     if end {
         let (evidence, evidence_chars) = clip_text(evidence.as_deref().unwrap_or(""));
+        // What the card waited on when the attempt closed: a parked attempt's
+        // reason lives here (the worker rewrites source_ref or sets blocked_on
+        // as it parks), and the velocity breakdown reads it (velocity.rs).
         json!({"status": status, "evidence": evidence, "evidence_chars": evidence_chars,
-               "desc": desc, "desc_chars": desc_chars})
+               "desc": desc, "desc_chars": desc_chars,
+               "waiting": {"depends_on": deps, "blocked_on": blocked_on, "waiting_on": waiting_on,
+                           "source_ref": source_ref, "next_action": next_action}})
     } else {
         json!({"title": title, "desc": desc, "desc_chars": desc_chars, "type": typ,
                "status": status, "acceptance_criteria": criteria, "epic": epic,
