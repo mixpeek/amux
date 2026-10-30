@@ -3204,6 +3204,13 @@ mod tests {
     /// AMUX_SMOKE_URL=http://127.0.0.1:<p> AMUX_SMOKE_PASSWORD="$pw" \
     ///   cargo test -p amux-server --lib live_smoke -- --ignored --nocapture
     /// ```
+    ///
+    /// `AMUX_SMOKE_MODEL` pins the model for the turn; unset means the fleet
+    /// default applies. It exists because the fleet default may be a FREE model
+    /// whose quota is spent (measured: `provider.free-limit`, 429) — a paid
+    /// model through `AMUX_SMOKE_MODEL` is how a full pass gets forced WITHOUT
+    /// baking a paid dependency into the repo. Either way the model used is
+    /// printed, so the run's evidence names it.
     #[tokio::test]
     #[ignore = "live smoke: needs a running `opencode serve` and provider quota"]
     async fn a_live_smoke_a_serve_worker_completes_and_steers_a_real_turn() {
@@ -3221,15 +3228,26 @@ mod tests {
             .with_transport(Transport::Serve)
             .with_serve_client(client.clone());
         let w = worker_id("SM001");
+        // Unset → the fleet default (`effective_model`). Set → that exact
+        // model, e.g. `AMUX_SMOKE_MODEL=opencode-go/deepseek-v4.1-flash` when
+        // the free default's quota is spent.
+        let smoke_model = std::env::var("AMUX_SMOKE_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
         proto.register(
             w.clone(),
             WorkerConfig {
                 provider: CliProvider::OpenCode,
                 cwd,
                 binary: None,
-                model: None,
+                model: smoke_model.clone(),
                 conversation: None,
             },
+        );
+        eprintln!(
+            "smoke: model = {}",
+            smoke_model.unwrap_or_else(|| format!("{} (fleet default)", crate::opencode::default_model()))
         );
         let mut rx = proto.events(&w);
 
