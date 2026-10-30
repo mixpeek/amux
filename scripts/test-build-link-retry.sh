@@ -19,7 +19,17 @@ run_case() {  # $1 = failure text the fake cargo prints while the stale tree exi
   mkdir -p "$REPO/crates" "$REPO/scripts" "$FAKE_HOME/.cargo/bin" "$(dirname "$INSTALL")"
   printf '[workspace]\n' > "$REPO/Cargo.toml"
   printf 'fixture\n' > "$REPO/crates/input.rs"
-  cp "$ROOT/scripts/cargo-target-guard.py" "$REPO/scripts/"
+  # A stub guard: the real one refuses to delete while it cannot identify every
+  # process on the host, which a hardened Linux CI runner never lets it do
+  # ("process executable unmeasured: pid 1219", red on cab92a17a). Its own
+  # tests cover that. Here it records the clear the builder asked for and does it.
+  cat > "$REPO/scripts/cargo-target-guard.py" <<GUARD
+import shutil, sys
+a = sys.argv[1:]
+open("$TMP/guard.calls", "a").write(" ".join(a) + "\\n")
+shutil.rmtree(a[a.index("--path") + 1])
+print('{"verdict": "cargo_reclaim_done", "measured": true}')
+GUARD
   cat > "$REPO/scripts/safe-cargo.sh" <<EOF
 #!/bin/sh
 echo call >> "$TMP/cargo.calls"
@@ -56,12 +66,14 @@ EOF
   cat "$TMP/stdout" "$TMP/build.log" 2>/dev/null > "$TMP/out"
   CALLS=$(wc -l < "$TMP/cargo.calls" | tr -d ' ')
   RAN=$("$INSTALL")
+  GUARD=$(cat "$TMP/guard.calls" 2>/dev/null || true)
 }
 
 run_case 'ld: symbol(s) not found for architecture arm64'
 if grep -q 'verdict=deploy_incremental_link_retry' "$TMP/out"; then pass=$((pass+1)); else echo "FAIL: no deploy_incremental_link_retry line"; cat "$TMP/out"; exit 1; fi
 if [ "$CALLS" -eq 2 ]; then pass=$((pass+1)); else echo "FAIL: expected 2 cargo builds (fail, retry), got $CALLS"; cat "$TMP/out"; exit 1; fi
 if [ "${RAN#new-build}" != "$RAN" ]; then pass=$((pass+1)); else echo "FAIL: the retried build was not installed (runs: $RAN)"; cat "$TMP/out"; exit 1; fi
+case "$GUARD" in "clear --target "*"/deploy/incremental/amux_server-stale"*) pass=$((pass+1)) ;; *) echo "FAIL: the stale tree was not cleared through the target guard (calls: $GUARD)"; exit 1 ;; esac
 rm -rf "${TMP:?}"
 
 run_case 'error[E0425]: cannot find value `x` in this scope'
