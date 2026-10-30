@@ -238,5 +238,26 @@ printf '{"canonical_url":"https://localhost:18824","pid":%s}\n' "$$" > "$FAKE_HO
 run_builder "$AUTH"
 expect grep -q 'https://localhost:18824/api/board/overlap/deployment-permit' "$CURL_TRACE"
 
+# AF-1055: the gate file says when its target was first named, and keeps that
+# time while the target is unchanged, so the server can tell a builder that has
+# had a green commit for 30 minutes from one that got it a minute ago.
+GATE_STATE="$TMP/activation-gate.json"
+eval "$(awk '/^gate_state\(\) \{/,/^\}/' "$ROOT/scripts/rust-auto-build-authority.sh")"
+since_of() { sed -n 's/.*"target_since":\([0-9][0-9]*\).*/\1/p' "$GATE_STATE"; }
+printf '{"at":1,"verdict":"ci_gate_held_back","tip":"t0","tip_state":"pending","target":"tgtA","target_since":1000,"held":2}\n' > "$GATE_STATE"
+gate_state ci_gate_held_back t1 pending tgtA 3
+expect test "$(since_of)" = 1000
+gate_state ci_gate_clear t2 green tgtB 0
+expect test "$(since_of)" -gt 1000
+first_b=$(since_of)
+gate_state ci_gate_clear t2 green tgtB 0
+expect test "$(since_of)" = "$first_b"
+gate_state ci_gate_no_green t3 red "" 4
+expect grep -q '"target":""' "$GATE_STATE"
+# A file from before this field has no target_since: the next write starts it.
+printf '{"at":1,"verdict":"ci_gate_held_back","tip":"t0","tip_state":"pending","target":"tgtC","held":2}\n' > "$GATE_STATE"
+gate_state ci_gate_held_back t1 pending tgtC 2
+expect test -n "$(since_of)"
+
 echo "test-build-activation-authority: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

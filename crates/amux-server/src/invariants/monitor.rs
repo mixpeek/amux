@@ -3302,6 +3302,9 @@ async fn served_commit_check() -> Vec<InvariantResult> {
             gate_hold: crate::api::self_update::gate_state()
                 .as_ref()
                 .and_then(|g| checks::gate_hold_reason(g, served)),
+            target_wait_s: crate::api::self_update::gate_state()
+                .as_ref()
+                .and_then(|g| checks::target_wait_s(g, served, chrono::Utc::now().timestamp())),
             restart_pending: installed_awaiting_restart(served),
         }),
         "",

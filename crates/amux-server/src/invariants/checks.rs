@@ -765,6 +765,18 @@ pub struct DeployLag {
     /// behind, and its text sent the reader to the builder log. The builder
     /// was fine. main was red, and the fix was in CI, not in the builder.
     pub gate_hold: Option<String>,
+    /// How long the activation gate's green TARGET has been waiting for the
+    /// builder, when that target is not the served commit ([`target_wait_s`]).
+    /// None when the gate names no target, names the served commit, or its
+    /// file predates `target_since`.
+    ///
+    /// AF-1055: `oldest_unserved_age_s` starts when origin/main moves, so it
+    /// counts CI's time too. On 2026-10-30 main moved past 219050158 at 07:14,
+    /// its tip went red and the next commits sat pending; 2cedcd642 turned
+    /// green at 07:46 and the builder started it at 07:47. The tick at 07:45
+    /// failed with 1849 s and blamed the builder, which had had nothing green
+    /// to ship for all but a minute of it.
+    pub target_wait_s: Option<i64>,
     /// A build newer than the served one is INSTALLED and the server has not
     /// restarted onto it yet (AF-1028). The builder installs, then the server
     /// re-execs; in between, /health still names the old commit. On
@@ -782,6 +794,19 @@ pub const RESTART_PENDING_S: i64 = 300;
 
 /// The gate's own words for a hold, from `activation-gate.json`. Pure so the
 /// mapping is tested; the caller reads the file.
+/// Seconds the gate's green target has waited for the builder: `now` minus the
+/// gate file's `target_since`, when the target is set and is not `served`.
+/// Pure so the comparison is tested; the caller passes the clock.
+pub fn target_wait_s(gate: &serde_json::Value, served: &str, now: i64) -> Option<i64> {
+    let target = gate["target"].as_str().unwrap_or("");
+    let n = target.len().min(served.len());
+    if target.is_empty() || (n >= 7 && target[..n] == served[..n]) {
+        return None;
+    }
+    let since = gate["target_since"].as_i64()?;
+    Some((now - since).max(0))
+}
+
 pub fn gate_hold_reason(gate: &serde_json::Value, served: &str) -> Option<String> {
     let tip = gate["tip"].as_str().unwrap_or("");
     let state = gate["tip_state"].as_str().unwrap_or("unknown");
@@ -919,17 +944,29 @@ pub fn served_commit_is_current(
         "age_source": lag.age_source,
         "gate_hold": lag.gate_hold,
         "restart_pending": lag.restart_pending,
+        "target_wait_s": lag.target_wait_s,
     });
-    if lag.oldest_unserved_age_s <= threshold_s || lag.restart_pending.is_some() {
+    // The builder's own clock (AF-1055): with a green target named, judge it by
+    // how long THAT has waited, not by how long main has been ahead.
+    let builder_late = match lag.target_wait_s {
+        Some(w) => w > threshold_s,
+        None => true,
+    };
+    if lag.oldest_unserved_age_s <= threshold_s || lag.restart_pending.is_some() || !builder_late {
         // Behind, but not yet longer than a build plausibly takes.
         return vec![InvariantResult::pass(ID).evidence(evidence)];
     }
-    let why = match &lag.gate_hold {
-        Some(hold) => format!(
+    let why = match (&lag.gate_hold, lag.target_wait_s) {
+        (Some(hold), _) => format!(
             "The builder is not the fault: {hold}. Fix main's CI (scripts/main-ci-watch.sh \
              keeps a card on the amux lane for it); the server follows once a commit is green."
         ),
-        None => "The builder may be ticking and still shipping nothing; check \
+        (None, Some(w)) => format!(
+            "The builder has had a green commit to ship for {w}s and has not; check \
+             `cargo_build_backoff`, SHELL-RUN DEFER and BUILD FAILED in the builder log \
+             (AMUX-4947/AMUX-4957)."
+        ),
+        (None, None) => "The builder may be ticking and still shipping nothing; check \
                  `cargo_build_backoff` and BUILD FAILED in the builder log (AMUX-4947/AMUX-4957)."
             .to_string(),
     };
@@ -11139,8 +11176,39 @@ mod served_commit_tests {
             oldest_unserved_age_s: age,
             age_source: "origin_reflog_arrival".into(),
             gate_hold: None,
+            target_wait_s: None,
             restart_pending: None,
         }
+    }
+
+    /// AF-1055: 1849 s behind at 07:45 on 2026-10-30, but the green target had
+    /// been named about a minute earlier; the rest was CI. A green target the
+    /// builder has had for under the threshold passes; past it, the builder is
+    /// named with how long it has had something to ship.
+    #[test]
+    fn the_builder_is_judged_by_how_long_its_green_target_has_waited() {
+        let gate = serde_json::json!({"verdict": "ci_gate_held_back", "tip": "7dbe662fc553",
+            "tip_state": "pending", "target": "2cedcd642f5841ce31d270e7e7cee5ba6b0e53f5",
+            "target_since": 1_000, "held": 1});
+        let served = "219050158e0b";
+        assert_eq!(target_wait_s(&gate, served, 1_060), Some(60));
+        assert_eq!(target_wait_s(&gate, "2cedcd642f58", 1_060), None, "target already served");
+        assert_eq!(target_wait_s(&serde_json::json!({"target": "2cedcd642f58"}), served, 1_060), None,
+            "a gate file from before target_since says nothing");
+
+        let mut l = lag(4, 1_849);
+        l.served = served.into();
+        l.gate_hold = gate_hold_reason(&gate, served);
+        assert_eq!(l.gate_hold, None, "an unshipped target is the builder's");
+        l.target_wait_s = target_wait_s(&gate, served, 1_060);
+        let r = served_commit_is_current(Some(&l), "", 1_800);
+        assert_eq!(r[0].status, Status::Pass, "{:?}", r[0]);
+        assert_eq!(r[0].evidence["target_wait_s"], 60);
+
+        l.target_wait_s = Some(1_801);
+        let late = served_commit_is_current(Some(&l), "", 1_800);
+        assert_eq!(late[0].status, Status::Fail);
+        assert!(late[0].observed.contains("green commit to ship for 1801s"), "{}", late[0].observed);
     }
 
     /// AF-1028: past the threshold, a freshly installed newer build is a
