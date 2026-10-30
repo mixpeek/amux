@@ -1,5 +1,79 @@
 [
   {
+    "hash": "a4038b386cfa02fd03aff52f4f25b5f8d65ea612",
+    "short": "a4038b38",
+    "title": "An HTML folder opens as a website, and app links stay in the viewer",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "apps",
+      "files",
+      "dashboard"
+    ],
+    "description": "Open an HTML file from the Files tab and amux serves its whole folder as a website, with working links between pages, on a private address only you can open for 12 hours. Links inside an app now stay in the viewer instead of breaking out to a new tab, and an app whose session lapsed asks to reopen rather than showing an error."
+  },
+  {
+    "hash": "0d6ad3f0e3faf0dd5b5578f1680df0b1e0aacfe9",
+    "short": "0d6ad3f0",
+    "title": "A worker you @mention in Messages sees only its own thread",
+    "date": "2026-10-30",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "workers"
+    ],
+    "description": "When you @mention a worker in a reply, it now gets that thread's earlier posts and nothing else, and a mention that starts a new thread arrives with no unrelated history. Workers answer the question you asked without picking up other conversations from the same channel."
+  },
+  {
+    "hash": "7997643c266a01ebc5dbaecf91b567e41cd33056",
+    "short": "7997643c",
+    "title": "The dashboard returns to live updates after a reconnect",
+    "date": "2026-10-30",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "realtime",
+      "performance"
+    ],
+    "description": "After a few failed reconnects, for example during a deploy restart, a dashboard window fell back to polling the whole board every five seconds and never went back. It now keeps retrying the live stream and stops polling the moment it reconnects, which also clears a stuck Sync error pill when you come back online."
+  },
+  {
+    "hash": "87fc8ca160c3c98c680f10277b44db12d36325fa",
+    "short": "87fc8ca1",
+    "title": "Deploys go live faster and roll back on their own",
+    "date": "2026-10-29",
+    "type": "feat",
+    "tags": [
+      "deploy",
+      "reliability"
+    ],
+    "description": "A new main commit goes live as soon as its fast checks pass, while the long end-to-end suite runs after the deploy. amux compiles the build while CI runs, and if the new build comes up unhealthy it rolls back to the last good one without anyone stepping in."
+  },
+  {
+    "hash": "3189c6825c7c3ca51fcbf21c2782d434f6055040",
+    "short": "3189c682",
+    "title": "Storage tiers move idle folders to a cold drive and back",
+    "date": "2026-10-29",
+    "type": "feat",
+    "tags": [
+      "disk",
+      "storage"
+    ],
+    "description": "The Disk tab has a Storage tiers section: pick a cold drive, add folders to watch, and amux moves each folder to the drive when it sits idle and back when it is used. A link stays at the original path, so you and your agents keep using the same path and never see the move. Folders that keep growing are tiered one subfolder at a time."
+  },
+  {
+    "hash": "1980b02334b51a7fe474ac7b5934e3e32f740394",
+    "short": "1980b023",
+    "title": "A saved Mac workspace reopens on the right server",
+    "date": "2026-10-29",
+    "type": "fix",
+    "tags": [
+      "desktop",
+      "mac app"
+    ],
+    "description": "A workspace saved on one Mac used to reopen every tab on the other Mac's own localhost, which showed no workers. Saved workspaces and open windows now remember the server itself, so a workspace opens on the same amux server from any Mac that reaches it."
+  },
+  {
     "hash": "9bc75e4e4abb94143eee54864f72d9962b2e57c1",
     "short": "9bc75e4e",
     "title": "Click an attachment's icon to preview it",
