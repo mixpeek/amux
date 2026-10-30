@@ -6181,6 +6181,29 @@ mod closed_predecessor_tests {
         assert!(!super::covered_by_closed_predecessor(0.0, closed), "no row time: files as before");
         assert!(!super::covered_by_closed_predecessor(1_793_334_175.0, 0), "an unknown close time: files as before");
     }
+
+    /// AF-1038: the predecessor is the card closed MOST RECENTLY, not the one
+    /// whose id sorts last as a string ("AMUX-6539" > "AF-1035").
+    #[test]
+    fn the_predecessor_is_the_most_recently_closed_card() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, archived INTEGER DEFAULT 0, deleted TEXT, updated INTEGER);",
+        )
+        .unwrap();
+        let sig = "latency|outlier|ROLLUP|/api/board,/api/sessions|1793334175";
+        let ident = super::fault_identity(sig).expect("a rollup has a fault identity");
+        for (id, updated) in [("AMUX-6539", 1_793_305_512_i64), ("AF-1035", 1_793_340_771)] {
+            conn.execute(
+                "INSERT INTO issues (id, source_ref, status, archived, deleted, updated) VALUES (?1, ?2, 'done', 0, NULL, ?3)",
+                rusqlite::params![id, format!("autofix:{ident}|1"), updated],
+            )
+            .unwrap();
+        }
+        let (id, _, closed_at) = super::released_predecessor(&conn, sig).expect("a predecessor");
+        assert_eq!((id.as_str(), closed_at), ("AF-1035", 1_793_340_771));
+        assert!(super::covered_by_closed_predecessor(1_793_334_175.0, closed_at), "AF-1038's stale occurrence is covered");
+    }
 }
 
 #[cfg(test)]
@@ -8000,6 +8023,10 @@ fn open_card_for_fault(conn: &Connection, signature: &str) -> Option<String> {
 /// Ordered by id DESC so the most recent predecessor wins, and returns the
 /// disposition rather than just the id, because "archived" and "discarded" mean
 /// different things to the reader: one was hidden, the other was judged.
+/// The MOST RECENTLY CLOSED card for this fault, by `updated` (AF-1038). It
+/// was `ORDER BY id DESC`, a string sort: "AMUX-6539" sorts after "AF-1035",
+/// so a card closed nine hours earlier was the predecessor, its old close time
+/// made every occurrence look new, and the rollup refiled after each close.
 fn released_predecessor(conn: &Connection, signature: &str) -> Option<(String, String, i64)> {
     let ident = fault_identity(signature)?;
     conn.query_row(
@@ -8011,7 +8038,7 @@ fn released_predecessor(conn: &Connection, signature: &str) -> Option<(String, S
               WHERE source_ref LIKE ?1 \
                 AND deleted IS NULL \
                 AND (archived = 1 OR status NOT IN ({live})) \
-              ORDER BY id DESC LIMIT 1",
+              ORDER BY COALESCE(updated, 0) DESC, rowid DESC LIMIT 1",
             live = crate::db::board_store::live_work_status_list()
         ),
         rusqlite::params![format!("autofix:{ident}|%")],
