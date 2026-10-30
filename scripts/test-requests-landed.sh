@@ -30,14 +30,19 @@ SESS = [{"name": "w-other", "dir": "$T/other"}, {"name": "w-srv", "dir": "$T/srv
 def health():  # read per request: the test flips it between runs
     return {} if os.path.exists("$T/no-commit") else {"commit": "0" * 40}
 HIST = [{"id": 101, "ts": $NOW - 3600000, "session": "w-other", "sender": "owner", "kind": "human", "text": "post the launch thread"},
-        {"id": 202, "ts": $NOW - 3600000, "session": "w-srv", "sender": "owner", "kind": "human", "text": "fix the card count"}]
+        {"id": 202, "ts": $NOW - 3600000, "session": "w-srv", "sender": "owner", "kind": "human", "text": "fix the card count"},
+        {"id": 303, "ts": $NOW - 1800000, "session": "w-other", "sender": "owner", "kind": "human", "text": "hows mac perf?"},
+        {"id": 404, "ts": $NOW - 1700000, "session": "w-other", "sender": "owner", "kind": "human", "text": "make sure u fix it"}]
+# The server's answered rule (AF-1059), as GET /api/task-history/requests reports it.
+REQS = {"w-other": [{"id": "MSG-303", "status": "answered", "evidence": "replied: The Mac is healthy"}]}
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         p = self.path
         body = SESS if p.startswith("/api/sessions") else health() if p.startswith("/health") \
             else (HIST if "offset=0" in p else []) if p.startswith("/api/history") \
-            else {"measured": True, "tasks": {}} if p.startswith("/api/task-history/at") else {}
+            else {"measured": True, "tasks": {}} if p.startswith("/api/task-history/at") \
+            else {"measured": True, "requests": REQS.get(p.split("session=")[1].split("&")[0], [])} if p.startswith("/api/task-history/requests") else {}
         b = json.dumps(body).encode()
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b)
 s = http.server.HTTPServer(("127.0.0.1", 0), H)
@@ -56,7 +61,15 @@ pass=$((pass+1))
 # "held" is the same state, labelled when main's CI is still running.
 echo "$OUT" | grep -E '^(on-main|held) +w-srv +MSG-202' >/dev/null || fail "an amux-repo commit the build lacks must stay on main, not live (control): $OUT"
 pass=$((pass+1))
-echo "$OUT" | grep -q '1 on main not live, 0 live, 1 landed in a repo this server does not deploy' || fail "the summary counts them apart: $OUT"
+echo "$OUT" | grep -q '1 on main not live, 0 live, 1 landed in a repo this server does not deploy, 1 answered' || fail "the summary counts them apart: $OUT"
+pass=$((pass+1))
+# AF-1059: a question the server marked answered reads answered with the reply;
+# an ask that produced neither a commit nor an answer stays open.
+echo "$OUT" | grep -E '^answered +w-other +MSG-303 ' >/dev/null && echo "$OUT" | grep -q 'replied: The Mac is healthy' || fail "an answered question reads answered with its reply: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -E '^open +w-other +MSG-404' >/dev/null || fail "an unanswered ask stays open: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -q ', 1 answered, ' || fail "the summary counts answered: $OUT"
 pass=$((pass+1))
 # Land review F1: /health with no commit makes live() None for EVERY repo; the
 # amux repo's work must stay on main, not read "landed elsewhere".

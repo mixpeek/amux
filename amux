@@ -9049,6 +9049,12 @@ while True:
     offset += len(page)
     if min(h["ts"] for h in page) < cutoff or offset > 50000:
         break
+answered_cache = {}
+def answered_for(w):
+    if w not in answered_cache:
+        d = get("/api/task-history/requests?session=%s&days=%g" % (urllib.parse.quote(w), days)) or {}
+        answered_cache[w] = {r["id"]: r.get("evidence", "") for r in d.get("requests") or [] if r.get("status") == "answered"}
+    return answered_cache[w]
 by_session = {}
 for h in owner_hist:
     by_session.setdefault(h.get("session"), []).append(h)
@@ -9094,6 +9100,10 @@ for w in workers:
             else:
                 st = "on-main" if os.path.isdir(os.path.join(repo, "crates", "amux-server")) else "landed"
             ev = sha[:9]
+        elif ("MSG-" + mid) in answered_for(w):
+            # The server's rule, not a second copy of it (AF-1059): a question
+            # whose own turn ended with a reply before the next message.
+            st, ev = "answered", answered_for(w)["MSG-" + mid]
         else:
             st, ev = "open", ""
         if sha:
@@ -9126,7 +9136,7 @@ for r in rows:
     t = tasks_at.get(when.get(r["id"], "")) or {}
     r["task"] = t.get("task") or ""
     r["task_ts"] = t.get("ts")
-counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "landed", "closed")}
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "landed", "answered", "closed")}
 summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
@@ -9148,13 +9158,17 @@ if only_open:
 if raw:
     print(json.dumps(dict(summary, requests=rows), indent=1))
     sys.exit(0)
-order = {"open": 0, "on-main": 1, "live": 2, "landed": 2, "closed": 3}
+order = {"open": 0, "on-main": 1, "live": 2, "landed": 2, "answered": 3, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
-    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+    answered = r["status"] == "answered"
+    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"],
+                                              "" if answered else r["evidence"][:10], r["text"][:90]))
+    if answered:  # the reply is the disposition, too long for the sha column
+        print("%59s %s" % ("", r["evidence"][:120]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
-print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d closed%s" % (
-    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["landed"], counts["closed"],
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d answered, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["landed"], counts["answered"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
 if summary.get("held_by_ci"):
     g = summary["held_by_ci"]
