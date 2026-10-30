@@ -1389,8 +1389,11 @@ pub async fn owner_requests(
                     live.insert(sha.clone(), in_build.contains(sha));
                 }
             }
-            // A closed request's sha may be older than the window: ask per sha (few).
-            let pending: Vec<String> = closed_shas.iter().filter(|s| !live.contains_key(*s)).cloned().collect();
+            // Anything rev-list did not settle (a closed sha older than the
+            // window, or every sha if rev-list failed) is asked per sha; both
+            // sets are this worker's only, so that is a handful (land review F1).
+            let pending: Vec<String> = landed.values().chain(closed_shas.iter())
+                .filter(|s| !live.contains_key(*s)).cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
             for sha in &pending {
                 let mut cmd = std::process::Command::new("git");
                 cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, &build])
