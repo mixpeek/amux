@@ -8353,6 +8353,66 @@ function _cardBoardActive(name) {
   });
   return n;
 }
+// OWNER REQUESTS ON THE WORKER CARD (AF-1060). Ethan asked "is it done" by
+// message four times in a day; the requests ledger already knew. The card shows
+// how many of his asks are open and how many are on main but not yet live, from
+// GET /api/task-history/requests (the same rules as `amux requests`). One fetch
+// per worker every two minutes, three at a time; the template reads the cache
+// so a re-render never waits on it.
+const _ownerReqCache = {};
+const _ownerReqQueue = [];
+let _ownerReqInFlight = 0;
+const _OWNER_REQ_TTL_MS = 120000;
+function _ownerReqWant(name) {
+  const c = _ownerReqCache[name];
+  if ((c && (Date.now() - c.at) < _OWNER_REQ_TTL_MS) || _ownerReqQueue.includes(name)) return;
+  _ownerReqQueue.push(name);
+  _ownerReqPump();
+}
+function _ownerReqPump() {
+  while (_ownerReqInFlight < 3 && _ownerReqQueue.length) {
+    const name = _ownerReqQueue.shift();
+    _ownerReqInFlight++;
+    _ownerReqCache[name] = Object.assign({}, _ownerReqCache[name], { at: Date.now() });
+    fetch(API + '/api/task-history/requests?session=' + encodeURIComponent(name))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || d.measured === false) return;
+        _ownerReqCache[name] = { at: Date.now(), data: d };
+        document.querySelectorAll('[data-owner-req="' + CSS.escape(name) + '"]').forEach(el => { el.innerHTML = _ownerReqInner(name, el.dataset.lead === '1'); });
+      })
+      .catch(() => {})
+      .finally(() => { _ownerReqInFlight--; _ownerReqPump(); });
+  }
+}
+// A stable wrapper on the card's meta line; a fetch that lands fills it in
+// place, so the count never appears on a second row (css-mobile.md).
+function _ownerReqHTML(name, lead) {
+  return `<span class="mc-req-wrap" data-owner-req="${esc(name)}" data-lead="${lead ? 1 : 0}">${_ownerReqInner(name, lead)}</span>`;
+}
+function _ownerReqInner(name, lead) {
+  const d = (_ownerReqCache[name] || {}).data;
+  const open = d ? d.counts.open : 0;
+  const onMain = d ? d.counts.on_main : 0;
+  if (!open && !onMain) return '';
+  const parts = [];
+  if (open) parts.push(`<span class="mc-req-open">${open}</span> ${open === 1 ? 'ask' : 'asks'} open`);
+  if (onMain) parts.push(`<span class="mc-req-main">${onMain}</span> ${d.deploys ? 'on main' : 'landed'}`);
+  return (lead ? ' · ' : '') + `<span class="mc-req" role="button" tabindex="0" `
+    + `title="Your requests to ${esc(name)}: tap for the list" `
+    + `onclick="event.stopPropagation();_ownerReqShow('${escJs(name)}')">${parts.join(' · ')}</span>`;
+}
+function _ownerReqShow(name) {
+  const d = (_ownerReqCache[name] || {}).data;
+  if (!d) return;
+  const label = { 'open': 'open', 'on-main': d.deploys ? 'on main, not live yet' : 'landed in ' + (d.repo || 'its repo'), 'live': 'live', 'closed': 'closed' };
+  const rows = d.requests.filter(r => r.status === 'open' || r.status === 'on-main').map(r =>
+    `<div style="padding:var(--space-2) 0;border-top:1px solid var(--border);">`
+    + `<div style="font-size:var(--fs-sm);color:var(--dim);">${esc(r.id)} · ${esc(label[r.status] || r.status)}${r.evidence ? ' · ' + esc(r.evidence) : ''} · ${esc(String(r.age_h))}h ago</div>`
+    + `<div>${esc(r.text)}</div></div>`).join('');
+  showAlertHtml('Your requests to ' + name, rows || '<div>Nothing open.</div>');
+}
+
 function _cardBoardStatusCounts(name) {
   const counts = {};
   (boardItems || []).forEach(c => {
@@ -9146,6 +9206,7 @@ function render() {
                queue look like a stalled worker. Spell out the nonzero board
                columns from the SSE-synced boardItems instead. */
             if (s.isolated) return '';
+            _ownerReqWant(s.name);
             const byStatus = _cardBoardStatusCounts(s.name);
             const d = byStatus.doing || 0;
             const todo = byStatus.todo || 0;
@@ -9174,7 +9235,8 @@ function render() {
             if (needsYou) parts.push(`<span class="mc-total">${needsYou}</span> needs you`);
             if (review) parts.push(`<span class="mc-total">${review}</span> review`);
             if (done) parts.push(`<span class="mc-total">${done}</span> done`);
-            return parts.length ? `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${parts.join(' · ')}</span>` : '';
+            // Inside the one meta line, never a second row (css-mobile.md).
+            return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${parts.join(' · ')}${_ownerReqHTML(s.name, parts.length > 0)}</span>`;
           })()}
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}

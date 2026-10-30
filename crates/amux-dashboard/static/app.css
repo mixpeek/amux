@@ -3034,6 +3034,13 @@
      mc-todo/mc-backlog classes make the status semantics explicit. */
   .meta-count .mc-active { color: var(--green); font-weight: 700; }
   .meta-count .mc-total { color: var(--dim); font-weight: 600; }
+  /* The owner's requests to this worker (AF-1060): tappable, opens the list. */
+  .meta-count .mc-req { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  /* A meta line holding only an empty request slot takes no row. */
+  .meta-count:has(> .mc-req-wrap:empty):not(:has(> span:not(.mc-req-wrap))) { display: none; }
+  .meta-count .mc-req-open { color: var(--yellow); font-weight: 700; }
+  .meta-count .mc-req-main { color: var(--accent); font-weight: 700; }
+  @media (max-width: 600px) { .meta-count .mc-req { display: inline-block; min-height: 44px; line-height: 44px; } }
   /* Session card: scrollback cached on this device (readable with no signal). */
   .card-offline-dot { color: var(--green); font-size: var(--fs-xs); opacity: 0.8; }
   /* ISOLATED (AMUX-3232). A raw agent with the harness stripped and hidden from

@@ -1237,6 +1237,159 @@ pub async fn task_links(
         "requests": requests, "handoff": handoff.and_then(|h| serde_json::from_str::<Value>(&h).ok())})).into_response()
 }
 
+/// One owner request and where it stands, as `amux requests <worker>` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OwnerRequest {
+    pub id: i64,
+    pub ts_ms: i64,
+    pub text: String,
+    /// open | on-main | live | closed
+    pub status: &'static str,
+    pub evidence: String,
+}
+
+/// A bare acknowledgement is not a request (same list as `amux requests`).
+pub(crate) fn is_ack(text: &str) -> bool {
+    static ACK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^\s*(continue|go|go on|keep going|ok(ay)?|k|yes|yep|y|no|nope|sure|thanks?( you)?|ty|done|proceed|do it|lgtm|nice|great|cool|good)\W*$")
+            .expect("static regex")
+    });
+    text.trim().chars().count() < 4 || ACK.is_match(text)
+}
+
+/// Classify owner messages the way `amux requests` does (AF-1060): a request
+/// a commit on origin/main cites is on main, and live when the running build
+/// contains it; one closed by hand is closed; anything else is open. `landed`
+/// maps MSG id -> sha cited on origin/main; `closed` maps id -> (reason, sha);
+/// `is_live` is None when the repo is not the one this server deploys.
+pub(crate) fn classify_requests(
+    msgs: Vec<(i64, i64, String)>,
+    landed: &std::collections::HashMap<i64, String>,
+    closed: &std::collections::HashMap<i64, (String, Option<String>)>,
+    is_live: &dyn Fn(&str) -> Option<bool>,
+) -> Vec<OwnerRequest> {
+    msgs.into_iter()
+        .filter(|(_, _, text)| !is_ack(text))
+        .map(|(id, ts_ms, text)| {
+            let sha = landed.get(&id).cloned().or_else(|| closed.get(&id).and_then(|c| c.1.clone()));
+            let (status, evidence) = match (&sha, closed.get(&id)) {
+                (None, Some((reason, _))) => ("closed", reason.clone()),
+                (Some(sha), _) => match is_live(sha) {
+                    Some(true) => ("live", sha.chars().take(9).collect()),
+                    _ => ("on-main", sha.chars().take(9).collect()),
+                },
+                (None, None) => ("open", String::new()),
+            };
+            let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+            OwnerRequest { id, ts_ms, text, status, evidence }
+        })
+        .collect()
+}
+
+/// GET /api/task-history/requests?session=&days=7: the owner's requests to one
+/// worker and where each stands, so the worker card can answer "is it done"
+/// without anyone asking (AF-1060). Same rules as `amux requests <worker>`:
+/// cited by a commit on origin/main is on main (live when the running build
+/// has it, and only for the repo this server deploys); closed with `amux
+/// requests close` is closed; the rest are open. Cached a minute per worker.
+pub async fn owner_requests(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(session) = q.get("session").filter(|s| !s.is_empty()).cloned() else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "session is required", "measured": false, "n_considered": 0}))).into_response();
+    };
+    let days = q.get("days").and_then(|v| v.parse::<f64>().ok()).unwrap_or(7.0).clamp(1.0, 30.0);
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = format!("{session}|{days}");
+    if let Some((at, v)) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        if at.elapsed() < std::time::Duration::from_secs(60) {
+            return Json(v).into_response();
+        }
+    }
+    let who = session.clone();
+    let since_ms = ((chrono::Utc::now().timestamp() as f64 - days * 86400.0) * 1000.0) as i64;
+    let msgs = state.store.read_async(move |c| {
+        let human = crate::api::history::HUMAN_TYPES.iter().map(|t| format!("'{t}'")).collect::<Vec<_>>().join(",");
+        let mut st = c.prepare(&format!(
+            "SELECT id, ts, COALESCE(text,'') FROM cmd_history WHERE session = ?1 AND ts >= ?2 \
+             AND COALESCE(type,'') IN ({human}) AND {} = 'owner' ORDER BY ts DESC",
+            crate::api::history::sender_sql()
+        ))?;
+        let rows = st.query_map(rusqlite::params![who, since_ms], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?
+            .flatten().collect::<Vec<_>>();
+        Ok(rows)
+    }).await;
+    let msgs = match msgs {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
+    };
+    let closed: std::collections::HashMap<i64, (String, Option<String>)> =
+        std::fs::read_to_string(crate::api::session_verbs::home().join("requests-closed.json")).ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.as_object().cloned())
+            .into_iter().flatten()
+            .filter_map(|(id, c)| Some((id.parse().ok()?, (c["reason"].as_str().unwrap_or("").to_string(), c["sha"].as_str().map(str::to_string)))))
+            .collect();
+    let sess = session.clone();
+    let closed_shas: Vec<String> = closed.values().filter_map(|c| c.1.clone()).collect();
+    let git = tokio::task::spawn_blocking(move || {
+        let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
+            .arg(format!("--since={} days ago", days as i64 + 3))
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let out = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests")
+            .ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
+        let msg_id = regex::Regex::new(r"MSG-(\d+)").expect("static regex");
+        let mut landed = std::collections::HashMap::new();
+        for rec in String::from_utf8_lossy(&out.stdout).split('\x1e') {
+            let Some((sha, body)) = rec.trim_start_matches('\n').split_once('\x1f') else { continue };
+            for c in msg_id.captures_iter(body) {
+                if let Ok(n) = c[1].parse::<i64>() {
+                    landed.entry(n).or_insert_with(|| sha.trim().to_string());
+                }
+            }
+        }
+        // Live is a fact only about the repo this server is built from.
+        let build = env!("AMUX_BUILD_COMMIT_FULL").trim().to_string();
+        let deploys = repo.join("crates").join("amux-server").is_dir() && !build.is_empty();
+        let mut live = std::collections::HashMap::new();
+        if deploys {
+            for sha in landed.values().chain(closed_shas.iter()) {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, &build])
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if let Some(o) = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live") {
+                    live.insert(sha.clone(), o.status.success());
+                }
+            }
+        }
+        let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        Ok::<_, String>((landed, deploys, live, name))
+    }).await.unwrap_or_else(|e| Err(e.to_string()));
+    let (landed, deploys, live, repo_name, git_why) = match git {
+        Ok((l, d, v, n)) => (l, d, v, n, Value::Null),
+        Err(e) => (Default::default(), false, Default::default(), String::new(), json!(e)),
+    };
+    let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None });
+    let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let body = json!({
+        "measured": true, "n_considered": rows.len(), "session": session, "days": days,
+        "repo": repo_name, "deploys": deploys,
+        "git_measured": git_why.is_null(), "git_why_unmeasured": git_why,
+        "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "closed": count("closed")},
+        "requests": rows.iter().map(|r| json!({"id": format!("MSG-{}", r.id), "status": r.status, "evidence": r.evidence,
+            "age_h": ((now_ms - r.ts_ms) as f64 / 3_600_000.0 * 10.0).round() / 10.0, "text": r.text})).collect::<Vec<_>>(),
+    });
+    if let Ok(mut c) = CACHE.lock() {
+        c.insert(key, (std::time::Instant::now(), body.clone()));
+    }
+    Json(body).into_response()
+}
+
 /// Where the single sessions builder is, so a stalled build names itself and
 /// can be shed (2026-10-21: the builder took the flight lock at ~05:59Z and
 /// never published; every reader was refused for 25 minutes, then the restart
@@ -4002,6 +4155,31 @@ fn subagent_mtimes(dirs: &[(std::path::PathBuf, std::path::PathBuf)], now: f64) 
 #[cfg(test)]
 mod subagent_walk_tests {
     use super::*;
+
+    /// AF-1060: the worker card's request line uses the same states as
+    /// `amux requests`, including a repo the server never deploys.
+    #[test]
+    fn owner_requests_classify_like_amux_requests() {
+        use std::collections::HashMap;
+        let msgs = vec![
+            (1, 10, "continue".to_string()),
+            (2, 20, "make cmd k open the worker tab".to_string()),
+            (3, 30, "fix the editor button when zoomed".to_string()),
+            (4, 40, "hows the mac performing?".to_string()),
+            (5, 50, "add a scheduler wakeup".to_string()),
+        ];
+        let landed: HashMap<i64, String> = [(2, "aaaaaaaaaaaa".to_string()), (3, "bbbbbbbbbbbb".to_string())].into();
+        let closed: HashMap<i64, (String, Option<String>)> = [(4, ("answered in chat".to_string(), None))].into();
+        let rows = classify_requests(msgs.clone(), &landed, &closed, &|sha| Some(sha.starts_with('a')));
+        let got: Vec<(i64, &str)> = rows.iter().map(|r| (r.id, r.status)).collect();
+        assert_eq!(got, vec![(2, "live"), (3, "on-main"), (4, "closed"), (5, "open")], "the ack is dropped: {rows:?}");
+        assert_eq!(rows[0].evidence, "aaaaaaaaa");
+        assert_eq!(rows[2].evidence, "answered in chat");
+        // A repo this server does not deploy: a landed commit is on main, never "not live".
+        let other = classify_requests(msgs, &landed, &closed, &|_| None);
+        assert_eq!(other.iter().filter(|r| r.status == "on-main").count(), 2);
+        assert!(other.iter().all(|r| r.status != "live"));
+    }
 
     fn touch(p: &std::path::Path) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
