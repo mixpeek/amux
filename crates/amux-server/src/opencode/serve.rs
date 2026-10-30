@@ -119,6 +119,28 @@
 //!   stream: [`idle_outcomes`] reads the **measured** structured field
 //!   `{"type":"idle","outcome":"interrupted"}` off a newest-first `data` list
 //!   (opencode 2.2.1, captured 2026-10-29).
+//!
+//! ## M3.4 — permissions (measured from the same 2026-10-27 openapi)
+//!
+//! Serve surfaces permission asks as **resources, not as agent requests** (ACP's
+//! `session/request_permission` is a blocking JSON-RPC request; here the agent
+//! asks opencode, and opencode exposes the ask over REST):
+//!
+//! - `GET /api/session/{id}/permission` → `{data: Permission.Request[]}`;
+//!   `Permission.Request = {id ("per_…"), sessionID, action, resources[],
+//!   save[], metadata, source:{type:"tool",messageID,id}, message}`.
+//! - `POST …/permission/{requestID}/reply` with `{decision, message}` →
+//!   **204 No Content** (an empty body — so this path checks the STATUS, it
+//!   does not parse JSON). `decision` is the measured `Permission.Reply`
+//!   enum: `"once" | "always" | "reject"` — the same vocabulary M2's ACP
+//!   options carry, so one `ApprovalPolicy` serves both transports.
+//! - A 404 carries the typed `PermissionNotFoundError {_tag, requestID,
+//!   message}`; an unknown request id must surface as that error, never as an
+//!   invented reply.
+//! - The existing policy seam is reused verbatim (`acp::{Approval,
+//!   ApprovalPolicy, PermissionAsk}`): allow-once is the default consent, and
+//!   an ask is always ANSWERED — never left hanging, because an unanswered ask
+//!   is a permanent wait in the agent.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -132,6 +154,7 @@ use amux_core::provider::ProviderId;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
+use super::acp::{Approval, ApprovalPolicy, PermissionAsk};
 use super::events::{is_rate_limit_message, summarize, tool_detail};
 use super::{ProtocolError, Result};
 
@@ -431,6 +454,40 @@ impl ServeClient {
             })
     }
 
+    /// This session's pending permission asks (MEASURED: `GET …/permission` →
+    /// `{data: Permission.Request[]}`). Returned opaquely; decode with
+    /// [`permission_requests`]. The fleet-wide sibling
+    /// `GET /api/permission/request` answers the same array for a location —
+    /// not implemented: the session-scoped form is the one a worker needs.
+    pub async fn permission_requests(&self, session_id: &str) -> Result<Value> {
+        let endpoint = format!("/api/session/{session_id}/permission");
+        self.send_json(reqwest::Method::GET, &endpoint, None).await
+    }
+
+    /// Answer one ask. MEASURED: `POST …/permission/{requestID}/reply` with a
+    /// `{decision, message}` body answers **204 No Content** — an EMPTY body —
+    /// so this path checks the STATUS and deliberately does not parse JSON
+    /// (every other path here goes through [`ServeClient::send_json`], which
+    /// would fail on an empty body). A 404 carries the typed
+    /// `PermissionNotFoundError {_tag, requestID, message}`.
+    pub async fn reply_permission(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        decision: PermissionReply,
+    ) -> Result<()> {
+        let endpoint = format!("/api/session/{session_id}/permission/{request_id}/reply");
+        let body = json!({"decision": decision.as_str(), "message": Value::Null});
+        let (status, text) = self
+            .request(reqwest::Method::POST, &endpoint, Some(body))
+            .await?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(serve_failure("POST", &endpoint, status, &text))
+        }
+    }
+
     /// Does a persisted `ses_…` id still resolve? Probed with the proven
     /// `/message` endpoint: 2xx = alive, 404 = gone (the caller drops the ref
     /// per the M1 dead-ref rule), anything else is a real failure that must
@@ -700,6 +757,165 @@ impl ServeSession {
     pub async fn turn_outcomes(&self) -> Result<Vec<String>> {
         Ok(idle_outcomes(&self.messages().await?))
     }
+
+    /// This session's pending permission asks, decoded into the shape the
+    /// policy already speaks (see [`permission_requests`]).
+    pub async fn poll_permissions(&self) -> Result<Vec<PermissionRequest>> {
+        Ok(permission_requests(
+            &self.client.permission_requests(&self.session_id).await?,
+        ))
+    }
+
+    /// Answer one ask from `policy` (M2's seam, reused verbatim).
+    ///
+    /// Two rules make this safe rather than merely convenient:
+    /// - **Never invent a reply.** The decision is only sent if the server
+    ///   offered that vocabulary; anything the ask does not offer degrades to
+    ///   `reject` — a refusal the protocol understands, not an option we made
+    ///   up. (Serve's vocabulary is the fixed measured enum, so this guard is
+    ///   belt-and-braces today — it exists because ACP's options are per-ask
+    ///   and the same policy code serves both.)
+    /// - **Never leave an ask hanging.** Every path here replies, including
+    ///   the refusal path: an unanswered ask is a permanent wait in the agent.
+    ///
+    /// The decision is logged with the tool, the action, the resources and the
+    /// verdict — the same two-fix visibility ACP gives its asks.
+    pub async fn answer_permission(
+        &self,
+        request: &PermissionRequest,
+        policy: &dyn ApprovalPolicy,
+    ) -> Result<PermissionReply> {
+        let approval = policy.decide(&request.ask);
+        let offered = |wanted: &str| request.ask.option_ids.iter().any(|o| o == wanted);
+        let reply = match approval {
+            Approval::AllowOnce if offered("once") => PermissionReply::AllowOnce,
+            Approval::AllowAlways if offered("always") => PermissionReply::AllowAlways,
+            Approval::Reject if offered("reject") => PermissionReply::Reject,
+            // A decision whose vocabulary the ask did not offer: refuse with
+            // the one reply every ask accepts, and say so loudly.
+            other => {
+                tracing::warn!(
+                    session = %self.session_id,
+                    request = %request.id,
+                    tool = %request.ask.tool,
+                    decision = ?other,
+                    offered = ?request.ask.option_ids,
+                    verdict = "policy decision not offered by the ask; answering reject",
+                    "serve permission ask had no matching option"
+                );
+                PermissionReply::Reject
+            }
+        };
+        tracing::info!(
+            session = %self.session_id,
+            request = %request.id,
+            tool = %request.ask.tool,
+            kind = request.ask.kind.as_deref().unwrap_or(""),
+            resources = ?request.ask.locations,
+            decision = ?approval,
+            reply = %reply.as_str(),
+            verdict = "serve permission ask answered; an unanswered ask would be a permanent wait",
+            "serve permission ask answered"
+        );
+        self.client
+            .reply_permission(&self.session_id, &request.id, reply)
+            .await?;
+        Ok(reply)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Permissions (M3.4)
+// ---------------------------------------------------------------------------
+
+/// How to answer a permission ask — the measured `Permission.Reply` enum
+/// (`"once" | "always" | "reject"`), which is the same vocabulary M2's ACP
+/// options carry, so one policy drives both transports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionReply {
+    /// Allow this call only. M2's default consent (`AllowOncePolicy`).
+    AllowOnce,
+    /// Allow this call and SAVE the rule (`PermissionSaved`), so the ask stops
+    /// recurring for this action+resource.
+    AllowAlways,
+    /// Refuse the call.
+    Reject,
+}
+
+impl PermissionReply {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PermissionReply::AllowOnce => "once",
+            PermissionReply::AllowAlways => "always",
+            PermissionReply::Reject => "reject",
+        }
+    }
+}
+
+/// One pending permission ask, decoded from the measured
+/// `Permission.Request` into the shape M2's [`PermissionAsk`] already speaks,
+/// so `dyn ApprovalPolicy` serves both transports unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRequest {
+    /// `per_…` — the id the reply names (measured pattern `^per`).
+    pub id: String,
+    /// The session that asked.
+    pub session_id: String,
+    /// The ask itself. `option_ids` is filled from the measured
+    /// `Permission.Reply` enum so the "never invent a reply" guard has
+    /// something real to check.
+    pub ask: PermissionAsk,
+}
+
+/// Decode `GET …/permission`'s `{data: [Permission.Request]}` (measured
+/// shape: `{id, sessionID, action, resources[], save[], metadata, source,
+/// message}`).
+///
+/// A row missing a required field is **skipped, not guessed**: an ask we
+/// cannot name is an ask we must not answer, and inventing the missing parts
+/// is exactly the failure mode this transport exists to avoid. The server's
+/// `message` text becomes [`PermissionAsk::title`], which is where ACP keeps
+/// its human title.
+pub fn permission_requests(body: &Value) -> Vec<PermissionRequest> {
+    let Some(rows) = body.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let id = row.get("id").and_then(Value::as_str)?.to_string();
+            let session_id = row.get("sessionID").and_then(Value::as_str)?.to_string();
+            let action = row.get("action").and_then(Value::as_str)?.to_string();
+            let resources = row
+                .get("resources")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Some(PermissionRequest {
+                id,
+                session_id,
+                ask: PermissionAsk {
+                    tool: action,
+                    title: row
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    // Serve has no per-ask `kind`; `source.type` is the
+                    // measured constant `"tool"`.
+                    kind: Some("tool".to_string()),
+                    locations: resources,
+                    option_ids: vec![
+                        "once".to_string(),
+                        "always".to_string(),
+                        "reject".to_string(),
+                    ],
+                },
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1644,6 +1860,9 @@ mod tests {
         create_body: Mutex<Option<Value>>,
         prompt_bodies: Mutex<Vec<(String, Value)>>,
         auth_headers: Mutex<Vec<String>>,
+        /// (request id, decision) for every permission reply the fixture
+        /// accepted — the wire's own `decision` field, not our enum.
+        permission_replies: Mutex<Vec<(String, String)>>,
         /// Set when the fixture's background "turn" would have ended. A prompt
         /// admission must return while this is still false.
         turn_ended: AtomicBool,
@@ -1780,6 +1999,53 @@ mod tests {
         }
     }
 
+    /// A MEASURED `Permission.Request` (shape from the captured openapi:
+    /// `{id, sessionID, action, resources[], save[], metadata, source, message}`).
+    const PERMISSION_REQUEST: &str = r#"{"data":[{"id":"per_189a2d347001perm01","sessionID":"ses_fixture","action":"write","resources":["/tmp/ws/perm.txt"],"message":"Write /tmp/ws/perm.txt?","source":{"type":"tool","messageID":"msg_189a2d347001","id":"call_00_perm"}}]}"#;
+
+    /// MEASURED: `GET …/permission` → `{data: Permission.Request[]}`.
+    async fn permissions(RoutePath(id): RoutePath<String>) -> Response {
+        if id == "ses_fixture" {
+            Json(serde_json::from_str::<Value>(PERMISSION_REQUEST).unwrap()).into_response()
+        } else {
+            Json(json!({"data": []})).into_response()
+        }
+    }
+
+    /// MEASURED: `POST …/permission/{requestID}/reply` answers **204 No
+    /// Content** — an empty body — and an unknown id answers 404 with the
+    /// typed `PermissionNotFoundError {_tag, requestID, message}`.
+    async fn reply_permission(
+        State(fx): State<Fixture>,
+        RoutePath((id, rid)): RoutePath<(String, String)>,
+        Json(body): Json<Value>,
+    ) -> Response {
+        if id != "ses_fixture" {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"_tag": "SessionNotFoundError"})),
+            )
+                .into_response();
+        }
+        if rid != "per_189a2d347001perm01" {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "_tag": "PermissionNotFoundError",
+                    "requestID": rid,
+                    "message": "permission request not found"
+                })),
+            )
+                .into_response();
+        }
+        fx.seen
+            .permission_replies
+            .lock()
+            .unwrap()
+            .push((rid, body["decision"].as_str().unwrap_or("").to_string()));
+        StatusCode::NO_CONTENT.into_response()
+    }
+
     /// Spin a fixture serve; returns (base_url, observed state).
     async fn fixture(mode: PromptMode) -> (String, Arc<Seen>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1794,6 +2060,11 @@ mod tests {
             .route("/api/session/{id}/prompt", post(prompt))
             .route("/api/session/{id}/message", get(messages))
             .route("/api/session/{id}/interrupt", post(interrupt))
+            .route("/api/session/{id}/permission", get(permissions))
+            .route(
+                "/api/session/{id}/permission/{rid}/reply",
+                post(reply_permission),
+            )
             .with_state(state);
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -2727,6 +2998,183 @@ mod tests {
             outcomes.iter().any(|o| o == "interrupted"),
             "an interrupted turn leaves a structured row with outcome=\"interrupted\" \
              in /message (measured on 2.2.1): {outcomes:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // M3.4 — permissions
+    // ------------------------------------------------------------------
+
+    /// A measured ask decodes into the shape M2's policy already speaks, and a
+    /// row missing required fields is skipped — never guessed into shape.
+    #[test]
+    fn a_measured_permission_ask_decodes_into_the_shape_the_policy_speaks() {
+        let body = serde_json::from_str::<Value>(PERMISSION_REQUEST).unwrap();
+        let reqs = permission_requests(&body);
+        assert_eq!(reqs.len(), 1);
+        let r = &reqs[0];
+        assert_eq!(r.id, "per_189a2d347001perm01");
+        assert_eq!(r.session_id, "ses_fixture");
+        assert_eq!(r.ask.tool, "write");
+        assert_eq!(r.ask.title.as_deref(), Some("Write /tmp/ws/perm.txt?"));
+        assert_eq!(r.ask.kind.as_deref(), Some("tool"));
+        assert_eq!(r.ask.locations, vec!["/tmp/ws/perm.txt"]);
+        // The vocabulary a reply may name is the measured enum, so the
+        // "never invent" guard has something real to check.
+        assert_eq!(r.ask.option_ids, vec!["once", "always", "reject"]);
+
+        assert!(permission_requests(&json!({"data": [{"id": "per_x", "sessionID": "s"}]})).is_empty());
+        assert!(permission_requests(&Value::Null).is_empty());
+    }
+
+    /// Allow and reject both settle the ask on the WIRE: the fixture records
+    /// the `decision` field it actually received, and a 204 (no body) is a
+    /// success — not the "non-JSON response" failure the other paths raise.
+    #[tokio::test]
+    async fn allow_once_replies_once_and_reject_all_replies_reject() {
+        use super::super::acp::{AllowOncePolicy, RejectAllPolicy};
+
+        let (base, seen) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+        let (session, _) = ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+            .await
+            .unwrap();
+
+        let asks = session.poll_permissions().await.unwrap();
+        assert_eq!(asks.len(), 1, "the measured ask, decoded");
+
+        assert_eq!(
+            session.answer_permission(&asks[0], &AllowOncePolicy).await.unwrap(),
+            PermissionReply::AllowOnce
+        );
+        assert_eq!(
+            session.answer_permission(&asks[0], &RejectAllPolicy).await.unwrap(),
+            PermissionReply::Reject
+        );
+
+        let replies = seen.permission_replies.lock().unwrap();
+        assert_eq!(
+            replies
+                .iter()
+                .map(|(_, d)| d.as_str())
+                .collect::<Vec<_>>(),
+            vec!["once", "reject"],
+            "the wire carries the measured enum's own strings"
+        );
+    }
+
+    /// An unknown request id is a TYPED error naming endpoint, status and tag —
+    /// never an invented reply and never a silent `Ok`.
+    #[tokio::test]
+    async fn an_unknown_request_id_is_a_typed_error_not_an_invented_reply() {
+        let (base, seen) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+
+        let err = client
+            .reply_permission("ses_fixture", "per_nope", PermissionReply::AllowOnce)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("POST /api/session/ses_fixture/permission/per_nope/reply"),
+            "{msg}"
+        );
+        assert!(msg.contains("HTTP 404"), "{msg}");
+        assert!(msg.contains("PermissionNotFoundError"), "{msg}");
+        assert!(matches!(err, ProtocolError::Transport(_)), "{err:?}");
+        assert!(
+            seen.permission_replies.lock().unwrap().is_empty(),
+            "an unanswered request id must never be recorded as answered"
+        );
+    }
+
+    /// The answer is logged with the tool, the resources and the verdict — the
+    /// same two-fix visibility ACP gives its asks.
+    #[test]
+    fn the_answer_is_logged_with_tool_action_and_resources() {
+        use super::super::acp::AllowOncePolicy;
+
+        let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let writer = Writer(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let (base, _) = fixture(PromptMode::Admit).await;
+                let client = ServeClient::connect(&base, PW).unwrap();
+                let (session, _) =
+                    ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+                        .await
+                        .unwrap();
+                let asks = session.poll_permissions().await.unwrap();
+                session
+                    .answer_permission(&asks[0], &AllowOncePolicy)
+                    .await
+                    .unwrap();
+            });
+        });
+
+        let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("serve permission ask answered"), "{logs}");
+        assert!(logs.contains("tool=write"), "{logs}");
+        assert!(logs.contains("/tmp/ws/perm.txt"), "{logs}");
+        assert!(logs.contains("verdict="), "{logs}");
+        assert!(logs.contains("reply=once"), "{logs}");
+    }
+
+    /// Belt-and-braces: a decision whose vocabulary the ask did NOT offer is
+    /// refused with `reject`, never invented. Serve's enum always offers all
+    /// three today, so the ask is hand-built short to reach the guard.
+    #[tokio::test]
+    async fn a_decision_the_ask_did_not_offer_is_refused_not_invented() {
+        use super::super::acp::AllowOncePolicy;
+
+        let (base, seen) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+        let (session, _) = ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+            .await
+            .unwrap();
+
+        let short = PermissionRequest {
+            id: "per_189a2d347001perm01".into(),
+            session_id: "ses_fixture".into(),
+            ask: PermissionAsk {
+                tool: "write".into(),
+                title: None,
+                kind: Some("tool".into()),
+                locations: vec!["/tmp/ws/perm.txt".into()],
+                // An ask that only ever offered "reject".
+                option_ids: vec!["reject".to_string()],
+            },
+        };
+        assert_eq!(
+            session.answer_permission(&short, &AllowOncePolicy).await.unwrap(),
+            PermissionReply::Reject,
+            "allow-once on an ask that never offered `once` must degrade to a refusal"
+        );
+        assert_eq!(
+            seen.permission_replies.lock().unwrap()[0].1,
+            "reject",
+            "the wire carries the refusal, not an invented `once`"
         );
     }
 }
