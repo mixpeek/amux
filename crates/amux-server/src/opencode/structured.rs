@@ -3159,4 +3159,176 @@ mod tests {
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
     }
+
+    // ------------------------------------------------------------------
+    // M3.5 — the live smoke (a REAL turn over the serve transport)
+    // ------------------------------------------------------------------
+
+    /// M3.5's done-condition on real hardware: a worker registered on the
+    /// `serve` transport runs a real turn to completion — prompt → admission →
+    /// **SSE progress reaching the worker's own channel** (M3.2's hub, now with
+    /// a production consumer) → **a steered durable message landing mid-turn**
+    /// (D4) → the outcome read from `/message` (D3) → `Idle`.
+    ///
+    /// `#[ignore]`d: it needs a serve process and provider quota. Driven by
+    /// hand in the D1 shape (one dedicated serve, password from its startup
+    /// log) — the same harness as the M3.3 smoke:
+    ///
+    /// ```text
+    /// opencode serve --hostname 127.0.0.1 --port <p> > serve.log 2>&1 &
+    /// pw=$(sed -n 's/^server password //p' serve.log)
+    /// AMUX_SMOKE_URL=http://127.0.0.1:<p> AMUX_SMOKE_PASSWORD="$pw" \
+    ///   cargo test -p amux-server --lib live_smoke -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "live smoke: needs a running `opencode serve` and provider quota"]
+    async fn a_live_smoke_a_serve_worker_completes_and_steers_a_real_turn() {
+        let (Ok(url), Ok(pw)) = (
+            std::env::var("AMUX_SMOKE_URL"),
+            std::env::var("AMUX_SMOKE_PASSWORD"),
+        ) else {
+            eprintln!("LIVE SMOKE NOT RUN: set AMUX_SMOKE_URL and AMUX_SMOKE_PASSWORD");
+            return;
+        };
+        let client = serve::ServeClient::connect(url, pw).expect("connect to the smoke serve");
+        let cwd = std::env::temp_dir().join("m35-smoke-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client.clone());
+        let w = worker_id("SM001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd,
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Write a 3000-word essay about lighthouses into essay.txt. \
+                     Do not stop early."
+                        .to_string(),
+                    idempotency_key: "m35-live-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit the long task");
+
+        // D4: a durable message while that turn runs must be ADMITTED, not
+        // bounced to the turn boundary — that difference is why M3 exists.
+        let marker = "SMOKE-STEER-1 stop the essay and reply exactly STEERED-OK";
+        proto
+            .deliver_message(
+                &w,
+                MessageId::from_ulid(ulid::Ulid::new()),
+                marker.to_string(),
+            )
+            .await
+            .expect("a durable message on a running turn must be admitted");
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(240)).await;
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        eprintln!("smoke: events = {kinds:?}");
+
+        // 1. The run CLOSED, and D3 held: the outcome came from `/message`,
+        //    never from SSE (which D3 forbids for outcomes anyway).
+        let outcome = evs
+            .iter()
+            .find_map(|e| match e {
+                WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+                _ => None,
+            })
+            .expect("TurnCompleted must arrive: the watcher reads /message");
+        eprintln!("smoke: outcome = {outcome}");
+
+        // 2. M3.2 in production: the reader consumed real frames. Asserted via
+        //    the HUB'S counter rather than "did text arrive", because a
+        //    provider that refuses before answering streams no text at all —
+        //    a smoke must fail on transport regressions, not on quota.
+        let frames = proto
+            .serve_hub
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|h| h.stats().frames)
+            .unwrap_or(0);
+        let sse_only: Vec<&&str> = kinds
+            .iter()
+            .filter(|k| matches!(**k, "progress" | "tool_used" | "rate_limited"))
+            .collect();
+        eprintln!("smoke: hub frames = {frames}; SSE-only kinds = {sse_only:?}");
+        assert!(
+            frames > 0,
+            "the SSE reader must consume real frames (M3.2 as a production consumer): {kinds:?}"
+        );
+
+        // 3. The steer did not merely get a 200 — it is in the DURABLE list.
+        //    (`shared` is bound first: a temporary MutexGuard in a block's
+        //    tail expression would outlive it — E0597.)
+        let shared = proto.shared(&w).expect("registered worker");
+        let conversation = shared.conversation.lock().unwrap().clone();
+        let session_id =
+            conversation.expect("the ses_ ref must be captured on session acquisition");
+        let messages = client
+            .messages(&session_id)
+            .await
+            .expect("read /message");
+        assert!(
+            messages.to_string().contains(marker),
+            "the steered durable message must appear in the session's history"
+        );
+        eprintln!("smoke: steered message present in /message (session {session_id})");
+
+        // 4. THE VERDICT. `succeeded` is the full pass. A TYPED provider
+        //    refusal is accepted — measured live on 2026-10-30 as
+        //    `provider.free-limit` (429, "Free usage limit reached") — because
+        //    in that case the transport is what we are smoke-testing and the
+        //    transport demonstrably worked: admission, SSE frames, the D3
+        //    outcome read and the persisted steer all happened. Anything else
+        //    (an untyped failure, a timeout) still fails loudly: accepting all
+        //    failures would make this smoke worthless.
+        let idle_error = messages
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r.get("type").and_then(serde_json::Value::as_str) == Some("idle"))
+                    .and_then(|r| r.get("error"))
+                    .cloned()
+            });
+        let refusal = idle_error.as_ref().and_then(|e| {
+            let ty = e.get("type").and_then(serde_json::Value::as_str)?;
+            let msg = e.get("message").and_then(serde_json::Value::as_str)?;
+            Some((ty.to_string(), msg.to_string()))
+        });
+        match (refusal.as_ref(), outcome.as_str()) {
+            (Some((ty, msg)), _)
+                if ty.contains("limit")
+                    || ty.contains("quota")
+                    || events::is_rate_limit_message(msg) =>
+            {
+                eprintln!("LIVE SMOKE VERDICT: transport proven; PROVIDER refused the turn");
+                eprintln!("  {ty}: {msg}");
+                eprintln!("  (admission, SSE frames, D3 outcome and the persisted steer all verified above)");
+            }
+            (_, "succeeded") => eprintln!("LIVE SMOKE VERDICT: full turn succeeded end to end"),
+            other => panic!(
+                "serve turn failed for a NON-provider reason: outcome={outcome}, \
+                 idle_error={other:?}, events={kinds:?}"
+            ),
+        }
+
+        // 5. The worker ends idle, and its ref is the provider-native ses_ id.
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+        assert!(session_id.starts_with("ses_"), "{session_id}");
+    }
 }
