@@ -53,22 +53,22 @@ attribution.
    the board driver claimed cards for lanes at their usage limit, the prompt
    was held, the claim released (248 times in 30 days). It now asks
    `dispatch_hold` first and leaves the card unclaimed.
-3. **Close the "why" gap.** Record a reason when a worker parks or releases a
+3. **Close the "why" gap (landed, d1a5fe2b8).** Record a reason when a worker parks or releases a
    card (from the status change's note), so self-parking splits into waiting
    on a dependency, unclear card, too big, and so on.
-4. **Reach the worker by default.** A short computed section in each worker's
+4. **Reach the worker by default (landed, 140ff3b8b; reconcile fix d031aa96d).** A short computed section in each worker's
    generated context (its throughput, top bottleneck with evidence, and the
    estimate for its current card), plus `amux velocity [worker]`. Recomputed
    from history, so it updates per worker as it works.
-5. **Projections.** Per worker, the queue's finish time from the estimates of
+5. **Projections (landed, f3b2aaa87; `amux velocity --projection`).** Per worker, the queue's finish time from the estimates of
    its queued cards (one card at a time); per project or goal, chained across
    workers through `depends_on` and scheduled external events (for example a
    shard build), with a slip factor from how past estimates and builds
    actually went. Every projection is scored against what happened.
-6. **Overrun flag (Devin-style cap).** When a card runs past its worker's p90
+6. **Overrun flag (Devin-style cap) (landed, 84d79aaf0; flags past p75 times calibration).** When a card runs past its worker's p90
    for similar cards, say so on the card and to the worker; optionally set
    `_amux_task_budgets` from the estimate.
-7. **Owner view.** A Velocity section: workers ranked by wasted hours, each
+7. **Owner view (landed, 24928c6df: Metrics > Velocity).** A Velocity section: workers ranked by wasted hours, each
    worker's breakdown, and project projections; one row of controls on a
    phone.
 
