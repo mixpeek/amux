@@ -1267,6 +1267,7 @@ pub(crate) fn classify_requests(
     landed: &std::collections::HashMap<i64, String>,
     closed: &std::collections::HashMap<i64, (String, Option<String>)>,
     is_live: &dyn Fn(&str) -> Option<bool>,
+    answered: &std::collections::HashMap<i64, String>,
 ) -> Vec<OwnerRequest> {
     msgs.into_iter()
         .filter(|(_, _, text)| !is_ack(text))
@@ -1278,12 +1279,78 @@ pub(crate) fn classify_requests(
                     Some(true) => ("live", sha.chars().take(9).collect()),
                     _ => ("on-main", sha.chars().take(9).collect()),
                 },
-                (None, None) => ("open", String::new()),
+                // A question the worker answered in a turn of its own (AF-1059).
+                (None, None) => match answered.get(&id) {
+                    Some(reply) => ("answered", reply.clone()),
+                    None => ("open", String::new()),
+                },
             };
             let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
             OwnerRequest { id, ts_ms, text, status, evidence }
         })
         .collect()
+}
+
+/// A message that asks something rather than tells the worker to do something
+/// (AF-1059). Only these can be closed by being answered; an ask still needs a
+/// commit or `amux requests close`.
+pub(crate) fn is_question(text: &str) -> bool {
+    let t = text.trim();
+    if t.ends_with('?') {
+        return true;
+    }
+    let first = t.split_whitespace().next().unwrap_or("").to_lowercase();
+    let first = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+    matches!(first, "how" | "hows" | "how's" | "what" | "whats" | "what's" | "why" | "when" | "where" | "which" | "who"
+        | "is" | "are" | "does" | "do" | "did" | "can" | "could" | "should" | "would" | "will" | "was" | "were" | "has" | "have")
+}
+
+/// The last thing the assistant SAID (text, not tool calls) in a Claude Code
+/// transcript between two unix times. One JSON object per line.
+pub(crate) fn last_assistant_text(jsonl: &str, from: f64, to: f64) -> Option<String> {
+    let mut last = None;
+    for line in jsonl.lines() {
+        let Ok(e) = serde_json::from_str::<Value>(line) else { continue };
+        if e["type"] != "assistant" {
+            continue;
+        }
+        let Some(at) = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else { continue };
+        let at = at.timestamp_millis() as f64 / 1000.0;
+        if at < from || at > to {
+            continue;
+        }
+        let text: String = e["message"]["content"].as_array().into_iter().flatten()
+            .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// Each open question and the window its answer must fall in: (id, asked at,
+/// the owner's NEXT message to this worker, any message, a bare "continue"
+/// included, since it also lands in that turn). Unix seconds; `settled` is true
+/// for a request a commit or a close already decided.
+pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64) -> bool) -> Vec<(i64, f64, f64)> {
+    let mut asc: Vec<&(i64, i64, String)> = msgs.iter().collect();
+    asc.sort_by_key(|m| m.1);
+    asc.iter().enumerate()
+        .filter(|(_, m)| !is_ack(&m.2) && is_question(&m.2) && !settled(m.0))
+        .map(|(i, m)| (m.0, m.1 as f64 / 1000.0, asc.get(i + 1).map_or(f64::INFINITY, |n| n.1 as f64 / 1000.0)))
+        .collect()
+}
+
+/// Find a Claude Code transcript by its session id under ~/.claude/projects.
+fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
+    if session_id.is_empty() || session_id.contains('/') {
+        return None;
+    }
+    let root = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".claude").join("projects");
+    std::fs::read_dir(root).ok()?.flatten()
+        .map(|d| d.path().join(format!("{session_id}.jsonl")))
+        .find(|p| p.is_file())
 }
 
 /// GET /api/task-history/requests?session=&days=7: the owner's requests to one
@@ -1413,14 +1480,43 @@ pub async fn owner_requests(
     let closed: std::collections::HashMap<i64, (String, Option<String>)> = closed.into_iter()
         .map(|(id, (reason, sha))| (id, (reason, sha.filter(|s| closed_on_main.contains(s)))))
         .collect();
-    let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None });
+    // ANSWERED (AF-1059): a question whose own turn ended (a native Stop)
+    // before the owner's next message to this worker, with the reply that turn
+    // ended on. A turn the next message joined proves nothing, so it stays open.
+    let questions = question_windows(&msgs, &|id| landed.contains_key(&id) || closed.contains_key(&id));
+    let who = session.clone();
+    let qs = questions.clone();
+    let stops: Vec<(i64, f64, f64, String)> = state.store.read_async(move |c| {
+        let mut out = Vec::new();
+        let mut st = c.prepare(
+            "SELECT ts, COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
+             WHERE session = ?1 AND type = 'session.native_status' AND ts > ?2 \
+             AND json_extract(data,'$.event') = 'Stop' ORDER BY ts LIMIT 1",
+        )?;
+        for (id, at, next) in qs {
+            if let Ok((stop, sid)) = st.query_row(rusqlite::params![who, at], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?))) {
+                if stop < next {
+                    out.push((id, at, stop, sid));
+                }
+            }
+        }
+        Ok(out)
+    }).await.unwrap_or_default();
+    let answered: std::collections::HashMap<i64, String> = tokio::task::spawn_blocking(move || {
+        stops.into_iter().filter_map(|(id, at, stop, sid)| {
+            let text = std::fs::read_to_string(transcript_for(&sid)?).ok()?;
+            let reply = last_assistant_text(&text, at - 60.0, stop + 5.0)?;
+            Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
+        }).collect()
+    }).await.unwrap_or_default();
+    let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None }, &answered);
     let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
     let now_ms = chrono::Utc::now().timestamp_millis();
     let body = json!({
         "measured": true, "n_considered": rows.len(), "session": session, "days": days,
         "repo": repo_name, "deploys": deploys,
         "git_measured": git_why.is_null(), "git_why_unmeasured": git_why,
-        "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "closed": count("closed")},
+        "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "answered": count("answered"), "closed": count("closed")},
         "requests": rows.iter().map(|r| json!({"id": format!("MSG-{}", r.id), "status": r.status, "evidence": r.evidence,
             "age_h": ((now_ms - r.ts_ms) as f64 / 3_600_000.0 * 10.0).round() / 10.0, "text": r.text})).collect::<Vec<_>>(),
     });
@@ -4210,22 +4306,61 @@ mod subagent_walk_tests {
         ];
         let landed: HashMap<i64, String> = [(2, "aaaaaaaaaaaa".to_string()), (3, "bbbbbbbbbbbb".to_string())].into();
         let closed: HashMap<i64, (String, Option<String>)> = [(4, ("answered in chat".to_string(), None))].into();
-        let rows = classify_requests(msgs.clone(), &landed, &closed, &|sha| Some(sha.starts_with('a')));
+        let rows = classify_requests(msgs.clone(), &landed, &closed, &|sha| Some(sha.starts_with('a')), &HashMap::new());
         let got: Vec<(i64, &str)> = rows.iter().map(|r| (r.id, r.status)).collect();
         assert_eq!(got, vec![(2, "live"), (3, "on-main"), (4, "closed"), (5, "open")], "the ack is dropped: {rows:?}");
         assert_eq!(rows[0].evidence, "aaaaaaaaa");
         assert_eq!(rows[2].evidence, "answered in chat");
         // A repo this server does not deploy: a landed commit is on main, never "not live".
-        let other = classify_requests(msgs, &landed, &closed, &|_| None);
+        let other = classify_requests(msgs, &landed, &closed, &|_| None, &HashMap::new());
         assert_eq!(other.iter().filter(|r| r.status == "on-main").count(), 2);
         assert!(other.iter().all(|r| r.status != "live"));
         // Closed WITH a sha (land review F1): the caller keeps the sha only when it
         // is on origin/main. Kept, the request is on main; dropped, it is closed.
         let msgs2 = vec![(6, 60, "answer this in chat please".to_string())];
         let kept: HashMap<i64, (String, Option<String>)> = [(6, ("landed".to_string(), Some("cccccccccccc".to_string())))].into();
-        assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false))[0].status, "on-main");
+        assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false), &HashMap::new())[0].status, "on-main");
         let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
-        assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false))[0].status, "closed");
+        assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
+    }
+
+    /// AF-1059: a question answered in its own turn reads answered with the
+    /// reply; an ask, or anything landed or closed, is untouched.
+    #[test]
+    fn a_question_answered_in_its_own_turn_reads_answered() {
+        use std::collections::HashMap;
+        for q in ["hows mac perf", "how's the mac performing", "is it live?", "Does cmd k open the tab"] {
+            assert!(is_question(q), "{q}");
+        }
+        for a in ["make sure u fix it", "try again", "push to remote", "scan the devices on my network"] {
+            assert!(!is_question(a), "an ask is not a question: {a}");
+        }
+        let jsonl = [
+            r#"{"type":"user","timestamp":"2026-10-25T13:08:00Z","message":{"content":"hows the mac peforming?"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:08:10Z","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:08:31Z","message":{"content":[{"type":"text","text":"Let me check."}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:09:00Z","message":{"content":[{"type":"text","text":"The Mac is\nhealthy right now."}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T14:00:00Z","message":{"content":[{"type":"text","text":"a later turn"}]}}"#,
+        ].join("\n");
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        assert_eq!(last_assistant_text(&jsonl, t("2026-10-25T13:08:00Z"), t("2026-10-25T13:09:05Z")).as_deref(), Some("The Mac is healthy right now."));
+        assert_eq!(last_assistant_text(&jsonl, t("2026-10-25T15:00:00Z"), t("2026-10-25T16:00:00Z")), None, "nothing said in the window");
+        let msgs = vec![(7, 70, "hows the mac peforming?".to_string()), (8, 80, "make sure u fix it".to_string())];
+        let answered: HashMap<i64, String> = [(7, "replied: The Mac is healthy".to_string())].into();
+        let rows = classify_requests(msgs, &HashMap::new(), &HashMap::new(), &|_| None, &answered);
+        assert_eq!((rows[0].status, rows[0].evidence.as_str()), ("answered", "replied: The Mac is healthy"));
+        assert_eq!(rows[1].status, "open", "an ask with no commit stays open");
+        // The window ends at the owner's NEXT message, an ack included: a turn
+        // that message joined cannot be credited to the question.
+        let ms = vec![
+            (21, 200_000, "is it live?".to_string()),
+            (20, 100_000, "hows mac perf".to_string()),
+            (22, 150_000, "continue".to_string()),
+            (23, 300_000, "push to remote".to_string()),
+            (24, 400_000, "does cmd k work?".to_string()),
+        ];
+        let w = question_windows(&ms, &|id| id == 21);
+        assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
     }
 
     fn touch(p: &std::path::Path) {
