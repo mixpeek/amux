@@ -3390,6 +3390,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxBlockedMessageDecision": {
+      "kind": "command._outboxBlockedMessageDecision",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxConfirmMessage": {
       "kind": "command._outboxConfirmMessage",
       "feedback_required": true,
@@ -3444,6 +3450,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxRearmUnreached": {
+      "kind": "command._outboxRearmUnreached",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxRemoveMessage": {
       "kind": "command._outboxRemoveMessage",
       "feedback_required": true,
@@ -3458,6 +3470,12 @@
     },
     "_outboxRetryNow": {
       "kind": "command._outboxRetryNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outboxSettleDecisions": {
+      "kind": "command._outboxSettleDecisions",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -5037,7 +5037,7 @@ async function _runSyncBanner(quiet = false, token = null) {
         // 5xx on its own to trip the route.mounted_routes_answer invariant
         // (AMUX-4900) where it was then filed as a server fault.
         if (!retryableMessageRefusal && (_outboxPermanentRefusal(r.status)
-          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) q.state = 'blocked';
+          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) Object.assign(q, {state: 'blocked', refused_status: r.status});
         throw new Error(await _apiErrText(r));
       }
       if (/\/api\/board\/[^/?]+$/.test(q.url) && (q.options.method || '').toUpperCase() === 'PATCH') {
@@ -5072,7 +5072,7 @@ async function _runSyncBanner(quiet = false, token = null) {
       } else if (e.outboxBlocked) q.state = 'blocked';
       if (_outboxIsMessage(q) && !q.needs_decision) {
         if (q.delivery_uncertain && q.checking_since && Date.now() - q.checking_since > _OUTBOX_DECIDE_AFTER_MS) _outboxMarkDecision(q, 'unconfirmed');
-        else if (q.state === 'blocked' && !q.delivery_uncertain) _outboxMarkDecision(q, 'refused');
+        else if (q.state === 'blocked' && !q.delivery_uncertain) _outboxBlockedMessageDecision(q);
       }
       if (!q.needs_decision) q.error = q.delivery_uncertain && _outboxMessageId(q)
         ? 'Awaiting confirmation — checking automatically' : String(e.message || e);
@@ -5080,7 +5080,7 @@ async function _runSyncBanner(quiet = false, token = null) {
         ...(q.delivery_uncertain ? {measured:false, why_unmeasured:'Server has not confirmed message acceptance'} : {}), feedback:{message:q.error}});
       q.attempts = (q.attempts || 0) + 1;
       _writeError = q.error;
-      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts, delivery_uncertain:!!q.delivery_uncertain, checking_since:q.checking_since || 0, needs_decision: q.needs_decision || ''}); });
+      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts, delivery_uncertain:!!q.delivery_uncertain, checking_since:q.checking_since || 0, needs_decision: q.needs_decision || '', refused_status: q.refused_status || 0}); });
       if (!q.needs_decision) failedResources.add(q.url);
       item.status = q.delivery_uncertain ? 'checking' : 'failed';
       item.label += ' — ' + q.error;
@@ -5311,10 +5311,35 @@ function _outboxIsMessage(q) {
 function _outboxNeedsDecision(q) {
   return !!(q && _outboxIsMessage(q) && q.needs_decision);
 }
+// "The worker did not accept it" is a claim about the SERVER'S ANSWER, so it
+// needs one (refused_status). A send that got no answer at all (WebKit's
+// "Fetch is aborted" on a reload or a dropped connection) was labelled refused
+// over a message the server never saw (owner, 2026-10-30: "mixpeek-vision and
+// other workers messages are not going thru"). It is sent again on its own,
+// with the same msg_id, so send_dedup never pastes it twice. After the attempt
+// cap it asks the reader, saying it never reached the server.
+// The server's answer: the recorded status, or for an entry stored before it
+// was recorded, the "409: ..." or "Error: 409" _apiErrText made its error.
+function _outboxServerAnswered(q) {
+  return !!(q.refused_status || /^(?:Error: )?[1-5]\d\d\b/.test(String(q.error || '')));
+}
+function _outboxBlockedMessageDecision(q, now = Date.now()) {
+  // Without a msg_id a resend could paste twice, so it waits for the reader.
+  if (_outboxServerAnswered(q) || !_outboxMessageId(q)) return _outboxMarkDecision(q, 'refused', now);
+  if ((q.attempts || 0) < 5) return _outboxRearmUnreached(q, 'no_server_answer');
+  return _outboxMarkDecision(q, 'unreached', now);
+}
+function _outboxRearmUnreached(q, why) {
+  try { _outboxDiagnostic('outbox_unanswered_send_rearmed', {id: q.id, msg_id: _outboxMessageId(q), why,
+    error: String(q.error || '').slice(0, 120), attempts: q.attempts || 0, measured: true, n_considered: 1}); } catch (_) {}
+  return Object.assign(q, {needs_decision: '', state: 'pending', delivery_uncertain: false,
+    attempts: why === 'mislabelled_refused' ? 0 : (q.attempts || 0)});
+}
 function _outboxMarkDecision(q, reason, now = Date.now()) {
   Object.assign(q, {needs_decision: reason, state: 'blocked', delivery_uncertain: false,
     error: reason === 'unconfirmed' ? 'Not confirmed by the worker; it may already be there'
          : reason === 'stale' ? 'Saved on this device and never sent'
+         : reason === 'unreached' ? 'Never reached the server: ' + String(q.error || 'no answer')
          : (q.error && !/^Awaiting confirmation/.test(q.error) ? q.error : 'The worker did not accept it')});
   try { amuxTrack('outbox_needs_decision', {id: q.id, reason, measured: true, n_considered: 1,
     age_ms: now - (q.timestamp || now)}); } catch (_) {}
@@ -5325,10 +5350,15 @@ function _outboxMarkDecision(q, reason, now = Date.now()) {
 function _outboxSettleDecisions(list, now = Date.now()) {
   let changed = 0;
   for (const q of list) {
+    // Labelled "refused" before 2026-10-30 with no answer from the server: the
+    // send was cut off (a reload, a dropped connection). Deliver it after all.
+    if (_outboxIsMessage(q) && q.needs_decision === 'refused' && !_outboxServerAnswered(q) && _outboxMessageId(q) && !_outboxActive.has(q.id)) {
+      _outboxRearmUnreached(q, 'mislabelled_refused'); changed++; continue;
+    }
     if (!_outboxIsMessage(q) || q.needs_decision || _outboxActive.has(q.id)) continue;
     const uncertain = _outboxUncertainMessage(q);
     if (uncertain && q.checking_since && now - q.checking_since > _OUTBOX_DECIDE_AFTER_MS) { _outboxMarkDecision(q, 'unconfirmed', now); changed++; }
-    else if (q.state === 'blocked' && !uncertain) { _outboxMarkDecision(q, 'refused', now); changed++; }
+    else if (q.state === 'blocked' && !uncertain) { _outboxBlockedMessageDecision(q, now); changed++; }
     else if (!uncertain && !q.attempted_at && !q.attempts && now - (q.timestamp || now) > _OUTBOX_STALE_SEND_MS) { _outboxMarkDecision(q, 'stale', now); changed++; }
   }
   return changed;
@@ -27253,6 +27283,7 @@ function _pendingMsgState(p) {
   const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
     : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
     : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
+    : p.decision === 'unreached' ? ['Not sent', 'it never reached the server']
     : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
     : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
     : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
