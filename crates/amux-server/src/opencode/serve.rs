@@ -100,6 +100,26 @@
 //! M3.3; the `…/log?after=` cursor failed to replay in the spike and is not
 //! depended on).
 
+//! ## M3.3 — steering + interrupt (measured from the same 2026-10-27 openapi)
+//!
+//! - `POST …/prompt` with `delivery:"steer"` lands INSIDE a running turn (M3.0
+//!   spike: the steered reply closed the run and the essay turn never got an
+//!   idle marker of its own); `"queue"` waits for the turn boundary. ACP
+//!   answers the steer case with `-32603 Session already has an active ACP
+//!   prompt`, which is the whole reason this transport exists.
+//! - `POST …/interrupt` → `SessionInterruptResponse {interrupted: bool}` at
+//!   the **TOP LEVEL** (no `data:` wrapper, unlike every other session
+//!   endpoint). `false` is a legitimate answer — nothing was running — not an
+//!   error. The openapi scopes it: *"Whether an active execution owned by this
+//!   OpenCode process was interrupted"* → **interrupt is per process, i.e. per
+//!   serve**; with D1 (one serve for the fleet) one worker's cancel cannot stop
+//!   another worker's turn. Its optional `?resume=<true|false>` query is NOT
+//!   sent — the effect is unmeasured.
+//! - Turn OUTCOME is read from `GET …/message` (D3), never from the SSE
+//!   stream: [`idle_outcomes`] reads the **measured** structured field
+//!   `{"type":"idle","outcome":"interrupted"}` off a newest-first `data` list
+//!   (opencode 2.2.1, captured 2026-10-29).
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -373,13 +393,42 @@ impl ServeClient {
         self.data_id(&endpoint, 200, &v)
     }
 
-    /// The durable message history for a session (the reconciliation path:
-    /// full history incl. interrupted turns and their `idle outcome=` markers,
-    /// measured). Returned opaquely — interpreting turn outcomes is the
-    /// caller's job (M3.3).
+    /// The durable message history for a session — the reconciliation path
+    /// (D3). Full history including interrupted turns, whose outcome rides as
+    /// a structured `{type: "idle", outcome: …}` row (MEASURED on opencode
+    /// 2.2.1, 2026-10-29; the body is `{data: [...], cursor}`, newest-first).
+    /// Returned opaquely — [`idle_outcomes`] does the outcome parsing.
     pub async fn messages(&self, session_id: &str) -> Result<Value> {
         let endpoint = format!("/api/session/{session_id}/message");
         self.send_json(reqwest::Method::GET, &endpoint, None).await
+    }
+
+    /// Interrupt whatever turn this session is running, returning whether an
+    /// execution was actually interrupted. `false` is a MEASURED answer —
+    /// nothing was running — and must never be confused with a failure.
+    ///
+    /// MEASURED (openapi, captured 2026-10-27): the 200 body is
+    /// `SessionInterruptResponse {interrupted: bool}` at the TOP LEVEL — no
+    /// `data:` wrapper, unlike every other session endpoint — and it is scoped
+    /// to "an active execution **owned by this OpenCode process**", i.e. an
+    /// interrupt reaches the sessions of THIS serve and no others (D1's
+    /// one-serve-per-fleet makes that a fleet-visible property). The optional
+    /// `?resume=<true|false>` query is deliberately not sent: its effect is
+    /// unmeasured, so the server's own default applies.
+    pub async fn interrupt(&self, session_id: &str) -> Result<bool> {
+        let endpoint = format!("/api/session/{session_id}/interrupt");
+        let v = self
+            .send_json(reqwest::Method::POST, &endpoint, None)
+            .await?;
+        v.get("interrupted")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                ProtocolError::Transport(format!(
+                    "serve POST {endpoint} -> HTTP 200: no `interrupted` in the measured \
+                     SessionInterruptResponse: {}",
+                    summarize(&v.to_string())
+                ))
+            })
     }
 
     /// Does a persisted `ses_…` id still resolve? Probed with the proven
@@ -474,6 +523,65 @@ pub fn password_from_service_json(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Turn outcomes out of a `GET …/message` body — D3's reconciliation path.
+///
+/// MEASURED on opencode **2.2.1** (2026-10-29, dedicated serve): the body is
+/// `{data: [...], cursor}`, `data` is **newest-first**, and an outcome is a
+/// **structured field on an `idle` row**:
+///
+/// ```json
+/// {"id": "msg_…", "time": {…}, "type": "idle", "outcome": "interrupted"}
+/// ```
+///
+/// sibling rows look like `{"type": "user", "text": …}` and
+/// `{"type": "assistant", "content": [{"type": "reasoning", …}], "finish": …}`.
+/// There are **no `info`/`parts` wrappers** in the measured body — those lived
+/// only in a hand-written fixture since M3.1 and never in a capture.
+///
+/// Rows are returned in the server's order (newest first), so "last one wins"
+/// stays the CALLER's decision rather than a guess baked in here.
+///
+/// The `idle outcome=<x>` TEXT sentinel is kept as a **compatibility path**:
+/// it was assumed, never captured, and no `sse-live`/`sse-passive` line
+/// contains it. A hit on it is therefore unverified — prefer the structured
+/// field's verdict.
+pub fn idle_outcomes(messages: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(rows) = messages.get("data").and_then(Value::as_array) else {
+        return out;
+    };
+    for row in rows {
+        // Measured path: a structured `outcome` field (2.2.1 puts it on an
+        // `idle` row). Matched on the field, not on `type`, so a renamed row
+        // type cannot silently hide the outcome.
+        if let Some(o) = row.get("outcome").and_then(Value::as_str) {
+            out.push(o.to_string());
+            continue;
+        }
+        // Unverified compatibility path: the `idle outcome=<x>` text sentinel,
+        // in a row-level `text` or the assumed `parts[].text`.
+        let mut texts: Vec<&str> = Vec::new();
+        if let Some(t) = row.get("text").and_then(Value::as_str) {
+            texts.push(t);
+        }
+        if let Some(parts) = row.get("parts").and_then(Value::as_array) {
+            for part in parts {
+                if let Some(t) = part.get("text").and_then(Value::as_str) {
+                    texts.push(t);
+                }
+            }
+        }
+        for t in texts {
+            for line in t.lines() {
+                if let Some(rest) = line.trim().strip_prefix("idle outcome=") {
+                    out.push(rest.trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
@@ -559,6 +667,38 @@ impl ServeSession {
     /// The durable history of this session (the reconciliation path).
     pub async fn messages(&self) -> Result<Value> {
         self.client.messages(&self.session_id).await
+    }
+
+    /// Deliver `text` INSIDE this session's running turn — the case ACP
+    /// refuses with `-32603 Session already has an active ACP prompt`. Returns
+    /// the admitted message id; the turn's outcome is still read from
+    /// [`ServeSession::messages`] (D3), never awaited here.
+    ///
+    /// D4 caveat: this relaxes the message queue's `AtTurnBoundary` timing for
+    /// serve workers. The queued path stays intact for `run`/`acp`.
+    pub async fn steer(&self, text: &str) -> Result<String> {
+        self.prompt_async(text, Delivery::Steer).await
+    }
+
+    /// Interrupt this session's running turn and report the ack. `Ok(false)`
+    /// means nothing was running — a normal answer, not a failure (see
+    /// [`ServeClient::interrupt`]). The ack is logged so a sweep can see who
+    /// cancelled what; the OUTCOME still comes from `/message` (D3).
+    pub async fn interrupt(&self) -> Result<bool> {
+        let interrupted = self.client.interrupt(&self.session_id).await?;
+        tracing::info!(
+            session = %self.session_id,
+            interrupted,
+            verdict = "serve interrupt acknowledged; turn outcome still read from /message (D3)",
+            "serve: interrupt"
+        );
+        Ok(interrupted)
+    }
+
+    /// The turn outcomes recorded in this session's durable history, in the
+    /// order the server returned them (see [`idle_outcomes`]).
+    pub async fn turn_outcomes(&self) -> Result<Vec<String>> {
+        Ok(idle_outcomes(&self.messages().await?))
     }
 }
 
@@ -1594,19 +1734,50 @@ mod tests {
         }
     }
 
+    /// MEASURED `/message` body — opencode 2.2.1, dedicated serve,
+    /// 2026-10-29: `{data: [...], cursor}`, `data` **newest-first**, rows
+    /// typed `user` / `assistant` / `idle`. The interrupted turn's outcome is
+    /// the structured `outcome` field on the `idle` row. There are no
+    /// `info`/`parts` wrappers — that shape existed only in an earlier
+    /// hand-written fixture and in no capture.
     async fn messages(RoutePath(id): RoutePath<String>) -> Response {
         if !matches!(id.as_str(), "ses_fixture" | "ses_busy") {
             return (StatusCode::NOT_FOUND, Json(json!({"message": "no such session"})))
                 .into_response();
         }
-        Json(json!({"data": [
-            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Write a 700 word essay…"}]},
-            {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "essay…"}]},
-            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "STOP the essay. Reply with exactly: STEERED-OK"}]},
-            {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "STEERED-OK"}]},
-            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "idle outcome=interrupted"}]}
-        ]}))
+        Json(json!({
+            "data": [
+                {"id": "msg_idle", "time": {"created": 5}, "type": "idle",
+                 "outcome": "interrupted"},
+                {"id": "msg_steered", "time": {"created": 4}, "type": "assistant",
+                 "content": [{"type": "text", "text": "STEERED-OK"}],
+                 "finish": "stop"},
+                {"id": "msg_essay", "time": {"created": 3}, "type": "assistant",
+                 "content": [{"type": "text", "text": "essay…"}],
+                 "finish": "tool_calls"},
+                {"id": "msg_steer", "time": {"created": 2}, "type": "user",
+                 "text": "STOP the essay. Reply with exactly: STEERED-OK"},
+                {"id": "msg_task", "time": {"created": 1}, "type": "user",
+                 "text": "Write a 700 word essay…"}
+            ],
+            "cursor": "cur_fixture"
+        }))
         .into_response()
+    }
+
+    /// MEASURED `SessionInterruptResponse`: `{interrupted: bool}` at the top
+    /// level, no `data:` wrapper. `ses_fixture` has a turn running, `ses_idle`
+    /// has none — so `false` is reachable as a normal answer.
+    async fn interrupt(RoutePath(id): RoutePath<String>) -> Response {
+        match id.as_str() {
+            "ses_fixture" => Json(json!({"interrupted": true})).into_response(),
+            "ses_idle" => Json(json!({"interrupted": false})).into_response(),
+            _ => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"_tag": "SessionNotFoundError"})),
+            )
+                .into_response(),
+        }
     }
 
     /// Spin a fixture serve; returns (base_url, observed state).
@@ -1622,6 +1793,7 @@ mod tests {
             .route("/api/session", post(create_session))
             .route("/api/session/{id}/prompt", post(prompt))
             .route("/api/session/{id}/message", get(messages))
+            .route("/api/session/{id}/interrupt", post(interrupt))
             .with_state(state);
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -1791,10 +1963,16 @@ mod tests {
         let history = session.messages().await.unwrap();
         let rows = history["data"].as_array().unwrap();
         assert_eq!(rows.len(), 5);
-        // The measured shape includes interrupted turns' idle markers — this
-        // is the reconciliation path, so the reader must pass it through.
-        let last = rows.last().unwrap();
-        assert!(last.to_string().contains("idle outcome=interrupted"));
+        // MEASURED shape (opencode 2.2.1): rows are newest-first and an
+        // interrupted turn's outcome is a STRUCTURED field on the leading
+        // `idle` row. This is the reconciliation path, so the reader must pass
+        // the envelope through untouched.
+        assert_eq!(rows[0]["type"], "idle");
+        assert_eq!(rows[0]["outcome"], "interrupted");
+        assert_eq!(
+            history["cursor"], "cur_fixture",
+            "the envelope's cursor rides along with the data"
+        );
     }
 
     #[tokio::test]
@@ -2304,5 +2482,251 @@ mod tests {
         assert_eq!(s.overflowed, 0, "{s:?}");
         assert_eq!(s.gaps, 0, "{s:?}");
         assert!(hub.take_backfill_owed().is_empty(), "{s:?}");
+    }
+
+    // ------------------------------------------------------------------
+    // M3.3 — steering + interrupt
+    // ------------------------------------------------------------------
+
+    /// The WIRE contract: a steer is a prompt carrying `delivery:"steer"`
+    /// (which the M3.0 spike proved lands inside a RUNNING turn — the case ACP
+    /// answers with `-32603`), while a queued delivery stays `"queue"` and
+    /// waits for the turn boundary (D4: no silent contract change). That a
+    /// steer reaches a turn that is actually running is proven by the M3.3
+    /// live smoke, not by a fixture — a fixture cannot run an agent loop.
+    #[tokio::test]
+    async fn steer_lands_inside_a_running_turn_while_queue_waits_for_the_boundary() {
+        let (base, seen) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+        let (session, _) = ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+            .await
+            .unwrap();
+
+        session
+            .steer("STOP the essay. Reply with exactly: STEERED-OK")
+            .await
+            .unwrap();
+        session
+            .prompt_async("next task", Delivery::Queue)
+            .await
+            .unwrap();
+
+        let bodies = seen.prompt_bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0].1["delivery"], "steer", "{:?}", bodies[0].1);
+        assert_eq!(bodies[1].1["delivery"], "queue", "{:?}", bodies[1].1);
+        // Steering is a prompt, not a side channel: the text rides verbatim.
+        assert_eq!(
+            bodies[0].1["text"],
+            "STOP the essay. Reply with exactly: STEERED-OK"
+        );
+    }
+
+    /// The ack is the measured TOP-LEVEL `{interrupted: bool}` (no `data:`
+    /// wrapper). `false` — nothing was running — must be indistinguishable
+    /// from neither success nor transport failure: a 404 names its endpoint
+    /// and status instead of pretending nothing was running.
+    #[tokio::test]
+    async fn an_interrupt_ack_is_measured_top_level_and_never_confused_with_a_failure() {
+        let (base, _) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+
+        assert!(
+            client.interrupt("ses_fixture").await.unwrap(),
+            "a running turn is interrupted"
+        );
+        assert!(
+            !client.interrupt("ses_idle").await.unwrap(),
+            "nothing running is a normal `false`, not an error"
+        );
+
+        let err = client.interrupt("ses_gone").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("POST /api/session/ses_gone/interrupt"), "{msg}");
+        assert!(msg.contains("HTTP 404"), "{msg}");
+    }
+
+    /// The session-level wrapper logs the ack with a verdict, so a sweep can
+    /// see who cancelled what (two-fix rule: the behaviour AND its trace).
+    #[test]
+    fn the_interrupt_ack_is_logged_with_a_verdict() {
+        let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let writer = Writer(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            // current_thread, so every tracing call runs on THIS thread and
+            // the subscriber above sees it.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let (base, _) = fixture(PromptMode::Admit).await;
+                let client = ServeClient::connect(&base, PW).unwrap();
+                let (session, _) =
+                    ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+                        .await
+                        .unwrap();
+                assert!(session.interrupt().await.unwrap());
+            });
+        });
+
+        let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("serve: interrupt"), "{logs}");
+        assert!(logs.contains("verdict="), "{logs}");
+        assert!(logs.contains("interrupted=true"), "{logs}");
+    }
+
+    /// D3 end to end: steer, interrupt, then read the OUTCOME from the durable
+    /// `GET …/message` list — never from the SSE stream. The fixture's
+    /// `/message` payload is the measured shape (an interrupted turn's
+    /// structured `outcome` field on an `idle` row).
+    #[tokio::test]
+    async fn the_outcome_after_an_interrupt_is_read_from_the_durable_message_list() {
+        let (base, _) = fixture(PromptMode::Admit).await;
+        let client = ServeClient::connect(&base, PW).unwrap();
+        let (session, _) = ServeSession::open(client, Path::new(CWD), Some(MODEL), None)
+            .await
+            .unwrap();
+
+        session.steer("STOP").await.unwrap();
+        assert!(session.interrupt().await.unwrap());
+
+        assert_eq!(
+            session.turn_outcomes().await.unwrap(),
+            vec!["interrupted".to_string()]
+        );
+    }
+
+    /// Outcome extraction against the MEASURED body (opencode 2.2.1), then
+    /// the legacy text-sentinel path. Rows come back in the server's order —
+    /// "last wins" stays the caller's decision, not something this parser
+    /// decides for them.
+    #[test]
+    fn idle_outcomes_reads_the_measured_structured_field_in_document_order() {
+        // MEASURED: {data, cursor}, newest-first, outcome is a field on an
+        // `idle` row; siblings are typed `user` / `assistant`.
+        let measured = json!({
+            "data": [
+                {"id": "msg_i", "time": {"created": 3}, "type": "idle",
+                 "outcome": "interrupted"},
+                {"id": "msg_a", "time": {"created": 2}, "type": "assistant",
+                 "content": [{"type": "text", "text": "STEERED-OK"}],
+                 "finish": "stop"},
+                {"id": "msg_u", "time": {"created": 1}, "type": "user",
+                 "text": "Write a 700 word essay…"}
+            ],
+            "cursor": "cur_1"
+        });
+        assert_eq!(idle_outcomes(&measured), vec!["interrupted"]);
+
+        // Two outcomes: document order preserved (server sends newest first).
+        let two = json!({"data": [
+            {"type": "idle", "outcome": "interrupted"},
+            {"type": "idle", "outcome": "succeeded"}
+        ]});
+        assert_eq!(idle_outcomes(&two), vec!["interrupted", "succeeded"]);
+
+        // Compatibility path for the text sentinel M3.1 assumed: never
+        // captured, kept only so an older body still parses.
+        let legacy = json!({"data": [
+            {"parts": [{"type": "text", "text": "idle outcome=succeeded"}]},
+            {"type": "user", "text": "nothing to find here"}
+        ]});
+        assert_eq!(idle_outcomes(&legacy), vec!["succeeded"]);
+
+        // Nothing to find is empty, never a panic.
+        assert!(idle_outcomes(&Value::Null).is_empty());
+        assert!(idle_outcomes(&json!({"data": []})).is_empty());
+        assert!(idle_outcomes(&json!({"data": [{"type": "user", "text": "hello"}]})).is_empty());
+    }
+
+    /// M3.3's done-condition, against a REAL `opencode serve`. A fixture
+    /// cannot run an agent loop, so "a steer reaches a turn that is actually
+    /// running" can only be proven live — this is that proof, and it is
+    /// `#[ignore]`d because it needs a serve process and provider quota.
+    ///
+    /// Driven by hand (D1 shape: one dedicated serve, password from its
+    /// startup log):
+    ///
+    /// ```text
+    /// opencode serve --hostname 127.0.0.1 --port <p> > serve.log 2>&1 &
+    /// pw=$(sed -n 's/^server password //p' serve.log)
+    /// AMUX_SMOKE_URL=http://127.0.0.1:<p> AMUX_SMOKE_PASSWORD="$pw" \
+    ///   cargo test -p amux-server --lib live_smoke -- --ignored --nocapture
+    /// ```
+    ///
+    /// The load-bearing assertion is `interrupt() == true`: the server only
+    /// interrupts an execution that is running, so a `true` AFTER a steer was
+    /// admitted proves the turn was still running when we steered into it —
+    /// the exact case ACP answers with `-32603`.
+    #[tokio::test]
+    #[ignore = "live smoke: needs a running `opencode serve` and provider quota"]
+    async fn a_live_smoke_steers_into_a_running_turn_and_interrupts_it() {
+        let (Ok(url), Ok(pw)) = (
+            std::env::var("AMUX_SMOKE_URL"),
+            std::env::var("AMUX_SMOKE_PASSWORD"),
+        ) else {
+            eprintln!("LIVE SMOKE NOT RUN: set AMUX_SMOKE_URL and AMUX_SMOKE_PASSWORD");
+            return;
+        };
+
+        let client = ServeClient::connect(url, pw).expect("connect to the smoke serve");
+        let cwd = std::env::temp_dir().join("m33-smoke-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (session, _) = ServeSession::open(client, &cwd, Some(MODEL), None)
+            .await
+            .expect("open a scratch session");
+
+        // A long task, queued (nothing is running yet, so it starts at once).
+        session
+            .prompt_async(
+                "Write a 4000-word essay about tide tables into essay.txt. \
+                 Do not stop early.",
+                Delivery::Queue,
+            )
+            .await
+            .expect("admit the long task");
+
+        // Give the agent loop time to actually be mid-turn.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+
+        // The steer: admitted while the turn runs.
+        let steered = session
+            .steer("STOP immediately. Reply with exactly: STEERED-OK")
+            .await
+            .expect("a steer must be admitted while a turn is running");
+        assert!(!steered.is_empty(), "steer returns the admitted message id");
+        eprintln!("smoke: steered, admitted as {steered}");
+
+        // The interrupt: `true` proves an execution was still running.
+        let interrupted = session.interrupt().await.expect("interrupt ack");
+        assert!(interrupted, "the turn was still running, so this is true");
+        eprintln!("smoke: interrupt acked, interrupted={interrupted}");
+
+        // D3: the OUTCOME comes from the durable /message list.
+        let outcomes = session.turn_outcomes().await.expect("read /message");
+        eprintln!("smoke: outcomes read from /message = {outcomes:?}");
+        assert!(
+            outcomes.iter().any(|o| o == "interrupted"),
+            "an interrupted turn leaves a structured row with outcome=\"interrupted\" \
+             in /message (measured on 2.2.1): {outcomes:?}"
+        );
     }
 }
