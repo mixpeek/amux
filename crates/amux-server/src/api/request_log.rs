@@ -2213,6 +2213,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/velocity",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity/{worker}",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/usage/attribution",
         methods: &["GET"],
     },
