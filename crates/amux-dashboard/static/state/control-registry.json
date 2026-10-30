@@ -1302,6 +1302,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictLoad": {
+      "kind": "command._dictLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictOpenPopup": {
       "kind": "command._dictOpenPopup",
       "feedback_required": true,
@@ -1328,6 +1334,12 @@
     },
     "_dictOutboxSet": {
       "kind": "command._dictOutboxSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictPendingBadge": {
+      "kind": "command._dictPendingBadge",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2030,12 +2042,6 @@
     },
     "_filesToolbarCheck": {
       "kind": "command._filesToolbarCheck",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_filesUp": {
-      "kind": "command._filesUp",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3972,6 +3978,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekUpdateTabCounts": {
+      "kind": "command._peekUpdateTabCounts",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekViewApply": {
       "kind": "command._peekViewApply",
       "feedback_required": true,
@@ -5358,6 +5370,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_upqCancel": {
+      "kind": "command._upqCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_upqDrain": {
       "kind": "command._upqDrain",
       "feedback_required": true,
@@ -5366,6 +5384,24 @@
     },
     "_upqListBounded": {
       "kind": "command._upqListBounded",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqOpenRecordings": {
+      "kind": "command._upqOpenRecordings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqRemove": {
+      "kind": "command._upqRemove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqRenderBadge": {
+      "kind": "command._upqRenderBadge",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

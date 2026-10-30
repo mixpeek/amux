@@ -4552,7 +4552,18 @@ async function _pendingSummary() {
   try { clips = ((await _idb.get('dict_pending')) || []).filter(x => x.state !== 'done'); } catch (e) {}
   const bytes = files.reduce((a, x) => a + (x.size || 0), 0)
               + clips.reduce((a, x) => a + ((x.blob && x.blob.size) || 0), 0);
-  return { files: files.length, clips: clips.length, total: files.length + clips.length, bytes };
+  // A clip past its automatic retries is waiting for a person, not sending.
+  const held = clips.filter(x => (x.attempts || 0) >= _DICT_MAX_AUTO && x.state !== 'sending');
+  return { files: files.length, clips: clips.length, total: files.length + clips.length, bytes,
+    clipsHeld: held.length, clipSession: (held[0] || clips[0] || {}).session || '' };
+}
+// The recordings live in a worker's Dictation tab, which lists each one with
+// Play, Retry and Delete; the Files pill opens it.
+function _upqOpenRecordings(session) {
+  const s = session || (typeof peekSession !== 'undefined' && peekSession) || ((sessions || [])[0] || {}).name;
+  if (!s) return;
+  openPeek(s);
+  setPeekTab('dictation');
 }
 
 function _fmtPendingBytes(b) {
@@ -4572,7 +4583,15 @@ async function _upqRenderBadge() {
     if (p.clips) parts.push(p.clips + ' recording' + (p.clips === 1 ? '' : 's'));
     el.style.display = '';
     el.textContent = parts.join(' + ') + ' queued (' + _fmtPendingBytes(p.bytes) + ')'
-      + (online ? ' \u2014 sending\u2026' : ' \u2014 waiting for connection');
+      + (!online ? ' \u2014 waiting for connection'
+        : p.clipsHeld ? ' \u2014 ' + p.clipsHeld + ' not sent, open to retry'
+        : ' \u2014 sending\u2026');
+    // Recordings are handled in the Dictation tab; say so and go there.
+    el.classList.toggle('upq-badge-link', !!p.clips);
+    el.title = p.clips ? 'Open the Dictation tab, where each recording can be played, retried or deleted' : '';
+    el.onclick = p.clips ? () => _upqOpenRecordings(p.clipSession) : null;
+    if (p.clips) { el.setAttribute('role', 'button'); el.tabIndex = 0; el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _upqOpenRecordings(p.clipSession); } }; }
+    else { el.removeAttribute('role'); el.removeAttribute('tabindex'); el.onkeydown = null; }
   });
 }
 
@@ -28060,7 +28079,7 @@ async function _dictTrySend(id, interactive) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
     return null;
   }
-  await _dictOutboxPatch(id, { state: 'sending' });
+  await _dictOutboxPatch(id, { state: 'sending', sending_at: Date.now() });
   if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
   if (_peekTab === 'dictation') _dictRender();
   const url = API + '/api/dictate?session=' + encodeURIComponent(it.session || peekSession || '')
@@ -28102,8 +28121,16 @@ async function _dictPruneDone() {
 
 // Exponential backoff so a hard failure (bad key, no quota) doesn't hammer the
 // endpoint on every reconnect, while a flaky link still recovers quickly.
+// A send gives up after 120s, so a clip still marked `sending` well past that
+// was cut off (the page reloaded or the tab was closed mid-upload) and nothing
+// owns it. It used to stay `sending` for good: never retried, while Files read
+// "1 recording queued (2.4 MB) - sending..." (Ethan, 2026-10-30).
+const _DICT_SENDING_STALE_MS = 150000;
+function _dictSendingStale(it) {
+  return it.state === 'sending' && Date.now() - (it.sending_at || 0) > _DICT_SENDING_STALE_MS;
+}
 function _dictReady(it) {
-  if (it.state === 'done' || it.state === 'sending') return false;
+  if (it.state === 'done' || (it.state === 'sending' && !_dictSendingStale(it))) return false;
   if ((it.attempts || 0) >= _DICT_MAX_AUTO) return false;
   const wait = Math.min(300000, 4000 * Math.pow(2, it.attempts || 0));
   return Date.now() - (it.last || 0) > wait;
@@ -28117,6 +28144,10 @@ async function _dictFlushOffline() {
     let sent = 0;
     for (const it of (await _dictOutbox())) {
       if (!_dictReady(it)) continue;
+      if (it.state === 'sending') {
+        try { amuxTrack('dictation_stale_sending_recovered', {id: it.id, age_ms: Date.now() - (it.sending_at || 0),
+          had_sending_at: !!it.sending_at, bytes: (it.blob && it.blob.size) || 0, measured: true, n_considered: 1}); } catch (_) {}
+      }
       if (await _dictTrySend(it.id, false) !== null) sent++;
     }
     if (sent) {
@@ -33858,12 +33889,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
   if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
 }, true);
-// Navigate to the parent of the current Files-tab folder (the "Up" action).
-function _filesUp() {
-  const p = (_filesPath || '/').replace(/\/+$/, '');
-  const i = p.lastIndexOf('/');
-  loadFiles(i > 0 ? p.slice(0, i) : '/');
-}
 // Toggle a folder's inline expansion (accordion). Inserts/removes the folder's
 // child rows right after it, without navigating into the folder.
 async function _feToggleExpand(btn) {
