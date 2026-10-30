@@ -8931,17 +8931,20 @@ LAND_BEHAVIOR_VERSION="2026-10-18.56"
 # is in the running build, CLOSED when someone closed it with a reason. All of
 # it is computed from the message history, git and /health; no model call.
 # amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet
+# amux velocity [WORKER] --projection [--backlog]: when the open cards land.
 # Where a worker's time goes, what wastes it and who can fix it, and with
 # --card an estimate of that card's minutes and tokens from the worker's own
 # finished cards (docs/design/worker-velocity.md). WORKER defaults to you.
 cmd_velocity() {
-  local worker="" card="" days=30 raw="" fleet=""
+  local worker="" card="" days=30 raw="" fleet="" proj="" backlog=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --card)  card="${2:-}"; shift 2 ;;
       --days)  days="${2:-30}"; shift 2 ;;
       --json)  raw=1; shift ;;
       --fleet) fleet=1; shift ;;
+      --projection) proj=1; shift ;;
+      --backlog) backlog=1; shift ;;
       -h|--help) sed -n '/^# amux velocity/,/^cmd_velocity/p' "$0" | sed '$d'; return 0 ;;
       *)       worker="$1"; shift ;;
     esac
@@ -8953,6 +8956,7 @@ cmd_velocity() {
     worker="${worker:-${AMUX_SESSION:-}}"
     [[ -n "$worker" ]] || die "usage: amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet  (no WORKER and no \$AMUX_SESSION)"
     url="$base/api/velocity/$worker?days=$days"
+    [[ -n "$proj" ]] && url="$base/api/velocity/$worker/projection?days=$days${backlog:+&include=backlog}"
     [[ -n "$card" ]] && url="$url&card=$card"
   fi
   local body
@@ -8966,6 +8970,20 @@ if "workers" in d:
     for r in d["workers"]:
         print("  %-26s finished %4s  %5s/day  %3s%% of time finished  %5.1f h wasted  top: %s" % (
             r["worker"], r["finished_cards"], r["finished_per_day"], r["finished_share_of_time"], r["wasted_hours"], r.get("top_bottleneck") or "-"))
+    sys.exit(0)
+if "work_minutes" in d:
+    if not d.get("measured", True):
+        print(d.get("why_unmeasured")); sys.exit(0)
+    wm = d["work_minutes"]; c = d.get("calibration") or {}; pace = d.get("pace") or {}; fb = d.get("finish_by") or {}
+    print("%s: %s open cards%s." % (d["worker"], d["n_considered"], " (with backlog)" if d.get("include_backlog") else ""))
+    for x in d["cards"]:
+        b = (" blocked by " + ", ".join(x["blocked_by"])) if x["blocked_by"] else ""
+        print("  %-10s %-7s %4.0f min (to %4.0f)  done after %5.0f min%s  %s" % (x["card"], x["status"], x["minutes_p50"], x["minutes_p75"], x["work_done_after_minutes"], b, x["title"][:50]))
+    print("Work time: %s min (pessimistic %s)%s." % (wm["p50"], wm["p75"], (", after scaling by %sx: your past cards took that many times their estimate" % c["actual_over_estimate"]) if c else ""))
+    if pace:
+        print("At your recent pace (%s days per finished card): done by %s, %s pessimistic." % (pace["days_per_finished_card"], (fb.get("p50") or "")[:16], (fb.get("p75") or "")[:16]))
+    if d.get("blocked_by_outside"):
+        print("Waits on work outside this queue: %s. The dates assume it lands in time." % ", ".join(d["blocked_by_outside"]))
     sys.exit(0)
 if not d.get("measured", True):
     print(d.get("why_unmeasured") or d.get("error") or d); sys.exit(1)

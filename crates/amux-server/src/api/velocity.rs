@@ -24,6 +24,13 @@
 //!   and (with `card`) an estimate for that card from the worker's similar
 //!   finished cards, falling back to all its finished cards, then the fleet's.
 //!   Every estimate says its basis and how many cards it rests on.
+//! - `GET /api/velocity/{worker}/projection?include=backlog` — when the
+//!   worker's open cards land: the one in doing, then todo in board order
+//!   (and backlog with include=backlog), each estimated as above, ordered so a
+//!   card follows the queued cards it depends on. Two answers: work time (the
+//!   estimates summed, scaled by how the worker's past cards compared with
+//!   their own estimates) and calendar time at the worker's recent pace. A
+//!   dependency outside the queue that is not done is named, not dated.
 
 use super::AppState;
 use axum::extract::{Path, Query, State};
@@ -36,13 +43,17 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/", get(fleet)).route("/{worker}", get(worker))
+    Router::new()
+        .route("/", get(fleet))
+        .route("/{worker}", get(worker))
+        .route("/{worker}/projection", get(projection))
 }
 
 #[derive(Deserialize, Default)]
 pub struct Q {
     days: Option<f64>,
     card: Option<String>,
+    include: Option<String>,
 }
 
 /// Workers with fewer attempts than this are left out of the fleet view.
@@ -334,6 +345,181 @@ pub(crate) fn context_lines(s: &Value, as_of: &str) -> String {
     out
 }
 
+/// An open card in a worker's queue.
+#[derive(Clone, Debug)]
+pub(crate) struct QCard {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub depends_on: Vec<String>,
+    pub blocked_on: String,
+}
+
+/// How a worker's finished cards compared with what this estimator would have
+/// said for each, with that card held out: the median of actual / estimate.
+/// None with fewer than MIN_SIMILAR + 1 finished cards.
+pub(crate) fn calibration(own: &[DoneCard], titles: &HashMap<String, String>) -> Option<(f64, usize)> {
+    if own.len() <= MIN_SIMILAR {
+        return None;
+    }
+    let mut ratios: Vec<f64> = own
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| {
+            let rest: Vec<DoneCard> = own.iter().enumerate().filter(|(j, _)| *j != i)
+                .map(|(_, x)| DoneCard { card: x.card.clone(), minutes: x.minutes, tokens: x.tokens }).collect();
+            let e = estimate(titles.get(&d.card).map(String::as_str).unwrap_or(""), &rest, &rest, titles);
+            let p50 = e["minutes"]["p50"].as_f64()?;
+            (p50 > 0.0).then_some(d.minutes / p50)
+        })
+        .collect();
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    quantile(&ratios, 0.5).map(|r| (r, ratios.len()))
+}
+
+/// Order the queue so a card comes after the queued cards it depends on,
+/// keeping board order otherwise.
+fn dependency_order(queue: &[QCard]) -> Vec<QCard> {
+    let ids: BTreeSet<&str> = queue.iter().map(|c| c.id.as_str()).collect();
+    let mut placed: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    let mut left: Vec<QCard> = queue.to_vec();
+    while !left.is_empty() {
+        let at = left
+            .iter()
+            .position(|c| c.depends_on.iter().all(|d| !ids.contains(d.as_str()) || placed.contains(d)))
+            .unwrap_or(0); // a cycle: take the next in board order
+        let c = left.remove(at);
+        placed.insert(c.id.clone());
+        out.push(c);
+    }
+    out
+}
+
+/// The worker's recent pace: how many cards it finished in how many days,
+/// and the moment the projection starts from.
+#[derive(Clone, Copy)]
+pub(crate) struct Pace {
+    pub finished_cards: usize,
+    pub days: f64,
+    pub now: i64,
+}
+
+/// The projection for a worker's queue. `open_elsewhere` holds dependency ids
+/// outside the queue that are not done.
+pub(crate) fn project(
+    queue: &[QCard],
+    own: &[DoneCard],
+    fleet: &[DoneCard],
+    titles: &HashMap<String, String>,
+    open_elsewhere: &BTreeSet<String>,
+    pace_in: &Pace,
+) -> Value {
+    let Pace { finished_cards, days, now } = *pace_in;
+    let order = dependency_order(queue);
+    let cal = calibration(own, titles);
+    let factor = cal.map(|c| c.0).unwrap_or(1.0);
+    let (mut p50_sum, mut p75_sum) = (0.0, 0.0);
+    let mut rows = Vec::new();
+    for c in &order {
+        let e = estimate(&c.title, own, fleet, titles);
+        let p50 = e["minutes"]["p50"].as_f64().unwrap_or(0.0);
+        let p75 = e["minutes"]["p75"].as_f64().unwrap_or(p50);
+        p50_sum += p50;
+        p75_sum += p75;
+        let blocked_by: Vec<&String> = c.depends_on.iter().filter(|d| open_elsewhere.contains(*d)).collect();
+        rows.push(json!({
+            "card": c.id, "title": c.title, "status": c.status,
+            "minutes_p50": p50, "minutes_p75": p75, "basis": e["basis"], "n": e["n"],
+            "work_done_after_minutes": (p50_sum * factor).round(),
+            "blocked_by": blocked_by, "blocked_on": c.blocked_on,
+        }));
+    }
+    // Calendar time at the worker's recent pace: days per finished card,
+    // which already counts idle time, waiting and parked attempts.
+    let pace = (finished_cards > 0).then(|| days / finished_cards as f64);
+    let spread_ratio = if p50_sum > 0.0 { p75_sum / p50_sum } else { 1.0 };
+    let at = |d: f64| chrono::DateTime::from_timestamp(now + (d * 86400.0) as i64, 0).map(|t| t.to_rfc3339());
+    let blocked: BTreeSet<&String> = order.iter().flat_map(|c| c.depends_on.iter()).filter(|d| open_elsewhere.contains(*d)).collect();
+    json!({
+        "measured": true,
+        "n_considered": order.len(),
+        "cards": rows,
+        "work_minutes": {"p50": (p50_sum * factor).round(), "p75": (p75_sum * factor).round(),
+                          "uncalibrated_p50": p50_sum.round()},
+        "calibration": cal.map(|(r, n)| json!({"actual_over_estimate": (r * 100.0).round() / 100.0, "cards": n,
+            "meaning": "the worker's past finished cards took this many times the estimate, each estimated with itself held out"})),
+        "pace": pace.map(|p| json!({"days_per_finished_card": (p * 100.0).round() / 100.0, "window_days": days, "finished_cards": finished_cards})),
+        "finish_by": pace.map(|p| json!({"p50": at(p * order.len() as f64), "p75": at(p * order.len() as f64 * spread_ratio)})),
+        "blocked_by_outside": blocked,
+        "note": if blocked.is_empty() { "" } else { "cards wait on work outside this queue (blocked_by_outside); the dates assume it lands in time" },
+    })
+}
+
+/// A worker's open cards, dependencies outside the queue that are not done,
+/// and the queued cards' titles.
+type QueueData = (Vec<QCard>, BTreeSet<String>, HashMap<String, String>);
+
+async fn projection(State(state): State<AppState>, Path(worker): Path<String>, Query(q): Query<Q>) -> Response {
+    let (days, since) = window(&q);
+    let d = match with_data(&state, since).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let with_backlog = q.include.as_deref() == Some("backlog");
+    let store = state.store.clone();
+    let w = worker.clone();
+    let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<QueueData> {
+        let conn = store.read()?;
+        let statuses = if with_backlog { "'doing','todo','backlog'" } else { "'doing','todo'" };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, COALESCE(title,''), status, COALESCE(depends_on,''), COALESCE(blocked_on,'') FROM issues
+             WHERE session = ?1 AND status IN ({statuses}) AND COALESCE(archived,0) = 0 AND deleted IS NULL
+             ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, pos"
+        ))?;
+        let queue: Vec<QCard> = stmt
+            .query_map([&w], |r| {
+                let deps: String = r.get(3)?;
+                Ok(QCard { id: r.get(0)?, title: r.get(1)?, status: r.get(2)?,
+                    depends_on: serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default(), blocked_on: r.get(4)? })
+            })?
+            .collect::<Result<_, _>>()?;
+        let ids: BTreeSet<&str> = queue.iter().map(|c| c.id.as_str()).collect();
+        let mut open = BTreeSet::new();
+        let mut st = conn.prepare("SELECT status FROM issues WHERE id = ?1")?;
+        for dep in queue.iter().flat_map(|c| c.depends_on.iter()).filter(|d| !ids.contains(d.as_str())) {
+            let s: Option<String> = st.query_row([dep], |r| r.get(0)).ok();
+            if !matches!(s.as_deref(), Some("done") | Some("verified") | Some("discarded")) {
+                open.insert(dep.clone());
+            }
+        }
+        let mut titles = HashMap::new();
+        for c in &queue {
+            titles.insert(c.id.clone(), c.title.clone());
+        }
+        Ok((queue, open, titles))
+    })
+    .await;
+    let (queue, open, qtitles) = match loaded {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{e:#}"), "measured": false, "n_considered": 0}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string(), "measured": false, "n_considered": 0}))).into_response(),
+    };
+    let mut titles = d.titles.clone();
+    titles.extend(qtitles);
+    let mine: Vec<Attempt> = d.attempts.iter().filter(|a| a.worker == worker).cloned().collect();
+    let own = done_cards(&mine, &d.tokens);
+    let fleet = done_cards(&d.attempts, &d.tokens);
+    let mut out = project(&queue, &own, &fleet, &titles, &open, &Pace { finished_cards: own.len(), days, now: chrono::Utc::now().timestamp() });
+    out["worker"] = json!(worker);
+    out["include_backlog"] = json!(with_backlog);
+    if queue.is_empty() {
+        out["measured"] = json!(false);
+        out["why_unmeasured"] = json!(format!("{worker} has no open cards in doing or todo{}", if with_backlog { " or backlog" } else { "" }));
+    }
+    Json(out).into_response()
+}
+
 fn window(q: &Q) -> (f64, i64) {
     let days = q.days.unwrap_or(30.0).clamp(1.0, 365.0);
     (days, chrono::Utc::now().timestamp() - (days * 86400.0) as i64)
@@ -469,6 +655,24 @@ mod tests {
         assert!(text.contains("\"MG-2292 shard hold\""), "{text}");
         assert!(text.contains("amux velocity"), "{text}");
         assert_eq!(context_lines(&summarize("w", &rows[..2], &HashMap::new(), 30.0), "2026-10-30"), "", "too little history adds nothing");
+    }
+
+    #[test]
+    fn a_projection_orders_by_dependency_names_outside_blockers_and_dates_at_the_workers_pace() {
+        let q = |id: &str, deps: &[&str]| QCard { id: id.into(), title: format!("move {id}"), status: "todo".into(),
+            depends_on: deps.iter().map(|d| d.to_string()).collect(), blocked_on: String::new() };
+        // C depends on B, which comes later in board order; B waits on X outside the queue.
+        let queue = vec![q("C", &["B"]), q("B", &["X"]), q("A", &[])];
+        let own: Vec<DoneCard> = (0..4).map(|i| DoneCard { card: format!("D{i}"), minutes: 10.0, tokens: None }).collect();
+        let titles = HashMap::new();
+        let open = BTreeSet::from(["X".to_string()]);
+        let p = project(&queue, &own, &own, &titles, &open, &Pace { finished_cards: 4, days: 8.0, now: 0 });
+        let ids: Vec<&str> = p["cards"].as_array().unwrap().iter().map(|c| c["card"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["B", "C", "A"], "a card follows the queued card it depends on");
+        assert_eq!(p["blocked_by_outside"][0], "X", "an outside dependency is named, not dated");
+        assert_eq!(p["work_minutes"]["p50"].as_f64(), Some(30.0), "three cards at the worker's 10-minute median, calibration 1");
+        assert_eq!(p["pace"]["days_per_finished_card"].as_f64(), Some(2.0), "4 finished in 8 days");
+        assert_eq!(p["finish_by"]["p50"].as_str().map(|s| s.starts_with("1970-01-07")), Some(true), "three cards at 2 days each");
     }
 
     #[test]
