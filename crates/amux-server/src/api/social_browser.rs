@@ -42,8 +42,11 @@ const SESSION: &str = "social-browser";
 /// shares the profile.
 static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Close the publisher's browser so the profile is free for the next publish,
-/// a worker, or a person.
+/// Close the publisher's browser (or, when it joined one a worker or person
+/// already had open, only its own tab) so the profile is free again. Starts
+/// join: amux-gtm's own session held the `ethan` profile and the publisher's
+/// start was refused 409 (2026-10-30), which at a scheduled time is a post
+/// that never goes out.
 async fn release(state: &AppState) {
     if let Err(e) = super::browser::drive(state, SESSION, "stop", json!({"session": SESSION})).await {
         tracing::warn!(error = %e, verdict = "social_browser_stop_failed", "the social publisher could not close its browser");
@@ -159,7 +162,7 @@ async fn discard(state: &AppState) {
 /// Open `t`'s composer with the caption (and file) in it. Nothing is sent.
 async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": t.url, "session": SESSION})).await.map_err(Failure::retry)?;
+    drive("start", json!({"profile": PROFILE, "url": t.url, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
     drive("navigate", json!({"url": t.url})).await.map_err(Failure::retry)?;
     if !until(state, t.ready_js, 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
@@ -395,7 +398,7 @@ async fn x_discard(state: &AppState) {
 
 async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION})).await.map_err(Failure::retry)?;
+    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
     drive("navigate", json!({"url": X_COMPOSE})).await.map_err(Failure::retry)?;
     if !until_in(state, SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
