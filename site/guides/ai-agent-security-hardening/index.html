@@ -21,8 +21,8 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Security Hardening","item":"https://amux.io/guides/ai-agent-security-hardening/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Security Hardening: The 2026 Practitioner's Guide","description":"Secure your AI coding agents against supply chain attacks, config poisoning, credential theft, and runaway execution. The complete defensive playbook with real incidents and concrete mitigations.","url":"https://amux.io/guides/ai-agent-security-hardening/","datePublished":"2026-05-05","dateModified":"2026-07-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What are the biggest security risks of AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"The top risks are: (1) Supply chain poisoning via malicious CLAUDE.md or MCP server configs in cloned repos, (2) Credential exfiltration — agents reading .env files or AWS credentials and leaking them through tool calls, (3) Runaway execution in YOLO mode making destructive changes without oversight, (4) Prompt injection via crafted code comments or issue descriptions that hijack agent behavior, and (5) MCP server vulnerabilities — the 5,800+ community MCP servers have varying security quality, with over 1,000 found to contain malicious code."}},{"@type":"Question","name":"Is YOLO mode safe for AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (auto-approve all tool calls) is safe when combined with proper guardrails: directory-scoped permissions that prevent writes outside the project, hook-based allowlists that block dangerous commands (rm -rf, curl to external hosts, credential access), network isolation that prevents data exfiltration, and session timeouts that cap execution duration. Without these layers, YOLO mode gives agents unconstrained access to your system."}},{"@type":"Question","name":"How do I secure MCP servers for AI agents?","acceptedAnswer":{"@type":"Answer","text":"Pin MCP server versions to exact commits (never use @latest), audit server source code before installation, run MCP servers in network-isolated containers, use an allowlist of approved servers in your team's shared configuration, restrict file system access to the minimum paths needed, and monitor MCP server network traffic for unexpected outbound connections. Never install MCP servers from untrusted sources."}},{"@type":"Question","name":"Can AI agents steal my credentials?","acceptedAnswer":{"@type":"Answer","text":"Yes. An AI coding agent with file read access can read .env files, ~/.aws/credentials, SSH keys, and API tokens. It can then exfiltrate them via tool calls (writing to files, making HTTP requests, or encoding them in git commit messages). Mitigations: use secret managers instead of .env files, block read access to credential directories via hooks or permission configs, and use credential-scanning hooks that abort if secrets appear in agent output."}},{"@type":"Question","name":"How do multiplexers improve agent security?","acceptedAnswer":{"@type":"Answer","text":"Multiplexers like amux add a security control layer between you and your agents: session isolation prevents one compromised agent from affecting others, hook systems enforce permission policies uniformly across all sessions, centralized monitoring detects anomalous behavior (unusual file access patterns, unexpected network calls), and audit logging creates a record of every action taken. Running agents through a multiplexer with proper configuration is significantly safer than running them directly in unmanaged terminal sessions."}},{"@type":"Question","name":"Should I run AI agents in Docker containers?","acceptedAnswer":{"@type":"Answer","text":"For untrusted code or overnight unattended runs, yes. Docker containers provide filesystem isolation, network control, and resource limits. Docker Sandboxes (launched January 2026) are specifically designed for AI coding agents. The trade-off is performance overhead and complexity — containerized agents can't access your local tools, databases, or file system without explicit mounts. For trusted projects in active development, hook-based security is usually sufficient."}},{"@type":"Question","name":"What security improvements shipped in amux v0.9.95–v0.9.98?","acceptedAnswer":{"@type":"Answer","text":"Four security layers shipped in July 2026: (1) XSS hardening — attribute quotes escaped server-side; email bodies rendered in sandboxed iframes. (2) DOMPurify sanitization — notes, markdown previews, and graph views sanitized before DOM insertion. (3) CSRF protection — state-changing API endpoints reject cross-origin requests (Origin/Referer header check). (4) RCE closure — path traversal, write escalation, and git argument injection vectors closed server-side."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Security Hardening: The 2026 Practitioner's Guide","description":"Secure your AI coding agents against supply chain attacks, config poisoning, credential theft, and runaway execution. The complete defensive playbook with real incidents and concrete mitigations.","url":"https://amux.io/guides/ai-agent-security-hardening/","datePublished":"2026-05-05","dateModified":"2026-10-30","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Should AI coding agents run on my laptop or a separate machine?", "acceptedAnswer": {"@type": "Answer", "text": "On a separate machine for anything unattended. An agent on your laptop can read your SSH keys, cloud credentials, browser sessions and every other repo, so a single prompt injection reaches all of it. A dedicated server, self-hosted or on amux Cloud from $39/mo, holds only the repos and keys you put there, and it keeps running when your laptop sleeps."}}, {"@type": "Question", "name": "What are the biggest security risks of AI coding agents?", "acceptedAnswer": {"@type": "Answer", "text": "The top risks are: (1) Supply chain poisoning via malicious CLAUDE.md or MCP server configs in cloned repos, (2) Credential exfiltration — agents reading .env files or AWS credentials and leaking them through tool calls, (3) Runaway execution in YOLO mode making destructive changes without oversight, (4) Prompt injection via crafted code comments or issue descriptions that hijack agent behavior, and (5) MCP server vulnerabilities — the 5,800+ community MCP servers have varying security quality, with over 1,000 found to contain malicious code."}}, {"@type": "Question", "name": "Is YOLO mode safe for AI coding agents?", "acceptedAnswer": {"@type": "Answer", "text": "YOLO mode (auto-approve all tool calls) is safe when combined with proper guardrails: directory-scoped permissions that prevent writes outside the project, hook-based allowlists that block dangerous commands (rm -rf, curl to external hosts, credential access), network isolation that prevents data exfiltration, and session timeouts that cap execution duration. Without these layers, YOLO mode gives agents unconstrained access to your system."}}, {"@type": "Question", "name": "How do I secure MCP servers for AI agents?", "acceptedAnswer": {"@type": "Answer", "text": "Pin MCP server versions to exact commits (never use @latest), audit server source code before installation, run MCP servers in network-isolated containers, use an allowlist of approved servers in your team's shared configuration, restrict file system access to the minimum paths needed, and monitor MCP server network traffic for unexpected outbound connections. Never install MCP servers from untrusted sources."}}, {"@type": "Question", "name": "Can AI agents steal my credentials?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. An AI coding agent with file read access can read .env files, ~/.aws/credentials, SSH keys, and API tokens. It can then exfiltrate them via tool calls (writing to files, making HTTP requests, or encoding them in git commit messages). Mitigations: use secret managers instead of .env files, block read access to credential directories via hooks or permission configs, and use credential-scanning hooks that abort if secrets appear in agent output."}}, {"@type": "Question", "name": "How do multiplexers improve agent security?", "acceptedAnswer": {"@type": "Answer", "text": "Multiplexers like amux add a security control layer between you and your agents: session isolation prevents one compromised agent from affecting others, hook systems enforce permission policies uniformly across all sessions, centralized monitoring detects anomalous behavior (unusual file access patterns, unexpected network calls), and audit logging creates a record of every action taken. Running agents through a multiplexer with proper configuration is significantly safer than running them directly in unmanaged terminal sessions."}}, {"@type": "Question", "name": "Should I run AI agents in Docker containers?", "acceptedAnswer": {"@type": "Answer", "text": "For untrusted code or overnight unattended runs, yes. Docker containers provide filesystem isolation, network control, and resource limits. Docker Sandboxes (launched January 2026) are specifically designed for AI coding agents. The trade-off is performance overhead and complexity — containerized agents can't access your local tools, databases, or file system without explicit mounts. For trusted projects in active development, hook-based security is usually sufficient."}}, {"@type": "Question", "name": "What security improvements shipped in amux v0.9.95–v0.9.98?", "acceptedAnswer": {"@type": "Answer", "text": "Four security layers shipped in July 2026: (1) XSS hardening — attribute quotes escaped server-side; email bodies rendered in sandboxed iframes. (2) DOMPurify sanitization — notes, markdown previews, and graph views sanitized before DOM insertion. (3) CSRF protection — state-changing API endpoints reject cross-origin requests (Origin/Referer header check). (4) RCE closure — path traversal, write escalation, and git argument injection vectors closed server-side."}}]}</script>
   <style>
     .threat-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; border-left: 3px solid var(--err); }
     .threat-card h3 { margin-top: 0; padding-top: 0; border: none; color: var(--err); }
@@ -66,7 +66,21 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Security Hardening</span></div>
     <h1>AI Agent Security Hardening</h1>
-    <p class="subtitle">Your AI coding agent has shell access, can read your credentials, write to any file, and make network requests. Here's how to run it safely &mdash; whether you're a solo developer or operating a fleet of 20+ agents overnight. <em>Updated July 2026 &mdash; v0.9.95&ndash;v0.9.98 security patches.</em></p>
+    <p class="subtitle">Your AI coding agent has shell access, can read your credentials, write to any file, and make network requests. Here's how to run it safely &mdash; whether you're a solo developer or operating a fleet of 20+ agents overnight. <em>Updated October 2026.</em></p>
+
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> treat every repo, issue and MCP server an agent reads as untrusted input. Pin MCP servers to exact versions, keep secrets out of the agent's reach, deny risky shell patterns in settings, and run unattended agents in a container or on a separate machine with limited network access. The cheapest big win for a fleet is location: agents that run on their own server cannot read the SSH keys, browser sessions and other repos on your laptop.
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> run your agents on their own server, away from the credentials on your laptop. They keep running when your laptop sleeps, and you steer them from your phone. Your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-agent-security-hardening">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=ai-agent-security-hardening" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, so agents for several client projects run on one server instead of on the laptop that holds every client's credentials.</p>
+    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -81,6 +95,7 @@
         <li><a href="#network-isolation" style="color:var(--dim);text-decoration:none;">Network Isolation</a></li>
         <li><a href="#container-sandboxing" style="color:var(--dim);text-decoration:none;">Container Sandboxing</a></li>
         <li><a href="#fleet-security" style="color:var(--dim);text-decoration:none;">Fleet Security with Multiplexers</a></li>
+        <li><a href="#where-agents-run" style="color:var(--dim);text-decoration:none;">Laptop or Separate Machine?</a></li>
         <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring &amp; Anomaly Detection</a></li>
         <li><a href="#checklist" style="color:var(--dim);text-decoration:none;">The 15-Point Hardening Checklist</a></li>
         <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
@@ -723,6 +738,27 @@ done</code></pre>
     <strong>Production fleet security (teams):</strong> All 15 items. Takes a day to implement, saves you from the next incident.</p>
 
     <!-- ═══════════════ AMUX SECURITY LAYER ═══════════════ -->
+    <h2 id="where-agents-run">Should AI agents run on my laptop or a separate machine?</h2>
+    <p>On a separate machine, for anything unattended. An agent on your laptop runs as you: it can read <code>~/.ssh</code>, cloud credentials, browser profiles and every other repo in your home directory, so one prompt injection reaches all of it. A dedicated server holds only what you put there: the repos the agents work on and the keys you give them. Its blast radius is that box.</p>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:130px;">Where agents run</th><th>What a compromised agent can reach</th><th>Keeps running with the laptop closed</th></tr></thead>
+        <tbody>
+          <tr><td>Your laptop</td><td>Everything your user account can read: SSH keys, cloud credentials, browser sessions, every repo</td><td>No</td></tr>
+          <tr><td>A container on your laptop</td><td>Only what you mount and the network you allow</td><td>No</td></tr>
+          <tr><td>Your own server (self-hosted amux)</td><td>Only the repos and keys on that server</td><td>Yes, if it stays on</td></tr>
+          <tr><td><a href="/start/?source=ai-agent-security-hardening">amux Cloud</a></td><td>Only the repos and keys on your dedicated server; see <a href="/security/">security</a> for what runs on it</td><td>Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cta-box" data-cta-loc="cloud-inline-mid">
+      <p style="margin:0;"><strong>Give your agents their own machine.</strong> amux Cloud is a dedicated server at <code>yourname.amux.io</code>, from $39/mo, with your agents on one board you check from your phone.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-agent-security-hardening">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+    </div>
+
     <h2 id="amux-security-layer">amux's built-in security layer (v0.9.95&ndash;v0.9.98, July 2026)</h2>
     <p>If you're running agents through amux, four security improvements shipped in the July 2026 patch series that directly reduce the attack surface of the control plane itself. These address classes of vulnerabilities that apply whenever a web dashboard manages shell sessions on your machine.</p>
 
@@ -751,6 +787,11 @@ done</code></pre>
 
     <!-- ═══════════════ FAQ ═══════════════ -->
     <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details class="faq-item">
+      <summary>Should AI coding agents run on my laptop or a separate machine?</summary>
+      <p>On a separate machine for anything unattended. An agent on your laptop can read your SSH keys, cloud credentials, browser sessions and every other repo, so a single prompt injection reaches all of it. A dedicated server, self-hosted or on amux Cloud from $39/mo, holds only the repos and keys you put there, and it keeps running when your laptop sleeps.</p>
+    </details>
 
     <details class="faq-item">
       <summary>What are the biggest security risks of AI coding agents?</summary>
@@ -798,13 +839,22 @@ done</code></pre>
     </details>
 
     <div class="cta-box" style="margin-top:3rem;">
-      <h3>Secure your agent fleet with amux</h3>
-      <p>amux provides session isolation, centralized hook enforcement, fleet monitoring, and audit logging out of the box. Run agents safely &mdash; whether you're managing 3 sessions or 30.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8824 — dashboard with fleet monitoring</code></pre>
+      <h3>Run your agent fleet with amux</h3>
+      <p>amux runs each agent in its own session with centralized hooks, fleet monitoring and an audit log. Self-host it free:</p>
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash
+amux register myproject --dir ~/Dev/myproject
+amux start myproject   # dashboard at https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
-      <a class="btn" href="/guides/self-healing-configuration/" style="margin-left:0.5rem;">Recovery configuration</a>
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or run them on a server of their own</h3>
+      <p>amux Cloud gives your agents a dedicated always-on server at <code>yourname.amux.io</code> from $39/mo, away from the credentials on your laptop. They keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=ai-agent-security-hardening">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=ai-agent-security-hardening" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, so agents for several client projects run on one server instead of on the laptop that holds every client's credentials.</p>
     </div>
   </main>
   <footer class="sub-footer">
