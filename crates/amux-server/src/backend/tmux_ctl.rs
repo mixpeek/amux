@@ -28,7 +28,8 @@
 //! dropped connection can never type a message twice. Reads, which are safe
 //! to repeat, are retried by spawning.
 //!
-//! `AMUX_TMUX_CONTROL=0` turns the whole path off. `stats()` feeds
+//! Off by default since the 2026-10-29 tmux crash (see `enabled`);
+//! `AMUX_TMUX_CONTROL=1` turns it on. `stats()` feeds
 //! /api/debug/send-profile.
 
 use std::collections::VecDeque;
@@ -80,8 +81,15 @@ fn stats_ref() -> &'static Stats {
     STATS.get_or_init(Stats::default)
 }
 
+/// OFF unless AMUX_TMUX_CONTROL=1 (2026-10-29 incident). With this client
+/// attached, the tmux 3.6a server holding every worker segfaulted at 20:10:54
+/// EDT inside control_write <- control_notify_session_closed, notifying the
+/// control client that a session had closed
+/// (~/Library/Logs/DiagnosticReports/tmux-2026-10-29-201055.ips), and every
+/// worker session went with it. Until the client is proven safe against that
+/// path, tmux commands spawn as they did before.
 fn enabled() -> bool {
-    std::env::var("AMUX_TMUX_CONTROL").map(|v| v != "0").unwrap_or(true)
+    std::env::var("AMUX_TMUX_CONTROL").map(|v| v == "1").unwrap_or(false)
 }
 
 /// `arg` as one tmux word: single quotes, with `'` spelled `'\''`.

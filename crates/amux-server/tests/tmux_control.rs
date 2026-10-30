@@ -25,6 +25,8 @@ async fn the_control_connection_answers_as_spawned_tmux_does() {
     }
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("TMUX_TMPDIR", dir.path());
+    // Off by default since the 2026-10-29 tmux crash; this test exercises it.
+    std::env::set_var("AMUX_TMUX_CONTROL", "1");
     std::env::remove_var("TMUX");
 
     // No server: the client does not start one.
