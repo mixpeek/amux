@@ -243,14 +243,19 @@ pub struct Choice {
 /// registry lists the site; then the default. Deprecated and test profiles
 /// are only chosen when nothing else covers the site.
 pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) -> Choice {
-    let mut choice = resolve_by_cookies(site, cands, default_profile);
+    let bound = crate::integrations::browser_login_sync::is_session_bound(site);
+    // The cookies cannot decide the PICK either: no profile holds a live
+    // session for a bound site, so the one that happens to keep its cookies
+    // was chosen. Live, that was `ethan-tubescience`, a customer profile, for
+    // every google.com task. Pick by registration, then the default.
+    let mut choice = resolve_by_cookies(site, cands, default_profile, !bound);
     // A DEVICE-BOUND SESSION IS NEVER REPORTED AS SIGNED IN (AF-1022). Google
     // revokes a session whose cookies appear in a second browser, so a 390-day
     // cookie in the `ethan` profile read as "login-cookie evidence" while
     // myaccount.google.com showed the signed-out page, and every "Continue
     // with Google" stopped at a password (MG-1988, MG-2071, MG-2079). Same
     // profile pick; the claim and the next step change.
-    if crate::integrations::browser_login_sync::is_session_bound(site) {
+    if bound {
         choice.session_bound = true;
         choice.signed_in = false;
         choice.why = format!(
@@ -263,9 +268,13 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
     choice
 }
 
-fn resolve_by_cookies(site: &str, cands: &[Candidate], default_profile: &str) -> Choice {
+fn resolve_by_cookies(site: &str, cands: &[Candidate], default_profile: &str, use_cookies: bool) -> Choice {
     let usable: Vec<&Candidate> = cands.iter().filter(|c| c.allowed).collect();
-    let mut live: Vec<&Candidate> = usable.iter().copied().filter(|c| c.jar.login_for(site).is_some()).collect();
+    let mut live: Vec<&Candidate> = usable
+        .iter()
+        .copied()
+        .filter(|c| use_cookies && c.jar.login_for(site).is_some())
+        .collect();
     live.sort_by(|a, b| {
         role_rank(&a.role).cmp(&role_rank(&b.role)).then_with(|| {
             let ea = a.jar.login_for(site).and_then(|l| l.expires_at).unwrap_or(i64::MAX);
@@ -408,13 +417,17 @@ mod tests {
     fn a_device_bound_site_is_never_reported_signed_in() {
         let far = Some(4_000_000_000);
         let jar = summarize(&[row(".google.com", "SID", far), row(".github.com", "user_session", far)], 1_700_000_000);
-        let cands = vec![cand("ethan", "primary", &[], true, jar)];
+        let customer = summarize(&[row(".google.com", "SID", far)], 1_700_000_000);
+        let cands = vec![cand("ethan", "primary", &[], true, jar), cand("acme", "customer", &[], true, customer)];
         let g = resolve_for_site("google.com", &cands, "ethan");
-        assert_eq!(g.profile, "ethan", "the same profile is still chosen");
+        assert_eq!(g.profile, "ethan", "cookies do not decide a bound site's pick: the default, not the customer profile");
         assert!(g.session_bound && !g.signed_in, "{g:?}");
         assert!(g.why.contains("amux cdp open"), "the reason names the route that works: {}", g.why);
         let accounts = resolve_for_site("accounts.google.com", &cands, "ethan");
         assert!(accounts.session_bound && !accounts.signed_in, "a subdomain is bound too");
+        let only_customer = vec![cand("ethan", "primary", &[], true, JarSummary::default()), cands[1].clone()];
+        assert_eq!(resolve_for_site("google.com", &only_customer, "ethan").profile, "ethan",
+            "the only profile with google cookies is a customer's; it is still not picked");
         let gh = resolve_for_site("github.com", &cands, "ethan");
         assert!(gh.signed_in && !gh.session_bound, "{gh:?}");
     }
