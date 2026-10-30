@@ -3922,6 +3922,40 @@ pub(crate) fn actions_help(asked: &str) -> Value {
     })
 }
 
+/// Drive the browser from server code, as `session`: `start` (StartBody),
+/// `navigate` (NavigateBody) or any action (the body of POST /action). The
+/// same handlers the HTTP routes run, so ownership, scope and audit apply
+/// unchanged. Returns the reply body, or its error text for a non-2xx reply.
+pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Value) -> Result<Value, String> {
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(session) {
+        headers.insert("x-amux-session", v);
+    }
+    let resp = match verb {
+        "start" => {
+            let b: StartBody = serde_json::from_value(body).map_err(|e| format!("start body: {e}"))?;
+            start(State(state.clone()), headers, Some(Json(b))).await
+        }
+        "navigate" => {
+            let b: NavigateBody = serde_json::from_value(body).map_err(|e| format!("navigate body: {e}"))?;
+            navigate(State(state.clone()), headers, Some(Json(b))).await
+        }
+        _ => {
+            let mut b = body;
+            b["action"] = json!(verb);
+            action_inner(State(state.clone()), headers, Some(Json(b))).await
+        }
+    };
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(&bytes)}));
+    if status.is_success() {
+        Ok(v)
+    } else {
+        Err(format!("browser {verb}: HTTP {status}: {}", v["error"].as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+    }
+}
+
 async fn action_inner(
     State(state): State<AppState>,
     headers: HeaderMap,

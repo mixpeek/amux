@@ -142,6 +142,9 @@ pub fn publisher(platform: &str) -> Option<&'static dyn Publisher> {
     match platform {
         "youtube" => Some(&social::YouTube),
         "devto" => Some(&super::social_devto::DevTo),
+        // Not in PUBLISHERS yet: it reads no metrics, and the windows job would
+        // retry a read that cannot succeed on every pass.
+        "linkedin" => Some(&super::social_browser::LinkedIn),
         _ => None,
     }
 }
