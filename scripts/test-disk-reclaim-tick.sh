@@ -118,6 +118,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n).decode()
         if self.path.startswith("/api/reclaim/scan"):
+            open(T + "/scan-posts.log", "a").write(self.path + "\n")
             return self.send({"scan_id": "S2"})
         open(T + "/posts.log", "a").write(self.headers.get("X-Amux-Session", "") + "\t" + body + "\n")
         paths = json.loads(body).get("paths", [])
@@ -247,10 +248,20 @@ mkscan false; run
 [ ! -s "$T/posts.log" ] && grep -q 'verdict=reclaim_tick_unmeasured' "$T/out.txt" && ok "unmeasured ownership moves nothing and says so" || bad "unmeasured ownership"
 
 # ── a scan longer than the schedule's budget (SCHED-783, 2026-10-22 04:00) ──
+# Tight tier: only under the floor does the run start a home scan (below).
 mkscan true; touch "$T/scan-pending"
-RECLAIM_SCAN_WAIT_S=2 RECLAIM_SCAN_POLL_S=1 run; rm -f -- "$T/scan-pending"
+FREE_KB=$((100 * 1048576)) RECLAIM_SCAN_WAIT_S=2 RECLAIM_SCAN_POLL_S=1 run; rm -f -- "$T/scan-pending"
 [ "$(cat "$T/rc")" = 0 ] && grep -q 'scan: S2 still running after .*verdict=reclaim_scan_pending' "$T/out.txt" && [ ! -s "$T/posts.log" ] \
   && ok "a scan still running when the wait ends: exit 0, nothing moved, says the next run uses it" || { bad "scan pending"; tail -5 "$T/out.txt"; }
+# ── no finished scan and plenty free: no home scan starts (hog RCA 20261030-044026) ──
+mkscan true; touch "$T/scan-pending"; : > "$T/scan-posts.log"
+RECLAIM_SCAN_WAIT_S=2 RECLAIM_SCAN_POLL_S=1 run; rm -f -- "$T/scan-pending"
+[ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/scan-posts.log" ] && grep -q 'verdict=reclaim_tick_scan_skipped_normal' "$T/out.txt" && [ ! -s "$T/posts.log" ] \
+  && ok "above the tight floor with no finished scan: no home scan starts, and it says so" || { bad "normal tier started a scan"; tail -5 "$T/out.txt"; }
+: > "$T/scan-posts.log"; touch "$T/scan-pending"
+RECLAIM_SCAN_WHEN_NORMAL=1 RECLAIM_SCAN_WAIT_S=2 RECLAIM_SCAN_POLL_S=1 run; rm -f -- "$T/scan-pending"
+[ -s "$T/scan-posts.log" ] && ok "RECLAIM_SCAN_WHEN_NORMAL=1 still starts one" || bad "override did not start a scan"
+
 limit=$(sed -nE 's/^pub const SHELL_TIMEOUT_S: u64 = ([0-9]+);.*/\1/p' crates/amux-server/src/runtime_jobs/scheduler.rs)
 wait_s=$(sed -nE 's/^SCAN_WAIT_S=\$\{RECLAIM_SCAN_WAIT_S:-([0-9]+)\}.*/\1/p' "$TICK")
 [ -n "$limit" ] && [ -n "$wait_s" ] && [ $((wait_s + 240)) -le "$limit" ] \

@@ -168,6 +168,14 @@ if [ -n "$scan_id" ]; then
   say "scan: reusing $scan_id (finished within ${SCAN_MAX_AGE_H}h)"
 elif [ "$DRY" = 1 ]; then
   say "scan: none finished within ${SCAN_MAX_AGE_H}h, and a dry run starts none"
+elif [ "$tier" = normal ] && [ "${RECLAIM_SCAN_WHEN_NORMAL:-0}" != 1 ]; then
+  # A HOME SCAN IS NOT FREE (hog RCA 20261030-044026). It walks ~1.7M folders
+  # for 40-70 minutes and was the server's top CPU share while it ran, and a
+  # deploy restart kills most of them, so the next run found no finished scan
+  # and started another. With free space above the tight floor there is
+  # nothing urgent to reclaim: the tools below still run, and a scan finished
+  # within the window (a person's Rescan) is still used.
+  say "scan: none finished within ${SCAN_MAX_AGE_H}h; free $(gb "$free0") is above the ${TIGHT_GB}G floor, so no home scan starts (verdict=reclaim_tick_scan_skipped_normal; RECLAIM_SCAN_WHEN_NORMAL=1 starts one)"
 else
   scan_id=$(api /api/reclaim/scan 30 -X POST -H 'Content-Type: application/json' -d '{}' \
     | python3 -c 'import json,sys
