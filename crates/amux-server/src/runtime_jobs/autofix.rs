@@ -5237,6 +5237,77 @@ fn episode_sig(episode: i64) -> String {
     }
 }
 
+/// How far a still-failing invariant must grow, over the largest magnitude a
+/// card was already filed at in the same episode, before it files again.
+///
+/// AF-1045. An episode only ends when the invariant passes, and `already_filed`
+/// holds a filed signature for the whole episode, so a discard sticks until
+/// then. That is right for a flapping fault and wrong for one that never heals
+/// while it grows: board.todo_is_reachable_by_dispatch had its card discarded
+/// at "1 of 179 live todo cards" and then reported 49 of 133 for weeks with
+/// every card for it discarded, so 49 stranded cards had no live owner.
+///
+/// A factor, not "any change": each refile needs the fault to double over the
+/// largest filed magnitude, so one episode can file at most log2(max) cards,
+/// a shrink never refiles, and an OPEN card still suppresses every one of them
+/// (`open_card_for_fault`).
+pub(crate) const INVARIANT_REGROWTH_FACTOR: f64 = 2.0;
+
+/// The largest magnitude a card was filed at for `base` (a signature without
+/// its `|m<N>` suffix), with the signature that card was filed under.
+///
+/// A card filed under `base` itself predates magnitudes: its size was never
+/// recorded, so it counts as 1, the smallest a declared magnitude can be. That
+/// files each such invariant once more when it is at least the factor large,
+/// which is the migration this fix exists to make.
+fn filed_magnitude(conn: &Connection, base: &str) -> Option<(i64, String)> {
+    let mut best = already_filed(conn, base).then(|| (1, base.to_string()));
+    let sized = format!("{base}|m");
+    // A range on the idem index rather than LIKE: invariant ids carry `_`,
+    // which LIKE reads as a wildcard. `|n` is the next string after `|m…`.
+    let rows: Vec<String> = conn
+        .prepare("SELECT idem FROM session_events WHERE idem > ?1 AND idem < ?2")
+        .and_then(|mut st| {
+            st.query_map(
+                rusqlite::params![idem_of(&sized), idem_of(&format!("{base}|n"))],
+                |r| r.get::<_, String>(0),
+            )
+            .map(|it| it.filter_map(Result::ok).collect())
+        })
+        .unwrap_or_default();
+    for idem in rows {
+        let Some(sig) = idem.strip_prefix("autofix:") else { continue };
+        let Some(m) = sig.strip_prefix(&sized).and_then(|t| t.parse::<i64>().ok()) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(p, _)| m > *p) {
+            best = Some((m, sig.to_string()));
+        }
+    }
+    best
+}
+
+/// The signature an invariant with a declared magnitude files under, and,
+/// when that is a regrowth past an earlier card, the earlier magnitude and
+/// signature.
+///
+/// Unchanged or smaller than the factor: the earlier signature, so
+/// `already_filed` keeps it quiet exactly as before.
+fn regrowth_signature(
+    conn: &Connection,
+    base: &str,
+    magnitude: i64,
+) -> (String, Option<(i64, String)>) {
+    let sized = format!("{base}|m{magnitude}");
+    match filed_magnitude(conn, base) {
+        None => (sized, None),
+        Some((p, sig)) if magnitude as f64 >= INVARIANT_REGROWTH_FACTOR * p.max(1) as f64 => {
+            (sized, Some((p, sig)))
+        }
+        Some((_, sig)) => (sig, None),
+    }
+}
+
 /// How many distinct entities one invariant must be failing for before it is
 /// filed as a SINGLE rollup card instead of one card per entity.
 ///
@@ -5488,11 +5559,49 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
             entity.clone()
         };
         // Episode identity, same reason as the ROLLUP arm above (AMUX-3633).
-        let signature = format!(
+        let base = format!(
             "invariant|{id}|{sig_entity}|{}{}",
             first as i64,
             episode_sig(episode)
         );
+        let evidence_json = serde_json::from_str::<serde_json::Value>(&evidence).ok();
+        // REGROWTH (AF-1045): a check that declares its magnitude files again
+        // once that doubles over what its last card was filed at.
+        let magnitude = evidence_json.as_ref().and_then(crate::invariants::magnitude_of);
+        let (signature, regrown) = match magnitude {
+            Some(m) => regrowth_signature(conn, &base, m),
+            None => (base.clone(), None),
+        };
+        let regrown_line = regrown.map(|(was, prior_sig)| {
+            let m = magnitude.unwrap_or(was);
+            let prior = conn
+                .query_row(
+                    "SELECT id, CASE WHEN archived = 1 THEN 'archived' ELSE status END \
+                       FROM issues WHERE source_ref = ?1 \
+                      ORDER BY COALESCE(updated, 0) DESC, rowid DESC LIMIT 1",
+                    rusqlite::params![idem_of(&prior_sig)],
+                    |r| Ok(format!("{} ({})", r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap_or_else(|_| "an earlier card (not found on the board)".into());
+            // Sized only if the old signature is this base plus `|m<N>`: an
+            // entity like `mixpeek-studio` also contains "|m".
+            let was_note = if prior_sig.strip_prefix(base.as_str()).is_some_and(|t| t.starts_with("|m")) {
+                format!("magnitude {was}")
+            } else {
+                "a size that was not recorded (counted as 1)".to_string()
+            };
+            tracing::info!(
+                target: "amux::autofix", invariant = %id, entity = %sig_entity,
+                prior = %prior, was, now = m, factor = INVARIANT_REGROWTH_FACTOR,
+                verdict = "invariant_regrown",
+                "invariant grew past the card that judged it; filing it again"
+            );
+            format!(
+                "{prior} judged this same unbroken failure at {was_note}. It is now {m}, at \
+                 least {INVARIANT_REGROWTH_FACTOR}x that, so this is a new card for a larger \
+                 condition rather than a repeat of the judged one (AF-1045)."
+            )
+        });
         if occ < min_occ {
             suppressed.push(sup(
                 DetectorKind::InvariantBreach,
@@ -5508,8 +5617,7 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
         // that has already lapsed means the invariant should have passed by now
         // and has not, which is a real fault and the loudest kind, so it must
         // not be filed as "parked until a date that is behind us".
-        let parked_until = serde_json::from_str::<serde_json::Value>(&evidence)
-            .ok()
+        let parked_until = evidence_json
             .as_ref()
             .and_then(crate::invariants::heals_at_of)
             .filter(|t| *t > now);
@@ -5542,14 +5650,23 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
             } else {
                 format!("invariant {id} failing ({occ}x) — {sig_entity}")
             },
-            evidence: vec![
-                ("verdict".into(), verdict),
-                ("expected".into(), truncate(&expected, 500)),
-                ("observed".into(), truncate(&observed, 500)),
-                ("first_seen".into(), rl::local_when(first)),
-                ("last_seen".into(), rl::local_when(last)),
-                ("occurrences".into(), occ.to_string()),
-            ],
+            evidence: {
+                let mut ev = vec![("verdict".into(), verdict)];
+                if let Some(line) = regrown_line {
+                    ev.push(("regrown".into(), line));
+                }
+                ev.extend([
+                    ("expected".into(), truncate(&expected, 500)),
+                    ("observed".into(), truncate(&observed, 500)),
+                    ("first_seen".into(), rl::local_when(first)),
+                    ("last_seen".into(), rl::local_when(last)),
+                    ("occurrences".into(), occ.to_string()),
+                ]);
+                if let Some(m) = magnitude {
+                    ev.push(("magnitude".into(), m.to_string()));
+                }
+                ev
+            },
             // READS `failures` AND `invariant_id` — the shape the endpoint
             // actually returns. This said `.get('results',[])` and `r.get('id')`
             // and the endpoint has NEITHER key, so it printed `[]` no matter
@@ -8801,6 +8918,26 @@ fn invariant_signature_parts(sig: &str) -> Option<(String, String)> {
             // whose last `|`-part happens to be numeric is not a thing today,
             // and if it ever is, this mis-links one card rather than dropping
             // the timestamp into every one.
+            //
+            // THE TAGS AFTER THE EPOCH GO FIRST: `|m<N>` (magnitude, AF-1045)
+            // then `|e<N>` (episode, AMUX-4798). Only the epoch was stripped,
+            // so `fleet|1793300324|e10` was taken as the entity and no card from
+            // episode 2 on ever linked to its incident: the log carried the
+            // "could not link it to any incident row" warning for exactly these.
+            fn tagged(s: &str, tag: char) -> &str {
+                match s.rsplit_once('|') {
+                    Some((head, tail))
+                        if !head.is_empty()
+                            && tail.strip_prefix(tag).is_some_and(|n| {
+                                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+                            }) =>
+                    {
+                        head
+                    }
+                    _ => s,
+                }
+            }
+            let rest = tagged(tagged(rest, 'm'), 'e');
             let ent = match rest.rsplit_once('|') {
                 Some((head, tail)) if !head.is_empty() && tail.parse::<i64>().is_ok() => head,
                 _ => rest,
@@ -17999,6 +18136,132 @@ mod tests {
             .unwrap();
         }
         detect_invariants(&conn, 9999.0).0
+    }
+
+    /// `invariant_findings` with the two tables the regrowth rule reads: the
+    /// filed signatures (`session_events.idem`) and the cards they became
+    /// (`issues.source_ref`). `filed` is (signature, card id, status).
+    fn invariant_findings_after(rows: &[InvRow], filed: &[(&str, &str, &str)]) -> Vec<Finding> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
+             status TEXT, first_seen REAL, last_seen REAL, occurrences INTEGER, \
+             resolved_at REAL, expected TEXT, observed TEXT, evidence TEXT, \
+             episode INTEGER NOT NULL DEFAULT 1); \
+             CREATE TABLE session_events (idem TEXT); \
+             CREATE UNIQUE INDEX idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL; \
+             CREATE TABLE issues (id TEXT, status TEXT, archived INTEGER DEFAULT 0, \
+             updated INTEGER, source_ref TEXT);",
+        )
+        .unwrap();
+        for r in rows {
+            conn.execute(
+                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10)",
+                rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
+            )
+            .unwrap();
+        }
+        for (sig, card, status) in filed {
+            conn.execute("INSERT INTO session_events(idem) VALUES (?1)", [idem_of(sig)]).unwrap();
+            conn.execute(
+                "INSERT INTO issues(id, status, updated, source_ref) VALUES (?1, ?2, 1, ?3)",
+                rusqlite::params![card, status, idem_of(sig)],
+            )
+            .unwrap();
+        }
+        detect_invariants(&conn, 9999.0).0
+    }
+
+    fn sized_row(id: &str, episode: i64, magnitude: i64) -> InvRow {
+        let mut r = inv_row_in_episode(id, "", 61, episode);
+        r.8 = json!({"stranded": magnitude, "magnitude": magnitude}).to_string();
+        r
+    }
+
+    fn ev<'f>(f: &'f Finding, key: &str) -> Option<&'f str> {
+        f.evidence.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// AF-1045, the live case: board.todo_is_reachable_by_dispatch, episode 4,
+    /// its only card discarded when 1 card was stranded, now 49. It files ONE
+    /// new card naming the old card and both sizes.
+    #[test]
+    fn a_grown_invariant_files_again_past_the_card_that_judged_it_smaller() {
+        let id = "board.todo_is_reachable_by_dispatch";
+        let legacy = "invariant|board.todo_is_reachable_by_dispatch|fleet|1000|e4";
+        let f = invariant_findings_after(&[sized_row(id, 4, 49)], &[(legacy, "AMUX-4968", "discarded")]);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].signature, format!("{legacy}|m49"), "a new signature, so already_filed lets it through");
+        let line = ev(&f[0], "regrown").expect("the card says why it filed again");
+        assert!(line.contains("AMUX-4968 (discarded)"), "names the old card: {line}");
+        assert!(line.contains("not recorded (counted as 1)") && line.contains("now 49"), "both sizes: {line}");
+        assert_eq!(ev(&f[0], "magnitude"), Some("49"));
+        assert_eq!(
+            fault_identity(&f[0].signature),
+            Some("invariant|board.todo_is_reachable_by_dispatch"),
+            "same fault identity, so an OPEN card still suppresses the regrowth"
+        );
+    }
+
+    /// The other direction, or the rule is a card per tick: once a card is
+    /// filed at a size, the same size, modest growth and any shrink all keep
+    /// THAT signature, which `already_filed` holds. Doubling files again.
+    #[test]
+    fn an_invariant_that_has_not_doubled_stays_already_filed() {
+        let id = "board.todo_is_reachable_by_dispatch";
+        let sized = "invariant|board.todo_is_reachable_by_dispatch|fleet|1000|e4|m49";
+        let sig_at = |m: i64| {
+            let f = invariant_findings_after(&[sized_row(id, 4, m)], &[(sized, "AF-9001", "discarded")]);
+            assert_eq!(f.len(), 1, "{f:?}");
+            (f[0].signature.clone(), ev(&f[0], "regrown").map(str::to_string))
+        };
+        for m in [49, 60, 97, 10, 1] {
+            assert_eq!(sig_at(m), (sized.to_string(), None), "magnitude {m} is not 2x 49: stays judged");
+        }
+        let (sig, line) = sig_at(98);
+        assert_eq!(sig, format!("{}|m98", sized.trim_end_matches("|m49")));
+        let line = line.expect("a doubling refile names its predecessor");
+        assert!(line.contains("AF-9001 (discarded)") && line.contains("magnitude 49") && line.contains("now 98"), "{line}");
+    }
+
+    /// A check that declares no magnitude keeps the exact signature it had,
+    /// so no card already on the board is re-filed by this change.
+    #[test]
+    fn an_invariant_without_a_magnitude_keeps_its_signature() {
+        let f = invariant_findings_after(&[inv_row_in_episode("hooks.x", "", 61, 3)], &[]);
+        assert_eq!(f[0].signature, "invariant|hooks.x|fleet|1000|e3");
+        assert!(ev(&f[0], "regrown").is_none() && ev(&f[0], "magnitude").is_none());
+        let first = invariant_findings_after(&[sized_row("hooks.x", 3, 5)], &[]);
+        assert_eq!(first[0].signature, "invariant|hooks.x|fleet|1000|e3|m5", "a first card records its size");
+        assert!(ev(&first[0], "regrown").is_none(), "nothing judged it yet, so it is not a regrowth");
+    }
+
+    /// AMUX-4798 added `|e<N>` after the epoch and AF-1045 adds `|m<N>`. Only
+    /// the epoch was stripped, so every episode-2+ card failed to link to its
+    /// incident ("could not link it to any incident row", entity=fleet|…|e10).
+    #[test]
+    fn the_episode_and_magnitude_tags_are_stripped_before_the_epoch() {
+        for sig in [
+            "invariant|board.todo_is_reachable_by_dispatch|fleet|1793300324|e10",
+            "invariant|board.todo_is_reachable_by_dispatch|fleet|1793300324|e4|m49",
+            "invariant|board.todo_is_reachable_by_dispatch|fleet|1793300324",
+        ] {
+            assert_eq!(
+                invariant_signature_parts(sig),
+                Some(("board.todo_is_reachable_by_dispatch".into(), "fleet".into())),
+                "{sig}"
+            );
+        }
+        assert_eq!(
+            invariant_signature_parts("invariant|route.callers_have_routes|GET /api/x|y|1787569200|e2"),
+            Some(("route.callers_have_routes".into(), "GET /api/x|y".into())),
+            "a piped entity survives both tags"
+        );
+        // CONTROL: an entity segment that merely starts with the letter is kept.
+        assert_eq!(
+            invariant_signature_parts("invariant|session.x|mixpeek-studio|1787569200"),
+            Some(("session.x".into(), "mixpeek-studio".into()))
+        );
     }
 
     /// AMUX-4798: a RECURRENCE earns a new card; a continuing failure does not.

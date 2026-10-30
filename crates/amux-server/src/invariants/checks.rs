@@ -3146,7 +3146,10 @@ pub fn todo_is_reachable_by_dispatch(
         "total_live_todo": total_live_todo,
         "pct_of_live_todo": pct,
         "by_lane": stranded.iter().map(|(l, c)| json!({"lane": l, "todo": c})).collect::<Vec<_>>(),
-    }))]
+    }))
+    // The stranded count is the size of this fault: a card discarded at 1
+    // stranded card does not speak for 49 (AF-1045).
+    .magnitude(n)]
 }
 
 /// A credential-shaped `NAME=VALUE` seen in a live process argument list.
