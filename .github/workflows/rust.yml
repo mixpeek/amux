@@ -419,6 +419,17 @@ jobs:
         shard: ${{ fromJSON(needs.affected.outputs.rust_shards || '[1, 2, 3, 4, 5, 6, 7, 8]') }}
     steps:
       - uses: actions/checkout@v4
+      # Every shard unpacks the WHOLE debug archive (126 binaries on
+      # 2026-10-30) onto a stock runner disk. On 84d79aaf0 two of eight
+      # shards ran out mid-extract ("error writing file target/debug/... to
+      # disk"), and the archive only grows. The runner image's Android SDK,
+      # .NET, GHC and CodeQL are never used here and are most of its disk.
+      # The free space is printed so the next shortfall names itself.
+      - name: Free runner disk for the test archive
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          echo "free after cleanup: $(df -BG --output=avail / | tail -1 | tr -d ' ')"
       - uses: taiki-e/install-action@nextest
       - uses: actions/download-artifact@v4
         with:
@@ -470,6 +481,9 @@ jobs:
             --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
             --partition count:${{ matrix.shard }}/${{ strategy.job-total }} --no-fail-fast "${filter[@]}"
           rc=$?
+          if [ "$rc" != "0" ] && [ "$rc" != "3" ]; then
+            echo "disk at exit: $(df -BG --output=avail / | tail -1 | tr -d ' ') free; archive $(du -h "$RUNNER_TEMP/nextest.tar.zst" | cut -f1)"
+          fi
           if [ "$rc" = "3" ]; then
             echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
             exit 0
