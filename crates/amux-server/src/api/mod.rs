@@ -1108,6 +1108,20 @@ static UI_STUCK: std::sync::Mutex<StuckTally> = std::sync::Mutex::new(std::colle
 pub(crate) fn ui_stuck_snapshot() -> Option<StuckTally> {
     UI_STUCK.lock().ok().map(|t| t.clone())
 }
+/// Whether a stuck-UI beacon counts toward `ui.controls_do_not_stick`.
+///
+/// A HIDDEN TAB IS NOT A STUCK CONTROL (AF-1031). The invariant's claim is
+/// that no client reports a control or view that stayed stuck; in a tab
+/// nobody is looking at there is no control to see, and WebKit throttles a
+/// hidden tab's IndexedDB and timers, so its outbox reads time out on their
+/// own (about 650 of 2,500 outbox reports on 2026-10-29 carried hidden=1).
+/// One such report from a background tab failed the fleet invariant and
+/// filed a card. The tab retries when it is shown, and a stall that a person
+/// can see arrives with hidden=0. Still logged, at INFO, with the reason.
+pub(crate) fn counts_as_stuck(body: &serde_json::Value) -> bool {
+    !matches!(body.get("hidden"), Some(v) if v.as_i64() == Some(1) || v.as_bool() == Some(true))
+}
+
 const CLIENT_DEBUG_RING_MAX: usize = 500;
 
 /// The client beacons of one `kind` still in the ring, oldest first, or None
@@ -1158,7 +1172,11 @@ async fn client_debug_post(
         .unwrap_or(0);
     // A stuck control or view: counted and said at WARN (see UI_STUCK_VERDICTS).
     let verdict = body.get("verdict").or_else(|| body.get("action")).and_then(|v| v.as_str()).unwrap_or("");
-    if UI_STUCK_VERDICTS.contains(&verdict) {
+    if UI_STUCK_VERDICTS.contains(&verdict) && !counts_as_stuck(&body) {
+        tracing::info!(kind = %kind, verdict, client = %client, measured = true, n_considered = 1,
+            payload = %body, reason = "hidden tab",
+            "client UI stall in a hidden tab: logged, not counted (ui.controls_do_not_stick)");
+    } else if UI_STUCK_VERDICTS.contains(&verdict) {
         tracing::warn!(kind = %kind, verdict, client = %client, measured = true, n_considered = 1,
             payload = %body, "client UI stuck: a control or view did not settle (ui.controls_do_not_stick)");
         if let Ok(mut t) = UI_STUCK.lock() {
@@ -1583,5 +1601,19 @@ mod slow_ok_tests {
             v.contains("helper-model"),
             "and what consumed the time: {v}"
         );
+    }
+}
+
+#[cfg(test)]
+mod ui_stuck_hidden_tests {
+    /// AF-1031: a stall reported from a hidden tab is not counted; one from a
+    /// shown tab, or with no visibility recorded, still is.
+    #[test]
+    fn a_hidden_tab_stall_does_not_count_as_a_stuck_control() {
+        use serde_json::json;
+        assert!(!super::counts_as_stuck(&json!({"verdict": "outbox_upload_list_timeout", "hidden": 1})));
+        assert!(!super::counts_as_stuck(&json!({"verdict": "outbox_flight_stalled", "hidden": true})));
+        assert!(super::counts_as_stuck(&json!({"verdict": "outbox_upload_list_timeout", "hidden": 0})));
+        assert!(super::counts_as_stuck(&json!({"verdict": "composer_send_stuck"})), "no visibility recorded still counts");
     }
 }
