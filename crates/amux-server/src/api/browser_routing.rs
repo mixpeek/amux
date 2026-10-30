@@ -178,6 +178,21 @@ async fn request_lock(key: String) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 mod tests {
     use super::{request_lock, Config};
 
+    /// AF-1023: a Cloudflare challenge page is named with the headed start
+    /// that passes it; an ordinary page is not.
+    #[test]
+    fn a_cloudflare_challenge_names_the_headed_start() {
+        let challenged = serde_json::json!({"ok":true,"state":{"url":"https://platform.openai.com/apps","title":"Just a moment..."}});
+        let c = super::bot_check(&challenged).expect("challenge recognised");
+        assert_eq!(c["provider"], "cloudflare");
+        let next = c["next"].as_str().unwrap();
+        assert!(next.contains("\"headless\":false") && next.contains("platform.openai.com/apps"), "{next}");
+        let by_frame = serde_json::json!({"url":"https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x","title":""});
+        assert!(super::bot_check(&by_frame).is_some());
+        let plain = serde_json::json!({"ok":true,"state":{"url":"https://platform.openai.com/apps","title":"Apps | OpenAI"}});
+        assert!(super::bot_check(&plain).is_none());
+    }
+
     #[test]
     fn a_route_call_is_audited_with_outcome_and_without_typed_secrets() {
         use super::route_audit_event;
@@ -362,12 +377,54 @@ async fn request(
     if v.is_null() {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     }
+    if let Some(check) = bot_check(&v) {
+        tracing::info!(session = %session, verb = %verb, provider = check["provider"].as_str().unwrap_or(""),
+            measured = true, n_considered = 1, verdict = "browser_route_bot_check",
+            "route landed on a bot check; the response names the headed start that passes it");
+        if let Some(o) = v.as_object_mut() {
+            o.insert("bot_check".into(), check);
+        }
+    }
     // A route hands back the CDP port of the browser it drove; the raw port
     // is withheld unless the caller says why the route cannot do the job.
     let why = body.get("cdp_reason").and_then(Value::as_str);
     super::cdp_proxy::gate(&state, &session, why, &mut v,
         &[("/cdp_port", "/profile"), ("/route/cdp_port", "/route/profile"), ("/state/cdp_port", "/state/profile")]).await;
     (parts.status, Json(v)).into_response()
+}
+
+/// A bot check the route landed on, and the step that gets past it (AF-1023).
+///
+/// A headless Chrome never clears Cloudflare's managed challenge: the ethan
+/// profile sat on "Just a moment..." with a challenges.cloudflare.com
+/// turnstile frame on platform.openai.com (2026-10-12 and 10-13), and the
+/// worker handed the OpenAI plugin portal (MG-1988) to the owner. A HEADED
+/// start was always available (`"headless": false` reaches the native start)
+/// and nothing said so. The route now does, on the page where it matters.
+fn bot_check(v: &Value) -> Option<Value> {
+    let field = |k: &str| {
+        ["", "/state", "/data", "/page"].iter().find_map(|p| v.pointer(&format!("{p}/{k}")).and_then(Value::as_str))
+    };
+    let title = field("title").unwrap_or("").trim().to_ascii_lowercase();
+    let url = field("url").unwrap_or("");
+    let text = field("text").unwrap_or("");
+    let cloudflare = title == "just a moment..."
+        || title == "attention required! | cloudflare"
+        || url.contains("challenges.cloudflare.com")
+        || text.contains("Verify you are human")
+        || text.contains("needs to review the security of your connection");
+    if !cloudflare {
+        return None;
+    }
+    let target = if url.is_empty() || url.contains("challenges.cloudflare.com") { "<the same url>" } else { url };
+    Some(json!({
+        "provider": "cloudflare",
+        "why": "a headless browser does not pass Cloudflare's managed challenge",
+        "next": format!(
+            "try a headed window: amux browser route start '{}' (add \"join\":false if another worker holds this profile headless); if it still shows the check, the challenge needs a person",
+            json!({"url": target, "headless": false})
+        ),
+    }))
 }
 
 /// The audit record for one route call. Pure, so redaction is testable.
