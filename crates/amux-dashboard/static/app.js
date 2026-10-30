@@ -1521,6 +1521,18 @@ window.addEventListener('online', () => {
   // true here because nothing had failed yet. Drain on the event itself, which
   // is the browser telling us the network is back.
   try { _syncBackoffReset(); _scheduleSyncRetry(); } catch (e) {}
+  // A read that failed while the network was down keeps the pill on "Sync
+  // error" until a read succeeds, and _onClientResume only resyncs when the
+  // data is over _SSE_REFRESH_MS old (and not at all in a hidden tab): the pill
+  // said "Sync error" over a running sync (LC-SYNC-PROGRESS, ios-safari, run
+  // 41010141601). Reconnecting with a read error outstanding re-reads once.
+  // Not on focus or visibility, so a persisting failure is no retry loop, and
+  // never for a 401 (session-load-failure.spec.ts).
+  if ((_sessionLoadError && _sessionLoadError.status !== 401) || _boardReadError || _syncReadError) {
+    // Plain text: engines format an object argument differently in the console.
+    console.info('[amux] reconnect resync after a failed read verdict=resume_resync_read_error');
+    try { _resyncEverything(); } catch (e) {}
+  }
 });
 // Migrate localStorage keys from cc_ to amux_
 ['offline_queue','sessions_cache','drafts'].forEach(k => {
@@ -52583,17 +52595,7 @@ function _onClientResume(reason) {
   if (peekSession && !peekTimer) { refreshPeek(); if (typeof updatePeekStatus === 'function') updatePeekStatus(); _schedulePeekPoll(); }
   if (window._peekEmbed) { refreshPeek(); return; }
   // Always pull fresh state — cheap and the user expects up-to-date data.
-  // A read that failed while the network was down keeps the pill on "Sync
-  // error" until a read succeeds, and a reconnect within _SSE_REFRESH_MS of the
-  // last data skipped the resync that would clear it: the pill said "Sync
-  // error" over a sync that was running (LC-SYNC-PROGRESS, ios-safari, run
-  // 41010141601). Coming back online with a read error outstanding resyncs.
-  // Only on `online`: focus and visibility must not turn a persisting failure
-  // into a retry loop, and a 401 never retries (session-load-failure.spec.ts).
-  const readFailed = reason === 'online'
-    && !!((_sessionLoadError && _sessionLoadError.status !== 401) || _boardReadError || _syncReadError);
-  if (readFailed || (_lastDataTime && Date.now() - _lastDataTime > _SSE_REFRESH_MS)) {
-    if (readFailed) console.info('[amux] resume resync after a failed read', { reason, verdict: 'resume_resync_read_error' });
+  if (_lastDataTime && Date.now() - _lastDataTime > _SSE_REFRESH_MS) {
     _resyncEverything();
   }
   // If the SSE connection looks dead (zombie after iOS background), bounce it.

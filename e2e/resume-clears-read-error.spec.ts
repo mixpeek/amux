@@ -24,13 +24,17 @@ test('coming back online re-reads at once when a read had failed, and the pill l
     (0, eval)("_sessionLoadError = {status: 0, reason: 'network_error'}; _lastDataTime = Date.now();");
     (window as any).updateConnectionStatus();
     const text = document.getElementById('conn-status')!.textContent;
+    // A hidden tab, as on CI's WebKit, where the resume path (which does
+    // nothing while hidden) never re-read: no resync line (run 41026111631).
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
     window.dispatchEvent(new Event('online'));
     return text;
   }, null, { timeout: 15000 });
   expect(await pill.jsonValue(), 'the failed read shows Sync error').toBe('Sync error');
-  // The reconnect itself re-reads, inside a window shorter than any background
-  // poll: the resync line is what separates this from a poll that happened to
-  // land (without the fix the pill can still clear on its own a few seconds later).
-  await expect.poll(() => resyncs.length, { message: 'reconnecting resyncs because a read had failed', timeout: 1500 }).toBeGreaterThan(0);
+  // The resync line is what separates the reconnect's own re-read from a
+  // background poll that happens to land (without the fix the pill can still
+  // clear on its own). Only the fix writes it, so the wait can be generous: a
+  // 1.5 s window failed on a loaded CI WebKit (run 41026111631).
+  await expect.poll(() => resyncs.length, { message: 'reconnecting resyncs because a read had failed', timeout: 10000 }).toBeGreaterThan(0);
   await expect(page.locator('#conn-status'), 'the re-read clears Sync error').not.toHaveText('Sync error', { timeout: 5000 });
 });
