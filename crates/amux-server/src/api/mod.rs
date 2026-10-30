@@ -1128,9 +1128,24 @@ pub(crate) fn ui_stuck_snapshot() -> Option<StuckTally> {
 /// One such report from a background tab failed the fleet invariant and
 /// filed a card. The tab retries when it is shown, and a stall that a person
 /// can see arrives with hidden=0. Still logged, at INFO, with the reason.
+///
+/// A BOUNDED WAIT THAT RECOVERED IS NOT A STUCK CONTROL EITHER (AF-1050). A
+/// beacon whose own `waited_ms` is under [`UI_STUCK_MIN_WAIT_MS`] reports a
+/// designed recovery: the outbox steals a frozen window's replay lock after
+/// 1.5 s and sends (`action:"stole"`), and storage already known dead is given
+/// 250 ms before the pass goes on. On 2026-10-30, after AF-1008 shipped, those
+/// two were 19 of the 22 reports keeping this invariant red, all from one Mac
+/// app. Every other stuck verdict waits 3 s or more (storage steal 3 s, queue
+/// 3 s, attachment save 8 s, delivery steal 30 s), and a first storage timeout
+/// still holds the send 5 s, so those still count.
 pub(crate) fn counts_as_stuck(body: &serde_json::Value) -> bool {
-    !matches!(body.get("hidden"), Some(v) if v.as_i64() == Some(1) || v.as_bool() == Some(true))
+    let hidden = matches!(body.get("hidden"), Some(v) if v.as_i64() == Some(1) || v.as_bool() == Some(true));
+    let recovered = body.get("waited_ms").and_then(|v| v.as_i64()).is_some_and(|ms| ms < UI_STUCK_MIN_WAIT_MS);
+    !hidden && !recovered
 }
+
+/// Below this, a stuck-UI beacon's own wait was a designed recovery (AF-1050).
+pub(crate) const UI_STUCK_MIN_WAIT_MS: i64 = 2_000;
 
 const CLIENT_DEBUG_RING_MAX: usize = 500;
 
@@ -1183,9 +1198,14 @@ async fn client_debug_post(
     // A stuck control or view: counted and said at WARN (see UI_STUCK_VERDICTS).
     let verdict = body.get("verdict").or_else(|| body.get("action")).and_then(|v| v.as_str()).unwrap_or("");
     if UI_STUCK_VERDICTS.contains(&verdict) && !counts_as_stuck(&body) {
+        let reason = if body.get("waited_ms").and_then(|v| v.as_i64()).is_some_and(|ms| ms < UI_STUCK_MIN_WAIT_MS) {
+            "recovered within its bounded wait"
+        } else {
+            "hidden tab"
+        };
         tracing::info!(kind = %kind, verdict, client = %client, measured = true, n_considered = 1,
-            payload = %body, reason = "hidden tab",
-            "client UI stall in a hidden tab: logged, not counted (ui.controls_do_not_stick)");
+            payload = %body, reason,
+            "client UI stall that a person did not see stuck: logged, not counted (ui.controls_do_not_stick)");
     } else if UI_STUCK_VERDICTS.contains(&verdict) {
         tracing::warn!(kind = %kind, verdict, client = %client, measured = true, n_considered = 1,
             payload = %body, "client UI stuck: a control or view did not settle (ui.controls_do_not_stick)");
@@ -1625,5 +1645,21 @@ mod ui_stuck_hidden_tests {
         assert!(!super::counts_as_stuck(&json!({"verdict": "outbox_flight_stalled", "hidden": true})));
         assert!(super::counts_as_stuck(&json!({"verdict": "outbox_upload_list_timeout", "hidden": 0})));
         assert!(super::counts_as_stuck(&json!({"verdict": "composer_send_stuck"})), "no visibility recorded still counts");
+    }
+
+    /// AF-1050: the outbox's designed recoveries (a 1.5 s lock steal, the 250 ms
+    /// dead-storage wait) are not stuck controls; a 5 s first storage timeout,
+    /// and every verdict with no wait recorded, still are.
+    #[test]
+    fn a_bounded_wait_that_recovered_does_not_count_as_a_stuck_control() {
+        use serde_json::json;
+        assert!(!super::counts_as_stuck(&json!({"verdict": "outbox_replay_lock_stalled",
+            "action": "stole", "waited_ms": 1500, "hidden": 0})));
+        assert!(!super::counts_as_stuck(&json!({"verdict": "outbox_upload_list_timeout",
+            "after_reset": 1, "waited_ms": 250, "hidden": 0})));
+        assert!(super::counts_as_stuck(&json!({"verdict": "outbox_upload_list_timeout",
+            "after_reset": 0, "waited_ms": 5000, "hidden": 0})));
+        assert!(super::counts_as_stuck(&json!({"verdict": "message_queue_stalled_sent_direct", "waited_ms": 3000})));
+        assert!(super::counts_as_stuck(&json!({"verdict": "outbox_flight_stalled", "hidden": 0})));
     }
 }
