@@ -10,9 +10,18 @@
 //! Anything that goes wrong after Post is clicked is `uncertain`, never
 //! retried, because a second send is a duplicate public post.
 //!
-//! The composer is found by role and text (div[role=textbox].ProseMirror, a
-//! button labelled "Media", a button reading "Post"); LinkedIn's class names
-//! are generated. Read 2026-10-30 from the live page.
+//! Two accounts. `ethan` posts on Ethan Steininger's own profile from the feed
+//! composer; `amux` posts as the amux company page (id 146906104, which the
+//! `ethan` login administers) from the page's admin composer, and the
+//! composer's identity is checked to read "amux" before anything is typed.
+//! Ethan approved the page for automatic posting; his own profile needs his
+//! sign-off per post (amux-gtm, 2026-10-30).
+//!
+//! The composers are found by role and text, never LinkedIn's generated class
+//! names: the feed's div[role=textbox].ProseMirror with a "Media" button, the
+//! page's Quill editor ("What do you want to talk about?") in the "Create post
+//! modal" dialog with an "Add media" button; both post with a "Post" button.
+//! Read 2026-10-30 from the live pages.
 
 use super::social::{self, SocialCtx};
 use super::social_publish::{BoxFut, Draft, Failure, Published, Publisher};
@@ -31,7 +40,6 @@ const FEED: &str = "https://www.linkedin.com/feed/";
 /// LinkedIn's limit for a post's text.
 const MAX_CHARS: usize = 3000;
 
-const EDITOR: &str = "div[role=textbox].ProseMirror";
 
 fn is_draft(d: &Draft) -> bool {
     d.privacy.as_deref().map(str::trim) == Some("draft")
@@ -41,7 +49,49 @@ fn is_draft(d: &Draft) -> bool {
 /// for every platform, a caller asking for "linkedin" could expect a company
 /// page and post on Ethan's own profile instead.
 fn account_ok(account: &str) -> bool {
-    account.trim() == PROFILE
+    target(account).is_some()
+}
+
+/// Where one account's composer lives and how to drive it.
+struct Target {
+    account: &'static str,
+    who: &'static str,
+    /// The page that holds (or opens) the composer.
+    url: &'static str,
+    /// JavaScript returning true once the composer can be opened or is open.
+    ready_js: &'static str,
+    /// JavaScript that opens the composer, or "" when `url` opens it.
+    open_js: &'static str,
+    editor: &'static str,
+    /// JavaScript returning true when the open composer posts as this account.
+    identity_js: &'static str,
+    media_label: &'static str,
+}
+
+const PERSONAL: Target = Target {
+    account: "ethan",
+    who: "Ethan Steininger",
+    url: FEED,
+    ready_js: "!![...document.querySelectorAll('[role=button],button')].find(e=>/^\\s*start a post\\s*$/i.test(e.innerText||''))",
+    open_js: "(()=>{const e=[...document.querySelectorAll('[role=button],button')].find(e=>/^\\s*start a post\\s*$/i.test(e.innerText||''));if(!e)return false;e.click();return true})()",
+    editor: "div[role=textbox].ProseMirror",
+    identity_js: "true",
+    media_label: "Media",
+};
+
+const PAGE: Target = Target {
+    account: "amux",
+    who: "the amux company page",
+    url: "https://www.linkedin.com/company/146906104/admin/page-posts/published/?share=true",
+    ready_js: "!![...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''))",
+    open_js: "",
+    editor: "[role=dialog] div.ql-editor[role=textbox][aria-placeholder^='What do you want']",
+    identity_js: "(()=>{const d=[...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''));return !!d&&[...d.querySelectorAll('button')].some(b=>/^\\s*amux\\b/i.test(b.innerText||''))})()",
+    media_label: "Add media",
+};
+
+fn target(account: &str) -> Option<&'static Target> {
+    [&PERSONAL, &PAGE].into_iter().find(|t| t.account == account.trim())
 }
 
 /// Run a JavaScript expression in the page and return its value.
@@ -61,13 +111,6 @@ async fn until(state: &AppState, script: &str, secs: u64) -> Result<bool, String
     Ok(false)
 }
 
-fn start_button_js(click: bool) -> String {
-    format!(
-        "(()=>{{const e=[...document.querySelectorAll('[role=button],button')].find(e=>/^\\s*start a post\\s*$/i.test(e.innerText||''));if(!e)return false;{}return true}})()",
-        if click { "e.click();" } else { "" }
-    )
-}
-
 const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*post\\s*$/i.test(b.innerText||''));return b&&!b.disabled?b:null})()";
 
 /// Close the composer without posting, discarding what was typed.
@@ -77,25 +120,36 @@ async fn discard(state: &AppState) {
     let _ = eval(state, "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*discard\\s*$/i.test(b.innerText||''));if(b){b.click();return true}return false})()").await;
 }
 
-/// Open the composer with the caption (and file) in it. Nothing is sent.
-async fn compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
+/// Open `t`'s composer with the caption (and file) in it. Nothing is sent.
+async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": FEED, "session": SESSION})).await.map_err(Failure::retry)?;
-    drive("navigate", json!({"url": FEED})).await.map_err(Failure::retry)?;
-    if !until(state, &start_button_js(false), 30).await.map_err(Failure::retry)? {
+    drive("start", json!({"profile": PROFILE, "url": t.url, "session": SESSION})).await.map_err(Failure::retry)?;
+    drive("navigate", json!({"url": t.url})).await.map_err(Failure::retry)?;
+    if !until(state, t.ready_js, 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
             StatusCode::FAILED_DEPENDENCY,
-            format!("LinkedIn shows no \"Start a post\" on the feed: is the `{PROFILE}` browser profile signed in?"),
+            format!("LinkedIn showed no composer for {} at {}: is the `{PROFILE}` browser profile signed in (and an admin of the page)?", t.who, t.url),
         ));
     }
-    eval(state, &start_button_js(true)).await.map_err(Failure::retry)?;
-    if !until(state, &format!("!!document.querySelector('{EDITOR}')"), 15).await.map_err(Failure::retry)? {
+    if !t.open_js.is_empty() {
+        eval(state, t.open_js).await.map_err(Failure::retry)?;
+    }
+    let editor = t.editor;
+    if !until(state, &format!("!!document.querySelector({})", json!(editor)), 15).await.map_err(Failure::retry)? {
         return Err(Failure::retry("the LinkedIn composer did not open"));
     }
-    drive("click", json!({"selector": EDITOR})).await.map_err(Failure::retry)?;
+    // Who the post would go out as, before a single character is typed.
+    if eval(state, t.identity_js).await.map_err(Failure::retry)? != json!(true) {
+        discard(state).await;
+        return Err(Failure::refused(
+            StatusCode::CONFLICT,
+            format!("the LinkedIn composer is not posting as {}; nothing was typed", t.who),
+        ));
+    }
+    drive("click", json!({"selector": editor})).await.map_err(Failure::retry)?;
     drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
     let head: String = d.caption.trim().chars().take(40).collect();
-    let typed = eval(state, &format!("(document.querySelector('{EDITOR}')?.innerText||'').includes({})", json!(head)))
+    let typed = eval(state, &format!("(document.querySelector({})?.innerText||'').includes({})", json!(editor), json!(head)))
         .await
         .map_err(Failure::retry)?;
     if typed != json!(true) {
@@ -103,7 +157,7 @@ async fn compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
         return Err(Failure::retry("the caption did not land in the LinkedIn composer"));
     }
     if !d.file.is_empty() {
-        eval(state, "(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Media');if(b){b.click();return true}return false})()")
+        eval(state, &format!("(()=>{{const b=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==={});if(b){{b.click();return true}}return false}})()", json!(t.media_label)))
             .await
             .map_err(Failure::retry)?;
         if !until(state, "!!document.querySelector('input[type=file]')", 15).await.map_err(Failure::retry)? {
@@ -134,11 +188,10 @@ impl Publisher for LinkedIn {
         if !account_ok(&d.account) {
             return Err(Failure::refused(
                 StatusCode::BAD_REQUEST,
-                if d.account.trim().is_empty() {
-                    format!("name the LinkedIn account: account \"{PROFILE}\" posts on Ethan Steininger's own profile (a company page is not built)")
-                } else {
-                    format!("LinkedIn posts only as Ethan Steininger (account \"{PROFILE}\"); account {:?}, a company page, is not built", d.account)
-                },
+                format!(
+                    "name the LinkedIn account: \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile (his sign-off per post); {:?} is neither",
+                    d.account
+                ),
             ));
         }
         let n = d.caption.trim().chars().count();
@@ -165,10 +218,11 @@ impl Publisher for LinkedIn {
         -> BoxFut<'a, Result<Published, Failure>> {
         Box::pin(async move {
             self.check(ctx, d)?;
-            compose(state, d).await?;
+            let t = target(&d.account).expect("checked");
+            compose(state, t, d).await?;
             if is_draft(d) {
                 discard(state).await;
-                tracing::info!(platform = "linkedin", chars = d.caption.chars().count(), file = !d.file.is_empty(),
+                tracing::info!(platform = "linkedin", account = t.account, chars = d.caption.chars().count(), file = !d.file.is_empty(),
                     verdict = "social_browser_draft_composed", "LinkedIn post composed and discarded (privacy draft)");
                 return Err(Failure::refused(StatusCode::OK, "composed in LinkedIn's composer and discarded: privacy was draft, nothing was posted")
                     .with(json!({"draft": true, "composed": true})));
@@ -181,10 +235,16 @@ impl Publisher for LinkedIn {
                 discard(state).await;
                 return Err(Failure::retry("LinkedIn's Post button was not enabled"));
             }
-            let link_js = "(()=>{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));return a?a.href:''})()";
+            // The confirmation's "View post" link, or (a page lands on its post
+            // list) the newest post carrying this caption.
+            let head: String = d.caption.trim().chars().take(40).collect();
+            let link_js = format!(
+                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:activity:\"]')].find(e=>(e.innerText||'').includes({}));return p?'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/':''}})()",
+                json!(head)
+            );
             let mut url = String::new();
             for _ in 0..60 {
-                if let Ok(Value::String(h)) = eval(state, link_js).await {
+                if let Ok(Value::String(h)) = eval(state, &link_js).await {
                     if !h.is_empty() {
                         url = h;
                         break;
@@ -195,14 +255,14 @@ impl Publisher for LinkedIn {
             let Some(urn) = url.split("/feed/update/").nth(1).map(|s| s.trim_end_matches('/').split('?').next().unwrap_or("").to_string()).filter(|s| s.starts_with("urn:li:")) else {
                 return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link within 30 s: check the feed before resending"));
             };
-            tracing::info!(platform = "linkedin", post_id = %urn, verdict = "social_browser_posted", "LinkedIn post published through the browser");
+            tracing::info!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted", "LinkedIn post published through the browser");
             Ok(Published {
                 post_id: urn,
                 url,
                 visibility: "public".into(),
                 title: String::new(),
-                notes: vec!["posted through the amux browser as Ethan Steininger".into()],
-                extra: json!({"via": "browser", "profile": PROFILE}),
+                notes: vec![format!("posted through the amux browser as {}", t.who)],
+                extra: json!({"via": "browser", "profile": PROFILE, "account": t.account}),
             })
         })
     }
@@ -240,8 +300,11 @@ mod tests {
         assert!(p.check(&open, &draft("   ", None)).is_err(), "an empty caption");
         assert!(p.check(&open, &draft(&"x".repeat(MAX_CHARS + 1), None)).is_err(), "over LinkedIn's limit");
         let mut d = draft("hi", None);
+        d.account = "amux".into();
+        assert!(p.check(&open, &d).is_ok(), "the amux company page posts");
+        assert_eq!(target("amux").map(|t| t.url), Some(PAGE.url));
         d.account = "company:amux".into();
-        assert!(p.check(&open, &d).unwrap_err().error.contains("company page"));
+        assert!(p.check(&open, &d).unwrap_err().error.contains("is neither"));
         d.account = String::new();
         assert!(p.check(&open, &d).unwrap_err().error.contains("name the LinkedIn account"), "posting as a person is never the default");
         let mut d = draft("hi", None);
