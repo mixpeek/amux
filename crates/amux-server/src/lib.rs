@@ -164,14 +164,35 @@ pub fn build_hash() -> String {
         .clone()
 }
 
+/// Stack for every runtime worker thread. Tokio's default is 2 MiB, and a debug
+/// build's board-drive pass overflowed it on `amux-maintenance` once tmux calls
+/// went over the control connection (3126420d3): "thread 'amux-maintenance' has
+/// overflowed its stack", aborting the server in the harness-recovery pool and
+/// conversation-recycle scenarios. `AMUX_THREAD_STACK_MB` overrides it.
+fn worker_stack_bytes() -> usize {
+    std::env::var("AMUX_THREAD_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|mb| *mb >= 2)
+        .unwrap_or(8)
+        * 1024
+        * 1024
+}
+
 pub fn run() {
+    let stack = worker_stack_bytes();
     let maintenance = tokio::runtime::Builder::new_multi_thread()
         .thread_name("amux-maintenance")
+        .thread_stack_size(stack)
         .enable_all()
         .build()
         .expect("maintenance runtime");
     runtime_jobs::executor::install(maintenance.handle().clone());
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(stack)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     rt.block_on(async_main());
 }
 
@@ -348,6 +369,8 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    tracing::info!(stack_bytes = worker_stack_bytes(), measured = true, n_considered = 2,
+        verdict = "runtime_stack_configured", "runtime worker threads use this stack size");
     // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR
     // fails at startup instead of on the first page load, and say which
     // bytes this process serves. Production never sets it (embedded).

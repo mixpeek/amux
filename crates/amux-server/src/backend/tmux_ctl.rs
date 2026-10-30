@@ -310,8 +310,14 @@ pub async fn run(args: &[&str], timeout: Duration) -> Option<std::process::Outpu
     run_traced(args, timeout).await.0
 }
 
-/// `run`, and whether the answer came over the control connection.
+/// `run`, and whether the answer came over the control connection. The body
+/// is boxed so a caller's future holds a pointer, not the whole state machine
+/// (see `a_tmux_call_is_a_small_future`).
 pub async fn run_traced(args: &[&str], timeout: Duration) -> (Option<std::process::Output>, bool) {
+    Box::pin(run_traced_inner(args, timeout)).await
+}
+
+async fn run_traced_inner(args: &[&str], timeout: Duration) -> (Option<std::process::Output>, bool) {
     let t = Instant::now();
     let line = if enabled() { command_line(args) } else { None };
     let Some(line) = line else { return (spawn(args, timeout).await, false) };
@@ -369,6 +375,19 @@ pub fn stats() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tmux_call_is_a_small_future() {
+        // Every tmux call site awaits this, so its size is added to each
+        // caller's future, all the way up a job's stack. Inlined, connect(),
+        // sender() and spawn() made a debug build's board-drive pass overflow
+        // the 2 MiB `amux-maintenance` thread stack in the harness-recovery
+        // pool and conversation-recycle scenarios (3126420d3 onward).
+        let fut = run_traced(&["list-sessions"], Duration::from_secs(1));
+        let size = std::mem::size_of_val(&fut);
+        eprintln!("run_traced future: {size} bytes");
+        assert!(size <= 256, "run_traced's future is {size} bytes; box its body");
+    }
 
     #[test]
     fn a_command_is_quoted_word_by_word() {
