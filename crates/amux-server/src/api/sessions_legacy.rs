@@ -1296,13 +1296,21 @@ pub(crate) fn classify_requests(
 /// commit or `amux requests close`.
 pub(crate) fn is_question(text: &str) -> bool {
     let t = text.trim();
+    let words: Vec<String> = t.split_whitespace().take(2)
+        .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string()).collect();
+    let (first, second) = (words.first().map_or("", String::as_str), words.get(1).map_or("", String::as_str));
+    // A request phrased as a question is still a request (land review F2):
+    // "can you fix X?" must stay open until something is done about it.
+    if matches!(first, "can" | "could" | "would" | "will" | "should" | "shall" | "please" | "pls" | "plz")
+        && (matches!(second, "you" | "u" | "we" | "ya") || matches!(first, "please" | "pls" | "plz"))
+    {
+        return false;
+    }
     if t.ends_with('?') {
         return true;
     }
-    let first = t.split_whitespace().next().unwrap_or("").to_lowercase();
-    let first = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
     matches!(first, "how" | "hows" | "how's" | "what" | "whats" | "what's" | "why" | "when" | "where" | "which" | "who"
-        | "is" | "are" | "does" | "do" | "did" | "can" | "could" | "should" | "would" | "will" | "was" | "were" | "has" | "have")
+        | "is" | "are" | "does" | "did" | "was" | "were" | "has" | "have")
 }
 
 /// The last thing the assistant SAID (text, not tool calls) in a Claude Code
@@ -1340,6 +1348,17 @@ pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64
         .filter(|(_, m)| !is_ack(&m.2) && is_question(&m.2) && !settled(m.0))
         .map(|(i, m)| (m.0, m.1 as f64 / 1000.0, asc.get(i + 1).map_or(f64::INFINITY, |n| n.1 as f64 / 1000.0)))
         .collect()
+}
+
+/// The question's OWN turn from the worker's (ts, event, session_id) events
+/// in time order (land review F1): the first prompt submitted at or after the
+/// question arrived, then the first Stop after that submit, and only if it
+/// stopped before the owner's next message. A Stop belonging to a turn already
+/// running when the question came in is never taken. Returns (began, stop, sid).
+pub(crate) fn own_turn_stop(events: &[(f64, String, String)], asked_at: f64, next: f64) -> Option<(f64, f64, String)> {
+    let began = events.iter().find(|(ts, ev, _)| *ts >= asked_at - 5.0 && ev == "UserPromptSubmit")?.0;
+    let (stop, _, sid) = events.iter().find(|(ts, ev, _)| *ts > began && ev == "Stop")?;
+    (*stop < next).then(|| (began, *stop, sid.clone()))
 }
 
 /// Find a Claude Code transcript by its session id under ~/.claude/projects.
@@ -1488,16 +1507,19 @@ pub async fn owner_requests(
     let qs = questions.clone();
     let stops: Vec<(i64, f64, f64, String)> = state.store.read_async(move |c| {
         let mut out = Vec::new();
-        let mut st = c.prepare(
-            "SELECT ts, COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
-             WHERE session = ?1 AND type = 'session.native_status' AND ts > ?2 \
-             AND json_extract(data,'$.event') = 'Stop' ORDER BY ts LIMIT 1",
+        let mut evq = c.prepare(
+            "SELECT ts, json_extract(data,'$.event'), COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
+             WHERE session = ?1 AND type = 'session.native_status' AND ts >= ?2 AND ts < ?3 \
+             AND json_extract(data,'$.event') IN ('UserPromptSubmit','Stop') ORDER BY ts",
         )?;
         for (id, at, next) in qs {
-            if let Ok((stop, sid)) = st.query_row(rusqlite::params![who, at], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?))) {
-                if stop < next {
-                    out.push((id, at, stop, sid));
-                }
+            // Events up to the next message are all the rule can use; a day caps an open end.
+            let until = next.min(at + 86_400.0);
+            let events: Vec<(f64, String, String)> = evq
+                .query_map(rusqlite::params![who, at - 5.0, until], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .flatten().collect();
+            if let Some((began, stop, sid)) = own_turn_stop(&events, at, next) {
+                out.push((id, began, stop, sid));
             }
         }
         Ok(out)
@@ -1505,7 +1527,7 @@ pub async fn owner_requests(
     let answered: std::collections::HashMap<i64, String> = tokio::task::spawn_blocking(move || {
         stops.into_iter().filter_map(|(id, at, stop, sid)| {
             let text = std::fs::read_to_string(transcript_for(&sid)?).ok()?;
-            let reply = last_assistant_text(&text, at - 60.0, stop + 5.0)?;
+            let reply = last_assistant_text(&text, at - 5.0, stop + 5.0)?;
             Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
         }).collect()
     }).await.unwrap_or_default();
@@ -4332,7 +4354,9 @@ mod subagent_walk_tests {
         for q in ["hows mac perf", "how's the mac performing", "is it live?", "Does cmd k open the tab"] {
             assert!(is_question(q), "{q}");
         }
-        for a in ["make sure u fix it", "try again", "push to remote", "scan the devices on my network"] {
+        for a in ["make sure u fix it", "try again", "push to remote", "scan the devices on my network",
+                  "can you fix the editor button?", "could you add a scheduler wakeup", "should we push it?",
+                  "please check the deploy?", "do the rename too"] {
             assert!(!is_question(a), "an ask is not a question: {a}");
         }
         let jsonl = [
@@ -4359,6 +4383,14 @@ mod subagent_walk_tests {
             (23, 300_000, "push to remote".to_string()),
             (24, 400_000, "does cmd k work?".to_string()),
         ];
+        // The question's own turn (land review F1). The worker was mid-turn when
+        // the question arrived at 100: that earlier turn stops at 120, and the
+        // question is submitted at 121 and answered by the Stop at 140.
+        let e = |ts: f64, ev: &str, sid: &str| (ts, ev.to_string(), sid.to_string());
+        let busy = vec![e(120.0, "Stop", "old"), e(121.0, "UserPromptSubmit", "s"), e(140.0, "Stop", "s")];
+        assert_eq!(own_turn_stop(&busy, 100.0, 150.0), Some((121.0, 140.0, "s".to_string())), "not the earlier turn's Stop at 120");
+        assert_eq!(own_turn_stop(&busy, 100.0, 130.0), None, "the next message (130) joined the question's turn");
+        assert_eq!(own_turn_stop(&[e(101.0, "UserPromptSubmit", "s")], 100.0, f64::INFINITY), None, "a turn that never stopped");
         let w = question_windows(&ms, &|id| id == 21);
         assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
     }
