@@ -59015,7 +59015,10 @@ function _reclaimRender() {
     </div>
   </div>`;
 
-  html += _tierPanel();
+  // With a scan, the tiers panel follows the scan's own warnings: above them
+  // it pushed the snapshot note below a phone's fold (reclaim-snapshot-context,
+  // red on 3189c6825).
+  if (!scan) html += _tierPanel();
   if (!scan) html += _reclaimActionsPanel(findings);
 
   if (!scan) {
@@ -59097,6 +59100,8 @@ function _reclaimRender() {
       </div>
     </div>`;
   }
+
+  html += _tierPanel();
 
   // What the scan did NOT look at. Shown next to the results rather than
   // behind a separate view, because a home-directory total that silently omits

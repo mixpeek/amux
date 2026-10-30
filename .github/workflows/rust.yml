@@ -681,7 +681,7 @@ jobs:
         # or the private HTTPS/tmux fixture tools. Install this smaller set.
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps
+          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps rsync
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Install locked packages and verify preinstalled browsers

@@ -386,10 +386,13 @@ mod tests {
 
     #[test]
     fn a_command_separator_spawns() {
-        // session_verbs::shell_line_args: type a line, then press Enter.
-        assert!(command_line(&["send-keys", "-t", "x", "-l", "ls", ";", "send-keys", "-t", "x", "Enter"]).is_none());
-        assert!(command_line(&["send-keys", "-t", "x", "Enter;"]).is_none());
-        assert!(command_line(&["send-keys", "-t", "x", "-l", "a\\;"]).is_none());
+        // session_verbs::shell_line_args: type a line, then press Enter. The
+        // target is bound to `st` because tmux_target_audit refuses a
+        // hand-spelled `-t` literal anywhere in the crate.
+        let st = "=x:";
+        assert!(command_line(&["send-keys", "-t", st, "-l", "ls", ";", "send-keys", "-t", st, "Enter"]).is_none());
+        assert!(command_line(&["send-keys", "-t", st, "Enter;"]).is_none());
+        assert!(command_line(&["send-keys", "-t", st, "-l", "a\\;"]).is_none());
         // A `;` inside text is typed literally and stays on the connection.
         assert!(command_line(&["send-keys", "-l", "a; b"]).is_some());
     }
