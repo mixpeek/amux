@@ -28,7 +28,9 @@
 # restarts no daemon (those remedies are Ethan's under the 24/7 rule in
 # ~/Dev/CLAUDE.md). It does act early: at the warn level it starts the hourly
 # cleanup pass (SCHED-465) ahead of its slot, which works only inside that
-# pass's own bounded rules, then pages at the critical level.
+# pass's own bounded rules. A trip then goes to scripts/host-responder.sh, which
+# wakes the host-health worker first and pages Ethan only at level 4, when no
+# worker can be started, or when the trip outlives the worker's attempt.
 #
 # The alarm is a fire alarm (~/.claude/CLAUDE.md: "USE VERY SPARINGLY"), so it
 # fires only on conditions a human must act on, and at most once per cooldown.
@@ -56,8 +58,8 @@ export PATH
 PRESSURE_ALERT=${AMUX_TRIPWIRE_PRESSURE:-3}       # >= this pages. 2 self-clears, so not 2.
 FSEVENTSD_GB=${AMUX_TRIPWIRE_FSEVENTSD_GB:-20}    # 12.8 GB seen 09-14; 20 is a real escalation
 SWAP_FREE_MB=${AMUX_TRIPWIRE_SWAP_FREE_MB:-512}   # last cushion
-COOLDOWN_S=${AMUX_TRIPWIRE_COOLDOWN_S:-10800}     # 3h, so a 15m schedule cannot spam
-STATE=${AMUX_TRIPWIRE_STATE:-$HOME/.amux/mac-pressure-tripwire.last}
+COOLDOWN_S=${AMUX_TRIPWIRE_COOLDOWN_S:-10800}     # 3h between pages, so a 15m schedule cannot spam
+export AMUX_RESPONDER_PAGE_COOLDOWN_S=${AMUX_RESPONDER_PAGE_COOLDOWN_S:-$COOLDOWN_S}
 ACT_PRESSURE=${AMUX_TRIPWIRE_ACT_PRESSURE:-2}     # >= this starts the cleanup; it acts, so 2 is fine
 CLEANUP_SCHEDULE=${AMUX_TRIPWIRE_CLEANUP_SCHEDULE:-SCHED-465}
 ACT_COOLDOWN_S=${AMUX_TRIPWIRE_ACT_COOLDOWN_S:-3600}
@@ -151,28 +153,42 @@ if [ "$level" != "-1" ] && awk_ge "$level" "$ACT_PRESSURE" || [ -n "$reasons" ];
   fi
 fi
 
+# HAND OFF BEFORE PAGING (Ethan 2026-10-30: "this worker and/or amux core needs
+# to be proactive with these things"). A trip goes to host-responder.sh, which
+# wakes the host-health worker first and pages only at the critical level, when
+# no worker can be started, or when the trip outlives the worker's attempt.
+responder() { # args passed through to host-responder.sh
+  if [ -n "${AMUX_RESPONDER_BIN:-}" ]; then
+    bash "$AMUX_RESPONDER_BIN" "$@"; return
+  fi
+  local here sib snap
+  here=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+  sib="$here/host-responder.sh"
+  if [ -f "$sib" ]; then bash "$sib" "$@"; return; fi
+  # The schedule runs a snapshot of this file from a temp path, so the sibling
+  # is not beside it: run the committed responder the same way.
+  snap=$(mktemp -t host-responder) || return
+  if git -C "${AMUX_REPO_DIR:-$HOME/Dev/amux}" show origin/main:scripts/host-responder.sh > "$snap" 2>/dev/null; then
+    bash "$snap" "$@"
+  else
+    echo "host-responder: unavailable (verdict=responder_missing)"
+    [ "${1:-}" = "clear" ] || amux alert "$4" "$1: host-responder.sh missing" >/dev/null 2>&1
+  fi
+  rm -f -- "$snap"
+}
+
 if [ -z "$reasons" ]; then
   echo "mac-tripwire: no threshold tripped (pressure>=$PRESSURE_ALERT, fseventsd>=${FSEVENTSD_GB}GB, swap_free<=${SWAP_FREE_MB}MB)"
-  exit 0
-fi
-
-now=$(date +%s)
-last=0
-[ -f "$STATE" ] && last=$(cat "$STATE" 2>/dev/null || echo 0)
-case "$last" in ''|*[!0-9]*) last=0 ;; esac
-since=$(( now - last ))
-if [ "$since" -lt "$COOLDOWN_S" ]; then
-  echo "mac-tripwire: TRIPPED ($reasons) but within cooldown, ${since}s of ${COOLDOWN_S}s — not paging again"
+  [ "$DRY" = "1" ] || responder clear mac-memory
   exit 0
 fi
 
 msg="Mac memory tripwire: $reasons. Reclaimable ${reclaim_gb} GB (free ${free_gb} GB), swap ${swap_used} MB used with ${swap_free} MB free, fseventsd ${fse_gb} GB. Nothing was killed or stopped; every remedy here is yours under the 24/7 rule (MO-3326)."
-why="Jetsam kills largest-first at level 4, which on this box is fseventsd then the claude sessions."
+sev=warn
+[ "$level" != "-1" ] && awk_ge "$level" 4 && sev=critical
 if [ "$DRY" = "1" ]; then
-  echo "mac-tripwire: DRY RUN, would page:"; echo "  $msg"
+  echo "mac-tripwire: DRY RUN, would hand off (severity=$sev):"; echo "  $msg"
 else
-  amux alert "$msg" "$why" >/dev/null 2>&1 && echo "mac-tripwire: PAGED Ethan — $reasons" \
-    || echo "mac-tripwire: TRIPPED ($reasons) but the alert call FAILED — check amux alert"
-  printf '%s' "$now" > "$STATE" 2>/dev/null
+  responder mac-memory "$sev" "$reasons" "$msg"
 fi
 exit 0

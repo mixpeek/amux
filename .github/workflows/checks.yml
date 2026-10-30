@@ -265,6 +265,9 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-pressure-tripwire.sh
+          # A trip wakes the host-health worker first and pages the owner
+          # only when a worker cannot help (2026-10-30).
+          ./scripts/test-host-responder.sh
       # AMUX-4810. The soak's leak verdict used to be peak-minus-a-30-second
       # baseline, which measured warm-up: it failed on 100% of runs that ever
       # executed, including one whose second HALF was negative. The replacement

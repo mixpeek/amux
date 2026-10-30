@@ -119,7 +119,7 @@ calls="$act_dir/calls"; : > "$calls"
 stub="$act_dir/stub.sh"
 printf '#!/bin/sh\necho x >> "%s"\necho "${STUB_CODE:-202}"\n' "$calls" > "$stub"; chmod +x "$stub"
 act_run() { # <level> [STUB_CODE]
-  STUB_CODE=${2:-202} AMUX_TRIPWIRE_LEVEL=$1 AMUX_TRIPWIRE_SWAP_FREE_MB=0 \
+  STUB_CODE=${2:-202} AMUX_TRIPWIRE_LEVEL=$1 AMUX_TRIPWIRE_SWAP_FREE_MB=0 AMUX_RESPONDER_DIR="$act_dir/trips" \
     AMUX_TRIPWIRE_STATE="$act_dir/last" AMUX_TRIPWIRE_ACT_STATE="$act_dir/act" \
     AMUX_TRIPWIRE_ACT_TRIGGER_CMD="$stub" bash "$SUT" 2>&1 || true
 }
@@ -144,7 +144,7 @@ rm -rf -- "${act_dir:?}"
 # ---------------------------------------------------------------------------
 swap_dir=$(mktemp -d "${TMPDIR:-/tmp}/mpt-swap.XXXXXX")
 swap_run() { # <vm.swapusage line>
-  AMUX_TRIPWIRE_LEVEL=0 AMUX_TRIPWIRE_SWAP_LINE="$1" AMUX_TRIPWIRE_STATE="$swap_dir/last" \
+  AMUX_TRIPWIRE_LEVEL=0 AMUX_TRIPWIRE_SWAP_LINE="$1" AMUX_RESPONDER_DIR="$swap_dir/trips" \
     AMUX_TRIPWIRE_ACT_STATE="$swap_dir/act" bash "$SUT" --dry-run 2>&1 || true
 }
 out=$(swap_run "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)")
@@ -154,6 +154,22 @@ out=$(swap_run "total = 4096.00M  used = 3900.00M  free = 196.00M  (encrypted)")
 cell "swap_nearly_full_trips" "yes" "$(printf '%s' "$out" | grep -q 'swap free 196.00 MB' && echo yes || echo no)"
 out=$(swap_run "total = 4096.00M  used = 1024.00M  free = 3072.00M  (encrypted)")
 cell "swap_roomy_no_trip" "no" "$(printf '%s' "$out" | grep -q 'swap free' && echo yes || echo no)"
+# A real trip hands off to the responder (sibling script) and starts the worker
+# instead of paging; level 4 pages at once.
+printf '#!/bin/sh\necho x >> "%s/runs"\necho 202\n' "$swap_dir" > "$swap_dir/run.sh"
+printf '#!/bin/sh\necho x >> "%s/pages"\n' "$swap_dir" > "$swap_dir/page.sh"
+printf '#!/bin/sh\necho 202\n' > "$swap_dir/act.sh"
+chmod +x "$swap_dir/run.sh" "$swap_dir/page.sh" "$swap_dir/act.sh"; : > "$swap_dir/runs"; : > "$swap_dir/pages"
+hand_run() { # <level>
+  AMUX_TRIPWIRE_LEVEL=$1 AMUX_TRIPWIRE_SWAP_LINE="total = 4096.00M  used = 3900.00M  free = 196.00M  (encrypted)" \
+    AMUX_RESPONDER_DIR="$swap_dir/trips" AMUX_RESPONDER_RUN_CMD="$swap_dir/run.sh" AMUX_RESPONDER_PAGE_CMD="$swap_dir/page.sh" \
+    AMUX_TRIPWIRE_ACT_STATE="$swap_dir/act" AMUX_TRIPWIRE_ACT_TRIGGER_CMD="$swap_dir/act.sh" bash "$SUT" 2>&1 || true
+}
+out=$(hand_run 1)
+cell "trip_starts_worker_not_page" "1 0" "$(wc -l < "$swap_dir/runs" | tr -d ' ') $(wc -l < "$swap_dir/pages" | tr -d ' ')"
+rm -rf -- "${swap_dir:?}/trips"; : > "$swap_dir/runs"
+out=$(hand_run 4)
+cell "critical_trip_pages" "1" "$(wc -l < "$swap_dir/pages" | tr -d ' ')"
 rm -rf -- "${swap_dir:?}"
 
 echo
