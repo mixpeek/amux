@@ -8333,6 +8333,15 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
 
     match pickup {
         Pickup::Claim { card, prompt } => {
+            // A lane whose work prompt would be held is not claimed for: the
+            // claim, the held prompt and the release were pure churn (248
+            // attempts in 30 days, two lanes at their usage limit).
+            if let Some((why, reason)) = crate::api::runner::dispatch_hold(lane, false) {
+                tracing::info!(target: "amux::board_drive", session = lane, card = %card, cause = why,
+                    measured = true, n_considered = 1, verdict = "held_lane_not_claimed",
+                    "board_drive: lane is held; card left unclaimed instead of claimed and released");
+                return LaneTrace::skip(lane, "held", reason).with_card(&card).with_counts(eligible, open);
+            }
             // Only dispatch "work it now" if the atomic claim actually took —
             // the card could have been closed between select_pickup and here
             // (AMUX-2983). A refused claim is not an error, it is the race being
