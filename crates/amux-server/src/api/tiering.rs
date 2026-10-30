@@ -97,6 +97,14 @@ const TICK_SECS: u64 = 300;
 /// A folder is re-measured at most this often unless a move or a click asks.
 const STATS_TTL_S: i64 = 6 * 3600;
 const MEASURE_BUDGET: Duration = Duration::from_secs(180);
+/// Walking time one interval or startup tick spends re-measuring stale folders.
+/// Hog RCA 20261030-044026: the watched folders hold 14.3M files (323
+/// subfolders of one lane's scratch root among them), all measured within
+/// minutes of each other, so all of them went stale together and each tick
+/// walked every one back to back: 9.7M files between 09:00 and 09:20Z, and
+/// measure_since was 46% of the server's CPU in a 30 s sample. A stale folder
+/// past this budget waits for the next tick, which spreads a wave over ticks.
+const MEASURE_TICK_BUDGET: Duration = Duration::from_secs(45);
 /// A use must land this long after the move finished to count. Every write the
 /// move itself makes happens before that moment, so this only absorbs
 /// timestamp rounding (one second on APFS).
@@ -291,6 +299,19 @@ pub(crate) struct TickReport {
     /// The Mac was under the low-space watermark when the tick began.
     #[serde(default)]
     pub pressure: bool,
+    /// Time this tick spent walking folders to measure them.
+    #[serde(default)]
+    pub measured_ms: u64,
+    /// Stale folders left for the next tick because the walking budget ran out.
+    #[serde(default)]
+    pub deferred: u32,
+}
+
+/// Whether a stale folder is re-measured in this tick. A person asking (a click,
+/// a folder just added) and a folder with a move under way always are; the
+/// interval and startup ticks stop once they have walked MEASURE_TICK_BUDGET.
+fn measure_this_tick(forced: bool, has_op: bool, walked: Duration) -> bool {
+    forced || has_op || walked < MEASURE_TICK_BUDGET
 }
 
 fn note(class: &str, text: impl Into<String>) -> Note {
@@ -944,6 +965,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     rep.pressure = pressure;
     let mut folders = cfg.folders.clone();
     folders.sort_by_key(|f| f.stats.as_ref().map(|s| s.last_used).unwrap_or(0));
+    let mut walked = Duration::ZERO;
     for f in folders {
         if f.each_subfolder {
             continue; // a root never moves; its subfolders are entries of their own
@@ -964,9 +986,16 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
         // folders on a spinning disk every five minutes.
         let forced = matches!(trigger, "manual" | "added");
         let stale = forced || f.stats.as_ref().map(|s| now_secs() - s.measured_at > STATS_TTL_S).unwrap_or(true);
+        if (stale || f.op.is_some()) && !measure_this_tick(forced, f.op.is_some(), walked) {
+            // Left for the next tick, policy included: deciding on numbers
+            // this old could move a folder that was used since.
+            rep.deferred += 1;
+            continue;
+        }
         let mut f = f;
         if stale || f.op.is_some() {
             let root = PathBuf::from(&path);
+            let started = Instant::now();
             let since = f.stats.as_ref().map(|s| s.measured_at).or(f.baseline_used).unwrap_or(i64::MAX);
             if let Ok(st) = tokio::task::spawn_blocking(move || measure_since(&root, MEASURE_BUDGET, since)).await {
                 if location(&f) == "hdd" {
@@ -984,6 +1013,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
                 });
                 f.stats = Some(st);
             }
+            walked += started.elapsed();
         }
 
         // 3. A queued click, or the policy.
@@ -1030,12 +1060,17 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
             }
         }
     }
+    rep.measured_ms = walked.as_millis() as u64;
+    if rep.deferred > 0 {
+        tracing::info!(trigger, measured_ms = rep.measured_ms, deferred = rep.deferred, measured = true, n_considered = rep.considered,
+            verdict = "tier_measure_deferred", "tiering: walking budget spent; stale folders wait for the next tick");
+    }
     let out = rep.clone();
     if let Err(e) = update(|c| c.last_tick = Some(rep)) {
         tracing::warn!(error = %e, verdict = "tier_state_write_failed", "tiering: could not save tick report");
     }
     if out.moved + out.refused + out.resumed > 0 {
-        tracing::info!(trigger, considered = out.considered, moved = out.moved, refused = out.refused, resumed = out.resumed, verdict = "tier_tick", "tiering: tick");
+        tracing::info!(trigger, considered = out.considered, moved = out.moved, refused = out.refused, resumed = out.resumed, measured_ms = out.measured_ms, verdict = "tier_tick", "tiering: tick");
     }
     Some(out)
 }
@@ -1542,6 +1577,17 @@ async fn run_now() -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_interval_tick_stops_measuring_once_its_walking_budget_is_spent() {
+        let under = super::MEASURE_TICK_BUDGET - Duration::from_millis(1);
+        let spent = super::MEASURE_TICK_BUDGET;
+        assert!(super::measure_this_tick(false, false, under));
+        assert!(!super::measure_this_tick(false, false, spent), "an interval tick kept walking past its budget");
+        // A person asking, or a move under way, is measured whatever was spent.
+        assert!(super::measure_this_tick(true, false, spent));
+        assert!(super::measure_this_tick(false, true, spent));
+    }
+
     use super::*;
     use std::fs;
 
