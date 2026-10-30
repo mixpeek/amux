@@ -118,11 +118,18 @@ fn backlog_delay(measured_ms: u64) -> Duration {
     Duration::from_millis(measured_ms.saturating_mul(3)).clamp(BACKLOG_DELAY_MIN, BACKLOG_DELAY_MAX)
 }
 
-/// Walking a tick may spend on stale folders. A startup tick walks none: the
-/// server boots on every deploy (up to five an hour), and its first minute is
-/// already the busiest; the paced backlog passes measure what it leaves.
-fn tick_walk_budget(trigger: &str) -> Duration {
-    if trigger == "startup" { Duration::ZERO } else { MEASURE_TICK_BUDGET }
+/// Walking a tick may spend on stale folders. No tick walks in the first
+/// BOOT_QUIET after the server starts: it boots on every deploy (up to five
+/// an hour) and its first minute is already the busiest; the paced backlog
+/// passes measure what it leaves. Judged by uptime, not the trigger name: the
+/// periodic job's first `interval` pass runs at boot and holds TICKING, so the
+/// `startup` pass 30 s later found it busy and never ran (c84c8aacb keyed on
+/// "startup" and the 22:22Z boot still walked 64.5 s).
+const BOOT_QUIET: Duration = Duration::from_secs(120);
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn tick_walk_budget(since_start: Duration) -> Duration {
+    if since_start < BOOT_QUIET { Duration::ZERO } else { MEASURE_TICK_BUDGET }
 }
 /// A use must land this long after the move finished to count. Every write the
 /// move itself makes happens before that moment, so this only absorbs
@@ -922,6 +929,7 @@ pub(crate) fn discover(c: &mut Config) -> (usize, usize) {
 // ── the tick ────────────────────────────────────────────────────────────────
 
 pub fn spawn(_state: AppState) -> crate::runtime_jobs::PeriodicTask {
+    STARTED.get_or_init(Instant::now);
     // First pass shortly after startup, so a move interrupted by the restart
     // resumes in minutes rather than at the first interval.
     tokio::spawn(async {
@@ -1003,7 +1011,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     let mut folders = cfg.folders.clone();
     folders.sort_by_key(|f| f.stats.as_ref().map(|s| s.last_used).unwrap_or(0));
     let mut walked = Duration::ZERO;
-    let walk_budget = tick_walk_budget(trigger);
+    let walk_budget = tick_walk_budget(STARTED.get_or_init(Instant::now).elapsed());
     for f in folders {
         if f.each_subfolder {
             continue; // a root never moves; its subfolders are entries of their own
@@ -1682,7 +1690,7 @@ mod tests {
     fn an_interval_tick_stops_measuring_once_its_walking_budget_is_spent() {
         let under = super::MEASURE_TICK_BUDGET - Duration::from_millis(1);
         let spent = super::MEASURE_TICK_BUDGET;
-        let b = super::tick_walk_budget("interval");
+        let b = super::tick_walk_budget(super::BOOT_QUIET);
         assert!(super::measure_this_tick(false, false, under, b));
         assert!(!super::measure_this_tick(false, false, spent, b), "an interval tick kept walking past its budget");
         // A person asking, or a move under way, is measured whatever was spent.
@@ -1692,8 +1700,11 @@ mod tests {
 
     #[test]
     fn a_startup_tick_walks_nothing_and_a_backlog_drains_at_a_quarter_duty() {
-        let b = super::tick_walk_budget("startup");
+        // Any pass in the boot window, whatever its trigger (the periodic job's
+        // first pass is "interval" and runs at boot), walks nothing.
+        let b = super::tick_walk_budget(Duration::from_secs(5));
         assert!(!super::measure_this_tick(false, false, Duration::ZERO, b), "a boot walked stale folders");
+        assert_eq!(super::tick_walk_budget(super::BOOT_QUIET), super::MEASURE_TICK_BUDGET, "after the boot window a pass walks its budget");
         assert!(super::measure_this_tick(false, true, Duration::ZERO, b), "a move under way is still measured at boot");
         // A full 45 s pass rests 135 s; a 224 s pass (one folder may walk 180 s) rests 672 s.
         assert_eq!(super::backlog_delay(45_000), Duration::from_secs(135));
