@@ -52583,7 +52583,17 @@ function _onClientResume(reason) {
   if (peekSession && !peekTimer) { refreshPeek(); if (typeof updatePeekStatus === 'function') updatePeekStatus(); _schedulePeekPoll(); }
   if (window._peekEmbed) { refreshPeek(); return; }
   // Always pull fresh state — cheap and the user expects up-to-date data.
-  if (_lastDataTime && Date.now() - _lastDataTime > _SSE_REFRESH_MS) {
+  // A read that failed while the network was down keeps the pill on "Sync
+  // error" until a read succeeds, and a reconnect within _SSE_REFRESH_MS of the
+  // last data skipped the resync that would clear it: the pill said "Sync
+  // error" over a sync that was running (LC-SYNC-PROGRESS, ios-safari, run
+  // 41010141601). Coming back online with a read error outstanding resyncs.
+  // Only on `online`: focus and visibility must not turn a persisting failure
+  // into a retry loop, and a 401 never retries (session-load-failure.spec.ts).
+  const readFailed = reason === 'online'
+    && !!((_sessionLoadError && _sessionLoadError.status !== 401) || _boardReadError || _syncReadError);
+  if (readFailed || (_lastDataTime && Date.now() - _lastDataTime > _SSE_REFRESH_MS)) {
+    if (readFailed) console.info('[amux] resume resync after a failed read', { reason, verdict: 'resume_resync_read_error' });
     _resyncEverything();
   }
   // If the SSE connection looks dead (zombie after iOS background), bounce it.
