@@ -243,7 +243,11 @@
      no ellipsis to even signal truncation. flex-basis:100% forces the wrap
      deterministically instead of leaving it to whatever width happens to
      remain. */
-  .card-header-meta .meta-count { flex: 0 0 100%; margin-left: 0; }
+  /* A line longer than the card scrolls sideways instead of clipping with no
+     sign (css-mobile.md: a row that does not fit scrolls; never a second row).
+     Seen live at 375px on 2026-10-30: 7 of 36 lines ran past the card edge. */
+  .card-header-meta .meta-count { flex: 0 0 100%; margin-left: 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .card-header-meta .meta-count::-webkit-scrollbar { display: none; }
   .card-menu-btn {
     width: 28px; height: 28px; border-radius: var(--radius-md); border: 1px solid var(--border);
     background: transparent; color: var(--dim); cursor: pointer;

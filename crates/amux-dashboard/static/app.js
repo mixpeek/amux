@@ -8379,18 +8379,21 @@ function _ownerReqPump() {
       .then(d => {
         if (!d || d.measured === false) return;
         _ownerReqCache[name] = { at: Date.now(), data: d };
-        document.querySelectorAll('[data-owner-req="' + CSS.escape(name) + '"]').forEach(el => { el.innerHTML = _ownerReqInner(name, el.dataset.lead === '1'); });
+        document.querySelectorAll('[data-owner-req="' + CSS.escape(name) + '"]').forEach(el => { el.innerHTML = _ownerReqInner(name, el.dataset.trail === '1'); });
       })
       .catch(() => {})
       .finally(() => { _ownerReqInFlight--; _ownerReqPump(); });
   }
 }
-// A stable wrapper on the card's meta line; a fetch that lands fills it in
-// place, so the count never appears on a second row (css-mobile.md).
-function _ownerReqHTML(name, lead) {
-  return `<span class="mc-req-wrap" data-owner-req="${esc(name)}" data-lead="${lead ? 1 : 0}">${_ownerReqInner(name, lead)}</span>`;
+// A stable wrapper that LEADS the card's meta line; a fetch that lands fills
+// it in place, so the count never appears on a second row (css-mobile.md).
+// First, not last: on a 375px card a long meta line runs past the edge, and
+// the owner's asks are the part he acts on (seen live 2026-10-30: 6 of 36 lines
+// had the count clipped when it came last).
+function _ownerReqHTML(name, trail) {
+  return `<span class="mc-req-wrap" data-owner-req="${esc(name)}" data-trail="${trail ? 1 : 0}">${_ownerReqInner(name, trail)}</span>`;
 }
-function _ownerReqInner(name, lead) {
+function _ownerReqInner(name, trail) {
   const d = (_ownerReqCache[name] || {}).data;
   const open = d ? d.counts.open : 0;
   const onMain = d ? d.counts.on_main : 0;
@@ -8398,9 +8401,9 @@ function _ownerReqInner(name, lead) {
   const parts = [];
   if (open) parts.push(`<span class="mc-req-open">${open}</span> ${open === 1 ? 'ask' : 'asks'} open`);
   if (onMain) parts.push(`<span class="mc-req-main">${onMain}</span> ${d.deploys ? 'on main' : 'landed'}`);
-  return (lead ? ' · ' : '') + `<span class="mc-req" role="button" tabindex="0" `
+  return `<span class="mc-req" role="button" tabindex="0" `
     + `title="Your requests to ${esc(name)}: tap for the list" `
-    + `onclick="event.stopPropagation();_ownerReqShow('${escJs(name)}')">${parts.join(' · ')}</span>`;
+    + `onclick="event.stopPropagation();_ownerReqShow('${escJs(name)}')">${parts.join(' · ')}</span>` + (trail ? ' · ' : '');
 }
 function _ownerReqShow(name) {
   const d = (_ownerReqCache[name] || {}).data;
@@ -9236,7 +9239,7 @@ function render() {
             if (review) parts.push(`<span class="mc-total">${review}</span> review`);
             if (done) parts.push(`<span class="mc-total">${done}</span> done`);
             // Inside the one meta line, never a second row (css-mobile.md).
-            return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${parts.join(' · ')}${_ownerReqHTML(s.name, parts.length > 0)}</span>`;
+            return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${_ownerReqHTML(s.name, parts.length > 0)}${parts.join(' · ')}</span>`;
           })()}
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}

@@ -18,8 +18,11 @@ test('a worker card shows the owner requests that are open or on main, and lists
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const worker = `e2e-asks-${testInfo.project.name}`;
   await request.post('/api/sessions', { headers: auth, data: { name: worker, dir: '/tmp', desc: 'e2e asks fixture' } });
-  // A board card too, so the meta line exists beside the request count.
-  await request.post('/api/board', { headers: auth, data: { title: 'e2e asks todo', status: 'todo', session: worker, type: 'chore' } });
+  // Board cards in many states, so the meta line is LONGER than a phone card
+  // (live at 375px on 2026-10-30, 7 of 36 lines ran past the edge).
+  for (const st of ['doing', 'todo', 'backlog', 'review', 'done', 'needsyou']) {
+    await request.post('/api/board', { headers: auth, data: { title: `e2e asks ${st}`, status: st, session: worker, type: 'chore' } });
+  }
 
   const seen: string[] = [];
   await page.route(/\/api\/task-history\/requests\?/, route => {
@@ -52,6 +55,10 @@ test('a worker card shows the owner requests that are open or on main, and lists
   if ((page.viewportSize()?.width || 1280) <= 600) {
     expect(box.height, 'a 44px touch target on a phone').toBeGreaterThanOrEqual(44);
   }
+  // The count leads the line, so a line too long for the card never hides it.
+  const cardBox = (await card.boundingBox())!;
+  expect(box.x + box.width, 'the request count is inside the card, not clipped past its edge').toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  expect(await card.locator('.meta-count').evaluate(e => e.firstElementChild?.matches('[data-owner-req]')), 'it leads the meta line').toBe(true);
 
   await card.screenshot({ path: testInfo.outputPath(`owner-requests-card-${testInfo.project.name}.png`) });
   await req.click();
