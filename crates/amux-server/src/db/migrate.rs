@@ -769,6 +769,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0141_schedule_when",
         sql: include_str!("../../migrations/0141_schedule_when.sql"),
     },
+    Migration {
+        version: 142,
+        name: "0142_issues_source_ref_index",
+        sql: include_str!("../../migrations/0142_issues_source_ref_index.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

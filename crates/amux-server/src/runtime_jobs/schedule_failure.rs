@@ -613,6 +613,24 @@ async fn handle(
 /// schedule passed again. Returns the card's id.
 async fn resolve_owner_card(store: &SharedStore, id: &str, now: i64) -> anyhow::Result<Option<String>> {
     let source_ref = owner_card_ref(id);
+    // Look on a read connection first (AF-1052). This runs on every passing
+    // fire, and almost every time there is no open failure card, so the
+    // single writer is taken only when there is a card to close. The write
+    // below repeats the lookup, so a card closed in between is not touched.
+    let probe_ref = source_ref.clone();
+    let any_open: bool = store
+        .read_async(move |conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM issues WHERE source_ref=?1 AND COALESCE(archived,0)=0 \
+                 AND status NOT IN ('done','verified','discarded'))",
+                [&probe_ref],
+                |r| r.get(0),
+            )?)
+        })
+        .await?;
+    if !any_open {
+        return Ok(None);
+    }
     let note = format!("\n\n---\n{}\nResolved by the harness: the schedule passed again.", fmt_ts(now));
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let slot_w = slot.clone();
@@ -1130,6 +1148,22 @@ mod tests {
         assert_eq!(state(&store, "SCHED-11").await.0, 0);
         on_run_outcome_with(&store, &sched("SCHED-11", "raw"), &ok(), "cron-rs", &Up(true)).await;
         assert_eq!(owner_cards(&store, "SCHED-11").await[0].1, "done");
+    }
+
+    /// AF-1052: the lookup every passing fire makes runs on an index. As a full
+    /// SCAN of issues inside the single writer it held it for 2-4.6 s a time.
+    #[tokio::test]
+    async fn the_failure_card_lookup_uses_the_source_ref_index() {
+        let (fx, _g) = fixture(&[]);
+        let plan: Vec<String> = fx.store.read_async(|c| {
+            let mut st = c.prepare(
+                "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM issues WHERE source_ref=?1 \
+                 AND COALESCE(archived,0)=0 AND status NOT IN ('done','verified','discarded'))")?;
+            let rows = st.query_map(["sched-failure:SCHED-1"], |r| r.get::<_, String>(3))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }).await.unwrap();
+        assert!(plan.iter().any(|p| p.contains("idx_issues_source_ref")), "{plan:?}");
+        assert!(!plan.iter().any(|p| p.trim() == "SCAN issues"), "{plan:?}");
     }
 
     /// An archived worker is not woken or unarchived; the owner is told why.
