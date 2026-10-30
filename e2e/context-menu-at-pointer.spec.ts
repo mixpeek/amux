@@ -23,9 +23,16 @@ for (const zoom of [1, 0.7, 1.3]) {
     const link = page.locator('#peek-body .md-link, #peek-body .file-link').first();
     await expect(link).toBeVisible();
     // The first line of the link: a wrapped link's box also covers the gap between lines.
-    const box = await link.evaluate((el) => { const r = el.getClientRects()[0]; return { x: r.left, y: r.top, height: r.height }; });
+    // locator.click waits for the link to stop moving and aims at click time; a
+    // rect read first and clicked later missed on CI WebKit, where the terminal
+    // shifted a line down in between (nightly run 41018265890: click at y 284,
+    // link at 312, no menu).
+    const line = () => link.evaluate((el) => { const r = el.getClientRects()[0], b = el.getBoundingClientRect();
+      return { x: r.left, y: r.top, height: r.height, dx: r.left - b.left, dy: r.top - b.top }; });
+    const first = await line();
+    await link.click({ button: 'right', position: { x: first.dx + 10, y: first.dy + first.height / 2 } });
+    const box = await line();
     const px = box.x + 10, py = box.y + box.height / 2;
-    await page.mouse.click(px, py, { button: 'right' });
     const menu = page.locator('#file-ctx-menu');
     await expect(menu).toBeVisible();
     const m = (await menu.boundingBox())!;

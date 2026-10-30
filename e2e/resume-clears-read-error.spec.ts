@@ -14,14 +14,20 @@ test('coming back online re-reads at once when a read had failed, and the pill l
   // Wait out the boot read: a reconnect read that joins it can be discarded
   // when a newer snapshot lands, which is not what this test is about.
   await expect(page.locator('#conn-status')).toHaveText(/^(Live|Polling)$/, { timeout: 15000 });
-  await page.waitForFunction(() => !(0, eval)('_sessionFetchInFlight'));
-  // The state an offline read leaves behind, with data that arrived a moment ago.
-  await page.evaluate(() => {
+  // The state an offline read leaves behind, with data that arrived a moment
+  // ago, then the reconnect: ONE synchronous step, taken while no read is in
+  // flight. A background read that lands between steps clears the error on its
+  // own, and on CI's slower WebKit it did, before the pill was even checked
+  // (nightly run 41018265890: "Live" for the whole 5s).
+  const pill = await page.waitForFunction(() => {
+    if ((0, eval)('_sessionFetchInFlight')) return false;
     (0, eval)("_sessionLoadError = {status: 0, reason: 'network_error'}; _lastDataTime = Date.now();");
     (window as any).updateConnectionStatus();
-  });
-  await expect(page.locator('#conn-status')).toHaveText('Sync error');
-  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const text = document.getElementById('conn-status')!.textContent;
+    window.dispatchEvent(new Event('online'));
+    return text;
+  }, null, { timeout: 15000 });
+  expect(await pill.jsonValue(), 'the failed read shows Sync error').toBe('Sync error');
   // The reconnect itself re-reads, inside a window shorter than any background
   // poll: the resync line is what separates this from a poll that happened to
   // land (without the fix the pill can still clear on its own a few seconds later).
