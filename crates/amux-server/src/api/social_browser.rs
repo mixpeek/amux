@@ -34,8 +34,21 @@ pub struct LinkedIn;
 
 /// The saved browser profile signed in to the posting account.
 const PROFILE: &str = "ethan";
-/// The browser session the publisher drives, apart from every worker's.
-const SESSION: &str = "social-linkedin";
+/// The one browser session every browser publisher drives, apart from every
+/// worker's. One per publisher let LinkedIn's session keep the `ethan` profile
+/// and refuse X's start with 409 (2026-10-30, the first live X draft).
+const SESSION: &str = "social-browser";
+/// One browser publish at a time: a queued group posting to LinkedIn and X
+/// shares the profile.
+static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Close the publisher's browser so the profile is free for the next publish,
+/// a worker, or a person.
+async fn release(state: &AppState) {
+    if let Err(e) = super::browser::drive(state, SESSION, "stop", json!({"session": SESSION})).await {
+        tracing::warn!(error = %e, verdict = "social_browser_stop_failed", "the social publisher could not close its browser");
+    }
+}
 const FEED: &str = "https://www.linkedin.com/feed/";
 /// LinkedIn's limit for a post's text.
 const MAX_CHARS: usize = 3000;
@@ -227,6 +240,21 @@ impl Publisher for LinkedIn {
         -> BoxFut<'a, Result<Published, Failure>> {
         Box::pin(async move {
             self.check(ctx, d)?;
+            let _one = PUBLISHING.lock().await;
+            let out = linkedin_publish(state, d).await;
+            release(state).await;
+            out
+        })
+    }
+
+    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
+        -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { Err("LinkedIn metrics are not built for the browser publisher".to_string()) })
+    }
+}
+
+async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Failure> {
+        {
             let t = target(&d.account).expect("checked");
             compose(state, t, d).await?;
             if is_draft(d) {
@@ -273,13 +301,7 @@ impl Publisher for LinkedIn {
                 notes: vec![format!("posted through the amux browser as {}", t.who)],
                 extra: json!({"via": "browser", "profile": PROFILE, "account": t.account}),
             })
-        })
-    }
-
-    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
-        -> BoxFut<'a, Result<Value, String>> {
-        Box::pin(async move { Err("LinkedIn metrics are not built for the browser publisher".to_string()) })
-    }
+        }
 }
 
 #[cfg(test)]
@@ -332,7 +354,6 @@ mod tests {
 /// API v2 posting needs a paid tier, which is the owner's decision.
 pub struct X;
 
-const X_SESSION: &str = "social-x";
 const X_HANDLE: &str = "ethansteininger";
 const X_COMPOSE: &str = "https://x.com/compose/post";
 /// The limit for an account without Premium.
@@ -341,30 +362,30 @@ const X_EDITOR: &str = "[role=dialog] [data-testid=tweetTextarea_0]";
 const X_POST_JS: &str = "(()=>{const b=document.querySelector('[role=dialog] [data-testid=tweetButton]');return b&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'?b:null})()";
 
 async fn x_discard(state: &AppState) {
-    let _ = eval_in(state, X_SESSION, "(()=>{const b=document.querySelector('[data-testid=app-bar-close]');if(b)b.click();return !!b})()").await;
+    let _ = eval_in(state, SESSION, "(()=>{const b=document.querySelector('[data-testid=app-bar-close]');if(b)b.click();return !!b})()").await;
     tokio::time::sleep(Duration::from_millis(800)).await;
-    let _ = eval_in(state, X_SESSION, "(()=>{const b=[...document.querySelectorAll('[role=button],button')].find(b=>/^\\s*discard\\s*$/i.test(b.innerText||''));if(b){b.click();return true}return false})()").await;
+    let _ = eval_in(state, SESSION, "(()=>{const b=[...document.querySelectorAll('[role=button],button')].find(b=>/^\\s*discard\\s*$/i.test(b.innerText||''));if(b){b.click();return true}return false})()").await;
 }
 
 async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
-    let drive = |verb: &'static str, body: Value| super::browser::drive(state, X_SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": X_SESSION})).await.map_err(Failure::retry)?;
+    let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
+    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION})).await.map_err(Failure::retry)?;
     drive("navigate", json!({"url": X_COMPOSE})).await.map_err(Failure::retry)?;
-    if !until_in(state, X_SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
+    if !until_in(state, SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
             StatusCode::FAILED_DEPENDENCY,
             format!("X showed no composer at {X_COMPOSE}: is the `{PROFILE}` browser profile signed in?"),
         ));
     }
     let who = format!("(document.querySelector('a[data-testid=AppTabBar_Profile_Link]')?.getAttribute('href')||'').toLowerCase()==='/{X_HANDLE}'");
-    if eval_in(state, X_SESSION, &who).await.map_err(Failure::retry)? != json!(true) {
+    if eval_in(state, SESSION, &who).await.map_err(Failure::retry)? != json!(true) {
         x_discard(state).await;
         return Err(Failure::refused(StatusCode::CONFLICT, format!("X is not signed in as @{X_HANDLE}; nothing was typed")));
     }
     drive("click", json!({"selector": X_EDITOR})).await.map_err(Failure::retry)?;
     drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
     let head: String = d.caption.trim().chars().take(40).collect();
-    if eval_in(state, X_SESSION, &format!("(document.querySelector({})?.innerText||'').includes({})", json!(X_EDITOR), json!(head)))
+    if eval_in(state, SESSION, &format!("(document.querySelector({})?.innerText||'').includes({})", json!(X_EDITOR), json!(head)))
         .await
         .map_err(Failure::retry)?
         != json!(true)
@@ -375,7 +396,7 @@ async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
     if !d.file.is_empty() {
         drive("files", json!({"selector": "[role=dialog] input[data-testid=fileInput]", "files": [d.file]})).await.map_err(Failure::retry)?;
         // Post is enabled again once the upload finishes.
-        if !until_in(state, X_SESSION, &format!("!!{X_POST_JS}"), 180).await.map_err(Failure::retry)? {
+        if !until_in(state, SESSION, &format!("!!{X_POST_JS}"), 180).await.map_err(Failure::retry)? {
             x_discard(state).await;
             return Err(Failure::retry("the media did not finish uploading to X"));
         }
@@ -419,6 +440,21 @@ impl Publisher for X {
         -> BoxFut<'a, Result<Published, Failure>> {
         Box::pin(async move {
             self.check(ctx, d)?;
+            let _one = PUBLISHING.lock().await;
+            let out = x_publish(state, d).await;
+            release(state).await;
+            out
+        })
+    }
+
+    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
+        -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { Err("X metrics are not built for the browser publisher".to_string()) })
+    }
+}
+
+async fn x_publish(state: &AppState, d: &Draft) -> Result<Published, Failure> {
+        {
             x_compose(state, d).await?;
             if is_draft(d) {
                 x_discard(state).await;
@@ -427,7 +463,7 @@ impl Publisher for X {
                 return Err(Failure::refused(StatusCode::OK, "composed in X's composer and discarded: privacy was draft, nothing was posted")
                     .with(json!({"draft": true, "composed": true})));
             }
-            let clicked = eval_in(state, X_SESSION, &format!("(()=>{{const b={X_POST_JS};if(!b)return false;b.click();return true}})()"))
+            let clicked = eval_in(state, SESSION, &format!("(()=>{{const b={X_POST_JS};if(!b)return false;b.click();return true}})()"))
                 .await
                 .map_err(|e| Failure::uncertain(format!("clicking Post: {e}")))?;
             if clicked != json!(true) {
@@ -438,7 +474,7 @@ impl Publisher for X {
             let link_js = format!("(()=>{{const a=[...document.querySelectorAll('[data-testid=toast] a[href*=\"/status/\"]')].find(a=>a.getAttribute('href').toLowerCase().startsWith('/{X_HANDLE}/status/'));return a?a.href:''}})()");
             let mut url = String::new();
             for _ in 0..60 {
-                if let Ok(Value::String(h)) = eval_in(state, X_SESSION, &link_js).await {
+                if let Ok(Value::String(h)) = eval_in(state, SESSION, &link_js).await {
                     if !h.is_empty() {
                         url = h;
                         break;
@@ -458,13 +494,7 @@ impl Publisher for X {
                 notes: vec![format!("posted through the amux browser as @{X_HANDLE}")],
                 extra: json!({"via": "browser", "profile": PROFILE, "account": PROFILE}),
             })
-        })
-    }
-
-    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
-        -> BoxFut<'a, Result<Value, String>> {
-        Box::pin(async move { Err("X metrics are not built for the browser publisher".to_string()) })
-    }
+        }
 }
 
 #[cfg(test)]

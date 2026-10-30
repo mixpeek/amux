@@ -3940,6 +3940,7 @@ pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Val
             let b: NavigateBody = serde_json::from_value(body).map_err(|e| format!("navigate body: {e}"))?;
             navigate(State(state.clone()), headers, Some(Json(b))).await
         }
+        "stop" => stop(State(state.clone()), headers, Some(Json(body))).await,
         _ => {
             let mut b = body;
             b["action"] = json!(verb);
