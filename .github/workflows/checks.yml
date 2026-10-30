@@ -594,6 +594,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-post-commit-open-requests.sh
+      - name: a request landed in a repo the server does not deploy reads landed, not "not live" (AF-1058)
+        run: |
+          set -uo pipefail
+          bash scripts/test-requests-landed.sh
       - name: install.sh's hook install references the real source path
         run: |
           set -uo pipefail

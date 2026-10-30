@@ -9085,7 +9085,9 @@ for w in workers:
             st, ev = "closed", closed[mid]["reason"]
         elif sha:
             lv = live(repo, sha)
-            st, ev = ("live" if lv else "on-main") if lv is not None else "on-main", sha[:9]
+            # A repo this server never deploys cannot become "live": its landed
+            # work is finished, not held (AF-1058: amux-gtm read 10 "not live").
+            st, ev = ("live" if lv else "on-main") if lv is not None else "landed", sha[:9]
         else:
             st, ev = "open", ""
         if sha:
@@ -9101,7 +9103,7 @@ for r in rows:
     mid = r["id"][4:]
     if r["status"] == "closed" and (closed.get(mid) or {}).get("at"):
         when[r["id"]] = "%s@%s" % (r["worker"], closed[mid]["at"])
-    elif r["status"] in ("on-main", "live") and r["repo"]:
+    elif r["status"] in ("on-main", "live", "landed") and r["repo"]:
         ct = subprocess.run(["git", "-C", r["repo"], "show", "-s", "--format=%ct", lm_sha.get(r["id"], r["evidence"])],
                             capture_output=True, text=True).stdout.strip()
         if ct.isdigit():
@@ -9118,7 +9120,7 @@ for r in rows:
     t = tasks_at.get(when.get(r["id"], "")) or {}
     r["task"] = t.get("task") or ""
     r["task_ts"] = t.get("ts")
-counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "landed", "closed")}
 summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
@@ -9140,13 +9142,13 @@ if only_open:
 if raw:
     print(json.dumps(dict(summary, requests=rows), indent=1))
     sys.exit(0)
-order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
+order = {"open": 0, "on-main": 1, "live": 2, "landed": 2, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
     print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
-print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
-    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["landed"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
 if summary.get("held_by_ci"):
     g = summary["held_by_ci"]
