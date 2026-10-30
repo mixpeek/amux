@@ -14872,7 +14872,10 @@ async function _steeringEdit(msgId) {
     + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">'
     + esc(m.text) + '</textarea>'
     + '<div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1-5);">Still delivers at the worker\'s next pause. ⌘↩ saves.</div>', 'Save');
-  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
+  // Only when nothing has focused it yet: moving the caret under a selection
+  // someone already made turned a replace into an append ("draft onedraft
+  // two", steering-edit.spec.ts on desktop, run 41039786358).
+  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t && document.activeElement !== t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
   if (!await shown) return;
   const text = (document.getElementById('steer-edit-input')?.value || '').replace(/\s+$/, '');
   if (!text.trim()) { showToast('Empty. Use ✕ to remove the message instead'); return; }
