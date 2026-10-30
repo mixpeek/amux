@@ -6,7 +6,7 @@
 # as real static files under crates/amux-dashboard/static/. Rust edits are NOT
 # checked here — `cargo check` on every single Edit would outlast the hook timeout
 # and stack up on the shared target dir; the builder + CI (rust.yml) own that gate,
-# and .claude/rules/single-file.md tells sessions to run `cargo check` themselves.
+# and crates/amux-server/CLAUDE.md tells sessions to run `cargo check` themselves.
 set -euo pipefail
 
 # The repo root is wherever THIS script lives (<repo>/.claude/check-and-commit.sh),

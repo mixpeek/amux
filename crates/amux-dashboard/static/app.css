@@ -1035,7 +1035,7 @@
        distance back without adding a gap under the buttons. */
     margin: var(--space-5) calc(-1 * var(--modal-pad)) calc(-1 * var(--modal-pad));
     padding: var(--space-2-5) var(--modal-pad);
-    /* iPhone PWA: clear the home indicator (.claude/rules/css-mobile.md) */
+    /* iPhone PWA: clear the home indicator (crates/amux-dashboard/CLAUDE.md) */
     padding-bottom: max(var(--modal-pad), env(safe-area-inset-bottom));
   }
   /* .amux-modal-foot is a bare marker class on app.js-built dialogs, so it
@@ -2921,7 +2921,7 @@
   .peek-more-menu button.peek-more-danger { color: var(--red); margin-top: var(--space-1);
     padding-top: var(--space-2-5); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-md) var(--radius-md); }
   .peek-more-menu button.peek-more-danger:hover { background: color-mix(in srgb, color-mix(in srgb, var(--red) 88%, var(--card)) 12%, transparent); }
-  /* 44px touch targets on the phone (.claude/rules/css-mobile.md). The desktop
+  /* 44px touch targets on the phone (crates/amux-dashboard/CLAUDE.md). The desktop
      padding gives ~34px, which is under the minimum on exactly the surface this
      menu is mostly used from. */
   @media (max-width: 600px) {
@@ -4074,7 +4074,7 @@
      button's box is 16.5 x 35. The MENU was never the bug — it opens correctly,
      position:fixed, z-index 4000, 15 rows, unclipped, on screen. The TARGET is.
      16.5px wide is a third of the 44x44 this repo already requires on mobile
-     (.claude/rules/css-mobile.md), and it sits inside a horizontally scrolling tab
+     (crates/amux-dashboard/CLAUDE.md), and it sits inside a horizontally scrolling tab
      strip, where iOS readily interprets a near-miss on a narrow child as a pan of
      the scroller instead of a tap on the child.
      Why every test passed anyway, including the ones I wrote to catch this: a
@@ -5226,7 +5226,7 @@
   .board-filter-chip.active-session { background: color-mix(in srgb, var(--dim) 15%, transparent); color: var(--text); border-color: var(--dim); }
   /* Board toolbar + view toggle */
   /* AT-A-GLANCE PROGRESS (AMUX-2506) + COLUMN PURPOSE (AMUX-2507).
-     Mobile-first per .claude/rules/css-mobile.md: this is a horizontally
+     Mobile-first per crates/amux-dashboard/CLAUDE.md: this is a horizontally
      scrollable rail, NOT a grid, so at 375px it stays one readable line instead
      of wrapping into a wall. Touch targets are not interactive here (read-only
      figures) so the 44px rule does not bind, but the rail keeps 44px height so it
@@ -6419,7 +6419,7 @@
     .reclaim-legend { gap: var(--space-1-5); }
     /* 44px on EVERY control in this tab, not just the ones in the action bar.
        Measured at 390px: Rescan came out 40px and the treemap "up" button 32px,
-       both under the touch-target floor in .claude/rules/css-mobile.md. The
+       both under the touch-target floor in crates/amux-dashboard/CLAUDE.md. The
        inline padding these carry wins over a class rule, so the floor is set
        here on the container rather than per-button. */
     #reclaim-content button, .reclaim-minibtn, .reclaim-upbtn { min-height: 44px; }
@@ -6455,7 +6455,7 @@
   #graph-view.sidebar-collapsed .graph-controls { left: 46px; }
   .graph-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
   /* Graph source switch (Notes / Fleet). 44px min height keeps it a legal
-     touch target on the phone, per .claude/rules/css-mobile.md. */
+     touch target on the phone, per crates/amux-dashboard/CLAUDE.md. */
   .graph-switch-btn { flex:1; min-height:32px; padding:var(--space-1-5) var(--space-2-5); font-size:var(--fs-sm); font-family:inherit;
     background:var(--bg); color:var(--dim); border:1px solid var(--border); border-radius:var(--radius-md); cursor:pointer; }
   .graph-switch-btn.active { background:var(--accent); color:var(--on-solid); border-color:transparent; }
@@ -8099,7 +8099,7 @@ select.input { height:var(--control-height); }
 .msg-ctx-close { margin-top:var(--space-3); width:100%; }
 
 @media (max-width: 600px) {
-  /* Touch target, per .claude/rules/css-mobile.md. The chip itself stays small
+  /* Touch target, per crates/amux-dashboard/CLAUDE.md. The chip itself stays small
      because the row is a list item and a 44px chip would set the row height;
      the padding here buys the target without changing the visual size. */
   .msg-ctx-chip { padding:var(--space-1-5); margin:calc(var(--space-1) * -1) var(--space-1-5) calc(var(--space-1) * -1) 0; max-width:9ch; }

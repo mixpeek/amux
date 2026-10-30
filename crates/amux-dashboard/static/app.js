@@ -9751,7 +9751,7 @@ function _taskStaleAge(s) {
 // bare badge back, so the never case is spelled out instead of left blank.
 //
 // COMPACT ON PURPOSE: this badge sits in the worker list, which has to survive
-// 375px per .claude/rules/css-mobile.md. The badge carries "19m"; the full
+// 375px per crates/amux-dashboard/CLAUDE.md. The badge carries "19m"; the full
 // sentence goes in the title where it costs no width.
 function _idleMovedAt(s) {
   const at = Number(s && s.last_board_change_ts);

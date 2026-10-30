@@ -923,6 +923,10 @@ jobs:
           # Cloud follows main's tip without the CI wait: an activation that does
           # not come up healthy is put back and held.
           ./scripts/test-build-activation-rollback.sh
+          # The rule tree VISION.md roots, and the slop ratchet (2026-10-30).
+          ./scripts/test-rules-tree.sh
+          ./scripts/test-slop-ratchet.sh
+          python3 scripts/check_rules_tree.py
           # The builder compiles main's tip while its CI runs (2026-10-29).
           ./scripts/test-rust-prebuild.sh
           python3 ./scripts/test-watchdog-recovery.py

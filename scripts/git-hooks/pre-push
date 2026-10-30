@@ -556,6 +556,57 @@ def main():
     except Exception:
         pass  # fail open, same rule as the guard above
 
+    # THE RULE TREE AND THE SLOP RATCHET (VISION.md, 2026-10-30). Selected from
+    # the pushed range like the harness check above: the rule tree runs when a
+    # push touches a rule file, the ratchet when it touches server Rust or the
+    # dashboard's scripts. AMUX_SKIP_RULES_TREE / AMUX_SKIP_SLOP_RATCHET skip
+    # once, said on stderr.
+    try:
+        _touch2, _heads = [], []
+        for _line in stdin_text.splitlines():
+            _p = _line.split()
+            if len(_p) < 4 or _p[1].strip("0") == "":
+                continue
+            _heads.append(_p[1])
+            _rng = [_p[1], "--not", "--remotes=origin"]
+            if _p[3] != ZERO:
+                _rng.append(_p[3])
+            _r = subprocess.run(["git", "log", "--name-only", "--format="] + _rng,
+                                capture_output=True, text=True, timeout=30)
+            _touch2.extend(x for x in _r.stdout.splitlines() if x.strip())
+        _root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+        _skip = lambda k: os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        if any(x == "VISION.md" or x.endswith("CLAUDE.md") or x.endswith("AGENTS.md") for x in _touch2):
+            _chk = os.path.join(_root, "scripts", "check_rules_tree.py")
+            if os.path.exists(_chk):
+                _w = subprocess.run([sys.executable, _chk, "--root", _root], capture_output=True, text=True, timeout=60)
+                if _w.returncode != 0:
+                    sys.stderr.write("\nBLOCKED: the rule tree under VISION.md is broken.\n\n" + _w.stdout + _w.stderr)
+                    if not _skip("AMUX_SKIP_RULES_TREE"):
+                        return 1
+                    sys.stderr.write("AMUX_SKIP_RULES_TREE set: pushing anyway.\n")
+        _code = [x for x in _touch2 if (x.endswith(".rs") and x.startswith("crates/") and "/src/" in x)
+                 or (x.startswith("crates/amux-dashboard/static/") and x.endswith((".js", ".mjs")))]
+        _chk = os.path.join(_root, "scripts", "check_slop_ratchet.py")
+        if _code and os.path.exists(_chk):
+            for _h in _heads:
+                _base = subprocess.run(["git", "merge-base", "origin/main", _h],
+                                       capture_output=True, text=True, timeout=30).stdout.strip()
+                if not _base:
+                    continue
+                _w = subprocess.run([sys.executable, _chk, "--base", _base, "--head", _h],
+                                    capture_output=True, text=True, timeout=300)
+                sys.stderr.write(_w.stdout)
+                if _w.returncode != 0:
+                    sys.stderr.write("\nBLOCKED: the slop ratchet (scripts/check_slop_ratchet.py).\n")
+                    if not _skip("AMUX_SKIP_SLOP_RATCHET"):
+                        return 1
+                    sys.stderr.write("AMUX_SKIP_SLOP_RATCHET set: pushing anyway.\n")
+    except Exception as _e:
+        sys.stderr.write("amux pre-push: rule tree / slop ratchet could not run (%s); not blocking "
+                         "(verdict=rules_slop_unmeasured)\n" % _e)
+
     # SPA GATES (_spa_gates above). Also before the session early-returns: a
     # red spa-gates holds the deploy for everyone, whoever pushed it.
     try:

@@ -993,7 +993,7 @@ pub(crate) fn py_truthy(v: &serde_json::Value) -> bool {
 /// it a table (D1: "in-memory state is fiction").
 /// GET /api/debug/sse — is the realtime backbone actually carrying the fleet?
 ///
-/// AF-262. `.claude/rules/sse-realtime.md` states the failure mode plainly:
+/// AF-262. `crates/amux-dashboard/CLAUDE.md (Realtime)` states the failure mode plainly:
 /// clients declare SSE stale after 18s of silence and FALL BACK TO POLLING,
 /// and the fallback fetches both sessions and board. So an SSE degradation
 /// shows up as a rise in ordinary poll traffic, which is indistinguishable
