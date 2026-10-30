@@ -30,12 +30,16 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
   expect(rows).toEqual([]);
   await expect.poll(() => beacons.filter(b => b.verdict === 'idb_connection_reset').length).toBe(1);
   expect(beacons.find(b => b.verdict === 'idb_connection_reset').had_connection).toBe(true);
-  expect(beacons.find(b => b.verdict === 'outbox_upload_list_timeout')?.after_reset).toBe(0);
+  expect(beacons.find(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 500)?.after_reset).toBe(0);
 
   // Still hung: the second timeout says a reset already happened.
   await page.evaluate(() => (window as any)._upqListBounded(500));
-  await expect.poll(() => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout').length).toBe(2);
-  expect(beacons.filter(b => b.verdict === 'outbox_upload_list_timeout')[1].after_reset).toBe(1);
+  // Counted by this test's own 500 ms bound: after the first timeout the page's
+  // background sync passes use the 250 ms dead-storage bound and beacon too
+  // (run 40994613137 saw 3, not 2), so a total count is not this read's.
+  const own = () => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 500);
+  await expect.poll(() => own().length).toBe(2);
+  expect(own()[1].after_reset).toBe(1);
 
   // Still hung after a reset: a pass's default read gives up in 250ms, not 5s,
   // so the messages behind it are not held (AF-1008).
