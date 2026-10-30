@@ -906,6 +906,9 @@ jobs:
           # AMUX-6530: a long deploy build logs a heartbeat, and the heartbeat
           # can neither outlive the build nor abort it under set -e.
           ./scripts/test-build-heartbeat.sh
+          # AF-1012: a link failure on unresolved symbols clears the stale
+          # amux_server incremental trees and retries once; a compile error does not.
+          ./scripts/test-build-link-retry.sh
           # Cloud follows main's tip without the CI wait: an activation that does
           # not come up healthy is put back and held.
           ./scripts/test-build-activation-rollback.sh

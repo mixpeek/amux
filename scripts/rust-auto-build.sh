@@ -839,6 +839,24 @@ fi
       BUILD_OK=1
     fi
   fi
+  # A STALE INCREMENTAL CACHE FAILS THE LINK, NOT THE COMPILE (AF-1012). On
+  # 2026-10-29 two green commits in a row (496d9cff6, ed0421bf3) failed to
+  # deploy with "ld: symbol(s) not found" for a function that compiles fine,
+  # and backoff retried the same cache every ~13 minutes: the server stayed
+  # 11 commits behind until the amux_server incremental trees were cleared by
+  # hand. Clear them through the target guard (it defers while another build
+  # holds the target) and build once more; dependency caches stay.
+  if [ "$BUILD_OK" = 0 ] && grep -aqE 'symbol\(s\) not found|Undefined symbols for architecture|undefined reference to' "$BUILD_OUT"; then
+    echo "== WARN deploy link failed on unresolved symbols; clearing the amux_server incremental trees and retrying once verdict=deploy_incremental_link_retry"
+    for _inc in "$HOME/.amux/rust-build-target/deploy/incremental"/amux_server-*; do
+      [ -d "$_inc" ] || continue
+      python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$HOME/.amux/rust-build-target" --path "$_inc" 2>&1 | sed 's/^/== /' || true
+    done
+    if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
+      BUILD_OK=1
+    fi
+    echo "== deploy_incremental_link_retry ok=$BUILD_OK"
+  fi
   # Explicit exit-code-derived flag, NOT a file-existence check: a stale
   # binary from an earlier successful build sitting at this same path would
   # make `[ -x ... ]` true even after a genuine failure, silently
