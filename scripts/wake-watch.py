@@ -311,6 +311,25 @@ def full_sha(repo, sha):
     return None, "GitHub could not resolve %s in %s (%s %s)" % (sha, repo, code, str((d or {}).get("message", ""))[:120])
 
 
+def workflow_ref(repo, wf):
+    """The file or id GitHub's /actions/workflows/<ref>/runs needs. A display
+    name like "rust" 404s there: W-fa25ca on "rust" was unmeasured on every
+    poll for 3 h while two rust runs completed, then expired unfired. Returns
+    (ref, error)."""
+    if re.fullmatch(r"\d+|[A-Za-z0-9._-]+\.ya?ml", wf or ""):
+        return wf, ""
+    code, d = gh_get("/repos/%s/actions/workflows?per_page=100" % repo)
+    flows = (d or {}).get("workflows") if code == 200 and isinstance(d, dict) else None
+    if not isinstance(flows, list):
+        return None, "GitHub could not list %s's workflows (%s %s)" % (repo, code, str((d or {}).get("message", ""))[:120])
+    for f in flows:
+        path = f.get("path") or ""
+        if wf in (f.get("name"), os.path.splitext(os.path.basename(path))[0]):
+            return os.path.basename(path), ""
+    return None, "no workflow named %s in %s (have: %s)" % (
+        wf, repo, ", ".join(sorted(str(f.get("name")) for f in flows))[:200])
+
+
 def _run_summary(r):
     return {"id": r.get("id"), "name": r.get("name"), "status": r.get("status"), "conclusion": r.get("conclusion"),
             "url": r.get("html_url"), "head_sha": r.get("head_sha"), "created_at": r.get("created_at"),
@@ -329,7 +348,11 @@ def ci_poll(w):
             return {"polled_at": now(), "rc": 1, "measured": False, "why_unmeasured": why}
         code, d = gh_get("/repos/%s/actions/runs?head_sha=%s&per_page=100" % (repo, sha))
     else:
-        code, d = gh_get("/repos/%s/actions/workflows/%s/runs?per_page=10" % (repo, w["workflow"]))
+        # A watch saved before the fix may hold a display name: resolve it here too.
+        wf, why = workflow_ref(repo, w["workflow"])
+        if not wf:
+            return {"polled_at": now(), "rc": 1, "measured": False, "why_unmeasured": why}
+        code, d = gh_get("/repos/%s/actions/workflows/%s/runs?per_page=10" % (repo, wf))
     rec = {"polled_at": now(), "rc": 0 if code == 200 else 1, "http": code}
     if code == 200 and isinstance(d, dict) and w.get("run") and d.get("status"):
         rec.update(measured=True, status=d.get("status"), conclusion=d.get("conclusion"), url=d.get("html_url"),
@@ -484,7 +507,12 @@ def cmd_add(a):
                 sha, why = full_sha(a.repo, sha)
                 if not sha:
                     raise SystemExit("wake-watch add ci: %s; a watch on it could never fire (AF-1063)" % why)
-            w.update(repo=a.repo, run=a.run or "", sha=sha, workflow=a.workflow or "")
+            wf = a.workflow or ""
+            if wf and not sha and not a.run:
+                wf, why = workflow_ref(a.repo, wf)
+                if not wf:
+                    raise SystemExit("wake-watch add ci: %s; a watch on it could never fire" % why)
+            w.update(repo=a.repo, run=a.run or "", sha=sha, workflow=wf)
         save(w)
     log("watch_registered", lane=lane, watch=w["id"], kind=w["kind"], target=describe(w), every=every,
         expires_at=iso(w["expires_at"]))
@@ -595,8 +623,11 @@ def cmd_check(a):
                 w.update(state="expired", closed_at=t)
                 save(w)
                 log("watch_expired", lane=lane, watch=w["id"], target=describe(w))
-                events.append("- %s EXPIRED unfired after %s: %s%s" % (
-                    w["id"], _ago(t - w["created_at"]), describe(w), _note(w)))
+                # A watch that never measured did not wait: say why it was blind.
+                blind = ("; it was UNMEASURED at its last poll: %s" % w["why_unmeasured"][:200]
+                         if w.get("measured") is False and w.get("why_unmeasured") else "")
+                events.append("- %s EXPIRED unfired after %s: %s%s%s" % (
+                    w["id"], _ago(t - w["created_at"]), describe(w), _note(w), blind))
                 continue
             if t - float(w.get("last_checked") or 0) < int(w.get("every", 0)):
                 continue
