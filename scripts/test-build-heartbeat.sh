@@ -50,6 +50,7 @@ AMUX_BUILD_MIN_FREE_GB=0 \
 AMUX_BUILD_DEBUG_MAX_GB=999999 \
 AMUX_BUILD_HEARTBEAT_S=1 \
 AMUX_RS_SHELL_DEFER_MAX_S=0 \
+AMUX_ACTIVATION_ROLLBACK=0 \
 AMUX_RS_RUNS_URL=http://127.0.0.1:9/none \
   bash "$BUILDER" > "$TMP/stdout" 2>&1 || { echo "FAIL: the builder exited non-zero"; cat "$TMP/stdout"; exit 1; }
 cat "$TMP/stdout" "$TMP/build.log" 2>/dev/null > "$TMP/out"

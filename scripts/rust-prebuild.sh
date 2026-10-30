@@ -38,9 +38,11 @@ say() { echo "== $(date '+%F %T') PREBUILD $SHA $*" >> "$LOG"; }
 [ "$(cat "$DONE" 2>/dev/null)" != "$SHA" ] || exit 0
 # A failure is retried, but not every pass: a commit that does not compile would
 # otherwise recompile every minute until its CI resolves (land review F2).
+# GNU stat first: GNU `stat -f` means --file-system, exits 0 and prints "File: ...",
+# which broke the arithmetic below on Linux CI (unbound variable File).
 FAILED="$DONE.failed"
 if [ "$(cat "$FAILED" 2>/dev/null)" = "$SHA" ] \
-   && [ $(( $(date +%s) - $(stat -f %m "$FAILED" 2>/dev/null || stat -c %Y "$FAILED" 2>/dev/null || echo 0) )) -lt "${AMUX_PREBUILD_RETRY_S:-600}" ]; then
+   && [ $(( $(date +%s) - $(stat -c %Y "$FAILED" 2>/dev/null || stat -f %m "$FAILED" 2>/dev/null || echo 0) )) -lt "${AMUX_PREBUILD_RETRY_S:-600}" ]; then
   exit 0
 fi
 free_gb=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
