@@ -271,6 +271,55 @@ session refs are **portable across serve instances** (the shared service answers
 `opencode.db`), and a dead ref is a clean `404 SessionNotFoundError`, which is
 what `session_exists` already assumed.
 
+### M6 — boundaries.toml governs opencode permission asks
+
+**The hole this fills:** boundary rules are enforced by a **PreToolUse hook** —
+Claude Code's mechanism. OpenCode has no hooks, so before M6 **no boundary
+applied to an opencode worker**: it could write into the vault or curl a payment
+provider and nothing refused it. The permission ask is the only interception
+point that provider has, and `acp::ApprovalPolicy`'s doc comment already said the
+seam existed for it.
+
+**What an ask can decide, measured from both transports.** A `PermissionAsk`
+carries `tool`, `title`, `kind`, **`locations`** (paths) and the offered
+`option_ids` — never the command text or the written content. So:
+
+| predicate in `boundaries.toml` | decidable at ask time? |
+|---|---|
+| `path` (on a file tool: Write/Edit/Read/Grep/Glob…) | **yes** — the ask names the paths |
+| `match_all` / `match_none` (bash command) | **no** — no command text in an ask |
+| `content_any` (written text) | **no** |
+| `tools` alone | **yes** — the tool is the whole rule |
+
+The design follows from that, and the two failure modes it refuses are both
+loud: a policy that denied anything naming the tool would brick every `Bash`
+call, and one that allowed silently would be theatre. So a path rule that
+matches → **`reject`** (logged `verdict=boundary_refused`); a rule that needs
+command/content → allowed unchanged, logged **once per (boundary, rule)** as
+`verdict=boundary_not_decidable`. A boundary that does not apply to this
+provider is a countable line in the log, not a silence.
+
+**Wiring.** `opencode/boundary_policy.rs` implements `ApprovalPolicy` over the
+same registry `api::boundaries` reads (installed file, else the copy embedded in
+the binary, merged with `~/.amux/boundaries.toml` by `id`, `enabled=false`
+honoured). It is the default for both transports; `AMUX_OPENCODE_BOUNDARIES=0`
+is the escape hatch and announces itself. `apply_to_isolated` is deliberately
+NOT consulted: it is a hook-side concern keyed on `AMUX_ISOLATED_WORKER`, and a
+policy has no worker identity — refusals for isolated workers are the
+conservative direction and cost nothing (a refusal injects no prompt).
+
+**A second gap found while wiring it, and closed:** the serve transport had the
+permission *wire* (M3.4) but **nothing drove it** — no poll, no reply. With
+`serve` now the default, a tool the worker's opencode config marks `ask` would
+have hung the turn until its 30-minute timeout. The turn watcher now polls asks
+on each pass (before the outcome read), answers each id once, retries a reply
+that failed rather than remembering it as answered, and logs every decision.
+
+**Honest limit:** two evaluators now exist (the Python hook for Claude Code, this
+one for opencode asks) and can drift. The mitigation is one registry plus a
+parity corpus over the registry's own `block_examples` where they are
+path-decidable — not a claim that they cannot drift.
+
 ---
 
 ## Risks / honest limits

@@ -10,6 +10,7 @@
 //! against the RR-0028e spike's coverage matrix.
 
 pub mod acp;
+pub mod boundary_policy;
 pub mod events;
 pub mod mock;
 pub mod serve;

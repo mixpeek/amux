@@ -64,7 +64,9 @@
 //! (migration 0011), hydrated back at registration by backend::bootstrap,
 //! so continuity survives a server restart.
 
-use super::{acp, events, serve, AgentProtocol, AgentState, Prompt, ProtocolError, Result};
+use super::{
+    acp, boundary_policy, events, serve, AgentProtocol, AgentState, Prompt, ProtocolError, Result,
+};
 use amux_core::ids::{MessageId, TurnId, WorkerId};
 use amux_core::protocol::{ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent};
 use async_trait::async_trait;
@@ -449,6 +451,11 @@ pub struct StructuredCliProtocol {
     /// lazily on the first serve session and dropped with the protocol.
     serve_hub: Mutex<Option<Arc<serve::ServeEventHub>>>,
     serve_reader: Mutex<Option<serve::EventReader>>,
+    /// M6: how a permission ask is answered. `None` = the production default,
+    /// [`boundary_policy::active`] (boundaries.toml, with
+    /// `AMUX_OPENCODE_BOUNDARIES=0` as the escape hatch). Tests pin a policy so
+    /// no test depends on the host's registry.
+    approval: Option<Arc<dyn acp::ApprovalPolicy>>,
 }
 
 /// How long a worker's ACP session may wait for an ACP turn. Generous — a long
@@ -594,6 +601,7 @@ impl StructuredCliProtocol {
             serve_client: None,
             serve_hub: Mutex::new(None),
             serve_reader: Mutex::new(None),
+            approval: None,
         }
     }
 
@@ -624,6 +632,21 @@ impl StructuredCliProtocol {
     pub fn with_serve_client(mut self, client: serve::ServeClient) -> Self {
         self.serve_client = Some(client);
         self
+    }
+
+    /// Pin how permission asks are answered (tests). Production leaves it unset
+    /// and gets [`boundary_policy::active`].
+    pub fn with_approval_policy(mut self, policy: Arc<dyn acp::ApprovalPolicy>) -> Self {
+        self.approval = Some(policy);
+        self
+    }
+
+    /// The policy every ask goes through — one place, so ACP and serve cannot
+    /// answer the same ask differently.
+    fn approval_policy(&self) -> Arc<dyn acp::ApprovalPolicy> {
+        self.approval
+            .clone()
+            .unwrap_or_else(boundary_policy::active)
     }
 
     /// The transport this worker's turns take. Only OpenCode speaks ACP or
@@ -994,6 +1017,9 @@ impl StructuredCliProtocol {
         start.model = cfg.effective_model();
         start.resume = resume.clone();
         start.turn_timeout = acp_turn_timeout();
+        // M6: boundaries.toml answers the ask. Without this an opencode worker
+        // had NO boundary enforcement at all — it has no hooks.
+        start.policy = self.approval_policy();
         let (session, handshake) = acp::AcpSession::spawn(start).await?;
         tracing::info!(
             worker = %shared.worker,
@@ -1260,7 +1286,13 @@ impl StructuredCliProtocol {
                     "serve prompt admitted"
                 );
                 if !already_running {
-                    spawn_serve_turn_watcher(shared, session, turn, baseline);
+                    spawn_serve_turn_watcher(
+                        shared,
+                        session,
+                        turn,
+                        baseline,
+                        self.approval_policy(),
+                    );
                 }
                 Ok(())
             }
@@ -1387,6 +1419,7 @@ fn spawn_serve_turn_watcher(
     session: Arc<serve::ServeSession>,
     turn: TurnId,
     baseline: usize,
+    policy: Arc<dyn acp::ApprovalPolicy>,
 ) {
     tokio::spawn(async move {
         let started = std::time::Instant::now();
@@ -1396,7 +1429,68 @@ fn spawn_serve_turn_watcher(
         // not kill a healthy turn, but a dead endpoint must not be polled for
         // 30 minutes either — see the fail-fast below.
         let mut gone_strikes = 0u32;
+        // M6: permission asks answered once each. The serve transport had the
+        // wire (M3.4) but nothing drove it, so a tool the worker's opencode
+        // config marks `ask` would hang the turn to its timeout — and with
+        // `serve` now the default (M4) that was the next worker to be stuck.
+        let mut answered: HashSet<String> = HashSet::new();
+        // Separate from `warned`: a failed permission poll must not suppress the
+        // (different) warning about an unreadable outcome.
+        let mut perm_warned = false;
         loop {
+            // An ask is a step the agent is BLOCKED on, so this runs on every
+            // poll (1s) rather than a slower cadence: the cost is one GET on an
+            // empty list, and the alternative is a stalled turn.
+            match session.poll_permissions().await {
+                Ok(asks) => {
+                    for request in asks {
+                        if !answered.insert(request.id.clone()) {
+                            continue;
+                        }
+                        match session.answer_permission(&request, policy.as_ref()).await {
+                            Ok(reply) => {
+                                tracing::info!(
+                                    worker = %shared.worker,
+                                    turn = %turn,
+                                    request = %request.id,
+                                    tool = %request.ask.tool,
+                                    reply = reply.as_str(),
+                                    verdict = "serve permission answered",
+                                    "serve permission answered"
+                                );
+                            }
+                            Err(e) => {
+                                // A reply that did not land must be retried, not
+                                // remembered as answered — otherwise the ask
+                                // hangs until the turn times out.
+                                answered.remove(&request.id);
+                                tracing::warn!(
+                                    worker = %shared.worker,
+                                    turn = %turn,
+                                    request = %request.id,
+                                    error = %e,
+                                    verdict = "serve permission reply failed; will retry",
+                                    "serve permission reply failed"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Not fatal: the turn can still finish without an ask (most
+                    // turns never ask). Announce it once per turn.
+                    if !perm_warned {
+                        perm_warned = true;
+                        tracing::warn!(
+                            worker = %shared.worker,
+                            turn = %turn,
+                            error = %e,
+                            verdict = "serve permission poll failed; the turn continues",
+                            "serve permission poll failed"
+                        );
+                    }
+                }
+            }
             match session.turn_outcomes().await {
                 Ok(outcomes) => {
                     gone_strikes = 0;
@@ -3355,6 +3449,163 @@ mod tests {
 
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
+    }
+
+    // ------------------------------------------------------------------
+    // M6 — boundaries.toml answers a serve permission ask
+    // ------------------------------------------------------------------
+
+    /// The chain M6 exists for, end to end over the WIRE: a running serve turn
+    /// polls its permission asks, the pinned policy consults `boundaries.toml`,
+    /// and a write into the vault is REFUSED — `reject` is what the fixture
+    /// records, not what our enum says.
+    ///
+    /// Before M6 nothing polled at all, so the ask would have hung the turn to
+    /// its timeout; and before it, no boundary applied to an opencode worker at
+    /// all (it has no PreToolUse hooks).
+    #[tokio::test]
+    async fn a_running_serve_turn_refuses_a_boundary_path_on_the_wire() {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        const PW: &str = "test-password-43-chars-test-password-43";
+        let replies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let permission_polls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let replies = Arc::clone(&replies);
+            let polls = Arc::clone(&permission_polls);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "ses_perm"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/prompt",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "msg_perm"}})).into_response()
+                    }),
+                )
+                // The turn is already over: the watcher polls permissions
+                // BEFORE it reads the outcome, so one iteration proves the chain.
+                .route(
+                    "/api/session/{id}/message",
+                    axum::routing::get(|| async {
+                        axum::Json(json!({
+                            "data": [{"type": "idle", "outcome": "succeeded"}],
+                            "cursor": "cur_perm"
+                        }))
+                        .into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/permission",
+                    axum::routing::get(move || {
+                        let polls = Arc::clone(&polls);
+                        async move {
+                            polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            axum::Json(json!({"data": [{
+                                "id": "per_vault01",
+                                "sessionID": "ses_perm",
+                                "action": "write",
+                                "resources": ["/home/pv/.amux/vault/items.json"],
+                                "message": "Write /home/pv/.amux/vault/items.json?"
+                            }]}))
+                            .into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/permission/{rid}/reply",
+                    axum::routing::post(
+                        move |axum::Json(body): axum::Json<Value>| {
+                            let replies = Arc::clone(&replies);
+                            async move {
+                                replies.lock().unwrap().push(
+                                    body.get("decision")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                );
+                                axum::http::StatusCode::NO_CONTENT.into_response()
+                            }
+                        },
+                    ),
+                )
+                // The M3.2 reader connects here; a heartbeat then EOF.
+                .route(
+                    "/api/event",
+                    axum::routing::get(|| async {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            ": heartbeat\n\n",
+                        )
+                    }),
+                );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+
+        // The registry's own vault rule, so the test cannot pass against a
+        // shape that changed underneath it.
+        let registry_toml = r#"
+[[boundary]]
+id = "credentials"
+[[boundary.deny]]
+tools = ["Write", "Edit", "Read"]
+match_all = ['\.amux/(vault|ts-secrets)']
+path = '\.amux/(vault|ts-secrets)/'
+reason = "The vault holds card and secret data."
+"#;
+        let parsed: toml::Table = toml::from_str(registry_toml).unwrap();
+        let registry: Vec<toml::Table> = parsed
+            .get("boundary")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect())
+            .unwrap();
+        let policy: Arc<dyn acp::ApprovalPolicy> =
+            Arc::new(boundary_policy::BoundaryPolicy::from_registry(registry));
+
+        let client = serve::ServeClient::connect(format!("http://{addr}"), PW).unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client)
+            .with_approval_policy(Arc::clone(&policy));
+        let w = worker_id("BP001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto
+            .send_prompt(&w, prompt("m6-perm-1"))
+            .await
+            .expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        // The wire carried `reject` — the boundary's decision, not a default.
+        let sent = replies.lock().unwrap().clone();
+        assert_eq!(
+            sent,
+            vec!["reject".to_string()],
+            "the vault write must be refused exactly once"
+        );
+        // And it was asked once, because an answered id is not re-answered.
+        assert!(
+            permission_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the watcher must poll permission asks during a turn"
+        );
     }
 
     // ------------------------------------------------------------------
