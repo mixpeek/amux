@@ -56,6 +56,68 @@ const TRIM_BATCH_ROWS: i64 = 20_000;
 /// written.
 const RESULTS_PER_WRITE: usize = 100;
 
+/// An open incident whose entity its invariant stopped reporting is resolved
+/// after this long (AF-1015).
+const ABSENT_RESOLVE_S: f64 = 3600.0;
+
+/// Resolve open incidents for entities their invariant no longer reports.
+///
+/// A deleted lane, a removed route or a retired schedule is never evaluated
+/// again, so no `pass` or `unknown` can ever arrive to resolve its incident.
+/// On 2026-10-29, 165 of 182 open incidents had not been seen for over an
+/// hour, some for 1,915 h (73 of them session.registered_lane_is_running for
+/// deleted workers): the open list read as a fleet on fire while 90% of it
+/// described things that no longer exist. That is AMUX-3575's shape (an
+/// incident nothing could clear) through a different door.
+///
+/// Only invariants that RAN this pass are touched, and only incidents unseen
+/// for [`ABSENT_RESOLVE_S`]: a check that reports a rotating subset must not
+/// flap, since every reopen starts a new episode and files a new card. The
+/// terminal status is `unknown`, which says it ended unobserved, not healed.
+async fn resolve_absent(
+    store: &SharedStore,
+    present: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ts: f64,
+) {
+    if present.is_empty() {
+        return;
+    }
+    let res = store
+        .write_async(move |conn| {
+            let stale: Vec<(String, String)> = {
+                let mut q = conn.prepare_cached(
+                    "SELECT invariant_id, entity_key FROM _amux_invariant_incident
+                      WHERE resolved_at IS NULL AND last_seen < ?1",
+                )?;
+                let rows = q.query_map([ts - ABSENT_RESOLVE_S], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.flatten()
+                    .filter(|(id, entity): &(String, String)| {
+                        present.get(id).is_some_and(|seen| !seen.contains(entity))
+                    })
+                    .collect()
+            };
+            for (id, entity) in &stale {
+                conn.prepare_cached(
+                    "UPDATE _amux_invariant_incident SET resolved_at = ?3, status = 'unknown'
+                      WHERE invariant_id = ?1 AND entity_key = ?2 AND resolved_at IS NULL",
+                )?
+                .execute(rusqlite::params![id, entity, ts])?;
+            }
+            if !stale.is_empty() {
+                tracing::info!(verdict = "invariant_incidents_resolved_absent", resolved = stale.len(),
+                    measured = true, n_considered = stale.len(),
+                    sample = %stale.iter().take(5).map(|(i, e)| format!("{i}:{e}")).collect::<Vec<_>>().join(","),
+                    "resolved incidents whose entity its invariant no longer reports");
+            }
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        })
+        .await;
+    if let Err(error) = res {
+        tracing::warn!(verdict = "invariant_absent_resolve_failed", %error, measured = false,
+            "could not resolve incidents for entities no longer reported");
+    }
+}
+
 /// An all-pass invariant whose entities have not changed is re-written at most
 /// this often (AF-1005). Under the 300 s after which a reader calls a check
 /// stale, so a quiet check never reads as one that stopped running.
@@ -131,6 +193,13 @@ fn now() -> f64 {
 /// before. Returns the number of incidents newly OPENED, which is the signal a
 /// caller acts on.
 pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration_ms: i64) -> usize {
+    // Who this pass evaluated, taken BEFORE unchanged passes are dropped: an
+    // entity skipped as unchanged was still evaluated.
+    let mut present: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for r in &results {
+        present.entry(r.invariant_id.clone()).or_default().insert(r.entity_key.clone());
+    }
     let results = drop_unchanged_passes(store.db_path(), results, now());
     if results.is_empty() {
         return 0;
@@ -320,6 +389,7 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
         })
         .await;
     }
+    resolve_absent(store, present, now()).await;
     // The trim is once per pass, in its own short write, not once per chunk.
     let _ = store
         .write_async(move |conn| {
@@ -864,6 +934,44 @@ mod tests {
 
     /// A pass closes the incident, and a later failure REOPENS the same row so
     /// the flap is one story rather than two unrelated ones.
+    /// AF-1015: an incident whose entity its invariant stopped reporting is
+    /// resolved as `unknown` once it has been absent an hour; one still
+    /// reported, one absent under an hour, and one whose invariant did not run
+    /// this pass all stay open.
+    #[tokio::test]
+    async fn an_entity_its_invariant_stopped_reporting_is_resolved_after_an_hour() {
+        let (s, _d) = store();
+        record(&s, vec![
+            InvariantResult::fail("af1015.lane", "a", "b").entity("kept"),
+            InvariantResult::fail("af1015.lane", "a", "b").entity("deleted"),
+            InvariantResult::fail("af1015.lane", "a", "b").entity("recent"),
+            InvariantResult::fail("af1015.other", "a", "b").entity("idle"),
+        ], 1).await;
+        let age = |entity: &'static str, secs: f64| {
+            let s = s.clone();
+            async move {
+                s.write_async(move |c| {
+                    c.execute("UPDATE _amux_invariant_incident SET last_seen = last_seen - ?1 WHERE entity_key = ?2",
+                        rusqlite::params![secs, entity])?;
+                    Ok(WriteOutcome { applied: true, events: vec![] })
+                }).await.unwrap();
+            }
+        };
+        age("deleted", 7200.0).await;
+        age("idle", 7200.0).await;
+        age("recent", 600.0).await;
+        record(&s, vec![InvariantResult::fail("af1015.lane", "a", "b").entity("kept")], 1).await;
+        let state = |entity: &str| -> (String, bool) {
+            s.read().unwrap().query_row(
+                "SELECT status, resolved_at IS NOT NULL FROM _amux_invariant_incident WHERE entity_key = ?1",
+                [entity], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(state("deleted"), ("unknown".into(), true), "absent for two hours: resolved, not claimed healed");
+        assert_eq!(state("kept"), ("fail".into(), false), "still reported: stays open");
+        assert_eq!(state("recent"), ("fail".into(), false), "absent under an hour: may be a rotating subset");
+        assert_eq!(state("idle"), ("fail".into(), false), "its invariant did not run this pass: untouched");
+    }
+
     #[tokio::test]
     async fn pass_resolves_and_a_later_failure_reopens() {
         let (s, _d) = store();
