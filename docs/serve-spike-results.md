@@ -193,14 +193,15 @@ wider than `provider.quota`.
 
 ## Honest limits
 
-- **Still opt-in.** `serve` is the default for nothing; `acp` remains the default until
-  a full pass *and* peer verification line up.
+- **Still opt-in.** `serve` is the default for nothing. The full-pass precondition is
+  now met; what remains before a default flip is peer verification, two one-probe gaps,
+  and a supervisor that owns the shared serve.
 - **Durable-log replay is unproven** (above). Reconciliation rides `/message`, which
   returns full history but is a full read, not a cursor.
 - **Two one-probe gaps** ride along with the default flip: the busy-response HTTP status,
   and the semantics of a 404 on a dead `ses_` ref from the serve path.
 - **Version drift is the norm here**, not the exception: three releases in four days. The
-  SSE capture in `memory-bank/evidence/m32/` was taken on 2.1.4 and has not been
-  re-measured on ≥2.2.1.
+  SSE capture taken during M3.2 is pinned to 2.1.4 and has not been re-measured on
+  ≥2.2.1 (it lives in the local memory bank, which this repo does not track).
 - **No fleet-level change yet.** Process count for N workers is still ~2N because nothing
   launches the shared serve in production; M3 built the transport, not the supervisor.
