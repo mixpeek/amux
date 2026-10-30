@@ -3302,10 +3302,31 @@ async fn served_commit_check() -> Vec<InvariantResult> {
             gate_hold: crate::api::self_update::gate_state()
                 .as_ref()
                 .and_then(|g| checks::gate_hold_reason(g, served)),
+            restart_pending: installed_awaiting_restart(served),
         }),
         "",
         checks::deploy_lag_threshold_s(),
     )
+}
+
+/// The installed build, when it is not the served one and was installed within
+/// [`checks::RESTART_PENDING_S`]: the server is about to restart onto it.
+/// Read from the builder's provenance file (`ACTIVATION INSTALLED identity=`).
+fn installed_awaiting_restart(served: &str) -> Option<String> {
+    let path = std::env::var("AMUX_RS_BUILD_PROVENANCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| crate::config::amux_home().join("rust-build-provenance.json"));
+    let age_s = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed().ok()?.as_secs() as i64;
+    if age_s > checks::RESTART_PENDING_S {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let sha = v["sha"].as_str()?;
+    let n = sha.len().min(served.len());
+    if n >= 7 && sha[..n] == served[..n] {
+        return None;
+    }
+    Some(format!("build {} installed {age_s}s ago; the server restarts onto it", sha.chars().take(12).collect::<String>()))
 }
 
 async fn argv_secret_check() -> Vec<InvariantResult> {

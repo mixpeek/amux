@@ -765,7 +765,20 @@ pub struct DeployLag {
     /// behind, and its text sent the reader to the builder log. The builder
     /// was fine. main was red, and the fix was in CI, not in the builder.
     pub gate_hold: Option<String>,
+    /// A build newer than the served one is INSTALLED and the server has not
+    /// restarted onto it yet (AF-1028). The builder installs, then the server
+    /// re-execs; in between, /health still names the old commit. On
+    /// 2026-10-29 the 262909fcc install landed at 23:09:37, the restart at
+    /// 23:11:13, and the tick at 23:10:23 failed with a 1814 s lag against
+    /// 1800 s, filing a card for a deploy that was seconds from done. Some only
+    /// while the install is fresh ([`RESTART_PENDING_S`]), so a restart that
+    /// never comes still fails.
+    pub restart_pending: Option<String>,
 }
+
+/// How long an installed-but-not-yet-served build is treated as a restart in
+/// progress rather than a stall.
+pub const RESTART_PENDING_S: i64 = 300;
 
 /// The gate's own words for a hold, from `activation-gate.json`. Pure so the
 /// mapping is tested; the caller reads the file.
@@ -905,8 +918,9 @@ pub fn served_commit_is_current(
         "measured": true,
         "age_source": lag.age_source,
         "gate_hold": lag.gate_hold,
+        "restart_pending": lag.restart_pending,
     });
-    if lag.oldest_unserved_age_s <= threshold_s {
+    if lag.oldest_unserved_age_s <= threshold_s || lag.restart_pending.is_some() {
         // Behind, but not yet longer than a build plausibly takes.
         return vec![InvariantResult::pass(ID).evidence(evidence)];
     }
@@ -11096,7 +11110,20 @@ mod served_commit_tests {
             oldest_unserved_age_s: age,
             age_source: "origin_reflog_arrival".into(),
             gate_hold: None,
+            restart_pending: None,
         }
+    }
+
+    /// AF-1028: past the threshold, a freshly installed newer build is a
+    /// restart in progress (pass, and says so); without one it still fails.
+    #[test]
+    fn an_installed_build_awaiting_its_restart_is_not_a_stall() {
+        let mut l = lag(4, 1_814);
+        assert_eq!(served_commit_is_current(Some(&l), "", 1_800)[0].status, Status::Fail);
+        l.restart_pending = Some("build 262909fcc installed 46s ago".into());
+        let r = served_commit_is_current(Some(&l), "", 1_800);
+        assert_eq!(r[0].status, Status::Pass, "{:?}", r[0]);
+        assert_eq!(r[0].evidence["restart_pending"], "build 262909fcc installed 46s ago");
     }
 
     /// 2026-10-24: 27 hours failing, 73 behind, and the text pointed at the
