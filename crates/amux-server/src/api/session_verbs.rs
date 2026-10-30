@@ -13618,8 +13618,11 @@ async fn send_text_inner_bound(
 ) -> (bool, String) {
     // Profiled (owner, 2026-10-29): GET /api/debug/send-profile and the
     // `send_profile` / `send_slow` log lines say where each send's time went.
+    // Boxed: `profiled` moves its future through two task-local scopes, and
+    // a debug build copies a by-value send future at each move. Unboxed, a
+    // board-drive pickup overflowed the 2 MiB maintenance stack (AF-1014).
     crate::api::send_profile::profiled(name, text.chars().count(),
-        send_text_inner_bound_body(state, name, text, mode, delivery, queue_id)).await
+        Box::pin(send_text_inner_bound_body(state, name, text, mode, delivery, queue_id))).await
 }
 
 async fn send_text_inner_bound_body(
