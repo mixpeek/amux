@@ -1447,6 +1447,95 @@ fn spawn_refresh_with(
         })
 }
 
+/// THE LAST FLEET SNAPSHOT SURVIVES A RESTART (AF-1032).
+///
+/// A new process has no snapshot, so every dashboard's first /api/sessions
+/// waited for a cold fleet build: 16-19 s at each of the 2026-10-30 restarts
+/// (03:11, 03:15, 03:29 and 03:34Z, main moving every few minutes), and the
+/// stale-while-revalidate path (AF-1011) cannot help with nothing to serve.
+/// The published snapshot is kept on disk and a cold process adopts it AS
+/// STALE, so callers get it at once while the background refresh rebuilds.
+///
+/// Same structural guarantees as the in-memory snapshot: it is written only on
+/// a successful publish, deleted by every structural invalidation (a config,
+/// isolation or registry write), adopted only when the registry fingerprint
+/// still matches, and never past [`PERSISTED_MAX_AGE_S`].
+const PERSISTED_MAX_AGE_S: f64 = 600.0;
+const PERSIST_EVERY_S: f64 = 15.0;
+
+fn persisted_snapshot_path() -> std::path::PathBuf {
+    amux_home().join("cache").join("sessions-snapshot.json")
+}
+
+fn persist_snapshot(json: &str, registry: u64, published: f64) {
+    static LAST: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if published - *last < PERSIST_EVERY_S {
+            return;
+        }
+        *last = published;
+    }
+    let path = persisted_snapshot_path();
+    let body = json!({"registry": registry.to_string(), "published": published, "json": json}).to_string();
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    let written = path.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::write(&tmp, body)).and_then(|_| std::fs::rename(&tmp, &path));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(target: "amux::sessions", verdict = "sessions_snapshot_persist_failed", %error,
+            measured = true, n_considered = 1, "fleet snapshot not kept for the next restart");
+    }
+}
+
+/// Install the snapshot kept by the previous process when this one has none.
+fn adopt_persisted_snapshot(store_key: &std::sync::Weak<crate::db::Store>, epoch_now: u64, now: f64) {
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let Ok(raw) = std::fs::read_to_string(persisted_snapshot_path()) else { return };
+    let (outcome, age_s, kept) = adoptable(&raw, now, registry_fingerprint());
+    if let Some((json, registry, published)) = kept {
+        if let Ok(mut c) = build_array_cache().lock() {
+            if c.json.is_empty() {
+                *c = ListSnapshot {
+                    store: store_key.clone(),
+                    stamp: published,
+                    json,
+                    epoch: epoch_now,
+                    runtime_epoch: 0,
+                    registry,
+                    published,
+                    build_s: 0.0,
+                };
+            }
+        }
+    }
+    tracing::info!(target: "amux::sessions", verdict = "sessions_snapshot_restored", outcome,
+        age_s = age_s as i64, measured = true, n_considered = 1,
+        "previous process's fleet snapshot considered for the cold start");
+}
+
+/// Whether a kept snapshot may be adopted: `adopted` with its parts, or why not.
+fn adoptable(raw: &str, now: f64, registry_now: Option<u64>) -> (&'static str, f64, Option<(String, u64, f64)>) {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else { return ("unreadable", 0.0, None) };
+    let (Some(registry), Some(published), Some(json)) = (
+        v["registry"].as_str().and_then(|r| r.parse::<u64>().ok()),
+        v["published"].as_f64(),
+        v["json"].as_str(),
+    ) else {
+        return ("unreadable", 0.0, None);
+    };
+    let age_s = now - published;
+    if !(0.0..PERSISTED_MAX_AGE_S).contains(&age_s) {
+        return ("too_old", age_s, None);
+    }
+    if registry_now != Some(registry) {
+        return ("registry_changed", age_s, None);
+    }
+    ("adopted", age_s, Some((json.to_string(), registry, published)))
+}
+
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
     now - published < ttl.max(build_s)
 }
@@ -1573,6 +1662,8 @@ pub fn invalidate_sessions_cache() {
     // Epoch first: an in-flight builder checks it AFTER building, so bumping
     // before the clear means no interleaving lets a pre-bump build survive.
     SESSIONS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // The copy on disk predates this change too: a restart must not bring it back.
+    let _ = std::fs::remove_file(persisted_snapshot_path());
     if let Ok(mut c) = build_array_cache().lock() {
         c.stamp = 0.0;
         c.json.clear();
@@ -4676,6 +4767,7 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
     let epoch_now = SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
+    adopt_persisted_snapshot(&store_key, epoch_now, now);
     if let Ok(c) = build_array_cache().lock() {
         if snapshot_fresh(now, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
@@ -4917,6 +5009,8 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
                     published,
                     build_s,
                 };
+                drop(c);
+                persist_snapshot(&json, registry, published);
             }
         }
         RaceVerdict::Raced => {
@@ -11627,6 +11721,21 @@ mod config_overlay_tests {
 
 #[cfg(test)]
 mod subagent_scan_cache_tests {
+
+    /// AF-1032: a kept snapshot is adopted only while young and while the
+    /// registry is the one it was built against; anything else rebuilds cold.
+    #[test]
+    fn a_kept_snapshot_is_adopted_only_young_and_with_the_same_registry() {
+        let raw = |published: f64| serde_json::json!({"registry": "42", "published": published, "json": "[]"}).to_string();
+        let (ok, _, kept) = super::adoptable(&raw(1000.0), 1060.0, Some(42));
+        assert_eq!(ok, "adopted");
+        assert_eq!(kept, Some(("[]".to_string(), 42, 1000.0)));
+        assert_eq!(super::adoptable(&raw(1000.0), 1000.0 + super::PERSISTED_MAX_AGE_S + 1.0, Some(42)).0, "too_old");
+        assert_eq!(super::adoptable(&raw(1000.0), 1060.0, Some(43)).0, "registry_changed", "a worker added or deleted since");
+        assert_eq!(super::adoptable(&raw(1000.0), 1060.0, None).0, "registry_changed", "an unreadable registry is not a match");
+        assert_eq!(super::adoptable(&raw(2000.0), 1000.0, Some(42)).0, "too_old", "a snapshot from the future is not trusted");
+        assert_eq!(super::adoptable("{", 1000.0, Some(42)).0, "unreadable");
+    }
 
     /// AF-1011: one background refresh at a time, and the flag clears when
     /// the refresh ends, including when it panics.

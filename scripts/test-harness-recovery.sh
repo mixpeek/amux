@@ -32,6 +32,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/peer-receive-recovery.mjs peer-receive
   e2e/chaos/worker-group-boundary-recovery.mjs worker-group-boundary
   e2e/chaos/land-startup-recovery.mjs land-startup
+  e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot
 )
 CHAOS_JOBS="${AMUX_CHAOS_JOBS:-$(n=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2); echo $(( n > 4 ? 4 : n )))}"
 chaos_pids=(); chaos_names=(); chaos_failed=()
