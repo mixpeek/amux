@@ -257,7 +257,17 @@ struct Data {
     titles: HashMap<String, String>,
 }
 
+fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
+    conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |_| Ok(()))
+        .is_ok()
+}
+
 fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
+    // The episodes job creates task_episodes on its first tick, so a new
+    // install has no history yet: an empty answer, not a 500.
+    if !table_exists(conn, "task_episodes") {
+        return Ok(Data { attempts: Vec::new(), tokens: HashMap::new(), titles: HashMap::new() });
+    }
     let mut stmt = conn.prepare(
         "SELECT e.card, e.worker, e.started_at, e.ended_at, e.outcome, COALESCE(e.reason, ''),
                 COALESCE(e.card_end, ''),
@@ -274,10 +284,15 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
                 waiting: waiting_from(&end).unwrap_or(now) })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut stmt = conn.prepare(
-        "SELECT task, SUM(input + cache_write + output) FROM token_ledger WHERE task <> '' AND ts >= ?1 GROUP BY task",
-    )?;
-    let tokens = stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?.collect::<Result<HashMap<_, _>, _>>()?;
+    let tokens = if table_exists(conn, "token_ledger") {
+        let mut stmt = conn.prepare(
+            "SELECT task, SUM(input + cache_write + output) FROM token_ledger WHERE task <> '' AND ts >= ?1 GROUP BY task",
+        )?;
+        let rows = stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?.collect::<Result<HashMap<_, _>, _>>()?;
+        rows
+    } else {
+        HashMap::new()
+    };
     let ids: BTreeSet<&str> = attempts.iter().map(|a| a.card.as_str()).collect();
     let mut titles = HashMap::new();
     let mut stmt = conn.prepare("SELECT id, COALESCE(title, '') FROM issues WHERE id = ?1")?;
@@ -720,6 +735,13 @@ mod tests {
         assert_eq!(without_section(a), without_section(b), "moving numbers are not a change of instructions");
         assert_ne!(without_section(a), without_section(&a.replace("# Browser", "# Browsers")), "a real change still is");
         assert_eq!(without_section("# Rules\n\nx"), "# Rules\n\nx");
+    }
+
+    #[test]
+    fn a_new_install_with_no_attempt_history_reads_as_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let d = load(&conn, 0).expect("no task_episodes table yet is an empty history, not an error");
+        assert!(d.attempts.is_empty() && d.tokens.is_empty());
     }
 
     #[test]

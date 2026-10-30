@@ -40677,7 +40677,7 @@ function switchView(view) {
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
-  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
+  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','velocity','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
   if (view === 'disk') _reclaimLoad(); else { if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling(); if (typeof _tierStopPolling === 'function') _tierStopPolling(); }
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
@@ -58522,6 +58522,7 @@ function _metricsSetMode(mode) {
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
   document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
   document.getElementById('metricsmode-resources')?.classList.toggle('active', mode === 'resources');
+  document.getElementById('metricsmode-velocity')?.classList.toggle('active', mode === 'velocity');
   document.getElementById('metricsmode-disk')?.classList.toggle('active', mode === 'disk');
   const mc = document.getElementById('metrics-content');
   const hc = document.getElementById('host-content');
@@ -58529,11 +58530,69 @@ function _metricsSetMode(mode) {
   if (mc) mc.style.display = mode === 'system' ? '' : 'none';
   if (hc) hc.style.display = mode === 'host' ? '' : 'none';
   if (rc) rc.style.display = mode === 'resources' ? '' : 'none';
+  const vc = document.getElementById('velocity-content');
+  if (vc) vc.style.display = mode === 'velocity' ? '' : 'none';
   const sb = document.getElementById('metrics-sidebar');
   if (sb) sb.style.display = (mode === 'system') ? '' : 'none';
   if (mode === 'disk') _reclaimLoad(); else _reclaimStopPolling();
   if (mode === 'host') _hostLoad();
   if (mode === 'resources') _resourcesLoad();
+  if (mode === 'velocity') _velocityLoad();
+}
+
+// ── Velocity (Metrics > Velocity) ─────────────────────────────────────────
+// Where each worker's time goes, what wastes it and who can fix it, and when
+// its open cards land (docs/design/worker-velocity.md, /api/velocity). The
+// fleet list first; a row opens that worker's breakdown and projection.
+let _velocityWorker = null;
+
+function _velocityLoad() {
+  const el = document.getElementById('velocity-content');
+  if (!el) return;
+  if (_velocityWorker) return _velocityShowWorker(_velocityWorker);
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading velocity…</div>';
+  fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null).then(d => {
+    if (!d || !Array.isArray(d.workers)) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
+    const rows = d.workers.map(w => `<div class="metrics-card velocity-row" data-velocity-worker="${esc(w.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)" style="cursor:pointer;">
+        <div class="reclaim-safe-head">${esc(w.worker)}</div>
+        <div class="reclaim-safe-text">${w.finished_cards} finished (${w.finished_per_day}/day) · ${w.finished_share_of_time}% of time on finished work · ${w.wasted_hours} h wasted · top: ${esc(w.top_bottleneck || '–')}</div>
+      </div>`).join('');
+    el.innerHTML = `<div class="metrics-section-title">Velocity, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
+  }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
+}
+
+function _velocityShowWorker(name) {
+  _velocityWorker = name;
+  const el = document.getElementById('velocity-content');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading ' + esc(name) + '…</div>';
+  const w = encodeURIComponent(name);
+  Promise.all([
+    fetch(API + '/api/velocity/' + w + '?days=30').then(r => r.ok ? r.json() : null),
+    fetch(API + '/api/velocity/' + w + '/projection?days=30&include=backlog').then(r => r.ok ? r.json() : null),
+  ]).then(([s, p]) => {
+    if (!s) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
+    const back = `<button class="btn" id="velocity-back" onclick="_velocityWorker=null;_velocityLoad()">All workers</button>`;
+    const fmt = v => v == null ? '–' : Math.round(v);
+    const m = (s.per_finished_card || {}).minutes || {}, t = (s.per_finished_card || {}).tokens || {};
+    const waste = (s.waste || []).slice().sort((a, b) => b.hours - a.hours).map(x =>
+      `<div class="reclaim-safe-text velocity-waste" data-kind="${esc(x.kind)}"><b>${esc(x.kind)}</b> (${esc(x.owner || '–')}) · ${x.attempts} attempts · ${x.hours} h · ${x.share_of_time}%<br><span style="color:var(--dim);">${esc(x.what_it_means || '')}</span></div>`).join('');
+    const waits = (s.waited_on || []).map(x => `<div class="reclaim-safe-text" style="overflow-wrap:anywhere;">${x.hours} h · ${esc(x.waiting)}</div>`).join('');
+    let proj = '';
+    if (p && p.measured) {
+      const cards = (p.cards || []).map(c => `<div class="reclaim-safe-text velocity-card" data-card="${esc(c.card)}" style="overflow-wrap:anywhere;">${esc(c.card)} · ${esc(c.status)} · ~${fmt(c.minutes_p50)} min${(c.blocked_by || []).length ? ' · waits on ' + esc(c.blocked_by.join(', ')) : ''}${c.over_estimate ? ` · <span style="color:var(--red);">over estimate: ${c.over_estimate.elapsed_minutes} of ${c.over_estimate.expected_minutes_p75} min</span>` : ''}<br><span style="color:var(--dim);">${esc((c.title || '').slice(0, 90))}</span></div>`).join('');
+      const fb = p.finish_by || {}, cal = p.calibration, pace = p.pace;
+      proj = `<div class="metrics-section-title">When the open cards land (${p.n_considered}, with backlog)</div>
+        <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-finish">${pace ? `At the recent pace (${pace.days_per_finished_card} days per finished card): by ${esc((fb.p50 || '').slice(0, 10))}, ${esc((fb.p75 || '').slice(0, 10))} if slower.` : 'No pace yet: no finished cards in the window.'} Work time ${fmt(p.work_minutes.p50)} min${cal ? `, scaled ${cal.actual_over_estimate}x (past cards against their estimates)` : ''}.${(p.blocked_by_outside || []).length ? ' Waits on ' + esc(p.blocked_by_outside.join(', ')) + ' outside this queue; the dates assume it lands in time.' : ''}</div>${cards}</div>`;
+    } else if (p) {
+      proj = `<div class="metrics-card reclaim-safe-text">${esc(p.why_unmeasured || 'No projection.')}</div>`;
+    }
+    el.innerHTML = `<div class="metrics-section-title" style="display:flex;align-items:center;gap:var(--space-2);">${back}<span>${esc(name)}, last ${s.window_days} days</span></div>
+      <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-summary">Finished ${s.finished_cards} of ${s.cards} cards (${s.finished_per_day}/day), ${s.attempts_per_card} attempts per card. ${s.finished_share_of_time}% of ${s.hours.total} h went to attempts that finished. A finished card: ${fmt(m.p50)} min median (${fmt(m.p25)} to ${fmt(m.p75)}), ${fmt(t.p50)} tokens.</div></div>
+      <div class="metrics-section-title">Waste, by who can fix it</div><div class="metrics-card">${waste || '<div class="reclaim-safe-text">None.</div>'}</div>
+      ${waits ? `<div class="metrics-section-title">What parked work waited on</div><div class="metrics-card">${waits}</div>` : ''}
+      ${proj}`;
+  }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
 }
 
 // ── Worker Resources (Metrics > Resources) ─────────────────────────────────

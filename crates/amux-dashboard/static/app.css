@@ -6404,7 +6404,9 @@
     .metrics-expand-btn { display: flex; }
     /* Disk Cleanup at phone width: the treemap needs real height to stay
        readable, and the action bar must not trap its buttons off-screen. */
-    .metrics-modebtn { flex: 1; min-width: 0; min-height: 44px; }
+    /* One row of modes on a phone: the row scrolls sideways rather than wrapping. */
+    .metrics-modebar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .metrics-modebtn { flex: 1 0 auto; min-height: 44px; white-space: nowrap; }
     /* No fixed svg height here: the map is laid out at its real pixel size in
        _reclaimRender, so a CSS height that disagreed with the viewBox is what
        produced the letterboxed band at 390px. */
