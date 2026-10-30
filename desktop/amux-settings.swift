@@ -336,7 +336,10 @@ extension AppDelegate {
             openWindow(url: nil, frame: nil)
         } else {
             launchedWithoutWindows = (config.windows ?? []).isEmpty
-            openWindows(config.windows ?? [])
+            // The last windows too: a Mac that opened a workspace before the
+            // remap existed saved its tabs on its own localhost (2026-10-29), and
+            // reopening them as saved kept every tab on an empty server.
+            openWindows(rehomed(config.windows ?? [], savedOn: nil, what: "last windows"))
         }
         lastSignature = placementSignature()
     }
