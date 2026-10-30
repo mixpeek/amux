@@ -193,26 +193,34 @@ wider than `provider.quota`.
 
 ## Honest limits
 
-- **Still opt-in.** `serve` is the default for nothing. The full-pass precondition is
-  now met; what remains before a default flip is peer verification, two one-probe gaps,
-  and a supervisor that owns the shared serve.
+- **Now the default, when there is a server to join.** `serve` is what an
+  un-pinned OpenCode worker uses as soon as amux can discover the shared
+  service opencode registers (`~/.local/state/opencode/service.json`); on a box
+  with no service it falls back to `acp` with one logged verdict. The escape
+  hatch is `AMUX_OPENCODE_TRANSPORT=acp|run`.
 - **Durable-log replay is unproven** (above). Reconciliation rides `/message`, which
   returns full history but is a full read, not a cursor.
-- **Two one-probe gaps** ride along with the default flip: the busy-response HTTP status,
-  and the semantics of a 404 on a dead `ses_` ref from the serve path.
+- **Both former "one-probe gaps" are closed, without spending a token.** A dead
+  ref measures `404 SessionNotFoundError` on `/message`, on `/session/{id}` and
+  on `/prompt` — exactly what `session_exists` assumed. And the busy HTTP status
+  turned out to be the wrong question: the captured openapi declares
+  `SessionBusyError` on ONLY the three `revert*` endpoints (409), none of which
+  amux calls, and prompt admission is asynchronous — so a "busy prompt"
+  rejection cannot occur at all. The fixture's 409 tests classification, not a
+  production path.
 - **Version drift is the norm here**, not the exception: three releases in four days. The
   SSE capture taken during M3.2 is pinned to 2.1.4 and has not been re-measured on
   ≥2.2.1 (it lives in the local memory bank, which this repo does not track).
-- **No fleet-level change yet, and the server already exists.** Measured
-  2026-10-30 on opencode 2.2.3: a bare `opencode` **attaches** to one background
-  service (`opencode serve --service`, `~/.local/state/opencode/service.json`
-  carries `{url, pid, password}`), and new servers appear only on `--standalone`
-  or `opencode acp` — which has no `--server` flag and therefore always spawns a
-  private `serve --stdio` child. So `acp` (still the default) is the thing that
-  breaks one-server-per-box: N acp workers = N private servers, 2 processes each.
-  `serve` can join the shared one via `AMUX_OPENCODE_SERVICE_URL`, and
-  `opencode service start|stop|status` is the supervisor — amux does not need to
-  build one. What is still true: nothing in amux points workers at it yet.
+- **One server per box, now enforced by amux too.** Measured 2026-10-30 on
+  opencode 2.2.3: a bare `opencode` **attaches** to one background service
+  (`opencode serve --service`, `~/.local/state/opencode/service.json` carries
+  `{url, pid, password}`), and new servers appear only on `--standalone` or
+  `opencode acp` — which has no `--server` flag and therefore always spawns a
+  private `serve --stdio` child. That made `acp`, the old default, the thing
+  breaking one-server-per-box: N acp workers = N private servers, 2 processes
+  each. amux now discovers the registry and defaults to `serve`; the supervisor
+  is opencode's own (`opencode service start|stop|status`), so there is no amux
+  daemon to babysit.
 - **The shared server's spike is the whole box's spike.** Re-measured while
   answering that question: `~5.8 GiB` RSS during a turn, back to `356 MiB` within
   a minute (D1 recorded 1.8–3.6 GB; the real number is larger), with 2.4 GB of

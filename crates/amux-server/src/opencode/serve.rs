@@ -308,6 +308,19 @@ fn http_status(msg: &str) -> Option<u16> {
         .ok()
 }
 
+/// Did this failure mean the SERVER is gone (connection refused, DNS, a body
+/// that never arrived) rather than answering with an error?
+///
+/// The distinction is operational, not cosmetic: an amux process that caches a
+/// session bound to an endpoint that no longer exists fails **every** future
+/// turn, and the shared service does not keep its address — `opencode service
+/// restart` brings up a new process on a new random port with a new password.
+/// Anything with an HTTP status came FROM the server, so the endpoint is alive
+/// and must not be discarded.
+pub fn is_server_gone(error: &ProtocolError) -> bool {
+    matches!(error, ProtocolError::Transport(m) if http_status(m).is_none())
+}
+
 /// How a serve-side [`ProtocolError`] surfaces to the harness (M3.6).
 ///
 /// `structured.rs` only holds the `ProtocolError` by the time it reports a
@@ -427,42 +440,35 @@ impl ServeClient {
         })
     }
 
-    /// Connect to the SHARED service via the env contract:
-    /// `AMUX_OPENCODE_SERVICE_URL` names the endpoint (mandatory — the shared
-    /// service's port is dynamic and guessing it is not a thing),
-    /// `AMUX_OPENCODE_SERVICE_PASSWORD` overrides, else
-    /// `~/.config/opencode/service.json` carries the password. This is the
-    /// explicit shared-service opt-in (decision D1); an amux-owned serve
-    /// bypasses this entirely by handing its captured password to
-    /// [`ServeClient::connect`].
+    /// Connect to the SHARED service: the one `opencode serve --service` this
+    /// box already runs (measured 2026-10-30 — a bare `opencode` is a CLIENT
+    /// of it, and only `--standalone`/`acp` spawn private servers).
+    ///
+    /// Sources, in precedence order:
+    ///
+    /// 1. `AMUX_OPENCODE_SERVICE_URL` (+ `AMUX_OPENCODE_SERVICE_PASSWORD`, else
+    ///    `~/.config/opencode/service.json`) — the explicit override.
+    /// 2. **The registry opencode itself writes**:
+    ///    `~/.local/state/opencode/service.json`, `{id, version, url, pid,
+    ///    password}`. This is what makes the join the DEFAULT instead of a
+    ///    hand-set env, and it is why no password hunting is needed: url and
+    ///    password live in the same measured file. `AMUX_OPENCODE_SERVICE_STATE`
+    ///    relocates it.
+    ///
+    /// An amux-owned serve bypasses this entirely by handing its captured
+    /// password to [`ServeClient::connect`].
     pub fn from_env() -> Result<Self> {
-        let base = std::env::var("AMUX_OPENCODE_SERVICE_URL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| {
-                ProtocolError::Transport(
-                    "serve: AMUX_OPENCODE_SERVICE_URL is not set — the shared-service \
-                     opt-in needs an explicit URL (an amux-owned serve is spawned with \
-                     its password captured from the startup log instead)"
-                        .into(),
-                )
-            })?;
-        let password = std::env::var("AMUX_OPENCODE_SERVICE_PASSWORD")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .or_else(|| {
-                let path =
-                    PathBuf::from(std::env::var("HOME").ok()?).join(".config/opencode/service.json");
-                password_from_service_json(&std::fs::read_to_string(path).ok()?)
-            })
-            .ok_or_else(|| {
-                ProtocolError::Transport(
-                    "serve: no password — set AMUX_OPENCODE_SERVICE_PASSWORD or provide \
-                     ~/.config/opencode/service.json with a password field"
-                        .into(),
-                )
+        let env_url = std::env::var("AMUX_OPENCODE_SERVICE_URL").ok();
+        let env_pw = std::env::var("AMUX_OPENCODE_SERVICE_PASSWORD").ok();
+        let config_pw = service_json_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| password_from_service_json(&t));
+        let registry = registered_shared_service();
+        let (base, password) =
+            pick_shared_service(env_url, env_pw, config_pw, registry).map_err(|why| {
+                ProtocolError::Transport(format!(
+                    "serve: no shared opencode server to join — {why}"
+                ))
             })?;
         Self::connect(base, password)
     }
@@ -570,6 +576,13 @@ impl ServeClient {
         }
     }
 
+    /// The endpoint this client speaks to (`http://host:port`). Exists so the
+    /// protocol can notice that the SHARED service restarted on a different
+    /// port and reopen its session instead of caching a dead endpoint forever.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     /// Does a persisted `ses_…` id still resolve? Probed with the proven
     /// `/message` endpoint: 2xx = alive, 404 = gone (the caller drops the ref
     /// per the M1 dead-ref rule), anything else is a real failure that must
@@ -581,6 +594,23 @@ impl ServeClient {
             200..=299 => Ok(true),
             404 => Ok(false),
             _ => Err(serve_failure("GET", &endpoint, status, &text)),
+        }
+    }
+
+    /// Delete a session. Measured 2026-10-26 (M3.0 spike): `DELETE
+    /// /api/session/{id}` answers ok.
+    ///
+    /// Exists so a throwaway session can be cleaned up instead of littering the
+    /// ONE fleet-wide session database — the shared service means every test
+    /// session is visible to every worker, so leaving them behind is not
+    /// private.
+    pub async fn delete_session(&self, session_id: &str) -> Result<()> {
+        let endpoint = format!("/api/session/{session_id}");
+        let (status, text) = self.request(reqwest::Method::DELETE, &endpoint, None).await?;
+        if (200..=299).contains(&status) {
+            Ok(())
+        } else {
+            Err(serve_failure("DELETE", &endpoint, status, &text))
         }
     }
 
@@ -660,6 +690,138 @@ pub fn password_from_service_json(text: &str) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// The shared `opencode serve --service` endpoint **as opencode itself
+/// registers it** — url and password in one file, which is what lets amux join
+/// the box's single server without a hand-set environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedService {
+    pub url: String,
+    pub password: String,
+    /// The service's pid and version, for the log line only — never for
+    /// identity: a restarted service has a new pid and the same job.
+    pub pid: Option<u64>,
+    pub version: Option<String>,
+}
+
+/// Parse `~/.local/state/opencode/service.json`.
+///
+/// MEASURED on this box, opencode 2.2.3, 2026-10-30:
+/// `{"id": "<36 chars>", "version": "2.2.3", "url": "http://127.0.0.1:49374",
+///   "pid": 3232984, "password": "<43 chars>"}`.
+///
+/// Both `url` and `password` are required and must be non-blank: half a
+/// credential is not a service, and refusing here is what makes the transport
+/// gate fall back to `acp` instead of starting a worker that cannot connect.
+pub fn shared_service_from_state(text: &str) -> Option<SharedService> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let url = v
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let password = v
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(SharedService {
+        url: url.trim_end_matches('/').to_string(),
+        password: password.to_string(),
+        pid: v.get("pid").and_then(Value::as_u64),
+        version: v.get("version").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+fn home_path(relative: &str) -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var("HOME").ok()?).join(relative))
+}
+
+/// `~/.config/opencode/service.json` — the password file the shared service
+/// documents (kept as a fallback source; the registry below supersedes it).
+fn service_json_path() -> Option<PathBuf> {
+    home_path(".config/opencode/service.json")
+}
+
+/// `~/.local/state/opencode/service.json` — opencode's own registry of the
+/// running background service. `AMUX_OPENCODE_SERVICE_STATE` relocates it
+/// (tests, and a state dir that moved).
+fn service_state_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var("AMUX_OPENCODE_SERVICE_STATE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return Some(PathBuf::from(p));
+    }
+    home_path(".local/state/opencode/service.json")
+}
+
+/// The shared service opencode has registered, if its file parses. Reads the
+/// registry only (no env), so callers can tell "registered" from "pinned".
+pub fn registered_shared_service() -> Option<SharedService> {
+    service_state_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| shared_service_from_state(&t))
+}
+
+/// Is there a shared server this process could join?
+///
+/// True when a URL is pinned explicitly OR opencode's registry parses — the
+/// two things [`ServeClient::from_env`] can succeed with. Deliberately a file
+/// read and not a network probe: the transport decision happens on every
+/// operation and must stay free, and an unreachable-but-registered service
+/// still belongs on the `serve` transport so its failure is REPORTED
+/// (`serve_start_failed` classifies it) rather than hidden behind a silent
+/// switch of transport mid-life.
+pub fn shared_service_available() -> bool {
+    let pinned = std::env::var("AMUX_OPENCODE_SERVICE_URL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .is_some();
+    pinned || registered_shared_service().is_some()
+}
+
+/// The precedence rule for "which shared server", factored pure so it is
+/// testable without touching the process environment every parallel test
+/// shares.
+///
+/// 1. An explicit `AMUX_OPENCODE_SERVICE_URL` wins (with
+///    `AMUX_OPENCODE_SERVICE_PASSWORD`, else the documented
+///    `~/.config/opencode/service.json` password) — the operator override.
+/// 2. Otherwise opencode's registry, which carries both halves.
+fn pick_shared_service(
+    env_url: Option<String>,
+    env_password: Option<String>,
+    config_password: Option<String>,
+    registry: Option<SharedService>,
+) -> std::result::Result<(String, String), String> {
+    let nonblank = |v: Option<String>| {
+        v.map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(url) = nonblank(env_url) {
+        let password = nonblank(env_password)
+            .or(config_password)
+            .ok_or_else(|| {
+                format!(
+                    "AMUX_OPENCODE_SERVICE_URL={url} is set but no password was found \
+                     (set AMUX_OPENCODE_SERVICE_PASSWORD, or provide \
+                     ~/.config/opencode/service.json)"
+                )
+            })?;
+        return Ok((url.trim_end_matches('/').to_string(), password));
+    }
+    if let Some(service) = registry {
+        return Ok((service.url, service.password));
+    }
+    Err(
+        "neither AMUX_OPENCODE_SERVICE_URL nor a readable \
+         ~/.local/state/opencode/service.json (is `opencode serve --service` running?)"
+            .to_string(),
+    )
 }
 
 /// Turn outcomes out of a `GET …/message` body — D3's reconciliation path.
@@ -744,6 +906,11 @@ pub struct ServeSession {
 }
 
 impl ServeSession {
+    /// The endpoint this session lives on — see [`ServeClient::base`].
+    pub fn base(&self) -> &str {
+        self.client.base()
+    }
+
     /// Open a session in `cwd`, pinned to `model` when given. A persisted
     /// `resume` id that still resolves continues the same conversation; one
     /// the server has forgotten (404) is DROPPED and reported in
@@ -2384,6 +2551,108 @@ mod tests {
         assert_eq!(password_from_service_json(r#"{}"#), None);
     }
 
+    // ------------------------------------------------------------------
+    // M4 — joining the box's ONE shared server
+    // ------------------------------------------------------------------
+
+    /// The measured registry body, verbatim from this box on 2.2.3
+    /// (2026-10-30) — url and password in one file, which is what removes the
+    /// hand-set env from the default path.
+    const SERVICE_STATE: &str = r#"{"id":"0f6a1c1e-9f4b-4c0e-9c4e-2c1f7c2b9a11","version":"2.2.3","url":"http://127.0.0.1:49374","pid":3232984,"password":"pw-shared-43-chars"}"#;
+
+    #[test]
+    fn the_shared_service_registry_parses_the_measured_shape() {
+        let s = shared_service_from_state(SERVICE_STATE).expect("the measured body must parse");
+        assert_eq!(s.url, "http://127.0.0.1:49374");
+        assert_eq!(s.password, "pw-shared-43-chars");
+        assert_eq!(s.pid, Some(3232984));
+        assert_eq!(s.version.as_deref(), Some("2.2.3"));
+        // A trailing slash would double up in every request path.
+        let slashed = shared_service_from_state(
+            r#"{"url":"http://127.0.0.1:49374/","password":"pw"}"#,
+        )
+        .unwrap();
+        assert_eq!(slashed.url, "http://127.0.0.1:49374");
+        // pid/version are logging details, not requirements.
+        let minimal =
+            shared_service_from_state(r#"{"url":"http://127.0.0.1:1","password":"pw"}"#).unwrap();
+        assert_eq!(minimal.pid, None);
+        assert_eq!(minimal.version, None);
+    }
+
+    /// Half a credential is not a service: refusing here is what makes the
+    /// transport gate fall back to `acp` instead of starting a worker that
+    /// cannot connect.
+    #[test]
+    fn a_registry_without_both_halves_is_not_a_service() {
+        for body in [
+            r#"{"url":"http://127.0.0.1:49374"}"#,
+            r#"{"password":"pw"}"#,
+            r#"{"url":"","password":"pw"}"#,
+            r#"{"url":"http://127.0.0.1:49374","password":"  "}"#,
+            r#"{"url":null,"password":"pw"}"#,
+            "{ not json",
+            "",
+        ] {
+            assert_eq!(
+                shared_service_from_state(body),
+                None,
+                "must not be treated as a joinable service: {body}"
+            );
+        }
+    }
+
+    /// The precedence, as a pure rule (no `set_var`): the explicit
+    /// `AMUX_OPENCODE_SERVICE_URL` wins over the registry, the password may
+    /// come from either documented place, and having none is an error that
+    /// names both.
+    #[test]
+    fn the_endpoint_precedence_is_explicit_env_then_registry() {
+        let registry = shared_service_from_state(SERVICE_STATE);
+        // 1. Explicit URL + explicit password.
+        assert_eq!(
+            pick_shared_service(
+                Some("http://127.0.0.1:9999/".into()),
+                Some("pw-env".into()),
+                Some("pw-config".into()),
+                registry.clone()
+            ),
+            Ok(("http://127.0.0.1:9999".into(), "pw-env".into()))
+        );
+        // 2. Explicit URL, password only in ~/.config/opencode/service.json.
+        assert_eq!(
+            pick_shared_service(
+                Some("http://127.0.0.1:9999".into()),
+                None,
+                Some("pw-config".into()),
+                registry.clone()
+            ),
+            Ok(("http://127.0.0.1:9999".into(), "pw-config".into()))
+        );
+        // 3. Nothing explicit → the registry, which carries both halves.
+        assert_eq!(
+            pick_shared_service(None, None, None, registry.clone()),
+            Ok(("http://127.0.0.1:49374".into(), "pw-shared-43-chars".into()))
+        );
+        // 4. A URL with no password anywhere is an error naming the fix, not a
+        //    silent attempt that 401s later.
+        let err = pick_shared_service(
+            Some("http://127.0.0.1:9999".into()),
+            None,
+            None,
+            registry,
+        )
+        .unwrap_err();
+        assert!(err.contains("AMUX_OPENCODE_SERVICE_PASSWORD"), "{err}");
+        // 5. Nothing at all → the reason names both sources.
+        let err = pick_shared_service(None, Some("  ".into()), None, None).unwrap_err();
+        assert!(err.contains("service.json"), "{err}");
+        // 6. A blank URL is not an override (whitespace never becomes a URL),
+        //    and the failure names the registry rather than an empty endpoint.
+        let err = pick_shared_service(Some("   ".into()), Some("pw".into()), None, None).unwrap_err();
+        assert!(err.contains("service.json"), "{err}");
+    }
+
     #[test]
     fn delivery_serializes_to_the_measured_strings() {
         assert_eq!(Delivery::Steer.as_str(), "steer");
@@ -3380,5 +3649,54 @@ mod tests {
             Some(WorkerEvent::Failed(f)) => assert!(!f.retryable, "{f:?}"),
             other => panic!("NoSession → Failed{{retryable:false}}, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // M4 — recovering from a restarted shared service
+    // ------------------------------------------------------------------
+
+    /// Only a failure that never reached the server may discard the cached
+    /// endpoint. An answer FROM the server — even a 500 — proves the endpoint
+    /// is alive, and dropping the session over it would churn `ses_` refs for
+    /// no reason.
+    #[test]
+    fn only_a_missing_status_means_the_server_is_gone() {
+        let refused = ProtocolError::Transport(transport_failure_msg(
+            "GET",
+            "/api/session/ses_x/message",
+            "error sending request for url (http://127.0.0.1:1/api/session/ses_x/message)",
+        ));
+        assert!(is_server_gone(&refused), "{refused}");
+        // A timeout carries no status either: the endpoint did not answer.
+        let timed_out = ProtocolError::Transport(transport_failure_msg(
+            "GET",
+            "/api/session/ses_x/message",
+            "operation timed out",
+        ));
+        assert!(is_server_gone(&timed_out));
+
+        for (status, body) in [
+            (500u16, r#"{"message":"boom"}"#),
+            (404, r#"{"_tag":"SessionNotFoundError"}"#),
+            (409, BUSY_BODY),
+        ] {
+            let answered = serve_failure("GET", "/api/session/ses_x/message", status, body);
+            assert!(
+                !is_server_gone(&answered),
+                "HTTP {status} came FROM the server: {answered}"
+            );
+        }
+        assert!(!is_server_gone(&ProtocolError::Rejected("busy".into())));
+        assert!(!is_server_gone(&ProtocolError::NoSession("wrk_1".into())));
+    }
+
+    #[test]
+    fn the_client_reports_the_endpoint_it_speaks_to() {
+        let client = ServeClient::connect("http://127.0.0.1:49374/", "pw").unwrap();
+        assert_eq!(
+            client.base(),
+            "http://127.0.0.1:49374",
+            "the trailing slash must not double up in every request path"
+        );
     }
 }

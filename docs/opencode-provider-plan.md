@@ -196,9 +196,16 @@ A blank value is *no* value: whitespace never becomes a model name.
 
 ### M3 — native HTTP transport (`opencode serve`)
 
-**STATUS: BUILT. Opt-in via `AMUX_OPENCODE_TRANSPORT=serve`; the default stays `acp`.**
-Measured record: `docs/serve-spike-results.md`. Code: `opencode/serve.rs` (client, SSE
-hub, typed errors) wired in `opencode/structured.rs`.
+**STATUS: BUILT, and `serve` is the DEFAULT when the box has a shared server.**
+Measured record: `docs/serve-spike-results.md`. Code: `opencode/serve.rs` (client,
+SSE hub, typed errors) wired in `opencode/structured.rs`.
+
+The default is not a blind flip: an un-pinned OpenCode worker takes `serve` when
+amux can discover the single `opencode serve --service` that opencode itself
+runs (`~/.local/state/opencode/service.json` → `{url, pid, password}`), and
+falls back to `acp` with one logged verdict on a box where nothing is
+registered. `AMUX_OPENCODE_TRANSPORT=run|acp` is the escape hatch and always
+wins; `AMUX_OPENCODE_ACP=0` still means `run`.
 
 Why: M2 ended on a measured wall — ACP rejects a second concurrent prompt with
 `-32603 "Session already has an active ACP prompt"`, so **true mid-turn steering is
@@ -235,21 +242,33 @@ Two measured limits, stated rather than buried:
   spawn output. Auth is HTTP Basic `opencode:<password>` — Bearer, empty-user Basic and
   `?password=` all measure 401.
 
-This is why `serve` is **not** the default yet — but the reason narrowed on
-2026-10-30, when the owner asked whether a freshly started `opencode` shares the
-fleet's server. Measured: it **does** — a bare `opencode` is a client of the one
-background service, and only `--standalone` or `opencode acp` spawns a private
-one. That makes the default `acp` a **cost** decision rather than a caution: every
-acp worker pays for a private `serve --stdio` child (2 processes each) beside the
-shared service that already exists. Flipping still wants peer verification and the
-two one-probe gaps closed (busy-response HTTP status, and what a 404 on a dead
-`ses_` ref means from the serve path), and it needs `AMUX_OPENCODE_SERVICE_URL`
-pointed at the running service. That join already exists — `ServeClient::from_env()`
-takes the URL from that env var and the password from
-`AMUX_OPENCODE_SERVICE_PASSWORD` or `~/.config/opencode/service.json` — but the URL
-is **hand-set**, which is the actual remaining gap: the registry file below has
-`{url, pid, password}` together, so reading it would remove the manual step.
-Until then: `acp` by default, `serve` on request.
+This is why the flip needed care, and what it now is. The plan's D2 said the flip
+happens once a live smoke proves a real worker turn end to end; that smoke passed
+on 2026-10-30 (`outcome=succeeded`, 131 SSE frames, a steered message in the
+history — see the spike record). The owner then asked whether a freshly started
+`opencode` shares the fleet's server, and the measurement answered it: **it does**
+— a bare `opencode` is a client of the one background service, and only
+`--standalone` or `opencode acp` spawns a private one. That made the default `acp`
+a **cost** decision rather than a caution: every acp worker paid for a private
+`serve --stdio` child (2 processes each) beside a shared service that already
+existed.
+
+So the default is now resolved, not flipped blindly:
+
+```
+AMUX_OPENCODE_TRANSPORT set       → that value wins (run | acp | serve)
+AMUX_OPENCODE_ACP=0               → run
+shared service discoverable       → serve      ← the normal case on this box
+otherwise                         → acp, + ONE logged verdict naming why
+```
+
+Discovery reads `~/.local/state/opencode/service.json`, which carries `url` and
+`password` together, so no hand-set variable is needed; `AMUX_OPENCODE_SERVICE_URL`
+still overrides. Two facts made the flip safe, both measured at zero token cost:
+session refs are **portable across serve instances** (the shared service answers
+`200` for a `ses_` a session my dedicated smoke serve created — same
+`opencode.db`), and a dead ref is a clean `404 SessionNotFoundError`, which is
+what `session_exists` already assumed.
 
 ---
 

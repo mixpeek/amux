@@ -438,10 +438,11 @@ pub struct StructuredCliProtocol {
     /// decides via [`transport_from_env`]; tests pin it explicitly so M1 stays
     /// on `run` and M2 on `acp` regardless of the host's env.
     transport: Option<Transport>,
-    /// The serve client to use. `None` = read the shared-service opt-in from
-    /// the environment ([`serve::ServeClient::from_env`]); set it when the
-    /// fleet owns its serve (D1: the password is captured from the spawn log
-    /// and handed to [`serve::ServeClient::connect`]).
+    /// The serve client to use. `None` = join the box's shared server via
+    /// [`serve::ServeClient::from_env`] (explicit env, else the registry
+    /// opencode writes — M4); set it when the fleet owns its serve (D1: the
+    /// password is captured from the spawn log and handed to
+    /// [`serve::ServeClient::connect`]).
     serve_client: Option<serve::ServeClient>,
     /// M3: ONE hub and ONE event reader for the whole protocol (D1: one
     /// reader per serve process, never one per worker). Both are created
@@ -500,25 +501,65 @@ impl Transport {
 
 /// The transport `AMUX_OPENCODE_TRANSPORT` asks for (`run` | `acp` | `serve`).
 ///
-/// **Default `acp`**, deliberately: plan D2 and the active context both say the
-/// default flips to `serve` only after M3.5's own live smoke, so `serve` stays
-/// an explicit opt-in until then. An unknown value falls back to `acp` **and
-/// logs once** — a typo that silently pinned every worker to the wrong
-/// transport would otherwise be invisible in the log (two-fix rule).
+/// **Default: `serve` when this box has a shared server to join, `acp`
+/// otherwise.** That is the one-server-per-box rule made automatic (measured
+/// 2026-10-30: a bare `opencode` is a CLIENT of the single
+/// `opencode serve --service`, and only `--standalone`/`acp` spawn private
+/// servers — `acp` has no `--server` flag, so it always pays for its own).
+///
+/// The fallback is bounded and self-announcing: a box with no reachable
+/// registry keeps working exactly as it did before, and the reason is logged
+/// ONCE with a verdict (the two-fix rule: a silent switch of transport is a
+/// diagnosis nobody can make). An explicit value still wins over everything —
+/// that is the escape hatch that makes this flip reversible without a rebuild.
 pub fn transport_from_env() -> Transport {
-    match std::env::var("AMUX_OPENCODE_TRANSPORT") {
-        Ok(raw) => transport_from_var(Some(raw.as_str())),
-        // The M2 escape hatch keeps working: `AMUX_OPENCODE_ACP=0` still sends
-        // OpenCode back to the M1 `run` transport, which the module docs promise.
-        Err(_) if !acp_transport_enabled() => Transport::Run,
-        Err(_) => Transport::Acp,
+    if let Ok(raw) = std::env::var("AMUX_OPENCODE_TRANSPORT") {
+        return transport_from_var(Some(raw.as_str()));
     }
+    // The M2 escape hatch keeps working: `AMUX_OPENCODE_ACP=0` still sends
+    // OpenCode back to the M1 `run` transport, which the module docs promise.
+    if !acp_transport_enabled() {
+        return Transport::Run;
+    }
+    let available = serve::shared_service_available();
+    if !available {
+        warn_no_shared_service();
+    }
+    transport_default(available)
+}
+
+/// The un-pinned transport, as a pure function of "is there a shared server".
+/// Split out for the same reason [`transport_from_var`] is: the rule gets
+/// tested without `set_var`, which every parallel test would otherwise share.
+pub fn transport_default(shared_service_available: bool) -> Transport {
+    if shared_service_available {
+        Transport::Serve
+    } else {
+        Transport::Acp
+    }
+}
+
+/// One warn per process, not per prompt: `transport_from_env` runs on every
+/// operation, so a per-call log would bury the fleet in the same line.
+fn warn_no_shared_service() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            verdict = "no shared `opencode serve` registered; opencode workers stay on acp \
+                       and spawn a private server each",
+            hint = "run `opencode service start`, or set AMUX_OPENCODE_SERVICE_URL, or pin \
+                    AMUX_OPENCODE_TRANSPORT=acp to silence this",
+            "opencode transport gate"
+        );
+    });
 }
 
 /// [`transport_from_env`] as a pure function of the raw value — factored out
 /// for the same reason [`resolve_model`] is: a rule that needs `set_var` to be
 /// tested is a rule that gets tested against every other test's environment.
-/// `None` means unset.
+/// `None` means "no explicit pin", which production never passes (the un-pinned
+/// case is [`transport_default`]); it stays `Acp` so the historical meaning of
+/// this function does not move under its callers.
 pub fn transport_from_var(raw: Option<&str>) -> Transport {
     let Some(raw) = raw else {
         return Transport::Acp;
@@ -990,9 +1031,10 @@ impl StructuredCliProtocol {
     // ------------------------------------------------------------------
 
     /// The client every serve call goes through: a pinned one when the fleet
-    /// owns its serve (D1 — the password captured from the spawn log), else
-    /// the explicit shared-service opt-in from the environment. Failing here
-    /// names both options instead of failing later as an opaque connect error.
+    /// owns its serve (D1 — the password captured from the spawn log), else the
+    /// box's shared server (M4: explicit env, else opencode's own registry —
+    /// which is why no hand-set variable is needed). Failing here names every
+    /// source instead of failing later as an opaque connect error.
     fn serve_client(&self) -> Result<serve::ServeClient> {
         if let Some(client) = &self.serve_client {
             return Ok(client.clone());
@@ -1031,8 +1073,29 @@ impl StructuredCliProtocol {
         shared: &Arc<WorkerShared>,
     ) -> Result<Arc<serve::ServeSession>> {
         let mut slot = shared.serve.lock().await;
-        if let Some(session) = slot.as_ref() {
-            return Ok(session.clone());
+        // M4: the SHARED service can be restarted, and the replacement binds a
+        // new random port with a new password. A cached session is bound to the
+        // endpoint it was opened against, so reusing it after that is a
+        // permanent failure with no way out. Compare first, and reopen when the
+        // endpoint moved — resuming by `ses_` ref keeps the conversation, since
+        // refs are portable between serve instances (measured 2026-10-30: the
+        // shared service answers 200 for a session a different serve created).
+        let cached = slot.clone();
+        if let Some(session) = cached {
+            let discovered = self.serve_client().ok().map(|c| c.base().to_string());
+            let stale = matches!(&discovered, Some(base) if base != session.base());
+            if stale {
+                tracing::warn!(
+                    worker = %shared.worker,
+                    cached_endpoint = session.base(),
+                    discovered_endpoint = discovered.as_deref().unwrap_or("-"),
+                    verdict = "serve endpoint changed (service restarted); reopening the session",
+                    "serve session endpoint moved"
+                );
+                *slot = None;
+            } else {
+                return Ok(session);
+            }
         }
         let client = self.serve_client()?;
         let hub = self.serve_hub()?;
@@ -1229,6 +1292,24 @@ impl StructuredCliProtocol {
         what: &str,
     ) -> ProtocolError {
         shared.seen_keys.lock().unwrap().remove(key);
+        // M4: a failure with no HTTP status means the SERVER is gone — the
+        // cached session is bound to an endpoint that no longer answers, so
+        // keeping it would fail every future turn. Drop it and the next attempt
+        // rediscovers (and resumes by `ses_` ref). Best-effort by design: if the
+        // slot is held, an acquisition is already in flight and will do this.
+        if serve::is_server_gone(&error) {
+            if let Ok(mut slot) = shared.serve.try_lock() {
+                if slot.take().is_some() {
+                    tracing::warn!(
+                        worker = %shared.worker,
+                        stage = what,
+                        verdict = "serve server unreachable; dropped the cached session so the \
+                                   next turn rediscovers the endpoint",
+                        "serve session cache cleared"
+                    );
+                }
+            }
+        }
         // M3.6: classify BEFORE reporting. `None` means the server REJECTED
         // us (a `SessionBusyError` while our own state said idle) — not a
         // failure, so no `Failed` event goes out; the queue's turn-boundary
@@ -1311,9 +1392,14 @@ fn spawn_serve_turn_watcher(
         let started = std::time::Instant::now();
         let timeout = serve_turn_timeout();
         let mut warned = false;
+        // M4: consecutive "the server is not answering" reads. One blip must
+        // not kill a healthy turn, but a dead endpoint must not be polled for
+        // 30 minutes either — see the fail-fast below.
+        let mut gone_strikes = 0u32;
         loop {
             match session.turn_outcomes().await {
                 Ok(outcomes) => {
+                    gone_strikes = 0;
                     if outcomes.len() > baseline {
                         // `data` is newest-first (measured on 2.2.1), so the
                         // first row is the one just written.
@@ -1338,6 +1424,53 @@ fn spawn_serve_turn_watcher(
                     }
                 }
                 Err(e) => {
+                    // M4: if the SERVER is gone, spinning until the 30-minute
+                    // turn timeout would report "turn exceeded 30m" — a
+                    // diagnosis pointing at the model when the truth is the
+                    // process. Three consecutive refusals (~3s at the 1s poll)
+                    // is enough to call it: one blip must not kill a healthy
+                    // turn, and a dead endpoint must not be polled for half an
+                    // hour.
+                    if serve::is_server_gone(&e) {
+                        gone_strikes += 1;
+                        if gone_strikes < 3 {
+                            tracing::warn!(
+                                worker = %shared.worker,
+                                turn = %turn,
+                                strike = gone_strikes,
+                                error = %e,
+                                verdict = "serve server not answering; retrying the outcome read \
+                                           before failing the turn",
+                                "serve outcome read failed"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                        tracing::error!(
+                            worker = %shared.worker,
+                            turn = %turn,
+                            error = %e,
+                            elapsed_s = started.elapsed().as_secs(),
+                            verdict = "serve server unreachable mid-turn; turn failed now \
+                                       (retryable) instead of polling to the timeout",
+                            "serve turn lost its server"
+                        );
+                        if let Ok(mut slot) = shared.serve.try_lock() {
+                            *slot = None;
+                        }
+                        shared.emit(WorkerEvent::Failed(Failure {
+                            reason: format!("serve server unreachable: {e}"),
+                            retryable: true,
+                        }));
+                        shared.emit(WorkerEvent::TurnCompleted(
+                            amux_core::protocol::TurnResult {
+                                turn_id: turn,
+                                outcome: "failed: serve server unreachable".to_string(),
+                            },
+                        ));
+                        shared.set_state(AgentState::Idle);
+                        return;
+                    }
                     if !warned {
                         warned = true;
                         tracing::warn!(worker = %shared.worker, error = %e,
@@ -2977,6 +3110,46 @@ mod tests {
         assert_eq!(transport_from_var(Some("srv")), Transport::Acp);
     }
 
+    /// M4's rule, as the pure function production uses: opencode workers join
+    /// the box's ONE shared server when it is registered, and stay on `acp`
+    /// only when there is nothing to join. Pure so no test needs `set_var` —
+    /// the environment is shared by every parallel test in the binary.
+    #[test]
+    fn the_unpinned_transport_joins_the_shared_server_when_one_exists() {
+        assert_eq!(transport_default(true), Transport::Serve);
+        assert_eq!(transport_default(false), Transport::Acp);
+
+        // An explicit pin still beats both — that is the escape hatch that
+        // makes this default reversible without a rebuild.
+        assert_eq!(transport_from_var(Some("acp")), Transport::Acp);
+        assert_eq!(transport_from_var(Some("run")), Transport::Run);
+        assert_eq!(transport_from_var(Some("serve")), Transport::Serve);
+    }
+
+    /// This box runs the registry opencode writes, so the discovery path is
+    /// exercised against a REAL file rather than only the pure parser — the
+    /// thing a parser unit test cannot catch is the path itself being wrong.
+    /// Skipped (not failed) where nothing is registered, so CI on a box with no
+    /// opencode stays green without pretending it proved anything.
+    #[test]
+    fn this_box_discovers_the_service_opencode_registered() {
+        let Some(service) = serve::registered_shared_service() else {
+            eprintln!("no shared opencode service registered here; discovery not exercised");
+            return;
+        };
+        assert!(
+            service.url.starts_with("http://127.0.0.1:"),
+            "the registry must yield a loopback URL, got {}",
+            service.url
+        );
+        assert!(!service.password.is_empty());
+        // And the gate must agree with the discovery it is built on.
+        assert_eq!(
+            transport_default(serve::shared_service_available()),
+            Transport::Serve
+        );
+    }
+
     /// Only OpenCode can leave the `run` transport: `serve` and `acp` are
     /// unreachable for every other provider, no matter how the gate is pinned.
     #[test]
@@ -3372,5 +3545,132 @@ mod tests {
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle, "{kinds:?}");
         assert!(session_id.starts_with("ses_"), "{session_id}");
+    }
+
+    // ------------------------------------------------------------------
+    // M4 — a worker joins the ONE shared server, by discovery
+    // ------------------------------------------------------------------
+
+    /// M4's done-condition on real hardware: an OpenCode worker with **no
+    /// transport pin and no serve client** resolves to `serve` from the box's
+    /// own registry and runs a real turn against the single
+    /// `opencode serve --service` — not a private child of its own.
+    ///
+    /// Deliberately different from the M3.5 smoke: that one took
+    /// `AMUX_SMOKE_URL`/`AMUX_SMOKE_PASSWORD` for a DEDICATED serve it started
+    /// itself. Discovering the endpoint is the thing under test here, so this
+    /// takes neither. `AMUX_SMOKE_MODEL` still pins the model (the fleet default
+    /// is a free model whose quota can be spent).
+    ///
+    /// It cleans up after itself with `DELETE /api/session/{id}`: on a SHARED
+    /// service every session is visible to every worker, so a leftover smoke
+    /// session is litter in the fleet's one database, not a private mess.
+    #[tokio::test]
+    #[ignore = "live: needs the shared `opencode serve --service` and provider quota"]
+    async fn a_worker_joins_the_shared_service_by_discovery_and_completes_a_turn() {
+        let Some(service) = serve::registered_shared_service() else {
+            eprintln!("LIVE SMOKE NOT RUN: no shared opencode service registered on this box");
+            return;
+        };
+        // The gate and the discovery must agree BEFORE a worker is registered:
+        // an un-pinned worker on this box takes `serve`, and that decision is
+        // the whole point of M4.
+        assert_eq!(
+            transport_default(serve::shared_service_available()),
+            Transport::Serve,
+            "a registered service must make serve the un-pinned default"
+        );
+
+        let client = serve::ServeClient::from_env()
+            .expect("discovery (registry → url + password) must produce a client");
+        let cwd = std::env::temp_dir().join("m4-shared-smoke-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // NO with_transport / with_serve_client: this is the un-pinned path.
+        let proto = StructuredCliProtocol::new();
+        let w = worker_id("SH001");
+        let smoke_model = std::env::var("AMUX_SMOKE_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd,
+                binary: None,
+                model: smoke_model.clone(),
+                conversation: None,
+            },
+        );
+        eprintln!(
+            "smoke: shared service {} (pid {:?}, v{:?}), model = {}",
+            service.url,
+            service.pid,
+            service.version,
+            smoke_model.unwrap_or_else(|| format!(
+                "{} (fleet default)",
+                crate::opencode::default_model()
+            ))
+        );
+        let mut rx = proto.events(&w);
+
+        // One word of work: this smoke proves the JOIN, not endurance.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Reply with exactly: SHARED-OK".to_string(),
+                    idempotency_key: "m4-shared-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit a turn on the shared service");
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(240)).await;
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        let outcome = evs
+            .iter()
+            .find_map(|e| match e {
+                WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+                _ => None,
+            })
+            .expect("TurnCompleted must arrive: the watcher reads /message");
+        eprintln!("smoke: events = {} total, outcome = {outcome}", evs.len());
+
+        let shared = proto.shared(&w).expect("registered worker");
+        let conversation = shared.conversation.lock().unwrap().clone();
+        let session_id =
+            conversation.expect("the ses_ ref must be captured on session acquisition");
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+
+        // The session must be readable on the SERVICE WE DISCOVERED — that is
+        // what proves the ref belongs to the fleet's one server rather than to
+        // a private child that would vanish with this process.
+        let visible = client
+            .session_exists(&session_id)
+            .await
+            .expect("the shared service must answer for the session");
+        let cleanup = client.delete_session(&session_id).await;
+        assert!(
+            visible,
+            "the turn's session must live on the discovered service ({session_id})"
+        );
+
+        match (outcome.as_str(), cleanup) {
+            ("succeeded", Ok(())) => {
+                eprintln!(
+                    "LIVE SMOKE VERDICT: worker joined the shared server and the turn succeeded"
+                );
+            }
+            ("succeeded", Err(e)) => {
+                // The turn is the claim; a failed cleanup is reported so it can
+                // be swept, not silently ignored.
+                eprintln!("LIVE SMOKE VERDICT: turn succeeded on the shared server; CLEANUP FAILED: {e}");
+            }
+            (other, _) => panic!(
+                "the shared-service turn did not succeed: outcome={other}, events={kinds:?}"
+            ),
+        }
     }
 }
