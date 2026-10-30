@@ -3683,6 +3683,185 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // M8 — a restarted server: fail fast, then reconnect and RESUME
+    // ------------------------------------------------------------------
+
+    /// Spawn a dedicated `opencode serve` whose password and port are chosen
+    /// here, so a test can restart it on a DIFFERENT port without touching the
+    /// fleet's shared service. `OPENCODE_PASSWORD` is honoured (measured
+    /// 2026-10-30), which is why no startup log has to be parsed.
+    fn spawn_serve(port: u16, password: &str) -> std::process::Child {
+        std::process::Command::new("opencode")
+            .env("OPENCODE_PASSWORD", password)
+            .args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a dedicated opencode serve")
+    }
+
+    async fn wait_until_listening(port: u16) {
+        for _ in 0..60 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("dedicated serve on :{port} never started listening");
+    }
+
+    /// Point the registry opencode would write at OUR server. This is the same
+    /// file the production path reads, so the test exercises discovery — not a
+    /// pinned client, which could never notice the endpoint moving.
+    fn write_registry(path: &std::path::Path, port: u16, password: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"id":"test","version":"test","url":"http://127.0.0.1:{port}","pid":0,"password":"{password}"}}"#
+            ),
+        )
+        .expect("write the registry the discovery path reads");
+    }
+
+    /// The one behaviour never run live before this test: the server the worker
+    /// is talking to RESTARTS mid-turn. Two things must be true, and only one of
+    /// them is obvious:
+    ///
+    /// 1. the turn must END — fast, with a retryable failure. Polling a dead
+    ///    endpoint until the 30-minute turn timeout would report "turn exceeded
+    ///    30m", which blames the model for a dead process;
+    /// 2. the NEXT turn must work, on the SAME `ses_`. The cached session is
+    ///    bound to the old endpoint, so this is the reopen-by-ref path: refs are
+    ///    portable between serve instances (measured), so continuity survives a
+    ///    restart instead of forking the conversation.
+    ///
+    /// Caller sets `AMUX_OPENCODE_SERVICE_STATE` (the registry to own) and
+    /// `AMUX_SMOKE_MODEL` (a paid model; the fleet default's free quota runs
+    /// out). `#[ignore]`d because it spawns processes and spends tokens.
+    #[tokio::test]
+    #[ignore = "live: spawns and restarts a dedicated `opencode serve`"]
+    async fn a_serve_turn_fails_fast_then_resumes_after_the_server_restarts() {
+        let (Ok(state), Ok(model)) = (
+            std::env::var("AMUX_OPENCODE_SERVICE_STATE"),
+            std::env::var("AMUX_SMOKE_MODEL"),
+        ) else {
+            eprintln!(
+                "RESTART SMOKE NOT RUN: set AMUX_OPENCODE_SERVICE_STATE and AMUX_SMOKE_MODEL"
+            );
+            return;
+        };
+        let state = std::path::PathBuf::from(state);
+        let (port1, port2) = (49_971u16, 49_972u16);
+        let (pw1, pw2) = (
+            "restart-smoke-pw-one-0123456789abcdefg",
+            "restart-smoke-pw-two-0123456789abcdefg",
+        );
+
+        let mut first = spawn_serve(port1, pw1);
+        wait_until_listening(port1).await;
+        write_registry(&state, port1, pw1);
+
+        // NO transport pin, NO pinned client: an un-pinned worker discovers the
+        // registry, which is exactly the production shape.
+        let proto = StructuredCliProtocol::new();
+        let w = worker_id("RS001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: Some(model),
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+
+        // Long enough to still be running when the restart lands.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Write a 1200-word essay about tides into essay.txt. Do not stop early."
+                        .to_string(),
+                    idempotency_key: "restart-smoke-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit the long turn");
+        tokio::time::sleep(Duration::from_secs(8)).await;
+
+        // --- the restart: kill it, bring one up on a DIFFERENT port, rewrite the
+        // registry the way opencode would.
+        first.kill().ok();
+        let _ = first.wait();
+        let mut second = spawn_serve(port2, pw2);
+        wait_until_listening(port2).await;
+        write_registry(&state, port2, pw2);
+        let restarted_at = std::time::Instant::now();
+        eprintln!("smoke: server restarted on :{port2} (was :{port1})");
+
+        // 1. The turn must END quickly. 90s is generous for 3 strikes at a 1s
+        // poll; the failure this guards against takes 30 MINUTES.
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(90)).await;
+        let took = restarted_at.elapsed();
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        let outcome = evs.iter().find_map(|e| match e {
+            WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+            _ => None,
+        });
+        eprintln!("smoke: turn ended after {:.1}s, outcome = {outcome:?}", took.as_secs_f64());
+        eprintln!("smoke: events = {kinds:?}");
+        assert!(
+            outcome.is_some(),
+            "the turn must CLOSE after the server vanished, not hang: {kinds:?}"
+        );
+        assert!(
+            took < Duration::from_secs(90),
+            "the turn must fail fast on a dead endpoint, took {took:?}"
+        );
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+
+        // 2. The NEXT turn works, on the SAME conversation.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Reply with exactly: RESUMED-OK".to_string(),
+                    idempotency_key: "restart-smoke-2".to_string(),
+                },
+            )
+            .await
+            .expect("the recovered worker must admit a new turn");
+        let evs2 = collect_until_terminal(&mut rx, Duration::from_secs(120)).await;
+        let kinds2: Vec<_> = evs2.iter().map(kind).collect();
+        let outcome2 = evs2.iter().find_map(|e| match e {
+            WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+            _ => None,
+        });
+        eprintln!("smoke: post-restart outcome = {outcome2:?}");
+        assert_eq!(
+            outcome2.as_deref(),
+            Some("succeeded"),
+            "the turn after the restart must succeed: {kinds2:?}"
+        );
+
+        let shared = proto.shared(&w).expect("registered worker");
+        let session = shared.conversation.lock().unwrap().clone();
+        let session = session.expect("a session ref must exist after the restart");
+        assert!(session.starts_with("ses_"), "{session}");
+        eprintln!("smoke: RESUMED on {session}");
+
+        second.kill().ok();
+        let _ = second.wait();
+        let _ = std::fs::remove_file(&state);
+        eprintln!(
+            "LIVE SMOKE VERDICT: restart recovery proven — failed fast, then resumed the same session"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // M6 — boundaries.toml answers a serve permission ask
     // ------------------------------------------------------------------
 
