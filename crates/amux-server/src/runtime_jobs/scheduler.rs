@@ -2358,7 +2358,8 @@ impl LiveDeliverer {
                 return RunOutcome::ShellError { note: format!("exit {code} [wake] {why}"), output };
             }
         };
-        let guard = format!("sched:{}", sched.id());
+        // `:wake`: each wake is a distinct message, never folded into the last (AF-1047).
+        let guard = format!("sched:{}{}", sched.id(), crate::api::session_verbs::WAKE_GUARD_SUFFIX);
         let started = std::time::Instant::now();
         let (d, attempts) = shell_wake_with_retry(shell_wake_attempts(), std::time::Duration::from_secs(shell_wake_backoff_s()), || {
             crate::api::session_verbs::deliver_automated(&self.state, &session, &text, &guard)

@@ -9446,12 +9446,26 @@ fn steer_row_source(conn: &rusqlite::Connection, id: &str) -> (Option<String>, O
 /// noticed later.
 const NON_COALESCING_GUARDS: &[&str] = &["board-progress"];
 
+/// The suffix the scheduler puts on a `wake` delivery's guard
+/// (`sched:<id>:wake`). A wake is the text a shell schedule PRINTED for one
+/// event, and the script closed that event before printing it, so nothing will
+/// ever send it again: it carries content, like a board note.
+///
+/// MEASURED (AF-1047, 2026-10-30). SCHED-917's 09:43:44Z run delivered "W-a69b53
+/// fired: ... cancelled"; the lane was mid-turn, so it waited under
+/// `sched:SCHED-917`. The 09:47:57Z run's "W-425051 EXPIRED" then rewrote that
+/// row in place (queued_at 09:43:46, text from 09:47), and the lane never
+/// learned its watched CI run had been cancelled. The suffix keeps the
+/// `sched:` prefix, so `is_schedule_guard` and the isolation gate still treat it
+/// as the owner's schedule.
+pub(crate) const WAKE_GUARD_SUFFIX: &str = ":wake";
+
 /// Whether `guard` names a content-bearing producer (see
 /// [`NON_COALESCING_GUARDS`]). Guards stay non-empty for these, so the isolation
 /// gate above still refuses them into a raw-agent lane — the coalescing is what
 /// is switched off, not the producer identity.
 fn non_coalescing(guard: &str) -> bool {
-    NON_COALESCING_GUARDS.contains(&guard)
+    NON_COALESCING_GUARDS.contains(&guard) || (is_schedule_guard(guard) && guard.ends_with(WAKE_GUARD_SUFFIX))
 }
 
 /// py:8595 _steer_enqueue — durable queue row + message.queued event.
@@ -53808,6 +53822,27 @@ mod steer_coalescing_tests {
             got.contains(&"note two: the verdict".to_string()),
             "and so did the second"
         );
+    }
+
+    /// AF-1047: two wake events from one schedule, both pending for a lane
+    /// mid-turn, are two messages. The plain `sched:` guard (a recurring prompt
+    /// fire) still coalesces: that is the control.
+    #[tokio::test]
+    async fn two_wakes_from_one_schedule_both_survive_until_delivery() {
+        let (st, _d) = store().await;
+        let wake = format!("sched:SCHED-917{WAKE_GUARD_SUFFIX}");
+        assert!(is_schedule_guard(&wake), "a wake is still the owner's schedule");
+        steer_enqueue_store(&st, "lane", "W-a69b53 fired: cancelled", &wake, "").await.unwrap();
+        steer_enqueue_store(&st, "lane", "W-425051 EXPIRED unfired", &wake, "").await.unwrap();
+        let got = pending(&st, "lane");
+        assert_eq!(got.len(), 2, "both wakes must be pending, got {got:?}");
+        assert!(got.contains(&"W-a69b53 fired: cancelled".to_string()), "the FIRST wake survived");
+        steer_enqueue_store(&st, "lane", "daily audit, fire 1", "sched:SCHED-773", "").await.unwrap();
+        steer_enqueue_store(&st, "lane", "daily audit, fire 2", "sched:SCHED-773", "").await.unwrap();
+        let got = pending(&st, "lane");
+        assert_eq!(got.len(), 3, "two wakes plus ONE coalesced prompt fire, got {got:?}");
+        assert!(got.contains(&"daily audit, fire 2".to_string()) && !got.contains(&"daily audit, fire 1".to_string()),
+            "a recurring prompt fire still coalesces to its newest text: {got:?}");
     }
 
     /// CONTROL 1, and the reason this is an allowlist rather than a deletion:
