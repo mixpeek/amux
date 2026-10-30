@@ -167,7 +167,7 @@ responder() { # args passed through to host-responder.sh
   if [ -f "$sib" ]; then bash "$sib" "$@"; return; fi
   # The schedule runs a snapshot of this file from a temp path, so the sibling
   # is not beside it: run the committed responder the same way.
-  snap=$(mktemp -t host-responder) || return
+  snap=$(mktemp "${TMPDIR:-/tmp}/host-responder.XXXXXX") || return
   if git -C "${AMUX_REPO_DIR:-$HOME/Dev/amux}" show origin/main:scripts/host-responder.sh > "$snap" 2>/dev/null; then
     bash "$snap" "$@"
   else
