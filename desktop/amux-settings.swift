@@ -79,6 +79,7 @@ struct ServerWindows: Codable {
     var windows: [SavedWindow]
     var savedBy: String?
     var savedAt: Double
+    var server: String? = nil   // the sending Mac's address for this server (amux-rehome.swift)
 }
 
 /// The server's copy of every saved workspace (prefs key desktop_workspaces).
@@ -94,6 +95,10 @@ struct Layout: Codable {
     var windows: [SavedWindow]
     var pins: [SavedPin]?
     var savedAt: Double
+    /// The address the saving Mac reached the server at (originKey), so another
+    /// Mac moves those tabs to its own address for it (amux-rehome.swift).
+    /// Absent in a workspace saved before 2026-10-29.
+    var server: String? = nil
 }
 
 // ── Layouts ──
@@ -113,7 +118,8 @@ extension AppDelegate {
             guard let self = self else { return }
             var c = loadConfig()
             var layouts = c.layouts ?? []
-            let l = Layout(name: trimmed, windows: windows, pins: self.snapshotPins(), savedAt: Date().timeIntervalSince1970)
+            let l = Layout(name: trimmed, windows: windows, pins: self.snapshotPins(), savedAt: Date().timeIntervalSince1970,
+                           server: self.serverURL.flatMap(originKey))
             if let i = layouts.firstIndex(where: { $0.name == trimmed }) { layouts[i] = l } else { layouts.append(l) }
             c.layouts = layouts
             saveConfig(c)
@@ -125,6 +131,47 @@ extension AppDelegate {
         }
     }
 
+    /// The saved windows with every tab, pane and pane tab on the saving Mac's
+    /// server moved to this Mac's address for it (amux-rehome.swift). Logs how
+    /// many moved, so a workspace that opens on the wrong server says so.
+    func rehomed(_ windows: [SavedWindow], savedOn: String?, what: String) -> [SavedWindow] {
+        let here = serverURL
+        var links = 0, moved = 0
+        func move(_ u: String) -> String {
+            let r = rehomedURL(u, savedOn: savedOn, here: here)
+            links += 1
+            if r != u { moved += 1 }
+            return r
+        }
+        func tab(_ t: SavedTab) -> SavedTab {
+            var t = t
+            t.url = move(t.url)
+            t.split = t.split.map { Box(grid($0.value)) }
+            return t
+        }
+        func grid(_ g: SavedGrid) -> SavedGrid {
+            var g = g
+            g.hostTabs = g.hostTabs?.map(tab)
+            g.panes = g.panes.map { p in
+                var p = p
+                p.url = move(p.url)
+                p.split = p.split.map { Box(grid($0.value)) }
+                p.tabs = p.tabs?.map(tab)
+                return p
+            }
+            return g
+        }
+        let out = windows.map { w -> SavedWindow in
+            var w = w
+            w.url = move(w.url)
+            w.grid = w.grid.map(grid)
+            return w
+        }
+        NSLog("amux-desktop: verdict=%@ what=%@ links=%d moved=%d saved_on=%@ here=%@", moved > 0 ? "workspace_rehomed" : "workspace_same_server",
+              what, links, moved, savedOn ?? "unrecorded", here.flatMap(originKey) ?? "not_connected")
+        return out
+    }
+
     /// Replace the open windows and pins with the workspace's.
     func openLayout(named name: String) {
         var cfg = loadConfig()
@@ -134,7 +181,7 @@ extension AppDelegate {
         config = cfg
         saveWork?.cancel()
         closeAllPins()
-        openWindows(l.windows, reuse: controllers)
+        openWindows(rehomed(l.windows, savedOn: l.server, what: "workspace " + name), reuse: controllers)
         rebuildLayoutsMenu()
         for p in l.pins ?? [] where !p.paths.isEmpty {
             let f = NSRectFromString(p.frame)
@@ -312,7 +359,8 @@ extension AppDelegate {
             let enc = JSONEncoder()
             enc.outputFormatting = [.sortedKeys]
             guard let body = try? enc.encode(windows), body != self.windowsSent else { return }
-            let doc = ServerWindows(schema: 1, windows: windows, savedBy: Host.current().localizedName, savedAt: Date().timeIntervalSince1970)
+            let doc = ServerWindows(schema: 1, windows: windows, savedBy: Host.current().localizedName, savedAt: Date().timeIntervalSince1970,
+                                    server: self.serverURL.flatMap(originKey))
             guard let data = try? enc.encode(doc), let text = String(data: data, encoding: .utf8) else { return }
             self.api("/api/prefs", method: "POST", body: ["key": key, "value": text]) { [weak self] r in
                 let ok = (r as? [String: Any])?["ok"] as? Bool == true
@@ -335,7 +383,7 @@ extension AppDelegate {
                 return
             }
             NSLog("amux-desktop: verdict=windows_adopted_from_server key=%@ windows=%d saved_by=%@", key, doc.windows.count, doc.savedBy ?? "-")
-            self.openWindows(doc.windows, reuse: self.controllers)
+            self.openWindows(self.rehomed(doc.windows, savedOn: doc.server, what: "server windows"), reuse: self.controllers)
         }
     }
 

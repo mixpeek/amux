@@ -56,6 +56,8 @@ jobs:
 
       - name: Pane grid
         run: xcrun swiftc -parse-as-library -o /tmp/panegrid desktop/amux-panegrid.swift desktop/test/panegrid-test.swift && /tmp/panegrid
+      - name: Workspace server addresses
+        run: xcrun swiftc -parse-as-library -o /tmp/rehome desktop/amux-rehome.swift desktop/test/rehome-test.swift && /tmp/rehome
 
       - name: 401 backoff
         run: xcrun swiftc -parse-as-library -D AMUX_APP -o /tmp/backoff scripts/amux-menubar.swift desktop/test/unauthorized-backoff-test.swift -framework Cocoa -framework WebKit && /tmp/backoff

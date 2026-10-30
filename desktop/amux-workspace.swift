@@ -1182,6 +1182,7 @@ extension AppDelegate {
                     d["pane_frames"] = g.tree.leaves.map { NSStringFromRect(frames[$0] ?? .zero) }
                     d["pane_views"] = g.tree.leaves.map { g.members[$0]?.viewHash ?? "" }
                     d["pane_tabs"] = g.tree.leaves.map { g.tabs($0).map { g.label($0) } }
+                    d["pane_servers"] = g.tree.leaves.map { g.tabs($0).map { $0.serverOrigin?.absoluteString ?? "" } }
                     // Splits inside tabs: per pane, its shown tab's split, nested the same way.
                     func nested(_ g: PaneGrid) -> [Any] {
                         g.tree.leaves.map { id -> Any in
