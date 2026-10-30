@@ -36,6 +36,11 @@ impl Drop for StopServer {
     }
 }
 
+// The recovery suite runs this (scripts/test-harness-recovery.sh passes
+// --ignored and keeps the output as an artifact). Its timing asserts hold alone
+// and with six copies at once, but failed twice in a row inside the land gate's
+// 600-test run, which keeps no failure text, and blocked unrelated lands. AF-1056.
+#[ignore = "recovery suite only: scripts/test-harness-recovery.sh runs it with --ignored"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_control_client_survives_closing_sessions_and_its_own_kill() {
     let Ok(v) = Command::new("tmux").arg("-V").output() else {
