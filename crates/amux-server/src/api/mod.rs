@@ -155,6 +155,7 @@ pub mod conversations;
 pub mod converse;
 pub mod static_files;
 pub mod stats;
+pub mod velocity;
 pub mod sync;
 pub mod telegram;
 pub mod tailnet_join;
@@ -281,6 +282,7 @@ pub fn router_with_connector_transport(
         .nest("/api/reclaim", reclaim::routes())
         .nest("/api/tiering", tiering::routes())
         .nest("/api/usage", usage::routes())
+        .nest("/api/velocity", velocity::routes())
         .nest("/api/review", review::routes())
         .nest("/api/channels", channels::routes())
         .nest("/api/alert", alerts::routes())
