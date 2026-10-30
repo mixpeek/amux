@@ -18150,8 +18150,8 @@ mod tests {
              episode INTEGER NOT NULL DEFAULT 1); \
              CREATE TABLE session_events (idem TEXT); \
              CREATE UNIQUE INDEX idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL; \
-             CREATE TABLE issues (id TEXT, status TEXT, archived INTEGER DEFAULT 0, \
-             updated INTEGER, source_ref TEXT);",
+             CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
+             archived INTEGER DEFAULT 0, updated INTEGER);",
         )
         .unwrap();
         for r in rows {
