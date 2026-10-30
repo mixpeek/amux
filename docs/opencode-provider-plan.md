@@ -1,10 +1,12 @@
 # Plan: first-class OpenCode provider for amux
 
 **Fork:** `pedrovgp/amux` · **Branch:** `feat/opencode-provider` · **Base:** `main` (== upstream `1c7fbc5`)
-**Target binary:** OpenCode `v2.0.32` (measured on this machine, 2026-10-17; the
-plan began against `v2.0.28`, so re-measure on upgrade)
+**Target binary:** OpenCode `v2.0.32` for M0–M2 (measured 2026-10-17; the plan began
+against `v2.0.28`), **`v2.2.3`** for M3 (the CLI moved 2.1.4 → 2.2.1 → 2.2.3 during M3
+alone). Re-measure on upgrade — the version drift is real, not hypothetical.
 **Status:** M0 + M1 shipped (PR #335, upstream `a95b05ab`); **M2 built** (ACP
-transport, `crates/amux-server/src/opencode/acp.rs`)
+transport, `crates/amux-server/src/opencode/acp.rs`); **M3 built** (`serve` HTTP
+transport — see the M3 section below and `docs/serve-spike-results.md`).
 
 ## Why
 
@@ -190,6 +192,55 @@ Two overrides, both intentional and both winning over the constant:
 
 A blank value is *no* value: whitespace never becomes a model name.
 
+---
+
+### M3 — native HTTP transport (`opencode serve`)
+
+**STATUS: BUILT. Opt-in via `AMUX_OPENCODE_TRANSPORT=serve`; the default stays `acp`.**
+Measured record: `docs/serve-spike-results.md`. Code: `opencode/serve.rs` (client, SSE
+hub, typed errors) wired in `opencode/structured.rs`.
+
+Why: M2 ended on a measured wall — ACP rejects a second concurrent prompt with
+`-32603 "Session already has an active ACP prompt"`, so **true mid-turn steering is
+impossible on ACP**. `opencode serve`'s v2 HTTP API has `delivery: "steer"`, and the same
+API answers the other three M2 limits: a real `{interrupted:bool}` ack, permissions as
+listable/repliable resources, and typed error bodies instead of text sniffing.
+
+What changed, and the measured fact behind each decision:
+
+| M3 goal | Result |
+|---|---|
+| **True mid-turn steering** | **Yes.** `POST …/prompt {delivery:"steer"}` lands *inside* a running turn: the essay turn closes with no `idle` marker of its own and the run ends on the steered reply. The queue's `AtTurnBoundary` path is untouched for `run`/`acp` (D4 — a contract change ships behind the enum, never silently). |
+| **Real interrupt** | **Yes.** `POST …/interrupt` → `{"interrupted":true}`; the turn closes `idle outcome=interrupted` and **0 of 25** requested files were written. |
+| **Permissions** | **Yes.** `GET …/permission` + `POST …/permission/{id}/reply` (`once｜always｜reject`); amux policy answers, and a `reject` actually stops the tool. |
+| **Typed errors** | **Yes.** `SessionBusyError` is a rejection, not a failure (the queue retries at the turn boundary); `provider.quota`/429 → `RateLimited`, with `reset_at` **only** when `retryAfterMs` exists; everything else → `Failed{retryable}` naming the endpoint (4xx no, 5xx/refused yes). |
+| **One process for the fleet** | **Designed, not deployed.** Measured: a serve is ~135–188 MB idle and spikes to 1.8–3.6 GB *during a turn*; extra sessions cost ~0 MB. So the fleet cost is `(serves × idle) + (concurrent turn spikes)` — one shared serve contains the spike to one process. M3 built the transport; nothing yet launches or supervises that serve, so production process count is still ~2N. |
+
+The architectural finding worth carrying forward: **`POST …/prompt` is asynchronous** — it
+returns the admitted message immediately and the turn runs in the background. ACP's
+`session/prompt` blocks for the whole turn, which is why `acp.rs` needed a pending-request
+map, id demux, reader/writer tasks and spawn-retry. On HTTP that machinery is
+unnecessary, and `serve.rs` came out at **897 lines vs `acp.rs`'s 1741** at the same
+milestone depth.
+
+Two measured limits, stated rather than buried:
+
+- **The durable log does not replay.** `…/log?after=` returned only a `log.synced` marker
+  and none of the 30 prior events, contradicting its own description. The backfill is
+  therefore `GET /session/{id}/message` — proven to return full history including
+  interrupted turns. SSE is a **progress** channel only; **turn outcome always comes from
+  `/message`** (`/api/event` is "volatile by contract": missed events are expected).
+- **A dedicated serve prints its own password** to its startup log (`server password
+  <43 chars>`) and does not read `service.json`, so amux captures the credential from the
+  spawn output. Auth is HTTP Basic `opencode:<password>` — Bearer, empty-user Basic and
+  `?password=` all measure 401.
+
+This is why `serve` is **not** the default yet. D2 said the flip happens once a live smoke
+proves a real worker turn end to end; that smoke passed on 2026-10-30 (`outcome=succeeded`,
+131 SSE frames, a steered message in the history — see the spike record), but the flip is
+a behaviour change for every existing OpenCode worker and wants peer verification plus two
+one-probe gaps closed (the busy-response HTTP status, and what a 404 on a dead `ses_` ref
+means from the serve path). Until then: `acp` by default, `serve` on request.
 
 ---
 
@@ -202,12 +253,18 @@ A blank value is *no* value: whitespace never becomes a model name.
   a second concurrent `session/prompt` with `-32603 "Session already has an
   active ACP prompt"`, so mid-turn delivery still happens at the turn boundary
   on both transports. `opencode serve` (`delivery: "steer"`) is the only path
-  that actually steers a running turn.
+  that actually steers a running turn — **built in M3** and proven by a live
+  smoke; it is not yet the default transport.
 - **Approvals.** Headless writes hang without `--auto` (or a config). Must set it
   for workers; that is a policy choice to state, not hide.
 - **Provider-id spelling.** Keep `"opencode"` canonical; no legacy alias needed.
-- **Version drift.** OpenCode's `run`/v2 API is young; pin the observed version
-  in the coverage doc and re-measure on upgrade.
+- **Version drift.** OpenCode's `run`/v2 API is young — it moved 2.1.4 → 2.2.1 →
+  2.2.3 in four days during M3. Pin the observed version in the coverage doc and
+  re-measure on upgrade; the M3 SSE capture has NOT been re-measured on ≥2.2.1.
+- **M3's durable log is unproven.** `…/log?after=` did not replay history. Turn
+  reconciliation rides `GET /session/{id}/message`; a full read, not a cursor.
+- **No supervisor yet.** A serve process exists only when someone starts it; M3
+  built the transport, not the thing that owns one for the fleet.
 
 ---
 
@@ -221,6 +278,12 @@ A blank value is *no* value: whitespace never becomes a model name.
 - Live smoke (M2): `cargo test -p amux-server opencode::acp -- --ignored` drives
   a REAL `opencode acp` process — a tool-calling turn must surface a `tool_used`
   with the written path, usage tokens, and two turns on ONE session id.
+- Live smoke (M3): the `#[ignore]`d tests in `opencode::structured::tests` drive a
+  REAL `opencode serve` (D1 shape: dedicated serve, password from its spawn log,
+  cleaned up afterwards) via `AMUX_SMOKE_URL` / `AMUX_SMOKE_PASSWORD` /
+  `AMUX_SMOKE_MODEL`. A pass is `LIVE SMOKE VERDICT: full turn succeeded end to
+  end` plus a steered message in the session's `/message` history. Recorded runs:
+  `docs/serve-spike-results.md`.
 
 ## Workflow
 
@@ -233,5 +296,8 @@ open an upstream PR against `mixpeek/amux` if the maintainers want it.
    (2026-10-17, ACP; see the M2 section).
 2. ~~Implement M0 (S1, S2, S5) + tests.~~ Done.
 3. ~~Smoke-test M0, then M1.~~ Done (PR #335).
-4. ~~M2: ACP transport.~~ Built; remaining: land it, then decide whether
-   `opencode serve` is worth a mid-turn-steering follow-up.
+4. ~~M2: ACP transport.~~ Built; M3 then answered the `opencode serve` question.
+5. ~~M3: `opencode serve` transport.~~ **Built** (`opencode/serve.rs` + `Transport::Serve`,
+   `docs/serve-spike-results.md`). Remaining before the default flip: peer verification,
+   the two one-probe gaps (busy HTTP status, dead-ref 404), and whoever launches the one
+   shared serve in production.
