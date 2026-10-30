@@ -44,6 +44,48 @@ mkdir -p "$(dirname "$LOG")"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >> "$LOG"; }
 
+SERVER_PID_FILE="${AMUX_DIR}/tmux-watchdog-server-pid"
+
+# The tmux server's pid, recorded so a REPLACED server is noticed (below).
+record_server_pid() {
+    local pid
+    pid=$(tmux display-message -p '#{pid}' 2>/dev/null || true)
+    [[ -n "$pid" ]] && printf '%s\n' "$pid" > "$SERVER_PID_FILE"
+    return 0
+}
+
+# The fleet restart both recovery paths run: start every worker, then report.
+# $1 says why, for the dashboard log ("was dead", "was replaced").
+recover_fleet() {
+    date +%s > "$COOLDOWN_FILE"
+    # Record the server the fleet is about to start in, so the next scan does
+    # not read the server Mode 1 just started as a replacement.
+    record_server_pid
+
+    base="$("$AMUX_BIN" url 2>/dev/null || echo "https://localhost:8824")"
+    curl -sk --max-time 5 -X POST -H 'Content-Type: application/json' \
+        -d '{"level":"warn","message":"tmux-watchdog: tmux server '"$1"', restarting fleet","source":"tmux-watchdog"}' \
+        "$base/api/log" >/dev/null 2>&1 || true
+
+    export AMUX_START_ALL_STAGGER="$STAGGER"
+    summary=$("$AMUX_BIN" start-all 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+    rc=$?
+
+    printf '%s\n' "$summary" >> "$LOG"
+    log "start-all exited rc=$rc"
+
+    if curl -sk --max-time 5 "$base/health" 2>/dev/null | grep -q '"status":"ok"'; then
+        running=$(curl -sk --max-time 10 "$base/api/sessions" 2>/dev/null \
+            | python3 -c "import json,sys; ss=json.load(sys.stdin); print(len([s for s in ss if not s.get('archived') and s.get('running')]))" 2>/dev/null || echo '?')
+        total=$(curl -sk --max-time 10 "$base/api/sessions" 2>/dev/null \
+            | python3 -c "import json,sys; ss=json.load(sys.stdin); print(len([s for s in ss if not s.get('archived')]))" 2>/dev/null || echo '?')
+        log "verdict: ${running}/${total} non-archived workers running after recovery"
+    fi
+
+    log "=== tmux recovery complete ==="
+    return "$rc"
+}
+
 # ---- Mode 1: tmux server is dead ----
 if ! tmux list-sessions &>/dev/null; then
     if [[ -f "$COOLDOWN_FILE" ]]; then
@@ -71,30 +113,25 @@ if ! tmux list-sessions &>/dev/null; then
     session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
     log "tmux server restored (${session_count} sessions). Starting fleet..."
 
-    date +%s > "$COOLDOWN_FILE"
+    recover_fleet "was dead"
+    exit $?
+fi
 
-    base="$("$AMUX_BIN" url 2>/dev/null || echo "https://localhost:8824")"
-    curl -sk --max-time 5 -X POST -H 'Content-Type: application/json' \
-        -d '{"level":"warn","message":"tmux-watchdog: tmux server was dead, recovered and restarting fleet","source":"tmux-watchdog"}' \
-        "$base/api/log" >/dev/null 2>&1 || true
-
-    export AMUX_START_ALL_STAGGER="$STAGGER"
-    summary=$("$AMUX_BIN" start-all 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-    rc=$?
-
-    printf '%s\n' "$summary" >> "$LOG"
-    log "start-all exited rc=$rc"
-
-    if curl -sk --max-time 5 "$base/health" 2>/dev/null | grep -q '"status":"ok"'; then
-        running=$(curl -sk --max-time 10 "$base/api/sessions" 2>/dev/null \
-            | python3 -c "import json,sys; ss=json.load(sys.stdin); print(len([s for s in ss if not s.get('archived') and s.get('running')]))" 2>/dev/null || echo '?')
-        total=$(curl -sk --max-time 10 "$base/api/sessions" 2>/dev/null \
-            | python3 -c "import json,sys; ss=json.load(sys.stdin); print(len([s for s in ss if not s.get('archived')]))" 2>/dev/null || echo '?')
-        log "verdict: ${running}/${total} non-archived workers running after recovery"
-    fi
-
-    log "=== tmux recovery complete ==="
-    exit "$rc"
+# A REPLACED tmux server is a dead one too (2026-10-29). The fleet's server
+# segfaulted at 20:10:55 (tmux 3.6a, control_notify_session_closed) and 46
+# workers died with it. Three seconds later board-drive started a new server
+# for the four workers it had cards for, so `tmux list-sessions` answered on
+# every later scan and Mode 1 never ran: 42 workers stayed down until the
+# owner noticed. The server's pid is recorded each scan; a different pid means
+# the old server is gone, so the fleet is recovered as for a dead server.
+prev_pid=$(cat "$SERVER_PID_FILE" 2>/dev/null || true)
+record_server_pid
+cur_pid=$(cat "$SERVER_PID_FILE" 2>/dev/null || true)
+if [[ -n "$cur_pid" && -n "$prev_pid" && "$cur_pid" != "$prev_pid" ]]; then
+    log "=== tmux server was REPLACED (pid ${prev_pid} -> ${cur_pid}): the old server died and another process started a new one; recovering fleet ==="
+    log "memory_pressure: $(memory_pressure 2>/dev/null | grep 'free percentage' || echo 'unavailable')"
+    recover_fleet "was replaced (pid ${prev_pid} -> ${cur_pid})"
+    exit $?
 fi
 
 # ---- Mode 2: tmux is alive, check for dead worker processes ----
