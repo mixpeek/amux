@@ -3892,59 +3892,148 @@ pub(crate) fn subagent_cache_step(now: f64, cached_at: f64, scanning: bool) -> S
     }
 }
 
+/// Conversations known to have a `subagents/` dir, from the last full walk.
+struct SubagentDirs {
+    walked_at: f64,
+    /// (conversation transcript, its subagents dir)
+    dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+static SUBAGENT_DIRS: std::sync::Mutex<Option<SubagentDirs>> = std::sync::Mutex::new(None);
+/// A full walk of ~/.claude/projects runs at most this often; between, only the
+/// subagent dirs it found are read. Hog RCA 20261030-044026: the walk covered
+/// 8,257 project dirs and 12,806 conversations every 30 s to find the 272 that
+/// have subagents, and was the server's top steady CPU share (14.7%). A first
+/// subagent in a conversation shows on the next full walk; a lane's REPORTED
+/// subagent count, which outranks this mtime fallback, is unaffected.
+pub(crate) const SUBAGENT_FULL_WALK_S: f64 = 600.0;
+
 /// The walk itself: lane -> newest subagent mtime, and how many
 /// conversations it looked at.
 fn scan_subagent_activity_walk(now: f64) -> (BTreeMap<String, f64>, usize) {
     let projects = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
         .join(".claude/projects");
-    let mut out: BTreeMap<String, f64> = BTreeMap::new();
-    let mut n_conv = 0usize;
     let claims = crate::api::session_verbs::conversation_claims();
-    let Ok(projs) = std::fs::read_dir(&projects) else {
-        return (out, 0);
-    };
-    for proj in projs.flatten() {
-        let Ok(entries) = std::fs::read_dir(proj.path()) else {
+    let mut known = SUBAGENT_DIRS.lock().unwrap_or_else(|p| p.into_inner());
+    let (newest, n_conv, full) = subagent_newest(&projects, now, &mut known, SUBAGENT_FULL_WALK_S);
+    if full {
+        tracing::debug!(conversations = n_conv, subagent_dirs = newest.len(), verdict = "subagent_full_walk", "subagent scan walked every conversation");
+    }
+    let mut out: BTreeMap<String, f64> = BTreeMap::new();
+    for (conv, t) in newest {
+        let owner = crate::api::session_verbs::conversation_owner(&conv, &claims);
+        if owner.is_empty() {
             continue;
-        };
-        for e in entries.flatten() {
-            let conv = e.path();
-            if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-                continue;
-            }
-            n_conv += 1;
-            let subs = conv.with_extension("").join("subagents");
-            let Ok(files) = std::fs::read_dir(&subs) else {
-                continue;
-            };
-            let mut newest = 0.0f64;
-            for f in files.flatten() {
-                if !f.file_name().to_string_lossy().ends_with(".jsonl") {
-                    continue;
-                }
-                if let Some(m) = f
-                    .metadata()
-                    .ok()
-                    .and_then(|md| md.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                {
-                    newest = newest.max(m.as_secs_f64());
-                }
-            }
-            if newest <= 0.0 || now - newest > 3600.0 {
-                continue;
-            }
-            let owner = crate::api::session_verbs::conversation_owner(&conv, &claims);
-            if owner.is_empty() {
-                continue;
-            }
-            let slot = out.entry(owner).or_insert(0.0);
-            if newest > *slot {
-                *slot = newest;
-            }
+        }
+        let slot = out.entry(owner).or_insert(0.0);
+        if t > *slot {
+            *slot = t;
         }
     }
     (out, n_conv)
+}
+
+/// Conversation -> newest subagent transcript mtime, for conversations whose
+/// subagents wrote in the last hour. A full walk when `known` is missing or
+/// older than `full_every`, otherwise only the dirs it recorded. Returns the
+/// conversations looked at and whether this was a full walk.
+fn subagent_newest(
+    projects: &std::path::Path,
+    now: f64,
+    known: &mut Option<SubagentDirs>,
+    full_every: f64,
+) -> (Vec<(std::path::PathBuf, f64)>, usize, bool) {
+    let full = known.as_ref().is_none_or(|k| now - k.walked_at >= full_every);
+    if full {
+        let mut dirs = Vec::new();
+        let mut n_conv = 0usize;
+        if let Ok(projs) = std::fs::read_dir(projects) {
+            for proj in projs.flatten() {
+                let Ok(entries) = std::fs::read_dir(proj.path()) else {
+                    continue;
+                };
+                for e in entries.flatten() {
+                    let conv = e.path();
+                    if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    n_conv += 1;
+                    let subs = conv.with_extension("").join("subagents");
+                    if subs.is_dir() {
+                        dirs.push((conv, subs));
+                    }
+                }
+            }
+        }
+        *known = Some(SubagentDirs { walked_at: now, dirs });
+        let out = subagent_mtimes(known.as_ref().map(|k| &k.dirs[..]).unwrap_or(&[]), now);
+        return (out, n_conv, true);
+    }
+    let k = known.as_ref().expect("checked above");
+    (subagent_mtimes(&k.dirs, now), k.dirs.len(), false)
+}
+
+fn subagent_mtimes(dirs: &[(std::path::PathBuf, std::path::PathBuf)], now: f64) -> Vec<(std::path::PathBuf, f64)> {
+    let mut out = Vec::new();
+    for (conv, subs) in dirs {
+        let Ok(files) = std::fs::read_dir(subs) else {
+            continue;
+        };
+        let mut newest = 0.0f64;
+        for f in files.flatten() {
+            if !f.file_name().to_string_lossy().ends_with(".jsonl") {
+                continue;
+            }
+            if let Some(m) = f
+                .metadata()
+                .ok()
+                .and_then(|md| md.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            {
+                newest = newest.max(m.as_secs_f64());
+            }
+        }
+        if newest > 0.0 && now - newest <= 3600.0 {
+            out.push((conv.clone(), newest));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod subagent_walk_tests {
+    use super::*;
+
+    fn touch(p: &std::path::Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "{}\n").unwrap();
+    }
+
+    #[test]
+    fn between_full_walks_only_the_known_subagent_dirs_are_read() {
+        let t = tempfile::tempdir().unwrap();
+        let projects = t.path().join("projects");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        touch(&projects.join("p1/c1.jsonl"));
+        touch(&projects.join("p1/c1/subagents/a.jsonl"));
+        touch(&projects.join("p1/c2.jsonl")); // no subagents
+        let mut known = None;
+        let (found, n, full) = subagent_newest(&projects, now, &mut known, 600.0);
+        assert!(full);
+        assert_eq!(n, 2, "a full walk looks at every conversation");
+        assert_eq!(found.len(), 1);
+        // A conversation that starts its first subagent between full walks...
+        touch(&projects.join("p2/c3.jsonl"));
+        touch(&projects.join("p2/c3/subagents/b.jsonl"));
+        let (found, n, full) = subagent_newest(&projects, now + 30.0, &mut known, 600.0);
+        assert!(!full, "a pass inside the window walked everything again");
+        assert_eq!(n, 1, "only the known subagent dir is read");
+        assert_eq!(found.len(), 1);
+        // ...shows on the next full walk.
+        let (found, n, full) = subagent_newest(&projects, now + 601.0, &mut known, 600.0);
+        assert!(full);
+        assert_eq!(n, 3);
+        assert_eq!(found.len(), 2);
+    }
 }
 
 /// The set of sessions currently `active` — the board's `stale` flag reads
