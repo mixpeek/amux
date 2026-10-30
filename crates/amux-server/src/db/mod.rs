@@ -41,6 +41,94 @@ use std::sync::Arc;
 
 pub type ReadPool = r2d2::Pool<SqliteConnectionManager>;
 
+/// Who holds each checked-out read connection, so a starved pool names its
+/// holders instead of only its victims (AMUX-6589). Every starvation report
+/// said "the routes are victims; look at what was HOLDING connections", and
+/// nothing recorded what was. `read()` is `#[track_caller]` and leaves its
+/// caller in a thread-local; r2d2 fires checkout on that same thread, inside
+/// `get()`, so the handler can file the connection under its caller.
+#[derive(Clone, Copy)]
+enum ReadSite {
+    Caller(&'static std::panic::Location<'static>),
+    /// `read_async`: the closure's type name, which names the function that
+    /// wrote it (the caller's location would always be `read_async` itself).
+    Closure(&'static str),
+}
+
+impl std::fmt::Display for ReadSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadSite::Caller(l) => write!(f, "{}:{}", l.file(), l.line()),
+            ReadSite::Closure(n) => f.write_str(n.trim_end_matches("::{{closure}}")),
+        }
+    }
+}
+
+thread_local! {
+    static READ_SITE: std::cell::Cell<Option<ReadSite>> = const { std::cell::Cell::new(None) };
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ReadHolders {
+    held: std::sync::Mutex<std::collections::HashMap<u64, (ReadSiteDebug, std::time::Instant)>>,
+}
+
+/// `HandleEvent` requires `Debug`; a site prints as its Display form.
+#[derive(Clone, Copy)]
+struct ReadSiteDebug(Option<ReadSite>);
+
+impl std::fmt::Debug for ReadSiteDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(site) => write!(f, "{site}"),
+            None => f.write_str("unattributed"),
+        }
+    }
+}
+
+impl ReadHolders {
+    /// The sites holding connections now, most connections first, as
+    /// `site x<count> max_held_ms=<ms>`; `unattributed` is a checkout that
+    /// did not come through `read()` / `read_async`.
+    pub(crate) fn summary(&self, top: usize) -> (usize, String) {
+        let Ok(held) = self.held.lock() else { return (0, "holders unreadable (lock poisoned)".into()) };
+        let mut by: std::collections::HashMap<String, (usize, u128)> = std::collections::HashMap::new();
+        for (site, at) in held.values() {
+            let e = by.entry(format!("{site:?}")).or_default();
+            e.0 += 1;
+            e.1 = e.1.max(at.elapsed().as_millis());
+        }
+        let mut rows: Vec<_> = by.into_iter().collect();
+        rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(b.1 .1.cmp(&a.1 .1)));
+        let n = held.len();
+        let text = rows
+            .iter()
+            .take(top)
+            .map(|(site, (count, ms))| format!("{site} x{count} max_held_ms={ms}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        (n, text)
+    }
+}
+
+#[derive(Debug)]
+struct ReadHolderEvents(Arc<ReadHolders>);
+
+impl r2d2::HandleEvent for ReadHolderEvents {
+    fn handle_checkout(&self, event: r2d2::event::CheckoutEvent) {
+        let site = READ_SITE.with(|c| c.get());
+        if let Ok(mut held) = self.0.held.lock() {
+            held.insert(event.connection_id(), (ReadSiteDebug(site), std::time::Instant::now()));
+        }
+    }
+
+    fn handle_checkin(&self, event: r2d2::event::CheckinEvent) {
+        if let Ok(mut held) = self.0.held.lock() {
+            held.remove(&event.connection_id());
+        }
+    }
+}
+
 pub(crate) enum ProjectionRead {
     Dedicated(Connection),
     Pooled(r2d2::PooledConnection<SqliteConnectionManager>),
@@ -132,6 +220,8 @@ pub struct Store {
     /// only testable by holding every connection, and the paths that must hold
     /// it (`api::policy::enforce`) live in other modules.
     pub(crate) read_pool: ReadPool,
+    /// Who holds each checked-out read connection (AMUX-6589).
+    pub(crate) read_holders: Arc<ReadHolders>,
     /// AF-937: held only for its lifetime -- an RAII guard, not state. An
     /// flock on a sidecar file next to `db_path`, acquired in
     /// [`claim_sole_writer`] at open time. The OS releases it automatically
@@ -386,8 +476,10 @@ impl Store {
             c.pragma_update(None, "query_only", "ON")?;
             Ok(())
         });
+        let read_holders = Arc::new(ReadHolders::default());
         let read_pool = r2d2::Pool::builder()
             .max_size(read_pool_size())
+            .event_handler(Box::new(ReadHolderEvents(read_holders.clone())))
             // FAIL FAST, because a blocked acquire pins a tokio worker (AF-640).
             //
             // r2d2's default is 30 SECONDS and it was never set, which is why
@@ -439,6 +531,7 @@ impl Store {
         Ok(Store {
             write_tx,
             read_pool,
+            read_holders,
             writer_lock,
             db_path: Arc::new(db_path.to_path_buf()),
             health_probe: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -625,7 +718,7 @@ impl Store {
             // was introduced, so if the pool is the bottleneck, that change
             // moved reads into the same queue as writes rather than out of it.
             record_blocking_dispatch(&dispatch, queued.elapsed());
-            let conn = this.read()?;
+            let conn = this.read_from(ReadSite::Closure(std::any::type_name::<F>()))?;
             f(&conn)
         })
         .await?
@@ -669,20 +762,33 @@ impl Store {
     /// Silent on the happy path: a healthy acquire is microseconds, so the
     /// threshold below is never reached in normal operation and this stays off
     /// a hot path rather than logging 200k times a day.
+    #[track_caller]
     pub fn read(&self) -> anyhow::Result<r2d2::PooledConnection<SqliteConnectionManager>> {
+        self.read_from(ReadSite::Caller(std::panic::Location::caller()))
+    }
+
+    fn read_from(&self, site: ReadSite) -> anyhow::Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         let t0 = std::time::Instant::now();
-        let got = self.read_pool.get();
+        let got = READ_SITE.with(|c| {
+            c.set(Some(site));
+            let got = self.read_pool.get();
+            c.set(None);
+            got
+        });
         let waited = t0.elapsed();
         match got {
             Ok(conn) => {
                 if waited >= Self::SLOW_ACQUIRE {
                     let st = self.read_pool.state();
+                    let (attributed, holders) = self.read_holders.summary(5);
                     tracing::warn!(
                         verdict = "read_pool_slow_acquire",
                         waited_ms = waited.as_millis() as u64,
                         connections = st.connections,
                         idle = st.idle_connections,
                         max_size = self.read_pool.max_size(),
+                        holders_attributed = attributed,
+                        holders = %holders,
                         "read pool acquire was slow; the pool is saturated and every waiter                          is pinning a thread (AF-640)"
                     );
                 }
@@ -690,12 +796,15 @@ impl Store {
             }
             Err(e) => {
                 let st = self.read_pool.state();
+                let (attributed, holders) = self.read_holders.summary(5);
                 tracing::warn!(
                     verdict = "read_pool_exhausted",
                     waited_ms = waited.as_millis() as u64,
                     connections = st.connections,
                     idle = st.idle_connections,
                     max_size = self.read_pool.max_size(),
+                    holders_attributed = attributed,
+                    holders = %holders,
                     error = %e,
                     "read pool acquire FAILED; callers are getting 500s (AF-640)"
                 );
@@ -705,6 +814,8 @@ impl Store {
     }
 
     /// Health must report pool exhaustion without waiting behind fleet probes.
+    /// Not attributed: r2d2's `try_get` fires no checkout event, so these
+    /// show as the gap between `holders_attributed` and `connections`.
     pub fn try_read(&self) -> Option<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.read_pool.try_get()
     }
@@ -1168,6 +1279,37 @@ mod amux4739_pool_startup_tests {
             max_size > 1,
             "max_size {max_size} leaves no room to grow beyond the startup minimum"
         );
+    }
+
+    /// AMUX-6589: a starved pool names who holds it. Two connections held at
+    /// one line of this file and one held inside a `read_async` closure must
+    /// show up as those two sites; a returned connection must drop out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_starved_pool_names_its_holders() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("holders.db")).unwrap();
+        let (a, b) = (store.read().unwrap(), store.read().unwrap()); let here = line!();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let bg = store.clone();
+        let task = tokio::spawn(async move {
+            bg.read_async(move |_conn| {
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .await
+        });
+        held_rx.recv().unwrap();
+        let (n, text) = store.read_holders.summary(5);
+        assert_eq!(n, 3, "{text}");
+        assert!(text.contains(&format!("src/db/mod.rs:{here} x2")), "{text}");
+        assert!(text.contains("a_starved_pool_names_its_holders"), "the read_async closure names its function: {text}");
+        drop((a, b));
+        release_tx.send(()).unwrap();
+        task.await.unwrap().unwrap();
+        let (n, text) = store.read_holders.summary(5);
+        assert_eq!(n, 0, "returned connections are no longer holders: {text}");
     }
 
     /// The acquisition bound AF-640 set must survive this change. Startup and
@@ -1673,8 +1815,10 @@ mod af640_read_pool_tests {
     fn a_saturated_pool_reports_its_state_under_greppable_verdicts() {
         let src = include_str!("mod.rs");
         let body = src
-            .split_once("\n    pub fn read(&self)")
-            .expect("Store::read exists")
+            // `read()` is a one-line `#[track_caller]` shim; the acquire and
+            // its warnings live in `read_from` (AMUX-6589).
+            .split_once("\n    fn read_from(&self")
+            .expect("Store::read_from exists")
             .1;
         let body = body.split_once("\n    }\n").expect("its closing brace").0;
 
@@ -1696,7 +1840,7 @@ mod af640_read_pool_tests {
         }
         // The state is what makes it diagnosable. A verdict with no numbers is
         // the 30-second 500 again, wearing a better name.
-        for field in ["connections", "idle", "max_size", "waited_ms"] {
+        for field in ["connections", "idle", "max_size", "waited_ms", "holders_attributed", "holders"] {
             assert!(
                 body.contains(&format!("{field} =")),
                 "the warn must carry `{field}`; without it nobody can tell a saturated \
