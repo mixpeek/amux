@@ -2198,7 +2198,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/tiering/folders",
-        methods: &["POST", "DELETE"],
+        methods: &["POST", "PATCH", "DELETE"],
     },
     RouteEntry {
         path: "/api/tiering/move",

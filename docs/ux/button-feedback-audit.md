@@ -697,6 +697,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Save and use | `_themeEditSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${on ? In use : Use} | `_themeUse` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Watch | `_tierAdd` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
+| app.js | Change idle days | `_tierEditDays` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Change idle days | `_tierEditDays` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Bring back to this Mac | `_tierMove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | app.js | Move to cold drive | `_tierMove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | app.js | Stop watching | `_tierRemove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |

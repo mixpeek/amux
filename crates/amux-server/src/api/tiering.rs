@@ -105,6 +105,8 @@ const MEASURE_BUDGET: Duration = Duration::from_secs(180);
 /// measure_since was 46% of the server's CPU in a 30 s sample. A stale folder
 /// past this budget waits for the next tick, which spreads a wave over ticks.
 const MEASURE_TICK_BUDGET: Duration = Duration::from_secs(45);
+/// Pause between passes while a measuring backlog drains.
+const BACKLOG_DELAY: Duration = Duration::from_secs(30);
 /// A use must land this long after the move finished to count. Every write the
 /// move itself makes happens before that moment, so this only absorbs
 /// timestamp rounding (one second on APFS).
@@ -312,6 +314,11 @@ pub(crate) struct TickReport {
 /// interval and startup ticks stop once they have walked MEASURE_TICK_BUDGET.
 fn measure_this_tick(forced: bool, has_op: bool, walked: Duration) -> bool {
     forced || has_op || walked < MEASURE_TICK_BUDGET
+}
+
+/// Whether a refusal is worth a WARN: a person asked, or the reason changed.
+fn refusal_is_new(prev: Option<&Note>, class: &str, manual: bool) -> bool {
+    manual || prev.map(|n| n.class != class).unwrap_or(true)
 }
 
 fn note(class: &str, text: impl Into<String>) -> Note {
@@ -934,6 +941,18 @@ pub(crate) async fn tick(trigger: &'static str) -> Option<TickReport> {
         rep = tick_inner("rerun").await;
     }
     TICKING.store(false, Ordering::SeqCst);
+    // A backlog drains on its own. Folders left unmeasured because the walking
+    // budget ran out get the next pass shortly, not at the next interval: 323
+    // new folders took a person clicking "Check now" every few minutes on
+    // 2026-10-30. Each pass walks for its full budget, so the chain advances
+    // and ends when nothing is deferred.
+    if let Some(r) = rep.as_ref().filter(|r| r.deferred > 0) {
+        tracing::info!(deferred = r.deferred, delay_s = BACKLOG_DELAY.as_secs(), verdict = "tier_backlog", "tiering: folders left to measure; next pass soon");
+        tokio::spawn(async {
+            tokio::time::sleep(BACKLOG_DELAY).await;
+            kick("backlog");
+        });
+    }
     rep
 }
 
@@ -1033,7 +1052,13 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
         if let Some((class, why)) = refusal {
             rep.refused += 1;
             rep.notes.push(format!("{path}: {why}"));
-            tracing::warn!(path = %path, class = %class, reason = %why, manual, verdict = "tier_refused", "tiering: move refused");
+            // Once per change of reason: the same refusal every five minutes
+            // buried the log in 297 identical WARNs on 2026-10-30.
+            if refusal_is_new(f.last_refusal.as_ref(), &class, manual) {
+                tracing::warn!(path = %path, class = %class, reason = %why, manual, verdict = "tier_refused", "tiering: move refused");
+            } else {
+                tracing::debug!(path = %path, class = %class, verdict = "tier_refused_again", "tiering: move still refused");
+            }
             let n = note(&class, why);
             update_folder(&path, |x| {
                 x.last_refusal = Some(n);
@@ -1200,7 +1225,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(status))
         .route("/config", put(set_config))
-        .route("/folders", post(add_folder).delete(remove_folder))
+        .route("/folders", post(add_folder).patch(edit_folder).delete(remove_folder))
         .route("/move", post(request_move))
         .route("/run", post(run_now))
 }
@@ -1489,6 +1514,63 @@ async fn add_folder(headers: HeaderMap, Json(body): Json<AddReq>) -> Response {
             status().await
         }
         Ok(Err(e)) => err(StatusCode::CONFLICT, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct EditReq {
+    path: String,
+    #[serde(default)]
+    idle_days: Option<u32>,
+    #[serde(default)]
+    promote_on_use: Option<bool>,
+}
+
+/// Apply an edit to a folder and, for a root, every folder under it. Returns
+/// how many entries changed.
+fn apply_edit(c: &mut Config, path: &str, idle_days: Option<u32>, promote_on_use: Option<bool>) -> Result<usize, (StatusCode, String)> {
+    let Some(i) = c.folders.iter().position(|x| x.path == path) else {
+        return Err((StatusCode::NOT_FOUND, "not watched".to_string()));
+    };
+    if let Some(root) = &c.folders[i].parent {
+        return Err((StatusCode::CONFLICT, format!("it follows the rules of {root}; change that folder instead")));
+    }
+    let mut n = 0;
+    for x in c.folders.iter_mut().filter(|x| x.path == path || x.parent.as_deref() == Some(path)) {
+        if let Some(d) = idle_days {
+            x.idle_days = d;
+        }
+        if let Some(p) = promote_on_use {
+            x.promote_on_use = p;
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Change a watched folder's rules in place. Editing a root changes every
+/// folder under it, so subfolders, their history and anything already on the
+/// drive stay as they are. Before this existed the only way to change a limit
+/// was to stop watching and add the folder again, which drops read history.
+async fn edit_folder(headers: HeaderMap, Json(body): Json<EditReq>) -> Response {
+    if let Some(d) = body.idle_days {
+        if !(1..=3650).contains(&d) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "idle days must be between 1 and 3650");
+        }
+    }
+    if body.idle_days.is_none() && body.promote_on_use.is_none() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "nothing to change: send idle_days or promote_on_use");
+    }
+    let by = who(&headers);
+    let r = update(|c| apply_edit(c, &body.path, body.idle_days, body.promote_on_use));
+    match r {
+        Ok(Ok(n)) => {
+            tracing::info!(path = %body.path, by = %by, idle_days = ?body.idle_days, promote_on_use = ?body.promote_on_use, folders = n, verdict = "tier_folder_edited", "tiering: folder rules changed");
+            kick("edited");
+            status().await
+        }
+        Ok(Err((code, e))) => err(code, e),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
@@ -1824,6 +1906,41 @@ mod tests {
         assert_eq!(policy(&g, &ctx(t0 + 20 * day)), None, "those reads are two weeks old");
         st.touched = 0;
         assert_eq!(observe_reads(&mut g, &st, t0 + 21 * day), None);
+    }
+
+    #[test]
+    fn editing_a_root_changes_every_subfolder_and_keeps_their_state() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("work");
+        for n in ["a", "b"] {
+            fs::create_dir_all(root.join(n)).unwrap();
+        }
+        let mut c = Config::default();
+        let mut r = folder(&root, None);
+        r.each_subfolder = true;
+        c.folders.push(r);
+        let other = d.path().join("other");
+        c.folders.push(folder(&other, None));
+        discover(&mut c);
+        let a = root.join("a").to_string_lossy().to_string();
+        let i = c.folders.iter().position(|f| f.path == a).unwrap();
+        c.folders[i].read_days = vec![5, 6];
+        let rp = root.to_string_lossy().to_string();
+        assert_eq!(apply_edit(&mut c, &rp, Some(1), None), Ok(3), "the root and both subfolders");
+        assert!(c.folders.iter().filter(|f| f.path.starts_with(&rp)).all(|f| f.idle_days == 1));
+        assert_eq!(c.folders.iter().find(|f| f.path == a).unwrap().read_days, vec![5, 6], "history survives an edit");
+        assert_eq!(c.folders.iter().find(|f| f.path == other.to_string_lossy()).unwrap().idle_days, 14, "another folder is untouched");
+        assert_eq!(apply_edit(&mut c, &a, Some(3), None).unwrap_err().0, StatusCode::CONFLICT, "a subfolder follows its root");
+        assert_eq!(apply_edit(&mut c, "/nope", Some(3), None).unwrap_err().0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_repeated_refusal_warns_once() {
+        let prev = note("live_scratch_recent", "used recently");
+        assert!(refusal_is_new(None, "live_scratch_recent", false), "first refusal warns");
+        assert!(!refusal_is_new(Some(&prev), "live_scratch_recent", false), "same reason again is quiet");
+        assert!(refusal_is_new(Some(&prev), "in_use", false), "a new reason warns");
+        assert!(refusal_is_new(Some(&prev), "live_scratch_recent", true), "a person asking always hears why");
     }
 
     #[test]

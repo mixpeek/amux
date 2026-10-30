@@ -206,6 +206,19 @@ test('a folder that keeps growing: old subfolders move, new ones stay and are fo
   await expect(kid('run-today')).toBeVisible();
   await expect(kid('run-today').locator('[data-tier-act="unwatch"]')).toHaveCount(0);
 
+  // The root's idle limit is edited in place: every subfolder follows, the ones
+  // already on the cold drive stay there, and a subfolder has no edit of its own.
+  await expect(kid('run-today').locator('[data-tier-act="edit-days"]')).toHaveCount(0);
+  await root.locator('[data-tier-act="edit-days"]').last().click();
+  const days = page.locator('#modal-prompt-input');
+  await expect(days).toHaveValue('14');
+  await days.fill('1');
+  await days.press('Enter');
+  await expect(root.locator('.reclaim-safe-text').nth(1)).toContainText('after 1 idle day', {timeout: 15_000});
+  await expect(kid('run-today')).toContainText('Moves out after 1 idle day');
+  await expect(kid('run-2026-09-01')).toHaveAttribute('data-tier-location', 'hdd');
+  await expect(kid('run-today')).toHaveAttribute('data-tier-location', 'mac');
+
   // Tomorrow's run appears and is picked up, on the Mac.
   makeTree(path.join(runs, 'run-tomorrow'));
   await page.click('#tier-run');

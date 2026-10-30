@@ -59796,7 +59796,7 @@ function _tierRootCard(f, kids) {
       <summary class="reclaim-safe-text" style="cursor:pointer;min-height:44px;display:flex;align-items:center;">Show subfolders</summary>
       <div class="reclaim-safe-grid" style="margin-top:var(--space-2);">${kids.map(_tierFolderCard).join('')}</div>
     </details>` : ''}
-    <div class="reclaim-actions-row"><button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button></div>
+    <div class="reclaim-actions-row"><button class="btn" data-tier-act="edit-days" onclick="_tierEditDays('${p}',${Number(f.idle_days)})">Change idle days</button><button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button></div>
   </div>`;
 }
 
@@ -59811,6 +59811,7 @@ function _tierFolderCard(f) {
   let btns = '';
   if (!op && where === 'mac') btns += `<button class="btn" data-tier-act="to-hdd" onclick="_tierMove('${p}','hdd')">Move to cold drive</button>`;
   if (!op && where === 'hdd') btns += `<button class="btn" data-tier-act="to-mac" onclick="_tierMove('${p}','mac')">Bring back to this Mac</button>`;
+  if (!f.parent) btns += `<button class="btn" data-tier-act="edit-days" onclick="_tierEditDays('${p}',${Number(f.idle_days)})">Change idle days</button>`;
   if (!op && !f.parent) btns += `<button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button>`;
   const notes = [];
   if (where === 'hdd' && !op) {
@@ -59889,6 +59890,19 @@ async function _tierMove(path, to) {
   const r = await _tierCall('POST', '/api/tiering/move', {path, to});
   if (!r.ok) showToast(r.j?.error || `Move refused (HTTP ${r.status})`);
   await _tierLoad();
+  _tierRefresh();
+}
+
+async function _tierEditDays(path, current) {
+  const root = (_tier?.folders || []).find(f => f.path === path && f.each_subfolder);
+  const v = await showPrompt(root ? `Move each subfolder of ${path} out after how many idle days?` : `Move ${path} out after how many idle days?`, '14', String(current || ''));
+  if (v == null || v === '') return;
+  const days = Number(v);
+  if (!Number.isInteger(days) || days < 1 || days > 3650) { showToast('Idle days must be a whole number from 1 to 3650'); return; }
+  const r = await _tierCall('PATCH', '/api/tiering/folders', {path, idle_days: days});
+  if (!r.ok) { showToast(r.j?.error || `Could not change the idle days (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  showToast(`Now moves out after ${days} idle day${days === 1 ? '' : 's'}`);
   _tierRefresh();
 }
 
