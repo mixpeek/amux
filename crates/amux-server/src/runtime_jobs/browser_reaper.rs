@@ -618,7 +618,7 @@ pub(crate) async fn tick_with_limits(
         }
         // PARKED FOR THE OWNER: its worker has a card in needsyou, so the
         // browser is very likely the page the owner was asked to finish.
-        if let Some(card) = store.and_then(|s| parked_for_owner(s, &owner, now as i64)) {
+        if let Some(card) = store.and_then(|s| parked_for_owner(s, &owner, now as i64, last_verb)) {
             tracing::info!(profile = %profile, owner = %owner, card = %card, measured = true, n_considered = 1,
                 verdict = "browser_reap_parked_for_owner",
                 "browser: its worker is waiting on the owner (needsyou), held open like a hold");
@@ -865,7 +865,16 @@ pub fn closing_notice(profile: &str, left_s: i64) -> String {
 /// owner opened the link. While the worker has a card in needsyou that
 /// entered that state within [`hold_max_s`], its browsers are treated as held.
 /// Past that, an unanswered ask no longer pins a browser.
-pub fn parked_for_owner(store: &crate::db::SharedStore, owner: &str, now: i64) -> Option<String> {
+///
+/// AND THE CARD MUST BE THE HANDOFF, not an older ask that happens to be open:
+/// a handoff parks its card as the worker walks away from the page, so it
+/// entered needsyou no earlier than [`HANDOFF_SLACK_S`] before the browser was
+/// last driven. Live on the first deploy, tubescience-parity's TP-212 (a
+/// production-data decision parked 7.8 h earlier, with the browser driven
+/// since) was holding ethan-tubescience open.
+pub const HANDOFF_SLACK_S: i64 = 600;
+
+pub fn parked_for_owner(store: &crate::db::SharedStore, owner: &str, now: i64, last_verb: i64) -> Option<String> {
     if owner.is_empty() {
         return None;
     }
@@ -873,8 +882,9 @@ pub fn parked_for_owner(store: &crate::db::SharedStore, owner: &str, now: i64) -
     conn.query_row(
         "SELECT id FROM issues WHERE session = ?1 AND status = 'needsyou' AND deleted IS NULL \
            AND COALESCE(archived,0) = 0 AND COALESCE(entered_state_at, updated, 0) >= ?2 \
+           AND COALESCE(entered_state_at, updated, 0) >= ?3 \
          ORDER BY COALESCE(entered_state_at, updated, 0) DESC LIMIT 1",
-        rusqlite::params![owner, now - hold_max_s()],
+        rusqlite::params![owner, now - hold_max_s(), last_verb - HANDOFF_SLACK_S],
         |r| r.get::<_, String>(0),
     )
     .ok()
@@ -1773,10 +1783,15 @@ mod parked_for_owner_tests {
             })
             .await
             .unwrap();
-        assert_eq!(super::parked_for_owner(&store, "lane-a", now).as_deref(), Some("AF-1"));
-        assert_eq!(super::parked_for_owner(&store, "lane-b", now), None, "not waiting on the owner");
-        assert_eq!(super::parked_for_owner(&store, "lane-c", now), None, "parked past the hold cap no longer pins it");
-        assert_eq!(super::parked_for_owner(&store, "lane-x", now), None, "no card");
-        assert_eq!(super::parked_for_owner(&store, "", now), None, "an unowned browser");
+        // The browser was last driven 2 min ago; AF-1 was parked 1 min ago: a handoff.
+        let driven = now - 120;
+        assert_eq!(super::parked_for_owner(&store, "lane-a", now, driven).as_deref(), Some("AF-1"));
+        assert_eq!(super::parked_for_owner(&store, "lane-b", now, driven), None, "not waiting on the owner");
+        assert_eq!(super::parked_for_owner(&store, "lane-c", now, driven), None, "parked past the hold cap no longer pins it");
+        assert_eq!(super::parked_for_owner(&store, "lane-x", now, driven), None, "no card");
+        assert_eq!(super::parked_for_owner(&store, "", now, driven), None, "an unowned browser");
+        // TP-212's shape: the card was parked long before the browser was last driven.
+        assert_eq!(super::parked_for_owner(&store, "lane-a", now, now - 60 + super::HANDOFF_SLACK_S + 1), None,
+            "an ask parked before the browser's later use is not its handoff");
     }
 }
