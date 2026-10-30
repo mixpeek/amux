@@ -482,6 +482,36 @@ const INCIDENT_TERMS: &[&str] = &[
     "production down", "prod down", "customer-facing", "customer plane", "customer-plane",
 ];
 
+/// An ask to CREATE AN ACCOUNT: the owner agrees to a service's terms, and
+/// often a payment method, in his own name. No approval for a different
+/// decision can do that for him (AF-1024, 2026-10-13: SA-6, a ChatGPT-directory
+/// decision, refused to park "create a Zapier account" (MG-2079) and "enroll in
+/// Microsoft Partner Center" (MG-2071) and told the lane not to escalate
+/// again). The learned-approval rule (all terms, 2026-10-16) closed that
+/// instance; this closes the class for written rules too. A verb then
+/// "account" within three words, or a fixed phrase.
+pub fn account_creation_term(text: &str) -> Option<String> {
+    let t = text.to_ascii_lowercase();
+    for p in ["sign up for", "enroll in", "account creation", "new account", "register for an account"] {
+        if t.contains(p) {
+            return Some(p.to_string());
+        }
+    }
+    let words: Vec<String> = t
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    for (i, w) in words.iter().enumerate() {
+        if matches!(w.as_str(), "create" | "open" | "register") {
+            if let Some(j) = words.iter().skip(i + 1).take(3).position(|x| x == "account" || x == "accounts") {
+                return Some(words[i..=i + 1 + j].join(" "));
+            }
+        }
+    }
+    None
+}
+
 /// The first incident phrase in `text`, if any.
 pub fn incident_term(text: &str) -> Option<&'static str> {
     let t = text.to_ascii_lowercase();
@@ -511,6 +541,13 @@ pub fn match_ask(
         return MatchVerdict::NoMatch {
             reason: format!(
                 "owner_presence_required: the ask needs the owner to act in person (\"{term}\"); a standing approval answers a decision, not that"
+            ),
+        };
+    }
+    if let Some(term) = account_creation_term(text) {
+        return MatchVerdict::NoMatch {
+            reason: format!(
+                "owner_account_required: the ask creates an account in the owner's name (\"{term}\"); a standing approval for another decision cannot agree to its terms"
             ),
         };
     }
@@ -1777,6 +1814,23 @@ mod learn_tests {
         let ask = "Decide now: the ChatGPT directory front door shard OOMKills every boot in production, a customer-plane outage.";
         let v = match_ask(&[sa6()], ask, Some("decision"), "mixpeek-override", &[], 1_790_000_100, &|_| 0);
         assert!(matches!(v, MatchVerdict::NoMatch { .. }), "the owner must be paged: {}", v.verdict());
+    }
+
+    /// AF-1024: an ask that creates an account in the owner's name is never
+    /// answered by an approval, even a written rule whose words it shares.
+    #[test]
+    fn an_account_creation_ask_is_never_answered_by_an_approval() {
+        let mut rule = sa6();
+        rule.source = "rule".into(); // written: any one term, context allowed
+        let mg2079 = "Decide: create a Zapier account so the ChatGPT directory developer listing can post updates?";
+        let v = match_ask(std::slice::from_ref(&rule), mg2079, Some("decision"), "mixpeek-general", &[], 1_790_000_100, &|_| 0);
+        assert!(matches!(&v, MatchVerdict::NoMatch { reason } if reason.starts_with("owner_account_required")), "{v:?}");
+        let mg2071 = "Decide: enroll in Microsoft Partner Center for the ChatGPT directory developer listing?";
+        let v = match_ask(std::slice::from_ref(&rule), mg2071, Some("decision"), "mixpeek-general", &[], 1_790_000_100, &|_| 0);
+        assert!(matches!(&v, MatchVerdict::NoMatch { reason } if reason.starts_with("owner_account_required")), "{v:?}");
+        assert_eq!(account_creation_term("rotate the deploy account's key"), None, "naming an account is not creating one");
+        let plain = "Decide: should the ChatGPT directory listing go ahead for the cloud front door, or stay a developer-mode app?";
+        assert!(matches!(match_ask(&[rule], plain, Some("decision"), "x", &[], 1_790_000_100, &|_| 0), MatchVerdict::Applied { .. }));
     }
 
     #[test]
