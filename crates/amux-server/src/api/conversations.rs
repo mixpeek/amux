@@ -1368,11 +1368,12 @@ pub(crate) async fn post_inner(
     // which can leave out the very post the thread is about (Ethan,
     // 2026-10-29: "in a thread if a worker is tagged it should understand the
     // context of the thread").
-    let thread_ctx: Vec<String> = match parent {
-        Some(root) => state.store.read().map(|c| thread_lines(&c, &conv.key(), root, 20)).unwrap_or_default(),
-        None => Vec::new(),
-    };
-    let context = if parent.is_some() { Vec::new() } else { recent_context(state, &conv.key(), 8) };
+    // A new post starts a thread of its own and carries nothing: the
+    // conversation's other posts are other topics (Ethan, 2026-10-29: a new
+    // thread mentioning amux-helper arrived with the DM's last 8 messages from
+    // every thread, "it was a new thread/comment it shouldn't have given you
+    // the full context").
+    let thread_ctx: Vec<String> = state.store.read().map(|c| delivery_context(&c, &conv.key(), parent)).unwrap_or_default();
     let (key, ts) = (conv.key(), now_ms());
     let id_cell = Arc::new(Mutex::new(0i64));
     let att2 = attachments.to_string();
@@ -1412,13 +1413,12 @@ pub(crate) async fn post_inner(
         }
     }
     tracing::info!(conv = %key, author = %author_key, post = id, mentions = mentions.len(),
-        deliveries = targets.len(), "conversation post");
+        deliveries = targets.len(), thread = ?parent, context_posts = thread_ctx.len(), "conversation post");
 
     // Deliver to workers in the background; the post exists either way, and
     // each outcome is written back onto it.
     if !targets.is_empty() {
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
-        let channel_workers = workers_in(&conv, &lanes);
         tokio::spawn(async move {
             let mut outcomes = Vec::new();
             for w in targets {
@@ -1431,22 +1431,12 @@ pub(crate) async fn post_inner(
                     let k = conv2.key();
                     text = text.replace(&format!("amux post '{k}' <<'EOF'"), &format!("amux post '{k}' --thread {root} <<'EOF'"));
                 }
-                // A channel's recent messages go only to workers who could read
-                // the channel anyway (its group's, or anyone in #general); a
-                // worker brought in from another group sees just the post. In a
-                // DM the poster chose to bring the worker in.
-                let member = match &conv2 {
-                    Conv::Group(g) => g == GENERAL || channel_workers.contains(&w),
-                    _ => true,
-                };
                 if !thread_ctx.is_empty() {
                     // Every worker in the thread gets it, an isolated one too:
                     // these are the thread's own posts, people's words with no
                     // instruction added, and without them a reply like "can you
                     // do this?" means nothing to the worker it tags.
                     text = format!("Earlier in this thread ({}, amux Messages):\n{}\n\n{text}", conv2.key(), thread_ctx.join("\n"));
-                } else if !isolated && member && !context.is_empty() {
-                    text = format!("Recent messages in {} before this one:\n{}\n\n{text}", conv2.key(), context.join("\n"));
                 }
                 if let Some(n) = &note {
                     text = format!("{n}\n\n{text}");
@@ -1515,15 +1505,13 @@ fn thread_lines(c: &rusqlite::Connection, conv: &str, root: i64, n: usize) -> Ve
     out
 }
 
-fn recent_context(state: &AppState, conv: &str, n: usize) -> Vec<String> {
-    let Ok(c) = state.store.read() else { return vec![] };
-    let Ok(mut q) = c.prepare("SELECT author_name, body FROM conversation_posts WHERE conv=?1 ORDER BY id DESC LIMIT ?2") else { return vec![] };
-    let rows = q.query_map(rusqlite::params![conv, n as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)));
-    let mut out: Vec<String> = rows.into_iter().flatten().flatten()
-        .map(|(a, b)| format!("- {a}: {}", b.chars().take(500).collect::<String>().replace('\n', " ")))
-        .collect();
-    out.reverse();
-    out
+/// What a worker mentioned in a post is given besides the post: for a reply,
+/// its thread (`thread_lines`); for a new post, nothing.
+fn delivery_context(c: &rusqlite::Connection, conv: &str, parent: Option<i64>) -> Vec<String> {
+    match parent {
+        Some(root) => thread_lines(c, conv, root, 20),
+        None => Vec::new(),
+    }
 }
 
 async fn mark_read(
@@ -2516,6 +2504,24 @@ mod tests {
         // In a direct message, a person also reaches the workers they could from #general.
         assert_eq!(mentionable_workers(&owner, &dm, &lanes), vec!["ed".to_string()]);
         assert!(mentionable_workers(&scoped, &dm, &[lane("other", &[])]).is_empty());
+    }
+
+    #[test]
+    fn a_new_post_carries_no_context_and_a_reply_carries_its_thread() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE conversation_posts (id INTEGER PRIMARY KEY, conv TEXT, author_name TEXT, body TEXT, parent_id INTEGER, deleted_at INTEGER);").unwrap();
+        let dm = "p:a@x.com|b@x.com";
+        for (id, who, body, parent) in [(1, "ethan", "where did you run this command?", None), (2, "doron", "upload your contacts", None),
+            (3, "ethan", "the thread's question", None), (4, "doron", "a reply in it", Some(3)), (5, "ethan", "a reply elsewhere", Some(2))] {
+            c.execute("INSERT INTO conversation_posts (id, conv, author_name, body, parent_id) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![id, dm, who, body, parent]).unwrap();
+        }
+        // A new post starts a thread: nothing from the rest of the DM.
+        assert!(delivery_context(&c, dm, None).is_empty());
+        // A reply: that thread only.
+        let t = delivery_context(&c, dm, Some(3));
+        assert!(t.iter().any(|l| l.contains("the thread's question")) && t.iter().any(|l| l.contains("a reply in it")), "{t:?}");
+        assert!(!t.iter().any(|l| l.contains("upload your contacts") || l.contains("a reply elsewhere") || l.contains("where did you run")), "{t:?}");
     }
 
     #[test]
