@@ -129,6 +129,30 @@ async fn route_table_matches_the_real_router_both_directions() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("sessions")).unwrap();
     std::env::set_var("AMUX_HOME", home.path());
+    // HERMETIC TMUX AND HOME TOO (AF-1051). AMUX_HOME alone left the sessions
+    // build reading the LIVE fleet: inside a pane `$TMUX` names the shared
+    // server, so GET /api/metrics/telemetry listed every worker's tmux session
+    // and scanned the developer's ~/.claude transcripts. Measured 2026-10-30 at
+    // host load 10: 12,554 ms of the 15 s FIRE_BUDGET (logs: the real fleet's
+    // dead panes, "subagent activity scan was slow ... 2799 ms"), so any load
+    // on top timed out and blocked unrelated lands. Isolated: 1,224 ms. CI has
+    // no tmux server and an empty home, which is why it stayed green.
+    let saved_home = std::env::var_os("HOME");
+    let saved_tmux = std::env::var_os("TMUX");
+    let saved_tmux_tmpdir = std::env::var_os("TMUX_TMPDIR");
+    std::env::remove_var("TMUX");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var("HOME", home.path());
+    // The rig must not see a tmux server. If tmux is installed, a listing from
+    // this environment has to fail; a success means the rig reached a real one.
+    if let Ok(out) = std::process::Command::new("tmux").args(["list-sessions"]).output() {
+        assert!(
+            !out.status.success(),
+            "the route table rig can see a tmux server ({}): it is not hermetic and its \
+             sessions routes are timing the real fleet (AF-1051)",
+            String::from_utf8_lossy(&out.stdout).lines().count()
+        );
+    }
     // AF-129, the named wedge: mdai_root() falls back to $HOME, so the fired
     // GET /api/files/mdai walked the developer's ENTIRE home tree — unbounded
     // in time on a real machine (one slow or kernel-blocking directory and
@@ -148,6 +172,17 @@ async fn route_table_matches_the_real_router_both_directions() {
     });
 
     let twin_candidates = ["DELETE", "PUT", "PATCH", "POST", "GET"];
+    // EARLY WARNING (AF-1051): the slowest route answers in half the budget,
+    // so a sessions build that starts reading real state again fails here,
+    // loudly and at any load, instead of timing out only on a busy machine.
+    let t0 = std::time::Instant::now();
+    let _ = fire(&app, "GET", "/api/metrics/telemetry").await;
+    let took = t0.elapsed();
+    assert!(
+        took < FIRE_BUDGET / 2,
+        "GET /api/metrics/telemetry took {took:?} in the hermetic rig, over half of FIRE_BUDGET \
+         ({FIRE_BUDGET:?}): the sessions build is reading something real again (AF-1051)"
+    );
     for entry in ROUTE_TABLE {
         let path = concretize(entry.path);
         let res = fire(&app, "OPTIONS", &path).await;
@@ -246,6 +281,12 @@ async fn route_table_matches_the_real_router_both_directions() {
     std::env::remove_var("AMUX_PY_URL");
     std::env::remove_var("AMUX_HOME");
     std::env::remove_var("AMUX_FILES_ROOT");
+    for (k, v) in [("HOME", saved_home), ("TMUX", saved_tmux), ("TMUX_TMPDIR", saved_tmux_tmpdir)] {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
 }
 
 /// THE OTHER DIRECTION: a route MOUNTED but absent from the table.
