@@ -87,6 +87,11 @@ def state_for(data):
             'SessionEnd': 'idle', 'StopFailure': 'error'}.get(event)
 
 
+def is_compaction(data):
+    event = data.get('hook_event_name')
+    return event in ('PreCompact', 'PostCompact') or (event == 'SessionStart' and data.get('source') == 'compact')
+
+
 def pending(folder):
     return sorted(p for p in folder.glob('*.json') if p.name != 'counter.json')
 
@@ -181,6 +186,15 @@ def observe(data, root, worker, run, provider, occurred_at):
         # Preserve the explicit tool's waiting state until a real next edge.
         if data.get('hook_event_name') == 'Notification' and previous.get('state') == 'waiting':
             state = 'waiting'
+        # A compaction is not a turn edge: it keeps whatever state the lane was
+        # in (AF-1046). Compacting an IDLE lane mapped to 'active' and nothing
+        # followed it, so the lane read mid-turn until its next prompt
+        # (mixpeek-general 2026-10-30: Stop idle at 07:02:56, then PreCompact,
+        # SessionStart(compact), PostCompact all 'active' at 07:57) and
+        # session.self_reports_landing called its hooks broken. A compaction
+        # inside a turn still reads 'active', from the edge before it.
+        if is_compaction(data) and previous.get('state'):
+            state = previous['state']
         seq = previous.get('sequence', 0) + 1
         payload = {'native_status': True, 'provider': provider, 'run_id': run,
                    'sequence': seq, 'event_ts': occurred_at, 'state': state,

@@ -75,6 +75,28 @@ class NativeStatus(unittest.TestCase):
             values=[json.loads(p.read_text())['state'] for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
             self.assertEqual(values, ['waiting','waiting','waiting','active','blocked'])
 
+    def test_a_compaction_keeps_the_lanes_state(self):
+        # AF-1046, mixpeek-general 2026-10-30: compacting an idle lane read as
+        # mid-turn for an hour because every compaction edge mapped to active.
+        def states(events):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for i, data in enumerate(events, 1):
+                    observer.observe(data, root, 'worker', 'abc', 'claude', float(i))
+                return [json.loads(p.read_text())['state'] for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
+        compaction = [{'hook_event_name':'PreCompact'},
+                      {'hook_event_name':'SessionStart','source':'compact'},
+                      {'hook_event_name':'PostCompact'}]
+        # At idle, the live sequence: the lane stays idle through all three.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}, {'hook_event_name':'Stop'}] + compaction),
+                         ['active', 'idle', 'idle', 'idle', 'idle'])
+        # Inside a turn: still active, and the turn's own Stop ends it.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}] + compaction + [{'hook_event_name':'Stop'}]),
+                         ['active', 'active', 'active', 'active', 'idle'])
+        # CONTROL: an ordinary SessionStart is not a compaction and still says idle.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}, {'hook_event_name':'SessionStart','source':'startup'}]),
+                         ['active', 'idle'])
+
     def test_subagent_prompt_blocks_the_lane_and_only_its_own_edge_clears_it(self):
         # tubescience-parity 2026-09-30: a subagent's permission prompt read as
         # WORKING because every subagent edge was dropped.
