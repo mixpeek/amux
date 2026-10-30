@@ -52325,6 +52325,7 @@ function connectSSE() {
     if (_initialLoad) { _initialLoad = false; render(); }
     if (_sseGraceUntil) _sseGraceUntil = 0;
     if (!_liveSSE) { _liveSSE = true; updateConnectionStatus(); }
+    if (_pollTimer) _stopPollingFallback();
     if (!online) setOnline(true);
     // On reconnect after being offline / zombie: catch up on anything we missed.
     // Note: _sseRetries is reset above, so we key off wasOffline alone.
@@ -52506,13 +52507,38 @@ function connectSSE() {
   };
 }
 
+// POLLING IS A DETOUR, NOT A DESTINATION (hog RCA 20261030-044026). Three
+// failed reconnects, which one deploy restart can cause, put a window on this
+// 5 s poll, and nothing ever tried the stream again or stopped the timer: the
+// Mac app's windows fetched the whole board (536 ms of server time each) about
+// 2,360 times an hour, one of them still on code two deploys old because the
+// reload hint rides the stream. While polling, the stream is retried every
+// _SSE_RETRY_FROM_POLL_MS, and its first message ends the poll.
+const _SSE_RETRY_FROM_POLL_MS = 30000;
+let _pollStartedAt = 0;
+let _sseRetryFromPollAt = 0;
 function enablePollingFallback() {
   _sseFallback = true;
   if (_sse) { _sse.close(); _sse = null; }
   fetchSessions(); fetchBoard(); _runDeltaSync();
+  if (!_pollStartedAt) _pollStartedAt = Date.now();
+  _sseRetryFromPollAt = Date.now() + _SSE_RETRY_FROM_POLL_MS;
   if (!_pollTimer) _pollTimer = setInterval(() => {
     fetchSessions(); fetchBoard();
+    if (!_sse && Date.now() >= _sseRetryFromPollAt) {
+      _sseRetryFromPollAt = Date.now() + _SSE_RETRY_FROM_POLL_MS;
+      _sseFallback = false; _sseRetries = 0;
+      connectSSE();
+    }
   }, 5000);
+}
+function _stopPollingFallback() {
+  if (!_pollTimer) return;
+  clearInterval(_pollTimer); _pollTimer = null;
+  _sseFallback = false;
+  const polledMs = _pollStartedAt ? Date.now() - _pollStartedAt : 0;
+  _pollStartedAt = 0;
+  console.info('[amux] stream back; polling stopped verdict=sse_recovered_from_polling polled_ms=' + polledMs);
 }
 
 // ── Freshness watchdog & resume handlers ───────────────────────────────────
