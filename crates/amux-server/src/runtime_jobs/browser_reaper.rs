@@ -616,6 +616,14 @@ pub(crate) async fn tick_with_limits(
             tracing::debug!(profile = %profile, until, verdict = "browser_reap_held", "browser: held open, no arm applies");
             continue;
         }
+        // PARKED FOR THE OWNER: its worker has a card in needsyou, so the
+        // browser is very likely the page the owner was asked to finish.
+        if let Some(card) = store.and_then(|s| parked_for_owner(s, &owner, now as i64)) {
+            tracing::info!(profile = %profile, owner = %owner, card = %card, measured = true, n_considered = 1,
+                verdict = "browser_reap_parked_for_owner",
+                "browser: its worker is waiting on the owner (needsyou), held open like a hold");
+            continue;
+        }
         // What Chrome itself says the pages are doing. A driver amux did not
         // carry (raw CDP, a polled `route state`) still moves pages or stays
         // attached, and that is activity (NetSuite, 2026-10-26).
@@ -846,6 +854,30 @@ pub fn closing_notice(profile: &str, left_s: i64) -> String {
          `amux browser hold {profile} --for 2h` for a long task. A page that is still loading is never closed under you.",
         left_s.max(0)
     )
+}
+
+/// The needsyou card a browser's worker is waiting on, if any (AF-1025).
+///
+/// A worker that hands the owner a half-finished page ("finish the Zapier
+/// sign-up") parks its card in needsyou and stops driving the browser, which
+/// is exactly what the activity arm reads as abandoned: on 2026-10-13 the
+/// ethan browser at zapier.com/sign-up closed after 6 minutes, before the
+/// owner opened the link. While the worker has a card in needsyou that
+/// entered that state within [`hold_max_s`], its browsers are treated as held.
+/// Past that, an unanswered ask no longer pins a browser.
+pub fn parked_for_owner(store: &crate::db::SharedStore, owner: &str, now: i64) -> Option<String> {
+    if owner.is_empty() {
+        return None;
+    }
+    let conn = store.read().ok()?;
+    conn.query_row(
+        "SELECT id FROM issues WHERE session = ?1 AND status = 'needsyou' AND deleted IS NULL \
+           AND COALESCE(archived,0) = 0 AND COALESCE(entered_state_at, updated, 0) >= ?2 \
+         ORDER BY COALESCE(entered_state_at, updated, 0) DESC LIMIT 1",
+        rusqlite::params![owner, now - hold_max_s()],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
 }
 
 // ── Holds: "keep this browser open for N" (`amux browser hold`) ──
@@ -1711,5 +1743,40 @@ mod direct_driving_tests {
         let r = reap_notice("netsuite", ReapReason::NoActivity { since_verb_s: 300, window_s: 300 });
         assert!(r.contains("in your next reply"), "the close notice says how to tell the person: {r}");
         assert!(r.contains("amux browser hold netsuite --for 2h"), "{r}");
+    }
+}
+
+#[cfg(test)]
+mod parked_for_owner_tests {
+    /// AF-1025: a worker with a fresh needsyou card keeps its browser; a card
+    /// in another state, another worker's card, or one parked past the hold
+    /// cap does not.
+    #[tokio::test]
+    async fn a_browser_waiting_on_the_owner_is_held_and_only_while_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("p.db")).unwrap());
+        let now = 1_800_000_000_i64;
+        let old = now - super::hold_max_s() - 60;
+        store
+            .write_async(move |c| {
+                for (id, session, status, entered) in [
+                    ("AF-1", "lane-a", "needsyou", now - 60),
+                    ("AF-2", "lane-b", "todo", now - 60),
+                    ("AF-3", "lane-c", "needsyou", old),
+                ] {
+                    c.execute(
+                        "INSERT INTO issues (id, title, status, session, created, updated, entered_state_at) VALUES (?1, 't', ?2, ?3, ?4, ?4, ?4)",
+                        rusqlite::params![id, status, session, entered],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        assert_eq!(super::parked_for_owner(&store, "lane-a", now).as_deref(), Some("AF-1"));
+        assert_eq!(super::parked_for_owner(&store, "lane-b", now), None, "not waiting on the owner");
+        assert_eq!(super::parked_for_owner(&store, "lane-c", now), None, "parked past the hold cap no longer pins it");
+        assert_eq!(super::parked_for_owner(&store, "lane-x", now), None, "no card");
+        assert_eq!(super::parked_for_owner(&store, "", now), None, "an unowned browser");
     }
 }
