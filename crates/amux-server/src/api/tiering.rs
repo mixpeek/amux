@@ -465,8 +465,20 @@ fn slash(p: &Path) -> String {
     format!("{}/", p.display())
 }
 
+/// rsync by absolute path, then on PATH, or None. Checked before a move is
+/// queued: CI's e2e container had no rsync, every copy failed and the folder
+/// sat in "moving" through five retries (fixed in CI by 50d4a37f8; this makes
+/// the server say so at once instead).
+pub(crate) fn rsync_bin() -> Option<PathBuf> {
+    ["/usr/bin/rsync", "/opt/homebrew/bin/rsync", "/usr/local/bin/rsync"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+        .or_else(|| std::env::var_os("PATH").and_then(|v| std::env::split_paths(&v).map(|d| d.join("rsync")).find(|p| p.exists())))
+}
+
 fn rsync(args: &[&str]) -> Result<String, String> {
-    let bin = ["/usr/bin/rsync", "/opt/homebrew/bin/rsync", "/usr/local/bin/rsync"].into_iter().find(|p| Path::new(p).exists()).unwrap_or("rsync");
+    let bin = rsync_bin().ok_or_else(|| "rsync is not installed".to_string())?;
     let out = Command::new(bin).args(args).output().map_err(|e| format!("rsync: {e}"))?;
     if !out.status.success() {
         return Err(format!(
@@ -620,6 +632,9 @@ pub(crate) fn run_op(path: &str, op: &Op, set_phase: &dyn Fn(Phase)) -> Result<(
 /// `None` when the folder may move to the cold drive; otherwise (class, why).
 async fn gate_to_hdd(f: &Folder, cold_root: &Path, owners: &reclaim_owner::Owners) -> Option<(String, String)> {
     let src = PathBuf::from(&f.path);
+    if rsync_bin().is_none() {
+        return Some(("no_rsync".into(), "rsync is not installed on this machine, so nothing can be copied".into()));
+    }
     if cold_root.as_os_str().is_empty() {
         return Some(("no_drive".into(), "no cold drive is selected".into()));
     }
@@ -674,6 +689,9 @@ async fn gate_to_hdd(f: &Folder, cold_root: &Path, owners: &reclaim_owner::Owner
 }
 
 async fn gate_to_mac(f: &Folder) -> Option<(String, String)> {
+    if rsync_bin().is_none() {
+        return Some(("no_rsync".into(), "rsync is not installed on this machine, so nothing can be copied".into()));
+    }
     let Some(dest) = f.dest.clone().map(PathBuf::from) else {
         return Some(("not_on_hdd".into(), "the folder is not on the cold drive".into()));
     };
@@ -720,20 +738,39 @@ fn link_would_show_in_git(p: &Path) -> Option<String> {
     }
 }
 
+/// Is `p` a mount point: a different device from its parent. A plain folder
+/// named `/Volumes/Bulk` can sit on the boot disk while the drive is unplugged
+/// (macOS leaves stale mount folders), and `is_dir()` alone would take it for
+/// the drive: the status read "available" with the Mac's own free space, and a
+/// move would have filled the Mac under the drive's name (land review F1).
+pub(crate) fn is_mount(p: &Path) -> bool {
+    let Some(parent) = p.parent() else { return true };
+    match (std::fs::metadata(p), std::fs::metadata(parent)) {
+        (Ok(a), Ok(b)) => a.is_dir() && a.dev() != b.dev(),
+        _ => false,
+    }
+}
+
+/// For a path under `/Volumes/<name>/...`, that volume; otherwise None.
+fn volume_of(p: &Path) -> Option<PathBuf> {
+    let mut comps = p.components();
+    match (comps.next(), comps.next(), comps.next()) {
+        (Some(_), Some(v), Some(name)) if v.as_os_str() == "Volumes" => Some(Path::new("/Volumes").join(name.as_os_str())),
+        _ => None,
+    }
+}
+
 fn ensure_cold_root(cold_root: &Path) -> Result<(), String> {
+    // Under /Volumes, the volume itself must be MOUNTED, checked by device, not
+    // just present: writing under an unplugged drive's leftover folder would
+    // fill the Mac under the drive's name.
+    if let Some(vol) = volume_of(cold_root) {
+        if !is_mount(&vol) {
+            return Err(format!("{} is not connected", vol.display()));
+        }
+    }
     if cold_root.is_dir() {
         return Ok(());
-    }
-    // Under /Volumes, the volume itself must be mounted: creating the folder on
-    // the internal disk under an unmounted drive's name would fill the Mac.
-    let mut comps = cold_root.components();
-    if let (Some(_), Some(v), Some(name)) = (comps.next(), comps.next(), comps.next()) {
-        if v.as_os_str() == "Volumes" {
-            let vol = Path::new("/Volumes").join(name.as_os_str());
-            if !vol.is_dir() {
-                return Err(format!("{} is not connected", vol.display()));
-            }
-        }
     }
     std::fs::create_dir_all(cold_root).map_err(|e| format!("cannot create {}: {e}", cold_root.display()))
 }
@@ -1193,14 +1230,21 @@ async fn status() -> Response {
     let cold_status = if cfg.cold_root.is_empty() {
         json!(null)
     } else {
+        // Available only when its own volume is mounted. Space is then read
+        // from the nearest existing folder, which stays on that volume; an
+        // unplugged drive reports nothing rather than the boot disk's numbers.
+        let available = match volume_of(&cold) {
+            Some(vol) => is_mount(&vol),
+            None => cold.is_dir() || ensure_parent_mounted(&cold),
+        };
         let probe = nearest_existing(&cold);
-        let m = std::fs::metadata(&probe).ok();
-        let (free, total) = df_bytes(&probe).unwrap_or((0, 0));
+        let (free, total) = if available { df_bytes(&probe).unwrap_or((0, 0)) } else { (0, 0) };
+        let dev = std::fs::metadata(&probe).ok().map(|m| m.dev());
         json!({
             "path": cfg.cold_root,
-            "available": m.as_ref().map(|m| m.is_dir()).unwrap_or(false) || ensure_parent_mounted(&cold),
+            "available": available,
             "free": free, "total": total,
-            "same_disk_as_mac": m.as_ref().map(|m| Some(m.dev()) == home_dev).unwrap_or(false),
+            "same_disk_as_mac": available && dev.is_some() && dev == home_dev,
         })
     };
     let folders: Vec<Value> = cfg
@@ -1238,10 +1282,9 @@ async fn status() -> Response {
 /// True when `p` sits under a mounted /Volumes/<name> even if `p` itself does
 /// not exist yet, so a fresh choice of cold folder reads as available.
 fn ensure_parent_mounted(p: &Path) -> bool {
-    let mut comps = p.components();
-    match (comps.next(), comps.next(), comps.next()) {
-        (Some(_), Some(v), Some(name)) if v.as_os_str() == "Volumes" => Path::new("/Volumes").join(name.as_os_str()).is_dir(),
-        _ => p.parent().map(|x| x.is_dir()).unwrap_or(false),
+    match volume_of(p) {
+        Some(vol) => is_mount(&vol),
+        None => p.parent().map(|x| x.is_dir()).unwrap_or(false),
     }
 }
 
@@ -1797,6 +1840,20 @@ mod tests {
         assert_eq!(nearest_existing(&missing), d.path());
         assert!(df_bytes(&nearest_existing(&missing)).is_some_and(|(_, total)| total > 0));
         assert_eq!(nearest_existing(d.path()), d.path());
+    }
+
+    #[test]
+    fn a_leftover_folder_is_not_a_mounted_drive() {
+        let d = tempfile::tempdir().unwrap();
+        let fake = d.path().join("Bulk");
+        fs::create_dir(&fake).unwrap();
+        assert!(!is_mount(&fake), "a plain folder sits on its parent's device");
+        assert!(is_mount(Path::new("/")));
+        assert_eq!(volume_of(Path::new("/Volumes/Bulk/amux-tier/x")), Some(PathBuf::from("/Volumes/Bulk")));
+        assert_eq!(volume_of(Path::new("/Users/e/x")), None);
+        let e = ensure_cold_root(Path::new("/Volumes/amux-test-no-such-drive/tier")).unwrap_err();
+        assert!(e.contains("not connected"), "{e}");
+        assert!(!Path::new("/Volumes/amux-test-no-such-drive").exists(), "nothing was created");
     }
 
     #[test]
