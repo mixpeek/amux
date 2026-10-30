@@ -69,10 +69,18 @@ DRY=0
 # AMUX_TRIPWIRE_LEVEL stands in for the kernel reading (tests only).
 level=${AMUX_TRIPWIRE_LEVEL:-$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)}
 [ -n "$level" ] || level=-1
-swap_line=$(sysctl -n vm.swapusage 2>/dev/null)
+# AMUX_TRIPWIRE_SWAP_LINE stands in for the sysctl reading (tests only).
+swap_line=${AMUX_TRIPWIRE_SWAP_LINE:-$(sysctl -n vm.swapusage 2>/dev/null)}
 swap_free=$(printf '%s' "$swap_line" | sed -E 's/.*free = ([0-9.]+)M.*/\1/')
 swap_used=$(printf '%s' "$swap_line" | sed -E 's/.*used = ([0-9.]+)M.*/\1/')
+swap_total=$(printf '%s' "$swap_line" | sed -E 's/.*total = ([0-9.]+)M.*/\1/')
 case "$swap_free" in ''|*[!0-9.]*) swap_free=-1 ;; esac
+case "$swap_total" in ''|*[!0-9.]*) swap_total=-1 ;; esac
+# NO SWAP FILE IS NOT EXHAUSTED SWAP. macOS creates swap files on demand, so a
+# box that has not needed any since boot reads "total = 0.00M free = 0.00M".
+# Free 0 of total 0 paged URGENT on 2026-10-30 with 72% of RAM free.
+swap_none=0
+awk -v t="$swap_total" 'BEGIN{exit !(t+0 == 0)}' && swap_none=1
 # RECLAIMABLE, not "free". On macOS `Pages free` is routinely near zero on a
 # perfectly healthy box because the OS keeps pages resident until something
 # wants them; measured here 0.38 GB free beside 22.76 GB inactive. Reporting
@@ -108,10 +116,10 @@ awk_ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 >= b+0)}'; }
   add "kernel memory pressure level $level (4 = critical, jetsam kills largest-first)"
 awk_ge "$fse_gb" "$FSEVENTSD_GB" && \
   add "fseventsd at ${fse_gb} GB (SIP-protected, unkillable; only a reboot clears it)"
-[ "$swap_free" != "-1" ] && awk -v a="$swap_free" -v b="$SWAP_FREE_MB" 'BEGIN{exit !(a+0 <= b+0)}' && \
+[ "$swap_free" != "-1" ] && [ "$swap_none" = 0 ] && awk -v a="$swap_free" -v b="$SWAP_FREE_MB" 'BEGIN{exit !(a+0 <= b+0)}' && \
   add "swap free ${swap_free} MB of the ${swap_used} MB in use"
 
-echo "mac-tripwire: measured=$measured level=$level reclaimable=${reclaim_gb}GB free=${free_gb}GB fseventsd=${fse_gb}GB(median of 3) swap_free=${swap_free}MB swap_used=${swap_used}MB"
+echo "mac-tripwire: measured=$measured level=$level reclaimable=${reclaim_gb}GB free=${free_gb}GB fseventsd=${fse_gb}GB(median of 3) swap_free=${swap_free}MB swap_used=${swap_used}MB swap_total=${swap_total}MB$([ "$swap_none" = 1 ] && echo " swap=none_allocated")"
 
 # ACT BEFORE PAGING (Ethan 2026-10-22: "make sure its proactive"). The page tier
 # above waits for level 3, where only a human can help. At the warn level the

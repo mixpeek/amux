@@ -137,6 +137,25 @@ cell "act_failure_named" "yes" "$(printf '%s' "$out" | grep -q 'verdict=cleanup_
 cell "act_failure_not_recorded" "no" "$([ -s "$act_dir/act" ] && echo yes || echo no)"
 rm -rf -- "${act_dir:?}"
 
+# ---------------------------------------------------------------------------
+# Swap tier (every platform; the reading is injected). No swap file allocated
+# reads "total = 0.00M ... free = 0.00M", which paged URGENT on 2026-10-30 with
+# 72% of RAM free. Only a real swap file that is nearly full may trip it.
+# ---------------------------------------------------------------------------
+swap_dir=$(mktemp -d "${TMPDIR:-/tmp}/mpt-swap.XXXXXX")
+swap_run() { # <vm.swapusage line>
+  AMUX_TRIPWIRE_LEVEL=0 AMUX_TRIPWIRE_SWAP_LINE="$1" AMUX_TRIPWIRE_STATE="$swap_dir/last" \
+    AMUX_TRIPWIRE_ACT_STATE="$swap_dir/act" bash "$SUT" --dry-run 2>&1 || true
+}
+out=$(swap_run "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)")
+cell "swap_none_allocated_no_trip" "no" "$(printf '%s' "$out" | grep -q 'swap free' && echo yes || echo no)"
+cell "swap_none_allocated_named" "yes" "$(printf '%s' "$out" | grep -q 'swap=none_allocated' && echo yes || echo no)"
+out=$(swap_run "total = 4096.00M  used = 3900.00M  free = 196.00M  (encrypted)")
+cell "swap_nearly_full_trips" "yes" "$(printf '%s' "$out" | grep -q 'swap free 196.00 MB' && echo yes || echo no)"
+out=$(swap_run "total = 4096.00M  used = 1024.00M  free = 3072.00M  (encrypted)")
+cell "swap_roomy_no_trip" "no" "$(printf '%s' "$out" | grep -q 'swap free' && echo yes || echo no)"
+rm -rf -- "${swap_dir:?}"
+
 echo
 echo "ran=$RAN failed=$FAIL skipped=$SKIPPED platform=$(uname -s)"
 [ "$FAIL" -eq 0 ] || exit 1
