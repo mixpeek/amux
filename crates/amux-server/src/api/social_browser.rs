@@ -37,8 +37,11 @@ fn is_draft(d: &Draft) -> bool {
     d.privacy.as_deref().map(str::trim) == Some("draft")
 }
 
+/// Posting as a person is named, never a default: with the public switch on
+/// for every platform, a caller asking for "linkedin" could expect a company
+/// page and post on Ethan's own profile instead.
 fn account_ok(account: &str) -> bool {
-    matches!(account.trim(), "" | "me" | "ethan")
+    account.trim() == PROFILE
 }
 
 /// Run a JavaScript expression in the page and return its value.
@@ -131,7 +134,11 @@ impl Publisher for LinkedIn {
         if !account_ok(&d.account) {
             return Err(Failure::refused(
                 StatusCode::BAD_REQUEST,
-                format!("LinkedIn posts as Ethan Steininger (the `{PROFILE}` profile); account {:?}, a company page, is not built", d.account),
+                if d.account.trim().is_empty() {
+                    format!("name the LinkedIn account: account \"{PROFILE}\" posts on Ethan Steininger's own profile (a company page is not built)")
+                } else {
+                    format!("LinkedIn posts only as Ethan Steininger (account \"{PROFILE}\"); account {:?}, a company page, is not built", d.account)
+                },
             ));
         }
         let n = d.caption.trim().chars().count();
@@ -218,7 +225,7 @@ mod tests {
     }
 
     fn draft(caption: &str, privacy: Option<&str>) -> Draft {
-        Draft { platform: "linkedin".into(), caption: caption.into(), privacy: privacy.map(String::from), ..Default::default() }
+        Draft { platform: "linkedin".into(), account: "ethan".into(), caption: caption.into(), privacy: privacy.map(String::from), ..Default::default() }
     }
 
     #[test]
@@ -235,6 +242,8 @@ mod tests {
         let mut d = draft("hi", None);
         d.account = "company:amux".into();
         assert!(p.check(&open, &d).unwrap_err().error.contains("company page"));
+        d.account = String::new();
+        assert!(p.check(&open, &d).unwrap_err().error.contains("name the LinkedIn account"), "posting as a person is never the default");
         let mut d = draft("hi", None);
         d.file = "/nonexistent/clip.mp4".into();
         assert!(p.check(&open, &d).unwrap_err().error.contains("no such file"));

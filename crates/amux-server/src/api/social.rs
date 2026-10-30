@@ -61,7 +61,7 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
     ("instagram", "not_built", "Graph API content publishing: @amux_io as a Business account linked to a Facebook Page, and a Meta app with publishing approved."),
     ("tiktok", "not_built", "Content Posting API: posts are visible only to the account until TikTok audits the app."),
     ("x", "not_built", "API v2 posting needs a paid tier, which is the owner's decision."),
-    ("linkedin", "built", "browser publisher on the `ethan` profile, posting as Ethan Steininger; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). A company page and metrics are not built."),
+    ("linkedin", "built", "browser publisher on the `ethan` profile, posting as Ethan Steininger only with account \"ethan\"; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). A company page and metrics are not built."),
 ];
 
 /// Every platform call names amux. dev.to answers 403 to a request with no
