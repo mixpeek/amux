@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect, Page } from './fixtures';
 
 // AF-1060: Ethan asked "is it done" by message four times in a day (MSG-100790,
 // MSG-100871, MSG-100902, MSG-100737) while the requests ledger already knew.

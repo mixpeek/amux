@@ -1352,6 +1352,17 @@ pub async fn owner_requests(
                 }
             }
         }
+        // A closed request's sha counts only when it is on origin/main, as in
+        // `amux requests` (land review F1): otherwise the request is closed.
+        let mut closed_on_main = std::collections::HashSet::new();
+        for sha in &closed_shas {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, "origin/main"])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            if run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-closed").is_some_and(|o| o.status.success()) {
+                closed_on_main.insert(sha.clone());
+            }
+        }
         // Live is a fact only about the repo this server is built from.
         let build = env!("AMUX_BUILD_COMMIT_FULL").trim().to_string();
         let deploys = repo.join("crates").join("amux-server").is_dir() && !build.is_empty();
@@ -1367,12 +1378,15 @@ pub async fn owner_requests(
             }
         }
         let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        Ok::<_, String>((landed, deploys, live, name))
+        Ok::<_, String>((landed, deploys, live, name, closed_on_main))
     }).await.unwrap_or_else(|e| Err(e.to_string()));
-    let (landed, deploys, live, repo_name, git_why) = match git {
-        Ok((l, d, v, n)) => (l, d, v, n, Value::Null),
-        Err(e) => (Default::default(), false, Default::default(), String::new(), json!(e)),
+    let (landed, deploys, live, repo_name, closed_on_main, git_why) = match git {
+        Ok((l, d, v, n, c)) => (l, d, v, n, c, Value::Null),
+        Err(e) => (Default::default(), false, Default::default(), String::new(), Default::default(), json!(e)),
     };
+    let closed: std::collections::HashMap<i64, (String, Option<String>)> = closed.into_iter()
+        .map(|(id, (reason, sha))| (id, (reason, sha.filter(|s| closed_on_main.contains(s)))))
+        .collect();
     let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None });
     let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -4179,6 +4193,13 @@ mod subagent_walk_tests {
         let other = classify_requests(msgs, &landed, &closed, &|_| None);
         assert_eq!(other.iter().filter(|r| r.status == "on-main").count(), 2);
         assert!(other.iter().all(|r| r.status != "live"));
+        // Closed WITH a sha (land review F1): the caller keeps the sha only when it
+        // is on origin/main. Kept, the request is on main; dropped, it is closed.
+        let msgs2 = vec![(6, 60, "answer this in chat please".to_string())];
+        let kept: HashMap<i64, (String, Option<String>)> = [(6, ("landed".to_string(), Some("cccccccccccc".to_string())))].into();
+        assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false))[0].status, "on-main");
+        let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
+        assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false))[0].status, "closed");
     }
 
     fn touch(p: &std::path::Path) {
