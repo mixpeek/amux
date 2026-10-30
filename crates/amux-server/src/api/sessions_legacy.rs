@@ -1384,6 +1384,69 @@ fn capture_stall_stack(held_ms: u64, phase: &'static str) {
     });
 }
 
+thread_local! {
+    /// Set on the background refresh thread so its own call builds instead of
+    /// serving the stale snapshot and spawning another refresh.
+    static REFRESH_INLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// One background fleet refresh at a time; a second caller serves the
+/// snapshot while the first refresh runs.
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+enum RefreshSpawn {
+    AlreadyRunning,
+    Failed(std::io::Error),
+}
+
+/// Start the fleet build on its own thread. The flag clears when the thread
+/// ends however it ends, so a panicking build cannot stop every later refresh.
+fn spawn_background_refresh(store: &crate::db::SharedStore) -> Result<(), RefreshSpawn> {
+    let store = store.clone();
+    spawn_refresh_with(move || {
+        REFRESH_INLINE.with(|f| f.set(true));
+        let t0 = std::time::Instant::now();
+        let result = legacy_sessions_array_built(&store);
+        tracing::debug!(target: "amux::sessions", verdict = "sessions_refreshed_in_background",
+            measured = true, n_considered = 1, ok = result.is_ok(),
+            build_ms = t0.elapsed().as_millis() as u64,
+            "fleet snapshot rebuilt off the request path");
+        if let Err(error) = result {
+            tracing::warn!(target: "amux::sessions", verdict = "sessions_background_refresh_failed",
+                measured = true, n_considered = 1, %error,
+                "background fleet refresh failed; callers keep the previous snapshot");
+        }
+    })
+    .map(|_| ())
+}
+
+/// The single-flight part of [`spawn_background_refresh`], separate so a test
+/// can run it without a fleet.
+fn spawn_refresh_with(
+    work: impl FnOnce() + Send + 'static,
+) -> Result<std::thread::JoinHandle<()>, RefreshSpawn> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if REFRESHING.swap(true, SeqCst) {
+        return Err(RefreshSpawn::AlreadyRunning);
+    }
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            REFRESHING.store(false, SeqCst);
+        }
+    }
+    std::thread::Builder::new()
+        .name("sessions-refresh".into())
+        .spawn(move || {
+            let _clear = Clear;
+            work();
+        })
+        .map_err(|e| {
+            REFRESHING.store(false, SeqCst);
+            RefreshSpawn::Failed(e)
+        })
+}
+
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
     now - published < ttl.max(build_s)
 }
@@ -4711,6 +4774,25 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
             && registry_fingerprint().is_some_and(|f| c.registry == f))
         .then(|| c.json.clone())
     };
+    // THE CALLER THAT WOULD BUILD SERVES THE LAST SNAPSHOT TOO (AF-1011).
+    // Waiters already got the previous snapshot; the one request that won
+    // FLIGHT paid the whole build: 6 s at the median and up to 104 s on
+    // the live fleet (sessions_build_exceeds_ttl), so /api/sessions was the
+    // top slow path at steady state, not just after a restart. With a
+    // structurally valid snapshot in hand, the build runs on its own thread
+    // and this caller returns at once. Only a cold or invalidated cache (no
+    // snapshot to serve) still builds in the request.
+    if !REFRESH_INLINE.with(|f| f.get()) {
+        if let Some(json) = served() {
+            match spawn_background_refresh(store) {
+                Ok(()) | Err(RefreshSpawn::AlreadyRunning) => return Ok(json),
+                Err(RefreshSpawn::Failed(error)) => tracing::warn!(
+                    target: "amux::sessions", verdict = "sessions_refresh_spawn_failed",
+                    measured = true, n_considered = 1, %error,
+                    "background fleet refresh could not start; this request builds inline"),
+            }
+        }
+    }
     let (_flight, _watch) = match wait_for_flight(
         &FLIGHT,
         &BUILD_WATCH,
@@ -11545,6 +11627,29 @@ mod config_overlay_tests {
 
 #[cfg(test)]
 mod subagent_scan_cache_tests {
+
+    /// AF-1011: one background refresh at a time, and the flag clears when
+    /// the refresh ends, including when it panics.
+    #[test]
+    fn a_background_refresh_runs_once_at_a_time_and_always_clears() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let first = super::spawn_refresh_with(move || {
+            let _ = release_rx.recv();
+        })
+        .ok()
+        .expect("the first refresh starts");
+        assert!(
+            matches!(super::spawn_refresh_with(|| {}), Err(super::RefreshSpawn::AlreadyRunning)),
+            "a second caller must serve the snapshot, not start another fleet scrape"
+        );
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        let panicking = super::spawn_refresh_with(|| panic!("build failed")).ok().expect("free again after the first ended");
+        assert!(panicking.join().is_err());
+        let after = super::spawn_refresh_with(|| {}).ok().expect("a panicking refresh must not block every later one");
+        after.join().unwrap();
+    }
+
     use super::{subagent_cache_step, SubagentCacheStep, SUBAGENT_SCAN_TTL_S};
 
     /// Mac hog RCA 20261026-235522: callers that find the cache stale while a
