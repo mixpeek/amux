@@ -208,9 +208,10 @@ wider than `provider.quota`.
   amux calls, and prompt admission is asynchronous — so a "busy prompt"
   rejection cannot occur at all. The fixture's 409 tests classification, not a
   production path.
-- **Version drift is the norm here**, not the exception: three releases in four days. The
-  SSE capture taken during M3.2 is pinned to 2.1.4 and has not been re-measured on
-  ≥2.2.1 (it lives in the local memory bank, which this repo does not track).
+- **Version drift is the norm here**, not the exception: four releases in five days
+  (2.1.4 → 2.2.1 → 2.2.3 → 2.2.4). Both SSE captures — 2.1.4 and 2.2.4 — now replay in
+  the suite, so a shape change fails a test rather than aging quietly (M5; the bytes
+  live in the local memory bank, which this repo does not track).
 - **One server per box, now enforced by amux too.** Measured 2026-10-30 on
   opencode 2.2.3: a bare `opencode` **attaches** to one background service
   (`opencode serve --service`, `~/.local/state/opencode/service.json` carries
@@ -225,3 +226,67 @@ wider than `provider.quota`.
   answering that question: `~5.8 GiB` RSS during a turn, back to `356 MiB` within
   a minute (D1 recorded 1.8–3.6 GB; the real number is larger), with 2.4 GB of
   swap already in use. One process contains it; it does not make it free.
+
+---
+
+## Re-measured on 2.2.4 (M5, 2026-10-30)
+
+The M3 contracts were measured on **2.1.4**; the CLI then moved to 2.2.1, 2.2.3
+and **2.2.4** within five days — four versions in one milestone. So the three
+questions worth asking again were asked again, on a dedicated serve, one
+tool-using turn, then cleaned up.
+
+### 1. Does the SSE contract still hold? — YES
+
+A fresh capture of one tool-using turn (write `hello` into `ok.txt`, reply
+`DONE`) emitted **37 data frames, 1 heartbeat, 30 distinct event kinds, 0
+unparseable**, and the parser/hub/translator reproduced the same shapes the
+2.1.4 capture asserted:
+
+| what | 2.1.4 | 2.2.4 |
+|---|---|---|
+| `server.connected` → `Started` | yes | yes |
+| `execution.started` → `TurnStarted` | yes | yes |
+| name→input two-frame `ToolUsed` assembly | yes | yes (`input.started` → `.called`) |
+| `usage.updated` → summed totals | yes | yes (463 / 11 768 / 23 094 tokens) |
+| text delta → `Progress` | turn had no text | `"DONE"` |
+| `execution.succeeded` | counted no-op (D3) | counted no-op (D3) |
+| unknowns | 0 | 0 |
+
+Both captures now replay in the suite: the 2.1.4 bytes stay as proof the parser
+was not fitted to one version, and the 2.2.4 bytes (`memory-bank/evidence/m5/`)
+as proof it still holds. `session.text.started`/`ended` and
+`session.step.started/streamed/ended` are counted no-ops in both — a step
+boundary is not a worker headline.
+
+### 2. Does `…/log?after=` replay now? — **NO**, still
+
+Same session, four parameter shapes (`after=0&follow=false`, `after=0`,
+`follow=false`, no query): every one returned exactly
+
+```jsonc
+data: {"type":"log.synced","aggregateID":"ses_…","seq":19}
+```
+
+and none of the 19 prior events. **The contract is not merely unproven — it is
+consistently false across two versions**, so the "no silent gap" invariant keeps
+its measured mechanism: reconciliation reads `GET /session/{id}/message`. Do not
+build a cursor backfill on this endpoint.
+
+### 3. Did the HTTP surface move? — YES, additively
+
+`/openapi.json`: **124 paths / 290 181 bytes → 138 paths / 350 727 bytes**.
+
+- **+15 paths**: `experimental/artifacts*`, `experimental/fs/watch`,
+  `experimental/generate/{decisions,image,text}`, `experimental/media/{hash}`,
+  `experimental/schedule*` (get/post/pause/resume), `experimental/usage/limits`,
+  `plugin/gui`.
+- **−1 path**: `experimental/voice/session/{sessionID}/instructions`.
+- **Every endpoint amux depends on still exists** — `/api/info`, `/api/session`,
+  `…/message`, `…/prompt`, `…/interrupt`, `…/permission` (+ reply), `/api/event`,
+  `…/log`. Nothing amux calls was removed or re-shaped.
+
+One of the new paths is worth remembering rather than building now:
+`GET /api/experimental/usage/limits` — a real quota surface. Today
+`RateLimited.reset_at` is derived from a `retryAfterMs` that only some refusals
+carry; a limits endpoint could give a clock for the ones that do not.

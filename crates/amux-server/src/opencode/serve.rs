@@ -1293,6 +1293,11 @@ const KNOWN_NOOP_KINDS: &[&str] = &[
     "provider.updated",
     "model.updated",
     "project.updated",
+    // MEASURED 2.2.4 (M5 capture, 2026-10-30): a config ping, same family as
+    // the three above. The 2.2.4 replay test caught it as the ONE unclassified
+    // kind out of 30 — which is exactly what that test is for: a new kind must
+    // be named here deliberately, not silently ignored.
+    "config.updated",
     "agent.updated",
     "command.updated",
     "skill.updated",
@@ -3006,29 +3011,24 @@ mod tests {
         }
     }
 
-    /// Replay the bytes opencode 2.1.4 actually emitted — not a hand-written
-    /// script — in 37-byte slices, so lines are reassembled across chunk
-    /// boundaries the way `Response::chunk()` hands them over, and assert the
-    /// exact dispatched sequence plus the counters.
-    #[test]
-    fn the_measured_capture_replays_to_the_expected_event_sequence() {
-        let Some(raw) = measured_capture() else { return; };
-
-        // Pin the fixture first: if the evidence file ever changes, this
-        // fails before any assertion about our translation of it.
+    /// Replay capture bytes through the REAL parser and hub, in 37-byte slices
+    /// so lines are reassembled across chunk boundaries the way
+    /// `Response::chunk()` hands them over. Factored out when the second
+    /// capture arrived (M5): the mechanism is one thing, the measured numbers
+    /// are per-version.
+    ///
+    /// Asserts the two parse-level invariants that hold for EVERY capture:
+    /// one frame per `data:` line, and subscribing on an up stream owes no
+    /// backfill.
+    fn replay_capture(raw: &str, session: &str) -> (Vec<WorkerEvent>, Arc<ServeEventHub>) {
         let data_lines = raw.lines().filter(|l| l.starts_with("data: ")).count();
-        let heartbeats = raw.lines().filter(|l| l.starts_with(": ")).count();
-        assert_eq!(data_lines, 58, "measured capture: 58 data frames");
-        assert_eq!(heartbeats, 3, "measured capture: 3 heartbeats");
-
         let hub = ServeEventHub::new();
         hub.note_stream_connected();
-        let mut rx = ServeEventHub::subscribe(&hub, CAPTURE_SESSION);
+        let mut rx = ServeEventHub::subscribe(&hub, session);
         assert!(
             hub.take_backfill_owed().is_empty(),
             "registering on an up stream owes no backfill"
         );
-
         let mut parser = SseParser::default();
         let mut payloads = Vec::new();
         for chunk in raw.as_bytes().chunks(37) {
@@ -3050,11 +3050,29 @@ mod tests {
         for p in &payloads {
             hub.handle_frame(p);
         }
-
         let mut got = Vec::new();
         while let Ok(e) = rx.try_recv() {
             got.push(e);
         }
+        (got, hub)
+    }
+
+    /// Replay the bytes opencode 2.1.4 actually emitted — not a hand-written
+    /// script — in 37-byte slices, so lines are reassembled across chunk
+    /// boundaries the way `Response::chunk()` hands them over, and assert the
+    /// exact dispatched sequence plus the counters.
+    #[test]
+    fn the_measured_capture_replays_to_the_expected_event_sequence() {
+        let Some(raw) = measured_capture() else { return; };
+
+        // Pin the fixture first: if the evidence file ever changes, this
+        // fails before any assertion about our translation of it.
+        let data_lines = raw.lines().filter(|l| l.starts_with("data: ")).count();
+        let heartbeats = raw.lines().filter(|l| l.starts_with(": ")).count();
+        assert_eq!(data_lines, 58, "measured capture: 58 data frames");
+        assert_eq!(heartbeats, 3, "measured capture: 3 heartbeats");
+
+        let (got, hub) = replay_capture(&raw, CAPTURE_SESSION);
         assert_eq!(got.len(), 6, "dispatched sequence: {got:?}");
         assert_eq!(got[0], WorkerEvent::Started, "server.connected broadcasts");
         assert!(
@@ -3103,6 +3121,126 @@ mod tests {
         assert_eq!(s.events_emitted, 6, "{s:?}");
         assert_eq!(s.known_noop, data_lines as u64 - 6, "{s:?}");
         assert_eq!(s.unknown_kind, 0, "measured kinds are all mapped: {s:?}");
+        assert_eq!(s.malformed, 0, "{s:?}");
+        assert_eq!(s.unrouted, 0, "{s:?}");
+        assert_eq!(s.overflowed, 0, "{s:?}");
+        assert_eq!(s.gaps, 0, "{s:?}");
+        assert!(hub.take_backfill_owed().is_empty(), "{s:?}");
+    }
+
+    // -- The SECOND capture: memory-bank/evidence/m5/sse-live-2.2.4.txt --
+
+    /// Session id every session-scoped frame of the 2.2.4 capture carries.
+    const CAPTURE_SESSION_224: &str = "ses_e71f367d0ffe2SqRELyUmuOwVh";
+
+    /// The 2026-10-30 capture, on opencode **2.2.4** — the fourth version this
+    /// box ran in five days (2.0.32 → 2.1.4 → 2.2.1 → 2.2.3 → 2.2.4). Same
+    /// rule as M3.2's: read at TEST RUN time, never `include_str!`, because the
+    /// memory bank is local-only here. `None` = this machine has no evidence,
+    /// and the test says so instead of pretending.
+    fn measured_capture_224() -> Option<String> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../memory-bank/evidence/m5/sse-live-2.2.4.txt");
+        match std::fs::read_to_string(&path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "M5 capture replay NOT RUN: {} unreadable ({e}) — local-only evidence",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    /// M5's first question: **does the SSE contract still hold a version
+    /// later?** Replay the 2.2.4 bytes through the same parser/hub and assert
+    /// the same shapes the 2.1.4 capture asserted — connection broadcast,
+    /// turn start, the name→input tool assembly, usage totals summed the ACP
+    /// way, text deltas, and `execution.succeeded` staying a counted no-op
+    /// (D3: outcomes come from `/message`, never from SSE).
+    ///
+    /// The numbers are this capture's own, so a future shape change fails HERE
+    /// rather than silently degrading a fixture nobody re-reads.
+    #[test]
+    fn the_2_2_4_capture_replays_to_the_same_contract() {
+        let Some(raw) = measured_capture_224() else {
+            return;
+        };
+
+        assert_eq!(
+            raw.lines().filter(|l| l.starts_with("data: ")).count(),
+            37,
+            "measured capture: 37 data frames"
+        );
+        assert_eq!(
+            raw.lines().filter(|l| l.starts_with(": ")).count(),
+            1,
+            "measured capture: 1 heartbeat"
+        );
+
+        let (got, hub) = replay_capture(&raw, CAPTURE_SESSION_224);
+
+        // 2.2.4 emitted 30 distinct kinds for one tool-using turn; 7 of them
+        // carry worker semantics and 30 are counted no-ops.
+        assert_eq!(got.len(), 7, "dispatched sequence: {got:?}");
+        assert_eq!(got[0], WorkerEvent::Started, "server.connected broadcasts");
+        assert!(
+            matches!(&got[1], WorkerEvent::TurnStarted { .. }),
+            "execution.started: {got:?}"
+        );
+        // Usage first in 2.2.4's ordering: 454+9+0+0+0 = 463.
+        assert_eq!(
+            got[2],
+            WorkerEvent::Progress(ProgressReport {
+                summary: "usage".into(),
+                tokens_used: Some(463),
+            })
+        );
+        // Name from tool.input.started, input from tool.called — the same
+        // two-frame assembly M3.2 measured, still in that order.
+        assert_eq!(
+            got[3],
+            WorkerEvent::ToolUsed(ToolEvent {
+                tool: "write".into(),
+                detail: Some("/tmp/opencode/m5-probe-ws/ok.txt".into()),
+            })
+        );
+        // 10028+76+0+1664+0 = 11768.
+        assert_eq!(
+            got[4],
+            WorkerEvent::Progress(ProgressReport {
+                summary: "usage".into(),
+                tokens_used: Some(11768),
+            })
+        );
+        // 2.2.4 streams the reply as a delta — "DONE" — where the 2.1.4
+        // capture's turn had no text at all.
+        assert_eq!(
+            got[5],
+            WorkerEvent::Progress(ProgressReport {
+                summary: "DONE".into(),
+                tokens_used: None,
+            })
+        );
+        // 10214+80+0+12800+0 = 23094.
+        assert_eq!(
+            got[6],
+            WorkerEvent::Progress(ProgressReport {
+                summary: "usage".into(),
+                tokens_used: Some(23094),
+            })
+        );
+
+        let s = hub.stats();
+        assert_eq!(s.frames, 37, "{s:?}");
+        assert_eq!(s.heartbeats, 1, "{s:?}");
+        assert_eq!(s.events_emitted, 7, "{s:?}");
+        assert_eq!(s.known_noop, 30, "{s:?}");
+        assert_eq!(
+            s.unknown_kind, 0,
+            "every 2.2.4 kind is mapped — a new kind must be added, not ignored: {s:?}"
+        );
         assert_eq!(s.malformed, 0, "{s:?}");
         assert_eq!(s.unrouted, 0, "{s:?}");
         assert_eq!(s.overflowed, 0, "{s:?}");

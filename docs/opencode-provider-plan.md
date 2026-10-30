@@ -2,8 +2,9 @@
 
 **Fork:** `pedrovgp/amux` · **Branch:** `feat/opencode-provider` · **Base:** `main` (== upstream `1c7fbc5`)
 **Target binary:** OpenCode `v2.0.32` for M0–M2 (measured 2026-10-17; the plan began
-against `v2.0.28`), **`v2.2.3`** for M3 (the CLI moved 2.1.4 → 2.2.1 → 2.2.3 during M3
-alone). Re-measure on upgrade — the version drift is real, not hypothetical.
+against `v2.0.28`), **`v2.2.4`** for M4/M5 (the CLI moved 2.1.4 → 2.2.1 → 2.2.3 → 2.2.4
+inside these milestones alone). Re-measure on upgrade — the version drift is real,
+not hypothetical, and it is why M5 exists.
 **Status:** M0 + M1 shipped (PR #335, upstream `a95b05ab`); **M2 built** (ACP
 transport, `crates/amux-server/src/opencode/acp.rs`); **M3 built** (`serve` HTTP
 transport — see the M3 section below and `docs/serve-spike-results.md`).
@@ -287,8 +288,10 @@ what `session_exists` already assumed.
   for workers; that is a policy choice to state, not hide.
 - **Provider-id spelling.** Keep `"opencode"` canonical; no legacy alias needed.
 - **Version drift.** OpenCode's `run`/v2 API is young — it moved 2.1.4 → 2.2.1 →
-  2.2.3 in four days during M3. Pin the observed version in the coverage doc and
-  re-measure on upgrade; the M3 SSE capture has NOT been re-measured on ≥2.2.1.
+  2.2.4 in five days. Pin the observed version in the coverage doc and re-measure
+  on upgrade. The captures now exist for BOTH 2.1.4 and 2.2.4 and both replay in
+  the suite (M5), so a shape change fails a test instead of aging silently.
+  **`…/log?after=` still does not replay on 2.2.4** — re-measured, not assumed.
 - **M3's durable log is unproven.** `…/log?after=` did not replay history. Turn
   reconciliation rides `GET /session/{id}/message`; a full read, not a cursor.
 - **No supervisor yet.** A serve process exists only when someone starts it; M3
