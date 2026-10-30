@@ -37,6 +37,17 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
   await expect.poll(() => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout').length).toBe(2);
   expect(beacons.filter(b => b.verdict === 'outbox_upload_list_timeout')[1].after_reset).toBe(1);
 
+  // Still hung after a reset: a pass's default read gives up in 250ms, not 5s,
+  // so the messages behind it are not held (AF-1008).
+  const deadMs = await page.evaluate(async () => {
+    const t0 = performance.now();
+    await (window as any)._upqListBounded();
+    return performance.now() - t0;
+  });
+  expect(deadMs, 'a read on storage that stayed dead holds the pass under a second').toBeLessThan(1000);
+  await expect.poll(() => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout').length).toBe(3);
+  expect(beacons.filter(b => b.verdict === 'outbox_upload_list_timeout')[2].waited_ms).toBe(250);
+
   // Healthy again: the read opens a NEW connection rather than reusing the dropped one.
   const opened = await page.evaluate(async (before) => {
     const g = window as any;

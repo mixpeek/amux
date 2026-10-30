@@ -4664,7 +4664,16 @@ function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
 // after_reset says whether that already happened since the last good read:
 // 1 on a later timeout means reopening did not help.
 let _upqResetSinceOk = false;
-function _upqListBounded(ms = 5000) {
+// STORAGE THAT STAYED DEAD COSTS EVERY SEND 5 SECONDS (AF-1008). Messages wait
+// for this read, and in the Mac app a reopened connection kept hanging for
+// hours: 2,368 timeouts from one Amux-Desktop client, after_reset=1 on nearly
+// all of them, each one a pass that held what the user had typed for 5s.
+// Once a read has timed out even after a reset, a pass waits 250ms instead.
+// The hung read keeps running, and if it ever completes it clears the flag,
+// so storage that is slow rather than dead gets the full 5s on the next pass.
+const _UPQ_DEAD_MS = 250;
+function _upqListBounded(ms) {
+  if (ms == null) ms = _upqResetSinceOk ? _UPQ_DEAD_MS : 5000;
   let timer;
   return Promise.race([
     _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
