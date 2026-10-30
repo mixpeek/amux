@@ -118,7 +118,7 @@ run_launcher
 expect grep -q "repo=$WORK sha=$GREEN" "$TRACE"
 expect grep -q "CI-GATE tip $PENDING is pending; activating newest green $GREEN .*verdict=ci_gate_held_back" "$LOG"
 # The verdict also reaches readers outside the log (amux requests).
-expect grep -q "\"verdict\":\"ci_gate_held_back\",\"tip\":\"$PENDING\",\"tip_state\":\"pending\",\"target\":\"$GREEN\",\"held\":1}" "$AMUX_ACTIVATION_GATE_STATE"
+expect grep -q "\"verdict\":\"ci_gate_held_back\",\"tip\":\"$PENDING\",\"tip_state\":\"pending\",\"target\":\"$GREEN\",\"target_since\":[0-9][0-9]*,\"held\":1}" "$AMUX_ACTIVATION_GATE_STATE"
 # The builder must be told the ELECTED sha, or its own authority check refuses it.
 expect grep -q "sha=$GREEN authority=$GREEN" "$TRACE"
 # Once the tip goes green it is activated.
