@@ -1851,6 +1851,16 @@ fn describe_window_load(loads: &mut [f64]) -> String {
 ///
 /// Extracted so the SENTENCE is pinned by a test rather than only the evidence
 /// block that reads it, the same reason `race_verdict` is its own function.
+/// Why a p95 comparison was not filed when the row cap left too little baseline.
+fn baseline_too_short(span_h: f64, window_h: f64, cap: usize, base_n: usize) -> String {
+    format!(
+        "the {cap}-row scan cap left a baseline of {:.1}h ({base_n} rows), shorter than the \
+         {window_h:.1}h window: a multiple against it compares the window with a sliver of itself, \
+         so it is not filed (AF-1040)",
+        span_h.max(0.0)
+    )
+}
+
 fn p95_position(win_n: usize, multiple: f64) -> String {
     let n = win_n.max(1);
     // Mirrors `request_log::percentile_sorted`: sorted[ceil(0.95n) - 1].
@@ -2252,6 +2262,22 @@ fn detect_latency_with_scan_cap(
         }
         // AMUX-3471: a ratio alone files fast-vs-faster noise (2ms at 3.7x).
         if p95_w < latency_floor_ms() {
+            continue;
+        }
+        // A CAPPED SCAN THAT LEFT NO BASELINE IS NOT A REGRESSION (AF-1040).
+        // The scan is newest-first, so the cap eats the baseline: on
+        // 2026-10-30 /api/presence filed at 5.7x against "a 72h p95 of 158ms"
+        // that was 78 rows from the 0.1h just before the window, while the real
+        // 66h before it held 12,270 rows with a p95 of 2,628ms, SLOWER than the
+        // window. When the baseline covers less than one window's length the
+        // multiple compares the window with a sliver of itself.
+        let baseline_span_h = (now - oldest_seen) / 3600.0 - window_h();
+        if scan_capped && baseline_span_h < window_h() {
+            suppressed.push(sup(
+                DetectorKind::Latency,
+                &format!("latency|p95|{fam}"),
+                &baseline_too_short(baseline_span_h, window_h(), scan_cap, base.len()),
+            ));
             continue;
         }
         // ACCUMULATE, DO NOT FILE YET (AMUX-3646). See the fan-in below.
@@ -14477,6 +14503,49 @@ mod tests {
     /// The fixture makes the cap bite with a baseline LARGER than the cap, so
     /// ascending order reaches zero window rows and the detector goes blind to
     /// the very period it reports on.
+    /// AF-1040: when the cap leaves a baseline shorter than the window, the
+    /// multiple compares the window with a sliver of itself, so it is
+    /// suppressed with its reason, never filed.
+    #[tokio::test]
+    async fn a_capped_scan_with_a_sliver_of_baseline_is_not_filed() {
+        let insert = |st: &AppState, ts: f64, ms: f64| {
+            st.store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO _amux_request_log (ts, method, path, family, status, \
+                         latency_ms, client_ip, user_agent, amux_session, worker, answered_by) \
+                         VALUES (?1,'GET','/api/sessions','/api/sessions',200,?2,\
+                         '127.0.0.1','curl/8','','','native')",
+                        rusqlite::params![ts, ms],
+                    )?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                })
+                .unwrap();
+        };
+        let (st, _d) = state();
+        let now = unix_now();
+        let window_start = now - window_h() * 3600.0;
+        // 300 fast rows packed into the seconds just before the window, so a
+        // 200-row cap reaches only ~140 s of "baseline".
+        for i in 0..300 {
+            insert(&st, window_start - 1.0 - i as f64, 5.0);
+        }
+        for i in 0..60 {
+            insert(&st, now - 300.0 - i as f64, 900.0);
+        }
+        let conn = st.store.read().unwrap();
+        let (f, sup) = detect_latency_with_scan_cap(&conn, now, None, 200);
+        assert!(
+            !f.iter().any(|x| x.signature == "latency|p95|/api/sessions"),
+            "a 140 s baseline must not file a regression: {:?}",
+            f.iter().map(|x| &x.signature).collect::<Vec<_>>()
+        );
+        assert!(
+            format!("{sup:?}").contains("AF-1040"),
+            "the suppression names why it was not filed: {sup:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_scan_cap_truncates_the_baseline_never_the_window() {
         let insert = |st: &AppState, ts: f64, ms: f64| {
