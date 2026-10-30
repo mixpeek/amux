@@ -3947,7 +3947,7 @@ pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Val
         }
     };
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| e.to_string())?;
+    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| with_cause(&e))?;
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(&bytes)}));
     if status.is_success() {
         Ok(v)
