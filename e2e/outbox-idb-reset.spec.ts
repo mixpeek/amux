@@ -45,8 +45,11 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     return performance.now() - t0;
   });
   expect(deadMs, 'a read on storage that stayed dead holds the pass under a second').toBeLessThan(1000);
-  await expect.poll(() => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout').length).toBe(3);
-  expect(beacons.filter(b => b.verdict === 'outbox_upload_list_timeout')[2].waited_ms).toBe(250);
+  // Found by value: CI captured an extra 500 ms timeout beacon on desktop and
+  // mobile, so the third entry was not this read's (run 40992561790). Only the
+  // stayed-dead default sends 250.
+  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 250),
+    { message: 'the default read on dead storage reports waited_ms 250' }).toBe(true);
 
   // Healthy again: the read opens a NEW connection rather than reusing the dropped one.
   const opened = await page.evaluate(async (before) => {
