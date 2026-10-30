@@ -427,7 +427,16 @@ def main():
         return supervise(command, targets, profile=profile_dir(command),
                          max_rss=positive('AMUX_CARGO_MAX_RSS_MB', 12288) * 1024**2,
                          max_seconds=positive('AMUX_CARGO_MAX_SECONDS', 3600),
-                         max_target=positive('AMUX_CARGO_MAX_TARGET_GB', 40) * 1024**3,
+                         # 64, not 40 (AF-983): the cleanup tick keeps the newest
+                         # 3 executables per test stem (AMUX_CLEANUP_SUPERSEDED_KEEP),
+                         # ~80 stems at ~155 MB each, so a HEALTHY shared target holds
+                         # ~37 GB of test binaries plus ~12 GB of rlibs, incremental and
+                         # examples. Measured 2026-10-30: 50-65 GB all day, 326 GB of
+                         # disk free, and every commit check refused target_size for
+                         # 40 min. A cap below the steady state refuses ordinary work
+                         # and pushes lanes into private targets that use more disk.
+                         # AMUX_CARGO_MIN_FREE_GB still guards the disk itself.
+                         max_target=positive('AMUX_CARGO_MAX_TARGET_GB', 64) * 1024**3,
                          min_free=positive('AMUX_CARGO_MIN_FREE_GB', 4) * 1024**3)
     except (OSError, ValueError) as error:
         emit('cargo_budget_refused', measured=False, reason=str(error))
