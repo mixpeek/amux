@@ -5925,7 +5925,7 @@ SEVERITY: blocks
 STATUS: open
 DATE: 2026-10-13
 SESSION: mixpeek-general (asked by Ethan: "figure out why u weren't able to do it yourself and tell @amux")
-CARD: none (workers may create board items only on their own board; amux-frustrations to card it)
+CARD: AF-1022 (filed by amux-frustrations; was: none (workers may create board items only on their own board; amux-frustrations to card it))
 SYMPTOM: `amux browser for https://accounts.google.com` prints "google.com: login-cookie evidence (verify live access), login expires in 399.4 day(s)" for profile ethan, yet myaccount.google.com in that profile lands on the signed-out "About Google Account" page. On 2026-10-12 the CUA sandbox, loaded with the same profile's 811 cookies, showed ethan@mixpeek.com as "Signed out" and asked for the password. zapier.com shows the same false positive ("login-cookie evidence, 390 days") while /app/home redirects to /app/login.
 COST: Every third-party sign-in that goes through Google (OpenAI plugin portal, Zapier, Microsoft Partner Center) ends at a password prompt, so a worker that should finish the job hands it to Ethan instead. Three asks in two days (MG-1988, MG-2071, MG-2079).
 FIX: Judge a session by loading the account page and reporting signed in or signed out, not by a cookie's expiry. The Chrome sync should warn when Google's session arrives dead (likely rotated or device-bound session cookies that do not survive copying).
@@ -5936,7 +5936,7 @@ SEVERITY: blocks
 STATUS: open
 DATE: 2026-10-13
 SESSION: mixpeek-general
-CARD: none (see above)
+CARD: AF-1023 (filed by amux-frustrations; was: none (see above))
 SYMPTOM: The ethan profile browser starts headless; platform.openai.com stays on "Just a moment..." with a challenges.cloudflare.com turnstile frame (2026-10-12 and 2026-10-13). Rung 2 did not help: the CDP relay's Chrome had no Google or OpenAI session on 2026-10-12 (Google showed a blank email field, no account chooser), and on 2026-10-13 its only tab was a platform.claude.com OAuth callback.
 COST: The OpenAI plugin portal (ChatGPT app submission, MG-1988) cannot be reached from rung 1 or rung 2.
 FIX: Start the profile browser headed (or with a real display) for sites behind Cloudflare, and confirm the CDP relay attaches to the Chrome profile Ethan actually signs in with.
@@ -5947,7 +5947,7 @@ SEVERITY: wrong
 STATUS: open
 DATE: 2026-10-13
 SESSION: mixpeek-general
-CARD: none (see above)
+CARD: AF-1024 (filed by amux-frustrations; was: none (see above))
 SYMPTOM: SA-6 (an amux ChatGPT-directory decision) has require_terms developer, directory, chatgpt. `amux board needsyou` then refused the status move on MG-2071 (enroll in Microsoft Partner Center and buy a Microsoft 365 Copilot tenant) and MG-2079 (create a Zapier account) as covered_by_standing_approval, with "Do not escalate this again". The ask is recorded but the card never reaches Ethan's needsyou list.
 COST: Owner-only asks (account creation, spend) are marked approved by an unrelated decision and stay invisible to Ethan; the worker is told not to escalate.
 FIX: Match a standing approval on the decision it records, not a keyword; never apply one to an ask that creates an account or spends money it did not name.
@@ -5958,7 +5958,7 @@ SEVERITY: friction
 STATUS: open
 DATE: 2026-10-13
 SESSION: mixpeek-general
-CARD: none (see above)
+CARD: AF-1025 (filed by amux-frustrations; was: none (see above))
 SYMPTOM: I left the ethan browser at zapier.com/sign-up for Ethan to complete from the needsyou resume link; amux closed it after 6 min with no activity (window 5 min).
 COST: The owner's handoff window disappears before they open it, and the resume link points at nothing.
 FIX: Exempt a browser named by an open needsyou card's resume link from the activity reaper until the card leaves needsyou.
@@ -6149,7 +6149,7 @@ SEVERITY: high
 STATUS: open
 DATE: 2026-10-28
 SESSION: amux-cloud
-CARD: none yet (amux-cloud filed none; the land-gate owner should take it)
+CARD: AF-1026 (filed by amux-frustrations; was: none yet (amux-cloud filed none; the land-gate owner should take it))
 SYMPTOM: three land gates in a row on 2026-10-28 evening (commits 5d0cad11d,
   ed3aac7c1's rerun, f4b5eaa7a) reported rust_fail with 72 errors (E0432,
   E0433, E0277 "the size for values of type `str` cannot be known") in
@@ -6175,7 +6175,7 @@ SEVERITY: slows
 STATUS: open
 DATE: 2026-10-30
 SESSION: desktop
-CARD: none (desktop is isolated and has no board; the land-gate owner should take it)
+CARD: AF-1027 (filed by amux-frustrations; was: none (desktop is isolated and has no board; the land-gate owner should take it))
 SYMPTOM: route_table route_table_matches_the_real_router_both_directions failed
   in four land gates in a row for storage-tiers commits (a3ed51598, 08e83f6e6,
   2a96c9178 and its rebase), marked FAIL, not inherited, because the gate's one
