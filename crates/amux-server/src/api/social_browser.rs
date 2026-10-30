@@ -87,7 +87,7 @@ const PERSONAL: Target = Target {
     url: FEED,
     ready_js: "!![...document.querySelectorAll('[role=button],button')].find(e=>/^\\s*start a post\\s*$/i.test(e.innerText||''))",
     open_js: "(()=>{const e=[...document.querySelectorAll('[role=button],button')].find(e=>/^\\s*start a post\\s*$/i.test(e.innerText||''));if(!e)return false;e.click();return true})()",
-    editor: "div[role=textbox].ProseMirror",
+    editor: "div[role=textbox].ProseMirror, div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "true",
     media_label: "Media",
 };
@@ -98,7 +98,10 @@ const PAGE: Target = Target {
     url: "https://www.linkedin.com/company/146906104/admin/page-posts/published/?share=true",
     ready_js: "!![...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''))",
     open_js: "",
-    editor: "[role=dialog] div.ql-editor[role=textbox][aria-placeholder^='What do you want']",
+    // Quill when the composer opens; tiptap after a media step (amux-gtm,
+    // 2026-10-30). Inside the create-post dialog only: the page also has a
+    // Quill comment box.
+    editor: "[role=dialog] div.ql-editor[role=textbox][aria-placeholder^='What do you want'], [role=dialog] div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "(()=>{const d=[...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''));return !!d&&[...d.querySelectorAll('button')].some(b=>/^\\s*amux\\b/i.test(b.innerText||''))})()",
     media_label: "Add media",
 };
@@ -135,6 +138,17 @@ async fn until_in(state: &AppState, session: &str, script: &str, secs: u64) -> R
 
 const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*post\\s*$/i.test(b.innerText||''));return b&&!b.disabled?b:null})()";
 
+/// Whether the composer's text box holds the whole caption (whitespace
+/// collapsed). Read back after typing and again right before Post.
+async fn caption_in_editor(state: &AppState, editor: &str, caption: &str) -> Result<bool, String> {
+    let js = format!(
+        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e=document.querySelector({});return !!e&&n(e.innerText).includes(n({}))}})()",
+        json!(editor),
+        json!(caption)
+    );
+    Ok(eval(state, &js).await? == json!(true))
+}
+
 /// Close the composer without posting, discarding what was typed.
 async fn discard(state: &AppState) {
     let _ = super::browser::drive(state, SESSION, "key", json!({"key": "Escape"})).await;
@@ -168,16 +182,10 @@ async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure>
             format!("the LinkedIn composer is not posting as {}; nothing was typed", t.who),
         ));
     }
-    drive("click", json!({"selector": editor})).await.map_err(Failure::retry)?;
-    drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
-    let head: String = d.caption.trim().chars().take(40).collect();
-    let typed = eval(state, &format!("(document.querySelector({})?.innerText||'').includes({})", json!(editor), json!(head)))
-        .await
-        .map_err(Failure::retry)?;
-    if typed != json!(true) {
-        discard(state).await;
-        return Err(Failure::retry("the caption did not land in the LinkedIn composer"));
-    }
+    // MEDIA FIRST, THEN THE CAPTION. The media step takes the composer through
+    // LinkedIn's media editor and back, and the text typed before it was gone
+    // when it returned: the amux page's 12:00 video post on 2026-10-30
+    // published with no caption (urn:li:ugcPost:7521964437470167040).
     if !d.file.is_empty() {
         eval(state, &format!("(()=>{{const b=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==={});if(b){{b.click();return true}}return false}})()", json!(t.media_label)))
             .await
@@ -193,10 +201,20 @@ async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure>
             let _ = eval(state, "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*(next|done)\\s*$/i.test(b.innerText||'')&&!b.disabled);if(b){b.click();return true}return false})()").await;
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        if !until(state, &format!("!!{POST_BUTTON_JS}"), 120).await.map_err(Failure::retry)? {
+        if !until(state, &format!("!!{POST_BUTTON_JS}"), 180).await.map_err(Failure::retry)? {
             discard(state).await;
             return Err(Failure::retry("the media did not finish uploading to LinkedIn"));
         }
+        if !until(state, &format!("!!document.querySelector({})", json!(editor)), 15).await.map_err(Failure::retry)? {
+            discard(state).await;
+            return Err(Failure::retry("the LinkedIn composer had no text box after the media step"));
+        }
+    }
+    drive("click", json!({"selector": editor})).await.map_err(Failure::retry)?;
+    drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
+    if !caption_in_editor(state, editor, &d.caption).await.map_err(Failure::retry)? {
+        discard(state).await;
+        return Err(Failure::retry("the caption did not land in the LinkedIn composer"));
     }
     Ok(())
 }
@@ -257,6 +275,14 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
         {
             let t = target(&d.account).expect("checked");
             compose(state, t, d).await?;
+            // The last read before anything is sent: the post goes out only
+            // with the caption in the box (amux-gtm, 2026-10-30).
+            if !caption_in_editor(state, t.editor, &d.caption).await.map_err(Failure::retry)? {
+                discard(state).await;
+                tracing::warn!(platform = "linkedin", account = t.account, verdict = "social_browser_caption_missing",
+                    "the caption was not in LinkedIn's composer right before Post; discarded, nothing posted");
+                return Err(Failure::retry("the caption was not in LinkedIn's composer right before Post; nothing was posted"));
+            }
             if is_draft(d) {
                 discard(state).await;
                 tracing::info!(platform = "linkedin", account = t.account, chars = d.caption.chars().count(), file = !d.file.is_empty(),
@@ -276,7 +302,7 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
             // list) the newest post carrying this caption.
             let head: String = d.caption.trim().chars().take(40).collect();
             let link_js = format!(
-                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:activity:\"]')].find(e=>(e.innerText||'').includes({}));return p?'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/':''}})()",
+                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>(e.innerText||'').includes({}));return p?'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/':''}})()",
                 json!(head)
             );
             let mut url = String::new();
