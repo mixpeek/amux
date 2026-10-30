@@ -146,6 +146,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/tiering", "storage tiers: watched folders between the Mac and a cold drive by access (api/tiering.rs)"),
     ("/api/recordings", "audio recorder: upload, list, folder config, local transcription (api/recordings.rs)"),
     ("/api/usage", "token usage"),
+    ("/api/velocity", "per-worker waste, estimates and projections from task attempts (api/velocity.rs)"),
     ("/api/alert", "owner alerts"),
     ("/api/stats", "daily stats"),
     ("/api/branding", "white-label branding + assets"),
