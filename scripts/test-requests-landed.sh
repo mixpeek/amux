@@ -25,14 +25,16 @@ mkrepo "$T/srv" amux 202
 NOW=$(($(date +%s) * 1000))
 cat > "$T/api.py" <<PY
 import http.server, json, sys
+import os
 SESS = [{"name": "w-other", "dir": "$T/other"}, {"name": "w-srv", "dir": "$T/srv"}]
+HEALTH = {} if os.path.exists("$T/no-commit") else {"commit": "0" * 40}
 HIST = [{"id": 101, "ts": $NOW - 3600000, "session": "w-other", "sender": "owner", "kind": "human", "text": "post the launch thread"},
         {"id": 202, "ts": $NOW - 3600000, "session": "w-srv", "sender": "owner", "kind": "human", "text": "fix the card count"}]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         p = self.path
-        body = SESS if p.startswith("/api/sessions") else {"commit": "0" * 40} if p.startswith("/health") \
+        body = SESS if p.startswith("/api/sessions") else (HEALTH if p.startswith("/health") else None) if p.startswith("/health") \
             else (HIST if "offset=0" in p else []) if p.startswith("/api/history") \
             else {"measured": True, "tasks": {}} if p.startswith("/api/task-history/at") else {}
         b = json.dumps(body).encode()
@@ -54,5 +56,13 @@ pass=$((pass+1))
 echo "$OUT" | grep -E '^(on-main|held) +w-srv +MSG-202' >/dev/null || fail "an amux-repo commit the build lacks must stay on main, not live (control): $OUT"
 pass=$((pass+1))
 echo "$OUT" | grep -q '1 on main not live, 0 live, 1 landed in a repo this server does not deploy' || fail "the summary counts them apart: $OUT"
+pass=$((pass+1))
+# Land review F1: /health with no commit makes live() None for EVERY repo; the
+# amux repo's work must stay on main, not read "landed elsewhere".
+touch "$T/no-commit"
+OUT2=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other w-srv 2>&1)
+echo "$OUT2" | grep -E '^(on-main|held) +w-srv +MSG-202' >/dev/null || fail "with no build commit, amux-repo work must stay on main: $OUT2"
+pass=$((pass+1))
+echo "$OUT2" | grep -E '^landed +w-other +MSG-101' >/dev/null || fail "and another repo's work still reads landed: $OUT2"
 pass=$((pass+1))
 echo "test-requests-landed: $pass passed, 0 failed"

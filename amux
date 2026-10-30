@@ -9087,7 +9087,13 @@ for w in workers:
             lv = live(repo, sha)
             # A repo this server never deploys cannot become "live": its landed
             # work is finished, not held (AF-1058: amux-gtm read 10 "not live").
-            st, ev = ("live" if lv else "on-main") if lv is not None else "landed", sha[:9]
+            # Decided by the repo, not by live() being None: an unreachable
+            # /health also gives None, and amux work must then stay on-main.
+            if lv is not None:
+                st = "live" if lv else "on-main"
+            else:
+                st = "on-main" if os.path.isdir(os.path.join(repo, "crates", "amux-server")) else "landed"
+            ev = sha[:9]
         else:
             st, ev = "open", ""
         if sha:
