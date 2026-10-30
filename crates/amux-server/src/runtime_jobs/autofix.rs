@@ -6169,6 +6169,21 @@ fn disk_candidates(home: &std::path::Path) -> Vec<std::path::PathBuf> {
 // Keep the original deadline/parser regressions on the shared implementation
 // used by both the detector and reclaim; count alone does not prove causality.
 #[cfg(test)]
+mod closed_predecessor_tests {
+    /// AF-1034: an occurrence no newer than the predecessor's close is the one
+    /// it covered; a newer one, or a detector with no row time, files.
+    #[test]
+    fn a_closed_card_covers_occurrences_up_to_its_close() {
+        let closed = 1_793_335_814;
+        assert!(super::covered_by_closed_predecessor(1_793_334_175.0, closed), "AF-1034's own case");
+        assert!(super::covered_by_closed_predecessor(closed as f64, closed), "the same second is covered");
+        assert!(!super::covered_by_closed_predecessor(closed as f64 + 1.0, closed), "a newer occurrence files");
+        assert!(!super::covered_by_closed_predecessor(0.0, closed), "no row time: files as before");
+        assert!(!super::covered_by_closed_predecessor(1_793_334_175.0, 0), "an unknown close time: files as before");
+    }
+}
+
+#[cfg(test)]
 use super::storage::bounded_output;
 
 #[cfg(test)]
@@ -7985,13 +8000,13 @@ fn open_card_for_fault(conn: &Connection, signature: &str) -> Option<String> {
 /// Ordered by id DESC so the most recent predecessor wins, and returns the
 /// disposition rather than just the id, because "archived" and "discarded" mean
 /// different things to the reader: one was hidden, the other was judged.
-fn released_predecessor(conn: &Connection, signature: &str) -> Option<(String, String)> {
+fn released_predecessor(conn: &Connection, signature: &str) -> Option<(String, String, i64)> {
     let ident = fault_identity(signature)?;
     conn.query_row(
         // The COMPLEMENT of the four "still open" sites, from the same source,
         // so the two directions cannot drift apart (AMUX-4801).
         &format!(
-            "SELECT id, CASE WHEN archived = 1 THEN 'archived' ELSE status END \
+            "SELECT id, CASE WHEN archived = 1 THEN 'archived' ELSE status END, COALESCE(updated, 0) \
                FROM issues \
               WHERE source_ref LIKE ?1 \
                 AND deleted IS NULL \
@@ -8000,9 +8015,17 @@ fn released_predecessor(conn: &Connection, signature: &str) -> Option<(String, S
             live = crate::db::board_store::live_work_status_list()
         ),
         rusqlite::params![format!("autofix:{ident}|%")],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
     )
     .ok()
+}
+
+/// The predecessor already covered this occurrence: it was closed (or last
+/// touched) at or after the finding's newest offending row (AF-1034). Only
+/// detectors that stamp `last_ts` from the rows themselves can say so; ones
+/// that stamp `now` are always newer and file as before.
+fn covered_by_closed_predecessor(last_ts: f64, closed_at: i64) -> bool {
+    last_ts > 0.0 && closed_at > 0 && last_ts <= closed_at as f64
 }
 
 /// One tick: run every detector, file what is new, note what went quiet.
@@ -8431,7 +8454,28 @@ async fn autofix_tick_with_inputs(
             .ok()
             .and_then(|c| released_predecessor(&c, &f.signature));
         let mut f = f;
-        if let Some((card, disp)) = released {
+        // A CLOSED CARD ALREADY SAW THIS (AF-1034). The latency rollup re-reads
+        // a trailing window, so closing its card released rows the card had
+        // already covered: AF-1011, 1019, 1029, 1032, 1033 and 1034 were six
+        // cards for one fault, the last filed 14 minutes after AF-1033 closed
+        // from a newest row 27 minutes older than that close, with nothing slow
+        // since. Only an occurrence newer than the close is a new one.
+        if let Some((card, disp, closed_at)) = released
+            .as_ref()
+            .filter(|(_, _, closed_at)| covered_by_closed_predecessor(f.last_ts, *closed_at))
+        {
+            rep.suppressed.push((
+                f.kind.slug().into(),
+                f.signature.clone(),
+                format!(
+                    "{card} (`{disp}`) was closed at {closed_at}, after this finding's newest occurrence \
+                     ({}): it already covered it. Only an occurrence after the close files again (AF-1034).",
+                    f.last_ts as i64
+                ),
+            ));
+            continue;
+        }
+        if let Some((card, disp, _)) = released {
             f.evidence.push((
                 "why_now".into(),
                 format!(
@@ -11204,7 +11248,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
-             archived INTEGER DEFAULT 0, deleted TEXT);",
+             archived INTEGER DEFAULT 0, deleted TEXT, updated INTEGER);",
         )
         .unwrap();
         let sig = "latency|outlier|GET|/api/sessions|1788121035";
@@ -11226,7 +11270,7 @@ mod tests {
 
         // An ARCHIVED card is the specimen: still `review`, hidden by an operator.
         add("AMUX-3864", "review", 1);
-        let (id, disp) = released_predecessor(&conn, sig).expect("the archived card must be found");
+        let (id, disp, _) = released_predecessor(&conn, sig).expect("the archived card must be found");
         assert_eq!(
             (id.as_str(), disp.as_str()),
             ("AMUX-3864", "archived"),
@@ -11241,7 +11285,7 @@ mod tests {
         conn2
             .execute_batch(
                 "CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
-                 archived INTEGER DEFAULT 0, deleted TEXT);",
+                 archived INTEGER DEFAULT 0, deleted TEXT, updated INTEGER);",
             )
             .unwrap();
         conn2
@@ -11266,7 +11310,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
-             archived INTEGER DEFAULT 0, deleted TEXT);",
+             archived INTEGER DEFAULT 0, deleted TEXT, updated INTEGER);",
         )
         .unwrap();
         let add = |id: &str, sref: &str, status: &str| {
