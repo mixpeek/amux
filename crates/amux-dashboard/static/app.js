@@ -4675,14 +4675,19 @@ const _UPQ_DEAD_MS = 250;
 function _upqListBounded(ms) {
   if (ms == null) ms = _upqResetSinceOk ? _UPQ_DEAD_MS : 5000;
   let timer;
+  // A timer that fires far past its bound means the page was frozen while the
+  // read waited (AF-1036: an upload-list timeout landed in the same millisecond
+  // as a 255 s frozen-page "stall"). Give the read one fresh window instead.
+  let t0 = Date.now(), rearmed = false;
   return Promise.race([
     _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => {
+    new Promise(resolve => { const fire = () => {
+      if (!rearmed && Date.now() - t0 > ms + 10000) { rearmed = true; t0 = Date.now(); timer = setTimeout(fire, ms); return; }
       _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
       _idb.reset('upload_list_timeout');
       _upqResetSinceOk = true;
       resolve([]);
-    }, ms); }),
+    }; timer = setTimeout(fire, ms); }),
   ]).finally(() => clearTimeout(timer));
 }
 // A FROZEN HOLDER IS PRE-EMPTED, NOT WAITED OUT (Ethan, 2026-10-23: the Mac
@@ -4741,9 +4746,20 @@ function runSyncBanner(quiet = false) {
   // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
   // only setTimeout (tests/dashboard-outage-recovery.mjs).
   let watch = null;
+  // A FROZEN PAGE IS NOT A STALLED PASS (AF-1036). A sleeping Mac or a
+  // suspended app stops every timer, so the first check after waking saw the
+  // whole freeze as time in one phase: outbox_flight_stalled phase=deliver,
+  // stalled_ms 255778, queued 0, from a visible tab the moment it woke. A gap
+  // between checks far past their 5 s cadence means the page was not running;
+  // the phase clock restarts, and a pass truly stuck after waking still
+  // reports _SYNC_STALL_MS later.
+  let lastCheck = Date.now();
   const check = () => {
     watch = null;
     if (_syncFlightToken !== token) return;
+    const gap = Date.now() - lastCheck;
+    lastCheck = Date.now();
+    if (gap > 15000) { _syncPhaseAt = Date.now(); watch = setTimeout(check, 5000); return; }
     // Uploads report progress as they go; a long upload is not a stall.
     if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) { watch = setTimeout(check, 5000); return; }
     _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
