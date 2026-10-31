@@ -605,15 +605,23 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             "/../../scripts/git-hooks/git-shared-guard.py"
         ));
         let repo = crate::api::self_update::repo_dir();
+        // ORIGIN/MAIN FIRST, THEN HEAD (AF-1107): the source install.sh's
+        // install_hook_from_head reads, in the same order. A shared checkout's
+        // HEAD lags origin by hundreds of commits, so a hook installed from
+        // origin/main read as "DRIFTED from HEAD" while it was exactly the
+        // committed bytes (fa9954062dd9 installed == origin/main, HEAD
+        // d0a5a83631d8, 2026-10-31).
         let read_head = |rel: &str| -> Option<String> {
             let dir = repo.as_ref()?;
-            let out = std::process::Command::new("git")
-                .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{rel}")])
-                .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            ["origin/main", "HEAD"].iter().find_map(|r| {
+                let out = std::process::Command::new("git")
+                    .args(["-C", &dir.to_string_lossy(), "show", &format!("{r}:{rel}")])
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            })
         };
         let read_worktree = |rel: &str| -> Option<String> {
             repo.as_ref()

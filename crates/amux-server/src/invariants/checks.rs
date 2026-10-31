@@ -3102,7 +3102,7 @@ pub fn installed_script_matches_committed(
             )
         } else {
             format!(
-                "runtime {} sha {} DRIFTED from {} at HEAD ({}) and matches the worktree \
+                "runtime {} sha {} DRIFTED from {} at origin/main ({}) and matches the worktree \
                  copy of neither: an older install that missed later fixes, or an unreviewed \
                  hand-edit. Reinstall from source (./install.sh, or scripts/install-hooks.sh \
                  for the hooks alone) or fold the edit back into the committed copy.",
