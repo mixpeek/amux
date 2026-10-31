@@ -52,6 +52,20 @@ async fn release(state: &AppState) {
         tracing::warn!(error = %e, verdict = "social_browser_stop_failed", "the social publisher could not close its browser");
     }
 }
+/// A browser start the browser REFUSED (a 4xx: the profile is held by another
+/// session, or the request was not allowed) is a refusal with that status; only
+/// a failure to get an answer is a 502 to retry. Every start error used to be
+/// a 502 (AF-1065: POST /api/social/posts answered 502 for a 409 "a browser is
+/// already running under session 'social-linkedin'"), which the 5xx detector
+/// rightly filed as amux failing.
+fn start_failure((status, error): (StatusCode, String)) -> Failure {
+    if status.is_client_error() {
+        Failure::refused(status, error)
+    } else {
+        Failure::retry(error)
+    }
+}
+
 const FEED: &str = "https://www.linkedin.com/feed/";
 /// LinkedIn's limit for a post's text.
 const MAX_CHARS: usize = 3000;
@@ -162,7 +176,8 @@ async fn discard(state: &AppState) {
 /// Open `t`'s composer with the caption (and file) in it. Nothing is sent.
 async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": t.url, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": t.url, "session": SESSION, "join": true}))
+        .await.map_err(start_failure)?;
     drive("navigate", json!({"url": t.url})).await.map_err(Failure::retry)?;
     if !until(state, t.ready_js, 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
@@ -337,6 +352,21 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
 mod tests {
     use super::*;
 
+    /// AF-1065: a refused browser start passes on its own status; only a
+    /// failure without an answer is a 502 to retry.
+    #[test]
+    fn a_refused_browser_start_is_a_refusal_not_a_bad_gateway() {
+        use super::super::social_publish::FailKind;
+        let held = start_failure((StatusCode::CONFLICT, "browser start: HTTP 409 Conflict: a browser is already running".into()));
+        assert_eq!(held.status, StatusCode::CONFLICT);
+        assert!(matches!(held.kind, FailKind::Refused));
+        let down = start_failure((StatusCode::BAD_GATEWAY, "browser start: no answer".into()));
+        assert_eq!(down.status, StatusCode::BAD_GATEWAY);
+        assert!(matches!(down.kind, FailKind::Retry));
+        let broke = start_failure((StatusCode::INTERNAL_SERVER_ERROR, "browser start: HTTP 500".into()));
+        assert!(matches!(broke.kind, FailKind::Retry), "a server error stays retryable");
+    }
+
     fn ctx(pairs: &'static [(&'static str, &'static str)]) -> SocialCtx {
         SocialCtx {
             env: std::sync::Arc::new(move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())),
@@ -398,7 +428,8 @@ async fn x_discard(state: &AppState) {
 
 async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION, "join": true}))
+        .await.map_err(start_failure)?;
     drive("navigate", json!({"url": X_COMPOSE})).await.map_err(Failure::retry)?;
     if !until_in(state, SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(

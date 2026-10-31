@@ -3927,17 +3927,27 @@ pub(crate) fn actions_help(asked: &str) -> Value {
 /// same handlers the HTTP routes run, so ownership, scope and audit apply
 /// unchanged. Returns the reply body, or its error text for a non-2xx reply.
 pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Value) -> Result<Value, String> {
+    drive_status(state, session, verb, body).await.map_err(|(_, e)| e)
+}
+
+/// [`drive`] with the reply's status kept beside the error, so a caller can
+/// pass a refusal on as one (a 409 for a profile another session holds)
+/// instead of reporting it as amux failing (AF-1065). A failure before any
+/// reply carries 502.
+pub(crate) async fn drive_status(state: &AppState, session: &str, verb: &str, body: Value)
+    -> Result<Value, (StatusCode, String)> {
+    let bad = |e: String| (StatusCode::BAD_GATEWAY, e);
     let mut headers = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(session) {
         headers.insert("x-amux-session", v);
     }
     let resp = match verb {
         "start" => {
-            let b: StartBody = serde_json::from_value(body).map_err(|e| format!("start body: {e}"))?;
+            let b: StartBody = serde_json::from_value(body).map_err(|e| bad(format!("start body: {e}")))?;
             start(State(state.clone()), headers, Some(Json(b))).await
         }
         "navigate" => {
-            let b: NavigateBody = serde_json::from_value(body).map_err(|e| format!("navigate body: {e}"))?;
+            let b: NavigateBody = serde_json::from_value(body).map_err(|e| bad(format!("navigate body: {e}")))?;
             navigate(State(state.clone()), headers, Some(Json(b))).await
         }
         "stop" => stop(State(state.clone()), headers, Some(Json(body))).await,
@@ -3948,12 +3958,12 @@ pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Val
         }
     };
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| with_cause(&e))?;
+    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| bad(with_cause(&e)))?;
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(&bytes)}));
     if status.is_success() {
         Ok(v)
     } else {
-        Err(format!("browser {verb}: HTTP {status}: {}", v["error"].as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+        Err((status, format!("browser {verb}: HTTP {status}: {}", v["error"].as_str().map(String::from).unwrap_or_else(|| v.to_string()))))
     }
 }
 
