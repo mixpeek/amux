@@ -126,3 +126,17 @@ test('a clip waiting for its next try says so, not "sending"', async ({ page, br
   await expect(badge(page)).toContainText('retrying soon (transcriber busy)');
   await expect(badge(page)).not.toContainText('sending');
 });
+
+// Land review F1/F2: the badge follows every outbox change on its own, with no
+// Dictation tab opened and no repaint called by hand.
+test('the Files badge follows the outbox as clips are added and patched', async ({ page, browserName }) => {
+  webkitGap(browserName);
+  await boot(page);
+  await page.evaluate(() => (window as any).switchView?.('files'));
+  await page.evaluate(() => (globalThis as any).eval('_dictFlushing = Date.now()'));   // hold the sender so the clip stays queued
+  const id = await page.evaluate(() => (globalThis as any).eval('_dictOutboxAdd')(new Blob([new Uint8Array(2400)], { type: 'audio/webm' }), 'audio/webm', 3000));
+  expect(id).toBeTruthy();
+  await expect(badge(page)).toContainText('1 recording');
+  await page.evaluate(i => (globalThis as any).eval('_dictOutboxPatch')(i, { state: 'failed', attempts: 1, last: Date.now(), error: 'transcriber busy' }), id);
+  await expect(badge(page)).toContainText('retrying soon (transcriber busy)');
+});

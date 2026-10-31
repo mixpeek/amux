@@ -1332,8 +1332,38 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictOutboxAdd": {
+      "kind": "command._dictOutboxAdd",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOutboxDel": {
+      "kind": "command._dictOutboxDel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOutboxPatch": {
+      "kind": "command._dictOutboxPatch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictPendingBadge": {
       "kind": "command._dictPendingBadge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictPruneDone": {
+      "kind": "command._dictPruneDone",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictRecoverLive": {
+      "kind": "command._dictRecoverLive",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1376,6 +1406,12 @@
     },
     "_dictUndo": {
       "kind": "command._dictUndo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictUpdate": {
+      "kind": "command._dictUpdate",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

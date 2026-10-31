@@ -28062,7 +28062,11 @@ function _dictUpdate(mutate) {
       return next.filter(x => !drop.has(x.id));
     }),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_write_timeout')), _DICT_READ_MS); }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => clearTimeout(timer))
+    // Every change repaints the Files badge and the Dictation count, as the
+    // old whole-list write did (land review F1/F2): otherwise they keep the
+    // state from before the change until the Dictation tab is opened.
+    .then(r => { _dictPendingBadge(); return r; });
 }
 // Returns the new clip's id, or null when this device could not save it (the
 // caller then sends the recording straight from memory).
