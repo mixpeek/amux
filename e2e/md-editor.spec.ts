@@ -147,11 +147,24 @@ test('History lists the commits; Diff against one; Restore puts it back unsaved'
   await commits.nth(1).locator('[data-act="diff"]').click();
   await expect(page.locator('.mdx-diff-head')).toContainText('start the log');
   await expect(page.locator('.mdx-row-add')).toContainText('- second');
+  await expect(page.locator('.mdx-diff-ends')).toHaveText(/start the log.*→ the text now/);
   await page.locator('#mdx-mode [data-m="history"]').click();
+  // The row reads by its time first; Restore asks, and Cancel changes nothing.
+  await expect(page.locator('.mdx-commit').nth(1).locator('.mdx-commit-when')).toHaveText(/ago$/);
   await page.locator('.mdx-commit').nth(1).locator('[data-act="restore"]').click();
+  await expect(page.locator('#modal-msg')).toContainText('Diff compares against it');
+  await page.locator('#modal-btns button', { hasText: 'Cancel' }).click();
+  await expect(page.locator('#file-edit-ta')).toHaveValue('# Log\n\n- first\n- second\n');
+  await page.locator('.mdx-commit').nth(1).locator('[data-act="restore"]').click();
+  await page.locator('#modal-btns button', { hasText: 'Restore' }).click();
   await expect(page.locator('#file-edit-ta')).toHaveValue('# Log\n\n- first\n');
-  await expect(page.locator('#mdx-dirty')).toHaveText('Unsaved');
-  expect(readFileSync(f, 'utf8')).toBe('# Log\n\n- first\n- second\n');
+  // The text before is kept: Diff opens against it.
+  await expect(page.locator('#mdx-mode [data-m="diff"]')).toHaveClass(/active/);
+  await expect(page.locator('.mdx-diff-ends')).toContainText('the text before restoring');
+  await expect(page.locator('.mdx-row-del')).toContainText('- second');
+  // It saves like any edit.
+  await expect.poll(() => readFileSync(f, 'utf8'), { timeout: 10000 }).toBe('# Log\n\n- first\n');
+  await page.screenshot({ path: test.info().outputPath('md-history-restored.png') });
 });
 
 test('a file outside git says it has no history', async ({ page }) => {

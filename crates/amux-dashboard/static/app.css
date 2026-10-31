@@ -10872,9 +10872,13 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .mdx-row-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
 .mdx-gap td { color: var(--dim); text-align: center; }
 .mdx-commit { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
-.mdx-commit-main { flex: 1; min-width: 0; }
-.mdx-commit-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mdx-commit-meta { font-size: var(--fs-sm); color: var(--dim); }
+.mdx-commit-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-2); align-items: baseline;
+  text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: var(--space-1) var(--space-1-5); border-radius: var(--radius-md); cursor: pointer; min-height: 44px; }
+.mdx-commit-main:hover { background: var(--bg-inset); }
+.mdx-commit-when { font-weight: 600; white-space: nowrap; }
+.mdx-commit-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mdx-commit-meta { grid-column: 2; font-size: var(--fs-sm); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdx-commit-restore { flex-shrink: 0; font-size: var(--fs-sm); color: var(--dim); }
 
 /* Full screen: the editor alone, the viewer's header out of the way. */
 #file-overlay.mdx-full .file-overlay-header { display: none; }

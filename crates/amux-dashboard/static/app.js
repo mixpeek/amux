@@ -30846,11 +30846,15 @@ function _mdxDrawHistory(d) {
   const rel = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago'; };
   let h = '<div class="mdx-hist-head">' + d.commits.length + ' commit' + (d.commits.length === 1 ? '' : 's') + (d.uncommitted ? ' · <span class="mdx-dirty on">edits not committed</span>' : '') + '</div>';
   if (!d.commits.length) h += '<div class="mdx-empty">No commits include this file yet.</div>';
+  // A version reads by when it was and what changed; the hash is metadata. The
+  // row itself compares it with the text now; Restore is the second, smaller
+  // action and asks first (owner, 2026-10-31).
   h += d.commits.map(c => '<div class="mdx-commit" data-sha="' + esc(c.sha) + '">'
-    + '<div class="mdx-commit-main"><div class="mdx-commit-subj">' + esc(c.subject) + '</div>'
-    + '<div class="mdx-commit-meta">' + esc(c.author) + ' · ' + rel(c.at) + ' · <code>' + esc(c.short) + '</code></div></div>'
-    + '<button type="button" class="btn" data-act="diff">Diff</button>'
-    + (_fileEditable(_fileData) ? '<button type="button" class="btn" data-act="restore" title="Put this version in the editor (not saved until you save)">Restore</button>' : '')
+    + '<button type="button" class="mdx-commit-main" data-act="diff" title="Compare this version with the text now">'
+    + '<span class="mdx-commit-when">' + rel(c.at) + '</span>'
+    + '<span class="mdx-commit-subj">' + esc(c.subject) + '</span>'
+    + '<span class="mdx-commit-meta">' + esc(c.author) + ' · <code>' + esc(c.short) + '</code></span></button>'
+    + (_fileEditable(_fileData) ? '<button type="button" class="btn mdx-commit-restore" data-act="restore" title="Put this version in the editor">Restore</button>' : '')
     + '</div>').join('');
   alt.innerHTML = h;
 }
@@ -30867,10 +30871,17 @@ async function _mdxHistoryAct(sha, act) {
     const content = await _mdxCommitAt(sha);
     if (act === 'diff') { _mdx.against = { sha, short: c.short, subject: c.subject, content }; _mdxSetTab('diff'); }
     else if (act === 'restore') {
+      // Edits save themselves, so Restore writes the file: the text now stays
+      // one step away, in Diff (compared against it) and in ⌘Z.
+      const ok = await showConfirm('Put the version from ' + c.short + ' (' + c.subject + ') in the editor? It saves like any edit. The text there now is kept: Diff compares against it and \u2318Z puts it back.', 'Restore');
+      if (!ok) return;
       const ta = document.getElementById('file-edit-ta');
+      const before = ta.value;
       _mdxReplace(0, ta.value.length, content, 0);
-      if (_mdx.mode === 'preview') _mdxSetMode(_mdxWide() ? 'split' : 'edit', false);
-      showToast('Version ' + c.short + ' is in the editor. Save to keep it.');
+      _mdx.against = { label: 'the text before restoring ' + c.short, content: before };
+      _mdxSetMode('preview', false);
+      _mdxSetTab('diff');
+      showToast('Restored ' + c.short + '. Diff shows what it changed.');
       _mdxBeacon('history_restored');
     }
   } catch (e) { showToast('Could not read that version: ' + (e.message || e)); }
