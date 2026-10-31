@@ -3344,8 +3344,14 @@ pub fn argv_command_head(command: &str) -> String {
 /// local argv; the remote shell expands it, so no secret is here. Split on
 /// whitespace, such a value starts with `$` or a backtick. It flagged 104 of
 /// the 171 failures on 2026-10-29 as two "credentials" of length 5 and 6.
+///
+/// Or CODE (2026-10-31): the land gate's review runs `claude -p <prompt>`, and
+/// a prompt carrying a diff with `DOOR_SECRET=os.path.join(etc, "secret")` put
+/// `DOOR_SECRET=os.path.join(etc,` (len 17) in argv, three processes at once.
+/// A credential is base64, hex or a dashed token; it never holds a bracket, a
+/// comma or a quote, and source text nearly always does.
 pub fn argv_value_is_expansion(value: &str) -> bool {
-    value.starts_with('$') || value.starts_with('`')
+    value.starts_with('$') || value.starts_with('`') || value.contains(['(', ')', ',', '"', '\''])
 }
 
 /// Does this argv key have the SHAPE of an environment variable? (AMUX-4964)
@@ -11627,10 +11633,10 @@ mod argv_secret_invariant_tests {
     /// AMUX-6586: a shell expansion in argv is not a credential.
     #[test]
     fn a_shell_expansion_is_not_a_credential_value() {
-        for v in ["$(cat", "$PLANE_TOKEN", "${KEY}", "`cat"] {
+        for v in ["$(cat", "$PLANE_TOKEN", "${KEY}", "`cat", "os.path.join(etc,", "\"x\"", "f(x)"] {
             assert!(argv_value_is_expansion(v), "{v}");
         }
-        for v in ["sk-abc123", "x$y", "0123456789abcdef"] {
+        for v in ["sk-abc123", "x$y", "0123456789abcdef", "ghp_AbC.dEf-123_xyz", "eyJhbGciOiJIUzI1NiJ9.e30.sig"] {
             assert!(!argv_value_is_expansion(v), "{v}");
         }
     }
