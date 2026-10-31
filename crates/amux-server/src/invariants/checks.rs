@@ -1166,6 +1166,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // Messages (0137): api/conversations.rs writes epoch milliseconds.
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),
+    ("conversation_pins", "pinned_at", true), // 0144: conversations.rs pin_post writes now_ms()
     ("profiles", "updated_at", true),
     // Channel settings (0139): conversations.rs writes the channel columns
     // with Utc::now().timestamp() and membership rows with now_ms().
