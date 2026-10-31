@@ -58620,18 +58620,46 @@ function _metricsSetMode(mode) {
 // fleet list first; a row opens that worker's breakdown and projection.
 let _velocityWorker = null;
 
+// The Usage tab (docs/design/usage-optimization.md): Metrics in its Usage mode.
+function openUsage() {
+  switchView('metrics');
+  _metricsSetMode('velocity');
+}
+
+// Usage & Optimization summary above the worker list: spend, what it produced,
+// and each opportunity with its evidence, $/month and who can act on it.
+function _usageSummaryHtml(o) {
+  if (!o || !o.totals) return '';
+  const t = o.totals, money = v => v == null ? '–' : '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const tile = (id, label, value, sub) => `<div class="metrics-card" id="${id}" style="flex:1 1 140px;min-width:0;"><div class="reclaim-safe-text" style="color:var(--dim);">${label}</div><div class="reclaim-safe-head" style="font-size:var(--fs-2xl);">${value}</div><div class="reclaim-safe-text" style="color:var(--dim);">${sub}</div></div>`;
+  const tiles = `<div style="display:flex;flex-wrap:wrap;gap:var(--space-2);">${
+    tile('usage-spend', 'Spend', money(t.spend_usd), 'last ' + o.window_days + ' days')}${
+    tile('usage-finished', 'Cards finished', t.finished_cards, t.success_rate + '% of ' + t.cards + ' attempted')}${
+    tile('usage-cps', 'Cost per success', money(t.cost_per_success_usd), 'per finished card')}${
+    tile('usage-savings', 'Potential savings', money(t.potential_savings_usd_month), 'a month, estimated')}</div>`;
+  const max = Math.max(1, ...(o.by_group || []).map(g => g.spend_usd));
+  const groups = (o.by_group || []).slice(0, 8).map(g => `<div class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-2);"><span style="flex:0 0 38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.group)}</span><span style="flex:1;height:8px;border-radius:4px;background:var(--border);"><span style="display:block;height:8px;border-radius:4px;background:var(--accent);width:${Math.round(100 * g.spend_usd / max)}%;"></span></span><span>${money(g.spend_usd)}</span></div>`).join('');
+  const opps = (o.opportunities || []).slice(0, 6).map(x => `<div class="reclaim-safe-text usage-opportunity" data-kind="${esc(x.kind)}" data-owner="${esc(String(x.owner || ''))}" style="margin-bottom:var(--space-2);overflow-wrap:anywhere;"><b>${money(x.est_usd_month)}/mo</b> · ${esc(x.kind === 'background_spend' ? 'Background spend' : 'Unfinished attempts')} · fix: ${esc(String(x.owner || '–'))}<br>${esc(x.evidence || '')}<br><span style="color:var(--dim);">${esc(String(x.action || ''))}</span></div>`).join('');
+  return `<div class="metrics-section-title">Usage & optimization, last ${o.window_days} days</div>${tiles}
+    <div class="metrics-section-title">Where the spend goes</div><div class="metrics-card">${groups || '<div class="reclaim-safe-text">No spend recorded.</div>'}<div class="reclaim-safe-text" style="color:var(--dim);">${esc(o.spend_note || '')}</div></div>
+    <div class="metrics-section-title">Optimization opportunities (${(o.opportunities || []).length})</div><div class="metrics-card" id="usage-opportunities">${opps || '<div class="reclaim-safe-text">None found.</div>'}</div>`;
+}
+
 function _velocityLoad() {
   const el = document.getElementById('velocity-content');
   if (!el) return;
   if (_velocityWorker) return _velocityShowWorker(_velocityWorker);
-  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading velocity…</div>';
-  fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null).then(d => {
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading usage…</div>';
+  Promise.all([
+    fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null),
+    fetch(API + '/api/velocity/optimize?days=30').then(r => r.ok ? r.json() : null).catch(() => null),
+  ]).then(([d, o]) => {
     if (!d || !Array.isArray(d.workers)) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
     const rows = d.workers.map(w => `<div class="metrics-card velocity-row" data-velocity-worker="${esc(w.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)" style="cursor:pointer;">
         <div class="reclaim-safe-head">${esc(w.worker)}</div>
         <div class="reclaim-safe-text">${w.finished_cards} finished (${w.finished_per_day}/day) · ${w.finished_share_of_time}% of time on finished work · ${w.wasted_hours} h wasted · top: ${esc(w.top_bottleneck || '–')}</div>
       </div>`).join('');
-    el.innerHTML = `<div class="metrics-section-title">Velocity, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
+    el.innerHTML = `${_usageSummaryHtml(o)}<div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
   }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
 }
 

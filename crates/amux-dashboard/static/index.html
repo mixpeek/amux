@@ -771,6 +771,7 @@
 <div class="tab-bar">
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
   <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
   <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
@@ -1861,7 +1862,7 @@
       <button class="metrics-modebtn active" id="metricsmode-system" onclick="_metricsSetMode('system')">System</button>
       <button class="metrics-modebtn" id="metricsmode-host" onclick="_metricsSetMode('host')">Host</button>
       <button class="metrics-modebtn" id="metricsmode-resources" onclick="_metricsSetMode('resources')">Resources</button>
-      <button class="metrics-modebtn" id="metricsmode-velocity" onclick="_metricsSetMode('velocity')">Velocity</button>
+      <button class="metrics-modebtn" id="metricsmode-velocity" onclick="_metricsSetMode('velocity')">Usage</button>
       <button class="metrics-modebtn" id="metricsmode-disk" onclick="switchView('disk')">Disk Cleanup</button>
     </div>
     <div id="metrics-content"><div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading metrics&hellip;</div></div>

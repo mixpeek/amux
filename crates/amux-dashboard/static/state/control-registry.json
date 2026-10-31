@@ -6462,6 +6462,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "openUsage": {
+      "kind": "command.openUsage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "openVault": {
       "kind": "command.openVault",
       "feedback_required": true,

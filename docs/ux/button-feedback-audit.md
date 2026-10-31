@@ -430,7 +430,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Host | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Resources | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | System | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| index.html | Velocity | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Usage | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Find in ${esc(locSess)} | `_msgLocate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Open task  | `_msgOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Resend … | `_msgResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -902,6 +902,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Team | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Invite | `openTeamInvite` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
+| index.html | Usage & Optimization: where the spend goes, what | `openUsage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Open Vault | `openVault` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Push | `peekGitPush` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Global | `peekMemoryTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |

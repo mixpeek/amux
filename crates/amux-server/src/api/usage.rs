@@ -1172,6 +1172,30 @@ async fn get_attribution(
     let store = state.store.clone();
     let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let conn = store.read()?;
+        attribution(&conn, hours)
+    })
+    .await;
+
+    match out {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Spend by what started each turn (a person, a schedule, an amux nudge, a
+/// peer), over the last `hours`. Shared with /api/velocity/optimize so the
+/// Usage view and this endpoint show the same numbers.
+pub(crate) fn attribution(conn: &rusqlite::Connection, hours: i64) -> anyhow::Result<Value> {
+    {
         let cutoff: i64 = chrono::Utc::now().timestamp() - hours * 3600;
 
         // The control, not decoration: an unbounded match and a correct match
@@ -1224,7 +1248,7 @@ async fn get_attribution(
         // "A schedule fired" is actionable only when it names WHICH schedule,
         // and "a peer messaged" only when it names the lane. One schedule
         // accounted for 134 turns in 24h here and was invisible without this.
-        let mut top = stmt_top(&conn, cutoff)?;
+        let mut top = stmt_top(conn, cutoff)?;
         top.truncate(10);
 
         Ok(json!({
@@ -1241,21 +1265,6 @@ async fn get_attribution(
             "rows_considered": in_window,
             "rows_excluded_by_window": total_rows - in_window,
         }))
-    })
-    .await;
-
-    match out {
-        Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
     }
 }
 

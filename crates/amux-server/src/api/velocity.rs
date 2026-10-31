@@ -45,6 +45,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(fleet))
+        .route("/optimize", get(optimize_handler))
         .route("/{worker}", get(worker))
         .route("/{worker}/projection", get(projection))
 }
@@ -255,6 +256,8 @@ struct Data {
     attempts: Vec<Attempt>,
     tokens: HashMap<String, f64>,
     titles: HashMap<String, String>,
+    /// API-equivalent dollars per worker in the window (token_ledger.cost_usd).
+    spend: HashMap<String, f64>,
 }
 
 fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
@@ -266,7 +269,7 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
     // The episodes job creates task_episodes on its first tick, so a new
     // install has no history yet: an empty answer, not a 500.
     if !table_exists(conn, "task_episodes") {
-        return Ok(Data { attempts: Vec::new(), tokens: HashMap::new(), titles: HashMap::new() });
+        return Ok(Data { attempts: Vec::new(), tokens: HashMap::new(), titles: HashMap::new(), spend: HashMap::new() });
     }
     let mut stmt = conn.prepare(
         "SELECT e.card, e.worker, e.started_at, e.ended_at, e.outcome, COALESCE(e.reason, ''),
@@ -301,7 +304,14 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
             titles.insert(id.to_string(), t);
         }
     }
-    Ok(Data { attempts, tokens, titles })
+    let spend = if table_exists(conn, "token_ledger") {
+        let mut stmt = conn.prepare("SELECT session, SUM(cost_usd) FROM token_ledger WHERE ts >= ?1 AND COALESCE(session, '') <> '' GROUP BY session")?;
+        let rows = stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))))?.collect::<Result<HashMap<_, _>, _>>()?;
+        rows
+    } else {
+        HashMap::new()
+    };
+    Ok(Data { attempts, tokens, titles, spend })
 }
 
 /// What a card said it waited on, from the attempt's end snapshot; None when
@@ -580,6 +590,119 @@ async fn with_data(state: &AppState, since: i64) -> Result<Data, Response> {
     }
 }
 
+fn usd(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+/// Usage & Optimization (docs/design/usage-optimization.md): where the spend
+/// went, what it produced, and what to change, each change with its evidence,
+/// its estimated dollars a month and who can act on it. `groups` maps a worker
+/// to its groups; `background` is /api/usage/attribution's answer.
+fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, background: Option<&Value>) -> Value {
+    let month = 30.0 / days.max(1.0);
+    let total_spend: f64 = d.spend.values().sum();
+    let workers: BTreeSet<&str> = d.attempts.iter().map(|a| a.worker.as_str()).chain(d.spend.keys().map(String::as_str)).collect();
+    let (mut finished, mut attempted, mut card_spend) = (0usize, 0usize, 0.0f64);
+    let mut rows = Vec::new();
+    let mut opportunities = Vec::new();
+    for w in workers {
+        let spend = d.spend.get(w).copied().unwrap_or(0.0);
+        let s = summarize(w, &d.attempts, &d.tokens, days);
+        let (fin, cards) = (s["finished_cards"].as_u64().unwrap_or(0) as usize, s["cards"].as_u64().unwrap_or(0) as usize);
+        finished += fin;
+        attempted += cards;
+        if cards > 0 {
+            card_spend += spend;
+        }
+        let unfinished_share = 1.0 - s["finished_share_of_time"].as_f64().unwrap_or(100.0) / 100.0;
+        rows.push(json!({
+            "worker": w, "groups": groups.get(w).cloned().unwrap_or_default(), "spend_usd": usd(spend),
+            "cards": cards, "finished_cards": fin,
+            "success_rate": if cards > 0 { ((fin as f64 / cards as f64) * 100.0).round() } else { 0.0 },
+            "cost_per_success_usd": (fin > 0).then(|| usd(spend / fin as f64)),
+            "attempts_per_card": s["attempts_per_card"], "top_bottleneck": s["top_bottleneck"]["kind"],
+        }));
+        if (s["attempts"].as_u64().unwrap_or(0) as usize) >= MIN_ATTEMPTS && spend > 0.0 && unfinished_share > 0.0 {
+            let t = &s["top_bottleneck"];
+            opportunities.push(json!({
+                "kind": "unfinished_attempts", "worker": w, "owner": t["owner"], "category": t["kind"],
+                "est_usd_month": usd(spend * unfinished_share * month),
+                "evidence": format!("{w} spent ${:.2} in {days} days; {:.0}% of its attempt time ended without finishing, mostly {}",
+                    spend, unfinished_share * 100.0, t["kind"].as_str().unwrap_or("-")),
+                "action": t["what_it_means"],
+                "estimate": "upper bound: assumes spend follows attempt time",
+            }));
+        }
+    }
+    if let Some(b) = background {
+        let hours = b["window_hours"].as_f64().unwrap_or(24.0).max(1.0);
+        for src in b["by_source"].as_array().into_iter().flatten().filter(|x| x["is_background"] == true).take(3) {
+            let cost = src["cost_usd"].as_f64().unwrap_or(0.0);
+            if cost <= 0.0 {
+                continue;
+            }
+            opportunities.push(json!({
+                "kind": "background_spend", "source": src["source"], "owner": "amux",
+                "est_usd_month": usd(cost * 720.0 / hours),
+                "evidence": format!("{}: ${:.2} over {} turns in the last {hours} h", src["label"].as_str().unwrap_or(""), cost, src["turns"]),
+                "action": "amux started these turns, not a person: check each one moves a card, and make the trigger narrower if it does not",
+                "estimate": "the full spend, scaled to a month; savings are what the change removes",
+            }));
+        }
+    }
+    opportunities.sort_by(|a, b| b["est_usd_month"].as_f64().partial_cmp(&a["est_usd_month"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    let mut by_group: HashMap<String, f64> = HashMap::new();
+    for (w, v) in &d.spend {
+        match groups.get(w).filter(|g| !g.is_empty()) {
+            Some(gs) => gs.iter().for_each(|g| *by_group.entry(g.clone()).or_default() += v),
+            None => *by_group.entry("ungrouped".into()).or_default() += v,
+        }
+    }
+    let mut by_group: Vec<Value> = by_group.into_iter().map(|(g, v)| json!({"group": g, "spend_usd": usd(v)})).collect();
+    by_group.sort_by(|a, b| b["spend_usd"].as_f64().partial_cmp(&a["spend_usd"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| b["spend_usd"].as_f64().partial_cmp(&a["spend_usd"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    json!({
+        "window_days": days, "measured": true, "n_considered": d.attempts.len(),
+        "totals": {
+            "spend_usd": usd(total_spend),
+            "finished_cards": finished, "cards": attempted,
+            "success_rate": if attempted > 0 { ((finished as f64 / attempted as f64) * 100.0).round() } else { 0.0 },
+            "cost_per_success_usd": (finished > 0).then(|| usd(card_spend / finished as f64)),
+            "potential_savings_usd_month": usd(opportunities.iter().filter_map(|o| o["est_usd_month"].as_f64()).sum()),
+        },
+        "by_group": by_group,
+        "by_group_note": "a worker in several groups counts in each",
+        "opportunities": opportunities,
+        "workers": rows,
+        "spend_note": "API-equivalent dollars from token_ledger.cost_usd; on a subscription this is usage, not a bill",
+    })
+}
+
+async fn optimize_handler(State(state): State<AppState>, Query(q): Query<Q>) -> Response {
+    let (days, since) = window(&q);
+    let d = match with_data(&state, since).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let home = crate::api::session_verbs::home();
+    let names: Vec<String> = d.attempts.iter().map(|a| a.worker.clone()).chain(d.spend.keys().cloned()).collect::<BTreeSet<_>>().into_iter().collect();
+    let groups: HashMap<String, Vec<String>> = names.into_iter().map(|w| {
+        let g = crate::api::scope::session_tags_of(&home, &w);
+        (w, g)
+    }).collect();
+    let store = state.store.clone();
+    let hours = (days * 24.0).clamp(1.0, 720.0) as i64;
+    let background = tokio::task::spawn_blocking(move || store.read().and_then(|c| crate::api::usage::attribution(&c, hours)))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    let mut out = optimize(&d, days, &groups, background.as_ref());
+    if background.is_none() {
+        out["background_unmeasured"] = json!("the usage attribution could not be read; background spend is not in the opportunities");
+    }
+    Json(out).into_response()
+}
+
 async fn fleet(State(state): State<AppState>, Query(q): Query<Q>) -> Response {
     let (days, since) = window(&q);
     let d = match with_data(&state, since).await {
@@ -742,6 +865,33 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         let d = load(&conn, 0).expect("no task_episodes table yet is an empty history, not an error");
         assert!(d.attempts.is_empty() && d.tokens.is_empty());
+    }
+
+    #[test]
+    fn optimize_prices_spend_per_success_and_ranks_opportunities_with_an_owner() {
+        let mut rows: Vec<Attempt> = (0..4).map(|i| a(&format!("D{i}"), "w", 20, "done", "")).collect();
+        rows.push(a("P1", "w", 180, "parked", ""));
+        let d = Data { attempts: rows, tokens: HashMap::new(), titles: HashMap::new(),
+            spend: HashMap::from([("w".to_string(), 30.0), ("idle".to_string(), 10.0)]) };
+        let groups = HashMap::from([("w".to_string(), vec!["ops".to_string()])]);
+        let bg = json!({"window_hours": 24, "by_source": [
+            {"source": "steer:board-drive", "label": "amux nudged this lane about a card", "is_background": true, "cost_usd": 12.0, "turns": 40},
+            {"source": "user", "label": "a person", "is_background": false, "cost_usd": 50.0, "turns": 10}]});
+        let o = optimize(&d, 30.0, &groups, Some(&bg));
+        assert_eq!(o["totals"]["spend_usd"].as_f64(), Some(40.0), "every worker's spend, cards or not");
+        assert_eq!(o["totals"]["finished_cards"].as_u64(), Some(4));
+        assert_eq!(o["totals"]["success_rate"].as_f64(), Some(80.0), "4 of 5 cards");
+        assert_eq!(o["totals"]["cost_per_success_usd"].as_f64(), Some(7.5), "spend of workers with cards / finished");
+        assert_eq!(o["by_group"][0], json!({"group": "ops", "spend_usd": 30.0}));
+        assert!(o["by_group"].as_array().unwrap().iter().any(|g| g["group"] == "ungrouped"));
+        let ops = o["opportunities"].as_array().unwrap();
+        assert_eq!(ops[0]["kind"], "background_spend", "$12/day is $360/month and ranks first");
+        assert_eq!(ops[0]["owner"], "amux");
+        assert_eq!(ops[0]["est_usd_month"].as_f64(), Some(360.0));
+        let un = ops.iter().find(|x| x["kind"] == "unfinished_attempts").expect("the worker's unfinished spend");
+        assert_eq!(un["owner"], "worker", "parked without saying what it waits on: the worker can fix that");
+        assert_eq!(un["category"], "parked_no_reason");
+        assert!(!ops.iter().any(|x| x["source"] == "user"), "a person's own turns are not an opportunity");
     }
 
     #[test]
