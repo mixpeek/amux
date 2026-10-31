@@ -120,6 +120,18 @@ license = "MIT"
 # could not answer /health inside the test's 60s and the nightly was red three
 # nights running (AMUX-6095; log 2026-10-17 07:45:54.68 -> 07:46:54.07). The
 # release binary takes 0.3s. Optimise the hash in debug/test builds too.
+# ONE DEV PROFILE FOR EVERY CARGO (disk RCA 20261030-193722). safe-cargo
+# exports CARGO_PROFILE_DEV_DEBUG=0 and CI sets it too, while a bare `cargo`
+# used the dev default (full debuginfo). Different settings are different
+# fingerprints, so the shared ~/.amux/rust-build-target held two builds of every
+# crate (amux_server's rlib 1,323 MB with debuginfo, 536 MB without) and sat
+# over safe-cargo's 64 GiB budget, refusing every lane's build. The profile now
+# says what safe-cargo and CI already chose; scripts/test-dev-profile-debug.sh
+# fails if they drift apart. Need symbols for a session? Set
+# CARGO_PROFILE_DEV_DEBUG in that shell, in a private CARGO_TARGET_DIR.
+[profile.dev]
+debug = 0
+
 [profile.dev.package.sha2]
 opt-level = 3
 

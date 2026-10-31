@@ -392,6 +392,8 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test-cargo-target-fingerprint.sh
+      - name: one dev profile for bare cargo, safe-cargo and CI (disk RCA 20261030-193722)
+        run: bash scripts/test-dev-profile-debug.sh
       # AF-346 second pass + AF-336. `--test <name>` skips the LIB ENTIRELY and
       # prints the smallest number of any selector, so it is the likeliest to be
       # read as a clean suite; and the worktree clause listed every dirty file
