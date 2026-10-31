@@ -60,7 +60,10 @@ const dashboardAssets = [
   const bytes = readFileSync(source);
   console.log('[e2e] candidate dashboard asset: ' + source + ' sha256='
     + createHash('sha256').update(bytes).digest('hex') + '; API binary is unchanged');
-  return [{route: route === '**/' ? /^https?:\/\/[^/]+\/(?:\?.*)?$/ : route, bytes, contentType}];
+  // index.html asks for /app.js?v=<build>, so app.js is matched with its query.
+  const pattern = route === '**/' ? /^https?:\/\/[^/]+\/(?:\?.*)?$/
+    : route === '**/app.js' ? /\/app\.js(?:\?.*)?$/ : route;
+  return [{route: pattern, bytes, contentType}];
 });
 
 export { expect };

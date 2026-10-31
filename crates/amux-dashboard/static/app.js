@@ -16561,6 +16561,14 @@ window._clientDebug = function (kind, fields) {
       body: JSON.stringify(Object.assign({ kind: kind, ver: APP_VER }, fields || {})) }).catch(() => {});
   } catch (e) {}
 };
+// The page asks for the app.js of its own build (index.html: /app.js?v=<ver>).
+// Running any other one means HTML and code came from different builds, which
+// breaks on the first element one has and the other does not. Say so.
+try {
+  const asked = new URL(document.currentScript.src).searchParams.get('v');
+  if (asked && asked !== APP_VER && asked.indexOf('__') !== 0)
+    window._clientDebug('asset-version-mismatch', { verdict: 'html_and_app_js_builds_differ', measured: true, n_considered: 1, html_ver: asked });
+} catch (e) {}
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
