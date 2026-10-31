@@ -2491,7 +2491,7 @@ pub(crate) enum TriggerPark {
 /// of mxp-gs12's cards at once (MSG-101729). Only prose keeps the 24 h rule;
 /// what it waits on is the worker's to judge.
 pub(crate) fn trigger_park(conn: &Connection, row: &bs::IssueRow, now: i64) -> rusqlite::Result<TriggerPark> {
-    let (named, open) = trigger_cards(conn, &row.id, row.source_ref.as_deref())?;
+    let (named, open) = trigger_cards(conn, &row.id, row.source_ref.as_deref(), row.last_verified_at)?;
     if let Some(open) = open {
         return Ok(TriggerPark::WaitsOnCard(open));
     }
@@ -2503,7 +2503,15 @@ pub(crate) fn trigger_park(conn: &Connection, row: &bs::IssueRow, now: i64) -> r
 
 /// The existing cards a trigger names (not the card itself), and the first
 /// of them that is not finished.
-fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>) -> rusqlite::Result<(Vec<String>, Option<String>)> {
+///
+/// A card that was ALREADY finished when the trigger was confirmed (`set_at`,
+/// the row's last_verified_at) is context the worker wrote knowingly, not what
+/// the trigger waits for, so it is not counted (AF-1090). mxp-gs12-rows'
+/// "... MG-2184 is discarded); re-proof once it has had no commit for 24 h"
+/// named a card discarded 9 h before the trigger, read as Fired, and returned
+/// MGR-3 and seven siblings to every idle nudge. A close time or set time that
+/// is unknown keeps the card counted, as before.
+fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>, set_at: Option<i64>) -> rusqlite::Result<(Vec<String>, Option<String>)> {
     let Some(text) = source_ref.filter(|t| !t.trim().is_empty()) else { return Ok((Vec::new(), None)) };
     static ID: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Z][A-Z0-9]{0,9}-[0-9]+\b").unwrap());
@@ -2514,10 +2522,14 @@ fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>) -> rusq
         if id == own || named.iter().any(|n| n == id) {
             continue;
         }
-        let row: Option<(String, i64)> = conn
-            .query_row("SELECT status, COALESCE(archived, 0) FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let row: Option<(String, i64, Option<i64>)> = conn
+            .query_row("SELECT status, COALESCE(archived, 0), closed_at FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()?;
-        if let Some((status, archived)) = row {
+        if let Some((status, archived, closed_at)) = row {
+            let finished = matches!(status.as_str(), "done" | "verified" | "discarded");
+            if finished && closed_at.zip(set_at).is_some_and(|(closed, set)| closed <= set) {
+                continue;
+            }
             named.push(id.to_string());
             if open.is_none() && archived == 0 && !matches!(status.as_str(), "done" | "verified" | "discarded") {
                 open = Some(id.to_string());
@@ -11911,6 +11923,33 @@ mod tests {
         let conn = store.read().unwrap();
         let row = bs::get_issue(&conn, "GM-40").unwrap().unwrap();
         assert_eq!(trigger_park(&conn, &row, now_f64() as i64).unwrap(), TriggerPark::Fired(vec!["GE1-30".into()]));
+    }
+
+    /// AF-1090: a trigger that mentions a card already finished when it was
+    /// set is prose about that card, so it parks for 24 h like prose; a card
+    /// that finishes AFTER the trigger was set still fires it.
+    #[test]
+    fn a_card_finished_before_the_trigger_was_set_is_context_not_its_dependency() {
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "MGR-3", "backlog", "agent", "code");
+        drive_card(&store, "MG-2184", "discarded", "agent", "code");
+        drive_card(&store, "MGR-9", "backlog", "agent", "code");
+        drive_card(&store, "MG-9", "doing", "agent", "code");
+        let set = now_f64() as i64 - 60;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET closed_at=?1 WHERE id='MG-2184'", [set - 9 * 3600])?;
+            c.execute("UPDATE issues SET source_ref='row 7: shard-rs still changes (MG-2184 is discarded); re-proof once it has had no commit for 24 h', last_verified_at=?1 WHERE id='MGR-3'", [set])?;
+            c.execute("UPDATE issues SET source_ref='after MG-9 lands', last_verified_at=?1 WHERE id='MGR-9'", [set])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let ids = |s: &std::sync::Arc<crate::db::Store>| drainable_backlog_ids(&s.read().unwrap(), "lane", now_f64());
+        assert!(!ids(&store).contains(&"MGR-3".to_string()), "a card discarded before the trigger is context: MGR-3 parks as prose");
+        assert!(!ids(&store).contains(&"MGR-9".to_string()), "MG-9 is open: MGR-9 stays parked");
+        store.write(move |c| {
+            c.execute("UPDATE issues SET status='done', closed_at=?1 WHERE id='MG-9'", [set + 30])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(ids(&store).contains(&"MGR-9".to_string()), "MG-9 finished after the trigger was set: it fired");
     }
 
     /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
