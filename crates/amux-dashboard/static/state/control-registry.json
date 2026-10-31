@@ -1332,44 +1332,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_dictOutboxAdd": {
-      "kind": "command._dictOutboxAdd",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_dictOutboxDel": {
-      "kind": "command._dictOutboxDel",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_dictOutboxPatch": {
-      "kind": "command._dictOutboxPatch",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_dictOutboxSet": {
-      "kind": "command._dictOutboxSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_dictPendingBadge": {
       "kind": "command._dictPendingBadge",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_dictPruneDone": {
-      "kind": "command._dictPruneDone",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_dictRecoverLive": {
-      "kind": "command._dictRecoverLive",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1382,6 +1346,12 @@
     },
     "_dictSaveKey": {
       "kind": "command._dictSaveKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictSendDirect": {
+      "kind": "command._dictSendDirect",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -33,13 +33,13 @@ async function seed(page: Page, clips: any[]) {
 }
 const badge = (page: Page) => page.locator('#files-cache-status .upq-badge');
 
-// WEBKIT GAP (2026-10-31): on the ios-safari project these two fail on every
-// run since this spec landed (527a066cd; runs 41155626842, 41157218403,
-// 41158692541; 4 of 4 locally): the seeded clip is never sent and the badge
-// never renders. A plain value and a Blob both round-trip through _idb there,
-// so storage is not it; the cause is not found yet. Chromium (desktop, mobile)
-// runs them in full. Marked fixme rather than skipped so the gap stays listed.
-const webkitGap = (browserName: string) => test.fixme(browserName === 'webkit', 'fails on Playwright WebKit since 527a066cd; cause not found (see the note above)');
+// WEBKIT GAP, CAUSE FOUND (2026-10-31): Playwright's WebKit runs an ephemeral
+// (private) context, and WebKit refuses to store a Blob in IndexedDB there:
+// `put` fails with "UnknownError: Error preparing Blob/File data to be stored in
+// object store" (probed directly). So no clip can be seeded on ios-safari. The
+// Mac app and Safari keep a persistent store, where Blobs are stored, so this is
+// the test environment, not the product. Chromium (desktop, mobile) runs these.
+const webkitGap = (browserName: string) => test.fixme(browserName === 'webkit', 'ephemeral WebKit contexts cannot store a Blob in IndexedDB (see the note above)');
 
 test('a clip left "sending" by a reload is sent again and leaves the queue', async ({ page, browserName }) => {
   webkitGap(browserName);
@@ -81,4 +81,48 @@ test('the Files toolbar has no Up button; the parent row does that', async ({ pa
   await expect(page.locator('#files-view .fe-toolbar')).toBeAttached();
   await expect(page.locator('#files-view .fe-toolbar').getByRole('button', { name: /^Up$/ })).toHaveCount(0);
   expect(await page.evaluate(() => typeof (window as any)._filesUp)).toBe('undefined');
+});
+
+// Owner, 2026-10-31: the badge still read "sending" for good in the Mac app,
+// whose WebKit storage reads time out. A pass waited on a read that never
+// settled, so _dictFlushing stayed set and every later pass returned at once.
+test('a storage read that never settles does not hold the next pass', async ({ page, browserName }) => {
+  webkitGap(browserName);
+  test.setTimeout(60_000);
+  const dictated = await boot(page, { dictate: true });
+  await seed(page, [{ id: 'clip-wait', session: W, state: 'failed', attempts: 0, last: 0, ms: 3000, mime: 'audio/webm' }]);
+  await page.evaluate(() => {
+    const idb = (globalThis as any).eval('_idb'), get = idb.get;
+    let hung = false;
+    idb.get = (k: string) => { if (k === 'dict_pending' && !hung) { hung = true; return new Promise(() => {}); } return get.call(idb, k); };
+  });
+  await page.evaluate(() => { (globalThis as any).eval('_dictFlushOffline')(); });
+  await page.waitForTimeout(6000);   // past the 5s read bound
+  await page.evaluate(() => (globalThis as any).eval('_dictFlushOffline')());
+  await expect.poll(() => dictated.length, { message: 'the next pass ran and sent the clip' }).toBe(1);
+});
+
+test('changing one clip never drops the others, even when a read fails', async ({ page, browserName }) => {
+  webkitGap(browserName);
+  await boot(page);
+  await seed(page, [
+    { id: 'c1', session: W, state: 'failed', attempts: 1, last: Date.now(), ms: 1000, mime: 'audio/webm' },
+    { id: 'c2', session: W, state: 'failed', attempts: 1, last: Date.now(), ms: 1000, mime: 'audio/webm' }]);
+  const ids = await page.evaluate(async () => {
+    const g = globalThis as any, idb = g.eval('_idb'), get = idb.get;
+    idb.get = () => Promise.reject(new Error('read failed'));   // the old read-then-write path wrote [] back
+    await g.eval('_dictOutboxPatch')('c1', { error: 'patched' });
+    idb.get = get;
+    return ((await idb.get('dict_pending')) || []).map((x: any) => x.id + ':' + (x.error || ''));
+  });
+  expect(ids).toEqual(['c1:patched', 'c2:']);
+});
+
+test('a clip waiting for its next try says so, not "sending"', async ({ page, browserName }) => {
+  webkitGap(browserName);
+  await boot(page);
+  await page.evaluate(() => (window as any).switchView?.('files'));
+  await seed(page, [{ id: 'clip-retry', session: W, state: 'failed', attempts: 2, last: Date.now(), error: 'transcriber busy', ms: 3000, mime: 'audio/webm' }]);
+  await expect(badge(page)).toContainText('retrying soon (transcriber busy)');
+  await expect(badge(page)).not.toContainText('sending');
 });

@@ -4557,8 +4557,14 @@ async function _pendingSummary() {
               + clips.reduce((a, x) => a + ((x.blob && x.blob.size) || 0), 0);
   // A clip past its automatic retries is waiting for a person, not sending.
   const held = clips.filter(x => (x.attempts || 0) >= _DICT_MAX_AUTO && x.state !== 'sending');
+  // Sending only while a send is live; a clip that failed and waits for its next
+  // try says so, with its error, rather than reading "sending" (owner, 2026-10-31).
+  const sending = clips.filter(x => x.state === 'sending' && !_dictSendingStale(x));
+  const waiting = clips.filter(x => !held.includes(x) && !sending.includes(x));
   return { files: files.length, clips: clips.length, total: files.length + clips.length, bytes,
-    clipsHeld: held.length, clipSession: (held[0] || clips[0] || {}).session || '' };
+    clipsHeld: held.length, clipsSending: sending.length, clipsWaiting: waiting.length,
+    clipError: ((waiting[0] || held[0] || {}).error || ''),
+    clipSession: (held[0] || clips[0] || {}).session || '' };
 }
 // The recordings live in a worker's Dictation tab, which lists each one with
 // Play, Retry and Delete; the Files pill opens it.
@@ -4588,6 +4594,7 @@ async function _upqRenderBadge() {
     el.textContent = parts.join(' + ') + ' queued (' + _fmtPendingBytes(p.bytes) + ')'
       + (!online ? ' \u2014 waiting for connection'
         : p.clipsHeld ? ' \u2014 ' + p.clipsHeld + ' not sent, open to retry'
+        : p.clips && !p.clipsSending ? ' \u2014 retrying soon' + (p.clipError ? ' (' + p.clipError.slice(0, 60) + ')' : '')
         : ' \u2014 sending\u2026');
     // Recordings are handled in the Dictation tab; say so and go there.
     el.classList.toggle('upq-badge-link', !!p.clips);
@@ -27994,21 +28001,26 @@ const _DICT_OUTBOX_MAX = 25;   // ring buffer; oldest fall off first
 const _DICT_KEEP_DONE  = 6;    // transcribed clips kept so a bad transcript can be re-run
 const _DICT_MAX_AUTO   = 6;    // give up auto-retrying after this many; manual Retry still works
 
-async function _dictOutbox() { try { return (await _idb.get('dict_pending')) || []; } catch(e) { return []; } }
-// The cap trims only clips that were already transcribed: a clip that never
-// sent is the one thing that cannot be recorded again, so it is never the one
-// dropped (it used to be: slice(-25) kept the newest 25 whatever their state).
-async function _dictOutboxSet(q) {
-  const done = q.filter(x => x.state === 'done');
-  const drop = new Set(done.slice(0, Math.max(0, q.length - _DICT_OUTBOX_MAX)).map(x => x.id));
-  try { await _idb.set('dict_pending', q.filter(x => !drop.has(x.id))); }
-  catch(e) {
-    // Never silent: the clip is still in memory, and the person is told it is not saved.
-    _dictStatus('This device could not save the recording: ' + ((e && e.message) || 'storage error'));
-    try { fetch(API + '/api/client-debug', {method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), keepalive: true,
-      body: JSON.stringify({kind: 'dictation_outbox_write_failed', error: String((e && e.message) || e)})}).catch(() => {}); } catch(_) {}
-  }
-  _dictPendingBadge();
+// A read is bounded: in the Mac app a WebKit storage read can hang for hours
+// (outbox_upload_list_timeout), and the retry loop below awaits this one. A read
+// that never settled left _dictFlushing set for good, so every 45s pass returned
+// at once and a recording sat "1 recording queued (2.4 MB) — sending…" (owner,
+// 2026-10-31). A timeout reads as empty for this pass and is beaconed.
+const _DICT_READ_MS = 5000;
+async function _dictOutbox() {
+  let timer;
+  try {
+    return await Promise.race([
+      _idb.get('dict_pending').then(v => v || []),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_read_timeout')), _DICT_READ_MS); }),
+    ]);
+  } catch (e) {
+    if (e && e.message === 'dict_read_timeout') {
+      try { amuxTrack('dictation_outbox_read_timeout', {waited_ms: _DICT_READ_MS, measured: true, n_considered: 1}); } catch (_) {}
+      try { _idb.reset('dict_read_timeout'); } catch (_) {}
+    }
+    return [];
+  } finally { clearTimeout(timer); }
 }
 
 // A take in progress is saved every second (`dict_live`), so a reload or a
@@ -28035,24 +28047,43 @@ async function _dictRecoverLive() {
   setTimeout(_dictFlushOffline, 1500);
 }
 setTimeout(_dictRecoverLive, 3000);
+// Read, change and write the outbox in ONE storage transaction, bounded. The
+// three writers used to read, change and write it back separately, so a read that
+// failed (now also one that times out) wrote back a list without the other
+// clips: a new recording replaced every one still waiting. A write that cannot
+// finish throws; nothing is written from a guess.
+function _dictUpdate(mutate) {
+  let timer;
+  return Promise.race([
+    _idb.update('dict_pending', q => {
+      const next = mutate(Array.isArray(q) ? q : []);
+      const done = next.filter(x => x.state === 'done');
+      const drop = new Set(done.slice(0, Math.max(0, next.length - _DICT_OUTBOX_MAX)).map(x => x.id));
+      return next.filter(x => !drop.has(x.id));
+    }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_write_timeout')), _DICT_READ_MS); }),
+  ]).finally(() => clearTimeout(timer));
+}
+// Returns the new clip's id, or null when this device could not save it (the
+// caller then sends the recording straight from memory).
 async function _dictOutboxAdd(blob, mime, ms) {
   const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const q = await _dictOutbox();
-  q.push({ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
-           state: 'pending', attempts: 0, last: 0, error: '', text: '' });
-  await _dictOutboxSet(q);
-  return id;
+  try {
+    await _dictUpdate(q => q.concat([{ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
+      state: 'pending', attempts: 0, last: 0, error: '', text: '' }]));
+    return id;
+  } catch (e) {
+    try { amuxTrack('dictation_outbox_add_failed', {error: String((e && e.message) || e).slice(0, 120), bytes: blob.size, measured: true, n_considered: 1}); } catch (_) {}
+    return null;
+  }
 }
 async function _dictOutboxPatch(id, patch) {
-  const q = await _dictOutbox();
-  const i = q.findIndex(x => x.id === id);
-  if (i < 0) return;
-  q[i] = Object.assign(q[i], patch);
-  await _dictOutboxSet(q);
+  try { await _dictUpdate(q => q.map(x => x.id === id ? Object.assign({}, x, patch) : x)); }
+  catch (e) { try { amuxTrack('dictation_outbox_patch_failed', {error: String((e && e.message) || e).slice(0, 120), measured: true, n_considered: 1}); } catch (_) {} }
 }
 async function _dictOutboxDel(id) {
-  const q = await _dictOutbox();
-  await _dictOutboxSet(q.filter(x => x.id !== id));
+  try { await _dictUpdate(q => q.filter(x => x.id !== id)); }
+  catch (e) { showToast('This device could not delete the recording yet; try again'); }
   if (_peekTab === 'dictation') _dictRender();
 }
 
@@ -28064,6 +28095,14 @@ async function _dictUpload() {
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
   const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  if (id === null) {
+    // This device's storage would not take it: send it now, from memory, rather
+    // than lose it. The live take is kept until the send answers.
+    _dictStatus('Could not save on this device — sending now…');
+    const txt = await _dictSendDirect(blob, mime, ms);
+    if (txt !== null) { await _dictLiveClear(); _dictClosePopup(false); }
+    return;
+  }
   await _dictLiveClear();                              // the take now lives in the outbox
   if (typeof online !== 'undefined' && !online) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
@@ -28074,6 +28113,25 @@ async function _dictUpload() {
   }
   const txt = await _dictTrySend(id, true);
   if (txt !== null) _dictClosePopup(false);
+}
+
+// A recording this device could not store, sent once from memory. Returns the
+// transcript, or null with the reason in the status line (the take stays live).
+async function _dictSendDirect(blob, mime, ms) {
+  const url = API + '/api/dictate?session=' + encodeURIComponent(peekSession || '')
+    + '&dur_ms=' + (ms || 0) + '&mime=' + encodeURIComponent(mime || 'audio/webm');
+  try {
+    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime || 'audio/webm' }),
+      body: blob, signal: AbortSignal.timeout(120000) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    _dictStatus('Added to the composer — review, then send');
+    _dictInsert(d.text);
+    return d.text || '';
+  } catch (e) {
+    _dictStatus('Not sent and not saved: ' + String((e && e.message) || 'failed').slice(0, 80) + '. The recording is still here; try again.');
+    return null;
+  }
 }
 
 // One attempt against a stored clip. Never discards audio: a failure of ANY kind
@@ -28120,11 +28178,14 @@ async function _dictTrySend(id, interactive) {
 // SAME audio — the "retry" that used to be impossible because we threw the
 // recording away the moment it succeeded.
 async function _dictPruneDone() {
-  const q = await _dictOutbox();
-  const done = q.filter(x => x.state === 'done');
-  if (done.length <= _DICT_KEEP_DONE) return;
-  const drop = new Set(done.slice(0, done.length - _DICT_KEEP_DONE).map(x => x.id));
-  await _dictOutboxSet(q.filter(x => !drop.has(x.id)));
+  try {
+    await _dictUpdate(q => {
+      const done = q.filter(x => x.state === 'done');
+      if (done.length <= _DICT_KEEP_DONE) return q;
+      const drop = new Set(done.slice(0, done.length - _DICT_KEEP_DONE).map(x => x.id));
+      return q.filter(x => !drop.has(x.id));
+    });
+  } catch (_) {}   // pruning is housekeeping; the next success prunes
 }
 
 // Exponential backoff so a hard failure (bad key, no quota) doesn't hammer the
@@ -28143,11 +28204,16 @@ function _dictReady(it) {
   const wait = Math.min(300000, 4000 * Math.pow(2, it.attempts || 0));
   return Date.now() - (it.last || 0) > wait;
 }
-let _dictFlushing = false;
+// When the running pass started, or 0. A pass older than _DICT_FLUSH_STALE_MS is
+// taken as hung (a send gives up at 120s, a read at 5s) and the next tick starts
+// a fresh one, said with dictation_flush_stalled.
+let _dictFlushing = 0;
+const _DICT_FLUSH_STALE_MS = 180000;
 async function _dictFlushOffline() {
-  if (_dictFlushing) return;
+  if (_dictFlushing && Date.now() - _dictFlushing < _DICT_FLUSH_STALE_MS) return;
+  if (_dictFlushing) { try { amuxTrack('dictation_flush_stalled', {age_ms: Date.now() - _dictFlushing, measured: true, n_considered: 1}); } catch (_) {} }
   if (typeof online !== 'undefined' && !online) return;
-  _dictFlushing = true;
+  _dictFlushing = Date.now();
   try {
     let sent = 0;
     for (const it of (await _dictOutbox())) {
@@ -28162,7 +28228,7 @@ async function _dictFlushOffline() {
       showToast(sent + ' queued dictation' + (sent === 1 ? '' : 's') + ' transcribed');
       if (_peekTab === 'dictation') _dictLoad();
     }
-  } finally { _dictFlushing = false; }
+  } finally { _dictFlushing = 0; }
 }
 async function _dictRetry(id) { await _dictOutboxPatch(id, { attempts: 0, last: 0 }); await _dictTrySend(id, true); }
 
