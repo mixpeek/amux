@@ -35989,13 +35989,16 @@ async fn config_patch_with_liveness(
     // one env write: steering, planning, pickup, continue, their master and
     // backlog refill. `null` removes all six worker overrides. The response's
     // `board_enabled` is the RESOLVED steering switch, because with steering
-    // off the board only keeps records whatever the others say.
+    // off the board is not used at all, whatever the others say (board_unused_in).
     if let Some(v) = body.get("board_enabled") {
         let keys = [
             super::board_lifecycle::FORCE_ADHERENCE_KEY,
             super::board_lifecycle::DECOMPOSE_KEY,
             "CC_AUTO_PICKUP",
             BOARD_CONTINUE_KEY,
+            // The legacy spelling of Keep going: left at 1, it kept a
+            // switched-off worker's board in use (2026-10-31).
+            "CC_AUTO_CONTINUE",
             "CC_STANDING_ORDERS",
             crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
         ];

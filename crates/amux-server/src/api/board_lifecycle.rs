@@ -90,6 +90,17 @@ pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_proce
     if session.is_empty() || !home.join("sessions").join(format!("{session}.env")).exists() {
         return false;
     }
+    // THE BOARD SWITCH IS THE ANSWER (Ethan, 2026-10-31: "make sure
+    // enable/disable board also makes it so board is not used if its disabled.
+    // this is critical"). The worker page's one switch reads Off exactly when
+    // steering is off, so an explicit Off at any scope means no board, whatever
+    // an older key says. Before this, seven switched-off workers kept their
+    // board through a legacy CC_AUTO_CONTINUE=1 or CC_STANDING_ORDERS=1 the
+    // switch never wrote, and the background planner kept filing their cards.
+    let steering = scoped_setting_in(home, session, FORCE_ADHERENCE_KEY).or_else(|| std::env::var(FORCE_ADHERENCE_KEY).ok());
+    if steering.as_deref().is_some_and(|v| !auto_continue_on(Some(v))) {
+        return true;
+    }
     let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| std::env::var(k).ok()).as_deref());
     let cont = scoped_setting_in(home, session, BOARD_CONTINUE_KEY)
         .or_else(|| scoped_setting_in(home, session, "CC_AUTO_CONTINUE"));
@@ -1451,6 +1462,10 @@ mod tests {
         std::fs::create_dir_all(&s).unwrap();
         for (name, env, unused) in [
             ("off", "CC_DIR=/tmp\nCC_AUTO_PICKUP=0\nAMUX_BOARD_FORCE_ADHERENCE=0\n", true),
+            // The switch's Off wins over keys it never wrote (2026-10-31).
+            ("off-legacy-continue", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_AUTO_CONTINUE=1\n", true),
+            ("off-standing", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_STANDING_ORDERS=1\nAMUX_COMMAND_LIFECYCLE=1\n", true),
+            ("off-pickup", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_AUTO_PICKUP=1\n", true),
             ("unset", "CC_DIR=/tmp\n", false),
             ("steer", "AMUX_BOARD_FORCE_ADHERENCE=1\n", false),
             ("pickup", "CC_AUTO_PICKUP=1\n", false),
@@ -1467,6 +1482,7 @@ mod tests {
         assert!(board_unused_in(dir.path(), "drain", Some("0")));
         assert!(no_board("off") && no_board("iso") && !no_board("steer"));
         assert!(!enabled("off"), "no decomposition onto a board that is off");
+        assert!(!enabled("off-standing"), "an explicit Off stops decomposition even with the planner key on");
         // Board automation is refused; other automation is not.
         use crate::api::session_verbs::board_off_refusal;
         for g in ["board-drive", "board-progress", "promise-nudge", "owner-ask", "accountability"] {

@@ -7057,6 +7057,10 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "auto_drain_backlog": crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(&name),
             "board_decompose": crate::api::board_lifecycle::enabled(&name),
             "board_force_adherence": crate::api::board_lifecycle::force_adherence(&name),
+            // Whether amux uses the board for this worker at all: the same
+            // predicate every board gate enforces. The worker page's switch
+            // reads this, so Off on screen always means unused (2026-10-31).
+            "board_used": !crate::api::board_lifecycle::no_board(&name),
             "auto_drain_backlog_own": env.contains_key(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY),
             // AMUX-3048: the raw event-driven count behind agents_working, so a
             // LEAKED count (a lost SubagentStop pinning a lane "working") is
