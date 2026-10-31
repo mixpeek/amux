@@ -38699,8 +38699,18 @@ async function submitCreate() {
   }
   showToast('Starting ' + name + '...');
   await fetchSessions();
+  // OPEN THE NEW WORKER (Ethan, 2026-10-31: "i just tried to make a worker
+  // nothing happened"). The create had succeeded (201) and the worker was
+  // running, but this only scrolled to its card when the card was on screen:
+  // from a worker view, a filtered list or another group, the dialog closed
+  // and nothing else visibly changed.
+  const listed = (sessions || []).some(s => s.name === name);
   const newCard = document.querySelector('[data-session="' + CSS.escape(name) + '"]');
-  if (newCard) newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (listed && typeof openPeek === 'function') openPeek(name);
+  else if (newCard) newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  else showToast('Created ' + name + '; it appears in Workers once the list refreshes');
+  try { amuxTrack('worker_create_opened', {session: name, listed: listed ? 1 : 0, card_on_screen: newCard ? 1 : 0,
+    opened: listed ? 1 : 0, measured: true, n_considered: 1}); } catch (_) {}
 }
 
 // ── Directory autocomplete + recent dirs ──
