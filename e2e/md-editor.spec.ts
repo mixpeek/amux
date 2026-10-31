@@ -278,3 +278,26 @@ test('a copy saved on this device says whose and how old it is, and the label go
   await expect(page.locator('#file-fresh')).toBeHidden();
   await expect(page.locator('#file-title')).toHaveText('todo.md');
 });
+
+// Land review F1/F2: an unreachable server leaves "Offline", not a late
+// "checking…" from the cache-first read; a second file opened straight from
+// the first does not wear the first one's label.
+test('the freshness label says Offline when the server fails, and never carries over to the next file', async ({ page }) => {
+  const a = freshFile('a.md', '# A\n'), b = freshFile('b.md', '# B\n');
+  await open(page, a);
+  await page.evaluate(() => (window as any).closeFilePreview());
+  await page.route(/\/api\/file\?path=.*a\.md/, r => r.abort('internetdisconnected'));
+  await page.evaluate(p => (window as any).openFilePreview(p), a);
+  await expect(page.locator('#file-fresh')).toHaveText(/^Offline · your copy from /);
+  await page.waitForTimeout(600);
+  await expect(page.locator('#file-fresh')).toHaveText(/^Offline · your copy from /);
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  await page.route(/\/api\/file\?path=.*b\.md/, async r => { await held; await r.continue(); });
+  await page.evaluate(p => { (window as any).openFilePreview(p); }, b);
+  await expect(page.locator('#file-title')).toHaveText('b.md');
+  await expect(page.locator('#file-fresh')).toBeHidden();
+  release();
+  await expect(page.locator('#mdx-out-host #file-body h1')).toHaveText(/B/);
+  await expect(page.locator('#file-fresh')).toBeHidden();
+});

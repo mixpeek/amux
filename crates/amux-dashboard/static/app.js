@@ -32404,6 +32404,7 @@ async function openFilePreview(path, options = {}) {
   // title can read as the markdown heading or carry a "cached" suffix.
   document.getElementById('file-overlay').dataset.path = path;
   _fileHashSync(path);
+  _fileFresh(null);   // the last file's label is not this one's
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -32523,6 +32524,9 @@ async function openFilePreview(path, options = {}) {
     }
   } catch(e) {
     if (gen !== _filePreviewGen) return;
+    // The server has answered (by failing): the cache-first read above must
+    // not relabel the copy as "checking" after this says "Offline".
+    fresh = true;
     if (options.readOnly) {document.getElementById('file-body').textContent='Retained asset unavailable.';return;}
     // Offline or unreachable: the saved copy, if any (it may already be shown).
     const cached = await _idb.getFile(path).catch(() => null);
