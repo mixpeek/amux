@@ -1315,26 +1315,60 @@ pub(crate) fn is_question(text: &str) -> bool {
 
 /// The last thing the assistant SAID (text, not tool calls) in a Claude Code
 /// transcript between two unix times. One JSON object per line.
+#[cfg(test)]
 pub(crate) fn last_assistant_text(jsonl: &str, from: f64, to: f64) -> Option<String> {
     let mut last = None;
     for line in jsonl.lines() {
-        let Ok(e) = serde_json::from_str::<Value>(line) else { continue };
-        if e["type"] != "assistant" {
-            continue;
-        }
-        let Some(at) = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else { continue };
-        let at = at.timestamp_millis() as f64 / 1000.0;
-        if at < from || at > to {
-            continue;
-        }
-        let text: String = e["message"]["content"].as_array().into_iter().flatten()
-            .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !text.is_empty() {
+        if let Some(text) = assistant_text_in_window(line, from, to) {
             last = Some(text);
         }
     }
     last
+}
+
+/// [`last_assistant_text`] over a transcript file, a line at a time. AF-1081:
+/// transcripts reach 455 MB (p90 89 MB), and reading one whole and parsing
+/// every line made a cold GET /api/task-history/requests take 6 s, 55 s
+/// under load.
+fn last_assistant_text_in_file(path: &std::path::Path, from: f64, to: f64) -> Option<String> {
+    use std::io::BufRead;
+    let mut last = None;
+    for line in std::io::BufReader::new(std::fs::File::open(path).ok()?).lines().map_while(Result::ok) {
+        if let Some(text) = assistant_text_in_window(&line, from, to) {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// The assistant text on one transcript line, when its timestamp is in the
+/// window. The type and timestamp are read off the raw line first, so the
+/// full JSON parse runs only for the lines that can answer (AF-1081).
+fn assistant_text_in_window(line: &str, from: f64, to: f64) -> Option<String> {
+    if !line.contains("\"assistant\"") {
+        return None;
+    }
+    // The top-level timestamp follows `message` on a transcript line, so the
+    // LAST one is it; a tool input's own timestamp key comes earlier. The
+    // parsed field is checked again below, so a miss only costs a parse.
+    let key = "\"timestamp\":\"";
+    let raw_at = line.rfind(key).map(|i| &line[i + key.len()..]).and_then(|r| r.split('"').next())?;
+    let at = chrono::DateTime::parse_from_rfc3339(raw_at).ok()?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let e: Value = serde_json::from_str(line).ok()?;
+    if e["type"] != "assistant" {
+        return None;
+    }
+    let at = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let text: String = e["message"]["content"].as_array().into_iter().flatten()
+        .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
 }
 
 /// Each open question and the window its answer must fall in: (id, asked at,
@@ -1369,10 +1403,21 @@ fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
     if session_id.is_empty() || session_id.contains('/') {
         return None;
     }
+    // A transcript does not move, and the search stats every project folder
+    // (8,257 on 2026-10-31), so a found path is kept (AF-1081).
+    static FOUND: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>> =
+        std::sync::LazyLock::new(Default::default);
+    if let Some(p) = FOUND.lock().ok().and_then(|m| m.get(session_id).cloned()).filter(|p| p.is_file()) {
+        return Some(p);
+    }
     let root = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".claude").join("projects");
-    std::fs::read_dir(root).ok()?.flatten()
+    let found = std::fs::read_dir(root).ok()?.flatten()
         .map(|d| d.path().join(format!("{session_id}.jsonl")))
-        .find(|p| p.is_file())
+        .find(|p| p.is_file())?;
+    if let Ok(mut m) = FOUND.lock() {
+        m.insert(session_id.to_string(), found.clone());
+    }
+    Some(found)
 }
 
 /// GET /api/task-history/requests?session=&days=7: the owner's requests to one
@@ -1527,10 +1572,27 @@ pub async fn owner_requests(
         }
         Ok(out)
     }).await.unwrap_or_default();
+    // A turn that has stopped never changes its reply, so each answer is read
+    // from its transcript once, keyed by the message, the turn's session and
+    // its stop (AF-1081).
+    type AnswerKey = (i64, String, i64);
+    static ANSWERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<AnswerKey, Option<String>>>> =
+        std::sync::LazyLock::new(Default::default);
     let answered: std::collections::HashMap<i64, String> = tokio::task::spawn_blocking(move || {
         stops.into_iter().filter_map(|(id, at, stop, sid)| {
-            let text = std::fs::read_to_string(transcript_for(&sid)?).ok()?;
-            let reply = last_assistant_text(&text, at - 5.0, stop + 5.0)?;
+            let key = (id, sid.clone(), stop as i64);
+            let known = ANSWERS.lock().ok().and_then(|m| m.get(&key).cloned());
+            let reply = match known {
+                Some(r) => r,
+                None => {
+                    let path = transcript_for(&sid)?;
+                    let r = last_assistant_text_in_file(&path, at - 5.0, stop + 5.0);
+                    if let Ok(mut m) = ANSWERS.lock() {
+                        m.insert(key, r.clone());
+                    }
+                    r
+                }
+            }?;
             Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
         }).collect()
     }).await.unwrap_or_default();
@@ -4398,6 +4460,31 @@ mod subagent_walk_tests {
             "a turn that began within the tolerance but ended before the question arrived");
         let w = question_windows(&ms, &|id| id == 21);
         assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
+    }
+
+    /// AF-1081: the file reader streams and filters lines before parsing, and
+    /// must answer exactly what the whole-text reader answers, including when
+    /// a tool input carries its own earlier timestamp key.
+    #[test]
+    fn the_streamed_transcript_reader_agrees_with_the_whole_text_reader() {
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        let line = |ty: &str, at: &str, content: &str| format!(
+            r#"{{"type":"{ty}","message":{{"content":{content}}},"uuid":"u","timestamp":"{at}"}}"#);
+        let jsonl = [
+            line("user", "2026-10-25T13:08:00Z", r#"[{"type":"text","text":"is the assistant done?"}]"#),
+            line("assistant", "2026-10-25T13:08:30Z", r#"[{"type":"tool_use","input":{"timestamp":"2026-10-25T09:00:00Z"}},{"type":"text","text":"Checked the job."}]"#),
+            line("assistant", "2026-10-25T13:09:00Z", r#"[{"type":"text","text":"It finished at noon."}]"#),
+            line("assistant", "2026-10-25T14:00:00Z", r#"[{"type":"text","text":"Later reply."}]"#),
+        ].join("\n");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, &jsonl).unwrap();
+        for (from, to) in [("2026-10-25T13:08:00Z", "2026-10-25T13:09:05Z"), ("2026-10-25T13:08:00Z", "2026-10-25T13:08:40Z"),
+                           ("2026-10-25T15:00:00Z", "2026-10-25T16:00:00Z")] {
+            assert_eq!(last_assistant_text_in_file(&path, t(from), t(to)), last_assistant_text(&jsonl, t(from), t(to)), "{from}..{to}");
+        }
+        assert_eq!(last_assistant_text_in_file(&path, t("2026-10-25T13:08:00Z"), t("2026-10-25T13:08:40Z")).as_deref(),
+            Some("Checked the job."), "the tool input's earlier timestamp does not move the line out of its window");
     }
 
     fn touch(p: &std::path::Path) {
