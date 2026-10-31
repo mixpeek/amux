@@ -113,10 +113,21 @@ jobs:
         # webkit scenario despite its name, and its webkit leg was red on its
         # own (desktop+mobile need chromium). Verified 2026-08-13 with
         # `--project='*chromium*' --list` -> "No projects matched".
+        #
+        # desktop and mobile are separate legs (AF-1042): together they ran
+        # past this job's 60 min and were cancelled on 2026-10-30 and
+        # 2026-10-31, so no chromium scenario reported at all, while the
+        # webkit leg alone took 45 min. One project per leg keeps each inside
+        # the budget without raising it.
         include:
           - browser: chromium
-            projects: --project=desktop --project=mobile
+            leg: desktop
+            projects: --project=desktop
+          - browser: chromium
+            leg: mobile
+            projects: --project=mobile
           - browser: webkit
+            leg: ios-safari
             projects: --project=ios-safari
     steps:
       - uses: actions/checkout@v4
@@ -148,7 +159,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-${{ matrix.browser }}
+          name: playwright-${{ matrix.leg }}
           path: test-results/
           retention-days: 7
 
