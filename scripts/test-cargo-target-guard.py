@@ -249,7 +249,11 @@ class CargoReclaimTests(unittest.TestCase):
         resolved = guard.process_executable(
             '1177', 'sleep', linux=True, proc_root=self.base / 'proc',
             readlink=denied, which=lambda name: '/usr/bin/sleep' if name == 'sleep' else None)
-        self.assertEqual(resolved, Path('/usr/bin/sleep'))
+        # process_executable resolves what PATH names, so expect the same: on
+        # the ubuntu26 runner /usr/bin/sleep is a link into uutils coreutils
+        # (/usr/lib/cargo/bin/coreutils/sleep), which reddened checks
+        # 2026-10-31 (run 41190837012).
+        self.assertEqual(resolved, Path('/usr/bin/sleep').resolve())
 
     def test_hardened_linux_proc_still_fails_closed_for_unknown_binary(self):
         proc = self.base / 'proc' / '1178'
