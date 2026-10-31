@@ -437,34 +437,53 @@ pub(crate) fn measure(root: &Path, budget: Duration) -> Stats {
 pub(crate) fn measure_since(root: &Path, budget: Duration, since: i64) -> Stats {
     let start = Instant::now();
     let mut st = Stats { bytes: 0, files: 0, last_used: 0, measured_at: now_secs(), complete: true, newest_write: 0, touched: 0 };
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    // Each entry carries whether it is inside a `.git` directory.
+    let mut stack = vec![(root.to_path_buf(), false)];
+    while let Some((dir, in_git)) = stack.pop() {
         if start.elapsed() > budget {
             st.complete = false;
             break;
         }
-        if let Ok(m) = std::fs::metadata(&dir) {
-            st.last_used = st.last_used.max(m.mtime());
-            st.newest_write = st.newest_write.max(m.mtime());
+        if !in_git {
+            if let Ok(m) = std::fs::metadata(&dir) {
+                st.last_used = st.last_used.max(m.mtime());
+                st.newest_write = st.newest_write.max(m.mtime());
+            }
         }
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             // DirEntry::metadata does not follow symlinks on unix.
             let Ok(m) = e.metadata() else { continue };
             if m.is_dir() {
-                stack.push(e.path());
+                stack.push((e.path(), in_git || e.file_name() == ".git"));
                 continue;
             }
             st.files += 1;
             st.bytes += m.blocks() * 512;
-            st.last_used = st.last_used.max(m.mtime()).max(m.atime());
+            if in_git && !git_write_is_use(&e.file_name()) {
+                continue;
+            }
+            st.last_used = st.last_used.max(m.mtime());
             st.newest_write = st.newest_write.max(m.mtime());
+            if in_git {
+                continue;
+            }
+            st.last_used = st.last_used.max(m.atime());
             if m.atime() > since {
                 st.touched += 1;
             }
         }
     }
     st
+}
+
+/// Inside `.git`, reads are never use: `git status` (which this module's own
+/// gate runs on every check) reads the index, and on 2026-10-30 that made 85
+/// idle checkouts read as used within hours, every pass, so none could ever
+/// move. Writes count, a commit or fetch is real work, except the index and
+/// its lock, which `git status` refreshes on its own.
+fn git_write_is_use(name: &std::ffi::OsStr) -> bool {
+    !matches!(name.to_str(), Some("index" | "index.lock" | "FETCH_HEAD"))
 }
 
 /// Is any file under `p` open, or any process working inside it?
@@ -2037,6 +2056,45 @@ mod tests {
         let _ = fs::read_dir(d.path().join("a")).unwrap().count();
         let again = measure(d.path(), Duration::from_secs(10));
         assert_eq!(before.last_used, again.last_used, "listing a folder is not a use");
+    }
+
+    #[test]
+    fn git_reading_its_own_index_is_not_a_use_but_a_commit_is() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("repo");
+        for p in [".git/objects/ab", "src"] {
+            fs::create_dir_all(r.join(p)).unwrap();
+        }
+        for p in [".git/index", ".git/HEAD", "src/a.rs"] {
+            fs::write(r.join(p), "x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - Duration::from_secs(10 * 86_400);
+        let set = |p: &Path, t: std::time::SystemTime| {
+            fs::File::open(p).unwrap().set_times(fs::FileTimes::new().set_accessed(t).set_modified(t)).unwrap();
+        };
+        let age_all = || {
+            for p in [".git/index", ".git/HEAD", "src/a.rs", ".git/objects/ab", ".git/objects", ".git", "src", ""] {
+                set(&r.join(p), old);
+            }
+        };
+        age_all();
+        let base = measure(&r, Duration::from_secs(10));
+        assert!(now_secs() - base.last_used > 9 * 86_400, "everything is ten days old");
+        // What `git status` does: read the index and refresh it.
+        set(&r.join(".git/index"), std::time::SystemTime::now());
+        assert_eq!(measure(&r, Duration::from_secs(10)).last_used, base.last_used, "an index refresh is not a use");
+        // A commit writes an object: that is work.
+        age_all();
+        fs::write(r.join(".git/objects/ab/cdef"), "obj").unwrap();
+        assert!(now_secs() - measure(&r, Duration::from_secs(10)).last_used < 60, "a commit is a use");
+        // Reading a real file still counts.
+        fs::remove_file(r.join(".git/objects/ab/cdef")).unwrap();
+        age_all();
+        let t = std::time::SystemTime::now();
+        fs::File::open(r.join("src/a.rs")).unwrap().set_times(fs::FileTimes::new().set_accessed(t)).unwrap();
+        let st = measure_since(&r, Duration::from_secs(10), base.measured_at - 1);
+        assert!(now_secs() - st.last_used < 60, "reading a source file is a use");
+        assert_eq!(st.touched, 1, "and only that file was touched");
     }
 
     #[test]
