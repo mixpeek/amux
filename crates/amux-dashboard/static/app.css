@@ -10855,6 +10855,9 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-out #file-body { flex: 1; border: 0; border-radius: 0; background: var(--bg); color: var(--text); white-space: normal;
   font-family: var(--font-ui); padding: var(--space-4) var(--space-6); }
 body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); color: var(--text); }
+/* A readable line on a wide screen (owner's spec, P2): the text keeps to about 80 characters,
+   centred, while the scroll area stays the full pane so the scrollbar sits at its edge. */
+@media (min-width: 701px) { .mdx-out #file-body.mdx-preview { padding-inline: max(var(--space-6), calc((100% - 80ch) / 2)); } }
 .mdx-preview h2 { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .mdx-preview h2:first-child { border-top: 0; padding-top: 0; }
 .mdx-anchor { margin-left: var(--space-2); font-size: 0.7em; text-decoration: none; opacity: 0.35; vertical-align: middle; }

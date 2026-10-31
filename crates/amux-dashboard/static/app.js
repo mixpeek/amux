@@ -30634,7 +30634,8 @@ function _mdxStatus() {
   if (!ta || !_mdxActive()) return;
   const v = ta.value, at = ta.selectionStart;
   let ln = 1; for (let i = v.indexOf('\n'); i !== -1 && i < at; i = v.indexOf('\n', i + 1)) ln++;
-  const col = at - v.lastIndexOf('\n', at - 1);
+  // lastIndexOf reads a negative start as 0, so at the very start a leading newline read as Col 0.
+  const col = at - (at > 0 ? v.lastIndexOf('\n', at - 1) : -1);
   document.getElementById('mdx-pos').textContent = 'Ln ' + ln + ', Col ' + col;
   const n = ta.value.length;
   document.getElementById('mdx-chars').textContent = n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
