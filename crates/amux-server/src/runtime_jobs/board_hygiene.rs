@@ -553,16 +553,15 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
 /// (`api::board_groom`, docs/design/board-cards-stay-current.md step 2): the
 /// worker judges its own cards; this only finds them. At most one turn a lane a
 /// day; isolated, board-off and switched-off lanes are skipped there.
-/// Returns (lanes with stale cards, turns delivered).
-async fn groom_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
+/// Returns (lanes with stale cards, turns delivered), or the reason the board
+/// could not be read, so the tick never reports a measurement it did not make.
+async fn groom_sweep(state: &AppState, now_secs: i64) -> Result<(usize, usize), String> {
     let days = crate::api::board_groom::stale_days();
-    let Ok(report) = state
+    let report = state
         .store
         .read_async(move |conn| Ok(crate::api::board_groom::staleness_report(conn, now_secs, days)?))
         .await
-    else {
-        return (0, 0);
-    };
+        .map_err(|e| e.to_string())?;
     let lanes: Vec<String> = report["lanes"]
         .as_array()
         .into_iter()
@@ -580,7 +579,7 @@ async fn groom_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
             delivered += 1;
         }
     }
-    (lanes.len(), delivered)
+    Ok((lanes.len(), delivered))
 }
 
 pub async fn tick(state: AppState) {
@@ -588,11 +587,14 @@ pub async fn tick(state: AppState) {
 
     let (ny_warned, ny_discarded) = needsyou_sweep(&state, now_secs).await;
     let (af_discarded, bl_flagged) = stale_sweep(&state, now_secs).await;
-    let (groom_lanes, groom_delivered) = groom_sweep(&state, now_secs).await;
     // Unconditional, including zero (AF-178): a sweep that only speaks with news
-    // cannot say it ran.
-    tracing::info!(lanes_with_stale = groom_lanes, groom_delivered, measured = true,
-        n_considered = groom_lanes, verdict = "board_groom_sweep", "board_hygiene: grooming pass");
+    // cannot say it ran. A board it could not read says so (land review F1).
+    match groom_sweep(&state, now_secs).await {
+        Ok((groom_lanes, groom_delivered)) => tracing::info!(lanes_with_stale = groom_lanes, groom_delivered,
+            measured = true, n_considered = groom_lanes, verdict = "board_groom_sweep", "board_hygiene: grooming pass"),
+        Err(e) => tracing::warn!(error = %e, measured = false, n_considered = 0,
+            verdict = "board_groom_sweep_unmeasured", "board_hygiene: grooming pass could not read the board"),
+    }
 
     if ny_warned > 0 || ny_discarded > 0 || af_discarded > 0 || bl_flagged > 0 {
         tracing::info!(

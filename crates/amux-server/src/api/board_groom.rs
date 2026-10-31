@@ -89,7 +89,7 @@ fn clip(s: &str, n: usize) -> String {
 /// The turn's text: the cards as context and the verbs that already exist. No verdict on any card.
 pub(crate) fn groom_text(lane: &str, cards: &[StaleCard], days: i64) -> String {
     let mut t = format!(
-        "[amux board grooming] {} of your open cards have not moved in {days}+ days. You know what \
+        "[Board grooming, from amux] {} of your open cards have not moved in {days}+ days. You know what \
          shipped and what replaced what, so judge each one against what it was for. For each card do \
          exactly one, then go back to what you were doing:\n\
          - still needed: `amux board progress <ID> \"groom: keep: <why it still matters>\"`\n\
