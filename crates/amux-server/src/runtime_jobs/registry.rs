@@ -1504,6 +1504,12 @@ pub fn classify(f: &Facts, now: f64) -> &'static str {
         if now - started > limit {
             return "hung";
         }
+        // A tick in flight within its budget is the loop running, whatever
+        // the previous tick's end says (AF-1084). tiering ended a tick at
+        // T+300, began the next at T+505 and was still moving gigabytes to the
+        // HDD at T+985, logging a move a minute; last_tick_at was 780 s old
+        // against a 765 s limit, so it read "stalled" and filed a card.
+        return "ok";
     }
     match f.last_tick_at {
         Some(t) if now - t > limit => "stalled",
@@ -2179,6 +2185,24 @@ mod tests {
            // NEGATIVE CONTROL: a tick in flight for 30s is just a slow tick.
         assert_eq!(classify(&f, T + 30.0), "ok");
         assert_eq!(classify(&f, T + 70.0), "hung");
+    }
+
+    /// AF-1084: a previous tick that ended past the budget does not make a
+    /// job stalled while a newer tick is running inside its budget.
+    #[test]
+    fn a_running_tick_is_not_stalled_by_an_old_previous_end() {
+        let running = Facts {
+            last_tick_at: Some(T - 50.0),
+            in_flight_since: Some(T),
+            ..base()
+        }; // 65s budget
+        assert_eq!(classify(&running, T + 30.0), "ok", "previous end is 80 s old, but a tick is running");
+        assert_eq!(classify(&running, T + 70.0), "hung", "past the budget it is still hung");
+        let idle = Facts {
+            last_tick_at: Some(T - 50.0),
+            ..base()
+        };
+        assert_eq!(classify(&idle, T + 30.0), "stalled", "with nothing running, an old end is stalled");
     }
 
     #[test]
