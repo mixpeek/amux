@@ -113,7 +113,7 @@ test('a stale palette answer is asked again, so a just-made card appears without
     expect(calls, 'the stale answer was followed by another request').toBeGreaterThan(1);
     await page.keyboard.press('Escape');
   } finally {
-    await page.unroute('**/api/palette?*');
+    await cleanup('remove the palette stub', () => page.unroute('**/api/palette?*'));
     await cleanup('delete fixture card', () => request.delete(`/api/board/${cardId}`, { headers: auth }));
   }
 });
