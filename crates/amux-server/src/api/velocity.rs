@@ -258,6 +258,14 @@ struct Data {
     titles: HashMap<String, String>,
     /// API-equivalent dollars per worker in the window (token_ledger.cost_usd).
     spend: HashMap<String, f64>,
+    /// The part of `spend` joined to a card (token_ledger.task set), per
+    /// worker (AGH-5): the rest was spent outside any card claim.
+    on_cards: HashMap<String, f64>,
+}
+
+/// `part` as a whole percent of `whole`, None when there is no whole to divide.
+fn pct(part: f64, whole: f64) -> Option<f64> {
+    (whole > 0.0).then(|| ((part / whole) * 100.0).round())
 }
 
 fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
@@ -269,7 +277,7 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
     // The episodes job creates task_episodes on its first tick, so a new
     // install has no history yet: an empty answer, not a 500.
     if !table_exists(conn, "task_episodes") {
-        return Ok(Data { attempts: Vec::new(), tokens: HashMap::new(), titles: HashMap::new(), spend: HashMap::new() });
+        return Ok(Data { attempts: Vec::new(), tokens: HashMap::new(), titles: HashMap::new(), spend: HashMap::new(), on_cards: HashMap::new() });
     }
     let mut stmt = conn.prepare(
         "SELECT e.card, e.worker, e.started_at, e.ended_at, e.outcome, COALESCE(e.reason, ''),
@@ -304,14 +312,21 @@ fn load(conn: &rusqlite::Connection, since: i64) -> rusqlite::Result<Data> {
             titles.insert(id.to_string(), t);
         }
     }
-    let spend = if table_exists(conn, "token_ledger") {
-        let mut stmt = conn.prepare("SELECT session, SUM(cost_usd) FROM token_ledger WHERE ts >= ?1 AND COALESCE(session, '') <> '' GROUP BY session")?;
-        let rows = stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))))?.collect::<Result<HashMap<_, _>, _>>()?;
-        rows
+    let (spend, on_cards) = if table_exists(conn, "token_ledger") {
+        let mut stmt = conn.prepare(
+            "SELECT session, SUM(cost_usd), SUM(CASE WHEN COALESCE(task, '') <> '' THEN cost_usd ELSE 0 END) \
+             FROM token_ledger WHERE ts >= ?1 AND COALESCE(session, '') <> '' GROUP BY session")?;
+        let (mut spend, mut on_cards) = (HashMap::new(), HashMap::new());
+        for row in stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<f64>>(1)?.unwrap_or(0.0), r.get::<_, Option<f64>>(2)?.unwrap_or(0.0))))? {
+            let (w, total, carded) = row?;
+            spend.insert(w.clone(), total);
+            on_cards.insert(w, carded);
+        }
+        (spend, on_cards)
     } else {
-        HashMap::new()
+        (HashMap::new(), HashMap::new())
     };
-    Ok(Data { attempts, tokens, titles, spend })
+    Ok(Data { attempts, tokens, titles, spend, on_cards })
 }
 
 /// What a card said it waited on, from the attempt's end snapshot; None when
@@ -615,8 +630,10 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
             card_spend += spend;
         }
         let unfinished_share = 1.0 - s["finished_share_of_time"].as_f64().unwrap_or(100.0) / 100.0;
+        let carded = d.on_cards.get(w).copied().unwrap_or(0.0);
         rows.push(json!({
             "worker": w, "groups": groups.get(w).cloned().unwrap_or_default(), "spend_usd": usd(spend),
+            "on_cards_usd": usd(carded), "on_cards_pct": pct(carded, spend),
             "cards": cards, "finished_cards": fin,
             "success_rate": if cards > 0 { ((fin as f64 / cards as f64) * 100.0).round() } else { 0.0 },
             "cost_per_success_usd": (fin > 0).then(|| usd(spend / fin as f64)),
@@ -666,6 +683,10 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
     let mut by_group: Vec<Value> = by_group.into_iter().map(|(g, v)| json!({"group": g, "spend_usd": usd(v)})).collect();
     by_group.sort_by(|a, b| b["spend_usd"].as_f64().partial_cmp(&a["spend_usd"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
     rows.sort_by(|a, b| b["spend_usd"].as_f64().partial_cmp(&a["spend_usd"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    let total_on_cards: f64 = d.on_cards.values().sum();
+    tracing::info!(verdict = "spend_on_cards", measured = true, n_considered = d.spend.len(),
+        spend_usd = usd(total_spend), on_cards_usd = usd(total_on_cards), on_cards_pct = pct(total_on_cards, total_spend),
+        days, "share of spend joined to a card (AGH-5)");
     json!({
         "window_days": days, "measured": true, "n_considered": d.attempts.len(),
         "totals": {
@@ -675,6 +696,9 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
             "cost_per_success_usd": (finished > 0).then(|| usd(card_spend / finished as f64)),
             "potential_savings_usd_month": usd(savings),
             "potential_savings_basis": "the larger of background spend and unfinished-attempt spend, not their sum: a turn amux started is also inside a worker's spend",
+            "spend_on_cards_usd": usd(total_on_cards),
+            "spend_on_cards_pct": pct(total_on_cards, total_spend),
+            "spend_on_cards_note": "spend joined to a card: token_ledger.task is set only while the worker has that card claimed. The rest was spent outside any card, mostly on peer and owner messages (AGH-5), so cost_per_success divides more than the cards cost; isolated lanes have no board and are always 0",
         },
         "by_group": by_group,
         "by_group_note": "a worker in several groups counts in each",
@@ -875,12 +899,30 @@ mod tests {
         assert!(d.attempts.is_empty() && d.tokens.is_empty());
     }
 
+    /// AGH-5: load() splits each worker's spend into the part joined to a card
+    /// (task set) and the rest, from the ledger itself.
+    #[test]
+    fn load_splits_each_workers_spend_by_whether_a_card_holds_it() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE task_episodes (card TEXT, worker TEXT, started_at TEXT, ended_at TEXT, outcome TEXT, reason TEXT, card_end TEXT);
+             CREATE TABLE issues (id TEXT, title TEXT, blocked_on TEXT, waiting_on TEXT, source_ref TEXT);
+             CREATE TABLE token_ledger (ts INTEGER, session TEXT, task TEXT, input INTEGER, cache_write INTEGER, output INTEGER, cost_usd REAL);
+             INSERT INTO token_ledger VALUES (100,'w','C-1',1,0,1,3.0),(100,'w','',1,0,1,1.0),(100,'w',NULL,1,0,1,1.0),(100,'iso','',1,0,1,4.0),(1,'w','C-1',1,0,1,99.0);",
+        ).unwrap();
+        let d = load(&conn, 50).unwrap();
+        assert_eq!(d.spend.get("w"), Some(&5.0), "the window's spend, cards or not");
+        assert_eq!(d.on_cards.get("w"), Some(&3.0), "only the row with a task");
+        assert_eq!(d.on_cards.get("iso"), Some(&0.0));
+    }
+
     #[test]
     fn optimize_prices_spend_per_success_and_ranks_opportunities_with_an_owner() {
         let mut rows: Vec<Attempt> = (0..4).map(|i| a(&format!("D{i}"), "w", 20, "done", "")).collect();
         rows.push(a("P1", "w", 180, "parked", ""));
         let d = Data { attempts: rows, tokens: HashMap::new(), titles: HashMap::new(),
-            spend: HashMap::from([("w".to_string(), 30.0), ("idle".to_string(), 10.0)]) };
+            spend: HashMap::from([("w".to_string(), 30.0), ("idle".to_string(), 10.0)]),
+            on_cards: HashMap::from([("w".to_string(), 12.0), ("idle".to_string(), 0.0)]) };
         let groups = HashMap::from([("w".to_string(), vec!["ops".to_string()])]);
         let bg = json!({"window_hours": 24, "by_source": [
             {"source": "steer:board-drive", "label": "amux nudged this lane about a card", "is_background": true, "cost_usd": 12.0, "turns": 40},
@@ -890,6 +932,11 @@ mod tests {
         assert_eq!(o["totals"]["finished_cards"].as_u64(), Some(4));
         assert_eq!(o["totals"]["success_rate"].as_f64(), Some(80.0), "4 of 5 cards");
         assert_eq!(o["totals"]["cost_per_success_usd"].as_f64(), Some(7.5), "spend of workers with cards / finished");
+        // AGH-5: how much of the spend is joined to a card, beside the totals.
+        assert_eq!(o["totals"]["spend_on_cards_usd"].as_f64(), Some(12.0));
+        assert_eq!(o["totals"]["spend_on_cards_pct"].as_f64(), Some(30.0), "12 of 40");
+        let w = o["workers"].as_array().unwrap().iter().find(|r| r["worker"] == "w").unwrap();
+        assert_eq!(w["on_cards_pct"].as_f64(), Some(40.0), "12 of the worker's 30");
         assert_eq!(o["by_group"][0], json!({"group": "ops", "spend_usd": 30.0}));
         assert!(o["by_group"].as_array().unwrap().iter().any(|g| g["group"] == "ungrouped"));
         let ops = o["opportunities"].as_array().unwrap();
