@@ -1402,6 +1402,9 @@ impl LiveFleet {
     /// of this row ("did amux hand me this, or did I ask for it?") deserves its
     /// own answer instead of being inferred from text.
     async fn record_prompt(&self, lane: &str, text: &str) {
+        // A delivery is a wake: the goal keeper no longer skips auto-continue
+        // lanes outright, and this is how it sees that board-drive acted.
+        crate::runtime_jobs::goal_keeper::note_wake(lane, crate::config::now_f64(), "board-drive");
         let (lane, text) = (lane.to_string(), text.to_string());
         let ts = crate::runtime_jobs::registry::unix_now();
         let _ = self

@@ -16,9 +16,11 @@
 //!
 //! Two signals, both required: the transcript's latest `goal_status`
 //! attachment says `met: false`, AND the provider's footer shows
-//! "/goal active" (a cleared goal leaves no footer). The worker must be idle
-//! on an authoritative report for `AMUX_GOAL_CONTINUE_IDLE_S` (120s), which
-//! also means Claude Code's own loop did not continue it.
+//! "/goal active" (a cleared goal leaves no footer). The worker's turn must
+//! have ended (a background shell may still run) with no progress for
+//! `AMUX_GOAL_CONTINUE_IDLE_S` (120s), which also means Claude Code's own loop
+//! did not continue it. Auto-continue lanes are included: the keeper defers to
+//! board-drive only when board-drive actually delivered within the interval.
 //!
 //! # Bounds
 //!
@@ -701,6 +703,16 @@ async fn notify_met_once(app: &crate::api::AppState, name: &str, condition: &str
         "the /goal is met; told the owner by web push ({delivered} of {} subscription(s) delivered)", results.len());
 }
 
+/// The worker's turn is over, so a continue lands between turns. A finished
+/// turn with only a background shell still running (`agent_state: active`,
+/// `activity: background_shell`) counts: Claude Code queues a paste whatever
+/// runs behind it, the rule board-drive and steering already use. A worker
+/// waiting on a prompt, an approval or a limit does not.
+fn turn_ended_for_goal(s: &Value) -> bool {
+    s["turn_state"] == "completed"
+        && (s["agent_state"] == "idle" || (s["agent_state"] == "active" && s["activity"] == "background_shell"))
+}
+
 async fn tick(app: crate::api::AppState) {
     let Ok(sessions) = crate::api::sessions_legacy::legacy_sessions_values(app.store.clone()).await else {
         return;
@@ -731,11 +743,13 @@ async fn tick(app: crate::api::AppState) {
         if stamped.contains(&name) {
             continue;
         }
-        // Board-drive's standing orders already continue these.
-        if s["auto_continue"] == true {
-            continue;
-        }
-        if s["agent_state"] != "idle" || s["turn_state"] != "completed" {
+        // Auto-continue lanes used to be skipped here as "board-drive continues
+        // these". Board-drive continues only a lane it has a card for, and it
+        // read tubescience-parity as `mid-turn` while a background shell ran:
+        // on 2026-10-31 neither continued it for 18 min with its checker at
+        // 4/10. Board-drive now records each delivery as a wake, so the
+        // recent-wake check below is the deferral, and only when it acted.
+        if !turn_ended_for_goal(s) {
             continue;
         }
         let Some(progress_at) = s["last_progress_at"].as_f64() else { continue };
@@ -874,6 +888,7 @@ async fn tick(app: crate::api::AppState) {
                     submitted = ?out.submitted, refused = out.refused, measured = true, n_considered = 1,
                     killed_agents_listed = over.len(), agent_notifications_considered = notes_considered,
                     window_pct = ?window_pct, limit_gate = ?gate,
+                    auto_continue = s["auto_continue"] == true, activity = %s["activity"].as_str().unwrap_or(""),
                     "continued a worker whose /goal is not met: {}", out.message);
             }
         }
@@ -899,6 +914,22 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+    /// mixpeek-dev 2026-10-31 21:43-22:01Z: tubescience-parity's turn had
+    /// ended with one background shell open, its checker at 4/10, and the
+    /// keeper skipped it for 18 min as not idle.
+    #[test]
+    fn a_turn_ended_with_a_background_shell_is_continued() {
+        use serde_json::json;
+        let f = super::turn_ended_for_goal;
+        let shell = json!({"turn_state": "completed", "agent_state": "active", "activity": "background_shell", "auto_continue": true});
+        assert!(f(&shell), "the repro shape");
+        assert!(f(&json!({"turn_state": "completed", "agent_state": "idle", "activity": "none"})));
+        assert!(!f(&json!({"turn_state": "running", "agent_state": "active", "activity": "tool"})), "mid-turn");
+        assert!(!f(&json!({"turn_state": "completed", "agent_state": "active", "activity": "subagents"})), "subagents still working");
+        assert!(!f(&json!({"turn_state": "completed", "agent_state": "waiting", "activity": "waiting_for_input"})));
+        assert!(!f(&json!({"turn_state": "completed", "agent_state": "rate_limited", "activity": "rate_limited"})));
+    }
+
     #[test]
     fn a_met_goal_is_noticed_once_per_condition() {
         let a = super::met_notice_key("ship dark mode");
