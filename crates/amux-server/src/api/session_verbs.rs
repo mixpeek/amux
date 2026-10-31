@@ -1536,11 +1536,20 @@ pub(crate) enum EmptyComposer {
     LeftUnverified,
 }
 
+/// How long an empty, unverified composer is still watched for the message to
+/// come back (AF-1089). Claude Code returns a message queued mid-turn to the
+/// input box when the turn ends: 2026-10-31 on mixpeek-frustrations, the watch
+/// ended "left composer" at 07:18:56, the text was back in the box by 07:19:10,
+/// and with nothing watching it steering preserved it as a human draft for an
+/// hour while four queued messages waited behind it.
+pub(crate) const RESTORE_WINDOW_S: f64 = 300.0;
+
 pub(crate) fn empty_composer_verdict(now: f64, grace_until: f64, redelivered_at: Option<f64>, transcript_live: bool) -> EmptyComposer {
     if now < grace_until {
         return EmptyComposer::Wait;
     }
     match (transcript_live, redelivered_at) {
+        (false, _) if now < grace_until + RESTORE_WINDOW_S => EmptyComposer::Wait,
         (false, _) => EmptyComposer::LeftUnverified,
         (true, None) => EmptyComposer::Redeliver,
         (true, Some(at)) if now < at + 30.0 => EmptyComposer::Wait,
@@ -50892,7 +50901,11 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert_eq!(empty_composer_verdict(210.0, 190.0, Some(200.0), true), Wait);
         assert_eq!(empty_composer_verdict(231.0, 190.0, Some(200.0), true), Lost);
         // No live transcript: nothing proves it lost, and nothing is resent.
-        assert_eq!(empty_composer_verdict(200.0, 190.0, None, false), LeftUnverified);
+        // AF-1089: no live transcript keeps watching through the restore window,
+        // so a message Claude Code puts back in the box is still submitted.
+        assert_eq!(empty_composer_verdict(200.0, 190.0, None, false), Wait);
+        assert_eq!(empty_composer_verdict(190.0 + RESTORE_WINDOW_S - 1.0, 190.0, None, false), Wait);
+        assert_eq!(empty_composer_verdict(190.0 + RESTORE_WINDOW_S, 190.0, None, false), LeftUnverified);
     }
 
     #[test]
