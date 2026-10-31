@@ -3,7 +3,7 @@
 // workers' schedules like bulk delete"). The tab hid the checkboxes and had no
 // bulk bar. Workers and schedules are fakes; DELETE is answered here and
 // recorded, so nothing real is deleted.
-import { test, expect, Page } from './fixtures';
+import { test, expect, Page, allowUnusedRoute } from './fixtures';
 
 const A = 'zz-sbulk-a', B = 'zz-sbulk-b';
 const SCHEDS = [
@@ -21,7 +21,11 @@ async function boot(page: Page) {
     { name: B, dir: '/tmp/sbulk-b', running: true, status: 'idle', flags: '', steering: [] }] }));
   await page.route(/\/api\/sessions\/zz-sbulk-[ab]\/peek\?.*/, r => r.fulfill({ json: { output: 'idle\n', history: '' } }));
   await page.route(/\/api\/schedules\/runs(?:\?.*)?$/, r => r.fulfill({ json: [] }));
-  await page.route(/\/api\/schedules\/SCHED-SB\d(?:\?.*)?$/, r => {
+  const one = /\/api\/schedules\/SCHED-SB\d(?:\?.*)?$/;
+  // Clear sends no request, so the test that only clears never reaches this
+  // stub; the delete test does and checks what it recorded.
+  allowUnusedRoute(page, one);
+  await page.route(one, r => {
     const id = r.request().url().match(/SCHED-SB\d/)![0];
     if (r.request().method() !== 'DELETE') return r.fulfill({ json: { ok: true } });
     deleted.push(id);
