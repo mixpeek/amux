@@ -8,6 +8,7 @@ REAL_RUN, REAL_POPEN = _sp.run, _sp.Popen
 
 TMP = tempfile.mkdtemp()
 os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_USAGE_LOG="off", CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
+                  CLAUDE_ROTATE_ACCOUNTS_DIR=os.path.join(TMP, "no-account-folders"),
                   CLAUDE_ROTATE_CLAUDE_JSON=os.path.join(TMP, "claude.json"))
 spec = importlib.util.spec_from_file_location("cr", os.path.join(os.path.dirname(__file__), "..", "claude-rotate.py"))
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
@@ -256,6 +257,16 @@ class Logins(unittest.TestCase):
         os.makedirs(d)
         json.dump({"oauthAccount": {"emailAddress": email}}, open(os.path.join(d, ".claude.json"), "w"))
         self.kc[(cr._folder_service(d), cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": rt}})
+
+    def test_signed_in_folder_without_a_reading_is_ranked(self):
+        # 2026-10-31: a new host's eight folders were never candidates, so it held forever.
+        cr.save(cr.ACCOUNTS, {"accounts": {"spent@x.com": acct(100, h(3), 100, h(90))}})
+        self.folder("fresh", "fresh@x.com")
+        self.folder("gone", "gone@x.com")
+        self.kc.pop((cr._folder_service(os.path.join(cr.ACCOUNTS_DIR, "gone")), cr.CRED_ACCT))
+        rows = cr.rank(NOW)
+        self.assertEqual([r["email"] for r in rows], ["fresh@x.com", "spent@x.com"])
+        self.assertEqual(cr.decide("spent@x.com", rows, {}, NOW)[0], "fresh@x.com")
 
     def test_folder_service_matches_the_cli(self):
         # Observed on this Mac: CLAUDE_CONFIG_DIR=~/.amux/claude-accounts/amux

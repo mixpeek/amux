@@ -93,8 +93,11 @@ SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
 MIN_SWITCH_GAP_S = int(os.environ.get("CLAUDE_ROTATE_MIN_GAP_S", "900"))
 CHROME_PROFILE = os.environ.get("CLAUDE_ROTATE_CHROME_PROFILE", "Profile 16")
 CLAUDE = os.environ.get("CLAUDE_ROTATE_CLAUDE", "claude")
-# The probe CLI starts here; it must be a folder the owner already trusts.
-PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, "Dev"))
+# The probe CLI starts here; it must be a folder the owner already trusts. The installer
+# creates this empty folder and trusts it, so the probe never opens in a folder of real files.
+# 2026-10-31: on a new Linux host ~/Dev was untrusted, every probe stopped at the trust
+# prompt, and every switch was rolled back as unproven.
+PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, ".amux", "claude-rotate", "probe"))
 SWITCH_TIMEOUT_S = int(os.environ.get("CLAUDE_ROTATE_SWITCH_TIMEOUT_S", "240"))
 
 
@@ -472,7 +475,17 @@ def window(w, at):
 def rank(at=None):
     at = at or now()
     rows = []
-    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+    accounts = dict(load(ACCOUNTS, {"accounts": {}})["accounts"])
+    # A signed-in config folder is an account too, before any reading of it exists. 2026-10-31:
+    # a new host with eight folders held "no_usable_account" on every tick, because readings
+    # only come from the logged-in account and nothing ever switched to the other seven.
+    folders = account_folders()
+    for email in folders:
+        if email not in accounts:
+            side = folder_login(email, folders)
+            if side and not _expired(side["claudeAiOauth"]):
+                accounts[email] = {}
+    for email, a in accounts.items():
         if a.get("disabled"):
             continue
         u5, r5 = window(a.get("five_hour"), at)
