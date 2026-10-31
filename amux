@@ -10423,7 +10423,12 @@ p.communicate(msg.encode())
     _cwt="$(git config --file "$_shared_cfg" --get core.worktree 2>/dev/null || true)"
     _cbare="$(git config --file "$_shared_cfg" --get core.bare 2>/dev/null || true)"
     if [ -n "$_cwt" ] || [ "$_cbare" = true ]; then
-      _land_log "refused: the shared git config $_shared_cfg sets ${_cwt:+core.worktree=$_cwt }${_cbare:+core.bare=$_cbare }; every lane's git reads that as its tree. Remove it (git config --file $_shared_cfg --unset core.worktree) and land again; nothing queued"
+      # The remedy names the key it found (2026-10-31: a core.bare=true refusal
+      # said to unset core.worktree, which leaves the repository bare).
+      local _fix=""
+      [ -n "$_cwt" ] && _fix="git config --file $_shared_cfg --unset core.worktree"
+      [ "$_cbare" = true ] && _fix="${_fix:+$_fix && }git config --file $_shared_cfg core.bare false"
+      _land_log "refused: the shared git config $_shared_cfg sets ${_cwt:+core.worktree=$_cwt }${_cbare:+core.bare=$_cbare }; every lane's git reads that as its tree. Fix it ($_fix) and land again; nothing queued"
       return 2
     fi
   fi
