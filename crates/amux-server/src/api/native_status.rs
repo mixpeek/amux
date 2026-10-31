@@ -68,6 +68,13 @@ fn sh_word(s: &str) -> String {
 /// while five of its subagents were running. Settings that already carry every
 /// entry are left byte-for-byte alone; otherwise only amux's own entries are
 /// replaced, never another hook.
+/// Seconds Claude gives the status hook (AF-1054). It was 3: under load runs
+/// reached 2,955 ms and the provider killed the ones past 3 s, so their edge
+/// never existed (a lost Stop read the lane as mid-turn for hours). The send is
+/// detached, so a normal run takes milliseconds. An entry carrying another
+/// timeout is rewritten, so hosts installed at 3 s are corrected.
+pub(crate) const STATUS_HOOK_TIMEOUT_S: u64 = 10;
+
 pub(crate) fn ensure_claude_hooks(settings: &Path, script: &Path) -> std::io::Result<bool> {
     let command = format!("python3 {} claude", sh_word(&script.to_string_lossy()));
     let mut data: Value = match std::fs::read_to_string(settings) {
@@ -79,7 +86,8 @@ pub(crate) fn ensure_claude_hooks(settings: &Path, script: &Path) -> std::io::Re
     let ours = |h: &Value| h["command"].as_str().is_some_and(|c| c.contains("native-status.py"));
     let present = |data: &Value, ev: &str| {
         data["hooks"][ev].as_array().is_some_and(|gs| gs.iter().any(|g| {
-            g["hooks"].as_array().is_some_and(|hs| hs.iter().any(|h| h["command"] == json!(command)))
+            g["hooks"].as_array().is_some_and(|hs| hs.iter().any(|h| h["command"] == json!(command)
+            && h["timeout"] == json!(STATUS_HOOK_TIMEOUT_S)))
         }))
     };
     let total = data["hooks"].as_object().map_or(0, |o| {
@@ -107,7 +115,7 @@ pub(crate) fn ensure_claude_hooks(settings: &Path, script: &Path) -> std::io::Re
         }
     }
     for ev in CLAUDE_HOOK_EVENTS {
-        let mut group = json!({"hooks": [{"type": "command", "command": command, "timeout": 3}]});
+        let mut group = json!({"hooks": [{"type": "command", "command": command, "timeout": STATUS_HOOK_TIMEOUT_S}]});
         if matches!(*ev, "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure") {
             group["matcher"] = json!(".*");
         }
@@ -772,6 +780,32 @@ mod tests {
         let fresh = dir.path().join("none").join("settings.json");
         assert!(ensure_claude_hooks(&fresh, Path::new("/a path/native-status.py")).unwrap());
         assert!(std::fs::read_to_string(&fresh).unwrap().contains("python3 '/a path/native-status.py' claude"));
+    }
+
+    /// AF-1054: settings installed with the 3 s timeout are rewritten to
+    /// STATUS_HOOK_TIMEOUT_S, other hooks kept; at the new timeout they are left alone.
+    #[test]
+    fn a_status_hook_installed_at_three_seconds_is_given_the_longer_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let script = Path::new("/home/amux/.amux/native-status.py");
+        assert!(ensure_claude_hooks(&settings, script).unwrap());
+        let mut d: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        for ev in CLAUDE_HOOK_EVENTS {
+            d["hooks"][ev][0]["hooks"][0]["timeout"] = json!(3);
+        }
+        d["hooks"]["Stop"].as_array_mut().unwrap().push(json!({"hooks": [{"type": "command", "command": "echo other", "timeout": 3}]}));
+        std::fs::write(&settings, d.to_string()).unwrap();
+        assert!(ensure_claude_hooks(&settings, script).unwrap(), "a 3 s observer entry is rewritten");
+        let d: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        for ev in CLAUDE_HOOK_EVENTS {
+            let ours: Vec<&Value> = d["hooks"][ev].as_array().unwrap().iter()
+                .flat_map(|g| g["hooks"].as_array().unwrap()).filter(|h| h["command"].as_str().unwrap().contains("native-status.py")).collect();
+            assert_eq!(ours.len(), 1, "{ev}");
+            assert_eq!(ours[0]["timeout"], json!(STATUS_HOOK_TIMEOUT_S), "{ev}");
+        }
+        assert!(d["hooks"]["Stop"].to_string().contains("echo other"), "another hook is kept, its timeout untouched");
+        assert!(!ensure_claude_hooks(&settings, script).unwrap(), "at the new timeout nothing is rewritten");
     }
 
     #[test]
