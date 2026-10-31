@@ -1255,6 +1255,12 @@
      rationale for opening files directly depends on this being findable.
      44px min-height is the mobile touch target; the rest of the row is short
      text, so without it this is an ~11px tap on a phone. */
+  /* The folder, then how fresh the shown copy is (app.js _fileFresh). */
+  .file-meta-row { display: flex; align-items: center; gap: var(--space-1-5); min-width: 0; }
+  .file-meta-row .file-subpath { flex: 0 1 auto; min-width: 0; }
+  .file-fresh { flex-shrink: 0; font-size: var(--fs-2xs); color: var(--dim); white-space: nowrap; }
+  .file-fresh[hidden] { display: none; }
+  .file-fresh.offline { color: var(--orange); }
   .file-subpath.clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
   .file-subpath.clickable:hover { color: var(--accent); }
   @media (max-width: 600px) { .file-subpath.clickable { min-height: 44px; display: flex; align-items: center; } }
@@ -10776,6 +10782,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-seg button { border: 0; background: none; color: var(--dim); font: inherit; font-size: var(--fs-md); padding: var(--space-1) var(--space-2-5);
   border-radius: var(--radius-sm); cursor: pointer; min-height: 30px; }
 .mdx-seg button.active { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+/* Split is a way of showing Edit, not a fifth place: an icon toggle at the end of the switch. */
+.mdx-seg .mdx-split { margin-left: var(--space-1); padding: var(--space-1) var(--space-2); }
+.mdx-preview-acts { display: inline-flex; align-items: center; gap: var(--space-1-5); flex-shrink: 0; }
+.mdx-preview-acts[hidden] { display: none; }
 .mdx-tools { display: inline-flex; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
 .mdx-tools button, .mdx-icon { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); min-width: 30px; min-height: 30px;
   border-radius: var(--radius-sm); cursor: pointer; padding: 0 var(--space-1); }
@@ -10869,6 +10879,9 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 
 @media (max-width: 700px) {
   .mdx [data-m="split"] { display: none; }
+  /* One row that fits a 375px phone: the four views and Copy. The viewer is already full screen
+     there, and Copy copies markdown. */
+  #mdx-copy-as, #mdx-full { display: none; }
   .mdx-bar { padding: var(--space-0-5) var(--space-1-5); }
   /* A phone: the note runs edge to edge, as the viewer's did. */
   .mdx-pane { border-radius: 0; border-left: 0; border-right: 0; }

@@ -3084,8 +3084,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxToggleSplit": {
+      "kind": "command._mdxToggleSplit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxToggleTask": {
       "kind": "command._mdxToggleTask",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxView": {
+      "kind": "command._mdxView",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -122,7 +122,7 @@ test('Diff shows what changed against the saved file', async ({ page }) => {
   await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(0, 7); });
   await page.keyboard.type('# Done');
   await mode(page, wide(page) ? 'split' : 'preview');
-  await page.locator('#mdx-tab [data-v="diff"]').click();
+  await page.locator('#mdx-mode [data-m="diff"]').click();
   await expect(page.locator('.mdx-diff-head')).toContainText('+1');
   await expect(page.locator('.mdx-diff-head')).toContainText('−1');
   await expect(page.locator('.mdx-row-del')).toContainText('# To-Do');
@@ -139,7 +139,7 @@ test('History lists the commits; Diff against one; Restore puts it back unsaved'
   writeFileSync(f, '# Log\n\n- first\n'); git('add', '.'); git('commit', '-qm', 'start the log');
   writeFileSync(f, '# Log\n\n- first\n- second\n'); git('commit', '-qam', 'add the second');
   await open(page, f);
-  await page.locator('#mdx-tab [data-v="history"]').click();
+  await page.locator('#mdx-mode [data-m="history"]').click();
   const commits = page.locator('.mdx-commit');
   await expect(commits).toHaveCount(2);
   await expect(commits.nth(0)).toContainText('add the second');
@@ -147,7 +147,7 @@ test('History lists the commits; Diff against one; Restore puts it back unsaved'
   await commits.nth(1).locator('[data-act="diff"]').click();
   await expect(page.locator('.mdx-diff-head')).toContainText('start the log');
   await expect(page.locator('.mdx-row-add')).toContainText('- second');
-  await page.locator('#mdx-tab [data-v="history"]').click();
+  await page.locator('#mdx-mode [data-m="history"]').click();
   await page.locator('.mdx-commit').nth(1).locator('[data-act="restore"]').click();
   await expect(page.locator('#file-edit-ta')).toHaveValue('# Log\n\n- first\n');
   await expect(page.locator('#mdx-dirty')).toHaveText('Unsaved');
@@ -156,7 +156,7 @@ test('History lists the commits; Diff against one; Restore puts it back unsaved'
 
 test('a file outside git says it has no history', async ({ page }) => {
   await open(page, freshFile());
-  await page.locator('#mdx-tab [data-v="history"]').click();
+  await page.locator('#mdx-mode [data-m="history"]').click();
   await expect(page.locator('#mdx-alt .mdx-empty')).toContainText('not in a git repository');
 });
 
@@ -205,4 +205,76 @@ test('a task ticked in Split can be undone with ⌘Z', async ({ page }) => {
   await page.keyboard.press('ControlOrMeta+z');
   await expect(ta).toHaveValue(/- \[ \] #gtm MomentBench/);
   await expect(ta).toHaveValue(/\nmore$/);
+});
+
+// Owner, 2026-10-31: the bar read "Edit Preview Split Preview Diff History",
+// the title said "cached 42h ago" over a file loaded fresh, a phone scrolled
+// sideways, and Diff did not say what it compared.
+test('one view bar: Preview, Edit, Diff, History once each; Split only on a wide screen', async ({ page }) => {
+  await open(page, freshFile());
+  const tabs = page.locator('#mdx [role="tab"]:visible');
+  await expect(tabs).toHaveText(['Preview', 'Edit', 'Diff', 'History']);
+  await expect(page.locator('#mdx-mode [data-m="preview"]')).toHaveClass(/active/);
+  await expect(page.locator('#mdx-mode .mdx-split')).toBeVisible({ visible: wide(page) });
+  await mode(page, 'edit');
+  await expect(page.locator('#mdx-mode [data-m="edit"]')).toHaveClass(/active/);
+  await expect(page.locator('#mdx [role="tab"]:visible')).toHaveText(['Preview', 'Edit', 'Diff', 'History']);
+  await mode(page, 'history');
+  await expect(page.locator('#mdx')).toHaveAttribute('data-mode', 'preview');
+  await expect(page.locator('#mdx-mode [data-m="history"]')).toHaveClass(/active/);
+  // Copy acts on the rendered note, so it shows only in Preview.
+  await expect(page.locator('#mdx-copy')).toBeHidden();
+  await mode(page, 'preview');
+  await expect(page.locator('#mdx-copy')).toBeVisible();
+  // Nothing scrolls sideways, the page or the bar.
+  const over = await page.evaluate(() => {
+    const bar = document.getElementById('mdx-view-bar')!;
+    return { page: document.documentElement.scrollWidth - window.innerWidth, bar: bar.scrollWidth - bar.clientWidth };
+  });
+  expect(over.page).toBeLessThanOrEqual(0);
+  expect(over.bar).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: test.info().outputPath('md-one-bar.png') });
+});
+
+test('Split toggles beside Edit and is remembered for Edit, not over Preview', async ({ page }) => {
+  test.skip(!wide(page), 'Split needs a wide screen');
+  await open(page, freshFile());
+  await mode(page, 'edit');
+  await page.locator('#mdx-mode .mdx-split').click();
+  await expect(page.locator('#mdx')).toHaveAttribute('data-mode', 'split');
+  await expect(page.locator('#mdx-mode .mdx-split')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#mdx-mode [data-m="edit"]')).toHaveClass(/active/);
+  await mode(page, 'preview');
+  await mode(page, 'edit');
+  await expect(page.locator('#mdx')).toHaveAttribute('data-mode', 'split');
+  await page.locator('#mdx-mode .mdx-split').click();
+  await expect(page.locator('#mdx')).toHaveAttribute('data-mode', 'edit');
+});
+
+test('Diff names both ends it compares', async ({ page }) => {
+  await open(page, freshFile());
+  await mode(page, 'edit');
+  await page.locator('#file-edit-ta').evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(0, 7); });
+  await page.keyboard.type('# Done');
+  await mode(page, 'diff');
+  await expect(page.locator('.mdx-diff-ends')).toHaveText('the file as you opened it → the text now');
+  await expect(page.locator('#mdx-mode [data-m="diff"]')).toHaveClass(/active/);
+});
+
+test('a copy saved on this device says whose and how old it is, and the label goes once the file loads', async ({ page }) => {
+  const f = freshFile();
+  await open(page, f);
+  await expect(page.locator('#file-title')).toHaveText('todo.md');
+  await expect(page.locator('#file-fresh')).toBeHidden();
+  // Opened again while the server is slow: the device's copy first, labelled.
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  await page.route(/\/api\/file\?path=/, async r => { await held; await r.continue(); });
+  await page.evaluate(() => (window as any).closeFilePreview());
+  await page.evaluate(p => { (window as any).openFilePreview(p); }, f);
+  await expect(page.locator('#file-fresh')).toHaveText(/^Your copy from .* · checking…$/);
+  await expect(page.locator('#file-title')).toHaveText('todo.md');
+  release();
+  await expect(page.locator('#file-fresh')).toBeHidden();
+  await expect(page.locator('#file-title')).toHaveText('todo.md');
 });

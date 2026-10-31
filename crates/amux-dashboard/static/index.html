@@ -4200,7 +4200,7 @@
     <button class="nav-back-btn" type="button" aria-label="Back" title="Back" hidden>&#x2039;</button>
     <div class="file-title-wrap">
       <h2 id="file-title">file</h2>
-      <div id="file-subpath" class="file-subpath"></div>
+      <div class="file-meta-row"><div id="file-subpath" class="file-subpath"></div><span id="file-fresh" class="file-fresh" role="status" hidden></span></div>
     </div>
     <div class="file-view-tabs" id="file-view-tabs" style="display:none;">
       <button class="file-view-tab active" id="file-tab-preview" onclick="setFileViewMode('preview')">Preview</button>
@@ -4240,10 +4240,12 @@
   <div id="mdx" class="mdx" hidden data-mode="preview">
     <section class="mdx-pane mdx-src" id="mdx-src" aria-label="Markdown source">
       <div class="mdx-bar" id="mdx-src-bar">
-        <div class="mdx-seg" id="mdx-mode" role="tablist" aria-label="Layout">
-          <button type="button" role="tab" data-m="edit" onclick="_mdxSetMode('edit', true)" title="Source only">Edit</button>
-          <button type="button" role="tab" data-m="preview" onclick="_mdxSetMode('preview', true)" title="Preview only">Preview</button>
-          <button type="button" role="tab" data-m="split" onclick="_mdxSetMode('split', true)" title="Source and preview side by side">Split</button>
+        <div class="mdx-seg" id="mdx-mode" role="tablist" aria-label="View">
+          <button type="button" role="tab" data-m="preview" onclick="_mdxView('preview')" title="The rendered note">Preview</button>
+          <button type="button" role="tab" data-m="edit" onclick="_mdxView('edit')" title="The markdown source">Edit</button>
+          <button type="button" role="tab" data-m="diff" onclick="_mdxView('diff')" title="What changed since the last save, or since a commit chosen in History">Diff</button>
+          <button type="button" role="tab" data-m="history" onclick="_mdxView('history')" title="Earlier versions from git">History</button>
+          <button type="button" class="mdx-split" data-m="split" onclick="_mdxToggleSplit()" aria-pressed="false" title="Show the preview beside the source" aria-label="Side by side">&#x25EB;</button>
         </div>
         <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting">
           <button type="button" data-t="heading" title="Heading (cycles # to ###)" aria-label="Heading"><b>H</b></button>
@@ -4272,15 +4274,12 @@
     </section>
     <section class="mdx-pane mdx-view" id="mdx-view" aria-label="Rendered">
       <div class="mdx-bar" id="mdx-view-bar">
-        <div class="mdx-seg" id="mdx-tab" role="tablist" aria-label="Show">
-          <button type="button" role="tab" data-v="preview" onclick="_mdxTabClick('preview')">Preview</button>
-          <button type="button" role="tab" data-v="diff" onclick="_mdxTabClick('diff')">Diff</button>
-          <button type="button" role="tab" data-v="history" onclick="_mdxTabClick('history')">History</button>
-        </div>
         <span class="mdx-spacer"></span>
+        <span class="mdx-preview-acts" id="mdx-preview-acts">
         <select id="mdx-copy-as" class="mdx-copy-as" aria-label="Copy as" title="What Copy copies">
           <option value="md">Markdown</option><option value="html">HTML</option><option value="text">Text</option></select>
         <button type="button" class="mdx-icon" id="mdx-copy" title="Copy" aria-label="Copy">&#x29C9;</button>
+        </span>
         <button type="button" class="mdx-icon" id="mdx-full" title="Full screen (Esc to leave)" aria-label="Full screen">&#x26F6;</button>
       </div>
       <div class="mdx-out" id="mdx-out-host"></div>

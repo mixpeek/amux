@@ -30258,7 +30258,7 @@ function _mdxShow(data, mode) {
   const want = mode === 'raw' || mode === 'edit' ? (_mdxWide() && localStorage.getItem('amux_mdx_mode') === 'split' ? 'split' : 'edit')
     : mode === 'split' ? 'split' : 'preview';
   _mdxSetMode(want, false);
-  _mdxSetTab(_mdx.tab === 'history' || _mdx.tab === 'diff' ? _mdx.tab : 'preview');
+  _mdxSetTab(want === 'preview' && (_mdx.tab === 'history' || _mdx.tab === 'diff') ? _mdx.tab : 'preview');
   _mdxHighlight();
   _mdxStatus();
   return true;
@@ -30296,8 +30296,9 @@ function _mdxSetMode(mode, remember) {
   const seg = document.getElementById('mdx-mode');
   const into = document.getElementById(mode === 'preview' ? 'mdx-view-bar' : 'mdx-src-bar');
   if (seg && into && seg.parentElement !== into) into.insertBefore(seg, into.firstChild);
-  seg.querySelectorAll('[data-m]').forEach(b => { const on = b.dataset.m === mode; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
-  if (remember) { try { localStorage.setItem('amux_mdx_mode', mode); } catch (e) {} }
+  _mdxSyncBar();
+  // Remembered is the layout Edit opens in (edit or split); Preview is never remembered over it.
+  if (remember && mode !== 'preview') { try { localStorage.setItem('amux_mdx_mode', mode); } catch (e) {} }
   ['file-tab-search', 'file-tab-readaloud'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = mode === 'edit' ? 'none' : ''; });
   if (mode === 'edit') _mdSearchClose();
   if (mode !== 'preview') { const ta = document.getElementById('file-edit-ta'); if (ta && !ta.readOnly) requestAnimationFrame(() => ta.focus({ preventScroll: true })); }
@@ -30308,7 +30309,10 @@ function _mdxSetMode(mode, remember) {
 
 function _mdxSetTab(tab) {
   _mdx.tab = tab;
-  document.querySelectorAll('#mdx-tab [data-v]').forEach(b => { const on = b.dataset.v === tab; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  _mdxSyncBar();
+  // Copy and Copy-as act on the rendered note, so they show only beside it.
+  const acts = document.getElementById('mdx-preview-acts');
+  if (acts) acts.hidden = tab !== 'preview';
   const body = document.getElementById('file-body'), alt = document.getElementById('mdx-alt');
   body.style.display = tab === 'preview' ? '' : 'none';
   document.getElementById('mdx-out-host').hidden = tab !== 'preview';
@@ -30719,8 +30723,11 @@ function _mdxRenderDiff() {
     : (_mdx.opened != null ? 'the file as you opened it' : 'the saved file');
   const rows = _mdxDiffLines(base, ta.value);
   const add = rows.filter(r => r[0] === '+').length, del = rows.filter(r => r[0] === '-').length;
-  let h = '<div class="mdx-diff-head">' + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b> against ' + what
-    : 'No changes against ' + what) + (_mdx.against ? ' <button type="button" class="btn mdx-diff-saved">Against the saved file</button>' : '') + '</div>';
+  // Both ends named (owner, 2026-10-31: "unclear Diff semantics"): red is the
+  // older side, green the text in the editor now.
+  let h = '<div class="mdx-diff-head"><span class="mdx-diff-ends"><span class="mdx-del">' + what + '</span> \u2192 <span class="mdx-add">the text now</span></span> '
+    + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b>' : '<span>no changes</span>')
+    + (_mdx.against ? ' <button type="button" class="btn mdx-diff-saved">Compare with the file as opened</button>' : '') + '</div>';
   if (add || del) {
     // Only the changes and three lines around each.
     const keep = new Set();
@@ -30814,8 +30821,38 @@ function _mdxFull(on) {
   requestAnimationFrame(_mdxHighlight);
 }
 
-// The Preview / Diff / History switch (index.html onclick). Diff opened from
-// the switch is against the saved file; History's Diff picks a commit.
+// The one view switch (owner, 2026-10-31: "Edit Preview Split Preview Diff
+// History" showed Preview twice). Preview, Edit, Diff and History are where
+// you are; Split is a desktop-only way of showing Edit, toggled beside them.
+// Inside, mode says which panes show and tab what the rendered pane holds.
+function _mdxCurrentView() {
+  if (_mdx.tab === 'diff' || _mdx.tab === 'history') return _mdx.tab;
+  return _mdx.mode === 'preview' ? 'preview' : 'edit';
+}
+function _mdxSyncBar() {
+  const seg = document.getElementById('mdx-mode');
+  if (!seg) return;
+  const view = _mdxCurrentView();
+  seg.querySelectorAll('[role="tab"][data-m]').forEach(b => { const on = b.dataset.m === view; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  const sp = seg.querySelector('.mdx-split');
+  if (sp) { const on = _mdx.mode === 'split'; sp.classList.toggle('active', on); sp.setAttribute('aria-pressed', String(on)); }
+}
+function _mdxView(v) {
+  if (v === 'edit') {
+    const split = _mdxWide() && localStorage.getItem('amux_mdx_mode') === 'split';
+    _mdxSetMode(split ? 'split' : 'edit', false);
+    _mdxSetTab('preview');
+  } else {
+    _mdxSetMode('preview', false);
+    _mdxTabClick(v);
+  }
+  _mdxBeacon('view', { view: v });
+}
+function _mdxToggleSplit() {
+  _mdxSetMode(_mdx.mode === 'split' ? 'edit' : 'split', true);
+  _mdxSetTab('preview');
+}
+// Diff opened from the switch is against the saved file; History's Diff picks a commit.
 function _mdxTabClick(v) {
   if (v === 'diff' && _mdx.tab !== 'diff') _mdx.against = null;
   _mdxSetTab(v);
@@ -32152,6 +32189,7 @@ async function _openXlsxPreview(path) {
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
   document.getElementById('file-overlay').dataset.path = path;
   _fileHashSync(path);
+  _fileFresh(null);
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -32391,6 +32429,7 @@ async function openFilePreview(path, options = {}) {
     const data = await r.json();
     if (gen !== _filePreviewGen) return;   // another file was opened meanwhile
     fresh = true;
+    _fileFresh(null);
     if (data.error) {
       // Say WHAT failed and WHERE, not a bare "Error: file not found" dead end
       // (Ethan, 2026-09-12: a terminal file link opened to that and nothing
@@ -32488,19 +32527,36 @@ async function openFilePreview(path, options = {}) {
     // Offline or unreachable: the saved copy, if any (it may already be shown).
     const cached = await _idb.getFile(path).catch(() => null);
     if (gen !== _filePreviewGen) return;
-    if (cached && cached.type === 'file') { _fileShowCached(path, cached); return; }
+    if (cached && cached.type === 'file') { _fileShowCached(path, cached, true); return; }
     document.getElementById('file-body').textContent = 'Could not reach the server, and this file has no saved copy on this device yet.';
   }
 }
 
 let _filePreviewGen = 0;
-function _fileShowCached(path, cached) {
+// How fresh the shown copy is, beside the folder (owner, 2026-10-31: "To-Do.md
+// · cached 42h ago" stayed in the title after the file had loaded fresh, and
+// read as if the note were 42 hours stale while its last commit was 8h old).
+// The cached time is when this device last opened the file, not when the file
+// changed, so it says "your copy" and goes away once the server answers.
+// null: the file is the server's, nothing to say.
+function _fileFresh(state, ts) {
+  const el = document.getElementById('file-fresh');
+  if (!el) return;
+  if (!state) { el.hidden = true; el.textContent = ''; el.className = 'file-fresh'; return; }
+  const age = Math.max(0, Math.round((Date.now() - (ts || Date.now())) / 60000));
+  const ageStr = age < 1 ? 'just now' : age < 60 ? age + 'm ago' : age < 2880 ? Math.round(age / 60) + 'h ago' : Math.round(age / 1440) + 'd ago';
+  el.textContent = state === 'offline' ? 'Offline \u00b7 your copy from ' + ageStr : 'Your copy from ' + ageStr + ' \u00b7 checking\u2026';
+  el.title = state === 'offline'
+    ? 'The server could not be reached. This is the copy saved on this device when you last opened the file.'
+    : 'Showing the copy saved on this device while the current file loads.';
+  el.className = 'file-fresh' + (state === 'offline' ? ' offline' : '');
+  el.hidden = false;
+}
+function _fileShowCached(path, cached, offline) {
     {
       _idb.touchFile(path);   // opening refreshes the 30-day clock, even offline
       _fileData = cached.data;
-      const age = Math.round((Date.now() - cached.ts) / 60000);
-      const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
-      document.getElementById('file-title').textContent = path.split('/').pop() + ' \u2022 cached ' + ageStr;
+      _fileFresh(offline ? 'offline' : 'checking', cached.ts);
       const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary && !cached.data.is_ebook;
       if (cachedIsText) {
         document.getElementById('file-view-tabs').style.display = '';
@@ -32595,6 +32651,7 @@ function closeFilePreview() {
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
   _fileHashSync(null);
+  _fileFresh(null);
   document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
