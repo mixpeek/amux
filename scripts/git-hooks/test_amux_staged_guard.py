@@ -301,6 +301,19 @@ def main():
         finally:
             os.chdir(cwd)
 
+    # #28: a block marker past its TTL is an ended episode, not this commit's.
+    with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"AMUX_HOME": home}, clear=False):
+        mod._write_marker("s", "/repo", "v1", ["a"])
+        if (mod._read_marker("s", "/repo") or {}).get("verdict_id") != "v1":
+            failures.append("#28: a fresh marker should be read")
+        import json as _json
+        p = mod._marker_path("s", "/repo")
+        m = _json.load(open(p)); m["ts"] -= mod.MARKER_TTL_S + 60; _json.dump(m, open(p, "w"))
+        if mod._read_marker("s", "/repo") is not None:
+            failures.append("#28: a marker past its TTL should read as absent")
+        if os.path.exists(p):
+            failures.append("#28: an expired marker should be removed")
+
     if failures:
         print(f"FAIL {len(failures)}:")
         for f in failures:

@@ -82,3 +82,26 @@ test('queue mode trusts only a fresh waiting status', async ({ page }) => {
   expect(await read(30000, 'waiting'), 'stale waiting: keep it queued').toBe(false);
   expect(await read(1000, 'active'), 'not waiting').toBe(false);
 });
+
+// An acknowledged pause survives a stale snapshot until the server agrees (#31).
+test('an acknowledged pause is not flipped back by an older snapshot', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [base] }));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any)._applyLifecycleAcks === 'function');
+  const got = await page.evaluate(() => {
+    const w = window as any;
+    const stale = () => [{ name: 'one-reading', lifecycle: 'active', running: true, status: 'active' }];
+    eval('_lifecycleAck.set("one-reading", { lifecycle: "paused", at: Date.now(), running: false, status: "" })');
+    const held = w._applyLifecycleAcks(stale())[0];
+    const agreed = w._applyLifecycleAcks([{ name: 'one-reading', lifecycle: 'paused', running: false }])[0];
+    const afterAgree = w._applyLifecycleAcks(stale())[0];
+    eval('_lifecycleAck.set("one-reading", { lifecycle: "paused", at: Date.now() - 40000 })');
+    const expired = w._applyLifecycleAcks(stale())[0];
+    return { held: [held.lifecycle, held.running, w._workerStatus(held).group], agreed: agreed.lifecycle, afterAgree: afterAgree.lifecycle, expired: expired.lifecycle };
+  });
+  expect(got.held, 'the stale snapshot is overlaid').toEqual(['paused', false, 'stopped']);
+  expect(got.agreed).toBe('paused');
+  expect(got.afterAgree, 'once the server agreed, the overlay is gone').toBe('active');
+  expect(got.expired, 'an overlay older than 30 s is dropped').toBe('active');
+});

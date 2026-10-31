@@ -290,6 +290,16 @@ fi
 mkdir -p "$(dirname "$LOCK")"
 if ! mkdir "$LOCK" 2>/dev/null; then
   owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  # An EMPTY pid file is a holder between its mkdir and its pid write (the
+  # prebuild writes the pid one step after mkdir), not a dead one: breaking
+  # it there ran two builds and let the disk guard's rm race a live build
+  # (implicit state machines inventory 2026-10-31, #22). Empty counts as
+  # stale only once the lock is over a minute old.
+  lock_mtime=$(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || echo 0)
+  if [ -z "$owner" ] && [ $(( $(date +%s) - lock_mtime )) -lt 60 ]; then
+    echo "== $(date '+%F %T') SKIP $built_sha — lock just taken, its pid not written yet verdict=build_lock_young" >> "$LOG"
+    exit 0
+  fi
   if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
     # Log the contention rather than exiting silently: a skip that leaves no
     # trace is indistinguishable from a cycle that found nothing to do, and

@@ -10372,6 +10372,21 @@ p.communicate(msg.encode())
   _land_log() { printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$me" "$*" "$key" >> "$log"; echo "amux land: $*" >&2; }
   # _land_pushing <pid>: does that process have a live `git push` or pre-push
   # hook among its descendants?
+  # Is the lock's holder still the process that took it? `kill -0` alone passes
+  # for whatever process now has a dead holder's pid, and the queue then waited
+  # out --max-hold behind nobody (implicit state machines inventory #23). The
+  # holder's start time is written with the lock and must still match.
+  _land_holder_alive() {
+    local pid="$1" lockdir="$2" want got
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    want="$(cat "$lockdir/start" 2>/dev/null || true)"
+    [ -z "$want" ] && return 0
+    got="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' || true)"
+    if [ "$got" != "$want" ]; then
+      _land_log "lock holder pid $pid is a different process now (started $got, the holder started $want) verdict=land_holder_pid_reused"
+      return 1
+    fi
+  }
   _land_pushing() {
     local frontier="$1" next found=1 p
     for _ in 1 2 3 4 5 6 7 8; do
@@ -10814,8 +10829,8 @@ p.communicate(msg.encode())
         timed_out=1
       fi
     fi
-    if [ "$head" = "$tname" ] && [ -d "$lock" ] && { { [ -n "$hpid" ] && ! kill -0 "$hpid" 2>/dev/null; } || [ "$timed_out" = 1 ]; }; then
-      if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then
+    if [ "$head" = "$tname" ] && [ -d "$lock" ] && { { [ -n "$hpid" ] && ! _land_holder_alive "$hpid" "$lock"; } || [ "$timed_out" = 1 ]; }; then
+      if [ -n "$hpid" ] && _land_holder_alive "$hpid" "$lock"; then
         _land_log "taking over a lock on $branch whose current attempt passed --max-hold ${max_hold}s (holder ${hwho:-?} pid $hpid STILL ALIVE, attempt since $hsince); its push may still land"
       else
         _land_log "taking over a stale lock on $branch (holder ${hwho:-?} pid ${hpid:-?} is gone, since $hsince)"
@@ -10844,6 +10859,7 @@ p.communicate(msg.encode())
   done
   rm -f -- "${q:?}/${tname:?}"
   echo $$ > "$lock/pid"; date +%s > "$lock/since"; echo "$me" > "$lock/who"
+  ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' > "$lock/start" || true
   # shellcheck disable=SC2064  # $lock is a local: it must be expanded when the trap is set
   # Remove the lock only while this process still owns it. An unconditional
   # rm deleted the NEXT holder's lock after a takeover (2026-10-01 11:18Z:

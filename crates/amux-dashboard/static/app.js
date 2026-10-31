@@ -7107,7 +7107,7 @@ async function _fetchSessionsOnce() {
     if (j !== lastSessionsJSON) {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
-      sessions = data;
+      sessions = _applyLifecycleAcks(data);
       _stateQuery.set(['sessions'], data);
       _sessionsSnapshotEpoch++;
       // Quota-full store: drop the cache rather than let the throw break rendering.
@@ -12441,6 +12441,25 @@ async function deleteSession(session) {
 async function pauseWorker(session) { return _changeWorkerPaused(session, true); }
 async function resumeWorker(session) { return _changeWorkerPaused(session, false); }
 
+// An acknowledged pause/resume, kept until a snapshot agrees (or 30 s). A
+// sessions snapshot taken before the server applied it used to replace the
+// projection and flip the badge and the paused section back (implicit state
+// machines inventory 2026-10-31, #31). Re-applied to every incoming snapshot.
+const _lifecycleAck = new Map();
+function _applyLifecycleAcks(list) {
+  if (!_lifecycleAck.size || !Array.isArray(list)) return list;
+  const now = Date.now();
+  for (const [name, ack] of _lifecycleAck) {
+    const w = list.find(s => s.name === name);
+    if (!w || now - ack.at > 30000 || w.lifecycle === ack.lifecycle) { _lifecycleAck.delete(name); continue; }
+    w.lifecycle = ack.lifecycle;
+    if (typeof ack.running === 'boolean') w.running = ack.running;
+    if (ack.status) w.status = ack.status;
+    try { amuxTrack('lifecycle_ack_held_over_stale_snapshot', { measured: true, n_considered: 1 }); } catch (e) {}
+  }
+  return list;
+}
+
 async function _changeWorkerPaused(session, paused) {
   if (_workerLifecyclePending.has(session)) return;
   closeAllMenus();
@@ -12458,9 +12477,10 @@ async function _changeWorkerPaused(session, paused) {
       // must not leave a stale Resume action or a Working badge behind.
       const worker = sessions.find(s => s.name === session);
       if (worker && body.lifecycle) {
-        worker.lifecycle = body.lifecycle;
-        if (typeof body.running === 'boolean') worker.running = body.running;
-        if (body.session === 'starting' || (!paused && body.session === 'started')) worker.status = 'starting';
+        _lifecycleAck.set(session, { lifecycle: body.lifecycle, at: Date.now(),
+          running: typeof body.running === 'boolean' ? body.running : undefined,
+          status: (body.session === 'starting' || (!paused && body.session === 'started')) ? 'starting' : '' });
+        _applyLifecycleAcks(sessions);
       }
       updatePeekStatus();
       if (!paused) {
@@ -52987,9 +53007,16 @@ async function _cdcBoardUpdate() {
 let _verReloadWhenShown = '';
 function _reloadForServerVersion(v, delayMs) {
   if (document.hidden) { _verReloadWhenShown = v; return; }
-  const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
-  if (Date.now() - last <= 600000) return;
-  sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+  // Throttled PER TARGET VERSION: the same version is tried at most once in
+  // 10 minutes (a reload that did not pick it up must not loop), but a newer
+  // deploy inside that window still reloads. A flat 10-minute throttle left a
+  // tab on old code after two deploys close together (implicit state
+  // machines inventory 2026-10-31, #34).
+  let last = {};
+  try { last = JSON.parse(sessionStorage.getItem('amux_ver_reload') || '{}') || {}; } catch (e) {}
+  if (typeof last !== 'object') last = {};
+  if (last.v === v && Date.now() - (last.at || 0) <= 600000) return;
+  sessionStorage.setItem('amux_ver_reload', JSON.stringify({ v, at: Date.now() }));
   console.warn('amux: server is v' + v + ', client is v' + APP_VER + ' — updating');
   // Nudge the SW first (it skipWaiting()s + claims on install), so the
   // reload serves the NEW shell in one cycle instead of two.
@@ -53047,7 +53074,7 @@ function connectSSE() {
           // it whenever SSE is down — the healthier your SSE, the staler your
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
-          sessions = msg.payload;
+          sessions = _applyLifecycleAcks(msg.payload);
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
           try { localStorage.setItem('amux_sessions_cache', j); localStorage.setItem('amux_sessions_cache_at', String(Date.now())); }
@@ -53470,6 +53497,9 @@ if ('serviceWorker' in navigator) {
   // into their first load (2026-10-19). Only a REPLACED worker means stale code.
   let _swHadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
+    // A registration that works clears an earlier failure, so a fixed
+    // origin stops being reported as broken (implicit state machines #34).
+    try { localStorage.removeItem('amux_sw_error'); } catch (e) {}
     // Store full page HTML in localStorage as fallback if iOS evicts SW cache
     if (navigator.onLine !== false) {
       fetch('/').then(r => r.text()).then(html => {
