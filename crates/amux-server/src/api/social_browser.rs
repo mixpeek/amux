@@ -155,12 +155,24 @@ async fn until_in(state: &AppState, session: &str, script: &str, secs: u64) -> R
 
 const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*post\\s*$/i.test(b.innerText||''));return b&&!b.disabled?b:null})()";
 
-/// Whether the composer's text box holds the whole caption (whitespace
-/// collapsed). Read back after typing and again right before Post.
+/// JS for the editor Post submits: the LAST VISIBLE match. The media step
+/// leaves an earlier, hidden copy of the composer in the page, and
+/// `querySelector` returned that one: the caption was typed into it and read
+/// back from it, and the visible composer posted empty (the amux page's video
+/// post of 2026-10-31 12:00, urn:li:ugcPost:7522326873993891840).
+fn visible_editor_js(editor: &str) -> String {
+    format!(
+        "[...document.querySelectorAll({})].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden').pop()",
+        json!(editor)
+    )
+}
+
+/// Whether the visible composer's text box holds the whole caption
+/// (whitespace collapsed). Read back after typing and again right before Post.
 async fn caption_in_editor(state: &AppState, editor: &str, caption: &str) -> Result<bool, String> {
     let js = format!(
-        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e=document.querySelector({});return !!e&&n(e.innerText).includes(n({}))}})()",
-        json!(editor),
+        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e={};return !!e&&n(e.innerText).includes(n({}))}})()",
+        visible_editor_js(editor),
         json!(caption)
     );
     Ok(eval(state, &js).await? == json!(true))
@@ -228,7 +240,14 @@ async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure>
             return Err(Failure::retry("the LinkedIn composer had no text box after the media step"));
         }
     }
-    drive("click", json!({"selector": editor})).await.map_err(Failure::retry)?;
+    // Focus the visible editor (see visible_editor_js), not the first match.
+    let focused = eval(state, &format!("(()=>{{const e={};if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();e.focus();return document.activeElement===e||e.contains(document.activeElement)}})()", visible_editor_js(editor)))
+        .await
+        .map_err(Failure::retry)?;
+    if focused != json!(true) {
+        discard(state).await;
+        return Err(Failure::retry("could not focus LinkedIn's visible text box"));
+    }
     drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
     if !caption_in_editor(state, editor, &d.caption).await.map_err(Failure::retry)? {
         discard(state).await;
@@ -336,6 +355,23 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
             let Some(urn) = url.split("/feed/update/").nth(1).map(|s| s.trim_end_matches('/').split('?').next().unwrap_or("").to_string()).filter(|s| s.starts_with("urn:li:")) else {
                 return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link within 30 s: check the feed before resending"));
             };
+            // READ THE PUBLISHED POST BACK (amux-gtm, 2026-10-31): the composer
+            // read-back passed while the post went out with no caption. Open
+            // the post and look for the caption's start; a post without it is
+            // reported, with its link, so it is edited rather than resent.
+            let _ = super::browser::drive(state, SESSION, "navigate", json!({"url": url})).await;
+            let shown_js = format!(
+                "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim().toLowerCase();return n(document.body.innerText).includes(n({}))}})()",
+                json!(head)
+            );
+            if !until(state, &shown_js, 20).await.unwrap_or(false) {
+                tracing::warn!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted_without_caption",
+                    "LinkedIn published the post, but its page does not show the caption");
+                return Err(Failure::uncertain(format!(
+                    "posted, but the published post does not show the caption: add it with Edit post at {url}; do not resend"
+                ))
+                .with(json!({"post_id": urn, "url": url, "caption_on_post": false})));
+            }
             tracing::info!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted", "LinkedIn post published through the browser");
             Ok(Published {
                 post_id: urn,
