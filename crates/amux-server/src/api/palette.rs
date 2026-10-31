@@ -572,9 +572,8 @@ mod tests {
         let (todo, other) = (dir.path().join("To-Do.md"), dir.path().join("to-do-old.md"));
         std::fs::write(&todo, "x").unwrap();
         std::fs::write(&other, "x").unwrap();
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE issues (id TEXT, title TEXT, status TEXT, session TEXT, archived INT, updated INT, desc TEXT, deleted INT);
-             CREATE TABLE schedules (id TEXT, title TEXT, enabled INT, session TEXT, updated INT, command TEXT, deleted INT);").unwrap();
+        // The real schema (tests/schema_fixtures.rs): issues and schedules as migrated.
+        let conn = crate::db::migrate::test_memdb();
         for _ in 0..9 {
             crate::api::file_visits::record(&conn, &todo.to_string_lossy(), NOW as f64).unwrap();
         }
