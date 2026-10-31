@@ -45,6 +45,19 @@ mk() {
 }
 run() { prune_superseded_artifacts "$R" "${1:-3}" "${2:-60}" "${3:-0}" > "$FIX/out.txt"; }
 
+echo "0. a kept target over the cargo budget keeps one fewer per stem; under it, keep is unchanged"
+mk
+superseded_keep 3 "$T" 1 > "$FIX/keep.txt"
+check "over the cap: keep lowered to 2" 2 "$SUPERSEDED_KEEP_EFFECTIVE"
+check "and it says so" yes "$(grep -q 'verdict=superseded_keep_lowered_over_cap' "$FIX/keep.txt" && echo yes || echo no)"
+superseded_keep 3 "$T" 999999999 > "$FIX/keep.txt"
+check "under the cap: keep stays 3" 3 "$SUPERSEDED_KEEP_EFFECTIVE"
+superseded_keep 1 "$T" 1 > "$FIX/keep.txt"
+check "never below 1" 1 "$SUPERSEDED_KEEP_EFFECTIVE"
+superseded_keep 3 "$T" 1 > /dev/null; run "$SUPERSEDED_KEEP_EFFECTIVE" 60
+check "over the cap, the third newest goes too" no "$(ex "$D/mvs_shard-3333333333333333")"
+check "over the cap, the two newest stay" yes "$(ex "$D/mvs_shard-4444444444444444")"
+
 echo "1. keeps the newest N per stem and prunes the older ones with their .d/.dSYM"
 mk; run 3 60
 check "oldest copy pruned"          no  "$(ex "$D/mvs_shard-1111111111111111")"

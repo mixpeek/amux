@@ -2115,6 +2115,35 @@ reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
 #  - *.rcgu.o codegen units, which rustc deletes after a link it finishes, so
 #    one older than the age floor was left by a compile that was killed.
 # Never a file younger than the floor, and never one any process holds open.
+# OVER THE CARGO BUDGET, KEEP ONE FEWER (disk RCA 20261030-193722). The newest
+# 3 per stem is the healthy plateau of the shared target, 50-66 GiB, and
+# safe-cargo refuses every build above AMUX_CARGO_MAX_TARGET_GB (64): on
+# 2026-10-30 it read 65.9 GiB with nothing superseded to prune, so every lane's
+# build was refused and the only way through was a private target. When a kept
+# target measures over the cap, this pass keeps keep-1 per stem (never below
+# 1). A size probe that does not answer in time leaves keep as it is and says so.
+superseded_keep() { # <keep> <targets, colon separated> <cap_kb> -> sets SUPERSEDED_KEEP_EFFECTIVE
+  local keep=$1 targets=$2 cap_kb=$3 t kb over="" IFS_OLD=$IFS
+  SUPERSEDED_KEEP_EFFECTIVE=$keep
+  [ "${keep:-0}" -gt 1 ] && [ "${cap_kb:-0}" -gt 0 ] || return 0
+  IFS=':'
+  for t in $targets; do
+    IFS=$IFS_OLD
+    [ -n "$t" ] && [ -d "$t" ] || continue
+    kb=$(timeout "${SUPERSEDED_SIZE_PROBE_S:-90}" du -sk -- "$t" 2>/dev/null | cut -f1)
+    if [ -z "$kb" ]; then
+      echo "mac-cleanup: superseded artifacts: size of $t UNMEASURED within ${SUPERSEDED_SIZE_PROBE_S:-90}s; keeping $keep per stem (verdict=superseded_keep_cap_unmeasured)"
+      continue
+    fi
+    [ "$kb" -gt "$cap_kb" ] && over="$t ($((kb / 1048576)) GiB over the $((cap_kb / 1048576)) GiB cargo budget)"
+  done
+  IFS=$IFS_OLD
+  if [ -n "$over" ]; then
+    SUPERSEDED_KEEP_EFFECTIVE=$((keep - 1))
+    echo "mac-cleanup: superseded artifacts: $over; keeping $SUPERSEDED_KEEP_EFFECTIVE per stem this pass, not $keep (verdict=superseded_keep_lowered_over_cap)"
+  fi
+}
+
 prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budget_s]
   # One pass per stage, never a process per file (self RCA 20261018-103045): the
   # first version ran has_open_handle (sed + a regex grep over the whole lsof
@@ -3521,7 +3550,8 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
   echo "mac-cleanup: disk tight (${tgt_free}G free, under ${TARGET_TIGHT_FREE_GB}G): build output idle ${tgt_idle}h is reclaimable this tick, not ${TARGET_IDLE_H}h"
 fi
 tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S && reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
-tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S"
+tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && superseded_keep "$SUPERSEDED_KEEP" "$TARGET_KEEP" "$(( ${AMUX_CARGO_MAX_TARGET_GB:-64} * 1048576 ))" \
+  && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP_EFFECTIVE" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S"
 VMS_PRUNED=0
 # Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
 # freed VM blocks back to the host, and with images swept after it, the 2-4
