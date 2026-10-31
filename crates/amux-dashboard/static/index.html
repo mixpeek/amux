@@ -1183,9 +1183,8 @@
     <span id="files-cache-status" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex-shrink:0;"><span class="upq-badge" style="display:none;"></span></span>
     <!-- More menu (the ellipsis menu): the full action list, always available -->
     <div class="fe-tb-overflow" id="files-overflow-wrap">
-      <button class="fe-tb-btn" onclick="_filesOverflowToggle()" title="More actions" id="files-overflow-btn">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="3" r="1.1" fill="currentColor"/><circle cx="7" cy="7" r="1.1" fill="currentColor"/><circle cx="7" cy="11" r="1.1" fill="currentColor"/></svg>
-        <span class="fe-more-lbl">More</span>
+      <button class="fe-tb-btn" onclick="_filesOverflowToggle()" title="More" aria-label="More" aria-haspopup="menu" id="files-overflow-btn">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="3" r="1.1" fill="currentColor"/><circle cx="7" cy="7" r="1.1" fill="currentColor"/><circle cx="7" cy="11" r="1.1" fill="currentColor"/></svg>
       </button>
       <div id="files-overflow-menu" class="fe-tb-overflow-menu">
         <button class="fe-tb-oitem" onclick="loadFiles(_filesCwd);_filesOverflowClose()">
@@ -1241,8 +1240,15 @@
       </div>
     </div>
   </div>
-  <!-- Quick-access bookmarks -->
+  <!-- Quick-access row: a filter (kept per device), then its chips on one line -->
   <div id="files-bookmarks" style="padding:var(--space-1) var(--space-2-5);border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:var(--space-1-5);overflow-x:auto;scrollbar-width:none;align-items:center;">
+    <select id="files-row-filter" class="input" aria-label="Show in this row" title="What this row shows (kept on this device)" onchange="_filesRowFilterSet(this.value)">
+      <option value="all">All</option>
+      <option value="pinned">Pinned</option>
+      <option value="recent">Recent</option>
+      <option value="modified">Modified</option>
+      <option value="shared">Shared</option>
+    </select>
     <div id="files-bookmarks-list" style="display:flex;gap:var(--space-1);flex-wrap:nowrap;"></div>
     <button id="files-bm-add" onclick="_filesPinMenu(this)" style="background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-1-5);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
     <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:var(--shade);border:none;border-radius:var(--radius-sm);font-size:var(--fs-xs);font-weight:600;padding:var(--space-0-5) var(--space-2);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>

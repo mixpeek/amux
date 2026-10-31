@@ -32267,6 +32267,7 @@ async function _cacheStreamedImage(path, data) {
 let _feOpenRecording = null;
 function _feRecordOpen(path) {
   if (!path) return;
+  _filesRecentAdd(path, 'file');
   return _feOpenRecording = fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }), keepalive: true })
     .then(r => r.ok ? r.json() : null)
@@ -33165,6 +33166,94 @@ function _filesBookmarkOpen(path, type) {
   else loadFiles(path);
 }
 
+// The row's filter (owner, 2026-10-31: "a filter that stays selected
+// locally ... all, pinned, recent, modified, shared"). Kept per device in
+// localStorage, never on the server. Where each list comes from:
+// - pinned: the scoped shortcuts (/api/prefs files_bookmarks*), as before.
+// - recent: files and folders opened on this device (_filesRecentAdd, fed by
+//   _feRecordOpen and loadFiles), newest first.
+// - modified: the newest files by mtime in the folder on screen (the listing
+//   the view already has; no endpoint lists modified files machine-wide).
+// - shared: files and folders with an approved public link (Apps tab, "Share
+//   a file or folder", /api/page-links kind=file). A pin "for all workers" is
+//   a scope of a shortcut and stays under Pinned.
+// - all: the four above in that order, each path once.
+const _FILES_ROW_FILTERS = ['all', 'pinned', 'recent', 'modified', 'shared'];
+const _FILES_ROW_FILTER_KEY = 'amux_files_row_filter';
+function _filesRowFilter() {
+  try { const v = localStorage.getItem(_FILES_ROW_FILTER_KEY); if (_FILES_ROW_FILTERS.includes(v)) return v; } catch(e) {}
+  return 'all';
+}
+function _filesRowFilterSet(v) {
+  if (!_FILES_ROW_FILTERS.includes(v)) return;
+  try { localStorage.setItem(_FILES_ROW_FILTER_KEY, v); } catch(e) {}
+  if (_filesSharedErr) _filesSharedAt = 0;   // choosing a list asks again after a failed load
+  _filesRenderBookmarks();
+  const row = document.getElementById('files-bookmarks');
+  if (row) row.scrollLeft = 0;
+}
+function _filesRowShows(kind) { const f = _filesRowFilter(); return f === 'all' || f === kind; }
+
+const _FILES_RECENT_KEY = 'amux_files_recent';
+const _FILES_RECENT_MAX = 15;
+function _filesRecentGet() {
+  try {
+    const a = JSON.parse(localStorage.getItem(_FILES_RECENT_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(r => r && typeof r.path === 'string' && r.path) : [];
+  } catch(e) { return []; }
+}
+function _filesRecentAdd(path, type) {
+  if (!path || typeof path !== 'string') return;
+  const list = _filesRecentGet().filter(r => r.path !== path);
+  list.unshift({ path, type: type === 'file' ? 'file' : 'dir', at: Date.now() });
+  try { localStorage.setItem(_FILES_RECENT_KEY, JSON.stringify(list.slice(0, _FILES_RECENT_MAX))); } catch(e) {}
+  if (_filesRowShows('recent') && document.getElementById('files-bookmarks-list')) _filesRenderBookmarks();
+}
+function _filesModifiedItems() {
+  const fl = _filesLastData;
+  if (!fl || !fl.data || fl.path !== _filesPath) return [];
+  const base = String(fl.data.path || fl.path || '').replace(/\/$/, '');
+  return (fl.data.entries || [])
+    .filter(e => e && e.name && e.type !== 'dir' && e.modified)
+    .sort((a, b) => b.modified - a.modified)
+    .slice(0, 8)
+    .map(e => ({ path: base + '/' + e.name, label: e.name, type: 'file', note: 'modified ' + timeAgo(e.modified) + ' in this folder' }));
+}
+// Shared links, fetched only when the row shows them and at most once a
+// minute (a failure counts as a fetch, so a down endpoint is not retried on
+// every render). _filesSharedErr says the list is unknown rather than empty.
+let _filesShared = [], _filesSharedAt = 0, _filesSharedErr = '', _filesSharedLoading = null;
+function _filesSharedLoad() {
+  if (_filesSharedLoading || Date.now() - _filesSharedAt < 60000) return _filesSharedLoading;
+  _filesSharedAt = Date.now();
+  _filesSharedLoading = fetch(API + '/api/page-links', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(d => {
+      _filesShared = (d.links || []).filter(l => l && l.kind === 'file' && l.file && !l.pending).map(l => ({
+        path: l.file,
+        label: l.title || l.file.split('/').filter(Boolean).pop() || l.file,
+        type: ((l.files || 0) !== 1 || !/\.[^/]+$/.test(l.file)) ? 'dir' : 'file',
+        note: 'shared at ' + (l.url || l.path),
+      }));
+      _filesSharedErr = '';
+    })
+    .catch(e => { _filesSharedErr = (e && e.message) || 'unreachable'; })
+    .finally(() => { _filesSharedLoading = null; if (_filesRowShows('shared')) _filesRenderBookmarks(); });
+  return _filesSharedLoading;
+}
+// A chip that opens its path and has nothing to remove (recent, modified,
+// shared). `tag` names the source when the row mixes them (All).
+function _filesRowChip(b, src, tag) {
+  const t = b.type === 'file' ? 'file' : 'dir';
+  const ic = t === 'file' ? '\u{1F4C4} ' : '\u{1F4C1} ';
+  const label = b.label || b.path.split('/').filter(Boolean).pop() || b.path;
+  return '<span class="files-bm-chip files-row-chip" data-source="' + src + '" data-path="' + esc(b.path) + '" '
+    + 'style="display:inline-flex;align-items:center;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
+    + 'title="' + esc(b.path + (b.note ? ' (' + b.note + ')' : '')) + '">'
+    + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + escJs(b.path) + '\',\'' + t + '\')">' + ic + esc(label)
+    + (tag ? ' <span style="color:var(--dim);font-size:var(--fs-3xs);">' + src + '</span>' : '') + '</span></span>';
+}
+
 function _filesRenderBookmarks() {
   const addBtn = document.getElementById('files-bm-add');
   if (addBtn) {
@@ -33173,20 +33262,53 @@ function _filesRenderBookmarks() {
   }
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
+  const filter = _filesRowFilter();
+  const sel = document.getElementById('files-row-filter');
+  if (sel && sel.value !== filter) sel.value = filter;
+  const all = filter === 'all';
   const bm = _filesGetBookmarks();
-  // Chip = tappable label (navigate / open) + a × button (remove). The × works
-  // on touch too — right-click can't (mobile-first). Right-click still removes.
-  container.innerHTML = bm.map((b, i) => {
-    const t = b.type === 'file' ? 'file' : 'dir';
-    const ic = t === 'file' ? '\u{1F4C4} ' : '';
-    return '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-      + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
-      + 'title="' + esc(b.path) + '">'
-      + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
-      + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
-      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
-      + '</span>';
-  }).join('') + (_exploreSession ? _filesInheritedChips(bm) : '');
+  const seen = new Set();
+  let html = '';
+  if (all || filter === 'pinned') {
+    // Chip = tappable label (navigate / open) + a × button (remove). The × works
+    // on touch too — right-click can't (mobile-first). Right-click still removes.
+    html += bm.map((b, i) => {
+      seen.add(b.path);
+      const t = b.type === 'file' ? 'file' : 'dir';
+      const ic = t === 'file' ? '\u{1F4C4} ' : '';
+      return '<span class="files-bm-chip" data-source="pinned" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
+        + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
+        + 'title="' + esc(b.path) + '">'
+        + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
+        + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
+        + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
+        + '</span>';
+    }).join('');
+    if (_exploreSession) {
+      html += _filesInheritedChips(bm);
+      for (const layer of _filesBmInherited) for (const b of layer.items) if (b && b.path) seen.add(b.path);
+    }
+  }
+  const add = (items, src) => {
+    for (const b of items) {
+      if (!b || !b.path || seen.has(b.path)) continue;
+      seen.add(b.path);
+      html += _filesRowChip(b, src, all);
+    }
+  };
+  if (all || filter === 'recent') add(_filesRecentGet(), 'recent');
+  if (all || filter === 'modified') add(_filesModifiedItems(), 'modified');
+  if (all || filter === 'shared') {
+    _filesSharedLoad();
+    add(_filesShared, 'shared');
+    if (filter === 'shared' && _filesSharedErr) html += '<span class="files-row-empty" style="color:var(--dim);font-size:var(--fs-xs);white-space:nowrap;">Shared links could not be loaded (' + esc(_filesSharedErr) + ')</span>';
+  }
+  if (!html) {
+    const empty = { all: 'Nothing pinned, opened or shared yet', pinned: 'No shortcuts pinned', recent: 'Nothing opened on this device yet',
+      modified: 'No files in this folder', shared: _filesSharedLoading ? 'Loading shared links…' : 'No files or folders shared' }[filter];
+    html = '<span class="files-row-empty" style="color:var(--dim);font-size:var(--fs-xs);white-space:nowrap;">' + esc(empty) + '</span>';
+  }
+  container.innerHTML = html;
 }
 // Chips from the worker's groups and the global list, each tagged with where
 // it comes from, so an inherited shortcut never reads as the worker's own.
@@ -33517,6 +33639,7 @@ async function loadFiles(path) {
   const body = document.getElementById('files-body');
   body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Loading...</div>';
   _filesPath = path;
+  _filesRecentAdd(path, 'dir');
   // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode).
   // A file open over the listing keeps the address: the listing behind a
   // deep-linked or just-opened file loads after it, and writing the folder
@@ -33973,6 +34096,7 @@ async function _feToggleExpand(btn) {
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
   _filesLastData = { path, data, cacheTs };
+  if (_filesRowShows('modified')) _filesRenderBookmarks();
   _libUpdateBtn(data.entries);   // show the Library button for ebook folders (+ auto-close on nav)
   body.innerHTML = '';
 

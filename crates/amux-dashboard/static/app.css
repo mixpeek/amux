@@ -1584,7 +1584,8 @@
      Refresh / Set dir) is collapsed into the ⋯ More menu on EVERY width (Ethan
      2026-08-19: "these take up too much space make it an ellipse dropdown"). The
      More menu already carries every one of these actions, so nothing is lost —
-     the toolbar is just Back / Up / breadcrumb / ⋯ now. */
+     the toolbar is just Back / breadcrumb / ⋯ now (Up went 2026-10-30; the
+     ⋯ carries no "More" text since 2026-10-31, only its aria-label). */
   .fe-tb-actions { display: none; }
   /* The More (ellipsis) menu is always available, on desktop and mobile. */
   .fe-tb-overflow { position: relative; flex-shrink: 0; display: flex; }
@@ -1604,11 +1605,10 @@
   .fe-tb-oitem.active { background: color-mix(in srgb, var(--accent) 20%, transparent); }
   .fe-tb-oitem-session { color: var(--accent); font-weight: 600; }
   .fe-tb-odivider { height: 1px; background: var(--border); margin: var(--space-0-5) 0; }
-  @media (max-width: 600px) {
-    /* .fe-tb-actions is already display:none at every width (above); on a phone
-       we also drop the "More" text so only the ⋯ icon remains, to fit 375px. */
-    .fe-more-lbl { display: none; }
-  }
+  /* The shortcuts row's filter (All / Pinned / Recent / Modified / Shared):
+     the shared .input select, sized to its text and held at the row's left
+     edge while the chips scroll under it. */
+  #files-row-filter { width: auto; flex-shrink: 0; position: sticky; left: 0; z-index: 1; }
   .fe-breadcrumb {
     flex: 1 1 180px; font-size: var(--fs-md); font-family: var(--font-mono);
     overflow-x: auto; white-space: nowrap; padding: var(--space-0-5) var(--space-1-5);
