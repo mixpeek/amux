@@ -62,10 +62,12 @@ async function openMessages(page: any) {
   await expect(page.locator('#cv-side')).toBeVisible();
 }
 
+// Polled: a box read while the control re-renders is null (CI run
+// 41181678656, mobile: "Cannot read properties of null (reading 'height')").
 async function atLeast44(loc: any) {
-  const b = (await loc.boundingBox())!;
-  expect(b.height, 'touch target height').toBeGreaterThanOrEqual(44);
-  expect(b.width, 'touch target width').toBeGreaterThanOrEqual(44);
+  const size = async () => (await loc.boundingBox()) || { height: 0, width: 0 };
+  await expect.poll(async () => (await size()).height, { message: 'touch target height' }).toBeGreaterThanOrEqual(44);
+  await expect.poll(async () => (await size()).width, { message: 'touch target width' }).toBeGreaterThanOrEqual(44);
 }
 
 test('a member sees no channel settings', async ({ page }) => {
