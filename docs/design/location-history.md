@@ -82,8 +82,20 @@ go back to the raw rows and be recomputed with better rules.
   Settings and sent with the status so a gap is visible.
 - **Buffer and upload:** points go to a JSON-lines file in Application Support
   before any upload, leave it only when the server confirmed them, and upload
-  1000 at a time (every 60 s, at 1000 waiting, on backgrounding, on visit
-  wake-ups). Ingest is idempotent by point id.
+  1000 at a time. Ingest is idempotent by point id.
+- **Energy (2026-10-31).** Uploads go every 60 s while amux is on screen, every
+  5 minutes while it records in the background, at once at 1000 waiting, on
+  backgrounding, on coming to the foreground and on visit wake-ups. A failed
+  upload backs off (1, 2, 4 ... minutes, capped at 30) instead of retrying on
+  every fix. iOS 16 standard updates and the iOS 17+ stall backstop let iOS
+  pause them while the phone is still; the next significant-change or visit
+  wake-up restarts them. Battery saver runs no live motion stream: each
+  wake-up asks the motion coprocessor for its history since the last stored
+  transition. The 60 s health timer has a 15 s tolerance. Turning recording
+  off stops every location and motion service, the background session and the
+  timer. Each of these logs under `io.amux.app` / `Location`, and `status`
+  carries `upload_failures`, `next_upload_s`, `paused_when_still` and
+  `motion_source`.
 
 ### Battery, honestly
 
