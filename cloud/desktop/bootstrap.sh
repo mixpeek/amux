@@ -26,7 +26,8 @@
 # TS_AUTHKEY, AMUX_PASSWORD (the RDP/unix password), SWAP_GB,
 # CLAUDE_CODE_OAUTH_TOKEN (workers use the subscription; the API key then stays out),
 # AMUX_SSH_KEYS, AMUX_SSH_PASSWORD_AUTH=1, AMUX_GITHUB_REPOS + GITHUB_TOKEN, AMUX_GIT_NAME,
-# AMUX_GIT_EMAIL, AMUX_CLAUDE_ROTATE=1. cloud/desktop/provision-gcp.sh creates the VM and DNS
+# AMUX_GIT_EMAIL, AMUX_CLAUDE_ROTATE=1, AMUX_BEHIND_CLOUDFLARE=1 (web from Cloudflare only;
+# the DNS record must be proxied). cloud/desktop/provision-gcp.sh creates the VM and DNS
 # and runs this with all of them from one env file.
 # AMUX_IMAGE, AMUX_TENANT=0 (keeps the server's ops-health cards on the board).
 # A DNS A record for AMUX_DOMAIN must point at this box before Caddy can get a
@@ -699,6 +700,15 @@ sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >
 systemctl enable caddy >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
+# ── Edge: SSH limits, fail2ban, security upgrades, the visitor's real address for the door, and
+# with AMUX_BEHIND_CLOUDFLARE=1 web ports open to Cloudflare only (cloud/desktop/edge-harden.sh;
+# update.sh re-runs it so Cloudflare's list stays current). ──
+install -d /etc/amux
+if [[ "${AMUX_BEHIND_CLOUDFLARE:-0}" == 1 ]]; then echo cloudflare > /etc/amux/edge; fi
+EDGE_SH="$(dirname "$(readlink -f "$0")")/edge-harden.sh"
+[[ -f "$EDGE_SH" ]] || EDGE_SH="$SRC/cloud/desktop/edge-harden.sh"
+if [[ -f "$EDGE_SH" ]]; then bash "$EDGE_SH" | while read -r l; do log "$l"; done; else log "WARN: edge-harden.sh not found; host not hardened"; fi
+
 # ── Self-updates for a standalone host (amux Cloud, cloud/start) ──
 # No control plane reaches these servers, so each one keeps itself current: every two minutes it
 # follows main's newest image and the checkout, rolls back (and holds) a build that fails /health,
@@ -810,5 +820,6 @@ log "amux /health on loopback, commit: ${LOCAL:-UNREACHABLE}"
 log "https://$DOMAIN/api/sessions without credentials: HTTP $ANON (401 expected; 000 = no cert yet, check DNS)"
 log "ANTHROPIC_API_KEY lines in server.env: $KEY_SET, CLAUDE_CODE_OAUTH_TOKEN lines: $(grep -c '^CLAUDE_CODE_OAUTH_TOKEN=.' "$ENV_FILE" || true)"
 log "xrdp listeners on 3389: $(ss -tln | grep -c ':3389 ' || true)"
+log "edge: $(cat /etc/amux/edge 2>/dev/null || echo direct), web rules open to anyone: $(ufw status | grep -cE '^(80|443|8443)/tcp( \(v6\))? +ALLOW +Anywhere' || true)"
 [[ -n "$CREDS_OUT" ]] && log "generated web credentials (shown once):$CREDS_OUT"
 log "connect from another amux: AMUX_API=https://<user>:<pw>@$DOMAIN amux ls"

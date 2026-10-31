@@ -10,7 +10,8 @@
 #   GCP_ZONE=us-east1-b  GCP_MACHINE=e2-standard-4  GCP_DISK_GB=200   (defaults shown)
 #   GCP_ACCOUNT=sa@project.iam.gserviceaccount.com   gcloud account to use (optional)
 #   GCP_WEB_TAG=amux-web                 network tag that opens 80/443; created when allowed
-#   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=...   DNS; without them, point DNS yourself
+#   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=...   DNS, proxied through Cloudflare, and the host
+#                           then admits web traffic from Cloudflare only (AMUX_BEHIND_CLOUDFLARE=0 opts out)
 #   SSH_PUBKEY_FILE=~/.ssh/id_ed25519.pub  SSH_USER=<you>   who can SSH in (defaults: yours)
 #   ...plus any bootstrap.sh setting: AMUX_WEB_USERS, CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY,
 #   AMUX_UPDATES=source, AMUX_UPDATE_FOLLOW_MIN, AMUX_GITHUB_REPOS, GITHUB_TOKEN, AMUX_GIT_NAME,
@@ -29,6 +30,9 @@ NAME="${GCP_INSTANCE:-${AMUX_DOMAIN%%.*}}"; TAG="${GCP_WEB_TAG:-amux-web}"
 SSH_USER="${SSH_USER:-$(id -un)}"; PUB="${SSH_PUBKEY_FILE:-$HOME/.ssh/id_ed25519.pub}"
 G=(gcloud --project="$GCP_PROJECT" --quiet); [[ -n "${GCP_ACCOUNT:-}" ]] && G+=(--account="$GCP_ACCOUNT")
 here="$(cd "$(dirname "$0")" && pwd)"
+# Behind Cloudflare by default whenever this script manages the DNS record.
+BEHIND_CF=0; [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" && "${AMUX_BEHIND_CLOUDFLARE:-1}" == 1 ]] && BEHIND_CF=1
+WEB_SRC=0.0.0.0/0; [[ $BEHIND_CF == 1 ]] && WEB_SRC=$(curl -fsS https://www.cloudflare.com/ips-v4 | paste -sd, -)
 say() { echo "[provision-gcp] $*"; }
 
 # 1. Static IP
@@ -41,8 +45,8 @@ say "address $NAME-ip: $IP"
 # 2. Web firewall: a rule opening 80/443 to the tag. Creating it needs compute.firewalls.create;
 #    without it, name an existing tag that already opens them in GCP_WEB_TAG.
 if ! "${G[@]}" compute firewall-rules list --format='value(targetTags.list())' | tr ',;' '\n\n' | grep -qx "$TAG"; then
-  if "${G[@]}" compute firewall-rules create "$TAG-80-443" --allow=tcp:80,tcp:443 --target-tags="$TAG" \
-       --source-ranges=0.0.0.0/0 --description="amux hosts: ACME and HTTPS" >/dev/null 2>&1; then
+  if "${G[@]}" compute firewall-rules create "$TAG-80-443" --allow=tcp:80,tcp:443,tcp:8443 --target-tags="$TAG" \
+       --source-ranges="$WEB_SRC" --description="amux hosts: web (Cloudflare only when proxied)" >/dev/null 2>&1; then
     say "firewall rule $TAG-80-443 created"
   else
     echo "no firewall rule opens 80/443 for tag '$TAG' and this account cannot create one;" \
@@ -64,9 +68,10 @@ else
   say "instance $NAME exists"
 fi
 
-# 4. DNS: an A record, not proxied, so Caddy gets its certificate straight from Let's Encrypt.
+# 4. DNS: an A record, proxied. Caddy still gets its certificate from Let's Encrypt: Cloudflare
+#    passes plain-HTTP challenge requests through to the host (checked on mixpeek-dev, 2026-10-31).
 if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]]; then
-  CF_DOMAIN="$AMUX_DOMAIN" CF_IP="$IP" python3 - <<'EOF'
+  CF_DOMAIN="$AMUX_DOMAIN" CF_IP="$IP" CF_PROXIED=$BEHIND_CF python3 - <<'EOF'
 import json, os, urllib.request
 tok, zone, name, ip = os.environ["CLOUDFLARE_API_TOKEN"], os.environ["CLOUDFLARE_ZONE_ID"], os.environ["CF_DOMAIN"], os.environ["CF_IP"]
 def call(method, path, body=None):
@@ -74,9 +79,10 @@ def call(method, path, body=None):
         data=json.dumps(body).encode() if body else None,
         headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
     return json.load(urllib.request.urlopen(r, timeout=30))
-rec = {"type": "A", "name": name, "content": ip, "ttl": 120, "proxied": False}
+proxied = os.environ["CF_PROXIED"] == "1"
+rec = {"type": "A", "name": name, "content": ip, "ttl": 1 if proxied else 120, "proxied": proxied}
 have = call("GET", f"/zones/{zone}/dns_records?type=A&name={name}")["result"]
-if have and have[0]["content"] == ip: print(f"[provision-gcp] dns {name} -> {ip} (exists)")
+if have and have[0]["content"] == ip and have[0]["proxied"] == proxied: print(f"[provision-gcp] dns {name} -> {ip} (exists)")
 elif have: call("PUT", f"/zones/{zone}/dns_records/{have[0]['id']}", rec); print(f"[provision-gcp] dns {name} -> {ip} (updated)")
 else: call("POST", f"/zones/{zone}/dns_records", rec); print(f"[provision-gcp] dns {name} -> {ip} (created)")
 EOF
@@ -88,7 +94,7 @@ fi
 SSH=(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$SSH_USER@$IP")
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 5; done
 "${SSH[@]}" 'sudo install -d -m 700 /root/amux-setup'
-grep -vE '^(GCP_|CLOUDFLARE_|SSH_USER=|SSH_PUBKEY_FILE=)' "$ENV_IN" | "${SSH[@]}" 'sudo tee /root/amux-setup/bootstrap.env >/dev/null && sudo chmod 600 /root/amux-setup/bootstrap.env'
+{ grep -vE '^(GCP_|CLOUDFLARE_|SSH_USER=|SSH_PUBKEY_FILE=|AMUX_BEHIND_CLOUDFLARE=)' "$ENV_IN"; echo "AMUX_BEHIND_CLOUDFLARE=$BEHIND_CF"; } | "${SSH[@]}" 'sudo tee /root/amux-setup/bootstrap.env >/dev/null && sudo chmod 600 /root/amux-setup/bootstrap.env'
 "${SSH[@]}" 'sudo tee /root/amux-setup/bootstrap.sh >/dev/null' < "$here/bootstrap.sh"
 "${SSH[@]}" 'sudo bash -c "cd /root/amux-setup && nohup bash -c \"set -a; . ./bootstrap.env; set +a; bash ./bootstrap.sh\" > run.log 2>&1 &"'
 say "bootstrap started on $IP; follow it with: ssh $SSH_USER@$IP sudo tail -f /root/amux-setup/run.log"

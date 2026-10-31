@@ -104,6 +104,11 @@ FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
 ENTRY_FILE = os.environ.get("DOOR_ENTRY", "/etc/amux-door/entry")    # standalone: this server's app sign-in key
 AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
 MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
+# Wrong passwords from one address, form or Basic, before that address is refused for the rest
+# of the window. Before this, Basic credentials on any URL could be guessed as fast as scrypt
+# allowed (2026-10-31). Per address, so a stranger guessing never locks the owner out.
+FAIL_LIMIT = int(os.environ.get("DOOR_FAIL_LIMIT", "10"))
+FAIL_WINDOW_S = int(os.environ.get("DOOR_FAIL_WINDOW_S", "900"))
 # Sign-in counts for the activation report. /etc/amux-door is group-writable by amux-door on every
 # server already, so a self-updated door can keep it without a bootstrap change.
 ACTIVITY_FILE = os.environ.get("DOOR_ACTIVITY", "/etc/amux-door/activity.json")
@@ -405,6 +410,41 @@ def redeem_invite(email, invite):
     return invite
 
 
+_fails, _fails_lock = {}, threading.Lock()
+
+
+def client_ip(headers, peer):
+    """The visitor's address. Caddy overwrites X-Real-IP with {client_ip}, which behind
+    Cloudflare is CF-Connecting-IP from a Cloudflare address only; else the first hop."""
+    real = (headers.get("X-Real-IP") or "").strip()
+    if real:
+        return real
+    return (headers.get("X-Forwarded-For") or "").split(",")[0].strip() or peer
+
+
+def throttled(ip, now=None):
+    """Seconds until `ip` may try a password again, or 0."""
+    now = now or time.time()
+    with _fails_lock:
+        recent = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW_S]
+        _fails[ip] = recent
+        if len(recent) < FAIL_LIMIT:
+            return 0
+        return int(recent[0] + FAIL_WINDOW_S - now) + 1
+
+
+def note_failure(ip, now=None):
+    now = now or time.time()
+    with _fails_lock:
+        if len(_fails) > 10000:   # bounded: forget the quietest addresses first
+            for k in sorted(_fails, key=lambda k: _fails[k][-1] if _fails[k] else 0)[:5000]:
+                _fails.pop(k, None)
+        _fails.setdefault(ip, []).append(now)
+        n = len(_fails[ip])
+    if n == FAIL_LIMIT:
+        log(event="throttle", ip=ip, failures=n, window_s=FAIL_WINDOW_S, verdict="door_signin_throttled")
+
+
 def check_password(user, password):
     stored = users().get(user) or joined().get(user)
     if not stored or not stored.startswith("scrypt$"):
@@ -444,14 +484,21 @@ def cookie_user(header, name=COOKIE):
     return None
 
 
-def basic_user(header):
+def basic_user(header, ip=None):
     if not header or not header.startswith("Basic "):
         return None
     try:
         user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
     except Exception:
         return None
-    return user if check_password(user, pw) else None
+    if ip and throttled(ip):
+        return None
+    if check_password(user, pw):
+        return user
+    if ip:
+        note_failure(ip)
+        log(event="basic", user=user, ip=ip, verdict="door_basic_refused")
+    return None
 
 
 def session_cookies(user, max_age=MAX_AGE):
@@ -571,7 +618,14 @@ class Door(BaseHTTPRequestHandler):
                 log(event="check", verdict="door_cross_site_refused", method=method, site=site)
                 return self.send(403, b'{"error":"cross-site request refused"}', [("Content-Type", "application/json")])
             cookies = self.headers.get("Cookie")
-            user = cookie_user(cookies) or basic_user(self.headers.get("Authorization"))
+            ip = client_ip(self.headers, self.client_address[0])
+            user = cookie_user(cookies)
+            if not user and (self.headers.get("Authorization") or "").startswith("Basic "):
+                wait = throttled(ip)
+                if wait:
+                    return self.send(429, b'{"error":"too many wrong passwords from this address; try again later"}',
+                                     [("Content-Type", "application/json"), ("Retry-After", str(wait))])
+                user = basic_user(self.headers.get("Authorization"), ip)
             if not user and method == "GET" and uri.startswith(VIEW_PATH):
                 user = cookie_user(cookies, VIEW_COOKIE)
             if user:
@@ -609,7 +663,7 @@ class Door(BaseHTTPRequestHandler):
                              ("WWW-Authenticate", 'Basic realm="amux"')])
         if path.path == "/_door/enter":
             q = urllib.parse.parse_qs(path.query)
-            ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+            ip = client_ip(self.headers, self.client_address[0])
             try:
                 claims = verify_entry_token(q.get("t", [""])[0])
                 email = claims["sub"].lower()
@@ -702,13 +756,18 @@ class Door(BaseHTTPRequestHandler):
         user = (form.get("username") or [""])[0].strip()
         pw = (form.get("password") or [""])[0]
         nxt = safe_next((form.get("next") or ["/"])[0])
-        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        ip = client_ip(self.headers, self.client_address[0])
+        wait = throttled(ip)
+        if wait:
+            log(event="signin", user=user, ip=ip, verdict="door_signin_throttled_refused")
+            return self.page(nxt, user, "Too many wrong passwords from this address. Try again in %d minutes." % (wait // 60 + 1))
         if check_password(user, pw):
             log(event="signin", user=user, ip=ip, verdict="door_signin_ok")
             note_signin(True)
             return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user))
         log(event="signin", user=user, ip=ip, verdict="door_signin_refused")
         note_signin(False)
+        note_failure(ip)
         time.sleep(1.0)  # slows guessing without a lockout a person could trip
         return self.page(nxt, user, "Wrong username or password.")
 
@@ -717,7 +776,7 @@ class Door(BaseHTTPRequestHandler):
         email = (form.get("username") or [""])[0].strip().lower()
         pw, pw2 = (form.get("password") or [""])[0], (form.get("password2") or [""])[0]
         invite = (form.get("invite") or [""])[0].strip()
-        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        ip = client_ip(self.headers, self.client_address[0])
         if "@" not in email or not (3 <= len(email) <= 200) or any(c.isspace() for c in email):
             return self.join_page(invite, email, "Enter your email address.")
         if len(pw) < 10:

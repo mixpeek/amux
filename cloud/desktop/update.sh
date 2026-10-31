@@ -200,7 +200,8 @@ if [[ -f $CF && -f "$APPS" ]]; then
       systemctl reload caddy; say "WARN verdict=caddy_apps_origin_rejected previous Caddyfile kept"
     fi
   fi
-  command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^8443/tcp' || ufw allow 8443/tcp >/dev/null 2>&1 || true
+  # Behind Cloudflare, edge-harden.sh owns the web ports (Cloudflare's ranges only).
+  [[ "$(cat /etc/amux/edge 2>/dev/null)" == cloudflare ]] || { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^8443/tcp' || ufw allow 8443/tcp >/dev/null 2>&1 || true; }
   ENVA="$HOME_DIR/.amux/server.env"
   if [[ -n "$site" && -f "$ENVA" ]] && ! grep -q '^AMUX_APPS_URL=' "$ENVA"; then
     printf 'AMUX_APPS_URL=https://%s:8443\n' "$site" >> "$ENVA" && say "verdict=apps_url_set url=https://$site:8443"
@@ -312,6 +313,10 @@ else
 fi
 
 fi
+
+# Edge hardening, re-run every update: Cloudflare's address list moves, and a host bootstrapped
+# before cloud/desktop/edge-harden.sh existed gains it here.
+[[ -f "$SRC/cloud/desktop/edge-harden.sh" ]] && bash "$SRC/cloud/desktop/edge-harden.sh" >/dev/null 2>&1
 
 # 4. Recovery, whatever happened above.
 if [[ -z "$(commit_of)" ]]; then

@@ -32,6 +32,10 @@ if [[ -z "${CDP_PORT:-}" ]]; then
     -d "{\"profile\":\"${AMUX_BROWSER_PROFILE:-claude-signin}\",\"url\":\"https://claude.ai/login\",\"headless\":false,\"cdp_reason\":\"claude-accounts.sh: sign a remote host into Claude accounts\"}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("cdp_port") or "")')
   [[ -n "$CDP_PORT" ]] || { echo "could not start a headed amux browser; set CDP_PORT" >&2; exit 3; }
+  # Stop the browser this script started, however it ends, so a re-run can start it again.
+  trap 'rm -f "$CODE_FILE"; curl -sk --max-time 20 -o /dev/null -X POST -H "Content-Type: application/json" \
+    -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "{\"profile\":\"${AMUX_BROWSER_PROFILE:-claude-signin}\"}" \
+    "$(amux url)/api/browser/stop"' EXIT
 fi
 
 ok=0; failed=()
