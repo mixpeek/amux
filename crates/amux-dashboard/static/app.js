@@ -49804,9 +49804,20 @@ async function _boardSetTriage(id, on) {
     if (body.status) item.status = body.status;
     showToast(on ? id + ' is in triage: kept, not picked up' : id + ' accepted into the backlog');
     try { amuxTrack('board_triage', { on, measured: true, n_considered: 1 }); } catch (e) {}
-    if (boardDetailId === id) _renderDetailStatusBtns();
+    // The open detail follows at once: its status select and the button label
+    // (a todo card put in triage moved to backlog). The live check of d27f00593
+    // showed both stale until the card was reopened.
+    if (boardDetailId === id) {
+      if (body.status) boardDetailStatus = body.status;
+      _renderDetailStatusBtns();
+    }
     renderBoard();
-    fetchBoard();
+    await fetchBoard();
+    if (boardDetailId === id) {
+      const fresh = (boardItems || []).find(i => i.id === id);
+      if (fresh && !_boardInTriage(fresh) === on) { fresh.tags = tags; if (body.status) fresh.status = body.status; }
+      _renderDetailStatusBtns();
+    }
   } catch (e) { showToast('Could not reach the server: ' + e.message); }
 }
 

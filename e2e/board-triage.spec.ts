@@ -40,6 +40,11 @@ test('a card goes into triage from the board and is accepted from its detail', a
   }
   await expect.poll(async () => (await card(page, id)).tags || []).toContain('triage');
   expect((await card(page, id)).status, 'a todo card put in triage moves to backlog').toBe('backlog');
+  if (vp.width <= 600) {
+    // The open detail follows at once, without reopening the card.
+    await expect(page.locator('#bd-triage-btn')).toHaveText('Accept');
+    await expect(page.locator('#bd-status-select')).toHaveValue('backlog');
+  }
   await expect.poll(async () => String((await card(page, id)).desc || '')).toContain('In triage');
 
   // The filter row leads with Triage and its count.
