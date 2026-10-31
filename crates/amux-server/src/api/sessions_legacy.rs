@@ -1459,6 +1459,34 @@ fn shared_git_stdout(key: String, read: impl FnOnce() -> Option<String>) -> Opti
     Some(out)
 }
 
+/// The answer per (session, days), with when it was computed.
+static OWNER_REQUESTS_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
+    std::sync::LazyLock::new(Default::default);
+/// Keys whose refresh is running, so an expired answer starts one refresh.
+static OWNER_REQUESTS_REFRESHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// What a GET does with the cached answer for its key (AF-1081).
+#[derive(Debug, PartialEq)]
+pub(crate) enum CachedAnswer {
+    /// Under 60 s old: serve it.
+    Fresh,
+    /// Older: serve it now and refresh behind the reply, so a card never waits
+    /// on git (the first read per repo still took 1.5-2.8 s on a loaded box
+    /// after the shared read, 2026-10-31).
+    Stale,
+    /// Nothing cached (the first call after a restart): compute inline.
+    Missing,
+}
+
+pub(crate) fn cached_answer(age: Option<std::time::Duration>) -> CachedAnswer {
+    match age {
+        Some(a) if a < std::time::Duration::from_secs(60) => CachedAnswer::Fresh,
+        Some(_) => CachedAnswer::Stale,
+        None => CachedAnswer::Missing,
+    }
+}
+
 pub async fn owner_requests(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -1467,14 +1495,33 @@ pub async fn owner_requests(
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "session is required", "measured": false, "n_considered": 0}))).into_response();
     };
     let days = q.get("days").and_then(|v| v.parse::<f64>().ok()).unwrap_or(7.0).clamp(1.0, 30.0);
-    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
-        std::sync::LazyLock::new(Default::default);
     let key = format!("{session}|{days}");
-    if let Some((at, v)) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
-        if at.elapsed() < std::time::Duration::from_secs(60) {
+    let cached = OWNER_REQUESTS_CACHE.lock().ok().and_then(|c| c.get(&key).cloned());
+    match (cached_answer(cached.as_ref().map(|(at, _)| at.elapsed())), cached) {
+        (CachedAnswer::Fresh, Some((_, v))) => return Json(v).into_response(),
+        (CachedAnswer::Stale, Some((at, mut v))) => {
+            let start = OWNER_REQUESTS_REFRESHING.lock().map(|mut r| r.insert(key.clone())).unwrap_or(false);
+            if start {
+                let k = key.clone();
+                tokio::spawn(async move {
+                    let _ = compute_owner_requests(state, session, days, k.clone()).await;
+                    if let Ok(mut r) = OWNER_REQUESTS_REFRESHING.lock() {
+                        r.remove(&k);
+                    }
+                });
+            }
+            v["cached_age_s"] = json!(at.elapsed().as_secs());
+            v["refreshing"] = json!(true);
             return Json(v).into_response();
         }
+        _ => {}
     }
+    compute_owner_requests(state, session, days, key).await
+}
+
+/// Compute the answer and cache it. Split from the handler so an expired
+/// answer can be refreshed behind the reply.
+async fn compute_owner_requests(state: AppState, session: String, days: f64, key: String) -> Response {
     // Per-phase wall time, in the answer and in a WARN past 1 s (AF-1081): the
     // cold GET was 3-6 s and the first fix aimed at the wrong phase.
     let t0 = std::time::Instant::now();
@@ -1673,7 +1720,7 @@ pub async fn owner_requests(
         "requests": rows.iter().map(|r| json!({"id": format!("MSG-{}", r.id), "status": r.status, "evidence": r.evidence,
             "age_h": ((now_ms - r.ts_ms) as f64 / 3_600_000.0 * 10.0).round() / 10.0, "text": r.text})).collect::<Vec<_>>(),
     });
-    if let Ok(mut c) = CACHE.lock() {
+    if let Ok(mut c) = OWNER_REQUESTS_CACHE.lock() {
         c.insert(key, (std::time::Instant::now(), body.clone()));
     }
     Json(body).into_response()
@@ -4475,6 +4522,15 @@ mod subagent_walk_tests {
         assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false), &HashMap::new())[0].status, "on-main");
         let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
         assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
+    }
+
+    #[test]
+    fn an_expired_answer_is_served_and_refreshed_and_only_a_missing_one_waits() {
+        use std::time::Duration;
+        assert_eq!(cached_answer(Some(Duration::from_secs(59))), CachedAnswer::Fresh);
+        assert_eq!(cached_answer(Some(Duration::from_secs(60))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(Some(Duration::from_secs(3600))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(None), CachedAnswer::Missing);
     }
 
     #[test]
