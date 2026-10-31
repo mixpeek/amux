@@ -118,6 +118,33 @@ test('a stale palette answer is asked again, so a just-made card appears without
   }
 });
 
+// On a busy board every answer reads stale: the fingerprint moves during each
+// 1-2 s rebuild (live 2026-10-31, a 70 ms old index read stale). The client
+// stops once an answer comes from an index built after the first stale one,
+// rather than asking six more times on every search.
+test('the stale retry stops once a newer index answers, even if that answer still reads stale', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'keyboard flow; one project is enough for the client retry');
+  await boot(page);
+  let calls = 0;
+  await page.route('**/api/palette?*', async (route) => {
+    calls += 1;
+    const res = await route.fetch();
+    const body = await res.json();
+    body.stale = true;
+    body.index_age_ms = calls === 1 ? 60_000 : 0;
+    await route.fulfill({ response: res, json: body });
+  });
+  try {
+    await palette(page, `busyboard${Date.now()}`);
+    await expect.poll(() => calls, { timeout: 5_000 }).toBe(2);
+    await page.waitForTimeout(2_000);
+    expect(calls, 'no retry after an answer from a rebuilt index').toBe(2);
+    await page.keyboard.press('Escape');
+  } finally {
+    await cleanup('remove the palette stub', () => page.unroute('**/api/palette?*'));
+  }
+});
+
 // The header magnifying glass is hidden (96e5b8e36); on a phone search opens
 // from the + menu.
 test('on a phone the + menu opens the palette and it fits the screen', async ({ page }, info) => {

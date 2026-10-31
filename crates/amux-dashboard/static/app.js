@@ -73075,9 +73075,13 @@ function _cmdkToggleHidden() {
 
 // A stale answer came from the previous index while the server rebuilds it
 // behind the reply, so a card made a moment ago is missing until the next
-// keystroke. Ask again, a few times, while the answer says it is stale.
+// keystroke. Ask again, a few times, until an answer comes from an index
+// built after the first stale one. "stale" alone is not the stop: on a busy
+// board the fingerprint moves during every 1-2 s rebuild, so even a 70 ms old
+// index reads stale (live, 2026-10-31), and any index built after the first
+// stale answer already holds what was made before the search.
 const CMDK_STALE_RETRIES = 6;
-function _cmdkQueryServer(retry = 0) {
+function _cmdkQueryServer(retry = 0, firstStaleAt = 0) {
   clearTimeout(_cmdk.timer);
   const q = _cmdk.q.trim();
   const seq = retry ? _cmdk.seq : ++_cmdk.seq;
@@ -73089,7 +73093,8 @@ function _cmdkQueryServer(retry = 0) {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = r.ok ? (d.hits || []) : [];
       _cmdk.serverMeta = r.ok ? d : { measured: false };
-      if (r.ok && d.stale && retry < CMDK_STALE_RETRIES) { _cmdkRender(); _cmdkQueryServer(retry + 1); return; }
+      const rebuiltSince = firstStaleAt && typeof d.index_age_ms === 'number' && d.index_age_ms < Date.now() - firstStaleAt;
+      if (r.ok && d.stale && !rebuiltSince && retry < CMDK_STALE_RETRIES) { _cmdkRender(); _cmdkQueryServer(retry + 1, firstStaleAt || Date.now()); return; }
     } catch (e) {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = []; _cmdk.serverMeta = { measured: false };
