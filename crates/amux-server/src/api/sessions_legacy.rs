@@ -1437,6 +1437,28 @@ fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
 /// cited by a commit on origin/main is on main (live when the running build
 /// has it, and only for the repo this server deploys); closed with `amux
 /// requests close` is closed; the rest are open. Cached a minute per worker.
+/// One git read per (command, repo, window) for 60 s, shared by every caller
+/// (AF-1081). The dashboard asks for every worker card at once and ~40 lanes
+/// share the mixpeek checkout, so each ran its own git log at the same moment:
+/// 0.8 s alone, ~5 s each under that contention. A per-key lock makes the
+/// concurrent callers wait for the one read instead of each spawning their
+/// own; a failed read is not kept, so the next caller tries again.
+fn shared_git_stdout(key: String, read: impl FnOnce() -> Option<String>) -> Option<std::sync::Arc<String>> {
+    type Slot = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<String>)>>>;
+    static SLOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Slot>>> =
+        std::sync::LazyLock::new(Default::default);
+    let slot = SLOTS.lock().ok()?.entry(key).or_default().clone();
+    let mut held = slot.lock().ok()?;
+    if let Some((at, out)) = held.as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(60) {
+            return Some(out.clone());
+        }
+    }
+    let out = std::sync::Arc::new(read()?);
+    *held = Some((std::time::Instant::now(), out.clone()));
+    Some(out)
+}
+
 pub async fn owner_requests(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -1494,17 +1516,25 @@ pub async fn owner_requests(
     // took over 60 s on 2026-10-30).
     let mine: std::collections::HashSet<i64> = msgs.iter().map(|m| m.0).collect();
     let closed_shas: Vec<String> = closed.iter().filter(|(id, _)| mine.contains(id)).filter_map(|(_, c)| c.1.clone()).collect();
+    // No requests in the window: nothing for git to settle (AF-1081: the
+    // dashboard asks for every worker card at once, and workers with none
+    // were each spending 5 s in a git log contended by 40 others).
+    let no_requests = msgs.is_empty();
     let git = tokio::task::spawn_blocking(move || {
+        if no_requests {
+            return Err("no owner requests in the window, so git was not read".to_string());
+        }
         let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
-            .arg(format!("--since={} days ago", days as i64 + 3))
-            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        let out = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests")
-            .ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
+        let log = shared_git_stdout(format!("log|{}|{}", repo.display(), days as i64), || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
+                .arg(format!("--since={} days ago", days as i64 + 3))
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests").map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        }).ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
         let msg_id = regex::Regex::new(r"MSG-(\d+)").expect("static regex");
         let mut landed = std::collections::HashMap::new();
-        for rec in String::from_utf8_lossy(&out.stdout).split('\x1e') {
+        for rec in log.split('\x1e') {
             let Some((sha, body)) = rec.trim_start_matches('\n').split_once('\x1f') else { continue };
             for c in msg_id.captures_iter(body) {
                 if let Ok(n) = c[1].parse::<i64>() {
@@ -1533,13 +1563,16 @@ pub async fn owner_requests(
             // One rev-list over the window the log read, not a merge-base per
             // sha: a landed sha came from that window, so it is in the build
             // exactly when the build's history over the window lists it.
-            let mut cmd = std::process::Command::new("git");
-            cmd.arg("-C").arg(&repo).args(["rev-list", &build])
-                .arg(format!("--since={} days ago", days as i64 + 3))
-                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
-            if let Some(o) = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success()) {
-                let in_build: std::collections::HashSet<String> =
-                    String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect();
+            let listed = shared_git_stdout(format!("rev-list|{}|{build}|{}", repo.display(), days as i64), || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&repo).args(["rev-list", &build])
+                    .arg(format!("--since={} days ago", days as i64 + 3))
+                    .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+                run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            });
+            if let Some(listed) = listed {
+                let in_build: std::collections::HashSet<String> = listed.lines().map(str::to_string).collect();
                 for sha in landed.values() {
                     live.insert(sha.clone(), in_build.contains(sha));
                 }
@@ -4442,6 +4475,28 @@ mod subagent_walk_tests {
         assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false), &HashMap::new())[0].status, "on-main");
         let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
         assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
+    }
+
+    #[test]
+    fn concurrent_callers_share_one_git_read_and_a_failed_read_is_not_kept() {
+        // AF-1081: ~40 cards asked at once, each running its own git log.
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let key = format!("test|{}", std::process::id());
+        let handles: Vec<_> = (0..8).map(|_| {
+            let (reads, key) = (reads.clone(), key.clone());
+            std::thread::spawn(move || shared_git_stdout(key, || {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                Some("abc".to_string())
+            }))
+        }).collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().as_deref().map(String::as_str), Some("abc"));
+        }
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "eight concurrent callers, one read");
+        let failing = format!("test-fail|{}", std::process::id());
+        assert!(shared_git_stdout(failing.clone(), || None).is_none());
+        assert_eq!(shared_git_stdout(failing, || Some("ok".into())).as_deref().map(String::as_str), Some("ok"), "a failed read is retried");
     }
 
     #[test]
