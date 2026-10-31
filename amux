@@ -10202,8 +10202,15 @@ cmd_land() {
   # unreachable server falls through to the client queue below.
   # AMUX_LAND_CLIENT=1 forces the client path.
   if [ -n "${AMUX_SESSION:-}" ] && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
-    local _q_sha _q_out _q_code _q_body
+    local _q_sha _q_out _q_code _q_body _q_pol
     _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
+    # Ask whether the queue is on for this lane before queueing (AF-1103).
+    # Posting blind drew a 409 land_queue_off on every land of every lane where
+    # the rule is off: 563 a day, the top error group, and the reason
+    # route.mounted_routes_answer read POST /api/land as a dead route. An
+    # unreadable policy (old server, unreachable) still tries the POST.
+    _q_pol=$(_curl -sk -m 10 "${AMUX_API:-$(cmd_url)}/api/land/policy?lane=${AMUX_SESSION}" 2>/dev/null) || _q_pol=""
+    case "$_q_pol" in *'"queue":false'*) _q_sha="" ;; esac
     if [ -n "$_q_sha" ]; then
       # The server re-runs the land guards and is authoritative, so the
       # lane's own escapes travel with the request.
