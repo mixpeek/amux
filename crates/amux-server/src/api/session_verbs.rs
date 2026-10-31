@@ -4364,15 +4364,60 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
 /// Newest JSONL for a session (py:5590 _session_jsonl_path_uncached): meta
 /// conv-id first, then title match, then the single unclaimed candidate.
 /// `<projects>/<any project>/<conv_id>.jsonl`, if one exists.
+///
+/// A find is remembered and re-checked with one stat. Uncached, every
+/// sessions-list build re-walked every project dir for each lane found this
+/// way: 8,262 dirs on 2026-10-31, and the walk's stats were a fifth of the
+/// server's CPU while the Mac sat at load 29 on 28 cores (RCA
+/// 20261031-164721). A scan slower than 250 ms logs
+/// `transcript_conversation_scan_slow`.
 pub(crate) fn find_conversation_jsonl(projects: &Path, conv_id: &str) -> Option<PathBuf> {
+    static HITS: std::sync::OnceLock<std::sync::Mutex<ConversationHits>> = std::sync::OnceLock::new();
+    find_conversation_jsonl_in(projects, conv_id, HITS.get_or_init(Default::default)).0
+}
+
+type ConversationHits = std::collections::HashMap<(PathBuf, String), PathBuf>;
+
+/// The path, and whether finding it walked the project dirs.
+fn find_conversation_jsonl_in(
+    projects: &Path,
+    conv_id: &str,
+    hits: &std::sync::Mutex<ConversationHits>,
+) -> (Option<PathBuf>, bool) {
     if conv_id.is_empty() || conv_id.contains('/') || conv_id.contains("..") {
-        return None;
+        return (None, false);
     }
-    std::fs::read_dir(projects)
-        .ok()?
+    let key = (projects.to_path_buf(), conv_id.to_string());
+    if let Some(p) = hits.lock().ok().and_then(|h| h.get(&key).cloned()) {
+        if p.is_file() {
+            return (Some(p), false);
+        }
+    }
+    let started = std::time::Instant::now();
+    let mut dirs = 0usize;
+    let Ok(rd) = std::fs::read_dir(projects) else {
+        return (None, true);
+    };
+    let found = rd
         .flatten()
-        .map(|e| e.path().join(format!("{conv_id}.jsonl")))
-        .find(|p| p.is_file())
+        .map(|e| {
+            dirs += 1;
+            e.path().join(format!("{conv_id}.jsonl"))
+        })
+        .find(|p| p.is_file());
+    let ms = started.elapsed().as_millis() as u64;
+    if ms > 250 {
+        tracing::warn!(conv_id = %conv_id, ms, dirs, found = found.is_some(), measured = true, n_considered = dirs,
+            verdict = "transcript_conversation_scan_slow",
+            "finding a conversation's transcript walked every project dir slowly");
+    }
+    if let (Some(p), Ok(mut h)) = (&found, hits.lock()) {
+        if h.len() > 4096 {
+            h.clear();
+        }
+        h.insert(key, p.clone());
+    }
+    (found, true)
 }
 
 pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
@@ -52155,6 +52200,28 @@ mod steer_freeze_tests {
             "a lane whose cc_cwd is a subdirectory still resolves to its own transcript");
         assert_eq!(find_conversation_jsonl(projects, "missing"), None);
         assert_eq!(find_conversation_jsonl(projects, "../x"), None);
+    }
+
+    /// RCA 20261031-164721: the walk ran again on every sessions-list build.
+    /// A find is remembered; a moved transcript is found again.
+    #[test]
+    fn a_found_conversation_is_not_searched_for_again() {
+        let d = tempfile::tempdir().unwrap();
+        let projects = d.path();
+        for i in 0..50 {
+            std::fs::create_dir_all(projects.join(format!("-p{i}"))).unwrap();
+        }
+        let want = projects.join("-p37").join("cafe1234.jsonl");
+        std::fs::write(&want, "{}").unwrap();
+        let hits = std::sync::Mutex::new(ConversationHits::new());
+        assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(want.clone()), true), "the first find walks");
+        for _ in 0..5 {
+            assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(want.clone()), false), "later finds do not");
+        }
+        let moved = projects.join("-p3").join("cafe1234.jsonl");
+        std::fs::rename(&want, &moved).unwrap();
+        assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(moved), true), "a moved transcript is found again");
+        assert_eq!(find_conversation_jsonl_in(projects, "nope", &hits), (None, true));
     }
 
     #[test]
