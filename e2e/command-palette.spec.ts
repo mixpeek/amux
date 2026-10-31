@@ -87,6 +87,37 @@ test('Cmd-K opens a worker, a card, a tab and a group by name', async ({ page, r
   }
 });
 
+// AF-1042: the server answers from its previous index while it rebuilds, and
+// says so (`stale`). A card made a moment ago is then missing from that answer,
+// and the nightly desktop leg failed on exactly this with no further keystroke
+// to ask again. The first answer here is made stale and empty; the card must
+// still appear without typing.
+test('a stale palette answer is asked again, so a just-made card appears without another keystroke', async ({ page, request }, info) => {
+  test.skip(info.project.name !== 'desktop', 'keyboard flow; one project is enough for the client retry');
+  const { auth } = await boot(page);
+  const stamp = Date.now();
+  const card = await request.post('/api/board', { headers: auth, data: { title: `Wombat rollout note ${stamp}`, status: 'todo' } });
+  expect(card.ok()).toBeTruthy();
+  const cardId = (await card.json()).id;
+  let calls = 0;
+  await page.route('**/api/palette?*', async (route) => {
+    calls += 1;
+    const res = await route.fetch();
+    const body = await res.json();
+    if (calls === 1) { body.hits = []; body.total = 0; body.stale = true; }
+    await route.fulfill({ response: res, json: body });
+  });
+  try {
+    await palette(page, `wombat ${stamp}`);
+    await expect(page.locator('#cmdk-list .cmdk-row', { hasText: `Wombat rollout note ${stamp}` })).toBeVisible({ timeout: 10_000 });
+    expect(calls, 'the stale answer was followed by another request').toBeGreaterThan(1);
+    await page.keyboard.press('Escape');
+  } finally {
+    await page.unroute('**/api/palette?*');
+    await cleanup('delete fixture card', () => request.delete(`/api/board/${cardId}`, { headers: auth }));
+  }
+});
+
 // The header magnifying glass is hidden (96e5b8e36); on a phone search opens
 // from the + menu.
 test('on a phone the + menu opens the palette and it fits the screen', async ({ page }, info) => {

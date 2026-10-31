@@ -73073,10 +73073,14 @@ function _cmdkToggleHidden() {
   document.getElementById('cmdk-input')?.focus();
 }
 
-function _cmdkQueryServer() {
+// A stale answer came from the previous index while the server rebuilds it
+// behind the reply, so a card made a moment ago is missing until the next
+// keystroke. Ask again, a few times, while the answer says it is stale.
+const CMDK_STALE_RETRIES = 6;
+function _cmdkQueryServer(retry = 0) {
   clearTimeout(_cmdk.timer);
   const q = _cmdk.q.trim();
-  const seq = ++_cmdk.seq;
+  const seq = retry ? _cmdk.seq : ++_cmdk.seq;
   if (!q) { _cmdk.server = []; _cmdk.serverMeta = null; return; }
   _cmdk.timer = setTimeout(async () => {
     try {
@@ -73085,12 +73089,13 @@ function _cmdkQueryServer() {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = r.ok ? (d.hits || []) : [];
       _cmdk.serverMeta = r.ok ? d : { measured: false };
+      if (r.ok && d.stale && retry < CMDK_STALE_RETRIES) { _cmdkRender(); _cmdkQueryServer(retry + 1); return; }
     } catch (e) {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = []; _cmdk.serverMeta = { measured: false };
     }
     _cmdkRender();
-  }, 90);
+  }, retry ? 500 : 90);
 }
 
 function openCmdk() {
