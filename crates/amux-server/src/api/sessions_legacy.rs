@@ -1389,6 +1389,17 @@ pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64
 /// question arrived, then the first Stop after that submit, and only if it
 /// stopped before the owner's next message. A Stop belonging to a turn already
 /// running when the question came in is never taken. Returns (began, stop, sid).
+/// Each question's own-turn stop, from one ts-sorted scan of the turn events.
+/// A window `(id, asked_at, next, until)` sees exactly the events a query for
+/// `ts >= asked_at - 5 AND ts < until` returned (AF-1081).
+pub(crate) fn stops_in_windows(events: &[(f64, String, String)], windows: &[(i64, f64, f64, f64)]) -> Vec<(i64, f64, f64, String)> {
+    windows.iter().filter_map(|&(id, at, next, until)| {
+        let a = events.partition_point(|e| e.0 < at - 5.0);
+        let b = events.partition_point(|e| e.0 < until);
+        own_turn_stop(&events[a..b.max(a)], at, next).map(|(began, stop, sid)| (id, began, stop, sid))
+    }).collect()
+}
+
 pub(crate) fn own_turn_stop(events: &[(f64, String, String)], asked_at: f64, next: f64) -> Option<(f64, f64, String)> {
     let began = events.iter().find(|(ts, ev, _)| *ts >= asked_at - 5.0 && ev == "UserPromptSubmit")?.0;
     let (stop, _, sid) = events.iter().find(|(ts, ev, _)| *ts > began && ev == "Stop")?;
@@ -1442,6 +1453,15 @@ pub async fn owner_requests(
             return Json(v).into_response();
         }
     }
+    // Per-phase wall time, in the answer and in a WARN past 1 s (AF-1081): the
+    // cold GET was 3-6 s and the first fix aimed at the wrong phase.
+    let t0 = std::time::Instant::now();
+    let mut phases = serde_json::Map::new();
+    let mut mark = |name: &str, since: &mut std::time::Instant| {
+        phases.insert(format!("{name}_ms"), json!(since.elapsed().as_millis() as u64));
+        *since = std::time::Instant::now();
+    };
+    let mut lap = std::time::Instant::now();
     let who = session.clone();
     let since_ms = ((chrono::Utc::now().timestamp() as f64 - days * 86400.0) * 1000.0) as i64;
     let msgs = state.store.read_async(move |c| {
@@ -1459,6 +1479,7 @@ pub async fn owner_requests(
         Ok(m) => m,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
     };
+    mark("messages", &mut lap);
     let closed: std::collections::HashMap<i64, (String, Option<String>)> =
         std::fs::read_to_string(crate::api::session_verbs::home().join("requests-closed.json")).ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -1540,6 +1561,7 @@ pub async fn owner_requests(
         let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         Ok::<_, String>((landed, deploys, live, name, closed_on_main))
     }).await.unwrap_or_else(|e| Err(e.to_string()));
+    mark("git", &mut lap);
     let (landed, deploys, live, repo_name, closed_on_main, git_why) = match git {
         Ok((l, d, v, n, c)) => (l, d, v, n, c, Value::Null),
         Err(e) => (Default::default(), false, Default::default(), String::new(), Default::default(), json!(e)),
@@ -1554,24 +1576,27 @@ pub async fn owner_requests(
     let who = session.clone();
     let qs = questions.clone();
     let stops: Vec<(i64, f64, f64, String)> = state.store.read_async(move |c| {
-        let mut out = Vec::new();
-        let mut evq = c.prepare(
+        // Events up to the next message are all the rule can use; a day caps an open end.
+        let windows: Vec<(i64, f64, f64, f64)> = qs.into_iter().map(|(id, at, next)| (id, at, next, next.min(at + 86_400.0))).collect();
+        let (Some(lo), Some(hi)) = (
+            windows.iter().map(|w| w.1 - 5.0).reduce(f64::min),
+            windows.iter().map(|w| w.3).reduce(f64::max),
+        ) else {
+            return Ok(Vec::new());
+        };
+        // ONE scan over the span of every window, then each window is a slice
+        // of it (AF-1081). A query per window re-read the overlapping day-long
+        // windows: 1.5-2.8 s for 36-55 questions, against 0.3-0.8 s for one scan.
+        let events: Vec<(f64, String, String)> = c.prepare(
             "SELECT ts, json_extract(data,'$.event'), COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
              WHERE session = ?1 AND type = 'session.native_status' AND ts >= ?2 AND ts < ?3 \
              AND json_extract(data,'$.event') IN ('UserPromptSubmit','Stop') ORDER BY ts",
-        )?;
-        for (id, at, next) in qs {
-            // Events up to the next message are all the rule can use; a day caps an open end.
-            let until = next.min(at + 86_400.0);
-            let events: Vec<(f64, String, String)> = evq
-                .query_map(rusqlite::params![who, at - 5.0, until], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .flatten().collect();
-            if let Some((began, stop, sid)) = own_turn_stop(&events, at, next) {
-                out.push((id, began, stop, sid));
-            }
-        }
-        Ok(out)
+        )?
+        .query_map(rusqlite::params![who, lo, hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .flatten().collect();
+        Ok(stops_in_windows(&events, &windows))
     }).await.unwrap_or_default();
+    mark("turn_events", &mut lap);
     // A turn that has stopped never changes its reply, so each answer is read
     // from its transcript once, keyed by the message, the turn's session and
     // its stop (AF-1081).
@@ -1596,11 +1621,19 @@ pub async fn owner_requests(
             Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
         }).collect()
     }).await.unwrap_or_default();
+    mark("answers", &mut lap);
     let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None }, &answered);
     let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let total_ms = t0.elapsed().as_millis() as u64;
+    if total_ms > 1000 {
+        let phase_ms = Value::Object(phases.clone()).to_string();
+        tracing::warn!(target: "amux::owner_requests", session = %session, total_ms, phases = %phase_ms,
+            n_considered = rows.len(), measured = true, "verdict=owner_requests_slow");
+    }
     let body = json!({
         "measured": true, "n_considered": rows.len(), "session": session, "days": days,
+        "took_ms": total_ms, "phases": Value::Object(phases),
         "repo": repo_name, "deploys": deploys,
         "git_measured": git_why.is_null(), "git_why_unmeasured": git_why,
         "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "answered": count("answered"), "closed": count("closed")},
@@ -4409,6 +4442,28 @@ mod subagent_walk_tests {
         assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false), &HashMap::new())[0].status, "on-main");
         let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
         assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
+    }
+
+    #[test]
+    fn one_scan_sliced_per_window_matches_a_query_per_window() {
+        // AF-1081: the handler now scans the turn events once and slices them.
+        // Overlapping day-long windows, an event 3 s before a question (inside
+        // the 5 s lead) and one exactly at `until` (outside) must all agree
+        // with filtering the events window by window, as the old query did.
+        let ev = |ts: f64, e: &str, sid: &str| (ts, e.to_string(), sid.to_string());
+        let events = vec![
+            ev(97.0, "UserPromptSubmit", "a"), ev(150.0, "Stop", "a"),
+            ev(200.0, "UserPromptSubmit", "b"), ev(300.0, "Stop", "b"),
+            ev(400.0, "UserPromptSubmit", "c"), ev(500.0, "Stop", "c"),
+        ];
+        let windows = vec![(1, 100.0, 180.0, 180.0), (2, 210.0, 400.0, 300.0), (3, 205.0, 1000.0, 1000.0), (4, 402.0, 900.0, 900.0)];
+        let naive: Vec<_> = windows.iter().filter_map(|&(id, at, next, until)| {
+            let w: Vec<_> = events.iter().filter(|e| e.0 >= at - 5.0 && e.0 < until).cloned().collect();
+            own_turn_stop(&w, at, next).map(|(b, s, sid)| (id, b, s, sid))
+        }).collect();
+        assert_eq!(stops_in_windows(&events, &windows), naive);
+        assert!(naive.iter().any(|r| r.0 == 1), "the prompt 3 s before the question still counts");
+        assert!(!naive.iter().any(|r| r.0 == 2), "a Stop exactly at until is outside the window");
     }
 
     /// AF-1059: a question answered in its own turn reads answered with the
