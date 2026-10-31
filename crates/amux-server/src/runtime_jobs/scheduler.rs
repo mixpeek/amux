@@ -3600,6 +3600,28 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+    /// AF-1082: the startup reconcile's three status='running' statements run
+    /// inside the single writer; on the migrated schema they use the partial
+    /// index instead of scanning every run (149,741 rows, held up to 42 s).
+    #[test]
+    fn the_startup_reconcile_reads_running_runs_through_their_index() {
+        let conn = crate::db::migrate::test_memdb();
+        for sql in [
+            "SELECT schedule_id, COUNT(*) FROM schedule_runs WHERE status='running' GROUP BY schedule_id ORDER BY schedule_id",
+            "UPDATE schedule_runs SET status='interrupted' WHERE status='running' AND delivery IS NULL",
+            "UPDATE schedule_runs SET status='interrupted' WHERE status='running' AND delivery='shell'",
+        ] {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().any(|p| p.contains("idx_schedule_runs_running")), "{sql}: {plan:?}");
+        }
+    }
+
     #[test]
     fn firing_defaults_on_and_only_explicit_off_words_disable_it() {
         use super::firing_from;
