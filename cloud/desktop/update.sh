@@ -94,6 +94,8 @@ fi
 as_user make -C "$SRC" install-cli BIN_DIR="$BIN_DIR" >/dev/null 2>&1 || say "WARN install-cli failed"
 
 # The sign-in (door.py) ships from the checkout too, so its fixes arrive with the scripts.
+# The door writes its own state there (the address allowlist, sign-in counts); older hosts made it 750.
+[[ -d /etc/amux-door ]] && chmod 770 /etc/amux-door
 if [[ -f "$SRC/cloud/desktop/door.py" ]] && ! cmp -s "$SRC/cloud/desktop/door.py" /opt/amux-door/door.py; then
   install -m 755 "$SRC/cloud/desktop/door.py" /opt/amux-door/door.py.new && mv /opt/amux-door/door.py.new /opt/amux-door/door.py
   systemctl restart amux-door && say "door.py updated from the checkout"

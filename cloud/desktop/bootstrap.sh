@@ -605,6 +605,17 @@ if [[ "$FLEET" == 1 ]]; then
 fi
 chown root:amux-door /etc/amux-door/users.new; chmod 640 /etc/amux-door/users.new
 mv /etc/amux-door/users.new /etc/amux-door/users
+# Address allowlist chosen at signup (cloud/start: "only my address"): AMUX_IP_ALLOWLIST is the
+# address the owner signed up from, or "1" to let each account's first sign-in add its address.
+# Set once: after that the owner edits it at /_door/allowlist.
+if [[ -n "${AMUX_IP_ALLOWLIST:-}" && ! -f /etc/amux-door/allowlist.json ]]; then
+  python3 /opt/amux-door/door.py allowlist on >/dev/null
+  if [[ "$AMUX_IP_ALLOWLIST" != 1 ]]; then
+    python3 /opt/amux-door/door.py allowlist add "$AMUX_IP_ALLOWLIST" "${WEB_USERS%%:*}" "signed up from here" >/dev/null \
+      || log "WARN: allowlist address $AMUX_IP_ALLOWLIST was not added; first sign-in will add one"
+  fi
+  log "address allowlist on ($(python3 -c 'import json;print(len(json.load(open("/etc/amux-door/allowlist.json"))["entries"]))') address(es))"
+fi
 systemctl daemon-reload
 systemctl enable amux-door >/dev/null
 systemctl restart amux-door

@@ -548,6 +548,27 @@ await test('C9 a certificate that is not renewing reaches the operator before it
   eq(w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).some(t => /recovered/.test(t)), true, 'recovery email');
 });
 
+await test('"only my address" at signup starts the server\'s allowlist with the signup address, and only then', async () => {
+  const pw = 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44);
+  const w = world();
+  const ask = (slug, lock, ip) => api(w, '/api/checkout', { plan: 'team', slug, email: 'a@example.com', pw_hash: pw, ip_lock: lock },
+                                      { 'x-test-key': 'k', ...(ip ? { 'cf-connecting-ip': ip } : {}) });
+  eq((await ask('lockv4', true, '198.51.100.7')).status, 200, 'checkout');
+  eq(w.sessions.at(-1).metadata.allow_ip, '198.51.100.7', 'the signup address is kept on the order');
+  await ask('lockv6', true, '2001:db8::7');
+  eq(w.sessions.at(-1).metadata.allow_ip, '2001:db8::7', 'IPv6 too');
+  await ask('nolock', false, '198.51.100.8');
+  eq('allow_ip' in w.sessions.at(-1).metadata, false, 'unticked: no address kept');
+  await ask('badip', true, "1.2.3.4' ; rm -rf /");
+  eq('allow_ip' in w.sessions.at(-1).metadata, false, 'a header that is not an address is dropped');
+  const sub = paid(w, 'lockv4'); w.subs[sub].metadata.allow_ip = '198.51.100.7';
+  await webhook(w, sub);
+  eq(/AMUX_IP_ALLOWLIST='198\.51\.100\.7'/.test(w.servers.at(-1).user_data), true, 'user_data turns the allowlist on with it');
+  eq(w.subs[sub].metadata.allow_ip, undefined, 'the address leaves Stripe once the server exists');
+  const sub2 = paid(w, 'nolock2'); await webhook(w, sub2);
+  eq(/AMUX_IP_ALLOWLIST/.test(w.servers.at(-1).user_data), false, 'no choice, no allowlist');
+});
+
 await test('funnel: paid, ready and canceled reach PostHog under the visitor id, once per order', async () => {
   const w = world();
   const r = await api(w, '/api/checkout', { plan: 'team', slug: 'phtrack', email: 'a@example.com', pw_hash: 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44),

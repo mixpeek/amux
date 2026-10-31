@@ -2813,13 +2813,20 @@ function _connectionSessionControls() {
   if (cloud) cloud.style.display = inApp ? '' : 'none';
   const out = document.getElementById('connection-sign-out');
   if (out && inApp) out.textContent = 'Sign out and switch server';
+  // A server behind the sign-in door (amux Cloud and dedicated hosts): its owner limits which
+  // addresses may reach it on the door's own page (cloud/desktop/door.py, /_door/allowlist).
+  const allow = document.getElementById('connection-allowlist');
+  if (allow) allow.style.display = _onDoorHost() ? '' : 'none';
+}
+function _onDoorHost() {
+  return /\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io';
 }
 // Sign out of this server on this device (2026-10-17). In the iOS app, back to its setup
 // screen (an address, or amux Cloud sign-in). On an amux Cloud server, the door's logout.
 // Elsewhere the owner/member cookies end and the page reloads to its sign-in.
 async function _connectionSignOut() {
   if (_appBridge('switch-server')) return;
-  if (/\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io') {
+  if (_onDoorHost()) {
     location.assign('/_door/logout');
     return;
   }

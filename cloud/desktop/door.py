@@ -445,6 +445,191 @@ def note_failure(ip, now=None):
         log(event="throttle", ip=ip, failures=n, window_s=FAIL_WINDOW_S, verdict="door_signin_throttled")
 
 
+# ── Address allowlist (Ethan, 2026-10-31: "whitelist only the ips that have previously connected so
+# that any other ips get blocked"; "for the first signup/signin users can whitelist their ip").
+# Off until someone turns it on: the owner at their first sign-in (a checkbox), a signup that asked
+# for it (AMUX_IP_ALLOWLIST, written by bootstrap.sh), the owner's page at /_door/allowlist, or
+# `door.py allowlist ...` over SSH. When on, /_door/check refuses every address not on the list,
+# signed in or not. A person whose account has no address yet adds theirs by signing in (the first
+# sign-in), unless the owner turned that off. Public /_door/* pages, public links (/pub/<id>/) and
+# /_door/status stay reachable: the owner published those, and cloud.amux.io's monitor reads status.
+ALLOW_FILE = os.environ.get("DOOR_ALLOWLIST", "/etc/amux-door/allowlist.json")
+_allow_cache = {"mtime": None, "data": {}}
+_allow_lock = threading.RLock()
+_blocked_logged = {}
+
+
+def allowlist():
+    """{"enabled", "first_signin", "admins", "entries": [{ip, user, how, added, note}]}. A file that
+    cannot be parsed counts as ON with no entries (closed), and says so in the log."""
+    try:
+        m = os.stat(ALLOW_FILE).st_mtime_ns
+    except FileNotFoundError:
+        return {}
+    if _allow_cache["mtime"] != m:
+        try:
+            with open(ALLOW_FILE) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as e:
+            log(event="allowlist", verdict="door_allowlist_unreadable", reason=str(e)[:120])
+            data = {"enabled": True, "entries": [], "unreadable": True}
+        _allow_cache.update(mtime=m, data=data)
+    return _allow_cache["data"]
+
+
+def save_allowlist(data):
+    tmp = ALLOW_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.chmod(tmp, 0o640)
+    if os.geteuid() == 0:   # written by root over SSH: the door must still read and rewrite it
+        import pwd
+        try:
+            pw = pwd.getpwnam("amux-door")
+            os.chown(tmp, pw.pw_uid, pw.pw_gid)
+        except KeyError:
+            pass
+    os.replace(tmp, ALLOW_FILE)
+    _allow_cache["mtime"] = None
+
+
+def _net(text):
+    import ipaddress
+    return ipaddress.ip_network(text.strip(), strict=False)
+
+
+def ip_listed(ip, data=None):
+    import ipaddress
+    data = allowlist() if data is None else data
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if a.is_loopback:
+        return True
+    for e in data.get("entries", []):
+        try:
+            if a in _net(e.get("ip", "")):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def ip_allowed(ip, data=None):
+    data = allowlist() if data is None else data
+    return not data.get("enabled") or ip_listed(ip, data)
+
+
+def admins(data=None):
+    """Who may edit the list: the names in the file, else the host's owners (password users with no
+    member token, which on amux Cloud is the paying customer)."""
+    data = allowlist() if data is None else data
+    if data.get("admins"):
+        return set(data["admins"])
+    toks = members()
+    return {u for u in users() if u not in toks}
+
+
+def update_allowlist(change):
+    """Read the list fresh, apply change(data) and save, all under one lock, so two sign-ins at the
+    same moment both keep their address (a snapshot read outside the lock dropped one)."""
+    with _allow_lock:
+        _allow_cache["mtime"] = None
+        data = json.loads(json.dumps(allowlist()))
+        data.pop("unreadable", None)
+        data.setdefault("entries", [])
+        out = change(data)
+        if out is not False:
+            save_allowlist(data)
+        return out
+
+
+def allow_add(ip, user, how, note=""):
+    """Add `ip` (an address or a CIDR) for `user`. Returns the stored entry, or None if it was listed."""
+    net = str(_net(ip))
+
+    def add(data):
+        if any(str(_net(e["ip"])) == net for e in data["entries"] if e.get("ip")):
+            return False
+        entry = {"ip": net if "/" in ip else ip.strip(), "user": user, "how": how,
+                 "added": int(time.time()), "note": note[:120]}
+        data["entries"].append(entry)
+        return entry
+    entry = update_allowlist(add)
+    if not entry:
+        return None
+    log(event="allowlist", ip=entry["ip"], user=user, how=how, verdict="door_allowlist_added")
+    return entry
+
+
+def first_signin_add(user, ip):
+    """On: an address not on the list may sign in only as an account with no address yet (its first
+    sign-in), which adds the address. True when the address may continue."""
+    data = allowlist()
+    if not data.get("enabled") or ip_listed(ip, data):
+        return True
+    if data.get("first_signin", True) and not data.get("unreadable") \
+            and not any(e.get("user") == user for e in data.get("entries", [])):
+        allow_add(ip, user, "first_signin")
+        log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_first_signin")
+        return True
+    log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_signin_refused")
+    return False
+
+
+def note_blocked(ip, uri, now=None):
+    """One log line per address per minute, so a scanner cannot flood the journal."""
+    now = now or time.time()
+    if now - _blocked_logged.get(ip, 0) < 60:
+        return
+    if len(_blocked_logged) > 10000:
+        _blocked_logged.clear()
+    _blocked_logged[ip] = now
+    log(event="check", ip=ip, uri=uri[:80], verdict="door_allowlist_blocked")
+
+
+def seed_from_logs(paths, cloudflare_list="/etc/amux/cloudflare-ips"):
+    """{ip: (user, requests)} for every address that made a signed-in request (Caddy's access log,
+    door_user set, status under 400). Cloudflare's own addresses are skipped: before a host trusted
+    CF-Connecting-IP, Caddy logged the proxy rather than the visitor."""
+    import gzip
+    import ipaddress
+    try:
+        cf = [ipaddress.ip_network(l.strip()) for l in open(cloudflare_list) if l.strip()]
+    except OSError:
+        cf = []
+    seen = {}
+    for p in paths:
+        op = gzip.open if p.endswith(".gz") else open
+        try:
+            fh = op(p, "rt", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                user = d.get("door_user")
+                if not user or d.get("status", 500) >= 400:
+                    continue
+                r = d.get("request") or {}
+                ip = r.get("client_ip") or r.get("remote_ip") or ""
+                try:
+                    a = ipaddress.ip_address(ip)
+                except ValueError:
+                    continue
+                if a.is_loopback or any(a in n for n in cf):
+                    continue
+                u, n = seen.get(ip, (user, 0))
+                seen[ip] = (u, n + 1)
+    return seen
+
+
 def check_password(user, password):
     stored = users().get(user) or joined().get(user)
     if not stored or not stored.startswith("scrypt$"):
@@ -554,12 +739,14 @@ label{display:block;font-size:13px;color:#8b949e;margin:12px 0 4px}
 input{width:100%%;box-sizing:border-box;min-height:44px;padding:10px;border-radius:8px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;font-size:16px}
 button{margin-top:18px;width:100%%;min-height:44px;border:0;border-radius:8px;background:#58a6ff;color:#0d1117;font-weight:600;font-size:16px}
 .err{color:#f85149;font-size:13px;margin-top:10px}
+.note{color:#d29922;font-size:13px;margin:12px 0 0}.chk{display:flex;gap:8px;align-items:flex-start;color:#8b949e;font-size:13px;margin-top:14px}
+.chk input{width:auto;min-height:0;margin-top:2px}
 </style></head><body>
 <form method="post" action="/_door/login">
 <h1>amux</h1><p>%(host)s</p>
 <label for="u">Username</label><input id="u" name="username" autocomplete="username" autocapitalize="none" required value="%(user)s">
 <label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
-<input type="hidden" name="next" value="%(next)s">
+<input type="hidden" name="next" value="%(next)s">%(allow)s
 <button type="submit">Sign in</button>%(err)s
 </form></body></html>"""
 
@@ -570,7 +757,34 @@ JOIN_PAGE = PAGE.replace('<form method="post" action="/_door/login">', '<form me
     'autocomplete="current-password" required>', 'autocomplete="new-password" minlength="10" required>'
     '<label for="p2">Password again</label><input id="p2" name="password2" type="password" autocomplete="new-password" required>').replace(
     '<input type="hidden" name="next" value="%(next)s">', '<input type="hidden" name="invite" value="%(next)s">').replace(
-    '<button type="submit">Sign in</button>', '<button type="submit">Join</button>')
+    '<button type="submit">Sign in</button>', '<button type="submit">Join</button>').replace('%(allow)s', '')
+
+
+ALLOW_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Address allowlist</title>
+<style>
+body{margin:0;font:15px -apple-system,system-ui,sans-serif;background:#0d1117;color:#e6edf3;padding:24px max(16px,env(safe-area-inset-left))}
+main{max-width:760px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}p{color:#8b949e;margin:6px 0}
+table{width:100%%;border-collapse:collapse;margin:16px 0;font-size:14px}td{border-top:1px solid #30363d;padding:8px 6px;vertical-align:middle}
+.wrap{overflow-x:auto}form.inline{display:inline-flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0}
+input{min-height:44px;padding:8px 10px;border-radius:8px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;font-size:15px}
+button{min-height:44px;padding:0 14px;border:0;border-radius:8px;background:#58a6ff;color:#0d1117;font-weight:600;font-size:14px}
+button.sec{background:#21262d;color:#e6edf3;border:1px solid #30363d}.err{color:#f85149}.ok{color:#3fb950}
+a{color:#58a6ff}
+</style></head><body><main>
+<h1>Address allowlist</h1><p>%(host)s</p>
+%(err)s%(ok)s
+<p><b>%(state)s</b></p>
+<p>Your address: <code>%(you)s</code> (%(you_listed)s).</p>
+<div>%(toggle)s</div>
+<p>%(first_state)s</p><div>%(first)s</div>
+<div class="wrap"><table>%(rows)s</table></div>
+<div>%(add)s</div>
+<p>Public links and the server's status page stay reachable from anywhere. Locked out? On the server:
+<code>sudo python3 /opt/amux-door/door.py allowlist add &lt;address&gt;</code></p>
+<p><a href="/">Back to amux</a></p>
+</main></body></html>"""
 
 
 class Door(BaseHTTPRequestHandler):
@@ -590,7 +804,17 @@ class Door(BaseHTTPRequestHandler):
 
     def page(self, nxt, user="", err=""):
         host = html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "")
-        body = PAGE % {"host": host, "next": html.escape(safe_next(nxt)), "user": html.escape(user),
+        ip = client_ip(self.headers, self.client_address[0])
+        al = allowlist()
+        if al.get("enabled") and not ip_listed(ip, al):
+            allow = ('<p class="note">Your address, %s, is not on this server\'s allowlist. If this is your '
+                     'first sign-in, signing in adds it. Otherwise ask the owner to add it.</p>' % html.escape(ip))
+        elif not os.path.exists(ALLOW_FILE):
+            allow = ('<label class="chk"><input type="checkbox" name="lock" value="1"> Owner: only let this '
+                     'address (%s) reach this server. You can add others later.</label>' % html.escape(ip))
+        else:
+            allow = ""
+        body = PAGE % {"host": host, "next": html.escape(safe_next(nxt)), "user": html.escape(user), "allow": allow,
                        "err": '<div class="err">%s</div>' % html.escape(err) if err else ""}
         self.send(401 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"),
                                                        ("Cache-Control", "no-store")])
@@ -619,14 +843,20 @@ class Door(BaseHTTPRequestHandler):
                 return self.send(403, b'{"error":"cross-site request refused"}', [("Content-Type", "application/json")])
             cookies = self.headers.get("Cookie")
             ip = client_ip(self.headers, self.client_address[0])
-            user = cookie_user(cookies)
-            if not user and (self.headers.get("Authorization") or "").startswith("Basic "):
+            blocked = not ip_allowed(ip)
+            if blocked:
+                note_blocked(ip, uri)
+                if not (method == "GET" and "text/html" in self.headers.get("Accept", "")):
+                    return self.send(403, json.dumps({"error": "this address is not on the server's allowlist",
+                                                      "ip": ip}).encode(), [("Content-Type", "application/json")])
+            user = None if blocked else cookie_user(cookies)
+            if not user and not blocked and (self.headers.get("Authorization") or "").startswith("Basic "):
                 wait = throttled(ip)
                 if wait:
                     return self.send(429, b'{"error":"too many wrong passwords from this address; try again later"}',
                                      [("Content-Type", "application/json"), ("Retry-After", str(wait))])
                 user = basic_user(self.headers.get("Authorization"), ip)
-            if not user and method == "GET" and uri.startswith(VIEW_PATH):
+            if not user and not blocked and method == "GET" and uri.startswith(VIEW_PATH):
                 user = cookie_user(cookies, VIEW_COOKIE)
             if user:
                 tok = members().get(user)
@@ -667,6 +897,8 @@ class Door(BaseHTTPRequestHandler):
             try:
                 claims = verify_entry_token(q.get("t", [""])[0])
                 email = claims["sub"].lower()
+                if not first_signin_add(email, ip):
+                    raise PermissionError("address not on the allowlist")
                 if email in users():       # the server's owner (a standalone server's paying customer)
                     log(event="enter", user=email, ip=ip, role="owner", via=claims.get("via"), verdict="door_enter_ok")
                     note_signin(True)
@@ -679,6 +911,11 @@ class Door(BaseHTTPRequestHandler):
                 tok = members().get(email)
                 if not tok or not member_valid(tok):
                     raise ValueError("not a member of this server")
+            except PermissionError:
+                body = ("<!doctype html><meta charset=utf-8><title>Address not allowed</title><p>Your address, %s, "
+                        "is not on this server's allowlist. Sign in from an address on the list and add it at "
+                        "/_door/allowlist, or ask the owner to.</p>" % html.escape(ip)).encode()
+                return self.send(403, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             except Exception as e:
                 log(event="enter", ip=ip, verdict="door_enter_refused", reason=str(e)[:120])
                 body = ("<!doctype html><meta charset=utf-8><title>Link expired</title><p>This sign-in link has expired "
@@ -690,6 +927,15 @@ class Door(BaseHTTPRequestHandler):
             nxt = safe_next(q.get("next", [""])[0] or next_from_cookie(self.headers.get("Cookie")))
             return self.send(303, headers=[("Location", nxt), ("Cache-Control", "no-store")] +
                              session_cookies(email, TOKEN_MAX_AGE) + next_cookie_clear(self.headers.get("Cookie")))
+        if path.path == "/_door/ipcheck":
+            # forward_auth for the apps origin (:8443), which has no sign-in of its own.
+            ip = client_ip(self.headers, self.client_address[0])
+            if ip_allowed(ip):
+                return self.send(200)
+            note_blocked(ip, self.headers.get("X-Forwarded-Uri", "/"))
+            return self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
+        if path.path == "/_door/allowlist":
+            return self.allowlist_page()
         if path.path == "/_door/login":
             q = urllib.parse.parse_qs(path.query)
             return self.page(q.get("next", ["/"])[0])
@@ -747,12 +993,14 @@ class Door(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = urllib.parse.urlsplit(self.path).path
-        if route not in ("/_door/login", "/_door/join"):
+        if route not in ("/_door/login", "/_door/join", "/_door/allowlist"):
             return self.send(404)
         n = int(self.headers.get("Content-Length") or 0)
         form = urllib.parse.parse_qs(self.rfile.read(min(n, 65536)).decode(errors="replace"))
         if route == "/_door/join":
             return self.join(form)
+        if route == "/_door/allowlist":
+            return self.allowlist_post(form)
         user = (form.get("username") or [""])[0].strip()
         pw = (form.get("password") or [""])[0]
         nxt = safe_next((form.get("next") or ["/"])[0])
@@ -761,6 +1009,24 @@ class Door(BaseHTTPRequestHandler):
         if wait:
             log(event="signin", user=user, ip=ip, verdict="door_signin_throttled_refused")
             return self.page(nxt, user, "Too many wrong passwords from this address. Try again in %d minutes." % (wait // 60 + 1))
+        al = allowlist()
+        if al.get("enabled") and not ip_listed(ip, al):
+            ok = check_password(user, pw)
+            if not (ok and first_signin_add(user, ip)):
+                # Same cost whatever the password: a right one must not come back faster, and it
+                # counts toward the throttle too, so this cannot be used to test passwords.
+                note_failure(ip)
+                time.sleep(1.0)
+                log(event="signin", user=user, ip=ip, verdict="door_signin_allowlist_refused")
+                note_signin(False)
+                return self.page(nxt, user, "This address (%s) is not on this server's allowlist." % ip)
+        elif (form.get("lock") or [""])[0] == "1" and not os.path.exists(ALLOW_FILE) and check_password(user, pw):
+            if user in admins({}):
+                update_allowlist(lambda d: d.update(enabled=True, first_signin=True, admins=[user]))
+                allow_add(ip, user, "owner_first_signin")
+                log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_turned_on")
+            else:
+                log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_lock_not_owner")
         if check_password(user, pw):
             log(event="signin", user=user, ip=ip, verdict="door_signin_ok")
             note_signin(True)
@@ -771,6 +1037,112 @@ class Door(BaseHTTPRequestHandler):
         time.sleep(1.0)  # slows guessing without a lockout a person could trip
         return self.page(nxt, user, "Wrong username or password.")
 
+
+    # ── /_door/allowlist: the owner's page for the address allowlist (linked from Settings) ──
+    def allowlist_admin(self):
+        """(user, ip) for a signed-in admin on an allowed address, else None after answering."""
+        ip = client_ip(self.headers, self.client_address[0])
+        if not ip_allowed(ip):
+            note_blocked(ip, "/_door/allowlist")
+            self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
+            return None
+        user = cookie_user(self.headers.get("Cookie"))
+        if not user:
+            self.send(302, headers=[("Location", "/_door/login?next=/_door/allowlist")])
+            return None
+        if user not in admins():
+            log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_not_admin")
+            self.send(403, b"Only the server's owner can change the address allowlist.\n", [("Content-Type", "text/plain")])
+            return None
+        return user, ip
+
+    def allowlist_page(self, err="", ok=""):
+        who = self.allowlist_admin()
+        if not who:
+            return
+        user, ip = who
+        al = allowlist()
+        on = bool(al.get("enabled"))
+        first = al.get("first_signin", True)
+        csrf = sign("allowlist:" + user, 0)
+        def form(action, label, extra="", cls=""):
+            return ('<form method="post" action="/_door/allowlist" class="inline"><input type="hidden" name="csrf" value="%s">'
+                    '<input type="hidden" name="action" value="%s">%s<button class="%s" type="submit">%s</button></form>'
+                    % (csrf, action, extra, cls, html.escape(label)))
+        rows = "".join(
+            "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                html.escape(e.get("ip", "")), html.escape(e.get("user", "")),
+                html.escape(e.get("how", "")), time.strftime("%Y-%m-%d", time.gmtime(e.get("added", 0))),
+                form("remove", "Remove", '<input type="hidden" name="ip" value="%s">' % html.escape(e.get("ip", "")), "sec"))
+            for e in al.get("entries", []))
+        body = ALLOW_PAGE % {
+            "host": html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""),
+            "state": "On: only the addresses below reach this server." if on else
+                     "Off: any address can reach the sign-in.",
+            "you": html.escape(ip), "you_listed": "on the list" if ip_listed(ip, al) else "not on the list",
+            "toggle": form("off", "Turn off", cls="sec") if on else form("on", "Turn on (adds your address)"),
+            "first": form("first_off" if first else "first_on",
+                          "Stop letting a first sign-in add its address" if first else "Let a first sign-in add its address",
+                          cls="sec"),
+            "first_state": "A person whose account has no address yet adds theirs by signing in." if first else
+                           "Only you add addresses.",
+            "rows": rows or '<tr><td colspan="5">No addresses yet.</td></tr>',
+            "add": form("add", "Add", '<input name="ip" placeholder="203.0.113.7 or 203.0.113.0/24" required>'
+                                      '<input name="note" placeholder="Label (optional)">'),
+            "err": '<p class="err">%s</p>' % html.escape(err) if err else "",
+            "ok": '<p class="ok">%s</p>' % html.escape(ok) if ok else "",
+        }
+        self.send(400 if err else 200, body.encode(), [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
+
+    def allowlist_post(self, form):
+        who = self.allowlist_admin()
+        if not who:
+            return
+        user, ip = who
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        given = (form.get("csrf") or [""])[0]
+        if site in ("cross-site", "same-site") or not hmac.compare_digest(given, sign("allowlist:" + user, 0)):
+            log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_csrf_refused")
+            return self.send(403, b"Refused: reload the page and try again.\n", [("Content-Type", "text/plain")])
+        action = (form.get("action") or [""])[0]
+        target = (form.get("ip") or [""])[0].strip()
+        if action == "add":
+            try:
+                net = _net(target)
+            except ValueError:
+                return self.allowlist_page(err="%s is not an address or a range." % target)
+            if net.prefixlen < (8 if net.version == 4 else 32):
+                return self.allowlist_page(err="That range is too wide to be an allowlist entry.")
+            added = allow_add(target, user, "owner", (form.get("note") or [""])[0])
+            return self.allowlist_page(ok=("Added %s." % target) if added else "%s was already on the list." % target)
+        if action == "remove":
+            def remove(data):
+                rest = [e for e in data["entries"] if e.get("ip") != target]
+                if data.get("enabled") and not ip_listed(ip, {"entries": rest}):
+                    return False
+                data["entries"] = rest
+                return True
+            if not update_allowlist(remove):
+                return self.allowlist_page(err="Removing %s would lock out your own address. Turn the allowlist off first, "
+                                               "or add another entry that covers you." % target)
+            log(event="allowlist", user=user, ip=target, verdict="door_allowlist_removed")
+            return self.allowlist_page(ok="Removed %s." % target)
+        if action in ("on", "off", "first_on", "first_off"):
+            def toggle(data):
+                if action == "on":
+                    data.setdefault("admins", sorted(admins(data)))
+                    if not ip_listed(ip, data):   # never switch it on with the owner outside
+                        data["entries"].append({"ip": ip, "user": user, "how": "owner", "added": int(time.time()),
+                                                "note": "turned the allowlist on"})
+                    data["enabled"] = True
+                elif action == "off":
+                    data["enabled"] = False
+                else:
+                    data["first_signin"] = action == "first_on"
+            update_allowlist(toggle)
+            log(event="allowlist", user=user, ip=ip, action=action, verdict="door_allowlist_" + action)
+            return self.allowlist_page(ok="Saved.")
+        return self.allowlist_page(err="Unknown action.")
 
     def join(self, form):
         email = (form.get("username") or [""])[0].strip().lower()
@@ -785,6 +1157,10 @@ class Door(BaseHTTPRequestHandler):
             return self.join_page(invite, email, "The two passwords differ.")
         if email in users() or email in joined():
             return self.join_page(invite, email, "That email already has an account here. Sign in instead.")
+        al = allowlist()
+        if al.get("enabled") and not ip_listed(ip, al) and not al.get("first_signin", True):
+            log(event="join", user=email, ip=ip, verdict="door_join_allowlist_refused")
+            return self.join_page(invite, email, "This address (%s) is not on this server's allowlist. Ask the owner to add it." % ip)
         try:
             redeem_invite(email, invite)
         except Exception as e:
@@ -792,6 +1168,7 @@ class Door(BaseHTTPRequestHandler):
             time.sleep(1.0)
             return self.join_page(invite, email, "This invite link is used or no longer valid. Ask the server owner for a new one.")
         save_joined(email, scrypt_hash(pw))
+        first_signin_add(email, ip)
         log(event="join", user=email, ip=ip, verdict="door_join_ok")
         note_signin(True)
         return self.send(303, headers=[("Location", "/"), ("Cache-Control", "no-store")] + session_cookies(email))
@@ -808,10 +1185,42 @@ class DoorServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def allowlist_cli(args):
+    """door.py allowlist show | on | off | add <ip> [user] [note] | remove <ip> | admins <a,b>
+                         | first-signin on|off | seed [--apply] <caddy access logs...>"""
+    cmd = args[0] if args else "show"
+    if cmd == "show":
+        print(json.dumps(allowlist(), indent=1))
+    elif cmd in ("on", "off"):
+        n = update_allowlist(lambda d: (d.update(enabled=cmd == "on"), len(d["entries"]))[1])
+        log(event="allowlist", action=cmd, via="cli", entries=n, verdict="door_allowlist_" + cmd)
+    elif cmd == "add" and len(args) >= 2:
+        print("added" if allow_add(args[1], args[2] if len(args) > 2 else "", "cli", " ".join(args[3:])) else "already listed")
+    elif cmd == "remove" and len(args) == 2:
+        update_allowlist(lambda d: d.update(entries=[e for e in d["entries"] if e.get("ip") != args[1]]))
+        log(event="allowlist", ip=args[1], via="cli", verdict="door_allowlist_removed")
+    elif cmd == "admins" and len(args) == 2:
+        update_allowlist(lambda d: d.update(admins=[a for a in args[1].split(",") if a]))
+    elif cmd == "first-signin" and len(args) == 2 and args[1] in ("on", "off"):
+        update_allowlist(lambda d: d.update(first_signin=args[1] == "on"))
+    elif cmd == "seed":
+        apply = "--apply" in args
+        seen = seed_from_logs([a for a in args[1:] if a != "--apply"])
+        for ip, (user, n) in sorted(seen.items(), key=lambda kv: -kv[1][1]):
+            print("%-40s %-24s %d signed-in requests" % (ip, user, n))
+            if apply:
+                allow_add(ip, user, "seed", "signed in before the allowlist")
+        print("seed: %d address(es) made signed-in requests%s" % (len(seen), "; added" if apply else "; --apply adds them"))
+    else:
+        sys.exit(allowlist_cli.__doc__)
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "hash":
         print("%s %s" % (sys.argv[2], scrypt_hash(sys.stdin.readline().rstrip("\n"))))
         return
+    if len(sys.argv) >= 2 and sys.argv[1] == "allowlist":
+        return allowlist_cli(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "serve":
         log(event="start", port=PORT, users=len(users()), backlog=DoorServer.request_queue_size,
             verdict="door_started")

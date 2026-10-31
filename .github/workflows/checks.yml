@@ -454,6 +454,8 @@ jobs:
         run: ./scripts/test-amux-cloud.sh
       - name: The Cloud sign-in door queues a page load's burst instead of dropping it
         run: python3 cloud/desktop/test_door_backlog.py
+      - name: The sign-in door throttles password guessing and enforces the owner's address allowlist
+        run: python3 -m unittest cloud/desktop/test_door_throttle.py cloud/desktop/test_door_allowlist.py
       - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
         run: |
           set -uo pipefail

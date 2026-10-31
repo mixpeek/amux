@@ -7,6 +7,12 @@
 # serves nothing else.
 @app_link path_regexp app_link ^/app/[0-9a-f]{32}(/|$)
 handle @app_link {
+  # The door's address allowlist (door.py, /_door/ipcheck): when the owner turned it on, an address
+  # not on the list is refused here too. Off, it answers 200 for everyone.
+  forward_auth 127.0.0.1:8890 {
+    uri /_door/ipcheck
+    header_up X-Real-IP {client_ip}
+  }
   request_header -X-Amux-Member
   request_header -X-Amux-Session
   request_header -X-Amux-Worker
