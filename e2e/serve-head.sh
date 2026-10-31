@@ -218,10 +218,15 @@ acquire_lock() {
   return 0
 }
 
+# Release only a lock this process holds, and disarm the trap that calls this:
+# a fallback path returns with the trap still set, and by the time the script
+# exits another run may hold the lock (land review F1).
 _unlock() {
+  trap - EXIT INT TERM
   [ -n "${_toucher:-}" ] && kill "$_toucher" 2>/dev/null
   _toucher=""
-  rm -rf "$LOCK"
+  [ "$(cut -d' ' -f1 "$LOCK/holder" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
+  return 0
 }
 
 # Build $SHA into $BIN under the lock. Returns non-zero only when no worktree
@@ -267,7 +272,6 @@ build_head() {
   # Keep the eight newest commits' servers; each is one debug binary.
   ls -1t "$BIN_CACHE" 2>/dev/null | tail -n +9 | while read -r old; do rm -rf "${BIN_CACHE:?}/$old"; done
   _unlock
-  trap - EXIT INT TERM
   return 0
 }
 
