@@ -812,6 +812,13 @@ pub struct DeployLag {
     /// while the install is fresh ([`RESTART_PENDING_S`]), so a restart that
     /// never comes still fails.
     pub restart_pending: Option<String>,
+    /// The gate's green target IS the served commit (AF-1099): nothing newer
+    /// has passed CI, so the server already runs the newest green commit and
+    /// any lag is CI's, not the builder's. `target_wait_s` is None both here
+    /// and when the gate names no target, which is why this is its own field:
+    /// 2026-10-31 12:16Z failed at 1811 s while a49570af4's CI was still
+    /// running and e5d51cd68, the served commit, was the green target.
+    pub target_is_served: bool,
 }
 
 /// How long an installed-but-not-yet-served build is treated as a restart in
@@ -976,7 +983,7 @@ pub fn served_commit_is_current(
     // how long THAT has waited, not by how long main has been ahead.
     let builder_late = match lag.target_wait_s {
         Some(w) => w > threshold_s,
-        None => true,
+        None => !lag.target_is_served,
     };
     if lag.oldest_unserved_age_s <= threshold_s || lag.restart_pending.is_some() || !builder_late {
         // Behind, but not yet longer than a build plausibly takes.
@@ -11292,7 +11299,20 @@ mod served_commit_tests {
             gate_hold: None,
             target_wait_s: None,
             restart_pending: None,
+            target_is_served: false,
         }
+    }
+
+    /// AF-1099: behind past the threshold, but the gate's green target is the
+    /// served commit, so the newer commits are still in CI. Not a builder stall;
+    /// with no target named at all, the age rule still fails.
+    #[test]
+    fn lag_while_the_served_commit_is_the_green_target_is_ci_not_a_stall() {
+        let mut ci = lag(1, 1811);
+        ci.target_is_served = true;
+        assert_eq!(served_commit_is_current(Some(&ci), "", 1800)[0].status, Status::Pass);
+        assert_eq!(served_commit_is_current(Some(&lag(1, 1811)), "", 1800)[0].status, Status::Fail,
+            "no target named: the age rule still applies");
     }
 
     /// AF-1055: 1849 s behind at 07:45 on 2026-10-30, but the green target had
