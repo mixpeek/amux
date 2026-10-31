@@ -31,8 +31,11 @@ async function open(page: Page, lastRead: number) {
   await page.waitForFunction(() => typeof (window as any)._cvRestoreScroll === 'function');
   await page.evaluate(() => (window as any).switchView('messages'));
 }
+// False, not a throw, while the post is not rendered yet: right after a switch
+// the list can still hold the previous conversation's posts (CI, 2026-10-30).
 const inView = (page: Page, id: number) => page.evaluate(i => {
-  const box = document.getElementById('cv-posts')!, el = box.querySelector('.cv-post[data-id="' + i + '"]')!;
+  const box = document.getElementById('cv-posts'), el = box && box.querySelector('.cv-post[data-id="' + i + '"]');
+  if (!box || !el) return false;
   const b = box.getBoundingClientRect(), e = el.getBoundingClientRect();
   return e.top >= b.top - 2 && e.top < b.bottom;
 }, id);
@@ -59,6 +62,7 @@ test('a conversation you scrolled up in reopens at the post you were reading', a
   await page.evaluate(c => (0, eval)('_cvSelect(' + JSON.stringify(c) + ')'), B);
   await expect(page.locator('#cv-posts .cv-post[data-id="1060"]')).toBeVisible();
   await page.evaluate(c => (0, eval)('_cvSelect(' + JSON.stringify(c) + ')'), A);
+  await expect(page.locator('#cv-posts .cv-post[data-id="12"]'), 'conversation A rendered again').toBeAttached();
   await expect(page.locator('#cv-posts .cv-unread-line')).toHaveCount(0);
   await expect.poll(() => inView(page, 12)).toBe(true);
 });
