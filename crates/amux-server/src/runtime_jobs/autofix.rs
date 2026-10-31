@@ -7160,6 +7160,14 @@ pub fn connector_findings_from_rollup(rollup: &serde_json::Value, now: f64) -> V
                 continue;
             }
             let http_st = leg.get("http").and_then(|v| v.as_u64()).unwrap_or(0);
+            // A 5xx is the PROVIDER failing, not it rejecting the token, so it
+            // files nothing, like `unreachable` (AF-1085: Google Calendar
+            // answered 503 "Backend Error" for esteininger21@gmail.com, the card
+            // said the token was rejected, and the next canary read 200). A 4xx
+            // is the API refusing this credential or grant, which is the rot.
+            if http_st >= 500 {
+                continue;
+            }
             out.push(Finding {
                 kind: DetectorKind::ConnectorAuth,
                 signature: format!("connector-canary|{account}|{svc}"),
@@ -11025,6 +11033,8 @@ mod tests {
                     "gmail": {"status": "ok", "http": 200},
                     "calendar": {"status": "api_error", "http": 403, "detail": "insufficientPermissions"},
                     "drive": {"status": "not_granted"},
+                    // AF-1085: a provider's own failure is not token rot.
+                    "sheets": {"status": "api_error", "http": 503, "detail": "Backend Error"},
                     "slack": {"status": "unreachable", "detail": "dns"},
                 }},
             ],
