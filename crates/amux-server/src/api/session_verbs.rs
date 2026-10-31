@@ -20676,15 +20676,20 @@ const MEM_TOPIC_FILE: &str = "amux-api.md";
 /// this string is written into every worker's MEMORY.md: the two prose lines
 /// shipped indented by nine spaces, and so did the table HEADER, which in
 /// markdown is an indented code block and breaks the table it heads (AMUX-3810).
-const FLEET_ROSTER_HEADER: &str = "\n## Fleet — who else is running (auto-generated, do not edit)\n\n\
-     Every live worker, INCLUDING YOU ($AMUX_SESSION). Message a peer with `amux send <name> --stdin`; \
-     wait on a peer's event with `amux signal wait <CARD> <name>` (the peer clears it with `amux signal raise <name>`). Models and workspaces: `amux ls`.\n\n\
+const FLEET_ROSTER_HEADER: &str = "\n## Workers you can reach (auto-generated, do not edit)\n\n\
+     You, and every worker you may message: those sharing a group with you, members of groups open \
+     to every worker, and peers the owner paired with you. Workers outside these are not listed, \
+     because you cannot message them; work for them goes through the owner. Message one with \
+     `amux send <name> --stdin`; wait on a peer's event with `amux signal wait <CARD> <name>` (the \
+     peer clears it with `amux signal raise <name>`).\n\n\
      | worker | groups | description |\n|---|---|---|\n";
 
 /// The fleet roster every worker gets, regenerated on each write.
 ///
 /// Ethan: "make sure all workers are always aware of each others: name, groups,
-/// and descriptions so they can auto discover".
+/// and descriptions so they can auto discover". Narrowed 2026-10-31 ("workers
+/// shouldnt even be aware of workers outside their group/peer right?"): each
+/// worker now sees the workers it can reach (reachable_roster).
 ///
 /// It goes into MEMORY.md — the file the session already reads by default —
 /// rather than behind an endpoint, because a roster you have to know to fetch
@@ -20782,7 +20787,8 @@ fn credential_preflight_from(n: usize, gaps: &[(&'static str, Vec<&'static str>)
     out
 }
 
-fn fleet_roster() -> String {
+/// Every worker's name and env map, the input to the roster.
+fn roster_lanes() -> Vec<(String, std::collections::HashMap<String, String>)> {
     let mut lanes: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
         let mut names: Vec<String> = rd
@@ -20793,23 +20799,62 @@ fn fleet_roster() -> String {
             .collect();
         names.sort();
         for other in names {
-            // NO SELF-EXCLUSION (AMUX-2831). MEMORY.md is keyed on the PROJECT
-            // DIRECTORY, not the lane, so a shared checkout has ONE file for
-            // every lane in it — 17 lanes share ~/Dev/mixpeek. A roster that
-            // omitted "me" was therefore correct for exactly one reader (the
-            // lane that wrote last) and wrong for the other sixteen, who read a
-            // list including themselves and omitting the writer. Last-writer-wins,
-            // which is this card's subject, and my own feature was an instance.
-            //
-            // Listing everyone is the only shape true for every reader of a
-            // shared file. A lane identifies itself by $AMUX_SESSION, which it
-            // always has; the file cannot know who is reading it.
             let env = crate::config::parse_env_file(&sessions_dir().join(format!("{other}.env")));
             lanes.push((other, env.into_iter().collect()));
         }
     }
+    lanes
+}
+
+/// The roster `me` sees: itself and the workers it may message.
+///
+/// PER READER, IN THE WORKER'S OWN CONTEXT (owner, 2026-10-31). The roster
+/// used to list every live worker in MEMORY.md, which Claude Code keys on the
+/// project directory: 17 lanes in ~/Dev/mixpeek read one file, so a per-reader
+/// list was impossible there (AMUX-2831). mxp-gs12 read mixpeek-vision in that
+/// table, messaged it, and was refused at the group boundary. The scoped
+/// context file (compose_worker_context) is per worker, so the list can be
+/// exactly the reach the send check allows.
+fn reachable_roster(me: &str) -> String {
+    let lanes = roster_lanes();
     let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
-    render_fleet_roster(&lanes, &open)
+    let mine = reachable_lanes(me, &lanes, &open);
+    tracing::debug!(session = %me, listed = mine.len(), n_considered = lanes.len(), measured = true,
+        verdict = "roster_composed", "a worker's roster lists the workers it can reach");
+    render_fleet_roster(&mine, &open)
+}
+
+/// The lanes `me` may message, plus `me`: the same rules as
+/// worker_messaging::worker_group_refusal (a shared group, a target in an open
+/// group) and bilateral_peers (CC_PEERS on both sides). A member of the admin
+/// group reaches every worker, so it sees every one.
+fn reachable_lanes(
+    me: &str,
+    lanes: &[(String, std::collections::HashMap<String, String>)],
+    open_groups: &[String],
+) -> Vec<(String, std::collections::HashMap<String, String>)> {
+    let list = |env: &std::collections::HashMap<String, String>, k: &str| -> Vec<String> {
+        env.get(k)
+            .map(|t| t.split([',', ' ']).map(|x| x.trim().trim_matches('"').to_lowercase()).filter(|x| !x.is_empty()).collect())
+            .unwrap_or_default()
+    };
+    let mine = lanes.iter().find(|(n, _)| n == me).map(|(_, e)| e.clone()).unwrap_or_default();
+    let my_groups = list(&mine, "CC_TAGS");
+    let my_peers = list(&mine, "CC_PEERS");
+    let admin = my_groups.iter().any(|g| g == ADMIN_GROUP);
+    let open: Vec<String> = open_groups.iter().map(|g| g.to_lowercase()).collect();
+    lanes
+        .iter()
+        .filter(|(n, env)| {
+            if n == me || admin {
+                return true;
+            }
+            let theirs = list(env, "CC_TAGS");
+            theirs.iter().any(|g| my_groups.contains(g) || open.contains(g))
+                || (my_peers.contains(&n.to_lowercase()) && list(env, "CC_PEERS").contains(&me.to_lowercase()))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The longest description the roster prints. Descriptions are meant to be one
@@ -20933,7 +20978,7 @@ fn roster_footer(n: usize) -> String {
             workers they share a group with.", open.join(", "))
     };
     format!(
-        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} Members of the \
+        "\n{n} worker(s) listed, you included. {WORKER_MESSAGING_POLICY}{open_line} Members of the \
          `{ADMIN_GROUP}` group act with the owner's reach and may message any worker, isolated ones \
          included. To reach a worker outside \
          your groups, ask the owner (the owner can put you in a shared group); a \
@@ -20972,10 +21017,18 @@ pub(crate) fn refresh_fleet_rosters() -> usize {
         if parse_env(name).get("CC_ARCHIVED") == Some("1") {
             continue;
         }
+        // The roster lives in each worker's scoped context: rewrite it, so the
+        // worker's next start sees its reach as it is now. An isolated worker
+        // gets no roster.
+        if !session_is_isolated(name) && !write_worker_context_file(name, &compose_worker_context(name, false)) {
+            tracing::warn!(session = %name, measured = true, n_considered = 1, verdict = "roster_context_not_written",
+                "a worker's scoped context (with its roster) could not be rewritten");
+        }
         let wd = session_work_dir(name);
         if wd.is_empty() {
             continue; // no project dir means no MEMORY.md to compose into
         }
+        // Still rewritten: that also drops the old fleet-wide roster from it.
         write_claude_memory(name, &wd);
         n += 1;
     }
@@ -21315,13 +21368,15 @@ fn write_claude_memory(name: &str, work_dir: &str) {
     // the two (AF-372). Standing approvals now travel with each lane's launch
     // (`compose_lane_context`), so each lane sees its own rather than the last
     // writer's (AMUX-5270's purpose, without the shared-file defect).
+    // No roster here any more: this file is shared by every lane in the
+    // directory, and each lane may see only the workers it can reach. The
+    // roster rides in the worker's own scoped context (reachable_roster).
     let creds = credential_preflight();
-    let roster = fleet_roster();
-    let composed = composed + &preserved + &creds + &roster;
+    let composed = composed + &preserved + &creds;
     let bytes = composed.len();
     if bytes > MEMORY_BUDGET_BYTES {
         tracing::warn!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES,
-            pointers = preserved.len(), credentials = creds.len(), roster = roster.len(), measured = true,
+            pointers = preserved.len(), credentials = creds.len(), measured = true,
             n_considered = 1, verdict = "memory_over_budget", "shared MEMORY.md is over its byte budget (contract rule 13)");
     } else {
         tracing::debug!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES, measured = true,
@@ -31904,6 +31959,8 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
     let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}");
+    let roster = reachable_roster(name);
+    let block = if roster.is_empty() { block } else { format!("{block}\n{roster}") };
     let velocity = crate::api::velocity::context_section(name);
     let block = if velocity.is_empty() { block } else { format!("{block}\n\n{velocity}") };
     let file = worker_rules_file(name);
@@ -54505,7 +54562,7 @@ mod roster_tests {
         assert!(broken.lines().any(|l| l.contains("   ")));
         // And the header still says the things it exists to say.
         assert!(FLEET_ROSTER_HEADER.contains("| worker | groups | description |"));
-        assert!(FLEET_ROSTER_HEADER.contains("INCLUDING YOU"));
+        assert!(FLEET_ROSTER_HEADER.contains("Workers outside these are not listed"));
         // AMUX-5237: every worker learns the signal verbs without opting in.
         assert!(FLEET_ROSTER_HEADER.contains("amux signal wait <CARD> <name>"));
         assert!(FLEET_ROSTER_HEADER.contains("amux signal raise <name>"));
@@ -54526,32 +54583,38 @@ mod roster_tests {
         assert!(f.contains("ask the owner"), "a refused lane needs a truthful next step: {f}");
     }
 
+    /// Owner, 2026-10-31: a worker sees only the workers it can reach. Each
+    /// assertion names one rule of the send boundary.
     #[test]
-    fn the_roster_lists_every_live_worker_because_the_file_is_shared() {
-        let r = super::fleet_roster();
-        if r.is_empty() {
-            return; // no live workers on this machine; nothing to assert
-        }
-        // It must say so, or a reader seeing its own name concludes the roster
-        // is buggy — which is what a correct shared roster looks like.
-        assert!(
-            r.contains("INCLUDING YOU"),
-            "a shared roster must tell the reader it lists them too: {r}"
-        );
-        assert!(
-            r.contains("$AMUX_SESSION"),
-            "and how to identify themselves in it: {r}"
-        );
+    fn a_worker_sees_only_the_workers_it_can_reach() {
+        let lane = |kv: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+            kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let lanes = vec![
+            ("amux".to_string(), lane(&[("CC_TAGS", "amux"), ("CC_DESC", "open hub")])),
+            ("boss".to_string(), lane(&[("CC_TAGS", "admin, ops"), ("CC_DESC", "the admin")])),
+            ("gs12".to_string(), lane(&[("CC_TAGS", "gs12"), ("CC_PEERS", "parity"), ("CC_DESC", "me")])),
+            ("gs12-rows".to_string(), lane(&[("CC_TAGS", "gs12, ops"), ("CC_DESC", "same group")])),
+            ("one-sided".to_string(), lane(&[("CC_TAGS", "gtm"), ("CC_PEERS", "gs12"), ("CC_DESC", "names me only")])),
+            ("parity".to_string(), lane(&[("CC_TAGS", "customers"), ("CC_PEERS", "gs12"), ("CC_DESC", "paired")])),
+            ("vision".to_string(), lane(&[("CC_TAGS", "admin, gtm"), ("CC_DESC", "outside")])),
+            ("seo".to_string(), lane(&[("CC_TAGS", "gtm"), ("CC_DESC", "outside too")])),
+        ];
+        let open = vec!["amux".to_string()];
+        let names = |me: &str| super::reachable_lanes(me, &lanes, &open).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        let gs = names("gs12");
+        assert!(gs.contains(&"gs12".to_string()), "the reader is listed: {gs:?}");
+        assert!(gs.contains(&"gs12-rows".to_string()), "a shared group: {gs:?}");
+        assert!(gs.contains(&"amux".to_string()), "a member of an open group: {gs:?}");
+        assert!(gs.contains(&"parity".to_string()), "a bilateral peer: {gs:?}");
+        assert!(!gs.contains(&"one-sided".to_string()), "a one-sided CC_PEERS opens nothing: {gs:?}");
+        assert!(!gs.contains(&"vision".to_string()) && !gs.contains(&"seo".to_string()), "outside lanes stay out: {gs:?}");
+        assert_eq!(names("boss").len(), lanes.len(), "an admin reaches, so sees, every worker");
+        let r = super::render_fleet_roster(&super::reachable_lanes("gs12", &lanes, &open), &open);
+        assert!(r.contains("| `gs12-rows`") && !r.contains("outside too"), "the rendered table follows the filter: {r}");
+        assert!(r.contains("Workers outside these are not listed"), "and says why others are missing: {r}");
     }
 
-    /// AMUX-4715: archiving a lane makes its live cards terminal, and
-    /// unarchiving gives them back.
-    ///
-    /// The invariant `board.archived_cards_are_terminal` fails on 969 cards
-    /// across 59 lanes because this used to flip `archived` with no status
-    /// filter. The cheap fix discards on archive and quietly makes a reversible
-    /// operation lossy; the round trip below is the property that distinguishes
-    /// the two, and it is why the column exists.
     #[test]
     fn archiving_a_lane_is_lossless_for_its_live_cards() {
         let conn = crate::db::migrate::test_memdb();
@@ -54765,20 +54828,6 @@ mod roster_tests {
         assert_ne!(some, unmeasured);
     }
 
-    /// It rides ABOVE the roster in the composed file, because a read ceiling
-    /// drops the tail and the roster is the re-derivable half.
-    #[test]
-    fn the_preflight_sits_above_the_roster() {
-        let composed = String::new() + &super::credential_preflight() + &super::fleet_roster();
-        let pre = composed.find("## Credentials").expect("preflight present");
-        if let Some(roster) = composed.find("## Fleet") {
-            assert!(
-                pre < roster,
-                "credentials must precede the roster: {pre} vs {roster}"
-            );
-        }
-    }
-
     /// Ethan, 2026-10-23: "make sure groups, names, descriptions and any other
     /// distinguishing characteristics are easily discoverable so that agents
     /// understand everyone's place". Each assertion names one rule.
@@ -54817,7 +54866,7 @@ mod roster_tests {
     /// with no rows under it, which reads as "the fleet is broken".
     #[test]
     fn a_roster_with_no_peers_is_the_empty_string() {
-        let r = super::fleet_roster();
+        let r = super::reachable_roster("no-such-worker-zz");
         assert!(
             r.is_empty() || r.contains("| `"),
             "header without rows: {r}"
