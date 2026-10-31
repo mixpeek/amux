@@ -22,6 +22,56 @@ Every proposal names:
   `tests/diagnostic_contract.rs`, unless it says test.
 - **Breaks if:** the mutation that must turn the check red (ethos rule 7).
 
+## Measured baseline (2026-10-31, before any change)
+
+`scripts/velocity-invariants-probe.py` runs each invariant below against live
+amux data (the API, `amux.db` read-only, git, docker, ps and the guard hooks)
+and reports pass, fail or unmeasured with `measured` and `n_considered`.
+Unmeasured means amux keeps no data that could answer it yet, which is itself
+the gap. Run it again after each change: the invariant must move from fail to
+pass, and the change's own check then replaces the probe.
+
+Result on 2026-10-31 afternoon: **7 pass, 14 fail, 6 unmeasured** (27
+probes, including item 27 added for the board switch). A probe whose source
+did not answer (an API timeout, an empty board read, a missing server log)
+reports unmeasured; an earlier draft let three of them read as passes, which
+the land review caught.
+
+| # | Verdict | Reading | n |
+|---|---|---|---|
+| 1 | pass | 4 lanes idle 30 min with eligible To Do (long-form-videos, mixpeek-ops-server, studio-plg, social-activities); each has a fresh board-drive reason. The reason is per lane, so the per-card half is unbuilt | 20 idle lanes |
+| 2 | fail | 15 parked cards whose waiting_on card is already terminal (MGR-40, MGR-31, MS-1650, MF-4578, MI-5991, GCA-54, MGR-21, MGR-22, ...); 51 of 73 parked cards name no card at all (prose) | 73 parked |
+| 3 | fail | 5 doing cards on lanes quiet 45 min with other eligible work (GE-1142, LFV-1, GE-1116, GE-1102, GE-1057) | 15 doing |
+| 4 | pass | 0 fleet-cap refusals in the last 40 MB of server log. Weak: the probe greps for the refusal's wording | 1 |
+| 5 | pass | 129 owner messages in 24 h, all delivered. One earlier run caught MSG-102505 queued 10 min behind amux-app's turn; it was delivered later, so it counts toward item 6's latency | 127 |
+| 6 | unmeasured | no priority flag exists, so no priority latency can be timed | 0 |
+| 7 | fail | 20 messages repeated to the same recipient by the same sender within 6 h | 934 messages, 24 h |
+| 8 | fail | 660 messages in 7 days typed `user` with origin `api (no worker identity)`, which render as the owner | 1,763 |
+| 9 | fail | 59 messages in 24 h carry the "no reply path" footer | 934 |
+| 10 | fail | background share 86.0% of 11,496 USD rate-card spend in 24 h; board-drive nudges 3,476 USD, peer messages 3,265 USD, owner prompts 1,608 USD | 13,661 turns |
+| 11 | pass | no enabled tmux schedule fired more than 5 times in 24 h. No-change detection is unbuilt, so this is an upper bound | 40 schedules |
+| 12 | fail | 0 of 1,662 verified cards name a check whose result can be read | 1,662 |
+| 13 | fail | 548 done-to-discarded moves in 7 days, 527 of them by `backend` in one hour (10-30 23:00) | 548 |
+| 14 | unmeasured | owner rulings are not recorded as rulings anywhere amux reads | 0 |
+| 15 | fail | longest run of consecutive "not met" goal-keeper prompts in 7 days: 10 | 17 |
+| 16 | fail | 1,492 of 2,750 land logs from 7 days have no outcome line (landed, refused or failed) | 2,750 |
+| 17 | pass | 0 schedules past their `until`, 0 plan-reserve refusals in the recent log. Expiry notices are unbuilt, so a future expiry would still go unannounced | 463 |
+| 18 | unmeasured | no path-triggered schedule kind exists | 0 |
+| 19 | unmeasured | no restart context message exists to look for | 1 restart in the log window |
+| 20 | pass | all 42 non-isolated agent processes carry `AMUX_SESSION`. The audit's empty-identity reports came from shells inside a pane, which this does not read | 42 |
+| 21 | unmeasured | the watchdog's server-pid file is absent: the fix (a6ab9dc49) is on main, but launchd runs the watchdog from the shared checkout, which is behind | 1 |
+| 22 | fail | the installed guards let `pkill -f node`, `killall python3` and `rm -rf` of a repo folder through; no boundary in `boundaries.toml` covers them | 4 cases |
+| 23 | fail | 9 of 9 running containers lack an owner label, and memory limits are missing on most (ts-dropin-mx, ts-appstate-pgrst, ffe-wt-postgrest, ...) | 9 |
+| 24 | unmeasured | a scan needs vault values, which the probe must not read | 0 |
+| 25 | fail | amux's own machine-commit share is 0.2% (passes); 1,479 land logs older than 14 days are not archived (fails) | 640 commits |
+| 26 | fail | `/api/usage/attribution?session=mxp-gs12` returns 9 rows from other sessions; the window does honour 168 hours, so the 24-hour half of the audit's claim is stale | 10 |
+| 27 | pass | 16 workers have the board switched Off; none got a card or a board delivery in 24 h. See item 27 | 16 |
+
+Existing invariants that already overlap and fail today:
+`board.todo_is_reachable_by_dispatch` (items 1 to 4),
+`board.nonterminal_has_disposition` (item 2), `board.repeat_offers_are_visible`
+(item 7) and `schedule.target_can_receive` (item 9).
+
 Removals come first because the audit's strongest pattern is workarounds
 stacked on harness defects (Part 5, recurring theme 3: "Waker, watches, note
 delivery and card moves all stand in for dispatch").
@@ -56,6 +106,7 @@ delivery and card moves all stand in for dispatch").
 | 24 | Known secret values never reach a transcript | build | 11 | `transcript.no_vault_values` |
 | 25 | Machine commits and land logs stop flooding | clean up | 10 | `repo.machine_commit_share`, `land.log_retention` |
 | 26 | Usage attribution honours its filter and window | refactor | 7 | test |
+| 27 | Off on the board switch means the board is not used | KISS | owner, 10-31 | `board.off_switch_means_unused` |
 
 ---
 
@@ -445,6 +496,29 @@ were built to cover it and did not.
 - **Breaks if:** the filter is applied after the row cap.
 
 ---
+
+## The board switch (added 2026-10-31)
+
+### 27. Off on the board switch means the board is not used (KISS)
+
+- **Challenge:** the owner, 2026-10-31: "make sure enable/disable board also
+  makes it so board is not used if its disabled. this is critical". The
+  worker page's switch reads Off whenever steering is off, but the server
+  called the board unused only when every board key was off. Measured the same
+  day: 7 workers with steering explicitly off still had a legacy
+  `CC_AUTO_CONTINUE=1` or `CC_STANDING_ORDERS=1` the switch never wrote
+  (amux-gtm, gainz, mixpeek-ops-server, mixpeek-override, mixpeek-research,
+  mxp-marketplace-retrievers, social-activities), and 11 running workers with
+  no board setting showed Off while the board kept their cards (gtm-engine 73
+  open, backend 17).
+- **Change:** an explicit Off at any scope makes `board_unused` true whatever
+  the other keys say; the switch also writes the legacy `CC_AUTO_CONTINUE`;
+  the session API publishes `board_used` from the gate every board path
+  enforces, and the switch reads it, so a worker whose board is in use reads On.
+- **Invariant `board.off_switch_means_unused`:** for every worker with
+  steering explicitly off, 0 cards created for it and 0 board-labelled
+  deliveries to it in 24 hours.
+- **Breaks if:** `board_unused_in` stops checking steering first.
 
 ## Order
 
