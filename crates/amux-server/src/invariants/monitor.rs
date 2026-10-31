@@ -3332,6 +3332,8 @@ async fn served_commit_check() -> Vec<InvariantResult> {
                 .as_ref()
                 .and_then(|g| checks::target_wait_s(g, served, chrono::Utc::now().timestamp())),
             restart_pending: installed_awaiting_restart(served),
+            gate_verdict: crate::api::self_update::gate_state().as_ref().and_then(|g| g["verdict"].as_str().map(str::to_string)),
+            gate_target: crate::api::self_update::gate_state().as_ref().and_then(|g| g["target"].as_str().map(str::to_string)),
             target_is_served: crate::api::self_update::gate_state().as_ref().is_some_and(|g| {
                 let t = g["target"].as_str().unwrap_or("");
                 let n = t.len().min(served.len());

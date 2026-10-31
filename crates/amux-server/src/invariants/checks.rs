@@ -819,6 +819,13 @@ pub struct DeployLag {
     /// 2026-10-31 12:16Z failed at 1811 s while a49570af4's CI was still
     /// running and e5d51cd68, the served commit, was the green target.
     pub target_is_served: bool,
+    /// The activation gate's own verdict and target, as read, for the
+    /// evidence (AF-1121): a failure at 22:35Z on 2026-10-31 recorded only
+    /// gate_hold=null and target_wait_s=null, which cannot tell a missing
+    /// target from a green one the builder held under SHELL-RUN DEFER (the
+    /// builder log showed the latter). None when the gate file is unreadable.
+    pub gate_verdict: Option<String>,
+    pub gate_target: Option<String>,
 }
 
 /// How long an installed-but-not-yet-served build is treated as a restart in
@@ -977,6 +984,9 @@ pub fn served_commit_is_current(
         "age_source": lag.age_source,
         "gate_hold": lag.gate_hold,
         "restart_pending": lag.restart_pending,
+        "target_is_served": lag.target_is_served,
+        "gate_verdict": lag.gate_verdict,
+        "gate_target": lag.gate_target,
         "target_wait_s": lag.target_wait_s,
     });
     // The builder's own clock (AF-1055): with a green target named, judge it by
@@ -11306,6 +11316,8 @@ mod served_commit_tests {
             target_wait_s: None,
             restart_pending: None,
             target_is_served: false,
+            gate_verdict: None,
+            gate_target: None,
         }
     }
 
@@ -11358,9 +11370,14 @@ mod served_commit_tests {
         let mut l = lag(4, 1_814);
         assert_eq!(served_commit_is_current(Some(&l), "", 1_800)[0].status, Status::Fail);
         l.restart_pending = Some("build 262909fcc installed 46s ago".into());
+        l.gate_verdict = Some("ci_gate_held_back".into());
+        l.gate_target = Some("262909fcc".into());
         let r = served_commit_is_current(Some(&l), "", 1_800);
         assert_eq!(r[0].status, Status::Pass, "{:?}", r[0]);
         assert_eq!(r[0].evidence["restart_pending"], "build 262909fcc installed 46s ago");
+        // AF-1121: the gate's own state rides in the evidence.
+        assert_eq!((r[0].evidence["gate_verdict"].as_str(), r[0].evidence["gate_target"].as_str()),
+            (Some("ci_gate_held_back"), Some("262909fcc")));
     }
 
     /// 2026-10-24: 27 hours failing, 73 behind, and the text pointed at the
