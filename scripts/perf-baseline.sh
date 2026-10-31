@@ -41,6 +41,14 @@ done
 
 TOKEN=$(cat "$WORK/auth-token" 2>/dev/null || echo "")
 
+# RSS AT BOOT, before any request (AF-1094). rss_mb below is read after five
+# requests per endpoint, one of them the whole board, so it carries that
+# response's serialization high-water mark: the September step (rss 250 -> 388)
+# tracked board_default_bytes (3.7 -> 6.8 MB), not the boot heap. This one
+# moves only with what the server holds once it is up. Reported, not gated,
+# until it has a series of its own.
+RSS_BOOT_MB=$(ps -o rss= -p "$SERVER_PID" | awk '{print int($1/1024)}')
+
 # MEDIAN OF N, judged; average and worst still reported (AMUX-5712). Five
 # averaged samples on a shared runner moved 181 -> 202ms for board between two
 # runs of the SAME code, and health 13 -> 44ms, so the verdict tracked runner
@@ -113,7 +121,7 @@ fi
 M1=$(summarize dashboard); M2=$(summarize health); M3=$(summarize board); M4=$(summarize board_full); M5=$(summarize workers)
 BOARD_BYTES=$(curl -sk -H "Authorization: Bearer $TOKEN" "https://localhost:$PORT/api/board" | wc -c | tr -d ' ')
 
-echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"dirty_mb\": ${DIRTY_MB:-null}, \"board_default_bytes\": $BOARD_BYTES }"
+echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"rss_boot_mb\": ${RSS_BOOT_MB:-null}, \"dirty_mb\": ${DIRTY_MB:-null}, \"board_default_bytes\": $BOARD_BYTES }"
 
 # Target assertions — each CAN fail (ethos 7).
 #
