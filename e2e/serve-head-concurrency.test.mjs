@@ -11,11 +11,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 
+// A git hook (pre-push runs this suite) exports GIT_DIR, GIT_INDEX_FILE and
+// friends. Inherited, they point every git below at the checkout being pushed:
+// the first version of this test rewrote that checkout's index and set its
+// user.name to "t". No child here sees a GIT_* variable.
+const CLEAN = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+
 const SCRIPT = process.env.SERVE_HEAD_UNDER_TEST
   || new URL('./serve-head.sh', import.meta.url).pathname;
 
 function repoAt(root) {
-  const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' }).toString().trim();
+  const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe', env: CLEAN }).toString().trim();
   fs.mkdirSync(root, { recursive: true });
   git('init', '-q');
   git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
@@ -60,7 +66,7 @@ chmod +x "$CARGO_TARGET_DIR/debug/amux-server"
   const r1 = path.join(t, 'r1'), r2 = path.join(t, 'r2');
   git('worktree', 'add', '-q', '--detach', r1, a);
   git('worktree', 'add', '-q', '--detach', r2, b);
-  const env = { PATH: `${fake}:${process.env.PATH}`, HOME: t, AMUX_HOME: path.join(t, 'home'),
+  const env = { PATH: `${fake}:${CLEAN.PATH}`, HOME: t, AMUX_HOME: path.join(t, 'home'),
     AMUX_E2E_WORKTREE_DIR: path.join(t, 'wt'), AMUX_E2E_HEAD_BIN_DIR: path.join(t, 'bin'),
     AMUX_E2E_HEAD_TARGET_DIR: path.join(t, 'target') };
   fs.mkdirSync(env.AMUX_HOME);
