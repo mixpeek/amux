@@ -1479,9 +1479,17 @@ pub(crate) enum CachedAnswer {
     Missing,
 }
 
+/// How long one worker's owner-request count is served without a refresh.
+/// Hog RCA 20261031-084253: at 60 s every open dashboard re-read cmd_history
+/// and git log for each worker card every minute, and owner_requests was
+/// 15.5% of the server's busy samples while it ran at 448% on two ticks. A
+/// count of your open asks does not need minute freshness; a stale answer is
+/// still served at once and refreshed behind it.
+pub(crate) const OWNER_REQUESTS_FRESH: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub(crate) fn cached_answer(age: Option<std::time::Duration>) -> CachedAnswer {
     match age {
-        Some(a) if a < std::time::Duration::from_secs(60) => CachedAnswer::Fresh,
+        Some(a) if a < OWNER_REQUESTS_FRESH => CachedAnswer::Fresh,
         Some(_) => CachedAnswer::Stale,
         None => CachedAnswer::Missing,
     }
@@ -4527,8 +4535,8 @@ mod subagent_walk_tests {
     #[test]
     fn an_expired_answer_is_served_and_refreshed_and_only_a_missing_one_waits() {
         use std::time::Duration;
-        assert_eq!(cached_answer(Some(Duration::from_secs(59))), CachedAnswer::Fresh);
-        assert_eq!(cached_answer(Some(Duration::from_secs(60))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(Some(Duration::from_secs(299))), CachedAnswer::Fresh, "a minute-old count is served, not recomputed");
+        assert_eq!(cached_answer(Some(Duration::from_secs(300))), CachedAnswer::Stale);
         assert_eq!(cached_answer(Some(Duration::from_secs(3600))), CachedAnswer::Stale);
         assert_eq!(cached_answer(None), CachedAnswer::Missing);
     }
