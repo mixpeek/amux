@@ -30,15 +30,20 @@ struct Connection: Codable {
 
 /// Which server a page is on, as a color for its tab (Ethan, 2026-10-25: "put
 /// a color code based on the location/connection (so if its localhost/desktop
-/// vs sandbox, etc.) in the tabs"). This Mac is green, amux cloud (a sandbox
-/// on *.amux.io) blue, and any other server keeps one color of its own, picked
-/// from its host so it never changes between launches.
+/// vs sandbox, etc.) in the tabs"). This Mac is green, and every other server has
+/// a color of its own (amux-tabcolors.swift), saved so it never changes between
+/// launches. 2026-10-31: every *.amux.io server was blue, so sandbox and
+/// mixpeek-dev tabs looked the same.
 struct ConnectionBadge {
     let color: NSColor
     let name: String
     let host: String
 
     private static var cache: [String: ConnectionBadge] = [:]
+    private static let tabColorsKey = "amux.tabColors"
+    /// tabColorNames' colors, in the same order.
+    private static let tabNSColors: [NSColor] = [.systemBlue, .systemOrange, .systemPurple, .systemPink, .systemTeal,
+                                                 .systemYellow, .systemIndigo, .systemRed, .systemBrown, .systemMint, .systemCyan]
 
     static func of(_ url: URL?) -> ConnectionBadge? {
         guard let url = url, let host = url.host, url.scheme == "https" || url.scheme == "http" else { return nil }
@@ -52,13 +57,12 @@ struct ConnectionBadge {
         let color: NSColor
         if local {
             color = .systemGreen
-        } else if host == "amux.io" || host.hasSuffix(".amux.io") {
-            color = .systemBlue
         } else {
-            let palette: [NSColor] = [.systemOrange, .systemPurple, .systemPink, .systemTeal, .systemYellow, .systemIndigo, .systemBrown]
-            var h: UInt32 = 5381
-            for b in host.utf8 { h = (h &* 33) ^ UInt32(b) }
-            color = palette[Int(h % UInt32(palette.count))]
+            let saved = (UserDefaults.standard.dictionary(forKey: tabColorsKey) as? [String: Int]) ?? [:]
+            let pick = tabColorIndex(for: key, assigned: saved)
+            if pick.assigned != saved { UserDefaults.standard.set(pick.assigned, forKey: tabColorsKey) }
+            color = tabNSColors[pick.index]
+            dlog("verdict=tab_color server=\(key) color=\(tabColorNames[pick.index]) servers_colored=\(pick.assigned.count)")
         }
         let badge = ConnectionBadge(color: color, name: named ?? (local ? "This Mac" : host), host: host)
         cache[key] = badge
