@@ -5484,6 +5484,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_upqReadOk": {
+      "kind": "command._upqReadOk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_upqRemove": {
       "kind": "command._upqRemove",
       "feedback_required": true,
@@ -5492,6 +5498,12 @@
     },
     "_upqRenderBadge": {
       "kind": "command._upqRenderBadge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqTimeoutReport": {
+      "kind": "command._upqTimeoutReport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

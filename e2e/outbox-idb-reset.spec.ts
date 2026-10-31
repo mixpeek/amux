@@ -10,7 +10,7 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
   const beacons: any[] = [];
   page.on('request', r => {
     const b = r.postData() || '';
-    if (/outbox_upload_list_timeout|idb_connection_reset/.test(b)) { try { beacons.push(JSON.parse(b)); } catch { /* not JSON */ } }
+    if (/outbox_upload_list_timeout|outbox_upload_list_recovered|idb_connection_reset/.test(b)) { try { beacons.push(JSON.parse(b)); } catch { /* not JSON */ } }
   });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._upqListBounded === 'function' && typeof (0, eval)('_idb')?.reset === 'function');
@@ -30,16 +30,17 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
   expect(rows).toEqual([]);
   await expect.poll(() => beacons.filter(b => b.verdict === 'idb_connection_reset').length).toBe(1);
   expect(beacons.find(b => b.verdict === 'idb_connection_reset').had_connection).toBe(true);
-  expect(beacons.find(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 500)?.after_reset).toBe(0);
+  const first = beacons.find(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 500);
+  expect(first?.after_reset).toBe(0);
+  expect(first?.episode_start, 'the first timeout of an episode reports at once').toBe(1);
 
-  // Still hung: the second timeout says a reset already happened.
+  // Still hung: the second timeout knows a reset already happened, and is
+  // folded into the episode rather than beaconed again (AF-1117: 3,846
+  // identical reports in one log from two clients).
   await page.evaluate(() => (window as any)._upqListBounded(500));
-  // Counted by this test's own 500 ms bound: after the first timeout the page's
-  // background sync passes use the 250 ms dead-storage bound and beacon too
-  // (run 40994613137 saw 3, not 2), so a total count is not this read's.
-  const own = () => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 500);
-  await expect.poll(() => own().length).toBe(2);
-  expect(own()[1].after_reset).toBe(1);
+  const timeouts = () => beacons.filter(b => b.verdict === 'outbox_upload_list_timeout');
+  expect(await page.evaluate(() => (0, eval)('_upqResetSinceOk'))).toBe(true);
+  expect(timeouts().length, 'a timeout inside the report interval is folded, not sent').toBe(1);
 
   // Still hung after a reset: a pass's default read gives up in 250ms, not 5s,
   // so the messages behind it are not held (AF-1008).
@@ -49,11 +50,17 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     return performance.now() - t0;
   });
   expect(deadMs, 'a read on storage that stayed dead holds the pass under a second').toBeLessThan(1000);
-  // Found by value: CI captured an extra 500 ms timeout beacon on desktop and
-  // mobile, so the third entry was not this read's (run 40992561790). Only the
-  // stayed-dead default sends 250.
-  await expect.poll(() => beacons.some(b => b.verdict === 'outbox_upload_list_timeout' && b.waited_ms === 250),
-    { message: 'the default read on dead storage reports waited_ms 250' }).toBe(true);
+  // Past the report interval the next timeout reports once, with how many it
+  // folded in and how long the episode has run.
+  await page.evaluate(async () => {
+    (0, eval)('_upqEpisode').last -= 11 * 60 * 1000;
+    await (window as any)._upqListBounded();
+  });
+  await expect.poll(() => timeouts().length).toBe(2);
+  const periodic = timeouts()[1];
+  expect(periodic.waited_ms, 'the stayed-dead default waits 250').toBe(250);
+  expect(periodic.folded, 'it counts the timeouts it folded in').toBeGreaterThanOrEqual(2);
+  expect(typeof periodic.episode_s).toBe('number');
 
   // Healthy again: the read opens a NEW connection rather than reusing the dropped one.
   const opened = await page.evaluate(async (before) => {
@@ -63,4 +70,7 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     return g.__opens - before;
   }, opensBefore);
   expect(opened, 'the next read opened a fresh connection').toBeGreaterThan(0);
+  await expect.poll(() => beacons.filter(b => b.verdict === 'outbox_upload_list_recovered').length,
+    { message: 'the first good read reports the episode once' }).toBe(1);
+  expect(beacons.find(b => b.verdict === 'outbox_upload_list_recovered').timeouts).toBeGreaterThanOrEqual(3);
 });

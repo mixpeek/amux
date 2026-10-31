@@ -4713,6 +4713,34 @@ let _upqResetSinceOk = false;
 // The hung read keeps running, and if it ever completes it clears the flag,
 // so storage that is slow rather than dead gets the full 5s on the next pass.
 const _UPQ_DEAD_MS = 250;
+// ONE REPORT PER EPISODE, NOT PER PASS (AF-1117). With storage dead for
+// hours, every outbox pass beaconed the same timeout: 3,846 reports in one
+// log from two WebKit clients. The first timeout of an episode reports at
+// once, later ones at most every _UPQ_REPORT_EVERY_MS with how many were
+// folded in, and the first good read reports the episode's length.
+const _UPQ_REPORT_EVERY_MS = 10 * 60 * 1000;
+let _upqEpisode = null; // {start, last, folded, timeouts}
+function _upqTimeoutReport(fields) {
+  const now = Date.now();
+  if (!_upqEpisode) {
+    _upqEpisode = {start: now, last: now, folded: 0, timeouts: 1};
+    _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({episode_start: 1}, fields));
+    return;
+  }
+  _upqEpisode.timeouts++;
+  if (now - _upqEpisode.last < _UPQ_REPORT_EVERY_MS) { _upqEpisode.folded++; return; }
+  _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({folded: _upqEpisode.folded,
+    episode_s: Math.round((now - _upqEpisode.start) / 1000)}, fields));
+  _upqEpisode.last = now;
+  _upqEpisode.folded = 0;
+}
+function _upqReadOk() {
+  _upqResetSinceOk = false;
+  if (!_upqEpisode) return;
+  _outboxDiagnostic('outbox_upload_list_recovered', {timeouts: _upqEpisode.timeouts,
+    episode_s: Math.round((Date.now() - _upqEpisode.start) / 1000)});
+  _upqEpisode = null;
+}
 function _upqListBounded(ms) {
   if (ms == null) ms = _upqResetSinceOk ? _UPQ_DEAD_MS : 5000;
   let timer;
@@ -4721,10 +4749,10 @@ function _upqListBounded(ms) {
   // as a 255 s frozen-page "stall"). Give the read one fresh window instead.
   let t0 = Date.now(), rearmed = false;
   return Promise.race([
-    _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
+    _upqList().then(rows => { _upqReadOk(); return rows; }).catch(() => []),
     new Promise(resolve => { const fire = () => {
       if (!rearmed && Date.now() - t0 > ms + 10000) { rearmed = true; t0 = Date.now(); timer = setTimeout(fire, ms); return; }
-      _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
+      _upqTimeoutReport({waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
       _idb.reset('upload_list_timeout');
       _upqResetSinceOk = true;
       resolve([]);
