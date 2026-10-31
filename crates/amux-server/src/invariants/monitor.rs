@@ -2306,10 +2306,16 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
                 .copied()
                 .unwrap_or(checks::HeldWork { open: 0, doing: 0 })
         });
+        let registered_age_s = std::fs::metadata(crate::api::session_verbs::env_path(&name))
+            .and_then(|m| m.created())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() as i64);
         lanes.push(checks::LaneRunState {
             name,
             is_running,
             held,
+            registered_age_s,
         });
     }
     checks::registered_lanes_are_running(&lanes)

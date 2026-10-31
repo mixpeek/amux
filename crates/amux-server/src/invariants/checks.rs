@@ -2668,6 +2668,14 @@ pub fn registered_lanes_are_running(lanes: &[LaneRunState]) -> Vec<InvariantResu
     for l in lanes {
         if l.is_running {
             out.push(InvariantResult::pass(ID).entity(&l.name));
+        } else if l.registered_age_s.is_some_and(|a| a < NEW_LANE_START_GRACE_S)
+            && l.held.is_some_and(|h| h.open == 0)
+        {
+            out.push(InvariantResult::pass(ID).entity(&l.name).evidence(json!({
+                "session": l.name, "not_running": true, "registered_age_s": l.registered_age_s,
+                "within_new_lane_grace_s": NEW_LANE_START_GRACE_S,
+                "note": "registered moments ago and holding no cards: a lane is registered before it is started",
+            })));
         } else {
             out.push(
                 InvariantResult::fail(
@@ -2755,7 +2763,16 @@ pub struct LaneRunState {
     /// read: a 0 there would read as "holds nothing" for a query that never
     /// ran, which is the distinction the verdict exists to make.
     pub held: Option<HeldWork>,
+    /// Seconds since the lane's env file was created, when the filesystem
+    /// says. A lane is registered before it is started, so a new one reads
+    /// "not running" until its start runs (AF-1105).
+    pub registered_age_s: Option<i64>,
 }
+
+/// How long a just-registered lane holding no cards may be not running before
+/// it is a finding (AF-1105: mixpeek-design-review was registered at 12:34Z,
+/// started at 12:41Z, and filed as a dead lane in between).
+pub const NEW_LANE_START_GRACE_S: i64 = 900;
 
 // ---------------------------------------------------------------------------
 // 5d. A pane's whole systemd scope got OOM-killed — the session, not the build.
@@ -11414,7 +11431,27 @@ mod registered_lane_running_tests {
             name: name.into(),
             is_running: running,
             held,
+            registered_age_s: None,
         }
+    }
+
+    /// AF-1105: a lane registered moments ago and holding nothing is starting,
+    /// not dead. Each half of the grace is pinned: an old lane, or a new one
+    /// holding a card, still fails.
+    #[test]
+    fn a_just_registered_empty_lane_is_not_called_dead() {
+        let empty = Some(HeldWork { open: 0, doing: 0 });
+        let mut new = lane("new", false, empty);
+        new.registered_age_s = Some(120);
+        let mut old = lane("old", false, empty);
+        old.registered_age_s = Some(NEW_LANE_START_GRACE_S + 1);
+        let mut busy = lane("busy", false, Some(HeldWork { open: 1, doing: 0 }));
+        busy.registered_age_s = Some(120);
+        let out = registered_lanes_are_running(&[new, old, busy]);
+        let st = |n: &str| out.iter().find(|r| r.entity_key == n).map(|r| r.status).unwrap();
+        assert_eq!(st("new"), Status::Pass, "registered 2 min ago, holds nothing");
+        assert_eq!(st("old"), Status::Fail, "past the grace");
+        assert_eq!(st("busy"), Status::Fail, "holds a card");
     }
 
     /// This check shipped with NO tests at all, both arms unpinned.
