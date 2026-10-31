@@ -214,6 +214,30 @@ fn optional_dependency_for(method: &str, shape: &str) -> Option<&'static str> {
         .map(|(_, _, daemon)| *daemon)
 }
 
+/// Routes whose CORRECT answer is often a refusal, with what refuses (AF-1072).
+///
+/// For these a 4xx counts as answering. `POST /api/browser/complete-order` is
+/// the vault's form fill: it refuses a page with no fillable payment field
+/// (422) and an order above the owner's approved limit (403), and every call
+/// that reached a fillable form answered 200. It read 2/20 answered (2 2xx, 12
+/// 4xx, 6 5xx) and was filed twice (AMUX-6252, AF-1072) with no handler change
+/// that could clear it: ethos rule 3, so the instrument moves.
+///
+/// A LIST, for the reason `OPTIONAL_DEPENDENCY_ROUTES` is one: most 4xx-heavy
+/// shapes are callers getting a request wrong, and a blanket rule would retire
+/// that half of the check. Only the 4xx are forgiven; a declared route's 5xx
+/// still fail it.
+const REFUSAL_ROUTES: &[(&str, &str, &str)] = &[(
+    "POST",
+    "/api/browser/complete-order",
+    "the vault refuses an unfillable page (422) and an order above the approved limit (403)",
+)];
+
+/// Is this shape one whose 4xx are answers?
+fn refuses_by_design(r: &RouteOutcomeRow) -> bool {
+    REFUSAL_ROUTES.iter().any(|(m, s, _)| *m == r.method && *s == r.shape)
+}
+
 /// Minimum calls before a shape is judged at all. Named rather than inlined so
 /// blind spot 1 and the code cannot drift apart.
 const MOUNTED_ANSWERS_MIN_N: i64 = 10;
@@ -233,7 +257,7 @@ const MOUNTED_ANSWERS_MAX_OK_PCT: i64 = 10;
 /// the tests), and three spellings of one predicate is how the census and the
 /// verdict come to disagree about the same row.
 fn answered(r: &RouteOutcomeRow) -> i64 {
-    r.ok + r.redirect
+    r.ok + r.redirect + if refuses_by_design(r) { r.client_err } else { 0 }
 }
 
 /// Below the answering threshold, on the same definition everywhere.
@@ -305,6 +329,8 @@ pub fn mounted_routes_answer(
             "max_ok_pct": MOUNTED_ANSWERS_MAX_OK_PCT,
             "blind_spots": MOUNTED_ANSWERS_BLIND_SPOTS,
             "dependency_down": dependency_down,
+            // Published so the forgiven 4xx are visible on a pass too.
+            "refusal_routes": REFUSAL_ROUTES.iter().map(|(m, s, why)| serde_json::json!({"route": format!("{m} {s}"), "why": why})).collect::<Vec<_>>(),
             "detail": extra,
         })
     };
@@ -8096,6 +8122,30 @@ mod negative_controls {
             dead.evidence["detail"]["refusal_shaped"],
             serde_json::json!(false)
         );
+    }
+
+    /// A DECLARED REFUSAL ROUTE'S 4xx ARE ANSWERS, ITS 5xx ARE NOT (AF-1072).
+    /// Three cells: the live specimen passes, the same route failing with 5xx
+    /// still fails, and an undeclared route with the same split still fails.
+    #[test]
+    fn a_declared_refusal_routes_4xx_answer_and_its_5xx_still_fail() {
+        let mounted: Vec<(&str, &[&str])> =
+            vec![("/api/browser/complete-order", &["POST"]), ("/api/browser/navigate", &["POST"])];
+        let row = |shape: &str, ok, client_err, server_err| RouteOutcomeRow {
+            method: "POST".into(),
+            shape: shape.into(),
+            n: ok + client_err + server_err,
+            ok,
+            client_err,
+            server_err,
+            ..Default::default()
+        };
+        let fails = |r: RouteOutcomeRow| {
+            mounted_routes_answer(&[r], &mounted).into_iter().filter(|x| x.status == Status::Fail).count()
+        };
+        assert_eq!(fails(row("/api/browser/complete-order", 2, 12, 6)), 0, "the live 2/12/6 split answers");
+        assert_eq!(fails(row("/api/browser/complete-order", 2, 0, 18)), 1, "5xx on a declared route still fail");
+        assert_eq!(fails(row("/api/browser/navigate", 2, 12, 6)), 1, "an undeclared route's 4xx are not forgiven");
     }
 
     /// A 503 FROM A DECLARED OPTIONAL DAEMON IS AN ANSWER (AMUX-4545).
