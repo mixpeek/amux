@@ -7617,7 +7617,15 @@ fn blocker_recoveries_with_policy(
     let ids = stmt
         .query_map([lane], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut result = Vec::new();
+    let mut result: Vec<BlockerRecovery> = Vec::new();
+    // ONE PROMPT PER SHARED BLOCKER (AF-1098). mixpeek-frustrations held 29
+    // cards on one byte-identical blocked_on (a GS-12 owner-rule hold) and got
+    // a recovery turn per card per backoff step, each restating the same hold.
+    // Cards whose blocker is the same text, trigger and dependencies are one
+    // decision: the first is offered and names the rest, the rest are skipped.
+    // A missing next_action or an out-of-policy ask is about the card itself,
+    // so those cards are never grouped.
+    let mut shared: std::collections::HashMap<String, (usize, Vec<String>)> = std::collections::HashMap::new();
     for id in ids {
         let Some(row) = bs::get_issue(conn, &id)? else {
             continue;
@@ -7660,6 +7668,11 @@ fn blocker_recoveries_with_policy(
             && !missing_next
             && !ask_outside_policy
         {
+            continue;
+        }
+        let group_key = (!missing_next && !ask_outside_policy).then(|| json!([blocked, trigger, deps]).to_string());
+        if let Some((_, others)) = group_key.as_ref().and_then(|k| shared.get_mut(k)) {
+            others.push(row.id.clone());
             continue;
         }
         // Include dependency OUTPUT state, not its owner's availability or log
@@ -7731,12 +7744,26 @@ fn blocker_recoveries_with_policy(
              Read this card and its named prerequisites. Keep responsibility for the complete outcome: implement a missing component yourself within existing authority, using an isolated checkout if necessary. Another worker's ownership, availability, approval of an ordinary implementation choice, or dirty checkout is not itself a dependency. Reuse existing canonical tasks and verified artifacts; do not create duplicate requests or wait an arbitrary time. For a cross-worker edge, retain the real artifact requirement in this task or a canonical prerequisite on this SAME board, remove the foreign execution edge, and own the missing implementation. Never relocate a peer wait into source_ref, blocked_on, next_action or gate text. For a local prerequisite, remove its edge only after establishing that its artifact is available or unnecessary.\n\
              If ask_outside_policy is true, classify the actual existing ask: retain and correctly type real budget/customer-outbound approval; otherwise own the ordinary decision, or record a precise real access blocker and complete independent work. Never treat policy cleanup as permission or fabricate authorization. Reconcile depends_on, blocked_on, source_ref AND the card gate together; removing an edge while its old wait survives elsewhere does not unblock work. Cross-worker tasks are evidence references, not dependencies or assignments: own the complete outcome on this board. Correct evidence-only tasks to investigation/doc rather than requiring a nonexistent deployment. Put completion requirements in acceptance_criteria and use the predefined column gates; never acknowledge completed results just to start. Preserve actual access restrictions, explicit owner holds, new-spend approval and customer-outbound approval. If one still blocks execution, record the exact observable condition and evidence, and perform any independent preparation that is allowed. Do not claim held work is running or fabricate completion. Supply next_action and acceptance_criteria on the existing card; track any actual execution as Doing and finish through the predefined gates. Resolve the same prerequisite for other affected cards in this lane in this turn when possible. No repeated whole-board audit. An unchanged blocker is re-offered on a widening backoff, 1h then 4h then 24h, and stops entirely after the fourth until the card's STATUS changes. Recording what this prompt asks for does not shorten that and no longer restarts it.",
             row.id, context);
+        if let Some(k) = group_key {
+            shared.insert(k, (result.len(), Vec::new()));
+        }
         result.push(BlockerRecovery {
             card: row.id,
             rev: row.rev,
             identity,
             text,
         });
+    }
+    let grouped: usize = shared.values().map(|(_, o)| o.len()).sum();
+    for (idx, others) in shared.into_values().filter(|(_, o)| !o.is_empty()) {
+        result[idx].text.push_str(&format!(
+            "\n\nThe same blocker holds {} other card(s) in this lane: {}. It is one decision: resolve it once for all of them. They get no recovery prompt of their own while it is unchanged.",
+            others.len(), others.join(", ")));
+    }
+    if grouped > 0 {
+        tracing::info!(target: "amux::board_drive", session = %lane, grouped, offered = result.len(), measured = true,
+            n_considered = result.len() + grouped, verdict = "blocker_recovery_shared_blockers_grouped",
+            "board_drive: cards sharing one blocker get one recovery prompt");
     }
     Ok(result)
 }
@@ -11406,6 +11433,9 @@ mod tests {
         store.write(|conn| {
             conn.execute("UPDATE issues SET session='idle-gs', blocked_on='input artifact missing', \
                 source_ref='owner deployment hold', last_verified_at=?1 WHERE id IN ('PK-1','PK-2')", [now_f64() as i64])?;
+            // Two DIFFERENT blockers: cards sharing one get one prompt (AF-1098),
+            // and this test is about the lane interval, not that grouping.
+            conn.execute("UPDATE issues SET blocked_on='second input artifact missing' WHERE id='PK-2'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         let fleet = BoundaryFleet::default();
@@ -12094,6 +12124,30 @@ mod tests {
         assert!(blocker_recoveries_with_policy(&conn, "lane", &["*".into()])
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn cards_sharing_one_blocker_get_one_recovery_prompt_that_names_the_rest() {
+        // AF-1098: 29 cards held by one owner-rule blocked_on got a prompt each.
+        let (_dir, _state, store) = drive_state();
+        for id in ["HOLD-1", "HOLD-2", "HOLD-3", "OTHER", "NO-NEXT"] {
+            drive_card(&store, id, "backlog", "agent", "code");
+        }
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='scoped rule 2 holds it until the owner names it', next_action='wait for the owner to name it' WHERE id IN ('HOLD-1','HOLD-2','HOLD-3')", [])?;
+            conn.execute("UPDATE issues SET blocked_on='a different hold', next_action='wait' WHERE id='OTHER'", [])?;
+            // Same blocker but no next_action: about this card, never grouped.
+            conn.execute("UPDATE issues SET blocked_on='scoped rule 2 holds it until the owner names it', next_action=NULL WHERE id='NO-NEXT'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let conn = store.read().unwrap();
+        let reviews = blocker_recoveries_with_policy(&conn, "lane", &["*".into()]).unwrap();
+        let mut cards: Vec<&str> = reviews.iter().map(|r| r.card.as_str()).collect();
+        cards.sort();
+        assert_eq!(cards, vec!["HOLD-1", "NO-NEXT", "OTHER"], "one prompt for the shared hold, the others individual");
+        let first = reviews.iter().find(|r| r.card == "HOLD-1").unwrap();
+        assert!(first.text.contains("2 other card(s) in this lane: HOLD-2, HOLD-3"), "{}", first.text);
+        assert!(!reviews.iter().find(|r| r.card == "OTHER").unwrap().text.contains("other card(s)"));
     }
 
     #[test]
