@@ -54,7 +54,8 @@ test('Split: the source with line numbers beside a live preview, and a status li
   await expect(page.locator('.mdx-src')).toBeVisible();
   await expect(page.locator('.mdx-view')).toBeVisible();
   await expect(page.locator('#mdx-hl .ln')).toHaveCount(SRC.split('\n').length);
-  await expect(page.locator('#mdx-hl .ln.mdx-h').first()).toHaveAttribute('data-n', '1');
+  // Numbered by a CSS counter (no attribute to renumber): the first line is the heading.
+  await expect(page.locator('#mdx-hl .ln').first()).toHaveClass(/mdx-h/);
   const ta = page.locator('#file-edit-ta');
   await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
   await page.keyboard.type('\n## Added live\n');

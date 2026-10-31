@@ -2246,6 +2246,9 @@ async function _cloudOfferTry(trigger, worker) {
   if (!st || st.dismissed || st[trigger] || document.getElementById('cloud-offer')) return;
   const setup = document.getElementById('apikey-setup-modal');
   if (setup && setup.style.display === 'flex') return;   // first run comes first
+  // Not over an open file or worker: it covered the markdown editor's text on a phone
+  // (2026-10-31). Left unmarked, so it is offered again on the next trigger.
+  if (document.querySelector('#file-overlay.active, #peek-overlay.active')) return;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }
@@ -30286,6 +30289,8 @@ function _mdxSetMode(mode, remember) {
   _mdx.mode = mode;
   const root = document.getElementById('mdx');
   root.dataset.mode = mode;
+  // The source is highlighted only while it shows (_mdxHighlight).
+  if (mode !== 'preview' && !_mdx.hlLines) _mdxHighlight();
   _fileViewMode = mode === 'preview' ? 'preview' : 'edit';
   // The layout switch lives in whichever pane is showing.
   const seg = document.getElementById('mdx-mode');
@@ -30399,7 +30404,34 @@ function _mdxInline(s) {
       : link || url ? '<span class="mdx-url">' + m + '</span>' : tag ? '<span class="mdx-tg">' + m + '</span>'
       : at ? '<span class="mdx-at">' + m + '</span>' : '<span class="mdx-i">' + m + '</span>');
 }
-function _mdxHighlight() {
+// The highlighted copy of the source, under a transparent textarea. Kept in step
+// with the text one changed stretch at a time: a keystroke rewrote every line
+// (a 3,600-line note took 105 ms a key on desktop and 178 ms in WebKit, owner
+// 2026-10-31: "make it snappier ... faster to edit"). Line numbers are a CSS
+// counter, so inserting a line renumbers nothing. Not built while only the
+// preview shows, and not on a phone, which edits in the plain textarea.
+function _mdxLineHtml(raw, fence, big) {
+  const e = esc(raw);
+  let cls = '', inner;
+  if (fence) { cls = 'mdx-codeln'; inner = e; }
+  else if (/^#{1,6}\s/.test(raw)) { cls = 'mdx-h'; inner = e; }
+  else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { cls = 'mdx-hr'; inner = e; }
+  else if (big) inner = e;
+  else {
+    const li = /^(\s*)((?:[-*+]|\d+[.)]))(\s+)(\[[ xX]\]\s)?/.exec(raw);
+    if (li) {
+      inner = esc(li[1]) + '<span class="mdx-li">' + esc(li[2]) + '</span>' + li[3]
+        + (li[4] ? '<span class="mdx-task">' + esc(li[4]) + '</span>' : '') + _mdxInline(esc(raw.slice(li[0].length)));
+    } else if (/^\s*>/.test(raw)) { cls = 'mdx-q'; inner = _mdxInline(e); }
+    else inner = _mdxInline(e);
+  }
+  return '<span class="ln' + (cls ? ' ' + cls : '') + '">' + (inner || '') + '\n</span>';
+}
+const _MDX_FENCE = /^\s*(```|~~~)/;
+// A phone edits in the plain textarea: one layer, so the text, the caret and
+// iOS's selection handles always line up, at a size meant for a thumb.
+function _mdxPhone() { return !_mdxWide(); }
+function _mdxHighlight(force) {
   const { ta, wrap } = _mdxEls();
   if (!ta || !wrap || !_mdxActive()) return;
   let hl = document.getElementById('mdx-hl');
@@ -30408,29 +30440,41 @@ function _mdxHighlight() {
     hl.id = 'mdx-hl'; hl.setAttribute('aria-hidden', 'true');
     wrap.insertBefore(hl, ta);
   }
-  const big = ta.value.length > 300000;
-  wrap.classList.toggle('mdx-plain', big);
-  const lines = ta.value.split('\n');
-  let fence = false, h = '';
-  lines.forEach((raw, i) => {
-    const e = esc(raw);
-    let cls = '', inner;
-    if (/^\s*(```|~~~)/.test(raw)) { fence = !fence; cls = 'mdx-fence'; inner = e; }
-    else if (fence) { cls = 'mdx-codeln'; inner = e; }
-    else if (/^#{1,6}\s/.test(raw)) { cls = 'mdx-h'; inner = e; }
-    else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { cls = 'mdx-hr'; inner = e; }
-    else if (big) inner = e;
-    else {
-      const li = /^(\s*)((?:[-*+]|\d+[.)]))(\s+)(\[[ xX]\]\s)?/.exec(raw);
-      if (li) {
-        inner = esc(li[1]) + '<span class="mdx-li">' + esc(li[2]) + '</span>' + li[3]
-          + (li[4] ? '<span class="mdx-task">' + esc(li[4]) + '</span>' : '') + _mdxInline(esc(raw.slice(li[0].length)));
-      } else if (/^\s*>/.test(raw)) { cls = 'mdx-q'; inner = _mdxInline(e); }
-      else inner = _mdxInline(e);
+  const phone = _mdxPhone(), big = ta.value.length > 300000;
+  wrap.classList.toggle('mdx-phone', phone);
+  wrap.classList.toggle('mdx-plain', big || phone);
+  if (phone || big) { if (_mdx.hlLines) { hl.textContent = ''; _mdx.hlLines = null; } return; }
+  if (_mdx.mode === 'preview') { _mdx.hlLines = null; return; }   // built when the source shows
+  const lines = ta.value.split('\n'), old = _mdx.hlLines;
+  if (!force && old && hl.childElementCount === old.length) {
+    const max = Math.min(old.length, lines.length);
+    let p = 0; while (p < max && old[p] === lines[p]) p++;
+    let q = 0; while (q < max - p && old[old.length - 1 - q] === lines[lines.length - 1 - q]) q++;
+    const oldMid = old.slice(p, old.length - q), newMid = lines.slice(p, lines.length - q);
+    // A fence opened or closed changes every line after it: build it all.
+    if (!oldMid.some(l => _MDX_FENCE.test(l)) && !newMid.some(l => _MDX_FENCE.test(l))) {
+      const fence = _mdx.hlFence[p];
+      const t = document.createElement('template');
+      t.innerHTML = newMid.map(l => _mdxLineHtml(l, fence, false)).join('');
+      for (let k = 0; k < oldMid.length; k++) hl.children[p].remove();
+      hl.insertBefore(t.content, hl.children[p] || null);
+      _mdx.hlLines = lines;
+      _mdx.hlFence = _mdx.hlFence.slice(0, p).concat(new Array(newMid.length).fill(fence), _mdx.hlFence.slice(old.length - q));
+      _mdxSyncScroll();
+      return;
     }
-    h += '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + (inner || '') + '\n</span>';
+  }
+  let fence = false, h = '';
+  const states = [];
+  lines.forEach(raw => {
+    states.push(fence);
+    if (_MDX_FENCE.test(raw)) { fence = !fence; h += '<span class="ln mdx-fence">' + esc(raw) + '\n</span>'; return; }
+    h += _mdxLineHtml(raw, fence, false);
   });
+  states.push(fence);
   hl.innerHTML = h;
+  _mdx.hlLines = lines;
+  _mdx.hlFence = states;
   // The pre wraps exactly as the textarea does: same width once its scrollbar is counted.
   hl.style.paddingRight = (parseFloat(getComputedStyle(ta).paddingRight) + (ta.offsetWidth - ta.clientWidth)) + 'px';
   _mdxSyncScroll();
@@ -30442,8 +30486,9 @@ function _mdxSyncScroll() {
 function _mdxStatus() {
   const ta = document.getElementById('file-edit-ta');
   if (!ta || !_mdxActive()) return;
-  const before = ta.value.slice(0, ta.selectionStart);
-  const ln = before.split('\n').length, col = ta.selectionStart - before.lastIndexOf('\n');
+  const v = ta.value, at = ta.selectionStart;
+  let ln = 1; for (let i = v.indexOf('\n'); i !== -1 && i < at; i = v.indexOf('\n', i + 1)) ln++;
+  const col = at - v.lastIndexOf('\n', at - 1);
   document.getElementById('mdx-pos').textContent = 'Ln ' + ln + ', Col ' + col;
   const n = ta.value.length;
   document.getElementById('mdx-chars').textContent = n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
@@ -30453,7 +30498,8 @@ function _mdxStatus() {
   d.textContent = ta.readOnly ? 'Read-only' : dirty ? 'Unsaved' : 'Saved';
   d.classList.toggle('on', dirty);
   const save = document.getElementById('file-save-btn');
-  if (save) save.style.display = _fileEditable(_fileData) && (_mdx.mode !== 'preview' || dirty) ? '' : 'none';
+  // Edits save themselves (_mdxAutosave), so Save shows only while something is unsaved.
+  if (save) save.style.display = _fileEditable(_fileData) && dirty ? '' : 'none';
 }
 // Every change to the source: highlight now, the preview a beat later, and a
 // save once typing pauses (owner, 2026-10-29: "make sure edits are saved as
@@ -30785,7 +30831,8 @@ function _mdxBind() {
   ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) _mdxStatus(); }));
   ta.addEventListener('keydown', e => { if (_mdxActive()) _mdxKeydown(e); });
   _atAttach(ta);   // @ offers the workers
-  document.getElementById('mdx-tools').addEventListener('mousedown', e => { if (e.target.closest('[data-t]')) e.preventDefault(); });   // keep the selection
+  // Keep the selection, and on a phone the keyboard: a tap reaches pointerdown before mousedown.
+  for (const ev of ['pointerdown', 'mousedown']) document.getElementById('mdx-tools').addEventListener(ev, e => { if (e.target.closest('[data-t]')) e.preventDefault(); });
   document.getElementById('mdx-tools').addEventListener('click', e => {
     const b = e.target.closest('[data-t]');
     if (!b || ta.readOnly) return;

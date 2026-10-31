@@ -10799,8 +10799,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-editor .file-edit-ta::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
 .mdx-editor.mdx-plain .file-edit-ta { color: var(--text); }
 .mdx-editor.mdx-plain #mdx-hl { color: transparent; }
-#mdx-hl .ln { display: block; position: relative; }
-#mdx-hl .ln::before { content: attr(data-n); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
+/* Line numbers are a counter: a line inserted renumbers nothing (app.js _mdxHighlight). */
+#mdx-hl { counter-reset: ln; }
+#mdx-hl .ln { display: block; position: relative; counter-increment: ln; }
+#mdx-hl .ln::before { content: counter(ln); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
 #mdx-hl .mdx-h { color: var(--accent); font-weight: 700; }
 #mdx-hl .mdx-li, #mdx-hl .mdx-task { color: var(--accent); }
 #mdx-hl .mdx-tg { color: var(--purple); }
@@ -10873,5 +10875,10 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   .mdx-out #file-body { padding: var(--space-3); }
   .mdx-editor #mdx-hl, .mdx-editor .file-edit-ta { padding-left: calc(var(--space-10) + var(--space-1)); padding-right: var(--space-2); }
   #mdx-hl .ln::before { left: -40px; width: 30px; }
+  /* A phone edits in the plain textarea (app.js _mdxPhone): one layer, text at 16px, which is
+     also the size below which iOS zooms the page on focus. */
+  .mdx-editor.mdx-phone #mdx-hl { display: none; }
+  .mdx-editor.mdx-phone .file-edit-ta { color: var(--text); font-family: var(--font-ui); font-size: var(--fs-2xl);
+    line-height: 1.55; padding: var(--space-3) var(--space-3) var(--space-12); }
   .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
 }
