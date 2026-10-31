@@ -20818,43 +20818,23 @@ fn roster_lanes() -> Vec<(String, std::collections::HashMap<String, String>)> {
 fn reachable_roster(me: &str) -> String {
     let lanes = roster_lanes();
     let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
-    let mine = reachable_lanes(me, &lanes, &open);
+    let mine = reachable_lanes(me, &lanes);
     tracing::debug!(session = %me, listed = mine.len(), n_considered = lanes.len(), measured = true,
         verdict = "roster_composed", "a worker's roster lists the workers it can reach");
     render_fleet_roster(&mine, &open)
 }
 
-/// The lanes `me` may message, plus `me`: the same rules as
-/// worker_messaging::worker_group_refusal (a shared group, a target in an open
-/// group) and bilateral_peers (CC_PEERS on both sides). A member of the admin
-/// group reaches every worker, so it sees every one.
+/// The lanes `me` may message, plus `me`, by the send check itself
+/// (peer_input_refusal: receive policy, owner grants, CC_PEERS pairs, shared and
+/// open groups, and the admin group's owner reach), so the roster cannot list a
+/// worker the send would refuse. A parser of its own here split CC_TAGS on
+/// spaces where the send check splits on commas, and listed every worker for
+/// `CC_TAGS="admin ops"`, which the send check does not read as admin (land review F1).
 fn reachable_lanes(
     me: &str,
     lanes: &[(String, std::collections::HashMap<String, String>)],
-    open_groups: &[String],
 ) -> Vec<(String, std::collections::HashMap<String, String>)> {
-    let list = |env: &std::collections::HashMap<String, String>, k: &str| -> Vec<String> {
-        env.get(k)
-            .map(|t| t.split([',', ' ']).map(|x| x.trim().trim_matches('"').to_lowercase()).filter(|x| !x.is_empty()).collect())
-            .unwrap_or_default()
-    };
-    let mine = lanes.iter().find(|(n, _)| n == me).map(|(_, e)| e.clone()).unwrap_or_default();
-    let my_groups = list(&mine, "CC_TAGS");
-    let my_peers = list(&mine, "CC_PEERS");
-    let admin = my_groups.iter().any(|g| g == ADMIN_GROUP);
-    let open: Vec<String> = open_groups.iter().map(|g| g.to_lowercase()).collect();
-    lanes
-        .iter()
-        .filter(|(n, env)| {
-            if n == me || admin {
-                return true;
-            }
-            let theirs = list(env, "CC_TAGS");
-            theirs.iter().any(|g| my_groups.contains(g) || open.contains(g))
-                || (my_peers.contains(&n.to_lowercase()) && list(env, "CC_PEERS").contains(&me.to_lowercase()))
-        })
-        .cloned()
-        .collect()
+    lanes.iter().filter(|(n, _)| n == me || peer_input_refusal(me, n).is_none()).cloned().collect()
 }
 
 /// The longest description the roster prints. Descriptions are meant to be one
@@ -54583,34 +54563,47 @@ mod roster_tests {
         assert!(f.contains("ask the owner"), "a refused lane needs a truthful next step: {f}");
     }
 
-    /// Owner, 2026-10-31: a worker sees only the workers it can reach. Each
-    /// assertion names one rule of the send boundary.
+    /// Owner, 2026-10-31: a worker sees only the workers it can reach. The roster
+    /// and the send check agree for every pair, including tags written with
+    /// spaces, which the send check does not split (land review F1).
     #[test]
     fn a_worker_sees_only_the_workers_it_can_reach() {
-        let lane = |kv: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
-            kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for (name, env) in [
+            ("boss", "CC_TAGS=\"admin, ops\"\nCC_DESC=the admin\n"),
+            ("spaced", "CC_TAGS=\"admin ops\"\nCC_DESC=tags with a space\n"),
+            ("gs12", "CC_TAGS=gs12\nCC_PEERS=parity\nCC_DESC=me\n"),
+            ("gs12-rows", "CC_TAGS=\"gs12, ops\"\nCC_DESC=same group\n"),
+            ("one-sided", "CC_TAGS=gtm\nCC_PEERS=gs12\nCC_DESC=names me only\n"),
+            ("parity", "CC_TAGS=customers\nCC_PEERS=gs12\nCC_DESC=paired\n"),
+            ("seo", "CC_TAGS=gtm\nCC_DESC=outside too\n"),
+        ] {
+            std::fs::write(sessions.join(format!("{name}.env")), env).unwrap();
+        }
+        let lanes = super::roster_lanes();
+        let names = |me: &str| {
+            super::reachable_lanes(me, &lanes)
+                .into_iter().map(|(n, _)| n).collect::<Vec<_>>()
         };
-        let lanes = vec![
-            ("amux".to_string(), lane(&[("CC_TAGS", "amux"), ("CC_DESC", "open hub")])),
-            ("boss".to_string(), lane(&[("CC_TAGS", "admin, ops"), ("CC_DESC", "the admin")])),
-            ("gs12".to_string(), lane(&[("CC_TAGS", "gs12"), ("CC_PEERS", "parity"), ("CC_DESC", "me")])),
-            ("gs12-rows".to_string(), lane(&[("CC_TAGS", "gs12, ops"), ("CC_DESC", "same group")])),
-            ("one-sided".to_string(), lane(&[("CC_TAGS", "gtm"), ("CC_PEERS", "gs12"), ("CC_DESC", "names me only")])),
-            ("parity".to_string(), lane(&[("CC_TAGS", "customers"), ("CC_PEERS", "gs12"), ("CC_DESC", "paired")])),
-            ("vision".to_string(), lane(&[("CC_TAGS", "admin, gtm"), ("CC_DESC", "outside")])),
-            ("seo".to_string(), lane(&[("CC_TAGS", "gtm"), ("CC_DESC", "outside too")])),
-        ];
-        let open = vec!["amux".to_string()];
-        let names = |me: &str| super::reachable_lanes(me, &lanes, &open).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        for (me, _) in &lanes {
+            let listed = names(me);
+            for (n, _) in &lanes {
+                let reach = n == me || super::peer_input_refusal(me, n).is_none();
+                assert_eq!(listed.contains(n), reach, "{me} lists {n} only if the send check allows it: {listed:?}");
+            }
+        }
         let gs = names("gs12");
         assert!(gs.contains(&"gs12".to_string()), "the reader is listed: {gs:?}");
         assert!(gs.contains(&"gs12-rows".to_string()), "a shared group: {gs:?}");
-        assert!(gs.contains(&"amux".to_string()), "a member of an open group: {gs:?}");
         assert!(gs.contains(&"parity".to_string()), "a bilateral peer: {gs:?}");
         assert!(!gs.contains(&"one-sided".to_string()), "a one-sided CC_PEERS opens nothing: {gs:?}");
-        assert!(!gs.contains(&"vision".to_string()) && !gs.contains(&"seo".to_string()), "outside lanes stay out: {gs:?}");
+        assert!(!gs.contains(&"seo".to_string()), "outside lanes stay out: {gs:?}");
         assert_eq!(names("boss").len(), lanes.len(), "an admin reaches, so sees, every worker");
-        let r = super::render_fleet_roster(&super::reachable_lanes("gs12", &lanes, &open), &open);
+        assert!(names("spaced").len() < lanes.len(), "\"admin ops\" is one tag to the send check, so no admin reach");
+        let r = super::render_fleet_roster(&super::reachable_lanes("gs12", &lanes), &[]);
         assert!(r.contains("| `gs12-rows`") && !r.contains("outside too"), "the rendered table follows the filter: {r}");
         assert!(r.contains("Workers outside these are not listed"), "and says why others are missing: {r}");
     }
