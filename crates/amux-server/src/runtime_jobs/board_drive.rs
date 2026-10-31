@@ -11693,10 +11693,21 @@ mod tests {
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        // The interval holds a WORKING lane; an idle one is not held (ee1fd734d,
+        // an_idle_lane_gets_its_next_blocker_review_without_waiting_an_hour).
+        // Recent card activity makes it working without a doing card, which
+        // would stop drive_lane at the WIP cap before blocker recovery.
+        store.write(|conn| {
+            conn.execute("INSERT INTO _amux_state_events (rev, entity_type, entity_id, mutation, at) \
+                VALUES (1, 'task', 'P1', '\"Updated\"', ?1)", [chrono::Utc::now().to_rfc3339()])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        *LANE_ACTIVITY.lock().unwrap() = None;
+        assert!(!lane_is_idle(&store.read().unwrap(), "lane").unwrap(), "the lane reads as working");
         for _ in 0..3 {
             clear(&store);
-            assert_ne!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery",
-                "the next parked card waits for the lane interval");
+            let r = drive_lane(&state, &fleet, "lane").await;
+            assert_ne!(r.outcome, "blocker-recovery", "the next parked card waits for the lane interval: {r:?}");
         }
         clear(&store);
         assert_eq!(drive_lane(&state, &fleet, "other").await.outcome, "blocker-recovery", "another lane has its own interval");
