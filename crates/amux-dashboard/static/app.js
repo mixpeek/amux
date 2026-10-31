@@ -58650,16 +58650,19 @@ function _velocityLoad() {
   if (!el) return;
   if (_velocityWorker) return _velocityShowWorker(_velocityWorker);
   el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading usage…</div>';
-  Promise.all([
-    fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null),
-    fetch(API + '/api/velocity/optimize?days=30').then(r => r.ok ? r.json() : null).catch(() => null),
-  ]).then(([d, o]) => {
+  // The workers render as soon as they arrive; the Usage summary fills in
+  // above them when /optimize answers (it reads 7 days of attribution and
+  // took 8-27 s on a loaded Mac, 2026-10-31).
+  const opt = fetch(API + '/api/velocity/optimize?days=30').then(r => r.ok ? r.json() : null).catch(() => null);
+  fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null).then(d => {
+    const o = null;
+    opt.then(x => { const s = document.getElementById('usage-summary'); if (s && x && !_velocityWorker) s.innerHTML = _usageSummaryHtml(x); });
     if (!d || !Array.isArray(d.workers)) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
     const rows = d.workers.map(w => `<div class="metrics-card velocity-row" data-velocity-worker="${esc(w.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)" style="cursor:pointer;">
         <div class="reclaim-safe-head">${esc(w.worker)}</div>
         <div class="reclaim-safe-text">${w.finished_cards} finished (${w.finished_per_day}/day) · ${w.finished_share_of_time}% of time on finished work · ${w.wasted_hours} h wasted · top: ${esc(w.top_bottleneck || '–')}</div>
       </div>`).join('');
-    el.innerHTML = `${_usageSummaryHtml(o)}<div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
+    el.innerHTML = `<div id="usage-summary">${_usageSummaryHtml(o) || '<div class="metrics-section-title">Usage & optimization: loading…</div>'}</div><div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
   }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
 }
 

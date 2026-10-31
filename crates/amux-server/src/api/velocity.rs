@@ -651,6 +651,11 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
         }
     }
     opportunities.sort_by(|a, b| b["est_usd_month"].as_f64().partial_cmp(&a["est_usd_month"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
+    // The two families overlap (a nudge turn is also the nudged worker's
+    // turn), so their sum counts some dollars twice: 2026-10-31 it read $497k
+    // a month against $407k spent. Take the larger family.
+    let family = |k: &str| opportunities.iter().filter(|o| o["kind"] == k).filter_map(|o| o["est_usd_month"].as_f64()).sum::<f64>();
+    let savings = family("background_spend").max(family("unfinished_attempts"));
     let mut by_group: HashMap<String, f64> = HashMap::new();
     for (w, v) in &d.spend {
         match groups.get(w).filter(|g| !g.is_empty()) {
@@ -668,7 +673,8 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
             "finished_cards": finished, "cards": attempted,
             "success_rate": if attempted > 0 { ((finished as f64 / attempted as f64) * 100.0).round() } else { 0.0 },
             "cost_per_success_usd": (finished > 0).then(|| usd(card_spend / finished as f64)),
-            "potential_savings_usd_month": usd(opportunities.iter().filter_map(|o| o["est_usd_month"].as_f64()).sum()),
+            "potential_savings_usd_month": usd(savings),
+            "potential_savings_basis": "the larger of background spend and unfinished-attempt spend, not their sum: a turn amux started is also inside a worker's spend",
         },
         "by_group": by_group,
         "by_group_note": "a worker in several groups counts in each",
@@ -691,7 +697,9 @@ async fn optimize_handler(State(state): State<AppState>, Query(q): Query<Q>) -> 
         (w, g)
     }).collect();
     let store = state.store.clone();
-    let hours = (days * 24.0).clamp(1.0, 720.0) as i64;
+    // Seven days is enough to price background spend (the estimate is scaled
+    // to a month either way) and a quarter of the 30-day scan's cost.
+    let hours = (days * 24.0).clamp(1.0, 168.0) as i64;
     let background = tokio::task::spawn_blocking(move || store.read().and_then(|c| crate::api::usage::attribution(&c, hours)))
         .await
         .ok()
@@ -886,6 +894,8 @@ mod tests {
         assert!(o["by_group"].as_array().unwrap().iter().any(|g| g["group"] == "ungrouped"));
         let ops = o["opportunities"].as_array().unwrap();
         assert_eq!(ops[0]["kind"], "background_spend", "$12/day is $360/month and ranks first");
+        let unfinished: f64 = ops.iter().filter(|x| x["kind"] == "unfinished_attempts").filter_map(|x| x["est_usd_month"].as_f64()).sum();
+        assert_eq!(o["totals"]["potential_savings_usd_month"].as_f64(), Some(360.0f64.max(unfinished)), "the larger family, never the sum");
         assert_eq!(ops[0]["owner"], "amux");
         assert_eq!(ops[0]["est_usd_month"].as_f64(), Some(360.0));
         let un = ops.iter().find(|x| x["kind"] == "unfinished_attempts").expect("the worker's unfinished spend");
