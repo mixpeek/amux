@@ -51,8 +51,12 @@ pub(crate) struct StaleCard {
     pub last_log: String,
 }
 
+/// Open = not archived, not deleted, not terminal. `deleted` is a soft delete
+/// that leaves status alone: backend's grooming turn (2026-10-31) listed 15
+/// cards whose last log line was "deleted" and which 404 on GET, so every
+/// action the turn suggested for them failed.
 fn open_filter() -> &'static str {
-    "archived=0 AND status NOT IN ('done','verified','discarded')"
+    "archived=0 AND deleted IS NULL AND status NOT IN ('done','verified','discarded')"
 }
 
 /// The lane's stale cards a worker may judge, oldest first, at most `MAX_CARDS`.
@@ -274,9 +278,14 @@ mod tests {
         card(&store, "BUDGET", "w", "needsyou", now - 30 * DAY, "agent", "budget");
         card(&store, "ASK", "w", "needsyou", now - 30 * DAY, "agent", "decision");
         card(&store, "OTHER", "x", "todo", now - 30 * DAY, "agent", "");
+        card(&store, "GONE", "w", "todo", now - 50 * DAY, "agent", "");
+        store.write(move |c| {
+            c.execute("UPDATE issues SET deleted=?1 WHERE id='GONE'", [now - 49 * DAY])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
         let conn = store.read().unwrap();
         let got: Vec<String> = stale_cards(&conn, "w", now, 7).unwrap().into_iter().map(|c| c.id).collect();
-        assert_eq!(got, vec!["OLDER", "ASK", "OLD"], "oldest first; not fresh, not the owner's, not a budget hold, not another lane's");
+        assert_eq!(got, vec!["OLDER", "ASK", "OLD"], "oldest first; not fresh, not the owner's, not a budget hold, not another lane's, not a deleted card");
         let t = groom_text("w", &stale_cards(&conn, "w", now, 7).unwrap(), 7);
         assert!(t.contains("OLDER (backlog, 40d)") && t.contains("done when: the report is sent"));
         for verb in ["amux board progress", "amux board done", "--folded-into", "archive_outcome", "amux board unarchive"] {
