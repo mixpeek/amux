@@ -7935,6 +7935,9 @@ select.input { height:var(--control-height); }
 .recorder-elapsed { font-size:var(--fs-6xl); font-weight:600; font-variant-numeric:tabular-nums; color:var(--text); line-height:1.1; }
 .recorder-level { height:8px; border-radius:var(--radius-sm); background:var(--bg); border:1px solid var(--border); overflow:hidden; }
 .recorder-level-fill { height:100%; width:100%; background:var(--green); transform:scaleX(0.02); transform-origin:left center; }
+/* The live waveform (app.js _recWave*): the last few seconds of sound as bars, so a glance says it hears you. */
+.recorder-wave { display:block; width:100%; height:36px; color:var(--green); }
+.recorder-wave.quiet { color:var(--dim); }
 .recorder-status { color:var(--dim); font-size:var(--fs-lg); line-height:1.4; overflow-wrap:anywhere; }
 .recorder-sync-row { display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; justify-content:space-between; }
 .recorder-sync-summary { color:var(--dim); font-size:var(--fs-lg); min-width:0; }

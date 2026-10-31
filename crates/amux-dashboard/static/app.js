@@ -66695,7 +66695,45 @@ function _nativeRecorderAvailable() {
 }
 function _nativeRecorderActive() { return !!_nativeRec && ['recording', 'paused'].includes(_nativeRec.state); }
 function _nativeRecorderPost(msg) {
-  try { window.webkit.messageHandlers.amuxRecorder.postMessage(msg); } catch (e) { _recorderStatus('The app did not answer: ' + e.message); }
+  try { window.webkit.messageHandlers.amuxRecorder.postMessage(msg); } catch (e) { _recorderStatus('The app did not answer: ' + e.message); _recorderBeacon('native_post_failed', { op: msg && msg.op, error: e.message }); return; }
+  if (msg && (msg.op === 'start' || msg.op === 'stop')) {
+    // Start and stop must come back as a status; silence means the app never acted.
+    const sent = Date.now();
+    clearTimeout(_nativeRecWaitT);
+    _nativeRecWaitT = setTimeout(() => {
+      if (_nativeRec && _nativeRec._at >= sent) return;
+      _recorderStatus('The amux app did not answer the ' + msg.op + '. Update the app if this keeps happening.');
+      _recorderBeacon('native_no_status', { op: msg.op, wait_ms: 4000 });
+    }, 4000);
+  }
+}
+let _nativeRecWaitT = 0, _nativeRecPollT = 0;
+// What the server hears of the app's recorder: every change of state and every
+// new error, so a recording that fails on a phone is in the server log.
+function _nativeRecorderTrack(prev, st) {
+  const a = prev && prev.state || 'none', b = st && st.state || 'none';
+  const err = st && st.error || '';
+  if (a !== b) _recorderBeacon('native_state', { from: a, to: b, id: st && st.id || '', segments: st && st.segments || 0, pending_upload: st && st.pending_upload || 0, gaps: st && st.gaps || 0, error: err });
+  else if (err && err !== (prev && prev.error)) _recorderBeacon('native_error', { state: b, error: err });
+}
+function _nativeRecorderPollSync() {
+  const want = !!_nativeRec && _nativeRec.state === 'recording' && !document.hidden;
+  if (want && !_nativeRecPollT) {
+    _nativeRecPollT = setInterval(() => {
+      const st = _nativeRec;
+      if (!st || st.state !== 'recording' || document.hidden) { clearInterval(_nativeRecPollT); _nativeRecPollT = 0; return; }
+      if (!st._slow && Date.now() - (st._at || 0) < 1500) return;
+      if (!st._slow) { st._slow = true; _recorderBeacon('native_push_quiet', { id: st.id || '' }); }
+      try { window.webkit.messageHandlers.amuxRecorder.postMessage({op: 'status'}); } catch (e) {}
+    }, 250);
+  } else if (!want && _nativeRecPollT) { clearInterval(_nativeRecPollT); _nativeRecPollT = 0; }
+}
+document.addEventListener('visibilitychange', () => { if (_nativeRec) _nativeRecorderPollSync(); if (!document.hidden) _recWaveDraw(); });
+function _recorderBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'recorder', verdict, measured: true, n_considered: 1, native: _nativeRecorderAvailable() ? 1 : 0, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
 }
 function _recorderPauseToggle() {
   if (_nativeRecorderActive()) _nativeRecorderPost({op: _nativeRec.state === 'paused' ? 'resume' : 'pause'});
@@ -66711,8 +66749,23 @@ function _recorderSetMeeting(mode) {
   if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', meeting: mode});
 }
 window._nativeRecorderStatus = function(st) {
-  const was = _nativeRec && _nativeRec.state;
+  const prev = _nativeRec;
+  const was = prev && prev.state;
+  const now = Date.now();
+  if (st) {
+    // The iOS app pushed only on a change (about every 10 s segment), so the
+    // clock, the meter and the live panel looked frozen and a recording that
+    // worked read as "nothing happened" (owner, 2026-10-31). A recording whose
+    // pushes go quiet for 1.5 s is asked for its status while this page is
+    // visible (_nativeRecorderPollSync); the Mac app pushes every second and
+    // is never asked.
+    st._at = now;
+    st._slow = !!(prev && prev._slow && prev.id === st.id);
+  }
   _nativeRec = st || null;
+  _nativeRecorderTrack(prev, st);
+  _nativeRecorderPollSync();
+  if (st && st.state === 'recording' && st.levels) _recWavePush(Math.min(1, Math.max(0, ...Object.values(st.levels).map(Number)) * 4));
   _nativeRecorderPaint();
   // Just stopped: the app uploads the last segments; show the filed recording when it lands.
   if (was && was !== 'idle' && st && st.state === 'idle') setTimeout(() => _recorderLoadServer().then(_recorderRender), 5000);
@@ -66757,11 +66810,7 @@ function _nativeRecorderPaint() {
   if (sys) { try { sys.checked = localStorage.getItem('amux_recorder_system') === '1'; } catch (e) {} }
   const el = document.getElementById('recorder-elapsed');
   if (el) el.textContent = _recorderClock(on ? Number(st.elapsed_ms || 0) : 0);
-  const fill = document.getElementById('recorder-level-fill');
-  if (fill) {
-    const lv = Math.max(0, ...Object.values(st.levels || {}).map(Number));
-    fill.style.width = (on ? Math.min(100, Math.round(lv * 400)) : 0) + '%';
-  }
+  if (!on && _recWave.levels.length) _recWaveClear();
   const tracks = (st.tracks || []).map(t => t === 'mic' ? 'microphone' : t === 'system' ? "the Mac's sound" : t).join(' and ');
   let text;
   if (st.state === 'recording') {
@@ -66789,6 +66838,7 @@ async function _recorderStart() {
   } catch (e) {
     _recorderStarting = false;
     _recorderStatus('Microphone unavailable: ' + ((e && (e.message || e.name)) || 'permission denied'));
+    _recorderBeacon('mic_unavailable', { error: String((e && (e.name || e.message)) || '') });
     return;
   }
   const release = () => { try { stream.getTracks().forEach(t => t.stop()); } catch (e) {} };
@@ -66830,6 +66880,7 @@ async function _recorderStart() {
     return;
   }
   _recorderStarting = false;
+  _recorderBeacon('started', { id: meta.id, mime: meta.mime });
   _recorderWakeLock();
   _recorderStartMeter();
   clearInterval(_recorderTimer);
@@ -66901,6 +66952,7 @@ async function _recorderFinalize(id) {
   _recorderStream = null; _recorderMedia = null;
   await _recorderWrites;   // the last dataavailable fires before stop, so every chunk is queued here
   const reason = _recorderStopReason || 'stopped';
+  _recorderBeacon('stopped', { id, reason });
   let m = null;
   try { m = await _recorderGet(id); } catch (e) {}
   const endedAt = Date.now();
@@ -66959,25 +67011,66 @@ function _recorderStartMeter() {
     src.connect(_recorderAnalyser);
   } catch (e) { return; }   // the meter is cosmetic; recording never depends on it
   const data = new Uint8Array(_recorderAnalyser.fftSize);
-  const fill = document.getElementById('recorder-level-fill');
-  const draw = () => {
+  // One bar every 80 ms is enough to read as live; measuring every frame
+  // costs the battery and adds nothing. A hidden page gets no frames at all.
+  let last = 0;
+  const draw = (t) => {
     if (!_recorderLive || !_recorderAnalyser) return;
-    _recorderAnalyser.getByteTimeDomainData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
-    const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
-    if (fill) fill.style.transform = 'scaleX(' + Math.max(0.02, level).toFixed(3) + ')';
+    if (!t || t - last >= _REC_WAVE_MS) {
+      last = t || 0;
+      _recorderAnalyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      _recWavePush(Math.min(1, Math.sqrt(sum / data.length) * 4));
+    }
     _recorderRaf = requestAnimationFrame(draw);
   };
-  draw();
+  draw(0);
 }
 function _recorderStopMeter() {
   if (_recorderRaf) cancelAnimationFrame(_recorderRaf);
   _recorderRaf = 0; _recorderAnalyser = null;
   try { if (_recorderAudioCtx) _recorderAudioCtx.close(); } catch (e) {}
   _recorderAudioCtx = null;
-  const fill = document.getElementById('recorder-level-fill');
-  if (fill) fill.style.transform = 'scaleX(0.02)';
+  _recWaveClear();
+}
+
+// ── The waveform (owner, 2026-10-31: "put the audio wave thing to indicate
+// sound recording. like a quick feedback thing") ──
+// The last few seconds of sound level as bars, newest on the right, for the
+// page's own recorder and the app's. Drawn only when a level arrives, never on
+// a loop, and a level is measured at most every _REC_WAVE_MS.
+const _REC_WAVE_MS = 80, _REC_WAVE_BARS = 56;
+const _recWave = { levels: [], color: '' };
+function _recWavePush(level) {
+  const w = _recWave.levels;
+  w.push(Math.max(0, Math.min(1, Number(level) || 0)));
+  if (w.length > _REC_WAVE_BARS) w.splice(0, w.length - _REC_WAVE_BARS);
+  _recWaveDraw();
+}
+function _recWaveClear() { _recWave.levels = []; _recWaveDraw(); }
+function _recWaveDraw() {
+  const c = document.getElementById('recorder-wave');
+  if (!c || !c.isConnected || document.hidden) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const lv = _recWave.levels;
+  // Quiet for the last second: dim bars, so silence reads as silence rather than as broken.
+  const recent = lv.slice(-Math.round(1000 / _REC_WAVE_MS));
+  c.classList.toggle('quiet', !recent.some(v => v > 0.06));
+  g.fillStyle = getComputedStyle(c).color;
+  const step = W / _REC_WAVE_BARS, bw = Math.max(1.5, step * 0.6), mid = H / 2;
+  for (let i = 0; i < _REC_WAVE_BARS; i++) {
+    const v = lv[lv.length - _REC_WAVE_BARS + i];
+    const h = Math.max(2, (v == null ? 0 : Math.sqrt(v)) * (H - 2));
+    const x = i * step + (step - bw) / 2;
+    g.fillRect(x, mid - h / 2, bw, h);
+  }
 }
 function _recorderTick() {
   const el = document.getElementById('recorder-elapsed');

@@ -3180,6 +3180,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_nativeRecorderPollSync": {
+      "kind": "command._nativeRecorderPollSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderPost": {
+      "kind": "command._nativeRecorderPost",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderTrack": {
+      "kind": "command._nativeRecorderTrack",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_navBeacon": {
       "kind": "command._navBeacon",
       "feedback_required": true,
@@ -4284,6 +4302,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderBeacon": {
+      "kind": "command._recorderBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderDeleteLocal": {
       "kind": "command._recorderDeleteLocal",
       "feedback_required": true,
@@ -4326,6 +4350,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderPauseToggle": {
+      "kind": "command._recorderPauseToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderRender": {
       "kind": "command._recorderRender",
       "feedback_required": true,
@@ -4356,8 +4386,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderSetInput": {
+      "kind": "command._recorderSetInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetMeeting": {
+      "kind": "command._recorderSetMeeting",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderSetOption": {
       "kind": "command._recorderSetOption",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetSystem": {
+      "kind": "command._recorderSetSystem",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

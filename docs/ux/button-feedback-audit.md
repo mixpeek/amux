@@ -572,6 +572,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | ${scan ? Rescan : Run scan} | `_reclaimStartScan` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Re-include | `_reclaimUnskip` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Delete from this device | `_recorderDeleteLocal` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Pause | `_recorderPauseToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Transcribe again | `_recorderRetranscribe` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Retry sync | `_recorderRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save | `_recorderSaveDir` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1434,7 +1435,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Select safe | `_reclaimSelectSafe` | onclick |
 | app.js | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
 | app.js | clear filter | `_reclaimSetCat` | onclick |
-| index.html | Pause | `_recorderPauseToggle` | onclick |
 | app.js | Play | `_recorderPlay` | onclick |
 | app.js | Remove | `_removeConnection` | onclick |
 | app.js | button | `_removeConnection` | onclick |
