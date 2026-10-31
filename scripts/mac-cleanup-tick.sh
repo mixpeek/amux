@@ -2144,6 +2144,40 @@ superseded_keep() { # <keep> <targets, colon separated> <cap_kb> -> sets SUPERSE
   fi
 }
 
+# INCREMENTAL TREES IN THE SHARED TARGETS (disk RCA 20261030-193722). cargo
+# writes debug/incremental/<crate>-<hash>/ per fingerprint and never deletes the
+# old one; only the deploy builder pruned, and only its own profile. The shared
+# target's debug/incremental held 263 trees, 12.3 GiB, while safe-cargo refused
+# every lane's build over the 64 GiB budget. Same pruner, same guards (the two
+# newest trees per crate kept, nothing idle under 2 h, only crates rebuilt in
+# the last 2 h), read from origin/main like this tick, not the shared tree.
+prune_kept_incremental() { # <targets, colon separated> <dry:0|1> [pruner script]
+  local targets=$1 dry=${2:-0} script=${3:-} t d out IFS_OLD=$IFS tmp=""
+  if [ -z "$script" ]; then
+    tmp=$(mktemp "${TMPDIR:-/tmp}/prune-incr.XXXXXX")
+    if ! git show origin/main:scripts/prune-superseded-incremental.sh > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null; then
+      echo "mac-cleanup: incremental: pruner unavailable from origin/main here; nothing pruned (verdict=incremental_pruner_unavailable)"
+      rm -f -- "${tmp:?}"; return 0
+    fi
+    script=$tmp
+  fi
+  IFS=':'
+  for t in $targets; do
+    IFS=$IFS_OLD
+    for d in "$t"/debug/incremental; do
+      [ -d "$d" ] || continue
+      if [ "$dry" = 1 ]; then echo "mac-cleanup: incremental: would prune superseded trees in $d (dry run)"; continue; fi
+      # since = the pruner's own idle floor: a crate rebuilt in that window
+      # sheds its older trees; nothing touched inside it is removed.
+      out=$(bash "$script" "$d" "$(( $(date +%s) - ${AMUX_INCREMENTAL_IDLE_H:-2} * 3600 ))" 2>&1) || true
+      echo "mac-cleanup: $out"
+    done
+  done
+  IFS=$IFS_OLD
+  [ -n "$tmp" ] && rm -f -- "${tmp:?}"
+  return 0
+}
+
 prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budget_s]
   # One pass per stage, never a process per file (self RCA 20261018-103045): the
   # first version ran has_open_handle (sed + a regex grep over the whole lsof
@@ -3551,7 +3585,8 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
 fi
 tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S && reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
 tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && superseded_keep "$SUPERSEDED_KEEP" "$TARGET_KEEP" "$(( ${AMUX_CARGO_MAX_TARGET_GB:-64} * 1048576 ))" \
-  && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP_EFFECTIVE" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S"
+  && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP_EFFECTIVE" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S" \
+  && prune_kept_incremental "$TARGET_KEEP" "$DRY"
 VMS_PRUNED=0
 # Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
 # freed VM blocks back to the host, and with images swept after it, the 2-4
