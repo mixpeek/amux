@@ -1229,13 +1229,60 @@ CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", 
 STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
 
 
+# LINUX HAS NO KEYCHAIN (mixpeek-dev.amux.io, 2026-10-31: "make sure it does the
+# claude account rotation thing too like i have here"). Claude Code on Linux
+# keeps its login in <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json, so the
+# CLI's own item maps to that file and every other item (the rotator's
+# snapshots) to a 0600 file under DIR/keyring. macOS keeps the Keychain.
+USE_KEYCHAIN = sys.platform == "darwin" and os.environ.get("CLAUDE_ROTATE_KEYSTORE") != "file"
+KEYRING = os.path.join(DIR, "keyring")
+
+
+def _cli_cred_file(config_dir=None):
+    base = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return os.path.join(base, ".credentials.json")
+
+
+def _file_for(service, account):
+    if service == "Claude Code-credentials" and account == CRED_ACCT:
+        return _cli_cred_file()
+    safe = lambda v: re.sub(r"[^A-Za-z0-9@._+-]", "_", v) or "_"
+    return os.path.join(KEYRING, safe(service), safe(account) + ".json")
+
+
+def _file_read(path):
+    try:
+        with open(path) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
+def _file_write(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".new.")
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _kc_read(service, account):
+    if not USE_KEYCHAIN:
+        return _file_read(_file_for(service, account))
     p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
                        capture_output=True, text=True)
     return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
 
 
 def _kc_write(service, account, value):
+    if not USE_KEYCHAIN:
+        return _file_write(_file_for(service, account), value)
     # -X takes hex, so quotes in the JSON cannot break the command line, and
     # `security -i` reads it from stdin, so the value is never an argv element.
     cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
@@ -1286,7 +1333,8 @@ def folder_login(email, folders=None):
     if not folder:
         return None
     try:
-        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+        raw = _kc_read(_folder_service(folder), CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
     except ValueError:
         oauth = None
     if not oauth or not oauth.get("refreshToken"):

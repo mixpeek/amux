@@ -389,5 +389,50 @@ class UsageLog(unittest.TestCase):
         self.assertEqual(self.verdicts()[-1]["verdict"], "claude_rotate_usage_log_unreachable")
 
 
+
+class FileKeystore(unittest.TestCase):
+    """Linux has no Keychain (mixpeek-dev.amux.io, 2026-10-31): the CLI's login is
+    <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json and snapshots are 0600 files."""
+    def setUp(self):
+        self.saved = {k: getattr(cr, k) for k in ("USE_KEYCHAIN", "HOME", "KEYRING")}
+        self.home = tempfile.mkdtemp()
+        cr.USE_KEYCHAIN, cr.HOME, cr.KEYRING = False, self.home, os.path.join(self.home, "keyring")
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(cr, k, v)
+
+    def test_the_cli_login_is_its_credentials_file(self):
+        login = json.dumps({"claudeAiOauth": {"refreshToken": "PLACEHOLDER_RT"}, "mcpOAuth": {"x": 1}})
+        self.assertTrue(cr._kc_write("Claude Code-credentials", cr.CRED_ACCT, login))
+        path = os.path.join(self.home, ".claude", ".credentials.json")
+        self.assertEqual(open(path).read(), login, "written where Claude Code on Linux reads it")
+        self.assertEqual(cr._kc_read("Claude Code-credentials", cr.CRED_ACCT), login)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_a_snapshot_is_a_private_file_per_account(self):
+        self.assertIsNone(cr._kc_read(cr.STORE_SVC, "a@x.io"))
+        self.assertTrue(cr._kc_write(cr.STORE_SVC, "a@x.io", '{"claudeAiOauth": {}}'))
+        self.assertEqual(cr._kc_read(cr.STORE_SVC, "a@x.io"), '{"claudeAiOauth": {}}')
+        f = os.path.join(cr.KEYRING, cr.STORE_SVC, "a@x.io.json")
+        self.assertEqual(os.stat(f).st_mode & 0o777, 0o600)
+        self.assertIsNone(cr._kc_read(cr.STORE_SVC, "b@x.io"), "another account is its own file")
+
+    def test_an_account_folder_login_is_read_from_its_own_credentials_file(self):
+        acc = os.path.join(self.home, "accounts")
+        folder = os.path.join(acc, "use")
+        os.makedirs(folder)
+        json.dump({"oauthAccount": {"emailAddress": "Use@X.io"}}, open(os.path.join(folder, ".claude.json"), "w"))
+        json.dump({"claudeAiOauth": {"refreshToken": "PLACEHOLDER_FOLDER_RT"}}, open(os.path.join(folder, ".credentials.json"), "w"))
+        saved_dir = cr.ACCOUNTS_DIR
+        cr.ACCOUNTS_DIR = acc
+        try:
+            got = cr.folder_login("use@x.io")
+        finally:
+            cr.ACCOUNTS_DIR = saved_dir
+        self.assertEqual(got["claudeAiOauth"]["refreshToken"], "PLACEHOLDER_FOLDER_RT")
+        self.assertEqual(got["folder"], folder)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
