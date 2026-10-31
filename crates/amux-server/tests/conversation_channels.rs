@@ -190,3 +190,69 @@ async fn the_owner_and_an_admin_create_and_manage_a_channel() {
     let launch = list["channels"].as_array().unwrap().iter().find(|c| c["conv"] == "g:launch").cloned();
     assert_eq!(launch.as_ref().map(|c| c["title"].clone()), Some(json!("Launch room")), "{list}");
 }
+
+fn pin_ids(page: &Value) -> Vec<i64> {
+    page["pins"].as_array().map(|a| a.iter().filter_map(|p| p["id"].as_i64()).collect()).unwrap_or_default()
+}
+
+/// Pinning a message inside a channel (Ethan, 2026-10-29): anyone who can read
+/// the channel pins or unpins a post, a reply included; every page of posts
+/// carries the pins, newest pin first, with who pinned; someone who cannot
+/// read the channel can neither pin nor see its pins, and a deleted post drops
+/// out of the list.
+#[tokio::test]
+async fn a_reader_pins_a_message_in_a_channel_and_everyone_there_sees_it() {
+    let (app, _d) = server();
+    let mate = member(&app, "pinmate@example.com").await;
+    let out = member(&app, "pinout@example.com").await;
+    let as_mate = [("cookie", mate.as_str())];
+    let as_out = [("cookie", out.as_str())];
+    let (st, v) = send(&app, "POST", "/api/conversations/channels", Some(json!({"name": "pins", "private": true})), &[]).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let (st, v) = send(&app, "POST", "/api/conversations/channels/pins/members", Some(json!({"email": "pinmate@example.com"})), &[]).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (_, a) = send(&app, "POST", "/api/conversations/g:pins/posts", Some(json!({"body": "the launch date is Friday"})), &[]).await;
+    let (_, b) = send(&app, "POST", "/api/conversations/g:pins/posts", Some(json!({"body": "unrelated chatter"})), &as_mate).await;
+    let (a, b) = (a["id"].as_i64().unwrap(), b["id"].as_i64().unwrap());
+    let (_, r) = send(&app, "POST", "/api/conversations/g:pins/posts", Some(json!({"body": "the venue is booked", "parent_id": a})), &as_mate).await;
+    let r = r["id"].as_i64().unwrap();
+
+    // Nothing pinned yet: the page says so.
+    let (_, page) = send(&app, "GET", "/api/conversations/g:pins/posts", None, &as_mate).await;
+    assert_eq!(page["pins"], json!([]), "{page}");
+
+    let (st, v) = send(&app, "POST", &format!("/api/conversations/posts/{a}/pin"), Some(json!({"pinned": true})), &[]).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(pin_ids(&v), vec![a]);
+    // A member pins a reply; it lists first, with who pinned it.
+    let (st, v) = send(&app, "POST", &format!("/api/conversations/posts/{r}/pin"), Some(json!({})), &as_mate).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, page) = send(&app, "GET", &format!("/api/conversations/g:pins/posts?after={b}"), None, &[]).await;
+    assert_eq!(pin_ids(&page), vec![r, a], "an incremental page still carries the pins: {page}");
+    let reply = &page["pins"][0];
+    assert_eq!((reply["parent_id"].as_i64(), reply["pinned_by"].as_str()), (Some(a), Some("person:pinmate@example.com")), "{page}");
+    assert_eq!(reply["body"], "the venue is booked");
+    // Pinning twice keeps the first pin.
+    let (st, _) = send(&app, "POST", &format!("/api/conversations/posts/{a}/pin"), Some(json!({"pinned": true})), &as_mate).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, page) = send(&app, "GET", "/api/conversations/g:pins/posts", None, &[]).await;
+    assert_eq!(page["pins"][1]["pinned_by"], "person:owner", "{page}");
+
+    // Someone outside the private channel: no pin, and no pins to read.
+    let (st, _) = send(&app, "POST", &format!("/api/conversations/posts/{b}/pin"), Some(json!({"pinned": true})), &as_out).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, _) = send(&app, "GET", "/api/conversations/g:pins/posts", None, &as_out).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, _) = send(&app, "POST", "/api/conversations/posts/999999/pin", Some(json!({})), &[]).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // Unpinned, and a deleted pinned post drops out.
+    let (st, v) = send(&app, "POST", &format!("/api/conversations/posts/{a}/pin"), Some(json!({"pinned": false})), &as_mate).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(pin_ids(&v), vec![r]);
+    let (st, _) = send(&app, "DELETE", &format!("/api/conversations/posts/{r}"), None, &as_mate).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, page) = send(&app, "GET", "/api/conversations/g:pins/posts", None, &[]).await;
+    assert_eq!(page["pins"], json!([]), "a deleted post stayed pinned: {page}");
+}
