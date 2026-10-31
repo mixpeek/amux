@@ -103,6 +103,17 @@ test('the Files row: no Up, a bare ⋮, and a remembered All/Pinned/Recent/Modif
       expect(mid).toBeLessThanOrEqual(row.y + row.height);
     }
     expect(await page.locator('#files-bookmarks-list').evaluate(e => getComputedStyle(e).flexWrap)).toBe('nowrap');
+    // Drawn like the chips beside it, not as the native grey select (owner,
+    // 2026-10-31: "styling to resemble the row").
+    const look = (e: Element) => { const c = getComputedStyle(e); return {
+      appearance: c.appearance, bg: c.backgroundColor, border: `${c.borderTopWidth} ${c.borderTopStyle} ${c.borderTopColor}`,
+      radius: c.borderTopLeftRadius, font: c.fontSize, height: e.getBoundingClientRect().height }; };
+    const selLook = await sel.evaluate(look);
+    const chipLook = await chips(page).filter({ has: page.locator(':scope[data-source="pinned"]') }).first().evaluate(look);
+    expect(selLook.appearance, 'no native select chrome').toBe('none');
+    expect({ bg: selLook.bg, border: selLook.border, radius: selLook.radius, font: selLook.font },
+      'the chip fill, border, radius and text size').toEqual({ bg: chipLook.bg, border: chipLook.border, radius: chipLook.radius, font: chipLook.font });
+    if (page.viewportSize()!.width > 600) expect(Math.abs(selLook.height - chipLook.height), 'the chip height').toBeLessThanOrEqual(2);
     if (page.viewportSize()!.width <= 600) {
       expect(selBox.height, 'the filter is a 44px touch target').toBeGreaterThanOrEqual(44);
       expect(row.height, 'the row is one line').toBeLessThanOrEqual(64);

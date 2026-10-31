@@ -1622,9 +1622,24 @@
   .fe-tb-oitem-session { color: var(--accent); font-weight: 600; }
   .fe-tb-odivider { height: 1px; background: var(--border); margin: var(--space-0-5) 0; }
   /* The shortcuts row's filter (All / Pinned / Recent / Modified / Shared):
-     the shared .input select, sized to its text and held at the row's left
-     edge while the chips scroll under it. */
-  #files-row-filter { width: auto; flex-shrink: 0; position: sticky; left: 0; z-index: 1; }
+     sized to its text and held at the row's left edge while the chips scroll
+     under it. Drawn like the chips beside it (.files-bm-chip: card fill, one
+     border, the same radius, height and text size) rather than as the native
+     grey select (owner, 2026-10-31: "resemble the row"); the arrow is the
+     Messages filters' one. */
+  #files-row-filter {
+    width: auto; flex-shrink: 0; position: sticky; left: 0; z-index: 1;
+    -webkit-appearance: none; appearance: none; box-shadow: none;
+    background-color: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    font-size: var(--fs-xs); line-height: 1.2; height: auto; min-height: 0;
+    padding: var(--space-0-5) var(--space-5) var(--space-0-5) var(--space-2);
+    align-self: stretch; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right var(--space-2) center;
+  }
+  #files-row-filter:hover { border-color: var(--dim); }
+  @media (max-width: 600px) { #files-row-filter { min-height: 44px; } }
   .fe-breadcrumb {
     flex: 1 1 180px; font-size: var(--fs-md); font-family: var(--font-mono);
     overflow-x: auto; white-space: nowrap; padding: var(--space-0-5) var(--space-1-5);
