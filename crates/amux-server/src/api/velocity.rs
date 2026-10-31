@@ -698,7 +698,7 @@ fn optimize(d: &Data, days: f64, groups: &HashMap<String, Vec<String>>, backgrou
             "potential_savings_basis": "the larger of background spend and unfinished-attempt spend, not their sum: a turn amux started is also inside a worker's spend",
             "spend_on_cards_usd": usd(total_on_cards),
             "spend_on_cards_pct": pct(total_on_cards, total_spend),
-            "spend_on_cards_note": "spend joined to a card: token_ledger.task is set only while the worker has that card claimed. The rest was spent outside any card, mostly on peer and owner messages (AGH-5), so cost_per_success divides more than the cards cost; isolated lanes have no board and are always 0",
+            "spend_on_cards_note": "spend joined to a card: token_ledger.task is set only while the worker has that card claimed. The rest was spent outside any card claim (AGH-5); /api/usage/attribution splits all spend by what started each turn, not by card. So cost_per_success divides more than the cards cost; isolated lanes have no board and are always 0",
         },
         "by_group": by_group,
         "by_group_note": "a worker in several groups counts in each",
