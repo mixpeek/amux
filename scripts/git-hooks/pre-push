@@ -289,6 +289,8 @@ _SPA_SUITE_FILES = ("tests/dashboard-outage-recovery.mjs", "package.json", "pack
                     "scripts/build-state.mjs", "scripts/button-audit.mjs",
                     "docs/ux/button-feedback-audit.md")
 _SPA_NOT_OK = re.compile(r"^\s*not ok \d+ - (.+?)(?:\s+#.*)?$")
+# Why the last _spa_failures run could not be measured, for the hook's line.
+_SPA_UNREAD = {"why": ""}
 
 
 def _spa_touched(path):
@@ -304,6 +306,7 @@ def _spa_failures(sha, node_modules):
         arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
                               capture_output=True, text=True, timeout=60)
         if arch.returncode != 0:
+            _SPA_UNREAD["why"] = "git archive failed: " + (arch.stderr.strip().splitlines() or ["?"])[-1][:160]
             return None
         os.symlink(node_modules, os.path.join(tmp, "node_modules"))
         suites = [s for s in ["tests/dashboard-outage-recovery.mjs",
@@ -323,13 +326,20 @@ def _spa_failures(sha, node_modules):
                         if re.search(r"stale|error|✖", l)]
                 names.add("scripts/spa-lint.sh: " + (said[0] if said else "exit %d" % lint.returncode))
         if suites:
-            r = subprocess.run(["node", "--test"] + suites, cwd=tmp, capture_output=True,
-                               text=True, timeout=180)
+            # TAP, asked for by name: the counts below are read from TAP lines,
+            # and node's default reporter depends on the version and on whether
+            # stdout is a terminal. On 2026-10-31 CI read this as "could not be
+            # read" from 09:38Z on and every SPA gate went unmeasured.
+            r = subprocess.run(["node", "--test", "--test-reporter=tap"] + suites, cwd=tmp,
+                               capture_output=True, text=True, timeout=180)
             m = re.search(r"^# tests (\d+)$", r.stdout, re.M)
             if not m:
+                tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
+                _SPA_UNREAD["why"] = "node --test printed no '# tests' line (exit %d): %s" % (r.returncode, " | ".join(tail)[:200])
                 return None
             run_names = {x.group(1) for x in map(_SPA_NOT_OK.match, r.stdout.splitlines()) if x}
             if r.returncode != 0 and not run_names:
+                _SPA_UNREAD["why"] = "node --test exited %d without a named failure" % r.returncode
                 return None
             tests += int(m.group(1))
             names |= run_names
@@ -405,8 +415,8 @@ def _spa_gates(refs):
         got = _spa_failures(local, nm)
         secs = (datetime.datetime.now() - t0).total_seconds()
         if got is None:
-            sys.stderr.write("amux pre-push: SPA gates on %s could not be read; CI's spa-gates "
-                             "still runs verdict=spa_gates_unmeasured\n" % short)
+            sys.stderr.write("amux pre-push: SPA gates on %s could not be read (%s); CI's spa-gates "
+                             "still runs verdict=spa_gates_unmeasured\n" % (short, _SPA_UNREAD["why"] or "no reason recorded"))
             _audit("spa_gates", "verdict=spa_gates_unmeasured sha=%s" % short)
             continue
         tests, failing = got
