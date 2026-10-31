@@ -119,6 +119,10 @@ jobs:
         # 2026-10-31, so no chromium scenario reported at all, while the
         # webkit leg alone took 45 min. One project per leg keeps each inside
         # the budget without raising it.
+        #
+        # ios-safari is two shards for the same reason: alone it took 45 min
+        # on 2026-10-31 07:00Z and was cancelled at 60 min on the 08:19Z run
+        # (41184110001), while desktop and mobile finished in 40.
         include:
           - browser: chromium
             leg: desktop
@@ -127,8 +131,11 @@ jobs:
             leg: mobile
             projects: --project=mobile
           - browser: webkit
-            leg: ios-safari
-            projects: --project=ios-safari
+            leg: ios-safari-1
+            projects: --project=ios-safari --shard=1/2
+          - browser: webkit
+            leg: ios-safari-2
+            projects: --project=ios-safari --shard=2/2
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
