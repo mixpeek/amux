@@ -167,6 +167,11 @@ PY
   return 1
 }
 
+# A Chat tab (AMUX_SESSION=<worker>@chat) is not a worker: it reports nothing
+# (AF-1101). The worker's own report below is the twin that still arrives.
+HOME="$TMP/home" AMUX_URL="$URL" AMUX_SESSION=probe@chat \
+  bash scripts/hooks/hook-report.sh subagent-start subagent-start-hook \
+  <<<'{"session_id":"chat-1","agent_id":"chat-agent"}'
 HOME="$TMP/home" AMUX_URL="$URL" AMUX_SESSION=probe \
   bash scripts/hooks/hook-report.sh subagent-start subagent-start-hook \
   <<<'{"session_id":"abc-123","agent_id":"explore-1"}'
@@ -179,6 +184,12 @@ assert v["source"] == "subagent-start-hook" and v["session_id"] == "abc-123", v
 assert v["event_id"] == "abc-123:explore-1:start", v
 assert v["delivery_attempt"] == 1, v
 print("ok   SubagentStart carries session, agent and stable event identity")
+PY
+/usr/bin/python3 - "$CAPTURE" <<'PY'
+import json,sys
+rows=[json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+assert not any("@chat" in r["path"] or "chat-agent" in json.dumps(r["body"]) for r in rows), rows
+print("ok   a Chat tab reports nothing; the worker's report arrives")
 PY
 /usr/bin/python3 - "$CAPTURE" <<'PY'
 import json,sys

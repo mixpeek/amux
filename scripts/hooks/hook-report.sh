@@ -242,6 +242,10 @@ if [ -n "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ] && [ ! -f "$HOME/.amux/sess
   esac
 fi
 [ -n "$AMUX_SESSION" ] || exit 0
+# A Chat tab runs its own Claude with AMUX_SESSION=<worker>@chat. It is not a
+# worker and has no status the server tracks, so its reports were 404 "is
+# <worker>'s Chat tab, not a worker", about 460 a day from 16 tabs (AF-1101).
+case "$AMUX_SESSION" in *@chat) exit 0 ;; esac
 # ISOLATED WORKERS (AMUX-3232). An isolated worker has AMUX_SESSION stripped at
 # spawn, so DERIVED=1 is the discriminator. But "derived" also covers a real lane
 # that lost its env var mid-run (the original MR-43 case). The two are separated
