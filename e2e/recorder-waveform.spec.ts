@@ -14,6 +14,11 @@ declare function switchView(view: string): void;
 
 // The tone microphone needs audio to start without a gesture (the page recorder test).
 test.use({ launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] } });
+// Chromium only, as in recorder.spec.ts: the autoplay flag is a Chromium switch,
+// and WebKit refuses to launch with it ("browserType.launch: Target page,
+// context or browser has been closed"), which turned main's ios-safari shard red
+// from 4f0a16970 (AF-1112). A skipped test never launches the browser.
+test.skip(({ browserName }) => browserName !== 'chromium', 'the autoplay flag and the tone microphone are Chromium only');
 
 async function openRecord(page: Page) {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
