@@ -1513,15 +1513,21 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
 /// The query `schedule.enabled_is_firing` runs, as a `const` so a test drives
 /// the SHIPPED SQL. `deleted IS NULL AND enabled = 1` is the scheduler's own
 /// due predicate (scheduler.rs `due_schedules`), so this check judges exactly
-/// the rows the scheduler would fire. Column 8 is the newest re-enable or
-/// expression change from `schedule_audit`: a schedule switched back on today
-/// has not been silent since its last fire a month ago.
+/// the rows the scheduler would fire. Column 8 is the newest re-enable,
+/// expression change or PATCH from `schedule_audit`: a schedule switched back
+/// on today has not been silent since its last fire a month ago. Every PATCH
+/// recomputes `next_run` from the moment of the edit (api/schedules.rs), so a
+/// brief edit restarts the clock too (AF-1062: SCHED-880, every 120m, last ran
+/// 00:29Z, its command PATCHed at 01:37:57Z moved next_run to 03:37, and this
+/// check called it silent at 03:34). Only `api-patch` rows count: the run
+/// path's own `pass_state` writes are not edits.
 pub(crate) const ENABLED_SCHEDULE_CLOCK_SQL: &str =
     "SELECT s.id, COALESCE(s.title,''), COALESCE(s.schedule_expr,''), \
             COALESCE(s.sched_type,'recurring'), s.last_run, s.created, \
             COALESCE(s.next_run,''), s.not_before, \
             (SELECT MAX(a.ts) FROM schedule_audit a WHERE a.schedule_id = s.id \
-               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr')) \
+               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr' \
+                    OR a.source = 'api-patch')) \
      FROM schedules s WHERE s.deleted IS NULL AND s.enabled = 1";
 
 /// `last_run` is declared TEXT and has held unix ints, floats and digit
@@ -5529,6 +5535,30 @@ mod enabled_schedule_clock_sql_tests {
         )
         .unwrap();
         assert_eq!(verdict(&c).0, Status::Pass);
+    }
+
+    /// AF-1062: a PATCH that edits only the brief recomputes next_run from the
+    /// edit, so the clock restarts there; a check's pass_state write does not.
+    #[test]
+    fn a_patched_brief_restarts_the_clock_and_a_check_write_does_not() {
+        let c = db();
+        add(&c, "BRIEF", "every 120m", 1, Some(NOW - 11_100), NOW - 900_000);
+        let (st, obs, _) = verdict(&c);
+        assert_eq!(st, Status::Fail, "silent 3h05m on a 2h cadence: {obs}");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'pass_state','','ok','check')",
+            [NOW - 600],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Fail, "a check's write is not an edit");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'command','old brief','new brief','api-patch')",
+            [NOW - 7_000],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Pass, "an edit 1h57m ago restarts the 2h clock");
     }
 
     #[test]
