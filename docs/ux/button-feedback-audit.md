@@ -266,6 +266,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Show their version | `_fileConflictResolve` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Take theirs | `_fileConflictResolve` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Download | `_fileDownload` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Open in worker | `_fileOpenInWorker` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Pin | `_filePinOverlay` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Full-screen player | `_fileVideoFullscreen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1209,8 +1210,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ; h += | `_connOpen` | onclick |
 | app.js | … | `_connSetFilter` | onclick |
 | app.js | … | `_connTab` | onclick |
-| index.html | Link | `_copyFileDeeplink` | onclick |
-| index.html | Path | `_copyFilePath` | onclick |
+| index.html | Copy link | `_copyFileDeeplink` | onclick |
+| index.html | Copy path | `_copyFilePath` | onclick |
 | app.js | Copy MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | app.js | MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | index.html | Copy | `_copyOwnerLink` | onclick |
@@ -1273,6 +1274,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Teleprompter | `_filesOpenTeleprompter` | onclick |
 | index.html | More | `_filesOverflowToggle` | onclick |
 | app.js | ${esc(b)} | `_filterBranches` | onclick |
+| app.js | Find issues | `_fowChip` | onclick |
+| app.js | Make changes | `_fowChip` | onclick |
+| app.js | Summarize | `_fowChip` | onclick |
 | app.js | Clear selection | `_fselClear` | onclick |
 | index.html | Files | `_gitDiffBack` | onclick |
 | app.js | ← Back | `_gmailCloseThread` | onclick |
@@ -1612,7 +1616,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Cancel | `closeTTS` | onclick |
 | app.js | button | `closeTTS` | onclick |
 | app.js | Close themes | `closeThemes` | onclick |
-| index.html | Copy | `copyFileContent` | onclick |
+| index.html | Copy text | `copyFileContent` | onclick |
 | index.html | Clear console | `dtClearConsole` | onclick |
 | index.html | Console | `dtSwitchTab` | onclick |
 | index.html | Info | `dtSwitchTab` | onclick |

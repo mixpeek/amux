@@ -4211,12 +4211,13 @@
     <button id="file-present-btn" onclick="_filePresent()" title="Present full screen (arrow keys to move, Esc to exit)" style="display:none;">&#x25B6; Present</button>
     <button class="file-menu-btn" id="file-menu-btn" onclick="_toggleFileMenu(event)" title="More actions" aria-label="More actions">&#x22EF;</button>
     <div class="file-actions" id="file-actions">
+      <button class="file-view-tab" id="file-tab-worker" onclick="_fileOpenInWorker()" title="Hand this file to a worker with instructions">Open in worker&#x2026;</button>
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
       <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-readaloud" onclick="_ttsSpeak(_mdToSpeech(_fileData&&_fileData.content),this)" title="Read aloud" style="display:none;">&#x1F50A; Read Aloud</button>
-      <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
-      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy relative path">Path</button>
-      <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy deep link">Link</button>
+      <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy the file's text">Copy text</button>
+      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy the file's path">Copy path</button>
+      <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy a link that opens this file">Copy link</button>
       <button class="file-view-tab" id="file-download-btn" onclick="_fileDownload()" style="display:none;">&#x2B07; Download</button>
       <button class="file-view-tab" id="file-tab-pin" onclick="_filePinOverlay()" title="Float as overlay on desktop">&#x1F4CC; Pin</button>
     </div><!-- /file-actions -->

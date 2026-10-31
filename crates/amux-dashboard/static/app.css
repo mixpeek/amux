@@ -1268,6 +1268,12 @@
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-md);
     padding: var(--space-1-5); z-index: 60; min-width: 170px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
   .file-actions.open { display: flex; }
+  /* Open in worker (app.js _fileOpenInWorker), inside the shared form dialog. */
+  .fow-to { display: flex; gap: var(--space-4); margin-bottom: var(--space-3); }
+  .fow-to label { display: inline-flex; align-items: center; gap: var(--space-1-5); min-height: 44px; cursor: pointer; }
+  .fow-chips { display: flex; gap: var(--space-1-5); flex-wrap: wrap; justify-content: center; margin: var(--space-2) 0; }
+  .fow-chips .btn { flex-shrink: 0; }
+  .fow-file code { word-break: break-all; }
   .file-actions .file-view-tab { width: 100%; justify-content: flex-start; text-align: left; border-radius: var(--radius-lg); font-size: var(--fs-md); padding: var(--space-1-5) var(--space-3-5); flex-shrink: 0; }
   .file-menu-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--fs-3xl); line-height: 1; padding: var(--space-1) var(--space-2); flex-shrink: 0; }
   .file-overlay-body {
@@ -1437,6 +1443,10 @@
     .file-overlay-header .btn { min-width: 40px; min-height: 40px; font-size: var(--fs-2xl); padding: var(--space-1-5) var(--space-2-5); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .file-menu-btn { min-width: 40px; min-height: 40px; font-size: var(--fs-4xl); }
     .file-actions .file-view-tab { min-height: 44px; font-size: var(--fs-xl); padding: var(--space-2) var(--space-3-5); }
+    /* A phone: the menu is a sheet from the bottom edge, in thumb reach (owner, 2026-10-31). */
+    .file-actions { position: fixed; top: auto; left: 0; right: 0; bottom: 0; max-width: none; min-width: 0; max-height: 70vh;
+      border-radius: var(--radius-2xl) var(--radius-2xl) 0 0; padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom));
+      box-shadow: var(--shadow-md); z-index: 400; }
     #md-search-row { padding: var(--space-2) var(--space-1); }
     #md-search-input { font-size: var(--fs-2xl); min-height: 40px; }
     #md-search-row .btn { min-width: 40px; min-height: 40px; }

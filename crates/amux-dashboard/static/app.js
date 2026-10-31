@@ -11810,6 +11810,7 @@ async function _outcomeStart(text, cfg) {
                  : 'Started ' + name);
   await fetchSessions();
   document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return name;
 }
 
 // ── Set default model label from server config ──
@@ -29174,6 +29175,72 @@ function _fileMenuOutside(e) {
   }
 }
 
+// ── Open in worker (owner, 2026-10-31 mockup) ──
+// Hands the open file to a worker, new or existing, with instructions. The file
+// goes as an @path the worker reads itself; nothing is copied or uploaded.
+const _FOW_CHIPS = { summarize: 'Summarize this file.', issues: 'Find issues in this file and list them.', change: 'Make these changes to this file: ' };
+function _fowChip(b) {
+  const ta = document.getElementById('fow-text');
+  if (!ta) return;
+  ta.value = _FOW_CHIPS[b.dataset.chip] || '';
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+function _fowMode() {
+  const existing = document.querySelector('input[name="fow-to"]:checked')?.value === 'existing';
+  const f = document.getElementById('fow-worker-field');
+  if (f) f.style.display = existing ? '' : 'none';
+}
+async function _fileOpenInWorker() {
+  const path = _fileData && _fileData.path;
+  if (!path) return;
+  const names = (typeof sessions !== 'undefined' ? sessions : []).map(s => s.name).filter(n => n && !String(n).endsWith('@chat'));
+  let last = '';
+  try { last = localStorage.getItem('amux_fow_to') || ''; } catch (e) {}
+  const def = names.includes(last) ? last : ((typeof _lastPeekedSession !== 'undefined' && _lastPeekedSession) || names[0] || '');
+  const dirty = _fileEditDirty();
+  const name = path.split('/').pop();
+  const html = '<div class="fow-to" role="radiogroup" aria-label="Send to">'
+    + '<label><input type="radio" name="fow-to" value="new" onchange="_fowMode()"> New worker</label>'
+    + '<label><input type="radio" name="fow-to" value="existing" checked onchange="_fowMode()"> Existing worker</label></div>'
+    + '<label class="ui-field" id="fow-worker-field">Worker<input id="fow-worker" class="input" list="fow-workers" value="' + esc(def) + '" autocomplete="off"></label>'
+    + '<datalist id="fow-workers">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>'
+    + '<label class="ui-field">Instructions<textarea id="fow-text" class="input" rows="4" placeholder="What should it do with this file?"></textarea></label>'
+    + '<div class="fow-chips"><button type="button" class="btn" data-chip="summarize" onclick="_fowChip(this)">Summarize</button>'
+    + '<button type="button" class="btn" data-chip="issues" onclick="_fowChip(this)">Find issues</button>'
+    + '<button type="button" class="btn" data-chip="change" onclick="_fowChip(this)">Make changes</button></div>'
+    + '<div class="ui-help fow-file">Attached: <b>' + esc(name) + '</b> <code>' + esc(path) + '</code><br>'
+    + (dirty ? 'Your unsaved edits are saved first, so the worker reads them.' : 'No unsaved edits: the worker reads the file as it is on disk.') + '</div>';
+  const shown = showFormModal('Open in worker', html, 'Open in worker');
+  setTimeout(() => document.getElementById('fow-text')?.focus(), 30);
+  if (!(await shown)) return;
+  const to = document.querySelector('input[name="fow-to"]:checked')?.value || 'existing';
+  const worker = ((document.getElementById('fow-worker') || {}).value || '').trim();
+  const instr = ((document.getElementById('fow-text') || {}).value || '').trim();
+  if (!instr) { showToast('Say what the worker should do with the file'); return; }
+  if (to === 'existing' && !worker) { showToast('Pick a worker to send to'); return; }
+  if (dirty) { await _fileSave(); if (_fileEditDirty()) { showToast('Not sent: the file could not be saved first'); return; } }
+  const text = instr + '\n@' + path;
+  let opened = '';
+  if (to === 'new') {
+    const cfg = await _outcomeDefaults();
+    cfg.dir = path.slice(0, path.lastIndexOf('/')) || cfg.dir;
+    opened = await _outcomeStart(text, cfg) || '';
+  } else {
+    try { localStorage.setItem('amux_fow_to', worker); } catch (e) {}
+    const res = await doSend(worker, text);
+    if (res === 'sent' || res === 'queued') { showToast((res === 'sent' ? 'Sent to ' : 'Queued for ') + worker); opened = worker; }
+    else if (res !== 'declined') showToast('Not sent to ' + worker);
+  }
+  _mdBeacon('file_open_in_worker', { to, sent: opened ? 1 : 0 });
+  if (!opened) return;
+  // The worker opens over the file, and Back returns to it (as a @worker link does).
+  if (typeof _navNote === 'function') { clearTimeout(_nav.timer); _navNote(); }
+  closeFilePreview();
+  if (typeof openPeek === 'function') openPeek(opened);
+  if (typeof _navSoon === 'function') _navSoon();
+}
+
 // ── Reading position (resume where you left off) ─────────────────────────────
 // Mirrors the video/audio resume: remember how far through a document you are so
 // reopening it restores the scroll. Stored as a FRACTION (0..1) keyed by path in
@@ -33029,7 +33096,7 @@ async function copyFileContent() {
   await navigator.clipboard.writeText(_fileData.content);
   const btn = document.getElementById('file-tab-copy');
   btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  setTimeout(() => { btn.textContent = 'Copy text'; }, 1500);
 }
 
 // ═══════ FILE EXPLORER ═══════

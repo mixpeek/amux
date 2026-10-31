@@ -1944,6 +1944,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileOpenInWorker": {
+      "kind": "command._fileOpenInWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filePinOverlay": {
       "kind": "command._filePinOverlay",
       "feedback_required": true,
