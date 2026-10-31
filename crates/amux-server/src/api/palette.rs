@@ -364,6 +364,12 @@ pub fn rank<'a>(
         } else {
             continue;
         };
+        // A file matches by its name or path, never by a fuzzy guess: long
+        // file names fuzzy-match almost any query, and on 2026-10-31 "to-do"
+        // put three unrelated docs above real cards.
+        if e.kind == "file" && tier < 2 {
+            continue;
+        }
         if is_hidden(e) && !with_hidden {
             hidden += 1;
             continue;
@@ -580,6 +586,8 @@ mod tests {
         assert_eq!(hits[0].entry.kind, "file");
         assert_eq!(hits[0].entry.title, "To-Do.md");
         assert!(fingerprint(&conn).unwrap().files >= 10, "a visit changes the fingerprint, so the index rebuilds");
+        let (fuzzy, _) = rank(&entries, "tdmd", NOW, false);
+        assert!(fuzzy.iter().all(|h| h.entry.kind != "file"), "a file is never a fuzzy guess");
     }
 
     fn e(

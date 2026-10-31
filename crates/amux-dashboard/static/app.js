@@ -72877,7 +72877,10 @@ function _cmdkCompute() {
       scored.push([{ ...it, tier: m.tier, match: m.match,
         snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, m.tier * 10000 + _cmdkBoost(it, m, u)]);
     }
+    // A file you pinned shows once, as the pin.
+    const pinned = new Set(scored.filter(([it]) => it.kind === 'pin' && it.body).map(([it]) => it.body));
     for (const h of (_cmdk.server || [])) {
+      if (h.kind === 'file' && pinned.has(h.id)) continue;
       // An older server answers without tier/boost: read the tier off its score.
       const tier = h.tier || (h.score >= 1000 ? 5 : h.score >= 200 ? 4 : 3);
       // A file's sub line is its folder; its status is the visit count.
