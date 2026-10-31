@@ -1475,7 +1475,8 @@ pub(crate) enum CachedAnswer {
     /// on git (the first read per repo still took 1.5-2.8 s on a loaded box
     /// after the shared read, 2026-10-31).
     Stale,
-    /// Nothing cached (the first call after a restart): compute inline.
+    /// Nothing cached (the first call after a restart): answer "computing"
+    /// at once and compute behind the reply (AF-1083).
     Missing,
 }
 
@@ -1505,26 +1506,40 @@ pub async fn owner_requests(
     let days = q.get("days").and_then(|v| v.parse::<f64>().ok()).unwrap_or(7.0).clamp(1.0, 30.0);
     let key = format!("{session}|{days}");
     let cached = OWNER_REQUESTS_CACHE.lock().ok().and_then(|c| c.get(&key).cloned());
-    match (cached_answer(cached.as_ref().map(|(at, _)| at.elapsed())), cached) {
-        (CachedAnswer::Fresh, Some((_, v))) => return Json(v).into_response(),
-        (CachedAnswer::Stale, Some((at, mut v))) => {
-            let start = OWNER_REQUESTS_REFRESHING.lock().map(|mut r| r.insert(key.clone())).unwrap_or(false);
-            if start {
-                let k = key.clone();
-                tokio::spawn(async move {
-                    let _ = compute_owner_requests(state, session, days, k.clone()).await;
-                    if let Ok(mut r) = OWNER_REQUESTS_REFRESHING.lock() {
-                        r.remove(&k);
-                    }
-                });
+    let verdict = cached_answer(cached.as_ref().map(|(at, _)| at.elapsed()));
+    if let (CachedAnswer::Fresh, Some((_, v))) = (&verdict, &cached) {
+        return Json(v.clone()).into_response();
+    }
+    // Stale or missing: one refresh per key, behind the reply.
+    let start = OWNER_REQUESTS_REFRESHING.lock().map(|mut r| r.insert(key.clone())).unwrap_or(false);
+    if start {
+        let k = key.clone();
+        let who = session.clone();
+        tokio::spawn(async move {
+            // AT MOST FOUR COMPUTES AT ONCE (AF-1083). After a restart every
+            // worker card asks at once with nothing cached; computing them all
+            // inline held each request 34-74 s (13:35Z and 14:33Z, 2026-10-31)
+            // and filled the read pool for every other endpoint.
+            static COMPUTES: std::sync::LazyLock<tokio::sync::Semaphore> =
+                std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+            if let Ok(_permit) = COMPUTES.acquire().await {
+                let _ = compute_owner_requests(state, who, days, k.clone()).await;
             }
+            if let Ok(mut r) = OWNER_REQUESTS_REFRESHING.lock() {
+                r.remove(&k);
+            }
+        });
+    }
+    match cached {
+        Some((at, mut v)) => {
             v["cached_age_s"] = json!(at.elapsed().as_secs());
             v["refreshing"] = json!(true);
-            return Json(v).into_response();
+            Json(v).into_response()
         }
-        _ => {}
+        // The dashboard ignores measured:false and asks again on its next pass.
+        None => Json(json!({"measured": false, "n_considered": 0, "session": session, "days": days, "computing": true,
+            "why_unmeasured": "not computed since the server started; computing now, ask again in a few seconds"})).into_response(),
     }
-    compute_owner_requests(state, session, days, key).await
 }
 
 /// Compute the answer and cache it. Split from the handler so an expired
@@ -4532,8 +4547,31 @@ mod subagent_walk_tests {
         assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cold_cache_answers_computing_at_once_and_the_next_ask_gets_the_answer() {
+        // AF-1083: after a restart every card asked at once and each computed
+        // inline, 34-74 s per request. The first ask now answers at once.
+        use axum::extract::{Query, State};
+        let state = crate::api::standing_approvals::tests::test_state();
+        let q = || Query(std::collections::HashMap::from([("session".to_string(), format!("af1083-{}", std::process::id()))]));
+        let body = |r: Response| async move {
+            serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+        };
+        let t0 = std::time::Instant::now();
+        let first = body(owner_requests(State(state.clone()), q()).await).await;
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "the first ask waited {:?}", t0.elapsed());
+        assert_eq!((first["measured"].as_bool(), first["computing"].as_bool()), (Some(false), Some(true)), "{first}");
+        let mut got = Value::Null;
+        for _ in 0..100 {
+            got = body(owner_requests(State(state.clone()), q()).await).await;
+            if got["measured"].as_bool() == Some(true) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(got["measured"].as_bool(), Some(true), "the background compute never landed: {got}");
+    }
+
     #[test]
-    fn an_expired_answer_is_served_and_refreshed_and_only_a_missing_one_waits() {
+    fn an_expired_answer_is_served_and_refreshed_and_a_missing_one_is_computed_behind_the_reply() {
         use std::time::Duration;
         assert_eq!(cached_answer(Some(Duration::from_secs(299))), CachedAnswer::Fresh, "a minute-old count is served, not recomputed");
         assert_eq!(cached_answer(Some(Duration::from_secs(300))), CachedAnswer::Stale);
