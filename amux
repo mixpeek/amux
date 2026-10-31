@@ -4610,6 +4610,43 @@ A block with no named cause is unfalsifiable: nobody else can tell when it clear
       echo "$result" | _board_outcome "$id" "" "blocked"
       return $?
       ;;
+    triage|accept)
+      # TRIAGE (owner, 2026-10-31: "tell the worker to capture the task in a
+      # issue and keep it there dont automatically flush it"; "triage sounds
+      # right"). The `triage` tag keeps a card in backlog: no drain, promotion,
+      # blocker review or nudge touches it until `accept`. Who and why land on
+      # the card.
+      local verb="$subcmd" id="${1:-}"
+      _board_id_guard "$verb" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board triage <ISSUE-ID> [why]   keep a card in backlog, never picked up automatically
+       amux board accept <ISSUE-ID> [why]   release it to backlog, where auto-dispatch can take it"
+      shift
+      local why="$*" result
+      result=$(_curl -sk "$AMUX_API/api/board/$id" | V="$verb" W="${AMUX_WORKER:-${AMUX_SESSION:-owner}}" Y="$why" python3 -c '
+import json, os, sys
+c = json.load(sys.stdin)
+if "id" not in c:
+    print(json.dumps({"__error": c.get("error") or "card not found"})); sys.exit(0)
+tags = [t for t in (c.get("tags") or []) if t.strip().lower() != "triage"]
+body = {}
+if os.environ["V"] == "triage":
+    tags.append("triage")
+    if c.get("status") == "todo":
+        body["status"] = "backlog"
+    note = "In triage (%s): kept in backlog, never picked up automatically, until amux board accept." % os.environ["W"]
+else:
+    note = "Accepted (%s): back in backlog, where auto-dispatch can take it." % os.environ["W"]
+if os.environ["Y"].strip():
+    note += " Why: " + os.environ["Y"].strip()
+body["tags"] = tags
+body["desc_append"] = note
+print(json.dumps(body))' )
+      echo "$result" | grep -q '"__error"' && die "amux board $verb: $(echo "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin)["__error"])')"
+      result=$(printf '%s' "$result" | _curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "$([[ $verb == triage ]] && echo "put in triage" || echo accepted)"
+      return $?
+      ;;
     unblock)
       local id="${1:-}"
       _board_id_guard "unblock" "$id"

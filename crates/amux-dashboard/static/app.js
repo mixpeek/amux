@@ -46926,8 +46926,12 @@ function renderBoardFilters() {
     if (t.includes(':') || t.includes('@')) return;
     tagCount[t] = (tagCount[t] || 0) + 1;
   }));
-  const topTags = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const topTags = Object.entries(tagCount).filter(([t]) => t !== 'triage').sort((a, b) => b[1] - a[1]).slice(0, 12);
   let html = '';
+  // Cards a worker captured and the owner has not accepted yet: kept in
+  // backlog, never picked up automatically (amux board triage / accept).
+  const nTriage = tagCount.triage || 0;
+  if (nTriage) html += "<button class='board-filter-chip' id='board-triage-chip' title='Captured, waiting for you to accept; nothing picks these up automatically' onclick='_bfTarget=\"board\";_bfAppend(\"tag:triage\")'>Triage <span style='color:var(--dim)'>" + nTriage + "</span></button>";
   if (topTags.length) {
     html += '<span class="board-filter-label">Group:</span>';
     topTags.forEach(([t, n]) => {
@@ -47124,6 +47128,10 @@ function _boardCtxMenu(e, id) {
       + esc(st.label) + '</div>';
   });
   h += '<div class="card-menu-sep"></div>';
+  const triaged = _boardInTriage(item);
+  h += '<div class="card-menu-item" id="board-ctx-triage" onclick="event.stopPropagation();_boardCtxClose();_boardSetTriage(\''
+    + escJs(id) + '\',' + (!triaged) + ')"><span class="mi">' + (triaged ? '&#x2713;' : '&#x23F8;') + '</span> '
+    + (triaged ? 'Accept from triage' : 'Put in triage') + '</div>';
   h += '<div class="card-menu-item" onclick="event.stopPropagation();_boardCtxCopy(\''
     + escJs(id) + '\')"><span class="mi">&#x2398;</span> Copy ID</div>';
   const m = document.createElement('div');
@@ -49763,7 +49771,43 @@ function _renderDetailStatusBtns() {
   const sty = statusStyle(boardDetailStatus);
   document.getElementById('bd-status-row').innerHTML = '<label class="bd-status-control">Status <select id="bd-status-select" aria-label="Task status" style="background:' + sty.bg + ';color:' + sty.color + '" onchange="boardDetailSetStatus(this.value)">'
     + boardStatuses.map(s => '<option value="' + esc(s.id) + '"' + (boardDetailStatus === s.id ? ' selected' : '') + '>' + esc(s.label) + '</option>').join('')
-    + '</select></label><button type="button" class="btn" onclick="boardDetailSave()">Move</button>';
+    + '</select></label><button type="button" class="btn" onclick="boardDetailSave()">Move</button>'
+    + (() => {
+      const it = (boardItems || []).find(i => i.id === boardDetailId);
+      if (!it) return '';
+      const on = _boardInTriage(it);
+      return '<button type="button" class="btn" id="bd-triage-btn" title="' + (on ? 'Release it to the backlog, where workers pick it up' : 'Keep it in backlog; nothing picks it up until you accept it')
+        + '" onclick="_boardSetTriage(boardDetailId,' + (!on) + ')">' + (on ? 'Accept' : 'Triage') + '</button>';
+    })();
+}
+
+// TRIAGE (owner, 2026-10-31): a card in triage stays in backlog and nothing
+// picks it up until it is accepted. The `triage` tag is what the server's
+// board-drive honours; this writes the same tag `amux board triage` does.
+function _boardInTriage(item) {
+  return (item.tags || []).some(t => String(t).trim().toLowerCase() === 'triage');
+}
+
+async function _boardSetTriage(id, on) {
+  const item = (boardItems || []).find(i => i.id === id);
+  if (!item) return;
+  const tags = (item.tags || []).filter(t => String(t).trim().toLowerCase() !== 'triage');
+  if (on) tags.push('triage');
+  const body = { tags, desc_append: on
+    ? 'In triage (owner, from the board): kept in backlog, never picked up automatically, until accepted.'
+    : 'Accepted (owner, from the board): back in backlog, where auto-dispatch can take it.' };
+  if (on && item.status === 'todo') body.status = 'backlog';
+  try {
+    const r = await fetch(API + '/api/board/' + encodeURIComponent(id), { method: 'PATCH', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); showToast((on ? 'Could not put ' : 'Could not accept ') + id + ': ' + (d.error || r.status)); return; }
+    item.tags = tags;
+    if (body.status) item.status = body.status;
+    showToast(on ? id + ' is in triage: kept, not picked up' : id + ' accepted into the backlog');
+    try { amuxTrack('board_triage', { on, measured: true, n_considered: 1 }); } catch (e) {}
+    if (boardDetailId === id) _renderDetailStatusBtns();
+    renderBoard();
+    fetchBoard();
+  } catch (e) { showToast('Could not reach the server: ' + e.message); }
 }
 
 function boardDetailSetStatus(st) {

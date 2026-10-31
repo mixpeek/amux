@@ -354,6 +354,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_boardSetTriage": {
+      "kind": "command._boardSetTriage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_boardShowMore": {
       "kind": "command._boardShowMore",
       "feedback_required": true,

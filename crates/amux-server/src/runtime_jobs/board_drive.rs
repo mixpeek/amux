@@ -179,6 +179,25 @@ const BACKLOG_STALE_AGE_S: i64 = 14 * 86400;
 /// finally acting on the card — never by an automated status change.
 pub(crate) const SOURCE_REF_STALE_S: i64 = 24 * 3600;
 
+/// TRIAGE (owner, 2026-10-31: "something where i can tell the worker to
+/// capture the task in a issue and keep it there dont automatically flush
+/// it"; "triage sounds right"). Like Linear's Triage, a card tagged `triage`
+/// waits to be accepted: it stays in backlog, no drain offers it, no promotion
+/// moves it, no blocker review or backlog-triage nudge asks about it, and an
+/// isolated lane's hand-off leaves it. `amux board accept` (the tag removed)
+/// releases it to the backlog, where auto-dispatch takes it. A tag, not a
+/// status, so every status query stays as it is.
+pub(crate) const TRIAGE_TAG: &str = "triage";
+
+pub(crate) fn in_triage(row: &bs::IssueRow) -> bool {
+    row.tags.iter().any(|t| t.trim().eq_ignore_ascii_case(TRIAGE_TAG))
+}
+
+/// SQL: the card whose id is `col` is not in triage.
+fn not_in_triage_sql(col: &str) -> String {
+    format!("NOT EXISTS (SELECT 1 FROM issue_tags tt WHERE tt.issue_id={col} AND lower(trim(tt.tag))='{TRIAGE_TAG}')")
+}
+
 /// A source ref is an external-trigger block only while the owner has recently
 /// verified it. Older refs still preserve message/provenance links but do not
 /// make an otherwise actionable card undispatchable.
@@ -1798,7 +1817,9 @@ pub(crate) fn hand_off_isolated_cards(
              AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0 \
              AND COALESCE(type,'') NOT IN ('tripwire','watch','epic') AND updated < ?2 \
              AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=issues.id \
-                             AND lower(t.tag) LIKE 'needs:you%') ORDER BY id",
+                             AND lower(t.tag) LIKE 'needs:you%') \
+             AND NOT EXISTS (SELECT 1 FROM issue_tags tt WHERE tt.issue_id=issues.id \
+                             AND lower(trim(tt.tag))='triage') ORDER BY id",
         )?;
         let v = st.query_map(rusqlite::params![lane, untouched_before], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -2143,6 +2164,12 @@ fn self_owned_backlog_blockers(
             if sess != session || !matches!(bs::parse_status(&st), Some(TaskStatus::Backlog)) {
                 return false;
             }
+            let triage: bool = conn
+                .query_row(&format!("SELECT NOT ({})", not_in_triage_sql("?1")), rusqlite::params![d], |r| r.get(0))
+                .unwrap_or(false);
+            if triage {
+                return false;
+            }
             // A dependency PARKED ON A TRIGGER (`--trigger`: source_ref plus a
             // fresh last_verified_at) is a decision, not an oversight; the
             // drain already honours it for SOURCE_REF_STALE_S. Promoting it
@@ -2393,12 +2420,14 @@ fn drainable_backlog_rows(
                            AND lower(t.tag) LIKE 'needs:you%') \
            AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
                            AND lower(t.tag) = 'defer:focused') \
+           AND {TRIAGE} \
            AND i.id NOT IN ({CLAIMED}) \
            AND COALESCE(i.blocked_on,'') = '' \
            AND NOT (COALESCE(i.source,'')='capture' AND COALESCE(i.source_ref,'') <> '') \
          ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC, i.id ASC",
             CAPTURE = bs::capture_shell_sql(),
-            CLAIMED = claimed_since_sql(2)
+            CLAIMED = claimed_since_sql(2),
+            TRIAGE = not_in_triage_sql("i.id")
         ))
         .and_then(|mut st| {
             st.query_map(rusqlite::params![session, reclaim_cut], |r| {
@@ -2913,6 +2942,7 @@ impl PromoteArm {
 /// exclusion, an ownership rule) lands on both arms or neither.
 fn still_promotable(conn: &Connection, row: &bs::IssueRow, arm: PromoteArm) -> bool {
     if row.status != "backlog"
+        || in_triage(row)
         || row.owner_type != "agent"
         || row.archived != 0
         || is_dormant_type(&row.item_type)
@@ -4956,11 +4986,12 @@ fn stale_backlog_candidates(
 ) -> Vec<(String, String, i64)> {
     let cutoff = now - BACKLOG_STALE_AGE_S;
     conn.prepare(
-        "SELECT id, title, created FROM issues \
+        &format!("SELECT id, title, created FROM issues \
          WHERE session=?1 AND status='backlog' AND deleted IS NULL \
          AND COALESCE(archived,0)=0 AND owner_type='agent' \
+         AND {} \
          AND created < ?2 \
-         ORDER BY created ASC LIMIT 10",
+         ORDER BY created ASC LIMIT 10", not_in_triage_sql("issues.id")),
     )
     .and_then(|mut st| {
         st.query_map(rusqlite::params![session, cutoff], |r| {
@@ -7568,8 +7599,9 @@ fn blocker_recoveries_with_policy(
          AND COALESCE(i.archived,0)=0 AND COALESCE(i.type,'') NOT IN ('epic','watch','tripwire') \
          AND NOT {capture} AND COALESCE(i.source,'')<>'capture' \
          AND (i.status IN ('needsyou','needs_you') OR NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id AND lower(t.tag) LIKE 'needs:you%')) \
+         AND {triage} \
          ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC, i.id ASC",
-        capture = bs::capture_shell_sql()))?;
+        capture = bs::capture_shell_sql(), triage = not_in_triage_sql("i.id")))?;
     let ids = stmt
         .query_map([lane], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -14428,6 +14460,42 @@ mod tests {
     /// nothing sets it by default, so its own test does not need a "does this
     /// silence the drain" control the way `blocked_on`'s does — a tag is
     /// opt-in the same way `--on` naming a cause is.
+    /// Owner, 2026-10-31: "tell the worker to capture the task in a issue and
+    /// keep it there dont automatically flush it". A card in triage is offered
+    /// by no drain, promotion, blocker review or backlog-triage nudge, and an
+    /// isolated lane's hand-off leaves it; accepted, it is offered again.
+    #[test]
+    fn a_card_in_triage_stays_in_backlog_until_accepted() {
+        let conn = board_db();
+        let now = now_f64();
+        // TB-1 is drainable; TB-3 is also promotable (its dependency TB-0 is
+        // verified), so the promotion arm is checked on it.
+        add_card(&conn, "TB-1", "lane", "backlog", "kept for later", "SCOPE: x");
+        add_card(&conn, "TB-0", "lane", "verified", "the dependency", "SCOPE: x");
+        add_card(&conn, "TB-3", "lane", "backlog", "waits on TB-0", "SCOPE: x");
+        conn.execute("UPDATE issues SET created=?1 WHERE id='TB-1'", [now as i64 - BACKLOG_STALE_AGE_S - 3600]).unwrap();
+        conn.execute("UPDATE issues SET depends_on='[\"TB-0\"]' WHERE id='TB-3'", []).unwrap();
+        // Controls: before triage, each mechanism sees its card.
+        assert!(drainable_backlog_ids(&conn, "lane", now).contains(&"TB-1".to_string()));
+        assert_eq!(stale_backlog_candidates(&conn, "lane", now as i64).len(), 1);
+        let promo = bs::get_issue(&conn, "TB-3").unwrap().unwrap();
+        assert!(still_promotable(&conn, &promo, PromoteArm::DepsCleared), "control: TB-3's dependency is verified");
+        tag(&conn, "TB-1", "triage", now);
+        tag(&conn, "TB-3", "triage", now);
+        let row = bs::get_issue(&conn, "TB-1").unwrap().unwrap();
+        assert!(in_triage(&row));
+        assert!(drainable_backlog_ids(&conn, "lane", now).is_empty(), "the drain never offers a card in triage (TB-1, TB-3)");
+        assert!(stale_backlog_candidates(&conn, "lane", now as i64).is_empty(), "the backlog-triage nudge leaves it");
+        let promo = bs::get_issue(&conn, "TB-3").unwrap().unwrap();
+        assert!(!still_promotable(&conn, &promo, PromoteArm::DepsCleared), "no promotion arm moves it");
+        assert!(blocker_recoveries(&conn, "lane").unwrap().iter().all(|r| r.card != "TB-1" && r.card != "TB-3"), "no blocker review asks about it");
+        let moved = hand_off_isolated_cards(&conn, "lane", "other", now + 10.0 * 86400.0, now, "09:00").unwrap();
+        assert!(!moved.contains(&"TB-1".to_string()), "an isolated lane's hand-off leaves it where the owner put it");
+        // Accepted: offered again; TB-3, still in triage, is not.
+        conn.execute("DELETE FROM issue_tags WHERE issue_id='TB-1' AND tag='triage'", []).unwrap();
+        assert_eq!(drainable_backlog_ids(&conn, "lane", now), vec!["TB-1".to_string()]);
+    }
+
     #[test]
     fn a_card_tagged_defer_focused_is_not_drainable_regardless_of_source_ref_or_due() {
         let conn = board_db();
