@@ -3248,13 +3248,25 @@ fn light_rows(
     // ORDER BY i.id matches the practical row order of the joined GROUP BY
     // query in list_issues, so ties in board_order break identically on both
     // paths (sort_by is stable; the input order is the tiebreaker).
-    let mut stmt = conn.prepare(
+    // A lane's read goes through idx_issues_session (2026-10-31: GET
+    // /api/board?session=mxp-gs12 took 5-72 s for 243 cards, because this
+    // scanned all ~30k rows of a 14.7 GB database, whose rows carry desc and
+    // log inline, and dropped other lanes in Rust; pread was the profile).
+    let started = std::time::Instant::now();
+    let by_lane = !session_filter.is_empty();
+    let sql = format!(
         "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
                 COALESCE(i.pos,0), i.updated \
-         FROM issues i WHERE i.deleted IS NULL ORDER BY i.id",
-    )?;
+         FROM issues i WHERE i.deleted IS NULL{} ORDER BY i.id",
+        if by_lane {
+            format!(" AND i.session IN ({})", vec!["?"; session_filter.len()].join(","))
+        } else {
+            String::new()
+        }
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut light: Vec<LightRow> = Vec::new();
-    for row in stmt.query_map([], |r| {
+    for row in stmt.query_map(rusqlite::params_from_iter(session_filter.iter()), |r| {
         Ok(LightRow {
             id: r.get(0)?,
             status: r.get(1)?,
@@ -3282,6 +3294,11 @@ fn light_rows(
         light.push(row);
     }
     light.sort_by(|a, b| board_order(a.pinned, a.pos, a.updated, b.pinned, b.pos, b.updated));
+    let ms = started.elapsed().as_millis();
+    if ms > 2000 {
+        tracing::warn!(target: "amux::board", ms, rows = light.len(), by_lane, measured = true, n_considered = light.len(),
+            verdict = "board_light_rows_slow", "the board's row selection took over 2 s");
+    }
     Ok(light)
 }
 
