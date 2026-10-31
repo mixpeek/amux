@@ -661,6 +661,12 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             runtime,
         ));
 
+        // -- 6a'. the shared checkout is not bare (AF-1116).
+        if let Some(dir) = repo.as_ref() {
+            let cfg = dir.join(".git").join("config");
+            out.push(checks::shared_config_is_not_bare(&cfg.to_string_lossy(), std::fs::read_to_string(&cfg).ok().as_deref()));
+        }
+
         // -- 6b. the DEPLOY path is still ticking (AMUX-4809). launchd stopped
         // firing com.amux.server-rs-builder for 59 consecutive cycles and
         // NOTHING SAID SO: the log stopped, /health's `commit` quietly stopped

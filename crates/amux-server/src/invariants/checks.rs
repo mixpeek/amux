@@ -3039,6 +3039,52 @@ pub const BOUNDARY_GUARD: InstalledScript = InstalledScript {
     noun: "boundary guard",
 };
 
+/// `git.shared_config_is_not_bare` (AF-1116): the shared checkout's own
+/// .git/config carries no `core.bare=true` and no `core.worktree`. Either one
+/// makes every lane's git in the main checkout read the wrong tree. On
+/// 2026-10-31 core.bare=true appeared at 20:17Z with no writer in any log and
+/// was noticed only when a land refused a minute later; this says so on the
+/// next evaluation instead. `config` is the file's text; None when unread.
+pub fn shared_config_is_not_bare(path: &str, config: Option<&str>) -> InvariantResult {
+    const ID: &str = "git.shared_config_is_not_bare";
+    let Some(text) = config else {
+        return InvariantResult::unknown(ID, format!("could not read {path}"));
+    };
+    let mut in_core = false;
+    let (mut bare, mut worktree) = (None::<String>, None::<String>);
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_core = t.trim_start_matches('[').trim_end_matches(']').trim().eq_ignore_ascii_case("core");
+            continue;
+        }
+        if !in_core {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().trim_matches('"').to_string());
+            if k == "bare" { bare = Some(v.to_ascii_lowercase()); }
+            if k == "worktree" { worktree = Some(v); }
+        }
+    }
+    let is_bare = bare.as_deref() == Some("true");
+    if !is_bare && worktree.is_none() {
+        return InvariantResult::pass(ID).evidence(json!({"config": path, "core_bare": bare, "measured": true, "n_considered": 1}));
+    }
+    let mut fix = Vec::new();
+    if worktree.is_some() { fix.push(format!("git config --file {path} --unset core.worktree")); }
+    if is_bare { fix.push(format!("git config --file {path} core.bare false")); }
+    InvariantResult::fail(
+        ID,
+        "the shared checkout's .git/config sets neither core.bare=true nor core.worktree",
+        format!("{path} sets {}{}: every lane's git in the main checkout reads that as its tree. Fix: {}",
+            if is_bare { "core.bare=true " } else { "" },
+            worktree.as_deref().map(|w| format!("core.worktree={w}")).unwrap_or_default(),
+            fix.join(" && ")),
+    )
+    .evidence(json!({"config": path, "core_bare": bare, "core_worktree": worktree, "fix": fix, "measured": true, "n_considered": 1}))
+}
+
 /// AF-132: the committed side must be read at CHECK time, not baked at build
 /// time. These scripts are not compiled into the binary's deploy unit — the
 /// builder rebuilds only on crates//Cargo.* commits — so a script-only commit
@@ -12024,5 +12070,23 @@ mod builder_tick_tests {
             Status::Unknown,
             "a zero interval cannot produce a budget, so it is unmeasured"
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_config_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_or_worktree_shared_config_fails_and_names_its_fix() {
+        let ok = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tbare = false\n[remote \"origin\"]\n\tbare = true\n"));
+        assert_eq!(ok.status, Status::Pass, "core.bare=false passes; a bare key outside [core] is ignored");
+        let bare = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tbare = true\n"));
+        assert_eq!(bare.status, Status::Fail);
+        assert!(bare.observed.contains("git config --file /r/.git/config core.bare false"), "{}", bare.observed);
+        let wt = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tworktree = /tmp/x\n"));
+        assert_eq!(wt.status, Status::Fail);
+        assert!(wt.observed.contains("--unset core.worktree") && !wt.observed.contains("core.bare false"), "{}", wt.observed);
+        assert_eq!(shared_config_is_not_bare("/r/.git/config", None).status, Status::Unknown);
     }
 }
