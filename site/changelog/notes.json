@@ -1,5 +1,77 @@
 [
   {
+    "hash": "1e0d1dca68c8ce20f11e59037adeb4f28450e4b2",
+    "short": "1e0d1dca",
+    "title": "The markdown editor keeps up with your typing on a phone",
+    "date": "2026-10-31",
+    "type": "perf",
+    "tags": [
+      "files",
+      "mobile",
+      "editor"
+    ],
+    "description": "On a long note, each keystroke now takes about 17 ms on an iPhone instead of 178, switching to Edit is four times faster, and the note opens sooner. The editor redraws only the lines you changed, so typing and scrolling stay smooth on a phone."
+  },
+  {
+    "hash": "d27f005934f47cdef9a62f86e3b093f20a531661",
+    "short": "d27f0059",
+    "title": "Triage: captured tasks wait on the board until you accept them",
+    "date": "2026-10-31",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "Ask a worker to capture a task and it lands in Triage instead of being picked up on its own. A Triage chip leads the board's filter row, and amux board accept moves a card into the normal flow when you are ready, recording who accepted it and why."
+  },
+  {
+    "hash": "5454d4ddec9c7707ccac8dae1cdda6c0f2f43bfb",
+    "short": "5454d4dd",
+    "title": "Pin messages in a channel or DM",
+    "date": "2026-10-31",
+    "type": "feat",
+    "tags": [
+      "messages"
+    ],
+    "description": "You or a worker can pin any post in a channel or DM you can read. Pins are listed per conversation, so the decision or link everyone needs stays at hand instead of scrolling away."
+  },
+  {
+    "hash": "75d4adedece1681ca2c4b44409ae80d8f4597a77",
+    "short": "75d4aded",
+    "title": "Usage & Optimization: see where your agent spend goes",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "usage",
+      "metrics"
+    ],
+    "description": "A new Usage tab shows spend, cards finished and attempted, success rate and cost per success, broken down by group, plus a ranked list of changes that would save money, each with its evidence and an estimated monthly saving."
+  },
+  {
+    "hash": "427fe4419bbdac4bd5f16111b431792db730567a",
+    "short": "427fe441",
+    "title": "Cmd-K finds the files you open most",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "palette",
+      "files"
+    ],
+    "description": "The command palette now searches files as well, ranked by how often and how recently you opened them, so the notes and docs you live in come up after a few letters."
+  },
+  {
+    "hash": "acd16b1e4db18031f9a18b806b4f3d5f260a510c",
+    "short": "acd16b1e",
+    "title": "Pause, resume or delete a worker's schedules together",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "schedules",
+      "workers"
+    ],
+    "description": "A worker's Schedules tab now has checkboxes and a bulk bar, so you can pause, resume or delete several of its schedules at once without touching other workers' schedules."
+  },
+  {
     "hash": "a4038b386cfa02fd03aff52f4f25b5f8d65ea612",
     "short": "a4038b38",
     "title": "An HTML folder opens as a website, and app links stay in the viewer",
