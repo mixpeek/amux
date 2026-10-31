@@ -188,6 +188,16 @@ pub fn run() {
         .build()
         .expect("maintenance runtime");
     runtime_jobs::executor::install(maintenance.handle().clone());
+    // AF-1006: board-drive and orchestrator-runtime hold a thread for seconds
+    // per tick; two threads of their own keep that off the shared pool.
+    let heavy = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("amux-heavy-jobs")
+        .worker_threads(2)
+        .thread_stack_size(stack)
+        .enable_all()
+        .build()
+        .expect("heavy-job runtime");
+    runtime_jobs::executor::install_heavy(heavy.handle().clone());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .thread_stack_size(stack)
         .enable_all()

@@ -276,7 +276,7 @@ where
     // that were dead for hours with nothing visible anywhere.
     registry::register(&name, "periodic", Some(interval), None);
     let job_id = name.clone();
-    let handle = executor::spawn(async move {
+    let handle = executor::spawn_for(&name, async move {
         let mut tick = tokio::time::interval(interval);
         // Delay, not Burst: a run that overshoots must not be "paid back"
         // with a rapid-fire catch-up volley (the spin-catcher lesson — a
