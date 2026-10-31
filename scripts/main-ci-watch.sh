@@ -37,13 +37,25 @@ else: d.pop(k,None)
 json.dump(s,open(p,'w'))" "$STATE" "$1" "$2" "$3"; }
 # Is the stretch's card still open? Closed, discarded or archived means the
 # next red run starts a new one rather than writing into a retired card.
-card_open() {
-  [ -n "$1" ] || return 1
-  curl -sk --max-time 20 "$U/api/board/$1" 2>/dev/null | python3 -c "
+# open | closed | unknown. A board that did not answer is UNKNOWN, never
+# closed: read as closed, a red tick filed a duplicate card and a green tick
+# cleared the stretch's card id and left that card open forever (implicit
+# state machines inventory 2026-10-31, #25). Unknown makes the tick retry.
+card_state() {
+  [ -n "$1" ] || { echo closed; return; }
+  local resp code
+  resp=$(mktemp "${TMPDIR:-/tmp}/main-ci-card-get.XXXXXX")
+  code=$(curl -sk --max-time 20 -o "$resp" -w '%{http_code}' "$U/api/board/$1" 2>/dev/null) || code=000
+  case "$code" in
+    404) echo closed ;;
+    2??) python3 -c "
 import json,sys
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(1)
-sys.exit(0 if d.get('id') and not d.get('archived') and d.get('status') not in ('done','verified','discarded') else 1)"
+try: d=json.load(open(sys.argv[1]))
+except Exception: print('unknown'); sys.exit()
+print('open' if d.get('id') and not d.get('archived') and d.get('status') not in ('done','verified','discarded') else 'closed')" "$resp" ;;
+    *) echo unknown ;;
+  esac
+  rm -f "$resp"
 }
 board_patch() {  # id json -> prints the HTTP code
   local resp code; resp=$(mktemp "${TMPDIR:-/tmp}/main-ci-patch.XXXXXX")
@@ -70,7 +82,11 @@ for wf in rust.yml checks.yml; do
   card=$(st_get "$wf" card)
   if [ "$conclusion" = success ]; then
     # Green again: close the stretch's card with the run that proves it.
-    if [ -n "$card" ] && [ "${DRY:-0}" != 1 ] && card_open "$card"; then
+    cs=closed; [ -n "$card" ] && [ "${DRY:-0}" != 1 ] && cs=$(card_state "$card")
+    if [ "$cs" = unknown ]; then
+      echo "{\"verdict\":\"main_ci_watch_board_unreadable\",\"card\":\"$card\",\"measured\":false}"; refused=$((refused + 1)); continue
+    fi
+    if [ "$cs" = open ]; then
       ev=$(printf 'main %s is green again at %s: %s' "${wf%.yml}" "${sha:0:9}" "$url")
       body=$(python3 -c "import json,sys; print(json.dumps({'status':'done','evidence':sys.argv[1],'desc_append':sys.argv[1]}))" "$ev")
       case "$(board_patch "$card" "$body")" in 2??) closed=$((closed + 1)) ;; *) refused=$((refused + 1)); continue ;; esac
@@ -109,7 +125,13 @@ for wf in rust.yml checks.yml; do
   desc=$(printf 'Run: %s\n\nFailing:\n%s\n\nCommits since the last green %s run (%s):\n%s\n\nPRs run only affected tests (#317), so main is the full gate. The builder deploys only a main commit that passed it, so until main is green the server stays on the last green commit and nothing newer reaches it (GET /api/pull). Fix forward or revert the culprit. Later red runs are appended here and the next green run closes this card.' \
     "$url" "${tests:-see the run}" "${wf%.yml}" "${green:0:9}" "${commits:-unknown: no green run recorded yet}")
   landed=0
-  if [ "${DRY:-0}" != 1 ] && card_open "$card"; then
+  cs=closed; [ "${DRY:-0}" != 1 ] && cs=$(card_state "$card")
+  if [ "$cs" = unknown ]; then
+    # Cannot tell whether this stretch already has a card: filing one now
+    # could be a duplicate. The run stays unseen and the next tick retries.
+    echo "{\"verdict\":\"main_ci_watch_board_unreadable\",\"card\":\"$card\",\"measured\":false}"; refused=$((refused + 1)); continue
+  fi
+  if [ "$cs" = open ]; then
     # Still the same red stretch: add this run to its card instead of a new one.
     note=$(printf 'Still red: %s on %s\nRun: %s\nFailing:\n%s' "${wf%.yml}" "${sha:0:9}" "$url" "${tests:-see the run}")
     body=$(python3 -c "import json,sys; print(json.dumps({'desc_append':sys.argv[1]}))" "$note")

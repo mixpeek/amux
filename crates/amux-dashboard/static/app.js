@@ -1033,22 +1033,34 @@ let _logSearchAbort = null;
 let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2' | 'ollama' | 'grok' | 'muse'
 let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
-function _sessStatusKey(s) {
-  if (s.status === 'starting') return 'starting';
-  if (!s.running) return 'stopped';
-  if (s.agent_state === 'unknown') return 'unknown';
-  if (s.status === 'rate_limited') return 'rate_limited';
-  if (s.status === 'api_error') return 'api_error';
-  if (s.status === 'error') return 'error';
-  if (s.status === 'unattributed') {
-    const rb = s.runtime_board || {};
-    return rb.runtime_status === 'active' ? 'working' : 'waiting';
-  }
-  if (s.status === 'blocked') return 'blocked';
-  if (s.status === 'active') return 'working';
-  if (s.status === 'waiting') return 'waiting';
-  return 'idle';
+// THE ONE CLIENT READING of a worker's status (implicit state machines
+// inventory 2026-10-31, #1). The card badge, the status filter and groups,
+// the sort, the grid dots and the board's is:working/is:waiting all read this,
+// so they cannot disagree. Before, the badge checked `waiting` before
+// `!running` and the filter the other way round: a stopped worker carrying a
+// stale waiting/owner showed "Needs input" on its card and filtered as
+// stopped; a paused worker still running filtered as working; the grid dot
+// showed a guessed (`unknown`) status as green.
+// `key` is what the badge shows; `group` is the filter/bucket it belongs to.
+function _workerStatus(s) {
+  const g = (key, group) => ({ key, group: group || key });
+  if (_workerLifecyclePending.has(s.name)) return g('pending', 'starting');
+  if (s.lifecycle === 'paused') return s.running ? g('pause_incomplete', 'blocked') : g('paused', 'stopped');
+  if (s.status === 'starting') return g('starting');
+  if (!s.running) return g('stopped');
+  if (s.agent_state === 'unknown') return g('unknown');
+  if (s.status === 'active' && s.activity === 'api_retry') return g('retrying', 'working');
+  if (s.status === 'active' && s.activity === 'background_shell') return g('background', 'working');
+  if (s.status === 'waiting') return s.waiting_reason === 'owner' ? g('needs_input', 'waiting') : g('waiting');
+  if (s.status === 'error') return g('error');
+  if (s.status === 'active') return g('working');
+  if (s.status === 'unattributed') return g('unattributed', (s.runtime_board || {}).runtime_status === 'active' ? 'working' : 'waiting');
+  if (s.status === 'blocked') return g('blocked');
+  if (s.status === 'rate_limited') return g('rate_limited');
+  if (s.status === 'api_error') return g('api_error');
+  return g('idle');
 }
+function _sessStatusKey(s) { return _workerStatus(s).group; }
 let filterModels = new Set();      // typed model family/capability from /api/models
 // Group pills HIDE as well as filter (Ethan, 2026-09-24: "press a pill/group
 // and that will hide them from the list"). A tap cycles neutral -> only this
@@ -6406,9 +6418,31 @@ function _notifPush(icon, title, body, session, card) {
   _notifFireNative(title, body, session, card);
 }
 
+// One device alert per transition, however many tabs are open. Each tab runs
+// its own edge detector (implicit state machines inventory 2026-10-31, #30),
+// so the same "needs input" fired once per tab and Mac-app window. The first
+// tab to claim the notification's signature in the shared record fires it;
+// the Web Lock makes the check-and-set atomic across tabs where supported.
+const _NOTIF_CLAIM_KEY = 'amux_notif_claim';
+function _notifClaimOnce(sig) {
+  const claim = () => {
+    let prev = {};
+    try { prev = JSON.parse(localStorage.getItem(_NOTIF_CLAIM_KEY) || '{}'); } catch (e) {}
+    if (prev.sig === sig && Date.now() - (prev.ts || 0) < 20000) return false;
+    try { localStorage.setItem(_NOTIF_CLAIM_KEY, JSON.stringify({ sig, ts: Date.now() })); } catch (e) {}
+    return true;
+  };
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request('amux-notif-claim', claim).catch(() => claim());
+  return Promise.resolve(claim());
+}
+
 async function _notifFireNative(title, body, session, card) {
   if (!amuxNotifyAllowed('native')) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!(await _notifClaimOnce(title + '|' + (body || '') + '|' + (session || '')))) {
+    try { amuxTrack('notif_native_deduped', { measured: true, n_considered: 1 }); } catch (e) {}
+    return;
+  }
   const opts = {
     body, icon: '/icon-192.png', badge: '/icon-192.png',
     tag: 'amux-' + (session || Date.now()), renotify: true, silent: false,
@@ -6788,8 +6822,20 @@ function _fireAmuxAlert(a) {
   _notifPush(icon, title, body, a.session || '', /^[A-Za-z0-9_-]+$/.test(card) ? card : '');
 }
 
+let _transitionsCheckedAt = 0;
 function _checkSessionTransitions(newData) {
   if (_initialLoad) return;
+  // A tab that saw nothing for a minute (asleep, offline, backgrounded) would
+  // diff against a stale snapshot and announce long-past changes as new, such
+  // as a "finished" from an hour ago. Re-baseline instead (#30).
+  const now = Date.now();
+  const stale = _transitionsCheckedAt && now - _transitionsCheckedAt > 60000;
+  _transitionsCheckedAt = now;
+  if (stale) {
+    for (const s of newData) _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state };
+    try { amuxTrack('notif_transitions_rebaselined', { measured: true, n_considered: newData.length }); } catch (e) {}
+    return;
+  }
   for (const s of newData) {
     const prev = _prevSessionState[s.name];
     if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state }; continue; }
@@ -8182,21 +8228,20 @@ function _workerLifecycleInactive(s) {
   return !!(s && (s.archived || ['paused','archived','expired'].includes(s.lifecycle)));
 }
 function _workerExecutionBadge(s, runtimeBoard, opts) {
-  const pending = _workerLifecyclePending.get(s.name);
-  if (pending) return '<span class="status-badge idle">' + pending + '…</span>';
-  if (s.lifecycle === 'paused') return s.running
-    ? '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>'
-    : '<span class="status-badge paused">paused</span>';
+  const k = _workerStatus(s).key;
+  if (k === 'pending') return '<span class="status-badge idle">' + _workerLifecyclePending.get(s.name) + '…</span>';
+  if (k === 'pause_incomplete') return '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>';
+  if (k === 'paused') return '<span class="status-badge paused">paused</span>';
   let badge = '';
   const tele = s.telemetry || {};
   // MSG-69352 items 2 and 4: a guess on an unhealthy status channel is shown
   // as a guess, and a finished turn waiting on its own background shell is
   // not "working".
-  if (s.running && s.agent_state === 'unknown') badge = '<button type="button" class="status-badge unknown" title="'
+  if (k === 'unknown') badge = '<button type="button" class="status-badge unknown" title="'
     + esc('Agent state unknown: only a screen guess (' + (s.status || '?') + ') is available and the status channel is ' + (tele.health || 'unmeasured') + '. ' + (tele.reason || '') + ' Automation will not act on it.')
     + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">unknown ▾</button>';
-  else if (s.running && s.status === 'active' && s.activity === 'api_retry') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
-  else if (s.running && s.status === 'active' && s.activity === 'background_shell') {
+  else if (k === 'retrying') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
+  else if (k === 'background') {
     // A status name and the job's age (MSG-99658: "idle" for 16 minutes while
     // etl_rest2.sh ran for 1h02m). The badge never shows the job's command: a
     // label is the whole command line ("cd /Users/... && AMUX_RESOURCES_ACK=..."),
@@ -8209,20 +8254,20 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
       + (jobs.length ? ' ' + jobs.map(j => j.label + ' (' + _bgJobAge(j.elapsed_s) + ')').join(', ') : '');
     badge = '<span class="status-badge background" title="' + esc(tip) + '">' + text + '</span>';
   }
-  else if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
-  else if (s.status === 'waiting' && s.waiting_reason === 'owner') badge = _needsInputBadge(s);
-  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
-  else if (!s.running) badge = '<span class="status-badge idle">stopped</span>';
-  else if (s.status === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
-  else if (s.status === 'active')  badge = runtimeBoard.syncing
+  else if (k === 'starting') badge = '<span class="status-badge idle">starting</span>';
+  else if (k === 'stopped') badge = '<span class="status-badge idle">stopped</span>';
+  else if (k === 'needs_input') badge = _needsInputBadge(s);
+  else if (k === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
+  else if (k === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
+  else if (k === 'working')  badge = runtimeBoard.syncing
     ? _runtimeBoardSyncBadge()
     : '<span class="status-badge active">working</span>' + _agentsChip(s)
       + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '');
-  else if (s.status === 'unattributed') badge = _runtimeBoardSplitBadge(s);
-  else if (s.status === 'blocked') badge = '<button type="button" class="status-badge blocked" title="Agent is waiting on a permission decision. Click for details." onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">blocked ▾</button>';
-  else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
-  else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
-  else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
+  else if (k === 'unattributed') badge = _runtimeBoardSplitBadge(s);
+  else if (k === 'blocked') badge = '<button type="button" class="status-badge blocked" title="Agent is waiting on a permission decision. Click for details." onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">blocked ▾</button>';
+  else if (k === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
+  else if (k === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
+  else if (k === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
   if (s.running && (tele.health === 'degraded' || tele.health === 'missing')) badge += '<span class="status-badge telemetry-warn" title="'
     + esc('Status channel ' + tele.health + ': ' + (tele.reason || '') + ' The status shown is ' + (s.status_authority || 'inferred') + '.') + '">⚠ telemetry</span>';
@@ -13128,7 +13173,7 @@ async function sendFromInput(name) {
     return;
   }
   const original = inp.value;
-  const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
+  const queued = _sendMode === 'queue' && !_waitingNow(name);
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
   _composerPendingSends.add(name);
@@ -23529,6 +23574,17 @@ function handleCardPaste(name, e) {
   });
 })();
 
+// Queue mode sends straight to a worker that is waiting at a question, so the
+// reply answers it. Only on a FRESH reading: a snapshot older than 10 s may
+// say waiting for a worker that has moved on, and the message then skipped
+// the queue and landed mid-turn (implicit state machines inventory #36).
+function _waitingNow(name) {
+  const s = (sessions || []).find(x => x.name === name);
+  if (!s || s.status !== 'waiting') return false;
+  const fresh = Date.now() - (_lastDataTime || 0) < 10000;
+  if (!fresh) { try { amuxTrack('queue_kept_stale_waiting', { measured: true, n_considered: 1 }); } catch (e) {} }
+  return fresh;
+}
 let _sendMode = localStorage.getItem('amux_send_mode') || 'send'; // 'send' or 'queue'
 // Default flipped to SEND (2026-07-17): pressing Send should send — it types
 // straight into the terminal, and Claude Code itself queues mid-turn input and
@@ -23635,7 +23691,7 @@ async function sendPeekCmd() {
   if (!text && !files.length) { _submitSuggestion(session, true, 'Enter'); return; }
   let message = text;
   if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
-  const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
+  const atSelector = _waitingNow(session);
   // The Chat tab's chat queues turns itself and has no steering queue.
   const queued = _sendMode === 'queue' && !atSelector && !_chatCompanionOf(session);
   if (!queued) {
@@ -28863,7 +28919,7 @@ function renderFilterOptions() {
   // Status chips — fixed order, only states that exist (or are selected)
   const sEl = document.getElementById('filter-statuses');
   if (sEl) {
-    const opts = ['working', 'blocked', 'waiting', 'rate_limited', 'api_error', 'idle', 'unknown', 'stopped']
+    const opts = ['working', 'blocked', 'waiting', 'error', 'starting', 'rate_limited', 'api_error', 'idle', 'unknown', 'stopped']
       .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
     sEl.innerHTML = opts.length ? opts.map(k => {
       const on = filterStatuses.has(k);
@@ -39863,6 +39919,7 @@ const _WORKER_STATUS_GROUPS = [
   { key: 'api_error', label: 'API Error', defaultOpen: true },
   { key: 'rate_limited', label: 'Rate Limited', defaultOpen: true },
   { key: 'idle', label: 'Idle', defaultOpen: true },
+  { key: 'unknown', label: 'Unknown', defaultOpen: true },
   { key: 'stopped', label: 'Stopped', defaultOpen: false },
 ];
 const _WORKER_STATUS_PRI = Object.fromEntries(_WORKER_STATUS_GROUPS.map((g, i) => [g.key, i]));
@@ -40819,9 +40876,20 @@ let boardOwnerFilter = localStorage.getItem('amux_board_owner') || 'human';
 // Smart Board: derived display-status data, fetched from /api/board/derived.
 let _smartBoardData = null;
 let _smartBoardFetching = false;
-let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('amux_board_collapsed') || '{}');
+// A corrupt saved value is dropped, never thrown: a bare JSON.parse here ran
+// at script load, so one bad byte stopped the whole dashboard from starting
+// (implicit state machines inventory 2026-10-31, #37).
+function _savedJson(key, fallback, ok) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  try { const v = JSON.parse(raw); if (ok(v)) return v; } catch (e) {}
+  try { localStorage.removeItem(key); amuxTrack('saved_view_state_dropped', { key, measured: true, n_considered: 1 }); } catch (e) {}
+  return fallback;
+}
+const _isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+let _sessionGroupCollapsed = _savedJson('amux_board_collapsed', {}, _isPlainObject);
 let _boardWorkerDensityBeaconSent = false;
-let _tagGroupCollapsed = JSON.parse(localStorage.getItem('amux_status_collapsed') || '{}');
+let _tagGroupCollapsed = _savedJson('amux_status_collapsed', {}, _isPlainObject);
 // First visit collapses the archive columns. backlog + todo are 1082 of 1553
 // items — they are the reason the ~64 in-flight cards are invisible. Collapsed
 // still shows the count and expands in one tap, and the seed is written
@@ -40833,7 +40901,7 @@ let _collapsedCols;
     _collapsedCols = new Set(['backlog', 'todo']);
     try { localStorage.setItem('amux_col_collapsed', JSON.stringify([..._collapsedCols])); } catch(e) {}
   } else {
-    _collapsedCols = new Set(JSON.parse(_cc || '[]'));
+    _collapsedCols = new Set(_savedJson('amux_col_collapsed', [], Array.isArray));
   }
 }
 let _boardColPages = {};  // tracks how many cards to show per column (lazy load)
@@ -46602,8 +46670,8 @@ function _bqIs(item, val, ix) {
     // looks identical to one still legitimately waiting.
     case 'armedstale': return _BQ_DORMANT.has((item.type || '').toLowerCase()) && !_BQ_CLOSED.has(st)
                               && (Date.now() / 1000 - (item.updated || 0)) / 86400 > _BQ_ROT_DAYS;
-    case 'working':  return !!sess && sess.status === 'active';
-    case 'waiting':  return !!sess && sess.status === 'waiting';
+    case 'working':  return !!sess && _workerStatus(sess).group === 'working';
+    case 'waiting':  return !!sess && _workerStatus(sess).group === 'waiting';
     case 'gated':    return !!sess && !!(sess.credit_limited || sess.rate_limited_until);
     // Needs-you (AMUX-2167): the DURABLE union, not just live session state.
     // A session working other cards while these await your call read as
@@ -51778,7 +51846,8 @@ function _updateGridPane(name) {
   if (!dot && !frame) { removeGridPane(name); return; }  // pane was removed
   if (dot) {
     const s = (sessions || []).find(s => s.name === name);
-    dot.className = 'gp-dot' + (!s || !s.running ? '' : s.status === 'active' ? ' working' : s.status === 'waiting' ? ' waiting' : ' idle');
+    const grp = s ? _workerStatus(s).group : 'stopped';
+    dot.className = 'gp-dot' + (grp === 'stopped' ? '' : grp === 'working' ? ' working' : (grp === 'waiting' || grp === 'blocked') ? ' waiting' : ' idle');
   }
 }
 
