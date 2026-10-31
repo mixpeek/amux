@@ -35,7 +35,9 @@ test('a card goes into triage from the board and is accepted from its detail', a
     // Phone: the card's detail carries the same toggle.
     await cardEl.click();
     await expect(page.locator('#bd-triage-btn')).toHaveText('Triage');
-    expect((await page.locator('#bd-triage-btn').boundingBox())!.height, 'touch target').toBeGreaterThanOrEqual(36);
+    // Polled: the status row re-renders when the board refreshes, and a box
+    // read in between is null (CI run 41176883981, mobile).
+    await expect.poll(async () => ((await page.locator('#bd-triage-btn').boundingBox()) || { height: 0 }).height, { message: 'touch target' }).toBeGreaterThanOrEqual(36);
     await page.locator('#bd-triage-btn').click();
   }
   await expect.poll(async () => (await card(page, id)).tags || []).toContain('triage');
