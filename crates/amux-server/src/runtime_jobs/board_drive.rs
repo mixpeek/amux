@@ -2525,8 +2525,15 @@ fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>, set_at:
         if id == own || named.iter().any(|n| n == id) {
             continue;
         }
+        // A finished card with no closed_at (6,397 of 28,621 on 2026-10-31,
+        // most of them discarded) is dated by its last update instead: a card
+        // last touched before the trigger was set was already finished then.
+        // Before, an unknown close time counted the card, so MF-4200's trigger
+        // "... ported onto the MG-2309 sliced scan ..." read as FIRED by the
+        // discarded MG-2309 and the card drained minutes after each re-park
+        // (AF-1122).
         let row: Option<(String, i64, Option<i64>)> = conn
-            .query_row("SELECT status, COALESCE(archived, 0), closed_at FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_row("SELECT status, COALESCE(archived, 0), COALESCE(closed_at, CAST(updated AS INTEGER)) FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()?;
         if let Some((status, archived, closed_at)) = row {
             let finished = matches!(status.as_str(), "done" | "verified" | "discarded");
@@ -11983,6 +11990,32 @@ mod tests {
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         assert!(ids(&store).contains(&"MGR-9".to_string()), "MG-9 finished after the trigger was set: it fired");
+    }
+
+    /// AF-1122: a finished card with no closed_at is dated by its last update.
+    /// MF-4200's trigger named the discarded MG-2309 (no closed_at) as context
+    /// and drained minutes after every re-park.
+    #[test]
+    fn a_finished_card_with_no_close_time_is_dated_by_its_last_update() {
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "MF-4200", "backlog", "agent", "code");
+        drive_card(&store, "MG-2309", "discarded", "agent", "code");
+        drive_card(&store, "MF-9", "backlog", "agent", "code");
+        drive_card(&store, "MG-9", "done", "agent", "code");
+        let set = now_f64() as i64 - 60;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET closed_at=NULL, updated=?1 WHERE id IN ('MG-2309','MG-9')", [set - 3600])?;
+            c.execute("UPDATE issues SET source_ref='mxp-gs12 lands the scroll early-stop (ported onto the MG-2309 sliced scan)', last_verified_at=?1 WHERE id='MF-4200'", [set])?;
+            c.execute("UPDATE issues SET source_ref='after MG-9 lands', last_verified_at=?1 WHERE id='MF-9'", [set])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let ids = |s: &std::sync::Arc<crate::db::Store>| drainable_backlog_ids(&s.read().unwrap(), "lane", now_f64());
+        assert!(!ids(&store).contains(&"MF-4200".to_string()), "finished an hour before the trigger: context, so it parks as prose");
+        store.write(move |c| {
+            c.execute("UPDATE issues SET updated=?1 WHERE id='MG-9'", [set + 30])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(ids(&store).contains(&"MF-9".to_string()), "last updated after the trigger: it fired");
     }
 
     /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
