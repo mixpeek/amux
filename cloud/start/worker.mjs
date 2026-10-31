@@ -335,13 +335,23 @@ async function finish(env, sub, slug, srv) {
   return srv;
 }
 
+// Every server is behind Cloudflare (Ethan, 2026-10-31: "yes re: ts, and all new cloud instances").
+// A proxied record is all a server needs: cloud/desktop/edge-harden.sh, on its next self-update,
+// sees its name resolve to Cloudflare and admits web traffic from Cloudflare only. Let's Encrypt
+// still reaches Caddy, since Cloudflare passes plain-HTTP challenge requests through.
 async function ensureDns(env, sub, slug, srv) {
   const ip = srv.public_net.ipv4.ip;
   const recs = await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(slug)}`);
-  if (recs.some(r => r.type === 'A' && r.content === ip)) return false;
+  const mine = recs.find(r => r.type === 'A' && r.content === ip);
+  if (mine && mine.proxied) return false;
+  if (mine) {   // a server from before 2026-10-31, still DNS-only
+    await cf(env, 'PATCH', `/zones/${env.CF_ZONE_ID}/dns_records/${mine.id}`, { proxied: true, ttl: 1 });
+    log('dns.proxied', { slug });
+    return true;
+  }
   for (const r of recs) await cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`);
   await cf(env, 'POST', `/zones/${env.CF_ZONE_ID}/dns_records`, { type: 'A', name: host(slug), content: ip,
-    proxied: false, ttl: 60, comment: `amux cloud ${sub}` });
+    proxied: true, ttl: 1, comment: `amux cloud ${sub}` });
   log('dns.written', { slug, replaced: recs.length });
   return true;
 }

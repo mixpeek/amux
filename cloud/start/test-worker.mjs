@@ -58,6 +58,7 @@ function world() {
         const r = { id: 'r' + (++w.n), ...JSON.parse(o.body) }; w.dns.push(r); return ok({ success: true, result: r });
       }
       if (m === 'DELETE') { const id = p.split('/').pop(); w.dns = w.dns.filter(r => r.id !== id); return ok({ success: true, result: {} }); }
+      if (m === 'PATCH') { const r = w.dns.find(r => r.id === p.split('/').pop()); Object.assign(r, JSON.parse(o.body)); return ok({ success: true, result: r }); }
     }
     if (u.host === 'us.i.posthog.com') { (w.events ||= []).push(JSON.parse(o.body)); return ok({ status: 1 }); }
     if (u.host === 'appleid.apple.com') return ok({ keys: w.appleKeys || [] });
@@ -149,6 +150,19 @@ await test('C15-2 DNS write fails, Stripe redelivers: replay finishes it (one se
   eq(w.subs[sub].metadata.pw_hash !== undefined, true, 'signup still marked unfinished');
   eq((await webhook(w, sub)).status, 200, 'replay');
   eq([w.servers.length, w.dns.length, w.subs[sub].metadata.pw_hash], [1, 1, undefined], 'servers, records, pw_hash');
+});
+
+await test('every server is behind Cloudflare: new records proxied, an old DNS-only one switched', async () => {
+  const w = world(); const sub = paid(w, 'proxied');
+  eq((await webhook(w, sub)).status, 200, 'webhook');
+  eq(w.dns.map(r => [r.type, r.proxied]), [['A', true]], 'new record');
+  w.dns[0].proxied = false;                    // a server from before 2026-10-31
+  const s = w.servers[0]; s.labels['amux-ready'] = '1'; s.backup_window = '22-02';
+  s.id = 10 - (new Date().getUTCMinutes() % 10);           // this minute is its monitor slot
+  w.up = true;
+  await cron(w);
+  eq([w.dns.length, w.dns[0].proxied], [1, true], 'after the monitor');
+  eq(w.logs.some(l => l.event === 'dns.proxied'), true, 'dns.proxied logged');
 });
 
 await test('C15-2 DNS write fails and no redelivery: the cron finishes it', async () => {

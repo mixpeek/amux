@@ -9,7 +9,10 @@
 #   - unattended security upgrades.
 #   - Caddy hands the door the visitor's real address as X-Real-IP ({client_ip}), overwriting
 #     anything the client sent, so the door's wrong-password throttle counts the right address.
-# When /etc/amux/edge says "cloudflare" (bootstrap.sh writes it for AMUX_BEHIND_CLOUDFLARE=1):
+# When the host is behind Cloudflare: /etc/amux/edge says "cloudflare" (bootstrap.sh writes it for
+# AMUX_BEHIND_CLOUDFLARE=1), or, with no such file, the site's name resolves only to Cloudflare
+# addresses. So proxying a host's DNS record is enough: its next update locks the origin, and an
+# un-proxied record opens it again (2026-10-31: TubeScience and every new amux Cloud server).
 #   - ufw admits 80, 443 and 8443 only from Cloudflare's published ranges. Nobody reaches the web
 #     server except through Cloudflare. SSH (22) and tailscale0 are unchanged.
 #   - Caddy trusts Cloudflare's addresses for CF-Connecting-IP, and only theirs.
@@ -18,7 +21,6 @@
 # One summary line: verdict=edge_hardened ... (journalctl -t amux-edge).
 set -uo pipefail
 say() { logger -t amux-edge -- "$*"; echo "$*"; }
-EDGE=$(cat /etc/amux/edge 2>/dev/null || echo direct)
 CF=/etc/caddy/Caddyfile
 LIST=/etc/amux/cloudflare-ips
 notes=()
@@ -56,20 +58,43 @@ U=/etc/apt/apt.conf.d/20auto-upgrades
 want_u=$'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n'
 [[ "$(cat "$U" 2>/dev/null)"$'\n' == "$want_u" ]] || { printf '%s' "$want_u" > "$U"; notes+=("unattended upgrades on"); }
 
-# ── Cloudflare ranges ──
+# ── Cloudflare ranges (always fetched: the detection below needs them) ──
 ranges=()
-if [[ "$EDGE" == cloudflare ]]; then
-  tmp=$(mktemp)
-  if curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4 > "$tmp" && echo >> "$tmp" \
-     && curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6 >> "$tmp" \
-     && [[ $(grep -cE '^[0-9a-f:.]+/[0-9]+$' "$tmp") -ge 10 ]]; then
-    grep -E '^[0-9a-f:.]+/[0-9]+$' "$tmp" | sort -u > "$LIST.new" && install -d /etc/amux && mv "$LIST.new" "$LIST"
-  else
-    say "WARN verdict=edge_cloudflare_ranges_unavailable kept=$( [[ -s $LIST ]] && wc -l < $LIST || echo 0 )"
-  fi
-  rm -f "$tmp"
-  [[ -s "$LIST" ]] && mapfile -t ranges < "$LIST"
+install -d /etc/amux; tmp=$(mktemp)
+if curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4 > "$tmp" && echo >> "$tmp" \
+   && curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6 >> "$tmp" \
+   && [[ $(grep -cE '^[0-9a-f:.]+/[0-9]+$' "$tmp") -ge 10 ]]; then
+  grep -E '^[0-9a-f:.]+/[0-9]+$' "$tmp" | sort -u > "$LIST.new" && install -d /etc/amux && mv "$LIST.new" "$LIST"
+else
+  say "WARN verdict=edge_cloudflare_ranges_unavailable kept=$( [[ -s $LIST ]] && wc -l < $LIST || echo 0 )"
 fi
+rm -f "$tmp"
+
+# ── Behind Cloudflare? ──
+DETECTED=/etc/amux/edge-detected
+if [[ -s /etc/amux/edge ]]; then
+  EDGE=$(cat /etc/amux/edge); how=configured
+else
+  site=$(grep -m1 -oE '^[A-Za-z0-9.-]+\.[A-Za-z]{2,} *\{' "$CF" 2>/dev/null | tr -d ' {')
+  EDGE=$(python3 - "$site" "$LIST" <<'EOF2'
+import ipaddress, socket, sys
+site, listf = sys.argv[1], sys.argv[2]
+try:
+    nets = [ipaddress.ip_network(l.strip()) for l in open(listf) if l.strip()]
+    addrs = {a[4][0] for a in socket.getaddrinfo(site, 443, proto=socket.IPPROTO_TCP)} if site else set()
+except (OSError, ValueError):
+    print("unknown"); sys.exit()
+if not addrs or not nets:
+    print("unknown")
+else:
+    print("cloudflare" if all(any(ipaddress.ip_address(a) in n for n in nets) for a in addrs) else "direct")
+EOF2
+)
+  how=detected
+  if [[ "$EDGE" == unknown ]]; then EDGE=$(cat "$DETECTED" 2>/dev/null || echo direct); how=last_detected
+  else install -d /etc/amux; echo "$EDGE" > "$DETECTED"; fi
+fi
+[[ "$EDGE" == cloudflare && -s "$LIST" ]] && mapfile -t ranges < "$LIST"
 
 # ── ufw: web ports from Cloudflare only ──
 if [[ ${#ranges[@]} -gt 0 ]] && command -v ufw >/dev/null; then
@@ -87,6 +112,15 @@ if [[ ${#ranges[@]} -gt 0 ]] && command -v ufw >/dev/null; then
     grep -qxF "$r" "$LIST" || ufw --force delete allow proto tcp from "$r" to any port 80,443,8443 >/dev/null
   done
   notes+=("web from cloudflare only (${#ranges[@]} ranges)")
+fi
+
+# Not behind Cloudflare (any more): web ports open to anyone again, Cloudflare-only rules removed.
+if [[ "$EDGE" != cloudflare ]] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q amux-cloudflare; then
+  ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw allow 8443/tcp >/dev/null
+  ufw status 2>/dev/null | grep -E '^80,443,8443/tcp +ALLOW +[0-9a-f:.]+/[0-9]+ +# amux-cloudflare' | awk '{print $3}' | while read -r r; do
+    ufw --force delete allow proto tcp from "$r" to any port 80,443,8443 >/dev/null
+  done
+  notes+=("web open to anyone again (not behind cloudflare)")
 fi
 
 # ── Caddy: the visitor's real address ──
@@ -123,4 +157,4 @@ EOF
 fi
 
 web_open=$(ufw status 2>/dev/null | grep -cE '^(80|443|8443)/tcp( \(v6\))? +ALLOW +Anywhere' || true)
-say "verdict=edge_hardened edge=$EDGE cloudflare_ranges=${#ranges[@]} web_rules_open_to_anyone=$web_open changes=\"${notes[*]:-none}\""
+say "verdict=edge_hardened edge=$EDGE edge_from=$how cloudflare_ranges=${#ranges[@]} web_rules_open_to_anyone=$web_open changes=\"${notes[*]:-none}\""
