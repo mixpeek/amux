@@ -77,6 +77,8 @@ struct Fingerprint {
     cards_updated: i64,
     schedules: i64,
     schedules_updated: i64,
+    files: i64,
+    files_updated: i64,
 }
 
 struct Index {
@@ -115,11 +117,20 @@ fn fingerprint(conn: &Connection) -> rusqlite::Result<Fingerprint> {
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let (files, files_updated) = if crate::api::file_visits::exists(conn) {
+        conn.query_row("SELECT SUM(visits), CAST(COALESCE(MAX(last_at), 0) AS INTEGER) FROM file_visits", [], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?.unwrap_or(0), r.get(1)?))
+        })?
+    } else {
+        (0, 0)
+    };
     Ok(Fingerprint {
         cards,
         cards_updated,
         schedules,
         schedules_updated,
+        files,
+        files_updated,
     })
 }
 
@@ -210,6 +221,12 @@ pub fn build(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
     })?;
     for e in rows {
         out.push(e?);
+    }
+    // Files the owner has opened (api/file_visits.rs): the name is the title,
+    // the path is what a body match finds, the visit count rides in `status`.
+    for (path, visits, last_at) in crate::api::file_visits::list(conn)? {
+        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+        out.push(entry("file", path.clone(), name, visits.to_string(), String::new(), false, last_at, &path));
     }
     Ok(out)
 }
@@ -351,7 +368,7 @@ pub fn rank<'a>(
             hidden += 1;
             continue;
         }
-        let mut b: i64 = if e.kind == "card" { 60 } else { 50 };
+        let mut b: i64 = match e.kind { "card" => 60, "file" => 70, _ => 50 };
         if matched == "prefix" {
             b += 60;
         }
@@ -365,6 +382,9 @@ pub fn rank<'a>(
             if e.archived {
                 b -= 400;
             }
+        } else if e.kind == "file" {
+            // Opened often ranks higher: +15 a visit, up to +150.
+            b += (e.status.parse::<i64>().unwrap_or(0) * 15).min(150);
         } else if e.status == "enabled" {
             b += 30;
         } else {
@@ -537,6 +557,30 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_790_000_000;
+
+    /// Ethan, 2026-10-30: typing "to-do" did not find his Mixpeek To-Do.md,
+    /// a file he opens all the time.
+    #[test]
+    fn a_visited_file_is_found_by_its_name_and_the_one_opened_more_ranks_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (todo, other) = (dir.path().join("To-Do.md"), dir.path().join("to-do-old.md"));
+        std::fs::write(&todo, "x").unwrap();
+        std::fs::write(&other, "x").unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE issues (id TEXT, title TEXT, status TEXT, session TEXT, archived INT, updated INT, desc TEXT, deleted INT);
+             CREATE TABLE schedules (id TEXT, title TEXT, enabled INT, session TEXT, updated INT, command TEXT, deleted INT);").unwrap();
+        for _ in 0..9 {
+            crate::api::file_visits::record(&conn, &todo.to_string_lossy(), NOW as f64).unwrap();
+        }
+        crate::api::file_visits::record(&conn, &other.to_string_lossy(), NOW as f64).unwrap();
+        let entries = build(&conn).unwrap();
+        let (hits, _) = rank(&entries, "to-do", NOW, false);
+        let ids: Vec<&str> = hits.iter().map(|h| h.entry.id.as_str()).collect();
+        assert_eq!(ids.first().copied(), Some(todo.to_str().unwrap()), "{ids:?}");
+        assert_eq!(hits[0].entry.kind, "file");
+        assert_eq!(hits[0].entry.title, "To-Do.md");
+        assert!(fingerprint(&conn).unwrap().files >= 10, "a visit changes the fingerprint, so the index rebuilds");
+    }
 
     fn e(
         kind: &'static str,

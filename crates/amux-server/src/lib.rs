@@ -683,6 +683,7 @@ async fn async_main() {
     drop(runtime_jobs::disk_watch::spawn(state.clone()));
     // Storage tiers: watched folders between the internal disk and a cold drive.
     drop(crate::api::tiering::spawn(state.clone()));
+    crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());

@@ -61,6 +61,7 @@ pub mod env_config;
 pub mod file_viewer;
 pub mod media_hls;
 pub mod files;
+pub mod file_visits;
 pub mod fs;
 pub mod git_guard;
 pub mod gmail;

@@ -72636,6 +72636,7 @@ const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
   worker: 'Worker', group: 'Group', card: 'Card', schedule: 'Schedule', view: 'Tab',
   action: 'Action', pin: 'Pin', secret: 'Vault', payment: 'Vault', connector: 'Connector', skill: 'Skill',
+  file: 'File',
 };
 // Families weighted so a worker or group outranks a card that matched as
 // well: an open card fresh today reaches 60 + 80 + 60 (+60 for a prefix) on
@@ -72819,7 +72820,8 @@ function _cmdkStartRows() {
     if (recent.length >= 5) break;
     const kind = k.split(':')[0], id = k.slice(kind.length + 1);
     if (kind === 'action') continue;
-    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id } : null);
+    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id }
+      : kind === 'file' ? { kind, id, title: e[2] || id.replace(/^.*\//, ''), sub: id.replace(/\/[^/]*$/, '').replace(/^\/Users\/[^/]+/, '~') } : null);
     if (it && !it.archived) recent.push({ ...it, section: 'Recent' });
   }
   const seen = new Set(recent.map(_cmdkKey));
@@ -72850,8 +72852,11 @@ function _cmdkCompute() {
     for (const h of (_cmdk.server || [])) {
       // An older server answers without tier/boost: read the tier off its score.
       const tier = h.tier || (h.score >= 1000 ? 5 : h.score >= 200 ? 4 : 3);
-      const it = { kind: h.kind, id: h.id, title: h.title, status: h.status, session: h.session, archived: h.archived,
-        sub: [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : ''),
+      // A file's sub line is its folder; its status is the visit count.
+      const sub = h.kind === 'file' ? String(h.id).replace(/\/[^/]*$/, '').replace(/^\/Users\/[^/]+/, '~')
+        : [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : '');
+      const it = { kind: h.kind, id: h.id, title: h.title, status: h.kind === 'file' ? '' : h.status, session: h.session, archived: h.archived,
+        sub,
         tier, match: h.match || '', snippet: h.snippet || '' };
       scored.push([it, tier * 10000 + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
     }
@@ -73052,6 +73057,7 @@ function _cmdkOpen(r) {
       break;
     case 'card': openBoardDetail(r.id); break;
     case 'schedule': switchView('scheduler'); _cmdkOpenSchedule(r.id, 0); break;
+    case 'file': openFilePreview(r.id); break;
     case 'pin':
       // The Mac app opens pins as its own floating panels.
       if (typeof _nativeTabs !== 'undefined' && _nativeTabs) location.href = 'amux://pin/' + r.id;

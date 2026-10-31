@@ -440,9 +440,29 @@ fn io_fail(e: &std::io::Error) -> Response {
 }
 
 async fn file_root(state: State<AppState>, req: Request) -> Response {
-    let _ = state; // reserved: keeps the handler signature uniform in this router
     match *req.method() {
-        Method::GET => view(req).await,
+        Method::GET => {
+            // An owner view (workers send X-Amux-Session) feeds the Cmd-K
+            // palette's visited files (api/file_visits.rs).
+            let owner_path = (!req.headers().contains_key("x-amux-session"))
+                .then(|| {
+                    let qs = parse_qs(req.uri().query().unwrap_or(""));
+                    qs_get(&qs, "path").filter(|p| p.starts_with('/')).map(str::to_string)
+                })
+                .flatten();
+            let resp = view(req).await;
+            if let Some(path) = owner_path.filter(|_| resp.status().is_success()) {
+                let at = crate::config::now_f64();
+                if let Err(e) = state.store.write_async(move |c| {
+                    crate::api::file_visits::record(c, &path, at)?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                }).await {
+                    tracing::warn!(target: "amux::file_visits", error = %e, measured = false, n_considered = 1,
+                        verdict = "file_visit_unrecorded", "a file view was not recorded for the palette");
+                }
+            }
+            resp
+        }
         Method::PUT => put_file(req).await,
         _ => not_found().await,
     }
