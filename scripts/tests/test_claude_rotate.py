@@ -234,7 +234,12 @@ class Logins(unittest.TestCase):
     def setUp(self):
         self.kc = {}
         self.saved = {k: getattr(cr, k) for k in ("_kc_read", "_kc_write", "cli_email", "probe", "resume_stranded",
-                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream")}
+                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream", "USE_KEYCHAIN")}
+        # These tests fake the Keychain (_kc_read/_kc_write), so they run in
+        # Keychain mode on every platform. Off macOS USE_KEYCHAIN is false and
+        # a folder's login is read from its .credentials.json, which folder()
+        # does not write: on the Linux runner the switch fell to the browser.
+        cr.USE_KEYCHAIN = True
         self.real_run, self.real_popen = cr.subprocess.run, cr.subprocess.Popen
         cr._kc_read = lambda svc, acct: self.kc.get((svc, acct))
         cr._kc_write = lambda svc, acct, v: self.kc.__setitem__((svc, acct), v) or True
