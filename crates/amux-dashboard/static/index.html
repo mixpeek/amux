@@ -4430,7 +4430,12 @@
      `.tab-customize-wrap`: position:relative, and not a scroller. -->
 <div class="tab-customizer-menu" id="peek-tab-customizer-menu" style="display:none;"></div>
 <script src="/state/kernel.js"></script>
-<script src="/app.js"></script>
+<!-- Versioned so a page only ever runs the app.js its own HTML was built with.
+     "/app.js" was one URL across builds, and the service worker answers it cache
+     first: on 2026-10-31 the Mac app ran Oct 30's app.js under the current HTML
+     and _cvSelect threw on the removed #cv-hint (client-action-error, ver
+     6e9da384b503 against a server on f5697fa825ec), reload after reload. -->
+<script src="/app.js?v=__AMUX_ASSET_VER__"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"></script>
 <!-- marked + DOMPurify + remend, served by amux so markdown renders offline (scripts/build-md.mjs) -->
