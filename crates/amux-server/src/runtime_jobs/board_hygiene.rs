@@ -549,11 +549,50 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     (autofix_discarded, backlog_flagged)
 }
 
+/// Offer every running lane with stale cards one grooming turn
+/// (`api::board_groom`, docs/design/board-cards-stay-current.md step 2): the
+/// worker judges its own cards; this only finds them. At most one turn a lane a
+/// day; isolated, board-off and switched-off lanes are skipped there.
+/// Returns (lanes with stale cards, turns delivered).
+async fn groom_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
+    let days = crate::api::board_groom::stale_days();
+    let Ok(report) = state
+        .store
+        .read_async(move |conn| Ok(crate::api::board_groom::staleness_report(conn, now_secs, days)?))
+        .await
+    else {
+        return (0, 0);
+    };
+    let lanes: Vec<String> = report["lanes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| l["stale"].as_i64().unwrap_or(0) > 0)
+        .filter_map(|l| l["lane"].as_str().map(str::to_string))
+        .collect();
+    let mut delivered = 0usize;
+    for lane in &lanes {
+        if !crate::api::session_verbs::is_running(lane).await {
+            continue;
+        }
+        let v = crate::api::board_groom::groom_lane(state, lane, false, false).await;
+        if v["ok"].as_bool() == Some(true) {
+            delivered += 1;
+        }
+    }
+    (lanes.len(), delivered)
+}
+
 pub async fn tick(state: AppState) {
     let now_secs = crate::config::now_f64() as i64;
 
     let (ny_warned, ny_discarded) = needsyou_sweep(&state, now_secs).await;
     let (af_discarded, bl_flagged) = stale_sweep(&state, now_secs).await;
+    let (groom_lanes, groom_delivered) = groom_sweep(&state, now_secs).await;
+    // Unconditional, including zero (AF-178): a sweep that only speaks with news
+    // cannot say it ran.
+    tracing::info!(lanes_with_stale = groom_lanes, groom_delivered, measured = true,
+        n_considered = groom_lanes, verdict = "board_groom_sweep", "board_hygiene: grooming pass");
 
     if ny_warned > 0 || ny_discarded > 0 || af_discarded > 0 || bl_flagged > 0 {
         tracing::info!(

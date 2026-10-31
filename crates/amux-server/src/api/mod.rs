@@ -17,6 +17,7 @@ pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
 pub(crate) mod send_profile;
+pub(crate) mod board_groom;
 pub mod prompt_block;
 pub mod land_approvals;
 pub mod land_queue;
@@ -229,6 +230,7 @@ pub fn router_with_connector_transport(
         .route("/api/sync", axum::routing::get(sync::delta_sync))
         .route("/api/events", axum::routing::get(sse::events))
         .nest("/api/board", board::routes())
+        .nest("/api/board-groom", board_groom::routes())
         // Dead-letter routes merge into the workers nest (RR-0068): same
         // /api/workers prefix, second nest at one path is an axum conflict.
         .nest(

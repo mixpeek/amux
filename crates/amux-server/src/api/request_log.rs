@@ -1466,6 +1466,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/board-groom/staleness",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/board-groom/{lane}",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/debug/send-profile",
         methods: &["GET"],
     },

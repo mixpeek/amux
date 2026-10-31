@@ -2,8 +2,9 @@
 
 Owner, 2026-10-31: "im finding that workers have board tasks that become obsolete over time -
 whats the best way to solve this?", then "come up with the best plan and /iterate based on scores
-you think are valuable especially in regards to amux vision". The plan and how it scores
-against `VISION.md` are below; the iteration history is at the end. Nothing in it is built yet.
+you think are valuable especially in regards to amux vision", then "implemente the best one then
+look at workers with large boards and apply it". The plan and how it scores against `VISION.md`
+are below; what is built is under Status, and the iteration history is at the end.
 
 ## The problem, measured on 2026-10-31
 
@@ -32,6 +33,7 @@ keeps offering cards nobody needs.
 | `amux requests` | Links an owner message to the commit that landed it (`Amux-Request:` trailers, `amux requests close`). |
 | Needs You digest (AF-510) | One batched place for what is waiting on the owner. |
 | Lease reaper | Frees a card whose holder went silent. |
+| `runtime_jobs/board_hygiene.rs` | Every 6 hours: discards needs-you cards at 30 days and autofix cards at 72 hours, and appends a review note to backlog cards older than 30 days. That note reaches nobody, so the grooming turn runs from this job instead of a new one. |
 
 ## The plan
 
@@ -105,6 +107,30 @@ closed without that choice.
   a red main does. The loop closes on its own result, not on effort.
 - **Targets:** the stale ratio from 40% to under 15% within two weeks of rollout, with reopens
   under 5%.
+
+## Status (2026-10-31)
+
+Built:
+
+- **Receipts close when the ledger says the request did** (step 1): capture reconcile's fourth
+  proof, `Proof::RequestClosed`, from `~/.amux/requests-closed.json`, every card of the message
+  at once. The tick logs `ledger_msgs_considered` and `ledger_closed`.
+- **The grooming turn** (step 2): `api/board_groom.rs`. `POST /api/board-groom/{lane}`
+  (`?dry=1`, `?force=1`), offered by the board-hygiene job to every running lane with stale
+  cards, at most once a day (`~/.amux/board-groom.json`), `AMUX_BOARD_GROOM=0` per lane.
+  Logged as `board_groom_delivered`, `board_groom_skipped` or `board_groom_refused`, and every
+  sweep as `board_groom_sweep`, zero included.
+- **The staleness measure** (step 5, first half): `GET /api/board-groom/staleness?days=7`.
+
+Not built yet, in this order:
+
+1. The reopen-within-7-days count, then the `board.cards_current` invariant on it.
+2. Alarm cards closing when their alarm clears.
+3. `doing` without a heartbeat back to `todo`, and cards of gone lanes rerouted.
+4. The owner's weekly list.
+
+The existing age-based discards in board hygiene are left as they are: they were set by an
+earlier decision, and changing them is a separate call.
 
 ## Rollout
 

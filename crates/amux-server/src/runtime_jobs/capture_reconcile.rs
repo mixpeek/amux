@@ -200,6 +200,8 @@ pub(crate) fn card_ids_in(text: &str) -> BTreeSet<String> {
 pub(crate) struct Target {
     pub on_card: Option<String>,
     pub named: BTreeSet<String>,
+    /// Every card of the message: a request closed as a whole closes all of them.
+    pub all: bool,
 }
 
 impl Target {
@@ -207,10 +209,11 @@ impl Target {
         Target {
             on_card: on_card.filter(|c| !c.is_empty()).map(str::to_string),
             named: card_ids_in(text),
+            all: false,
         }
     }
     fn covers(&self, card: &str) -> bool {
-        self.on_card.as_deref() == Some(card) || self.named.contains(card)
+        self.all || self.on_card.as_deref() == Some(card) || self.named.contains(card)
     }
 }
 
@@ -260,6 +263,13 @@ pub(crate) enum Proof {
         status: String,
         evidence: String,
     },
+    /// The owner's request is closed in the requests ledger
+    /// (`~/.amux/requests-closed.json`, `amux requests close`): landed, answered or
+    /// declined, with the reason given there (docs/design/board-cards-stay-current.md).
+    RequestClosed {
+        reason: String,
+        sha: String,
+    },
 }
 
 impl Proof {
@@ -275,6 +285,14 @@ impl Proof {
             } => format!(
                 "capture-reconcile: MSG-{msg} cited in a {source} by {author} with landed commit {sha}"
             ),
+            Proof::RequestClosed { reason, sha } => {
+                let r: String = reason.chars().take(300).collect();
+                format!(
+                    "capture-reconcile: MSG-{msg} closed in the requests ledger{}: {}",
+                    if sha.is_empty() { String::new() } else { format!(" with {sha}") },
+                    if r.trim().is_empty() { "no reason recorded" } else { r.trim() }
+                )
+            }
             Proof::CardDone {
                 card,
                 status,
@@ -865,8 +883,65 @@ async fn reconcile_from_commits(state: &AppState) -> (usize, usize, bool) {
     (tokens.len(), closed, !truncated)
 }
 
+/// The requests ledger: message id -> (reason, sha) for every request closed by hand.
+pub(crate) fn requests_ledger() -> std::collections::BTreeMap<i64, (String, String)> {
+    let path = crate::api::session_verbs::home().join("requests-closed.json");
+    let v: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    v.as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, c)| {
+            let mid: i64 = id.trim_start_matches("MSG-").parse().ok()?;
+            Some((
+                mid,
+                (
+                    c["reason"].as_str().unwrap_or("").to_string(),
+                    c["sha"].as_str().unwrap_or("").to_string(),
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Close the receipts whose request the ledger says is closed, all of the
+/// message's cards at once (a split request is resolved as a whole there).
+/// Returns (messages considered, cards closed).
+pub(crate) async fn reconcile_from_ledger(
+    state: &AppState,
+    ledger: &std::collections::BTreeMap<i64, (String, String)>,
+) -> (usize, usize) {
+    let open = match state
+        .store
+        .read_async(|conn| {
+            let rows = open_capture_cards(conn)?;
+            Ok(rows
+                .iter()
+                .filter(|r| closable(r) && enabled(r.session.as_deref().unwrap_or("")))
+                .flat_map(|r| linked_msgs(conn, r))
+                .collect::<BTreeSet<i64>>())
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return (0, 0),
+    };
+    let mut closed = 0usize;
+    let target = Target { all: true, ..Target::default() };
+    for msg in open.iter().filter(|m| ledger.contains_key(m)) {
+        let (reason, sha) = ledger[msg].clone();
+        closed += reconcile(state, *msg, None, None, Proof::RequestClosed { reason, sha }, &target)
+            .await
+            .len();
+    }
+    (open.len(), closed)
+}
+
 pub async fn tick(state: &AppState) {
     let (msgs_considered, closed, complete) = reconcile_from_commits(state).await;
+    let (ledger_considered, ledger_closed) = reconcile_from_ledger(state, &requests_ledger()).await;
     let now = chrono::Utc::now().timestamp();
     let after = unreconciled_after_s();
     let slot = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize, 0usize)));
@@ -897,6 +972,8 @@ pub async fn tick(state: &AppState) {
             commit_msgs_considered = msgs_considered,
             commit_closed = closed,
             commit_scan_complete = complete,
+            ledger_msgs_considered = ledger_considered,
+            ledger_closed,
             verdict = "capture_unreconciled",
             "capture reconcile tick (AMUX-5238)"
         ),
@@ -956,6 +1033,30 @@ mod tests {
     fn row(st: &AppState, id: &str) -> bs::IssueRow {
         let conn = st.store.read().unwrap();
         bs::get_issue(&conn, id).unwrap().unwrap()
+    }
+
+    /// docs/design/board-cards-stay-current.md step 1: a request closed in the
+    /// requests ledger closes its receipt, and all of a split request's cards;
+    /// a request not in the ledger closes nothing.
+    #[tokio::test]
+    async fn a_request_closed_in_the_ledger_closes_its_receipts() {
+        let (st, _d) = state();
+        let now = 1_790_500_000;
+        seed(&st, "RC-1", "lane", 501, now, "investigation").await;
+        seed(&st, "RC-2", "lane", 502, now, "investigation").await;
+        seed(&st, "RC-3", "lane", 502, now, "investigation").await;
+        seed(&st, "RC-4", "lane", 503, now, "investigation").await;
+        let mut ledger = std::collections::BTreeMap::new();
+        ledger.insert(501, ("answered in chat, nothing to build".to_string(), String::new()));
+        ledger.insert(502, ("landed".to_string(), "abc1234".to_string()));
+        let (considered, closed) = reconcile_from_ledger(&st, &ledger).await;
+        assert_eq!((considered, closed), (3, 3));
+        for id in ["RC-1", "RC-2", "RC-3"] {
+            let r = row(&st, id);
+            assert!(matches!(r.status.as_str(), "done" | "verified" | "discarded"), "{id} is {}", r.status);
+            assert!(r.log.as_deref().unwrap_or("").contains("closed in the requests ledger"), "{id} log: {:?}", r.log);
+        }
+        assert_eq!(row(&st, "RC-4").status, "todo", "a request not in the ledger stays open");
     }
 
     #[test]
