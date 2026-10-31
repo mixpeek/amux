@@ -42,6 +42,18 @@ fresh; mkdir -p a/b/c/d; printf '<!-- rules: parent=../../CLAUDE.md owner=v enfo
 ln -s CLAUDE.md a/b/c/d/AGENTS.md; git add -A >/dev/null
 run && ok "a parent two folders up is accepted" || bad "skip-level parent: $(cat "$T/out")"
 
+# --ref reads the committed bytes, which is what the pre-push hook checks (land review F1):
+# a broken file left uncommitted never fails a push, and a broken commit is never passed by a
+# fixed working tree.
+fresh; git -c user.name=t -c user.email=t@example.com commit -qm good
+printf '# broken, uncommitted\n' > a/b/CLAUDE.md
+python3 "$CHK" --root "$T/r" --ref HEAD > "$T/out" 2>&1 && ok "--ref ignores a broken uncommitted file" || bad "--ref read the working tree: $(cat "$T/out")"
+git -c user.name=t -c user.email=t@example.com commit -qam broken
+git checkout -q HEAD~1 -- a/b/CLAUDE.md
+python3 "$CHK" --root "$T/r" --ref HEAD > "$T/out" 2>&1 && bad "--ref passed a broken commit over a fixed working tree" || ok "--ref fails a broken commit even when the working tree is fixed"
+git rm -q --cached a/b/AGENTS.md && git -c user.name=t -c user.email=t@example.com commit -qm noagents
+python3 "$CHK" --root "$T/r" --ref HEAD > "$T/out" 2>&1 && bad "--ref passed a commit without AGENTS.md" || { grep -q "AGENTS.md beside it" "$T/out" && ok "--ref checks the committed symlink" || bad "symlink at ref: $(cat "$T/out")"; }
+
 python3 "$CHK" --root "$ROOT" > "$T/real" 2>&1 && ok "the real tree passes" || bad "the real tree: $(cat "$T/real")"
 python3 "$CHK" --root "$ROOT" --map | grep -q "crates/amux-server/CLAUDE.md" && ok "--map prints the tree from the headers" || bad "--map"
 

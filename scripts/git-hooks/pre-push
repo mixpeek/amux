@@ -579,10 +579,12 @@ def main():
         _skip = lambda k: os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
         if any(x == "VISION.md" or x.endswith("CLAUDE.md") or x.endswith("AGENTS.md") for x in _touch2):
             _chk = os.path.join(_root, "scripts", "check_rules_tree.py")
-            if os.path.exists(_chk):
-                _w = subprocess.run([sys.executable, _chk, "--root", _root], capture_output=True, text=True, timeout=60)
+            # At each pushed head's committed bytes, never the shared working tree.
+            for _h in (_heads if os.path.exists(_chk) else []):
+                _w = subprocess.run([sys.executable, _chk, "--root", _root, "--ref", _h],
+                                    capture_output=True, text=True, timeout=60)
                 if _w.returncode != 0:
-                    sys.stderr.write("\nBLOCKED: the rule tree under VISION.md is broken.\n\n" + _w.stdout + _w.stderr)
+                    sys.stderr.write("\nBLOCKED: the rule tree under VISION.md is broken at %s.\n\n" % _h[:9] + _w.stdout + _w.stderr)
                     if not _skip("AMUX_SKIP_RULES_TREE"):
                         return 1
                     sys.stderr.write("AMUX_SKIP_RULES_TREE set: pushing anyway.\n")
