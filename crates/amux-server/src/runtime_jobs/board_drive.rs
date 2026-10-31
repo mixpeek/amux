@@ -2314,6 +2314,16 @@ fn blocker_recovery_lane_interval(session: &str) -> f64 {
     blocker_recovery_lane_interval_in(&crate::api::session_verbs::home(), session, process_value.as_deref())
 }
 
+/// No card in doing and no card event in the drain activity window: the lane
+/// is waiting on drive, so drive should not also wait on a clock.
+fn lane_is_idle(conn: &Connection, lane: &str) -> rusqlite::Result<bool> {
+    let doing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='doing' AND deleted IS NULL AND COALESCE(archived,0)=0",
+        [lane], |r| r.get(0))?;
+    let window = std::env::var("AMUX_DRAIN_ACTIVITY_WINDOW_MIN").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(30);
+    Ok(doing == 0 && lane_card_activity(conn, window).get(lane).copied().unwrap_or(0) == 0)
+}
+
 /// Seconds until `lane` may get its next blocker-recovery review, or None when
 /// it may get one now. `interval <= 0` means disabled (always held).
 pub(crate) fn blocker_recovery_lane_hold(conn: &Connection, lane: &str, interval: f64, now: f64) -> rusqlite::Result<Option<f64>> {
@@ -2373,7 +2383,6 @@ fn drainable_backlog_rows(
     // external condition that eventually goes stale. Only an explicit claim
     // (or an intentional move to Todo) should dispatch that work again.
     let reclaim_cut = now - reclaim_cooldown_s();
-    let verified_cut = (now as i64) - SOURCE_REF_STALE_S;
     let candidates = conn
         .prepare(&format!(
             "SELECT i.id FROM issues i WHERE i.session=?1 AND i.status='backlog' \
@@ -2385,7 +2394,6 @@ fn drainable_backlog_rows(
            AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
                            AND lower(t.tag) = 'defer:focused') \
            AND i.id NOT IN ({CLAIMED}) \
-           AND NOT (COALESCE(i.source_ref,'') <> '' AND COALESCE(i.last_verified_at,0) > ?3) \
            AND COALESCE(i.blocked_on,'') = '' \
            AND NOT (COALESCE(i.source,'')='capture' AND COALESCE(i.source_ref,'') <> '') \
          ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC, i.id ASC",
@@ -2393,7 +2401,7 @@ fn drainable_backlog_rows(
             CLAIMED = claimed_since_sql(2)
         ))
         .and_then(|mut st| {
-            st.query_map(rusqlite::params![session, reclaim_cut, verified_cut], |r| {
+            st.query_map(rusqlite::params![session, reclaim_cut], |r| {
                 r.get::<_, String>(0)
             })
             .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
@@ -2409,10 +2417,18 @@ fn drainable_backlog_rows(
         if !deps_blocking(conn, &row).is_empty() {
             continue;
         }
-        if let Some(open) = trigger_waits_on_open_card(conn, &row.id, row.source_ref.as_deref())? {
-            tracing::debug!(target: "amux::board_drive", card = %row.id, waits_on = %open, measured = true, n_considered = 1,
-                verdict = "backlog_trigger_card_open", "a backlog card's trigger names a card that is not finished; it stays parked");
-            continue;
+        match trigger_park(conn, &row, now as i64)? {
+            TriggerPark::WaitsOnCard(open) => {
+                tracing::debug!(target: "amux::board_drive", card = %row.id, waits_on = %open, measured = true, n_considered = 1,
+                    verdict = "backlog_trigger_card_open", "a backlog card's trigger names a card that is not finished; it stays parked");
+                continue;
+            }
+            TriggerPark::Prose => continue,
+            TriggerPark::Fired(cards) => {
+                tracing::info!(target: "amux::board_drive", card = %row.id, session, fired_by = %cards.join(","), measured = true, n_considered = 1,
+                    verdict = "trigger_fired_unparked", "every card a backlog card's trigger names is finished; it is offered again");
+            }
+            TriggerPark::None => {}
         }
         eligible.push(row);
     }
@@ -2426,6 +2442,62 @@ fn drainable_backlog_rows(
 /// expiry exists for conditions the server cannot see; a card id it can.
 /// Returns the first card the trigger names that exists, is not this card,
 /// is not archived, and is not done, verified or discarded.
+/// Whether a backlog card's `source_ref` trigger still parks it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum TriggerPark {
+    /// No trigger, or a prose one past SOURCE_REF_STALE_S.
+    None,
+    /// The trigger names a card that is not finished.
+    WaitsOnCard(String),
+    /// The trigger names cards and every one is finished: it fired.
+    Fired(Vec<String>),
+    /// A prose trigger confirmed within SOURCE_REF_STALE_S.
+    Prose,
+}
+
+/// A trigger that names cards is judged by those cards, however recently it
+/// was confirmed: open parks, all finished releases. Before 2026-10-30 any
+/// trigger confirmed in the last 24 h parked its card even after the card it
+/// named had finished, and one board audit that rewrote source_ref stamped 71
+/// of mxp-gs12's cards at once (MSG-101729). Only prose keeps the 24 h rule;
+/// what it waits on is the worker's to judge.
+pub(crate) fn trigger_park(conn: &Connection, row: &bs::IssueRow, now: i64) -> rusqlite::Result<TriggerPark> {
+    let (named, open) = trigger_cards(conn, &row.id, row.source_ref.as_deref())?;
+    if let Some(open) = open {
+        return Ok(TriggerPark::WaitsOnCard(open));
+    }
+    if !named.is_empty() {
+        return Ok(TriggerPark::Fired(named));
+    }
+    Ok(if fresh_source_ref_trigger(row, now) { TriggerPark::Prose } else { TriggerPark::None })
+}
+
+/// The existing cards a trigger names (not the card itself), and the first
+/// of them that is not finished.
+fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>) -> rusqlite::Result<(Vec<String>, Option<String>)> {
+    let Some(text) = source_ref.filter(|t| !t.trim().is_empty()) else { return Ok((Vec::new(), None)) };
+    static ID: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Z][A-Z0-9]{0,9}-[0-9]+\b").unwrap());
+    let mut named = Vec::new();
+    let mut open = None;
+    for m in ID.find_iter(text) {
+        let id = m.as_str();
+        if id == own || named.iter().any(|n| n == id) {
+            continue;
+        }
+        let row: Option<(String, i64)> = conn
+            .query_row("SELECT status, COALESCE(archived, 0) FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        if let Some((status, archived)) = row {
+            named.push(id.to_string());
+            if open.is_none() && archived == 0 && !matches!(status.as_str(), "done" | "verified" | "discarded") {
+                open = Some(id.to_string());
+            }
+        }
+    }
+    Ok((named, open))
+}
+
 pub(crate) fn trigger_waits_on_open_card(conn: &Connection, own: &str, source_ref: Option<&str>) -> rusqlite::Result<Option<String>> {
     let Some(text) = source_ref.filter(|t| !t.trim().is_empty()) else { return Ok(None) };
     static ID: std::sync::LazyLock<regex::Regex> =
@@ -8653,7 +8725,22 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             let recovery_on = fleet.auto_continue_enabled(lane) && dispatch_backlog_when_idle(lane);
             let lane_hold = if recovery_on {
                 let (l, interval, now) = (lane.to_string(), blocker_recovery_lane_interval(lane), now_f64());
-                state.store.read_async(move |conn| Ok(blocker_recovery_lane_hold(conn, &l, interval, now)?)).await.ok().flatten()
+                state.store.read_async(move |conn| {
+                    let hold = blocker_recovery_lane_hold(conn, &l, interval, now)?;
+                    // An IDLE lane is not held: one parked card an hour is a
+                    // throttle on the worker, not a pace it chose. mxp-gs12 on
+                    // 2026-10-30 got 12 reviews in 12 h against 79 parked cards
+                    // while busy 4.8 h (MSG-101729). The per-card identity and
+                    // the one-pending-review rule still stop repeats, so the
+                    // next card arrives when the worker has handled the last.
+                    if hold.is_some() && interval > 0.0 && lane_is_idle(conn, &l)? {
+                        tracing::info!(target: "amux::board_drive", session = %l, measured = true, n_considered = 1,
+                            verdict = "blocker_recovery_idle_lane_unheld",
+                            "board_drive: idle lane's blocker reviews are not held by the lane interval");
+                        return Ok(None);
+                    }
+                    Ok(hold)
+                }).await.ok().flatten()
             } else {
                 None
             };
@@ -11261,6 +11348,41 @@ mod tests {
         crate::db::migrate::test_memdb()
     }
 
+    /// MSG-101729: an idle lane's parked backlog got one blocker review an
+    /// hour (mxp-gs12: 12 in 12 h against 79 parked cards). Idle, the next
+    /// card comes on the next pass; a lane with a card in doing is still held.
+    #[tokio::test]
+    async fn an_idle_lane_gets_its_next_blocker_review_without_waiting_an_hour() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        opt_in_backlog_dispatch(home.path(), "idle-gs");
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "PK-1", "backlog", "agent", "code");
+        drive_card(&store, "PK-2", "backlog", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET session='idle-gs', blocked_on='input artifact missing', \
+                source_ref='owner deployment hold', last_verified_at=?1 WHERE id IN ('PK-1','PK-2')", [now_f64() as i64])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        let first = drive_lane(&state, &fleet, "idle-gs").await;
+        assert_eq!(first.outcome, "blocker-recovery", "{first:?}");
+        let second = drive_lane(&state, &fleet, "idle-gs").await;
+        assert_eq!(second.outcome, "blocker-recovery", "an idle lane waited on the hourly lane interval: {second:?}");
+        assert_ne!(first.card, second.card, "the next review is a different card");
+        let conn = store.read().unwrap();
+        assert!(lane_is_idle(&conn, "idle-gs").unwrap());
+        drop(conn);
+        drive_card(&store, "WORK", "doing", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET session='idle-gs' WHERE id='WORK'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let conn = store.read().unwrap();
+        assert!(!lane_is_idle(&conn, "idle-gs").unwrap(), "a card in doing means the lane is not idle");
+        assert!(blocker_recovery_lane_hold(&conn, "idle-gs", 3600.0, now_f64()).unwrap().is_some(), "the hold still applies to a working lane");
+    }
+
     struct BoundaryFleet {
         delivered: std::sync::Mutex<Vec<(String, String)>>,
         resume_ids: std::sync::Mutex<HashSet<String>>,
@@ -11715,6 +11837,37 @@ mod tests {
         let conn = store.read().unwrap();
         assert_eq!(trigger_waits_on_open_card(&conn, "X-1", Some("waiting on X-1 itself and NOPE-9")).unwrap(), None,
             "its own id and unknown ids do not hold it");
+    }
+
+    /// MSG-101729, 2026-10-30: a board audit rewrote source_ref on 71 of
+    /// mxp-gs12's cards, which stamped last_verified_at, so every trigger read
+    /// as fresh and parked its card for 24 h, including ones whose named card
+    /// had finished. A trigger that names cards is judged by those cards
+    /// however fresh it is; only prose keeps the 24 h rule.
+    #[test]
+    fn a_fresh_trigger_on_a_finished_card_releases_it_and_fresh_prose_still_parks() {
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "GM-40", "backlog", "agent", "code");
+        drive_card(&store, "GM-41", "backlog", "agent", "code");
+        drive_card(&store, "GE1-30", "doing", "agent", "code");
+        let fresh = now_f64() as i64 - 60;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET source_ref='after GE1-30 lands', last_verified_at=?1 WHERE id='GM-40'", [fresh])?;
+            c.execute("UPDATE issues SET source_ref='when amux resources reads memory under 80%', last_verified_at=?1 WHERE id='GM-41'", [fresh])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let ids = |s: &std::sync::Arc<crate::db::Store>| drainable_backlog_ids(&s.read().unwrap(), "lane", now_f64());
+        assert!(!ids(&store).contains(&"GM-40".to_string()), "GE1-30 is open: GM-40 stays parked");
+        assert!(!ids(&store).contains(&"GM-41".to_string()), "fresh prose parks for 24 h");
+        store.write(|c| {
+            c.execute("UPDATE issues SET status='done' WHERE id='GE1-30'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(ids(&store).contains(&"GM-40".to_string()), "its trigger fired: GM-40 drains though confirmed a minute ago");
+        assert!(!ids(&store).contains(&"GM-41".to_string()), "prose is still the worker's to judge");
+        let conn = store.read().unwrap();
+        let row = bs::get_issue(&conn, "GM-40").unwrap().unwrap();
+        assert_eq!(trigger_park(&conn, &row, now_f64() as i64).unwrap(), TriggerPark::Fired(vec!["GE1-30".into()]));
     }
 
     /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
