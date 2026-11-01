@@ -299,6 +299,9 @@ pub fn goal_payload(name: &str) -> Value {
         },
     };
     v["checker"] = checker;
+    if let Some((line, since)) = crate::api::prompt_block::current(name) {
+        v["blocked_on_prompt"] = serde_json::json!({"line": line, "since": since});
+    }
     v
 }
 
@@ -444,6 +447,14 @@ pub(crate) fn goal_view(goal: Option<Goal>, footer: impl FnOnce() -> Option<bool
 /// None when the pane cannot be read.
 type FooterCache = Mutex<HashMap<String, (std::time::Instant, Option<bool>)>>;
 
+/// A permission prompt replaces the footer, so its absence there says nothing
+/// about the goal: this is only read when the transcript holds an unmet goal,
+/// and a lane on a prompt read "cleared" for 24 minutes (mixpeek-dev,
+/// 2026-11-01) while it was blocked and still owed the goal.
+fn footer_shows_goal(pane: &str) -> bool {
+    pane.contains("/goal active") || crate::api::prompt_block::prompt_line(pane).is_some()
+}
+
 pub(crate) fn footer_goal_active(name: &str) -> Option<bool> {
     static CACHE: std::sync::OnceLock<FooterCache> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -462,7 +473,7 @@ pub(crate) fn footer_goal_active(name: &str) -> Option<bool> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("/goal active"));
+        .map(|o| footer_shows_goal(&String::from_utf8_lossy(&o.stdout)));
     if let Ok(mut map) = cache.lock() {
         map.insert(name.to_string(), (std::time::Instant::now(), v));
     }
@@ -530,6 +541,8 @@ struct Keep {
     /// may rightly wait on them, so that turn is not a no-progress turn: the
     /// two-strike budget would stop the keeper before the wait ended.
     background_live: bool,
+    /// The first-seen time of the permission prompt last reported.
+    prompt_reported: f64,
 }
 
 /// Kept on disk, so a server restart does not hand every stuck goal a fresh
@@ -763,6 +776,33 @@ fn quiet_needed(s: &Value, idle_s: f64) -> f64 {
     }
 }
 
+/// A worker with an open goal cannot continue past a permission prompt, and
+/// the keeper cannot answer one (D2). Say so once per prompt: a lane sat on
+/// one for 24 minutes with nothing telling anybody (mixpeek-dev, 2026-11-01).
+async fn report_goal_prompt(app: &crate::api::AppState, name: &str, line: &str, since: f64, now: f64) {
+    if now - since < env_f64("AMUX_GOAL_PROMPT_REPORT_S", 120.0) {
+        return;
+    }
+    {
+        let Ok(mut map) = state().lock() else { return };
+        let k = map.entry(name.to_string()).or_default();
+        if k.prompt_reported == since {
+            return;
+        }
+        k.prompt_reported = since;
+    }
+    let n = name.to_string();
+    let goal = tokio::task::spawn_blocking(move || goal_payload(&n)).await.unwrap_or_default();
+    if !matches!(goal["state"].as_str(), Some("unmet" | "unknown")) {
+        return;
+    }
+    tracing::warn!(target: "amux::goal_keeper", session = %name, prompt = %line, age_s = (now - since) as i64,
+        verdict = "goal_blocked_on_permission_prompt", measured = true, n_considered = 1,
+        "a worker with an unmet /goal is stopped on a permission prompt; the keeper cannot answer it");
+    crate::push::send_all(app, &format!("{name} is stopped on a permission prompt"), line, name,
+        &format!("goal-prompt:{name}"), &format!("/#peek={name}")).await;
+}
+
 async fn tick(app: crate::api::AppState) {
     let Ok(sessions) = crate::api::sessions_legacy::legacy_sessions_values(app.store.clone()).await else {
         return;
@@ -799,6 +839,9 @@ async fn tick(app: crate::api::AppState) {
         // on 2026-10-31 neither continued it for 18 min with its checker at
         // 4/10. Board-drive now records each delivery as a wake, so the
         // recent-wake check below is the deferral, and only when it acted.
+        if let Some((line, since)) = crate::api::prompt_block::current(&name) {
+            report_goal_prompt(&app, &name, &line, since, now).await;
+        }
         if !turn_ended_for_goal(s) {
             continue;
         }
@@ -1016,6 +1059,14 @@ mod tests {
         };
         assert_eq!(run(true), 0);
         assert_eq!(run(false), 1, "with nothing running it still counts");
+    }
+
+    #[test]
+    fn a_permission_prompt_hiding_the_footer_does_not_read_as_cleared() {
+        let prompt = "This shell -c script runs rm and could not be checked\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No\nEsc to cancel";
+        assert!(super::footer_shows_goal(prompt));
+        assert!(super::footer_shows_goal("x\n/goal active (10m)"));
+        assert!(!super::footer_shows_goal("\u{276f} \n\u{23f5}\u{23f5} bypass permissions on"), "a real clear still reads cleared");
     }
 
     #[test]
