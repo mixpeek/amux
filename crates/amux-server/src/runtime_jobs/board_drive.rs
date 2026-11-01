@@ -4248,8 +4248,8 @@ fn tag_severity(tags: &[String]) -> i64 {
     let mut boost = 0;
     for t in tags {
         match t.to_ascii_lowercase().as_str() {
-            "p0" | "sev0" | "sev1" | "critical" | "urgent" => boost = boost.max(40),
-            "p1" | "sev2" | "high" => boost = boost.max(20),
+            "p0" | "sev0" | "sev1" | "critical" | "urgent" => boost = boost.max(5_000),
+            "p1" | "sev2" | "high" => boost = boost.max(1_000),
             _ => {}
         }
     }
@@ -4280,10 +4280,103 @@ fn count_dependents(conn: &Connection, id: &str) -> i64 {
 /// similar-priority cards and lets a deliberate drag nudge one up, without
 /// re-installing the pos-LIFO default that buries old work. `pinned` is the hard
 /// human override — a pinned card leads regardless of everything else.
+/// PRIORITY OUTRANKS AGE. `p0` was worth 40 and an hour of age 1, so any card
+/// two days old beat a P0, and three of four mixpeek-dev lanes drifted off
+/// direct orders on 2026-11-01. Age still orders cards within a tier.
 fn pickup_score(row: &bs::IssueRow, now: f64, dependents: i64, drag: i64) -> i64 {
     let age_hours = (((now as i64) - row.created).max(0)) / 3600;
     let pin = if row.pinned != 0 { 10_000 } else { 0 };
     pin + age_hours + type_weight(&row.item_type) + tag_severity(&row.tags) + dependents * 5 + drag
+}
+
+/// A lane's dispatchable cards, best first: the one order dispatch and the goal
+/// keeper both use.
+fn ranked_candidates(conn: &Connection, session: &str, now: f64, fresh_cut: i64, reclaim_cut: f64) -> Vec<String> {
+    if pickup_scoring_enabled() {
+        let raw: Vec<String> = conn
+            .prepare(&format!(
+                // Pinned first so a newer pinned card is never truncated out of
+                // the 256-card scoring window before its pin boost applies; then
+                // oldest-first so a deep queue never drops the oldest before it
+                // can score.
+                "SELECT i.id FROM issues i WHERE {dw} \
+                 ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC LIMIT 256",
+                dw = dispatchable_where()
+            ))
+            .and_then(|mut st| {
+                st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
+                    r.get::<_, String>(0)
+                })
+                .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+        let rows: Vec<bs::IssueRow> = raw
+            .iter()
+            .filter_map(|id| bs::get_issue(conn, id).ok().flatten())
+            .collect();
+        // Drag rank: topmost board position (min `pos`) scores highest; ties by
+        // id so the rank is deterministic.
+        let n = rows.len() as i64;
+        let mut by_pos: Vec<(&str, f64)> = rows.iter().map(|r| (r.id.as_str(), r.pos)).collect();
+        by_pos.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(b.0))
+        });
+        let drag: std::collections::HashMap<&str, i64> = by_pos
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (*id, n - i as i64))
+            .collect();
+        let mut scored: Vec<(i64, i64, String)> = rows
+            .iter()
+            .map(|r| {
+                let deps = count_dependents(conn, &r.id);
+                let s = pickup_score(r, now, deps, *drag.get(r.id.as_str()).unwrap_or(&0));
+                (s, r.created, r.id.clone())
+            })
+            .collect();
+        // score DESC, then oldest-first, then id — a deterministic total order.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        scored.into_iter().map(|(_, _, id)| id).collect()
+    } else {
+        conn.prepare(&format!(
+            "SELECT i.id FROM issues i WHERE {dw} \
+             ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC LIMIT 16",
+            dw = dispatchable_where()
+        ))
+        .and_then(|mut st| {
+            st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
+                r.get::<_, String>(0)
+            })
+            .map(|rows| rows.flatten().collect())
+        })
+        .unwrap_or_default()
+    }
+}
+
+/// The card a lane should work next, for the goal keeper's continue: its id,
+/// title, and whether the owner ranked it (pinned, or a p0 or p1 tag). The
+/// card `select_pickup` would claim when it would claim one, refusal guards
+/// and all; for a lane at its WIP cap, only an owner-ranked card.
+pub fn top_card(conn: &Connection, session: &str, now: f64) -> Option<(String, String, bool)> {
+    let ranked_row = |id: &str| bs::get_issue(conn, id).ok().flatten().map(|r| (r.pinned != 0 || tag_severity(&r.tags) > 0, r));
+    if let Pickup::Claim { card, .. } = select_pickup(conn, session, now) {
+        let (ranked, row) = ranked_row(&card)?;
+        return Some((card, row.title, ranked));
+    }
+    // A lane holding work in `doing` is refused by the WIP cap, and that is the
+    // drift case: busy on a low card while a P0 waits. Name the best
+    // dispatchable card there only if the owner ranked it, after the same
+    // delegated-only filter pickup applies.
+    let delegated = delegated_only_pickup(session);
+    ranked_candidates(conn, session, now, pickup_fresh_cut(now), now - reclaim_cooldown_s())
+        .into_iter()
+        .filter_map(|id| ranked_row(&id).map(|(ranked, row)| (id, ranked, row)))
+        .find(|(_, ranked, row)| {
+            *ranked && (!delegated || row.requested_by.as_deref().is_some_and(|by| !by.trim().is_empty() && by != session))
+        })
+        .map(|(id, ranked, row)| (id, row.title, ranked))
 }
 
 /// Count todos that would be dispatchable but for the freshness gate — the
@@ -4486,67 +4579,7 @@ pub fn select_pickup_with(
     // can score), then order by `pickup_score` — age surfaces starved cards, type
     // and tag severity lift P0s, dependents lift critical-path work, and drag
     // position / pin stay as human overrides.
-    let ids: Vec<String> = if pickup_scoring_enabled() {
-        let raw: Vec<String> = conn
-            .prepare(&format!(
-                // Pinned first so a newer pinned card is never truncated out of
-                // the 256-card scoring window before its pin boost applies; then
-                // oldest-first so a deep queue never drops the oldest before it
-                // can score.
-                "SELECT i.id FROM issues i WHERE {dw} \
-                 ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC LIMIT 256",
-                dw = dispatchable_where()
-            ))
-            .and_then(|mut st| {
-                st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
-                    r.get::<_, String>(0)
-                })
-                .map(|rows| rows.flatten().collect())
-            })
-            .unwrap_or_default();
-        let rows: Vec<bs::IssueRow> = raw
-            .iter()
-            .filter_map(|id| bs::get_issue(conn, id).ok().flatten())
-            .collect();
-        // Drag rank: topmost board position (min `pos`) scores highest; ties by
-        // id so the rank is deterministic.
-        let n = rows.len() as i64;
-        let mut by_pos: Vec<(&str, f64)> = rows.iter().map(|r| (r.id.as_str(), r.pos)).collect();
-        by_pos.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(b.0))
-        });
-        let drag: std::collections::HashMap<&str, i64> = by_pos
-            .iter()
-            .enumerate()
-            .map(|(i, (id, _))| (*id, n - i as i64))
-            .collect();
-        let mut scored: Vec<(i64, i64, String)> = rows
-            .iter()
-            .map(|r| {
-                let deps = count_dependents(conn, &r.id);
-                let s = pickup_score(r, now, deps, *drag.get(r.id.as_str()).unwrap_or(&0));
-                (s, r.created, r.id.clone())
-            })
-            .collect();
-        // score DESC, then oldest-first, then id — a deterministic total order.
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-        scored.into_iter().map(|(_, _, id)| id).collect()
-    } else {
-        conn.prepare(&format!(
-            "SELECT i.id FROM issues i WHERE {dw} \
-             ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC LIMIT 16",
-            dw = dispatchable_where()
-        ))
-        .and_then(|mut st| {
-            st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
-                r.get::<_, String>(0)
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default()
-    };
+    let ids = ranked_candidates(conn, session, now, fresh_cut, reclaim_cut);
     // DELEGATED-ONLY PICKUP (2026-09-30, goal-spec-12 orchestration). An
     // implementation worker under an orchestrator filed defects it found onto
     // its OWN board (gs12-mvs GM-9, gs12-compute GC-13/14), and with pickup on,
@@ -17316,6 +17349,16 @@ mod tests {
             Some("T-1"),
             "a card claimed 10m ago must not leave the lane stalled"
         );
+    }
+
+    #[test]
+    fn a_ranked_card_outranks_any_age_and_age_still_orders_a_tier() {
+        let mut p0 = vec!["P0".to_string()];
+        assert!(tag_severity(&p0) > 24 * 180, "six months of age must not beat a p0");
+        p0[0] = "p1".into();
+        assert!(tag_severity(&p0) > 24 * 30, "a month of age must not beat a p1");
+        assert!(tag_severity(&["p0".into()]) > tag_severity(&["p1".into()]));
+        assert!(tag_severity(&["p0".into()]) < 10_000, "a pin still leads");
     }
 
     /// Age is priority input, not a hidden lifecycle state.

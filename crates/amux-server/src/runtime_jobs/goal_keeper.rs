@@ -722,6 +722,16 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
     ))
 }
 
+/// A continue with the lane's top card named. An owner-ranked card (pinned, p0
+/// or p1) comes before everything else, including the work in hand.
+fn with_top_card(text: String, top: Option<&(String, String, bool)>) -> String {
+    match top {
+        Some((id, title, true)) => format!("{text} Your top priority is {id}, \"{title}\": do it before anything else, parking what you hold if you must."),
+        Some((id, title, false)) => format!("{text} Next on your board: {id}, \"{title}\"."),
+        None => text,
+    }
+}
+
 /// The dedupe key for "this goal was reported met": one notice per goal
 /// condition, so a worker re-evaluated as met every tick is told once, and a
 /// new /goal on the same worker is told again.
@@ -949,6 +959,13 @@ async fn tick(app: crate::api::AppState) {
                     killed.into_iter().filter(|k| alr::kill_is_over(k, now_s, account_changed_at)).collect();
                 let window_pct = alr::fresh_window_pct();
                 let text = alr::resume_text(&text, &over, window_pct, &name);
+                // "Keep going" left the lane to pick its own next step, and
+                // lanes drifted off direct orders. Name dispatch's top card.
+                let top = (!crate::api::session_verbs::session_is_isolated(&name))
+                    .then(|| app.store.read().ok().and_then(|c| super::board_drive::top_card(&c, &name, now)))
+                    .flatten();
+                let top_id = top.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+                let text = with_top_card(text, top.as_ref());
                 let home = crate::api::session_verbs::home();
                 let (text, carried) = super::receipts::attach(&home, &name, &text);
                 let out = crate::api::session_verbs::deliver_automated(&app, &name, &text, &format!("goal:{name}")).await;
@@ -990,7 +1007,7 @@ async fn tick(app: crate::api::AppState) {
                     submitted = ?out.submitted, refused = out.refused, measured = true, n_considered = 1,
                     killed_agents_listed = over.len(), agent_notifications_considered = notes_considered,
                     window_pct = ?window_pct, limit_gate = ?gate,
-                    auto_continue = s["auto_continue"] == true, activity = %s["activity"].as_str().unwrap_or(""),
+                    top_card = %top_id, auto_continue = s["auto_continue"] == true, activity = %s["activity"].as_str().unwrap_or(""),
                     "continued a worker whose /goal is not met: {}", out.message);
             }
         }
@@ -1083,6 +1100,17 @@ mod tests {
         assert!(super::footer_shows_goal(prompt));
         assert!(super::footer_shows_goal("x\n/goal active (10m)"));
         assert!(!super::footer_shows_goal("\u{276f} \n\u{23f5}\u{23f5} bypass permissions on"), "a real clear still reads cleared");
+    }
+
+    #[test]
+    fn a_continue_names_the_lanes_top_card() {
+        let ranked = ("MG-1".to_string(), "ship".to_string(), true);
+        let plain = ("MG-2".to_string(), "tidy".to_string(), false);
+        let t = |c| super::with_top_card("go.".into(), c);
+        assert!(t(Some(&ranked)).contains("top priority is MG-1"), "{}", t(Some(&ranked)));
+        assert!(t(Some(&plain)).contains("Next on your board: MG-2"));
+        assert!(!t(Some(&plain)).contains("before anything else"), "only an owner-ranked card overrides");
+        assert_eq!(t(None), "go.");
     }
 
     #[test]
