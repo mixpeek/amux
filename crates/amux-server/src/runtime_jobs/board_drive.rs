@@ -3539,8 +3539,8 @@ pub(crate) async fn reap_ephemeral_workers<F: Fleet>(
 /// fleet-wide carried any `depends_on` at all), so before this arm existed the
 /// overwhelming majority of parked work had NO automated exit whatsoever.
 async fn promote_due_backlog(state: &AppState) -> (usize, usize) {
-    let (candidates, due_total) = match state.store.read() {
-        Ok(conn) => backlog_due_promotions(&conn),
+    let (candidates, due_total) = match state.store.read_async(|conn| Ok(backlog_due_promotions(conn))).await {
+        Ok(found) => found,
         Err(_) => return (0, 0),
     };
     let mut promoted = 0;
@@ -4323,11 +4323,13 @@ async fn proof_for_capped_lane(state: &AppState, lane: &str) -> Option<(String, 
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
     }).await;
     let (card, source, reopened) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-    let conn = state.store.read().ok()?;
-    let row = bs::get_issue(&conn, &card).ok().flatten()?;
+    let (prompt_lane, prompt_card) = (lane.to_owned(), card.clone());
+    let prompt = state.store.read_async(move |conn| {
+        Ok(bs::get_issue(conn, &prompt_card).ok().flatten().map(|row| pickup_prompt(conn, &prompt_lane, &row)))
+    }).await.ok().flatten()?;
     tracing::info!(session = lane, card, source, reopened, cap = true, measured = true, n_considered = 1,
         verdict = "a2_pool_assigned", "a lane at its done-WIP cap took a proof card instead of waiting (AH-395)");
-    Some((card, pickup_prompt(&conn, lane, &row)))
+    Some((card, prompt))
 }
 
 pub fn select_pickup(conn: &Connection, session: &str, now: f64) -> Pickup {
@@ -6850,18 +6852,20 @@ fn legacy_blocked_doing(conn: &rusqlite::Connection, row: &bs::IssueRow) -> bool
         && !doing_is_unblocked(conn, row)
 }
 async fn normalize_blocked_doing(state: &AppState) -> usize {
-    let candidates: Vec<String> = match state.store.read() {
-        Ok(conn) => bs::list_issues(
-            &conn,
+    let candidates: Vec<String> = match state.store.read_async(|conn| {
+        Ok(bs::list_issues(
+            conn,
             &["doing".to_string()],
             &[],
             bs::ArchivedFilter::ActiveOnly,
         )
         .unwrap_or_default()
         .into_iter()
-        .filter(|row| legacy_blocked_doing(&conn, row))
+        .filter(|row| legacy_blocked_doing(conn, row))
         .map(|row| row.id)
-        .collect(),
+        .collect())
+    }).await {
+        Ok(cards) => cards,
         Err(error) => {
             tracing::warn!(
                 target: "amux::board_drive",
@@ -7071,17 +7075,17 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(
     };
     let expired: Vec<(String, String, i64)> = match state
         .store
-        .read()
-        .map_err(|e| e.to_string())
-        .and_then(|conn| {
-            bs::list_issues(
-                &conn,
+        .read_async(|conn| {
+            Ok(bs::list_issues(
+                conn,
                 &["doing".to_string()],
                 &[],
                 bs::ArchivedFilter::ActiveOnly,
-            )
-            .map_err(|e| e.to_string())
-        }) {
+            )?)
+        })
+        .await
+        .map_err(|e| e.to_string())
+    {
         Ok(rows) => rows
             .into_iter()
             .filter_map(|row| {
@@ -7286,8 +7290,8 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     let max_concurrent = crate::runtime_jobs::worker_resources::max_concurrent();
     let mut active_lanes = BTreeSet::new();
     if max_concurrent > 0 {
-        if let Ok(conn) = state.store.read() {
-            active_lanes = concurrent_active_lanes(&conn);
+        if let Ok(active) = state.store.read_async(|conn| Ok(concurrent_active_lanes(conn))).await {
+            active_lanes = active;
         }
     }
     sections.mark("lanes_and_cap");
@@ -7313,9 +7317,10 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
         report.lanes.push(trace);
     }
     sections.mark("lane_loop");
-    if let Ok(conn) = state.store.read() {
-        crate::runtime_jobs::board_drain::warn_losing_lanes(&conn, now_f64() as i64);
-    }
+    let _ = state.store.read_async(|conn| {
+        crate::runtime_jobs::board_drain::warn_losing_lanes(conn, now_f64() as i64);
+        Ok(())
+    }).await;
     sections.mark("warn_losing_lanes");
     report.finished_at = now_f64();
     // THE FLEET NUMBER, IN THE LOGS, EVERY TICK (AMUX-3758). A lane going idle
@@ -19182,6 +19187,26 @@ mod af579_decline_exit_tests {
             body.matches("read_async(").count() >= 10,
             "drive_lane's reads moved somewhere this test cannot see"
         );
+    }
+
+    /// AF-1120: a sample of the live server found the remaining holds OUTSIDE
+    /// drive_lane: warn_losing_lanes, backlog_due_promotions and the two Doing
+    /// scans ran their queries on the runtime thread in the tick around it.
+    /// The whole tick path reads through the blocking pool.
+    #[test]
+    fn the_tick_path_reads_the_store_only_through_read_async() {
+        let src = include_str!("board_drive.rs");
+        for head in [
+            "async fn drive_tick<",
+            "async fn normalize_blocked_doing(",
+            "async fn reclaim_expired_leases<",
+            "async fn promote_due_backlog(",
+            "async fn proof_for_capped_lane(",
+        ] {
+            let body = src.split_once(head).unwrap_or_else(|| panic!("{head} exists")).1;
+            let body = body.split_once("\n}\n").expect("its closing brace").0;
+            assert_eq!(body.matches(".read()").count(), 0, "{head} holds a runtime thread on a synchronous store read");
+        }
     }
 }
 
