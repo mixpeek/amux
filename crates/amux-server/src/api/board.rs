@@ -11238,7 +11238,12 @@ pub async fn patch_item(
                 // registered worker owns stays theirs.
                 let orphan_rescue = requested_owner.as_deref().is_some_and(|to| {
                     let from = row.session.as_deref().unwrap_or("").trim();
+                    // The owner's board (ETHAN) has no worker registration
+                    // either, and holds the asks waiting on the owner: never
+                    // orphaned, and neither is a card a human owns.
                     !from.is_empty()
+                        && !from.eq_ignore_ascii_case(super::turn_end::owner_name().trim())
+                        && row.owner_type != "human"
                         && !super::session_verbs::session_is_registered(from)
                         && super::session_verbs::session_is_registered(to)
                         && super::session_verbs::parse_env(to).get("CC_ISOLATED") != Some("1")

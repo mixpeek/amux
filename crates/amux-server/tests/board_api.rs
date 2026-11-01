@@ -1992,6 +1992,22 @@ async fn an_orphaned_card_may_move_to_a_live_lane_and_a_live_owners_card_may_not
     let (_, _, after) = send(&app, "GET", &format!("/api/board/{orphan}"), None).await;
     assert_eq!(after["session"], "af1069-live");
 
+    // The owner's board is unregistered too, and holds the asks waiting on
+    // the owner: it is never orphaned.
+    let owner = std::env::var("AMUX_OWNER_NAME").ok().filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var("AMUX_OWNER_EMAIL").ok().and_then(|e| e.split('@').next().map(str::to_string)))
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "ethan".into())
+        .to_uppercase();
+    let ask = create(&app, json!({"title": "an ask on the owner's board", "session": owner})).await["id"]
+        .as_str().unwrap().to_string();
+    let (st, _, v) = patch(ask.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the owner's board is not orphaned: {v}");
+    let human = card("af1069-gone-human").await;
+    send(&app, "PATCH", &format!("/api/board/{human}"), Some(json!({"owner_type": "human"}))).await;
+    let (st, _, v) = patch(human.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a human's card is not orphaned: {v}");
+
     let owned = card("af1069-owner").await;
     let (st, _, v) = patch(owned.clone(), "af1069-live").await;
     assert_eq!(st, StatusCode::FORBIDDEN, "a registered owner's card stays theirs: {v}");
