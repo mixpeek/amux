@@ -8,6 +8,9 @@
 #   2. if an old process did replace it, a matching local stamp does not make
 #      the elected builder exit early — /api/health forces re-adoption.
 set -euo pipefail
+# Never the real amux on this machine: its in-flight shell schedules would defer
+# this fixture's build, and the test fails only while one is running (AF-1129).
+export AMUX_RS_RUNS_URL=http://127.0.0.1:9/none
 # These cases install builds against a health endpoint that does not model
 # the new commit coming up, so rollback (on by default since 2026-10-29) is
 # off here; test-build-activation-rollback.sh covers it.
