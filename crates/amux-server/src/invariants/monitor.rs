@@ -3486,7 +3486,11 @@ async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
     let managed: Vec<_> = per_lane
         .into_iter()
         .filter(|(lane, _)| {
-            !lane.is_empty() && !crate::api::session_verbs::session_is_isolated(lane)
+            !lane.is_empty()
+                && !crate::api::session_verbs::session_is_isolated(lane)
+                // The owner's board (ETHAN) has no worker registration and is
+                // not dispatched: its cards wait on the owner, not on a lane.
+                && !lane.eq_ignore_ascii_case(crate::api::turn_end::owner_name().trim())
         })
         .collect();
     let total = managed.iter().map(|(_, n)| n).sum();
