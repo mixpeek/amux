@@ -77,3 +77,22 @@ faster is separate work.
   commits that needed a re-run; the specs behind them are the next flakes to fix.
 - `verdict=checks_duration` in each `checks` run, and a `checks_near_timeout`
   warning past 15 minutes.
+
+## 2026-11-01: push to live in about two minutes
+
+Owner request: "iterate until full amux cicd is sub 2 min". The whole suite takes
+14 minutes (`checks`) and 14 minutes (`rust`: 8 test shards, 16 e2e shards), and a
+cold Rust build alone takes longer than two minutes on a hosted runner, so the
+full suite cannot gate inside that window at no added cost. What moved:
+
+| Step | Before | After |
+|---|---|---|
+| Deploy gate | `checks`, 14 min | `gate`, 20 s (`scripts/ci-fast-gate.sh`) |
+| Builder poll | 60 s | 5 s |
+| Build | 95 s, already ahead of the gate | same, prebuilt from the moment of the push |
+| Health check | 5 s steps | 1 s steps; `push_to_live_s` on `ACTIVATION HEALTHY` |
+
+`checks` and `rust` still run on every push and SCHED-713 still opens one card per
+red stretch, but a red result arrives after the commit is live. The builder's
+compile and boot health check still stop a commit that does not build or start.
+The 120 s activation cooldown stays, so pushes in a burst deploy together.
