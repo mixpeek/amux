@@ -5489,7 +5489,85 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 /// load.
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let json = legacy_sessions_array_built(store)?;
-    Ok(apply_config_overlays(json))
+    Ok(apply_status_reports(apply_config_overlays(json)))
+}
+
+// A STATUS REPORT SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
+// 2026-11-01: "make the status of workers more accurate and timely"). A hook
+// report pushes SSE immediately, but readers got the last snapshot, which is
+// rebuilt only once a build's own length has passed (median 8 s measured, so a
+// flip took 6-12 s to appear). Reports newer than the snapshot's build start
+// are laid over it the way config writes are; the next build retires them.
+fn status_reports() -> &'static std::sync::Mutex<std::collections::HashMap<String, (f64, String)>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (f64, String)>>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Record a report the writer just stored, for readers of the last snapshot.
+pub fn note_status_report(name: &str, state: &str, ts: f64) {
+    if let Ok(mut r) = status_reports().lock() {
+        r.insert(name.to_string(), (ts, state.to_string()));
+    }
+}
+
+fn apply_status_reports(json: String) -> String {
+    let built_at = build_array_cache().lock().map(|c| c.stamp).unwrap_or(0.0);
+    let pending: Vec<(String, (f64, String))> = {
+        let Ok(mut r) = status_reports().lock() else { return json };
+        r.retain(|_, (ts, _)| *ts >= built_at);
+        r.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    if pending.is_empty() {
+        return json;
+    }
+    let Ok(mut rows) = serde_json::from_str::<Vec<Value>>(&json) else { return json };
+    let mut flipped = 0usize;
+    for row in rows.iter_mut() {
+        let name = row["name"].as_str().unwrap_or("");
+        if let Some((_, (ts, state))) = pending.iter().find(|(n, _)| n == name) {
+            flipped += lay_status_report(row, state, *ts) as usize;
+        }
+    }
+    tracing::debug!(target: "amux::sessions", flipped, pending = pending.len(), measured = true,
+        n_considered = rows.len(), verdict = "sessions_status_report_applied",
+        "status reports were laid over a session list built before them");
+    serde_json::to_string(&rows).unwrap_or(json)
+}
+
+/// One report over one row. Returns whether the status moved. Only turn edges
+/// move: a rate limit, an API error or a stopped worker stay what the build
+/// decided, and a turn that ended with its own job or subagents still running
+/// stays active.
+fn lay_status_report(row: &mut Value, state: &str, ts: f64) -> bool {
+    if row["running"] != true {
+        return false;
+    }
+    if row["self_report"].is_object() {
+        row["self_report"]["state"] = json!(state);
+        row["self_report"]["ts"] = json!(ts as i64);
+    }
+    if row["last_progress_at"].as_f64().unwrap_or(0.0) < ts {
+        row["last_progress_at"] = json!(ts);
+    }
+    let busy = row["agents_working"].as_i64().unwrap_or(0) > 0
+        || row["background_jobs"].as_array().is_some_and(|j| j.iter().any(|b| b["waiting"] != true));
+    let current = row["status"].as_str().unwrap_or("");
+    let (status, turn, activity) = match (state, current) {
+        ("active", "idle" | "waiting" | "blocked") => ("active", "running", "working"),
+        ("idle", "active") if !busy => ("idle", "completed", "none"),
+        ("waiting", "active" | "idle") => ("waiting", "waiting", "waiting_for_input"),
+        ("blocked", "active" | "idle") => ("blocked", "waiting", "waiting_for_approval"),
+        _ => return false,
+    };
+    row["status"] = json!(status);
+    row["agent_state"] = json!(status);
+    row["turn_state"] = json!(turn);
+    row["activity"] = json!(activity);
+    row["status_authority"] = json!("authoritative");
+    if let Some(o) = row.as_object_mut() {
+        o.remove("waiting_reason");
+    }
+    true
 }
 
 // A CONFIG WRITE SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
@@ -9700,6 +9778,39 @@ pub(crate) mod tests {
             s.agent_running(tmux),
             "a non-shell foreground pane is running"
         );
+    }
+
+    #[test]
+    fn a_report_moves_a_turn_edge_and_nothing_else() {
+        let row = |status: &str| json!({"running": true, "status": status, "self_report": {"state": "x", "ts": 1}, "last_progress_at": 5.0, "agents_working": 0, "background_jobs": [], "waiting_reason": "owner"});
+        let mut r = row("waiting");
+        assert!(lay_status_report(&mut r, "active", 100.0));
+        assert_eq!((r["status"].as_str(), r["activity"].as_str(), r["waiting_reason"].is_null()), (Some("active"), Some("working"), true));
+        assert_eq!((r["last_progress_at"].as_f64(), r["self_report"]["ts"].as_i64()), (Some(100.0), Some(100)));
+
+        let mut r = row("active");
+        assert!(lay_status_report(&mut r, "idle", 100.0));
+        assert_eq!(r["status"], "idle");
+
+        // A turn that ended with work still running stays active.
+        let mut r = row("active");
+        r["agents_working"] = json!(2);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": false}]);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": true}]);
+        assert!(lay_status_report(&mut r, "idle", 100.0), "a watch loop is not work");
+
+        for held in ["rate_limited", "api_error", "error", "starting"] {
+            let mut r = row(held);
+            assert!(!lay_status_report(&mut r, "active", 100.0), "{held}");
+            assert_eq!(r["status"], held);
+        }
+        let mut r = row("idle");
+        r["running"] = json!(false);
+        assert!(!lay_status_report(&mut r, "active", 100.0));
     }
 
     #[test]

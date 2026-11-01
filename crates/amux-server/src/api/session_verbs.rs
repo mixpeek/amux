@@ -33993,6 +33993,7 @@ pub(crate) async fn report_post(
             // builder catches up; runtime status may be stale during that
             // revalidation, but membership/isolation never is.
             crate::api::sessions_legacy::invalidate_sessions_runtime_cache();
+            crate::api::sessions_legacy::note_status_report(&name_s, &st2, now_f64());
             // SNAPPY STATUS (Ethan, 2026-08-16). A self-report is the fast, durable
             // signal for active/idle/needs-input (the D1 exit), but this write used
             // events:vec![], so a hook state change pushed NO SSE and the dashboard
