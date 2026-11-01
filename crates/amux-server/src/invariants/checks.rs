@@ -227,11 +227,17 @@ fn optional_dependency_for(method: &str, shape: &str) -> Option<&'static str> {
 /// shapes are callers getting a request wrong, and a blanket rule would retire
 /// that half of the check. Only the 4xx are forgiven; a declared route's 5xx
 /// still fail it.
-const REFUSAL_ROUTES: &[(&str, &str, &str)] = &[(
-    "POST",
-    "/api/browser/complete-order",
-    "the vault refuses an unfillable page (422) and an order above the approved limit (403)",
-)];
+const REFUSAL_ROUTES: &[(&str, &str, &str)] = &[
+    (
+        "POST",
+        "/api/browser/complete-order",
+        "the vault refuses an unfillable page (422) and an order above the approved limit (403)",
+    ),
+    // AF-1140: an external send waits for the owner (403 approval_required). All
+    // 48 logged 4xx on these two are that hold, and reply read 2/23 answered.
+    ("POST", "/api/email/reply", "an external reply is held for the owner's approval (403)"),
+    ("POST", "/api/email/send", "an external send is held for the owner's approval (403)"),
+];
 
 /// Is this shape one whose 4xx are answers?
 fn refuses_by_design(r: &RouteOutcomeRow) -> bool {
@@ -8242,6 +8248,27 @@ mod negative_controls {
         assert_eq!(fails(row("/api/browser/complete-order", 2, 12, 6)), 0, "the live 2/12/6 split answers");
         assert_eq!(fails(row("/api/browser/complete-order", 2, 0, 18)), 1, "5xx on a declared route still fail");
         assert_eq!(fails(row("/api/browser/navigate", 2, 12, 6)), 1, "an undeclared route's 4xx are not forgiven");
+    }
+
+    /// AF-1140: the approval hold on outbound mail is an answer; a 5xx is not.
+    #[test]
+    fn an_email_held_for_approval_is_an_answer() {
+        let mounted: Vec<(&str, &[&str])> = vec![("/api/email/reply", &["POST"]), ("/api/email/send", &["POST"])];
+        let row = |shape: &str, ok, client_err, server_err| RouteOutcomeRow {
+            method: "POST".into(),
+            shape: shape.into(),
+            n: ok + client_err + server_err,
+            ok,
+            client_err,
+            server_err,
+            ..Default::default()
+        };
+        let fails = |r: RouteOutcomeRow| {
+            mounted_routes_answer(&[r], &mounted).into_iter().filter(|x| x.status == Status::Fail).count()
+        };
+        assert_eq!(fails(row("/api/email/reply", 2, 21, 0)), 0, "the live 2/21/0 split is the owner's hold");
+        assert_eq!(fails(row("/api/email/send", 2, 21, 0)), 0, "send has the same hold");
+        assert_eq!(fails(row("/api/email/reply", 2, 0, 18)), 1, "5xx still fail");
     }
 
     /// A 503 FROM A DECLARED OPTIONAL DAEMON IS AN ANSWER (AMUX-4545).
