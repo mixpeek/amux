@@ -2876,6 +2876,7 @@ The effective global/group/worker policy may allow only budget and customer_outb
 Ordinary choices should proceed. If no human act is required, work the blocker:
 
   amux board backlog $id --trigger \"<the condition that re-arms it>\"   external wait
+  amux board block $id --on \"<the peer card or lane it waits on>\"     waits on a peer: stays out of pickup
   amux board doing $id                                                work the blocker
 
   amux board needsyou $id --actor Ethan --ask decision --question \"...?\" --unblocks \"...\""
