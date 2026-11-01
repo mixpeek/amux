@@ -10721,6 +10721,9 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 /* Pinned messages: the tag on a pinned post, the header count, the list. */
 .cv-post-pinned { font-size:var(--fs-3xs); color:var(--dim); }
 .cv-pins-btn { flex:none; white-space:nowrap; min-height:44px; }
+.pm-pin-row { display:flex; gap:var(--space-2); align-items:center; }
+.pm-pin-row .cv-pin-item { flex:1; min-width:0; }
+.pm-pin-unpin { flex:none; min-height:44px; }
 .cv-pins-list { display:flex; flex-direction:column; gap:var(--space-1-5); max-height:60vh; overflow-y:auto; }
 .cv-pin-item { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-1); text-align:left; width:100%; white-space:normal; min-height:44px; }
 .cv-pin-who { font-weight:600; }

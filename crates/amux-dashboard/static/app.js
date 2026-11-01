@@ -27191,14 +27191,23 @@ async function _pmPin(id, on) {
 }
 async function _pmShowPins() {
   if (!_pmPins.length) return;
-  const html = '<div class="cv-pins-list">' + _pmPins.map((x, i) => '<button type="button" class="btn cv-pin-item" data-i="' + i + '">'
+  const html = '<div class="cv-pins-list">' + _pmPins.map((x, i) => '<div class="pm-pin-row"><button type="button" class="btn cv-pin-item" data-i="' + i + '">'
     + '<span class="cv-pin-who">MSG-' + esc(String(x.id)) + ' <span class="cv-pin-when">' + esc(new Date(x.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></span>'
-    + '<span class="cv-pin-body">' + esc(String(x.text || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>').join('') + '</div>';
+    + '<span class="cv-pin-body">' + esc(String(x.text || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>'
+    + '<button type="button" class="btn pm-pin-unpin" data-id="' + esc(String(x.id)) + '">Unpin</button></div>').join('') + '</div>';
   const chosen = new Promise(resolve => {
-    setTimeout(() => document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(Number(el.dataset.i)); _modalClose(false); }), 0);
-    showFormModal('Pinned messages', html, 'Close').then(() => resolve(-1));
+    setTimeout(() => {
+      document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(_pmPins[Number(el.dataset.i)]); _modalClose(false); });
+      // Here as well as on the row: an older pin may not be on this page.
+      document.querySelectorAll('.pm-pin-unpin').forEach(el => el.onclick = async () => {
+        await _pmPin(Number(el.dataset.id), false);
+        el.closest('.pm-pin-row')?.remove();
+        if (!_pmPins.length) { resolve(null); _modalClose(false); }
+      });
+    }, 0);
+    showFormModal('Pinned messages', html, 'Close').then(() => resolve(null));
   });
-  const x = _pmPins[await chosen]; if (!x) return;
+  const x = await chosen; if (!x) return;
   _pickCmdHistory(x.text);
 }
 function _msgCtxPeek() {

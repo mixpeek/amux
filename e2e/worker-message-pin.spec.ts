@@ -38,4 +38,14 @@ test('a message pinned in a worker tab is marked, listed, kept and can be unpinn
   await row.locator('.pm-menu-pin').click();
   await expect(row.locator('.pm-pin-mark')).toHaveCount(0);
   await expect(page.locator('#pm-pins-btn')).toBeHidden();
+
+  // Unpin from the list too: an older pin may not be on the current page.
+  await row.locator('.pm-dots').click();
+  await row.locator('.pm-menu-pin').click();
+  await expect(page.locator('#pm-pins-n')).toHaveText('1');
+  await page.locator('#pm-pins-btn').click();
+  await page.locator('.pm-pin-unpin').first().click();
+  await expect(page.locator('.pm-pin-row')).toHaveCount(0);
+  await expect(page.locator('#pm-pins-btn')).toBeHidden();
+  await expect(row.locator('.pm-pin-mark')).toHaveCount(0);
 });
