@@ -59,9 +59,9 @@ check "no arm is skipped"                             none "$skipped"
 check "it keeps a working budget (its runs took 3-13s)" yes "$([ "$wt" -ge 8 ] && echo yes || echo no)"
 check "the first arm keeps its measured 54-95s"     yes "$([ "$cargo" -ge 70 ] && echo yes || echo no)"
 check "claude tmp is not squeezed below the arms after it" yes "$([ "$ct" -ge 45 ] && echo yes || echo no)"
-check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 330 ] && echo yes || echo no)"
+check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 360 ] && echo yes || echo no)"
 out=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; SECONDS=25; TARGET_SCAN_S=90; tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S')
-check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 305s left.*verdict=tick_arm_share')"
+check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 335s left.*verdict=tick_arm_share')"
 
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
@@ -107,6 +107,13 @@ if [ "$(uname)" = Darwin ]; then
 else
   echo "  skip macOS-only cell (the tick's other probes are macOS commands): not run on $(uname)"
 fi
+
+echo "the reserve leaves the arms room and the verdicts their worst case (RCA self 20261101-164758)"
+vals=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $(( TICK_BUDGET_S - TICK_RESERVE_S )) $TICK_RESERVE_S' "$TICK" 2>/dev/null | tail -1)
+arms=${vals% *}; reserve=${vals#* }
+check "arms get past the 335 s that skipped them" yes "$([ "$arms" -gt 350 ] && echo yes || echo no)"
+check "the worst verdicts (145 s) finish before the 600 s kill" yes "$([ $(( arms + 145 )) -lt 600 ] && echo yes || echo no)"
+check "the reserve is not smaller than the usual verdicts" yes "$([ "$reserve" -ge 60 ] && echo yes || echo no)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-deadline — all checks passed"; exit 0; fi

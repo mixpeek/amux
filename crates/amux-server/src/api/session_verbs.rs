@@ -15094,6 +15094,22 @@ async fn retry_held_idle_draft(name: &str, text: &str, sent_at: f64) -> (Submiss
     (Submission::Stuck, presses, "still_held")
 }
 
+/// What the check actually saw when it called a message lost, so a false resend
+/// names its own cause. The demo server doubled every first prompt with the text
+/// in the bound transcript, and no reading of the code explains it.
+fn resend_evidence(name: &str, text: &str, sent_at: f64) {
+    let path = session_jsonl_path(name);
+    let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+    let records = path.as_ref().map(|p| iter_jsonl_tail(p, 262_144)).unwrap_or_default();
+    let users: Vec<&Value> = records.iter().filter(|r| r["type"].as_str() == Some("user")).collect();
+    let needle = text.trim();
+    let same_text = users.iter().filter(|r| r["message"]["content"].as_str().is_some_and(|c| c.trim() == needle)).count();
+    tracing::warn!(session = %name, path = ?path, size = ?size, records = records.len(), users = users.len(), same_text,
+        needle_len = needle.len(), sent_at, now = now_f64(), bound = transcript_is_bound(name),
+        conv = %meta_str(&load_meta(name), "cc_conversation_id"), measured = true, n_considered = records.len(),
+        verdict = "direct_draft_resend_evidence", "what the transcript check saw before sending a message again");
+}
+
 fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s: f64) {
     if is_slash_command(text) {
         // Never press Enter on a slash command later: its panel or picker may be
@@ -15164,6 +15180,7 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                                 break "direct_draft_confirmed_by_transcript";
                             }
                             redelivered_at = Some(now_f64());
+                            resend_evidence(&name, &text, sent_at);
                             tracing::warn!(session = %name, preview = %chars_truncate(&text, 80), measured = true, n_considered = 1,
                                 verdict = "direct_draft_lost_redelivering",
                                 "the composer is empty but the live transcript never got the message; sending it again, once");

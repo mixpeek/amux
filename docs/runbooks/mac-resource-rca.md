@@ -8,9 +8,9 @@ and the health classes below) gets an RCA bundle and one message to the
 escalation target, at most once per class per cooldown (6h by default). This
 page is what that lane does with the message.
 
-The whole tick runs inside one deadline, `AMUX_CLEANUP_TICK_BUDGET_S` (540s),
+The whole tick runs inside one deadline, `AMUX_CLEANUP_TICK_BUDGET_S` (450s),
 because the scheduler kills it at 600s. Each cleanup arm gets at most what is
-left after `AMUX_CLEANUP_TICK_RESERVE_S` (120s), which is kept for the verdicts
+left after `AMUX_CLEANUP_TICK_RESERVE_S` (90s), which is kept for the verdicts
 and the escalation. An arm with no time left prints `<arm> skipped: ...
 (verdict=tick_out_of_time)` and is named in the done line's `skipped=` field.
 A tick that skips arms on a loaded machine has still measured and escalated;

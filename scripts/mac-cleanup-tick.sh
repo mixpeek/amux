@@ -518,7 +518,10 @@ STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # the 480s warning, so a run that kept every budget could still cross it (497s on
 # 2026-10-16 at load 36/28) and escalate itself. The clamp below enforces it.
 TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-450}
-TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-120}
+# 90, not 120 (Mac self RCA 20261101-164758): verdicts took 0-39 s in the last 12
+# runs and 145 s at worst in 30, while 120 stopped the arms at 330 s and skipped
+# worktrees three times in 10 h on ticks that finished by 366 s of a 600 s limit.
+TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-90}
 TICK_SKIPPED=""
 # The budgeted arms in the order they run, each with a weight (Mac self RCA
 # 20261020-005306). Capping an arm at "what the tick has left" let the first
