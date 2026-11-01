@@ -10039,6 +10039,16 @@ Plain markdown with headings, short paragraphs, no filler. Say plainly when some
   printf '%s\n' "$out"
 }
 
+# The land gate builds and tests the workspace on the machine every worker
+# shares. Uncapped, two at once with a lane's own builds held load at 78 on 28
+# cores (Mac cpu RCA 20261101-184920) and one build reached 15.4 G. Slower lands
+# are the cost; AMUX_LAND_BUILD_JOBS and AMUX_LAND_TEST_THREADS raise the caps.
+land_gate_run() {
+  local jobs=${AMUX_LAND_BUILD_JOBS:-12} threads=${AMUX_LAND_TEST_THREADS:-8}
+  echo "amux land: the gate runs at nice 10 with $jobs build jobs and $threads test threads (verdict=land_gate_capped)" >&2
+  CARGO_BUILD_JOBS=$jobs NEXTEST_TEST_THREADS=$threads nice -n 10 "$@"
+}
+
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] [--json] | --cancel | --status
   #
@@ -10190,7 +10200,7 @@ cmd_land() {
     _lg_dir="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-gate.XXXXXX")"
     git show "$remote/$branch:scripts/land_gate.py" > "$_lg_dir/land_gate.py" \
       && git show "$remote/$branch:scripts/land_review.py" > "$_lg_dir/land_review.py" \
-      && python3 "$_lg_dir/land_gate.py" || _lg_rc=$?
+      && land_gate_run python3 "$_lg_dir/land_gate.py" || _lg_rc=$?
     rm -rf "$_lg_dir"
     if [ "$_lg_rc" != 0 ]; then
       echo "amux land: the land gate did not pass (above); nothing queued. Fix it and run amux land again." >&2
