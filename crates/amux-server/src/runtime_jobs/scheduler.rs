@@ -869,18 +869,40 @@ fn at_local_time(date: NaiveDate, hour: u32, minute: u32) -> Option<DateTime<Loc
 pub(crate) fn resolve_local(n: NaiveDateTime) -> Option<DateTime<Local>> {
     match Local.from_local_datetime(&n) {
         LocalResult::Single(t) => Some(t),
-        LocalResult::Ambiguous(earliest, _) => Some(earliest),
+        // The order of the two is chrono's, and on macOS the later one comes
+        // first: a `daily at 1am` that fired at the first 1:00 was handed the
+        // second 1:00, whose text is the same, and re-fired every tick
+        // (2026-11-01, SCHED-124).
+        LocalResult::Ambiguous(a, b) => Some(a.min(b)),
         LocalResult::None => {
             for h in 1..=3 {
                 match Local.from_local_datetime(&(n + ChronoDuration::hours(h))) {
                     LocalResult::Single(t) => return Some(t),
-                    LocalResult::Ambiguous(earliest, _) => return Some(earliest),
+                    LocalResult::Ambiguous(a, b) => return Some(a.min(b)),
                     LocalResult::None => continue,
                 }
             }
             None
         }
     }
+}
+
+/// True while a `next_run` in the repeated hour of a DST fall-back names its
+/// second occurrence. The stored text has no zone, so `every 1h` set at the
+/// first 1:42 stores "01:42", which already compares as due. A row that ran
+/// at or after the first occurrence is waiting for the second.
+fn fall_back_held(next_run: &str, last_run: i64, now: DateTime<Local>) -> bool {
+    let Ok(n) = NaiveDateTime::parse_from_str(next_run, "%Y-%m-%dT%H:%M") else { return false };
+    match Local.from_local_datetime(&n) {
+        LocalResult::Ambiguous(a, b) => {
+            held_for_second_occurrence(a.min(b).timestamp(), a.max(b).timestamp(), last_run, now.timestamp())
+        }
+        _ => false,
+    }
+}
+
+fn held_for_second_occurrence(first: i64, second: i64, last_run: i64, now: i64) -> bool {
+    last_run >= first && now < second
 }
 
 /// Format an instant the way Python stores `next_run`/`run_at`: local
@@ -2753,6 +2775,16 @@ async fn scheduler_tick_inner(
         Ok(due_schedules(&conn, &ns)?)
     })
     .await??;
+    let due: Vec<DurableSchedule> = due
+        .into_iter()
+        .filter(|s| {
+            let held = fall_back_held(s.str_field("next_run"), s.i64_field("last_run", 0), now);
+            if held {
+                tracing::info!(id = s.id(), next_run = s.str_field("next_run"), verdict = "schedule_fall_back_held", "schedule waits for the second occurrence of a repeated hour");
+            }
+            !held
+        })
+        .collect();
 
     let mut report = TickReport {
         due: due.len(),
@@ -2944,6 +2976,7 @@ async fn fire_one(
                 || !sched.enabled()
                 || stored_next.is_empty()
                 || stored_next.as_str() > now_str.as_str()
+                || fall_back_held(&stored_next, sched.i64_field("last_run", 0), now)
             {
                 return Ok(WriteOutcome {
                     applied: false,
@@ -4746,6 +4779,32 @@ mod tests {
     }
 
     // ---- next-run correctness around boundaries --------------------------
+
+    #[test]
+    fn a_fired_daily_is_not_handed_the_repeated_hour_again() {
+        // Runs where the zone has a fall-back (this Mac, and any TZ=America/*
+        // run); `measured` says so, since a UTC host has no repeated hour.
+        let n = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(1, 0, 0).unwrap();
+        let LocalResult::Ambiguous(a, b) = Local.from_local_datetime(&n) else {
+            eprintln!("measured=false: no repeated hour in this zone");
+            return;
+        };
+        let (first, second) = (a.min(b), a.max(b));
+        assert_eq!(resolve_local(n), Some(first));
+        let expr = ScheduleExpr::parse("daily at 1am").unwrap();
+        let next = expr.next_run_after(first + ChronoDuration::seconds(6)).unwrap();
+        assert_eq!(next.date_naive(), NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
+        assert!(fall_back_held("2026-11-01T01:00", first.timestamp(), first + ChronoDuration::minutes(30)));
+        assert!(!fall_back_held("2026-11-01T01:00", first.timestamp(), second));
+    }
+
+    #[test]
+    fn an_interval_across_the_repeated_hour_waits_for_the_second_occurrence() {
+        let (first, second) = (1_000, 4_600);
+        assert!(held_for_second_occurrence(first, second, 1_300, 1_330), "ran after the first: wait");
+        assert!(!held_for_second_occurrence(first, second, 1_300, second), "the second has come");
+        assert!(!held_for_second_occurrence(first, second, 900, 1_000), "not run yet: the first is due");
+    }
 
     #[test]
     fn next_run_month_and_week_boundaries() {
