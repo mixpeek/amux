@@ -395,7 +395,11 @@ def _harness_guard_gate(refs):
 # and 10-31. This leg runs the shell tests checks.yml runs that name a changed
 # script, on the pushed tree, and blocks only on a failure the remote's tip
 # does not share.
-_SCRIPT_TEST_STEP = re.compile(r"^\s*\./(scripts/test-[A-Za-z0-9_.-]+\.sh)\b", re.M)
+# Every form checks.yml uses: `./scripts/test-x.sh`, `bash scripts/test-x.sh`,
+# behind `run:`, chained with `&&`, with arguments or an env prefix. A test
+# with arguments runs here without them; if that makes it fail, it fails on
+# the remote's tip the same way and counts as inherited (review F1).
+_SCRIPT_TEST_STEP = re.compile(r"(?:\./|\bbash\s+)(scripts/test-[A-Za-z0-9_.-]+\.sh)\b")
 _SCRIPT_TESTS_MAX = 12
 _SCRIPT_TEST_TIMEOUT_S = 300
 
@@ -411,7 +415,9 @@ def _script_tests_for(sha, touched):
     changed = [p for p in touched if p.startswith("scripts/") and "/" not in p[len("scripts/"):]]
     if not changed:
         return [], 0
-    wired = list(dict.fromkeys(_SCRIPT_TEST_STEP.findall(_git_show(sha, ".github/workflows/checks.yml"))))
+    steps = "\n".join(l for l in _git_show(sha, ".github/workflows/checks.yml").splitlines()
+                      if not l.lstrip().startswith("#"))
+    wired = list(dict.fromkeys(_SCRIPT_TEST_STEP.findall(steps)))
     picked = []
     for t in wired:
         if t in changed:

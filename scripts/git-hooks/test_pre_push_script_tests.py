@@ -28,9 +28,9 @@ CHECKS = """jobs:
     steps:
       - run: |
           ./scripts/test-widget.sh
-          ./scripts/test-other.sh
-          ./scripts/test-env.sh
-          ./scripts/test-unrelated.sh
+          bash scripts/test-other.sh && bash scripts/test-env.sh
+      # ./scripts/test-commented.sh is not a step
+      - run: bash scripts/test-unrelated.sh
 """
 WIDGET = "#!/usr/bin/env bash\necho GOOD\n"
 TEST_WIDGET = """#!/usr/bin/env bash
