@@ -1443,11 +1443,26 @@ pub fn irreversible_op(blob: &str) -> Option<String> {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r"(?i)stash\s+(drop|clear)|rm\s+-[rf]{1,2}\b|push\s+(--force|-f)\b|reset\s+--hard|git\s+clean\s+-[a-z]*[fd]|drop\s+table|truncate\s+table|delete\s+from\s+\w+\s*;|--no-preserve-root",
+            r"(?i)stash\s+(drop|clear)|rm\s+-[rf]{1,2}\b|push\s+(--force|-f)\b|reset\s+--hard|git\s+clean\s+-[a-z]*[fd]|\bdrop\s+(the\s+)?(\w+\s+){0,2}(table|database|schema|collection)s?\b|\btruncate\s+(the\s+)?(\w+\s+){0,2}table|delete\s+from\s+\w+\s*;|\bdelete\s+(the\s+|all\s+)?(\w+\s+){0,2}(production|prod)\b|--no-preserve-root",
         )
         .expect("danger regex")
     });
     re.find(blob).map(|m| m.as_str().trim().to_string())
+}
+
+#[cfg(test)]
+mod irreversible_op_tests {
+    use super::irreversible_op;
+
+    #[test]
+    fn plain_english_for_a_destructive_op_is_caught_and_ordinary_words_are_not() {
+        for hit in ["DROP TABLE users", "Drop the production table", "drop the old users table", "truncate the audit table", "delete all production data"] {
+            assert!(irreversible_op(hit).is_some(), "{hit}");
+        }
+        for miss in ["drop a note in the table of contents row", "add a table to the docs", "delete the draft comment"] {
+            assert!(irreversible_op(miss).is_none(), "{miss}");
+        }
+    }
 }
 
 #[cfg(test)]

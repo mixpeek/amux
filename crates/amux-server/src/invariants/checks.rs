@@ -1218,6 +1218,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),
     ("conversation_pins", "pinned_at", true), // 0144: conversations.rs pin_post writes now_ms()
+    ("message_pins", "pinned_at", true), // 0149: history.rs
     ("profiles", "updated_at", true),
     // Channel settings (0139): conversations.rs writes the channel columns
     // with Utc::now().timestamp() and membership rows with now_ms().

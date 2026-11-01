@@ -6438,7 +6438,9 @@ function _notifClaimOnce(sig) {
     try { localStorage.setItem(_NOTIF_CLAIM_KEY, JSON.stringify({ sig, ts: Date.now() })); } catch (e) {}
     return true;
   };
-  if (navigator.locks && navigator.locks.request) return navigator.locks.request('amux-notif-claim', claim).catch(() => claim());
+  // WebKit syncs localStorage between tabs after the lock is released, so the
+  // holder waits long enough to read the previous holder's claim.
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request('amux-notif-claim', () => new Promise(r => setTimeout(() => r(claim()), 120))).catch(() => claim());
   return Promise.resolve(claim());
 }
 
@@ -8593,8 +8595,9 @@ function _cardDoingItem(name) {
 // An observed stale claim is a navigation aid, never promoted to a live claim.
 function _workerHasLiveActivity(s) {
   if (!s?.running || s.archived || ['paused','archived','expired'].includes(s.lifecycle)) return false;
-  const truth = s.runtime_board || {};
-  return truth.measured === true ? truth.runtime_status === 'active' : s.status === 'active';
+  // The list's own status decides. A status report can move it ahead of the
+  // board reading in the same row, and an idle worker is not "Working".
+  return s.status === 'active' || (s.status === 'unattributed' && s.runtime_board?.runtime_status === 'active');
 }
 
 function _boardActivityEntries(workerName) {

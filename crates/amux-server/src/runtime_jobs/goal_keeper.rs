@@ -803,6 +803,14 @@ async fn report_goal_prompt(app: &crate::api::AppState, name: &str, line: &str, 
         &format!("goal-prompt:{name}"), &format!("/#peek={name}")).await;
 }
 
+/// Where a worker's goal check runs: its worktree when it has one. The base
+/// directory holds a different checkout, so a check could read "not met" forever.
+fn goal_check_dir(s: &Value) -> &str {
+    s["worktree_path"].as_str().filter(|p| s["worktree_active"] == true && !p.is_empty())
+        .or(s["dir"].as_str())
+        .unwrap_or("")
+}
+
 async fn tick(app: crate::api::AppState) {
     let Ok(sessions) = crate::api::sessions_legacy::legacy_sessions_values(app.store.clone()).await else {
         return;
@@ -827,7 +835,7 @@ async fn tick(app: crate::api::AppState) {
         }
         // The worker's own checker runs whatever the worker is doing: it is
         // shell, costs no turn, and drives the goal tile and the stall alert.
-        super::goal_check::maybe_run(&app, &name, s["dir"].as_str().unwrap_or(""), now);
+        super::goal_check::maybe_run(&app, &name, goal_check_dir(s), now);
         // A lane the goal-loop guard parked on the owner is not continued:
         // continuing it is the loop (AMUX-5277).
         if stamped.contains(&name) {
@@ -1028,6 +1036,14 @@ mod tests {
         assert_eq!(super::quiet_needed(&shell, 120.0), 120.0);
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "waiting", "activity": "waiting_for_input"})));
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "rate_limited", "activity": "rate_limited"})));
+    }
+
+    #[test]
+    fn a_goal_check_runs_in_the_worktree_when_the_worker_has_one() {
+        let on = serde_json::json!({"dir": "/repo", "worktree_active": true, "worktree_path": "/repo/.worktrees/w"});
+        assert_eq!(super::goal_check_dir(&on), "/repo/.worktrees/w");
+        let off = serde_json::json!({"dir": "/repo", "worktree_active": false, "worktree_path": "/repo/.worktrees/w"});
+        assert_eq!(super::goal_check_dir(&off), "/repo");
     }
 
     /// #20: the keeper's record survives a restart (save, then a fresh load).

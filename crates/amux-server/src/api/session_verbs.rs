@@ -1519,6 +1519,17 @@ pub(crate) fn jsonl_records_since(recs: &[Value], since: f64) -> bool {
     recs.iter().any(|r| r["timestamp"].as_str().and_then(parse_iso8601).is_some_and(|ts| ts >= since))
 }
 
+/// Whether `session_jsonl_path` names the worker's own conversation, not the
+/// folder's newest guess.
+pub(crate) fn transcript_is_bound(name: &str) -> bool {
+    let conv = meta_str(&load_meta(name), "cc_conversation_id");
+    session_jsonl_path(name).is_some_and(|p| transcript_file_is(&conv, &p))
+}
+
+fn transcript_file_is(conv_id: &str, path: &Path) -> bool {
+    !conv_id.is_empty() && path.file_stem().and_then(|s| s.to_str()) == Some(conv_id)
+}
+
 /// What the held-message watcher does when the composer is empty after its
 /// grace: `Lost` when the transcript is live and does not have the message.
 /// An empty composer alone is not a delivery (MSG-92727, 2026-10-22: the
@@ -3684,6 +3695,7 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("steering_history", RenameDisposition::Migrate),
     ("share_tokens", RenameDisposition::Migrate),
     ("cmd_history", RenameDisposition::Migrate),
+    ("message_pins", RenameDisposition::Migrate),
     ("token_ledger", RenameDisposition::Migrate),
     // Skill invocations are counted per lane on the Skills page; they follow it.
     ("skill_usage", RenameDisposition::Migrate),
@@ -12208,15 +12220,24 @@ fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
     jsonl_records_have(records, text, since)
         || (!text.trim().is_empty()
             && records.iter().any(|record| {
-                record["type"].as_str() == Some("queue-operation")
-                    && record["operation"].as_str() == Some("enqueue")
-                    && record["content"]
-                        .as_str()
-                        .is_some_and(|content| content.trim() == text.trim())
+                // A message sent to a busy worker has no `user` record yet: it
+                // sits as an enqueue and a queued_command attachment, wrapped
+                // (<pasted_content ...>) and stamped seconds apart. Reading
+                // only an exact enqueue called it lost and sent it again 90 s
+                // later, to a card already closed (AF, 2026-11-01: shipit
+                // MSG-1; this lane's own 15:49 message, twice).
+                let queued = match record["type"].as_str() {
+                    Some("queue-operation") if record["operation"].as_str() == Some("enqueue") => record["content"].as_str(),
+                    Some("attachment") if record["attachment"]["type"].as_str() == Some("queued_command") => {
+                        record["attachment"]["prompt"].as_str()
+                    }
+                    _ => None,
+                };
+                queued.is_some_and(|content| jsonl_content_matches(content, text.trim()))
                     && record["timestamp"]
                         .as_str()
                         .and_then(parse_iso8601)
-                        .is_some_and(|ts| ts >= since)
+                        .is_some_and(|ts| ts >= since - 2.0)
             }))
 }
 
@@ -15046,7 +15067,12 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                     }
                 }
                 ComposerState::Empty | ComposerState::Placeholder(_) => {
-                    let live = sent_at > 0.0 && jsonl_live_since(&name, sent_at);
+                    // Only this worker's own transcript can say a message is
+                    // missing. With no bound conversation the path is a guess
+                    // from the project folder, and in a shared folder that is
+                    // a peer's live transcript: api and web each got every
+                    // prompt twice, 92 s apart (VID-030, 2026-11-01).
+                    let live = sent_at > 0.0 && transcript_is_bound(&name) && jsonl_live_since(&name, sent_at);
                     match empty_composer_verdict(now_f64(), started + grace_s, redelivered_at, live) {
                         EmptyComposer::Wait => continue,
                         EmptyComposer::LeftUnverified => break "direct_draft_left_composer",
@@ -51152,6 +51178,28 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert!(body.contains(r#"break "direct_draft_lost""#), "and named lost if it still does not arrive");
         let resolved = &body[body.find("held direct message resolved").unwrap().saturating_sub(400)..];
         assert!(!resolved[..400].contains("direct_draft_lost"), "lost is never logged as resolved");
+    }
+
+    #[test]
+    fn only_the_workers_own_conversation_can_say_a_message_is_missing() {
+        let own = Path::new("/p/abc-123.jsonl");
+        assert!(transcript_file_is("abc-123", own));
+        assert!(!transcript_file_is("", own), "no bound conversation: a guess");
+        assert!(!transcript_file_is("other", own), "a peer's transcript");
+    }
+
+    #[test]
+    fn a_message_queued_to_a_busy_worker_counts_as_delivered() {
+        let text = "[amux] Idle with AMUX-1 in 'doing'";
+        let wrapped = format!("<pasted_content id=\"7008\">\n{text}\n</pasted_content id=\"7008\">");
+        let since = parse_iso8601("2026-11-01T15:49:52.000Z").unwrap();
+        let enqueue = json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-01T15:49:56.002Z", "content": wrapped});
+        let attachment = json!({"type": "attachment", "timestamp": "2026-11-01T15:49:51.812Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
+        assert!(submission_records_have(std::slice::from_ref(&enqueue), text, since), "a wrapped enqueue");
+        assert!(submission_records_have(&[attachment], text, since), "the attachment, stamped before the send");
+        assert!(!submission_records_have(&[enqueue], "another message entirely", since));
+        let old = json!({"type": "attachment", "timestamp": "2026-11-01T15:40:00.000Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
+        assert!(!submission_records_have(&[old], text, since), "an earlier copy of the same nudge is not this delivery");
     }
 
     #[test]

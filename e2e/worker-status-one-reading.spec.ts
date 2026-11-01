@@ -105,3 +105,15 @@ test('an acknowledged pause is not flipped back by an older snapshot', async ({ 
   expect(got.afterAgree, 'once the server agreed, the overlay is gone').toBe('active');
   expect(got.expired, 'an overlay older than 30 s is dropped').toBe('active');
 });
+
+test('an idle worker shows no board activity whatever its older board reading says', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any)._workerHasLiveActivity === 'function');
+  const live = await page.evaluate(() => {
+    const f = (window as any)._workerHasLiveActivity;
+    const stale = { measured: true, runtime_status: 'active', status: 'unlinked' };
+    return [f({ running: true, status: 'idle', runtime_board: stale }), f({ running: true, status: 'active', runtime_board: stale }), f({ running: true, status: 'unattributed', runtime_board: stale })];
+  });
+  expect(live).toEqual([false, true, true]);
+});
