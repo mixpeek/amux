@@ -5498,7 +5498,7 @@ pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<S
 // rebuilt only once a build's own length has passed (median 8 s measured, so a
 // flip took 6-12 s to appear). Reports newer than the snapshot's build start
 // are laid over it the way config writes are; the next build retires them.
-// native_status::apply and report_post write to it.
+// native_status::apply and report_post feed it.
 fn status_reports() -> &'static std::sync::Mutex<std::collections::HashMap<String, (f64, String)>> {
     static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (f64, String)>>> = std::sync::OnceLock::new();
     R.get_or_init(Default::default)
