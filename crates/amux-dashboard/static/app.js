@@ -53163,7 +53163,12 @@ function connectSSE() {
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
             if (document.hidden) _boardChangesWhileHidden++;
-            else _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
+            // Re-checked when it fires: a tab hidden inside the 400 ms read
+            // anyway (nightly 41283498168, ios-safari).
+            else _invBoardTimer = setTimeout(() => {
+              if (document.hidden) _boardChangesWhileHidden++;
+              else _cdcBoardUpdate();
+            }, 400);
           }
           if (key === 'sessions') {
             _scheduleSessionInvalidation();
