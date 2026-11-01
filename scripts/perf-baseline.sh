@@ -30,14 +30,16 @@ trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 # instrument tracks, and it moves the numbers ONCE, on the record here.
 sqlite3 "file:${LIVE_DB}?mode=ro" "VACUUM INTO '$WORK/amux.db'"
 
-AMUX_HOME="$WORK" AMUX_DB="$WORK/amux.db" AMUX_RS_PORT=$PORT \
-  "${AMUX_RS_BIN:-./target/release/amux-server}" >"$WORK/server.log" 2>&1 &
-SERVER_PID=$!
-
-for _ in $(seq 1 60); do
-  curl -sk --max-time 2 "https://localhost:$PORT/health" >/dev/null 2>&1 && break
-  sleep 0.5
-done
+boot_server() {
+  AMUX_HOME="$WORK" AMUX_DB="$WORK/amux.db" AMUX_RS_PORT=$PORT \
+    "${AMUX_RS_BIN:-./target/release/amux-server}" >>"$WORK/server.log" 2>&1 &
+  SERVER_PID=$!
+  for _ in $(seq 1 60); do
+    curl -sk --max-time 2 "https://localhost:$PORT/health" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+}
+boot_server
 
 TOKEN=$(cat "$WORK/auth-token" 2>/dev/null || echo "")
 
@@ -102,18 +104,20 @@ RSS_MB=$(ps -o rss= -p "$SERVER_PID" | awk '{print int($1/1024)}')
 # Linux: Private_Dirty from smaps_rollup; macOS: the MALLOC rows' DIRTY
 # column summed. Empty when neither works (never fake a 0 — an absent
 # measurement must not read as a tiny heap).
-DIRTY_MB=""
-if [ -r "/proc/$SERVER_PID/smaps_rollup" ]; then
-  DIRTY_MB=$(awk '/^Private_Dirty:/{print int($2/1024)}' "/proc/$SERVER_PID/smaps_rollup")
-elif command -v vmmap >/dev/null 2>&1; then
-  DIRTY_MB=$(vmmap --summary "$SERVER_PID" 2>/dev/null | awk '
-    /^MALLOC/ {
-      v=$4  # DIRTY SIZE column of the region-type table
-      mult = (v ~ /G$/) ? 1024 : (v ~ /K$/) ? 1/1024 : 1
-      gsub(/[KMG]$/, "", v); total += v * mult
-    }
-    END { if (total > 0) print int(total) }')
-fi
+read_dirty() {
+  if [ -r "/proc/$SERVER_PID/smaps_rollup" ]; then
+    awk '/^Private_Dirty:/{print int($2/1024)}' "/proc/$SERVER_PID/smaps_rollup"
+  elif command -v vmmap >/dev/null 2>&1; then
+    vmmap --summary "$SERVER_PID" 2>/dev/null | awk '
+      /^MALLOC/ {
+        v=$4  # DIRTY SIZE column of the region-type table
+        mult = (v ~ /G$/) ? 1024 : (v ~ /K$/) ? 1/1024 : 1
+        gsub(/[KMG]$/, "", v); total += v * mult
+      }
+      END { if (total > 0) print int(total) }'
+  fi
+}
+DIRTY_MB=$(read_dirty)
 rest=$(( PERF_SAMPLES - first ))
 if [ "$rest" -gt 0 ]; then
   for e in "${ENDPOINTS[@]}"; do IFS='|' read -r n u a <<<"$e"; sample "$n" "$u" "$a" "$rest"; done
@@ -121,7 +125,30 @@ fi
 M1=$(summarize dashboard); M2=$(summarize health); M3=$(summarize board); M4=$(summarize board_full); M5=$(summarize workers)
 BOARD_BYTES=$(curl -sk -H "Authorization: Bearer $TOKEN" "https://localhost:$PORT/api/board" | wc -c | tr -d ' ')
 
-echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"rss_boot_mb\": ${RSS_BOOT_MB:-null}, \"dirty_mb\": ${DIRTY_MB:-null}, \"board_default_bytes\": $BOARD_BYTES }"
+# MEDIAN OF FRESH BOOTS, judged (AF-1094). One ps read cannot tell a code change
+# from noise: October nightlies read 310-393 on a 350 ceiling, 4 of 15 at or over
+# it with no code growth, and 2026-11-01 failed at 352. Each extra boot takes the
+# same five requests per endpoint and is untimed, so the latency series above is
+# unchanged. rss_reads carries every read, so a real step stays visible.
+PERF_RSS_BOOTS="${PERF_RSS_BOOTS:-3}"
+RSS_READS="$RSS_MB"; DIRTY_READS="$DIRTY_MB"
+median() { python3 -c 'import sys; v=sorted(int(x) for x in sys.argv[1:]); print(v[len(v)//2] if v else "")' $1; }
+for _ in $(seq 2 "$PERF_RSS_BOOTS"); do
+  kill "$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  boot_server
+  for e in "${ENDPOINTS[@]}"; do
+    IFS='|' read -r n u a <<<"$e"
+    for _ in $(seq 1 "$first"); do
+      if [ -n "$a" ]; then curl -sk -o /dev/null -H "Authorization: Bearer $TOKEN" "$u"; else curl -sk -o /dev/null "$u"; fi
+    done
+  done
+  RSS_READS="$RSS_READS $(ps -o rss= -p "$SERVER_PID" | awk '{print int($1/1024)}')"
+  DIRTY_READS="$DIRTY_READS $(read_dirty)"
+done
+RSS_MB=$(median "$RSS_READS"); DIRTY_MB=$(median "$DIRTY_READS")
+
+echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"rss_reads\": [$(echo $RSS_READS | tr ' ' ',')], \"rss_boot_mb\": ${RSS_BOOT_MB:-null}, \"dirty_mb\": ${DIRTY_MB:-null}, \"board_default_bytes\": $BOARD_BYTES }"
 
 # Target assertions — each CAN fail (ethos 7).
 #
