@@ -1812,7 +1812,7 @@ self_coll_covered() { # <collision log> -> 0 if a tracked earlier run held the l
 }
 
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 fstart=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1856,7 +1856,13 @@ check_self_runs() {
       if [ "$fage" -lt $(( SELF_SLOW_RECENT_MIN * 60 )) ] && [ "$el" -gt "$slow_recent" ]; then slow_recent=$el; fi ;;
     esac
     case "$line" in *" skipped=none "*) ;; *" skipped="*) n_skip=$((n_skip+1))
-      [ "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
+      # By when the run STARTED, which the log's name holds in ms (Mac self RCA
+      # 20261101-014559). Its mtime is when it finished, so the run that sent
+      # the escalation always read as newer than that escalation, and re-raised
+      # itself once the cooldown ran out.
+      fstart=$(basename "$f" .log); fstart=${fstart%???}
+      case "$fstart" in ''|*[!0-9]*) fstart=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0) ;; esac
+      [ "$fstart" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
   done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
   since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}

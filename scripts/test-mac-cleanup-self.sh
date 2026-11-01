@@ -97,6 +97,12 @@ check "it says so, with a verdict"                    yes "$(has "$out" 'all 3 r
 printf 'esc_self=%s\n' "$((NOW-1500))" > "$FIX/state/state"
 out=$(probe)
 check "a skip after the escalation raises it again"   yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+# Real logs are named by start time in ms. A run that started before the
+# escalation and finished after it is the one that sent it (RCA self 20261101-014559).
+for n in 1 2 3; do mv "$LOGS/skip$n.log" "$LOGS/$((NOW-1600+n))000.log"; done
+out=$(probe)
+check "a run that started before the escalation is not new" no "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+for n in 1 2 3; do mv "$LOGS/$((NOW-1600+n))000.log" "$LOGS/skip$n.log"; done
 rm -f "$FIX/state/state"
 
 echo "4b. a slow run older than 6h is reported, not escalated (RCA self 20261016-082126)"
