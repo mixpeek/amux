@@ -73,7 +73,8 @@ test('Clear empties only this worker\'s selection', async ({ page }) => {
   await boot(page);
   await page.evaluate((a) => { const g = window as any; g.openPeek(a); g._stopPeekPoll?.(); g.setPeekTab('schedules'); }, A);
   const list = page.locator('#peek-schedules-list');
-  await list.locator('.sx-row[data-sched-id="SCHED-SB2"] .sx-sel input').check();
+  // A refresh can replace the row mid-click (nightly 41288385907, ios-safari).
+  await expect(() => list.locator('.sx-row[data-sched-id="SCHED-SB2"] .sx-sel input').check({ timeout: 3_000 })).toPass({ timeout: 15_000 });
   await page.locator('#peek-sched-bulk').getByRole('button', { name: 'Clear' }).click();
   await expect(page.locator('#peek-sched-bulk')).toBeHidden();
   await expect(list.locator('.sx-row.selected')).toHaveCount(0);

@@ -79,9 +79,9 @@ test('a browser shows no Split button and never opens the old split, even a reme
   // The old entry points do nothing to the page's own layout.
   await page.evaluate(() => (window as any)._peekSplitOpen('files'));
   await expect(page.locator('#peek-split-wrap')).not.toHaveClass(/split-active/);
-  const said = await page.evaluate(async () => {
+  // The beacon is fire-and-forget, so it can land after this read (nightly 41288385907).
+  await expect.poll(() => page.evaluate(async () => {
     const r = await (await fetch('/api/client-debug?kind=split')).json();
     return (r.beacons || []).some((b: any) => b.body && b.body.verdict === 'split_view_retired');
-  });
-  expect(said, 'the refusal is beaconed').toBe(true);
+  }), { message: 'the refusal is beaconed', timeout: 10_000 }).toBe(true);
 });
