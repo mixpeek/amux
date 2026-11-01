@@ -64,6 +64,8 @@ pub fn routes() -> Router<AppState> {
         // AMUX-4664: ask a question of these messages. A literal POST, like
         // `/import`, so the `/{id}` capture below does not take it.
         .route("/ask", axum::routing::post(super::history_ask::ask))
+        .route("/pins", get(list_pins))
+        .route("/{id}/pin", axum::routing::post(pin_message))
         // Look up ONE message by its id. `/import` is a literal POST above, so
         // this GET capture never swallows it.
         .route("/{id}", get(get_history_item))
@@ -156,6 +158,90 @@ fn attach_linked_cards(conn: &rusqlite::Connection, rows: &mut [Value]) -> rusql
         row["linked_cards"] = Value::Array(cards);
     }
     Ok(())
+}
+
+fn pins_for(conn: &rusqlite::Connection, session: &str) -> anyhow::Result<Vec<Value>> {
+    let mut st = conn.prepare(
+        "SELECT p.msg_id, h.text, h.ts, p.pinned_by, p.pinned_at FROM message_pins p
+         JOIN cmd_history h ON h.id = p.msg_id
+         WHERE p.session = ?1 ORDER BY p.pinned_at DESC, p.msg_id DESC LIMIT 100",
+    )?;
+    let rows = st.query_map([session], |r| {
+        Ok(json!({"id": r.get::<_, i64>(0)?, "text": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?,
+            "pinned_by": r.get::<_, String>(3)?, "pinned_at": r.get::<_, i64>(4)?}))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// GET /api/history/pins?session=<worker> — that worker's pinned messages,
+/// newest pin first.
+async fn list_pins(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let session = q.get("session").cloned().unwrap_or_default();
+    let store = state.store.clone();
+    match crate::db::interactions::spawn_blocking(move || pins_for(&*store.read()?, &session)).await {
+        Ok(Ok(pins)) => Json(json!({ "pins": pins })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    }
+}
+
+/// POST /api/history/{id}/pin `{"pinned": true|false}` — pin a message to its
+/// worker's Messages tab, or take the pin off. Answers with that worker's pins.
+async fn pin_message(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(b): axum::Json<Value>,
+) -> Response {
+    let Ok(nid) = id.trim().trim_start_matches("MSG-").trim_start_matches("msg-").parse::<i64>() else {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": format!("'{id}' is not a message id") }));
+    };
+    let pinned = b.get("pinned").and_then(Value::as_bool).unwrap_or(true);
+    let by = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("owner").to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let found = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let found_w = found.clone();
+    let wrote = state.store.write_async(move |conn| {
+        let session: Option<String> = conn
+            .query_row("SELECT session FROM cmd_history WHERE id=?1", [nid], |r| r.get(0))
+            .ok();
+        let Some(session) = session.filter(|s| !s.is_empty()) else {
+            return Ok(WriteOutcome { applied: false, events: vec![] });
+        };
+        if pinned {
+            conn.execute(
+                "INSERT INTO message_pins (msg_id, session, pinned_by, pinned_at) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(msg_id) DO NOTHING",
+                rusqlite::params![nid, session, by, now],
+            )?;
+        } else {
+            conn.execute("DELETE FROM message_pins WHERE msg_id=?1", [nid])?;
+        }
+        found_w.store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!(session = %session, msg = nid, pinned, measured = true, n_considered = 1,
+            verdict = if pinned { "worker_message_pinned" } else { "worker_message_unpinned" }, "a worker message pin changed");
+        Ok(WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    if let Err(e) = wrote {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+    }
+    if !found.load(std::sync::atomic::Ordering::SeqCst) {
+        return err(StatusCode::NOT_FOUND, json!({ "error": format!("no message MSG-{nid} on a worker") }));
+    }
+    let store = state.store.clone();
+    let listed = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+        let conn = store.read()?;
+        let session: String = conn.query_row("SELECT session FROM cmd_history WHERE id=?1", [nid], |r| r.get(0))?;
+        pins_for(&conn, &session)
+    }).await;
+    match listed {
+        Ok(Ok(pins)) => Json(json!({ "pins": pins })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    }
 }
 
 /// GET /api/history/{id} — look up ONE message by its id, accepting either a

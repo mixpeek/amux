@@ -4092,6 +4092,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pmLoadPins": {
+      "kind": "command._pmLoadPins",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmPin": {
+      "kind": "command._pmPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pmResend": {
       "kind": "command._pmResend",
       "feedback_required": true,
@@ -4112,6 +4124,12 @@
     },
     "_pmSelToggle": {
       "kind": "command._pmSelToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmShowPins": {
+      "kind": "command._pmShowPins",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

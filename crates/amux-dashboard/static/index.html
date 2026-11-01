@@ -3640,6 +3640,7 @@
     <div class="peek-tasks-add" style="gap:var(--space-2);padding:var(--space-2) var(--space-2-5);">
       <input type="search" id="peek-messages-search" placeholder="Search messages sent to this worker&hellip;" oninput="_peekMessagesRender()"
         style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-1) var(--space-2-5);font-size:var(--fs-md);color:var(--text);outline:none;">
+      <button type="button" class="btn cv-pins-btn" id="pm-pins-btn" hidden onclick="_pmShowPins()" aria-label="Pinned messages" title="Pinned messages">&#x1F4CC; <span id="pm-pins-n"></span></button>
       <!-- The kind chips ride in this row on wide screens (one control row per
            tab, 2026-10-23); they scroll sideways when there are many. -->
       <div id="peek-messages-filter" style="display:flex;gap:var(--space-1);flex:0 1 auto;min-width:0;max-width:50%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;"></div>

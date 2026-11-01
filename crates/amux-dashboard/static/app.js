@@ -27157,6 +27157,47 @@ function _msgCardChips(message) {
 // be shared and the three drifted into looking like different content — which is
 // exactly what Ethan reported. Normalize once, at every fetch, and set BOTH names
 // so nothing downstream has to know which surface it came from.
+// Pinned messages in a worker's Messages tab. The list opens from the 📌 count
+// in the one control row, the same way a channel's pins do.
+let _pmPins = [], _pmPinsFor = null;
+function _pmPinned(id) { return _pmPinsFor === peekSession && _pmPins.some(p => String(p.id) === String(id)); }
+function _pmRenderPinsBtn() {
+  const btn = document.getElementById('pm-pins-btn'); if (!btn) return;
+  const n = _pmPinsFor === peekSession ? _pmPins.length : 0;
+  btn.hidden = !n;
+  document.getElementById('pm-pins-n').textContent = n ? String(n) : '';
+}
+async function _pmLoadPins() {
+  const sess = peekSession;
+  try {
+    const r = await fetch(API + '/api/history/pins?session=' + encodeURIComponent(sess));
+    if (!r.ok || sess !== peekSession) return;
+    _pmPins = (await r.json()).pins || []; _pmPinsFor = sess;
+    _pmRenderPinsBtn(); _peekMessagesRender();
+  } catch (_) {}
+}
+async function _pmPin(id, on) {
+  try {
+    const r = await fetch(API + '/api/history/' + id + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: on }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+    _pmPins = d.pins || []; _pmPinsFor = peekSession;
+    _pmRenderPinsBtn(); _peekMessagesRender();
+    showToast(on ? 'Pinned' : 'Unpinned');
+  } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
+}
+async function _pmShowPins() {
+  if (!_pmPins.length) return;
+  const html = '<div class="cv-pins-list">' + _pmPins.map((x, i) => '<button type="button" class="btn cv-pin-item" data-i="' + i + '">'
+    + '<span class="cv-pin-who">MSG-' + esc(String(x.id)) + ' <span class="cv-pin-when">' + esc(new Date(x.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></span>'
+    + '<span class="cv-pin-body">' + esc(String(x.text || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>').join('') + '</div>';
+  const chosen = new Promise(resolve => {
+    setTimeout(() => document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(Number(el.dataset.i)); _modalClose(false); }), 0);
+    showFormModal('Pinned messages', html, 'Close').then(() => resolve(-1));
+  });
+  const x = _pmPins[await chosen]; if (!x) return;
+  _pickCmdHistory(x.text);
+}
 function _msgCtxPeek() {
   return { sel: _pmSel, key: _pmKey, toggle: '_pmSelToggle', resend: '_pmResend',
            searchId: 'peek-messages-search', rowClass: 'pm-row', ownTab: true,
@@ -27382,7 +27423,8 @@ function _cmdHistItemHTML(e, ctx) {
   const idTag = _mid
     ? `<code class="msg-id-badge" title="Message id — click to copy" onclick="event.stopPropagation();_copyMsgId('${esc(_mid)}')">MSG-${esc(_mid)}</code>`
     : '';
-  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + senderTag + sessTag + tsTag
+  const pinTag = ctx.ownTab && _mid && _pmPinned(_mid) ? '<span class="pm-pin-mark" title="Pinned">\u{1F4CC}</span>' : '';
+  const meta = pinTag + tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + senderTag + sessTag + tsTag
     + _msgContextChip(e) + idTag
     + _msgCardChips(e);
   const locSess = (session || (typeof peekSession !== 'undefined' ? peekSession : '') || '').replace(/'/g,'');
@@ -27395,7 +27437,7 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:var(--space-2) var(--space-3);background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);transition:border-color 0.15s;display:flex;gap:var(--space-1-5);align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:var(--space-1);">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:var(--space-2) var(--space-3);background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);transition:border-color 0.15s;display:flex;gap:var(--space-1-5);align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:var(--space-1);">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab && _mid ? `<button class="pm-menu-pin" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_pmPin(${Number(_mid)},${!_pmPinned(_mid)})">${_pmPinned(_mid) ? 'Unpin' : 'Pin'}</button>` : ''}${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -27864,6 +27906,7 @@ async function _exportMessageHistory() {
 
 async function _peekMessagesLoad(more) {
   const sess = peekSession;
+  if (more !== true) _pmLoadPins();
   if (_peekMsgRowsFor !== sess) {              // session changed -> back to page 1
     _peekMsgRows = null; _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false;
     _peekMsgRowsFor = sess; _peekMsgPage = 1; _peekMsgTotal = null; more = false;
