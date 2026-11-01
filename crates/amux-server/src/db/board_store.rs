@@ -3230,6 +3230,21 @@ pub fn list_issues_by_ids(
     hydrate_light(conn, &light, prose)
 }
 
+/// The selection `light_rows` runs. Unfiltered, it is answered entirely by
+/// idx_issues_light_rows (AF-1144).
+fn light_rows_sql(lanes: usize) -> String {
+    format!(
+        "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
+                COALESCE(i.pos,0), i.updated \
+         FROM issues i WHERE i.deleted IS NULL{} ORDER BY i.id",
+        if lanes > 0 {
+            format!(" AND i.session IN ({})", vec!["?"; lanes].join(","))
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// Pass 1 shared by the capped and quota lists: filter + sort over the
 /// no-prose columns. ONE loader on purpose — two spellings of the filter
 /// canon or the sort would drift exactly the way the predicate rule warns.
@@ -3254,17 +3269,7 @@ fn light_rows(
     // log inline, and dropped other lanes in Rust; pread was the profile).
     let started = std::time::Instant::now();
     let by_lane = !session_filter.is_empty();
-    let sql = format!(
-        "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
-                COALESCE(i.pos,0), i.updated \
-         FROM issues i WHERE i.deleted IS NULL{} ORDER BY i.id",
-        if by_lane {
-            format!(" AND i.session IN ({})", vec!["?"; session_filter.len()].join(","))
-        } else {
-            String::new()
-        }
-    );
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare(&light_rows_sql(session_filter.len()))?;
     let mut light: Vec<LightRow> = Vec::new();
     for row in stmt.query_map(rusqlite::params_from_iter(session_filter.iter()), |r| {
         Ok(LightRow {
@@ -4957,6 +4962,24 @@ pub fn dependency_path(
 
 #[cfg(test)]
 mod tests {
+    /// AF-1144: the unfiltered selection must come from the covering index. On
+    /// the table it walks every card's desc to reach `status`.
+    #[test]
+    fn the_unfiltered_board_selection_never_touches_the_table() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        let conn = store.read().unwrap();
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", super::light_rows_sql(0)))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(plan.contains("COVERING INDEX idx_issues_light_rows"), "{plan}");
+    }
+
     /// AMUX-4801: the live-work list is DERIVED and SQL-safe.
     ///
     /// The literal it replaced, `NOT IN ('done','verified','discarded')`, was
