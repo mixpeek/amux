@@ -8159,12 +8159,12 @@ mod negative_controls {
     #[test]
     fn a_refusing_gate_and_a_dead_route_are_told_apart_in_the_evidence() {
         let mounted: Vec<(&str, &[&str])> =
-            vec![("/api/email/reply", &["POST"]), ("/api/sql/run", &["GET"])];
+            vec![("/api/land", &["POST"]), ("/api/sql/run", &["GET"])];
         let rows = vec![
             // A GATE doing its job: answered every time, refused every time.
             RouteOutcomeRow {
                 method: "POST".into(),
-                shape: "/api/email/reply".into(),
+                shape: "/api/land".into(),
                 n: 12,
                 ok: 0,
                 client_err: 12,
@@ -8197,7 +8197,7 @@ mod negative_controls {
 
         let gate = fails
             .iter()
-            .find(|r| r.entity_key == "POST /api/email/reply")
+            .find(|r| r.entity_key == "POST /api/land")
             .expect("the gate is reported");
         let dead = fails
             .iter()
