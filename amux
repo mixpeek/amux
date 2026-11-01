@@ -8980,7 +8980,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-10-18.56"
+LAND_BEHAVIOR_VERSION="2026-11-01.57"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -10085,6 +10085,184 @@ land_gate_run() {
   CARGO_BUILD_JOBS=$jobs NEXTEST_TEST_THREADS=$threads nice -n 10 "$@"
 }
 
+# MERGE QUEUE (MC-92; Z2 of Mixpeek's 2026-11-01 no-baggage plan). The CI half
+# is Mixpeek's research/cicd/MERGE-QUEUE.md, which Ethan approved on
+# 2026-10-23: main moves only to a tree the repository's workflow already
+# passed. Off unless the repository opts in with `landMergeQueue` in
+# .amux/land.conf ([amux] section), or AMUX_LAND_MERGE_QUEUE for one process:
+#   off      (the default) the holder pushes the composed stack to the branch.
+#   shadow   the stack is also pushed to refs/heads/mq/<batch> and the workflow
+#            dispatched on it, then landed directly as with off. Each candidate
+#            is a line in ~/.amux/logs/land-mq.jsonl, so its verdict can be
+#            compared with the verdict the branch later reaches.
+#   enforce  the stack lands only after the workflow concluded success on the
+#            candidate ref, as a fast-forward. A red batch is bisected over its
+#            landings (prefixes on the same base); the culprit waiter is ejected
+#            and the rest re-composed. rc 6: this lane's own change was red, or
+#            the candidate could not be measured; the waiters keep their places.
+# Other keys: landMergeQueueWorkflow (the workflow file to dispatch; required),
+# landMergeQueueBaseInput (a workflow_dispatch input that receives the sha the
+# stack was composed on), landMergeQueueRepo (owner/name when the remote URL
+# does not say it), landMergeQueueBudgetMin (wait for one run, default 75),
+# landMergeQueueBatchMax (landings per candidate with the holder, default 8),
+# landMergeQueueLostJob (an ERE: a red run with a failed job of that name is
+# dispatched once more instead of bisected; a lost runner is not a culprit).
+_land_mq_cfg() { # <key suffix> [default]
+  local v; v="$(_land_cfg --get "amux.landMergeQueue$1" 2>/dev/null || true)"
+  printf '%s\n' "${v:-${2:-}}"
+}
+_land_mq_mode() { # prints off, shadow or enforce
+  local m="${AMUX_LAND_MERGE_QUEUE:-}"
+  [ -n "$m" ] || m="$(_land_cfg --get amux.landMergeQueue 2>/dev/null || true)"
+  case "$m" in
+    ''|off|false|0) echo off; return 0 ;;
+    shadow|enforce) ;;
+    *) _land_log "WARN verdict=mq_mode_unknown value=$m: amux.landMergeQueue is off, shadow or enforce; landing directly"; echo off; return 0 ;;
+  esac
+  if [ -z "$(_land_mq_cfg Workflow)" ] || [ -z "$(_land_mq_slug)" ]; then
+    _land_log "WARN verdict=mq_misconfigured mode=$m: amux.landMergeQueueWorkflow or the repository (amux.landMergeQueueRepo, or a github.com remote) is missing; landing directly"
+    echo off; return 0
+  fi
+  echo "$m"
+}
+_land_mq_slug() {
+  local s; s="$(_land_mq_cfg Repo)"
+  [ -n "$s" ] || s="$(git remote get-url "${remote:-origin}" 2>/dev/null | sed -nE 's#^.*github\.com[^:/]*[:/]+([^/]+/[^/]+)$#\1#p')"
+  printf '%s\n' "${s%.git}"
+}
+# gh with a token minted per call: a wait outlives an exported App token (an
+# hour), as the push comment in cmd_land measured. AMUX_LAND_MQ_GH: a stand-in for tests.
+_land_mq_gh() {
+  local tok=""
+  [ -x "$HOME/.amux/github-app/get-token.sh" ] && tok="$("$HOME/.amux/github-app/get-token.sh" --min-remaining 600 --raw 2>/dev/null || true)"
+  GH_TOKEN="${tok:-${GH_TOKEN:-}}" "${AMUX_LAND_MQ_GH:-gh}" "$@"
+}
+_land_mq_ledger() { # key=value ...
+  mkdir -p "$HOME/.amux/logs"
+  python3 -c 'import json, sys, time
+d = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+for a in sys.argv[1:]:
+    k, _, v = a.partition("=")
+    d[k] = v
+print(json.dumps(d))' "$@" >> "$HOME/.amux/logs/land-mq.jsonl" 2>/dev/null || true
+}
+# The candidate ref skips the push hook: it is only the workflow's input, and the
+# hook gates the same tree again on the push to the branch.
+_land_mq_push_ref() { # <sha> <batch id>
+  local t
+  for t in 1 2 3; do
+    git push --no-verify -q "$remote" "$1:refs/heads/mq/$2" 2>/dev/null && return 0
+    sleep $(( t * ${AMUX_LAND_NET_BACKOFF_S:-10} ))
+  done
+  return 1
+}
+_land_mq_drop_ref() { git push --no-verify -q "$remote" ":refs/heads/mq/$1" >/dev/null 2>&1 || true; }
+_land_mq_dispatch() { # <batch id> <base sha>; the error on stderr
+  local input args=()
+  input="$(_land_mq_cfg BaseInput)"
+  [ -z "$input" ] || args=(-f "$input=$2")
+  _land_mq_gh workflow run "$(_land_mq_cfg Workflow)" --repo "$(_land_mq_slug)" --ref "mq/$1" ${args[@]+"${args[@]}"} >/dev/null
+}
+_land_mq_run() { # <batch id> <sha> -> "<run id> <status> <conclusion> <url>" of the newest run of that sha
+  _land_mq_gh api "repos/$(_land_mq_slug)/actions/workflows/$(_land_mq_cfg Workflow)/runs?branch=mq/$1&event=workflow_dispatch&per_page=10" 2>/dev/null \
+    | python3 -c 'import json, sys
+try:
+    runs = json.load(sys.stdin).get("workflow_runs") or []
+except Exception:
+    runs = []
+for r in sorted(runs, key=lambda r: r.get("id") or 0, reverse=True):
+    if r.get("head_sha") == sys.argv[1]:
+        print(r.get("id"), r.get("status") or "-", r.get("conclusion") or "-", r.get("html_url") or "-")
+        break' "$2"
+}
+_land_mq_lost() { # <run id>: rc 0 when a failed job's name matches landMergeQueueLostJob
+  local re; re="$(_land_mq_cfg LostJob)"
+  [ -n "$re" ] || return 1
+  _land_mq_gh api "repos/$(_land_mq_slug)/actions/runs/$1/jobs?per_page=100" 2>/dev/null \
+    | python3 -c 'import json, re, sys
+try:
+    jobs = json.load(sys.stdin).get("jobs") or []
+except Exception:
+    jobs = []
+sys.exit(0 if any(j.get("conclusion") == "failure" and re.search(sys.argv[1], j.get("name") or "") for j in jobs) else 1)' "$re"
+}
+_land_mq_wait() { # <batch id> <sha> -> "green|red|lost|unmeasured <run id> <url> [why]"
+  local budget poll t0 r rid="-" st co url="-"
+  budget=$(( $(_land_mq_cfg BudgetMin 75) * 60 )); poll="${AMUX_LAND_MQ_POLL_S:-30}"; t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le "$budget" ]; do
+    # A candidate run is longer than --max-hold by design, so the holder keeps its
+    # attempt stamp fresh while it waits; a waiter still takes over a dead holder.
+    [ "$(cat "${lock:-/nonexistent}/pid" 2>/dev/null)" = "$$" ] && date +%s > "$lock/since"
+    r="$(_land_mq_run "$1" "$2")"
+    if [ -n "$r" ]; then
+      read -r rid st co url <<< "$r"
+      if [ "$st" = completed ]; then
+        case "$co" in
+          success) echo "green $rid $url" ;;
+          failure) if _land_mq_lost "$rid"; then echo "lost $rid $url"; else echo "red $rid $url"; fi ;;
+          *) echo "unmeasured $rid $url conclusion=$co" ;;
+        esac
+        return 0
+      fi
+    fi
+    sleep "$poll"
+  done
+  echo "unmeasured $rid $url no_conclusion_in_${budget}s"
+}
+_land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <run id> <url> [why]"
+  local id="$1" v err try
+  for try in 1 2; do
+    _land_mq_push_ref "$3" "$id" || { echo "unmeasured - - candidate_push_failed"; return 0; }
+    if ! err="$(_land_mq_dispatch "$id" "$2" 2>&1)"; then
+      _land_mq_drop_ref "$id"
+      echo "unmeasured - - dispatch_failed:$(printf '%s' "$err" | tr -s ' \n' '__' | cut -c1-160)"; return 0
+    fi
+    _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$id (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
+    v="$(_land_mq_wait "$id" "$3")"
+    _land_mq_drop_ref "$id"
+    _land_mq_ledger phase=judge batch="$id" base="$2" candidate="$3" verdict="${v%% *}" run="$(printf '%s' "$v" | cut -d' ' -f3)" what="${4:-}"
+    { [ "${v%% *}" = lost ] && [ "$try" = 1 ]; } || break
+    _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
+    id="$id-r"
+  done
+  [ "${v%% *}" != lost ] || v="red ${v#lost }"
+  echo "$v"
+}
+# Binary search over the batch's prefixes on the same base, each regenerated as
+# the full stack was. Prefix 0 is the holder's own change, prefix k adds the
+# k-th waiter (line k of stack_map). The base is taken as green: in enforce mode
+# the branch only moves to green candidates.
+_land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit index> <url>" or "unmeasured <why>"
+  local lo=-1 hi n mid tip v url="$4"
+  n="$(printf '%s\n' "$stack_map" | grep -c .)"; hi="$n"
+  while [ $(( hi - lo )) -gt 1 ]; do
+    mid=$(( (lo + hi) / 2 ))
+    if [ "$mid" = 0 ]; then tip="$3"
+    else tip="$(printf '%s\n' "$stack_map" | grep . | sed -n "${mid}p" | awk '{print $(NF-1)}')"; fi
+    # A failing generator leaves the prefix unrendered, as the full stack would be.
+    v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
+    v="$(_land_mq_judge "$2-b$mid" "$1" "$tip" "bisect: prefix of $((mid + 1)) of $((n + 1)) landings")"
+    case "${v%% *}" in
+      green) lo="$mid" ;;
+      red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
+      *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
+    esac
+  done
+  echo "$hi $url"
+}
+# Candidate refs land made, past twice the budget (shadow leaves its refs for the
+# run; a killed holder leaves one). Other mq/ refs (a CI self-test) are not ours.
+_land_mq_sweep() {
+  local cut ref name
+  cut=$(( $(date +%s) - 2 * $(_land_mq_cfg BudgetMin 75) * 60 ))
+  git ls-remote "$remote" 'refs/heads/mq/*' 2>/dev/null | while read -r _ ref; do
+    name="${ref#refs/heads/mq/}"
+    case "${name%%-*}" in ''|*[!0-9]*) continue ;; esac
+    [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ] && _land_mq_drop_ref "$name"
+  done
+  return 0
+}
+
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] [--json] | --cancel | --status
   #
@@ -10174,6 +10352,13 @@ cmd_land() {
   # declaration or to the server itself. With no declaration the client path runs
   # as it always has and says nothing tested the composed tree
   # (verdict=land_gate_undeclared).
+  #
+  # Merge queue (off unless .amux/land.conf sets landMergeQueue = shadow or
+  # enforce; see _land_mq_mode): the composed stack goes to refs/heads/mq/<batch>,
+  # the repository's workflow is dispatched on it, and with enforce the branch is
+  # fast-forwarded only when that run is green. A red batch is bisected and its
+  # culprit ejected. Exit 6: this lane's change was red, or the run could not be
+  # measured. AMUX_LAND_MERGE_QUEUE=off lands directly for one process.
   #
   # Repository config lives in `.amux/land.conf` (git-config syntax, committed):
   # the [amux] land* keys, read from the remote branch (the regenerate keys from
@@ -10285,7 +10470,16 @@ cmd_land() {
     printf '%s %s verdict=land_queue_bypassed reason=%s\n' "$(date -u +%FT%TZ)" "$_q_who" "${AMUX_LAND_CLIENT_REASON:-none given}" >> "$HOME/.amux/logs/land.log"
     echo "amux land: WARN this repository declares a queue gate and AMUX_LAND_CLIENT=1 skips it (verdict=land_queue_bypassed, reason: ${AMUX_LAND_CLIENT_REASON:-none given})" >&2
   fi
-  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ -z "$_q_decl" ] && git rev-parse -q --verify "$remote/$branch" >/dev/null 2>&1; then
+  # The client merge queue (landMergeQueue) is the other way a repository can
+  # test the composed tree; a server queue gate takes the land first, so a
+  # repository that sets both runs only the queue gate, and says so.
+  # The effective mode, so AMUX_LAND_MERGE_QUEUE and a misconfigured key (which
+  # lands directly) count the way the hold below will count them.
+  local _q_mq; _q_mq="$(_land_mq_mode 2>/dev/null || echo off)"
+  if [ -n "$_q_decl" ] && { [ "$_q_mq" = enforce ] || [ "$_q_mq" = shadow ]; }; then
+    echo "amux land: WARN amux.queueGate and amux.landMergeQueue are both set; the server queue gate takes this land and the merge queue does not run (verdict=land_mq_shadowed_by_queue_gate)" >&2
+  fi
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ -z "$_q_decl" ] && [ "$_q_mq" != enforce ] && git rev-parse -q --verify "$remote/$branch" >/dev/null 2>&1; then
     mkdir -p "$HOME/.amux/logs"
     printf '%s %s verdict=land_gate_undeclared repo declares no amux.queueGate: the push hook is the only check on the composed tree\n' "$(date -u +%FT%TZ)" "$_q_who" >> "$HOME/.amux/logs/land.log"
     echo "amux land: this repository declares no amux.queueGate in .amux/land.conf, so no queue gate tests the composed tree (verdict=land_gate_undeclared)" >&2
@@ -11027,6 +11221,13 @@ p.communicate(msg.encode())
     local max="$batch_max"
     [ -n "$max" ] || max="$(_land_cfg --get amux.landBatchMax 2>/dev/null || true)"
     case "$max" in ''|*[!0-9]*) max=6 ;; esac
+    # An enforced merge queue caps a candidate at landMergeQueueBatchMax landings
+    # with the holder (default 8): a red batch then costs at most 3 bisect runs.
+    if [ "${_mq:-off}" = enforce ]; then
+      local _mqm; _mqm="$(_land_mq_cfg BatchMax 8)"
+      case "$_mqm" in ''|*[!0-9]*|0) _mqm=8 ;; esac
+      [ "$max" -le $(( _mqm - 1 )) ] || max=$(( _mqm - 1 ))
+    fi
     local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made
     stack_tip="$1"; stack_in=""; stack_map=""
     # Every skip names itself (mixpeek-override, 2026-10-02 16:09Z: 7 of 22
@@ -11198,6 +11399,13 @@ $f"
   }
 
   local i out rc full verdicts lanes solo=0 _force_replay=0 batch_skip=" " stack_map="" named
+  # The merge queue's mode for this hold (see _land_mq_mode); off lands as before.
+  local _mq _mq_own="" _mq_base _mq_id _mq_v _mq_url _mq_b _mq_tk
+  _mq="$(_land_mq_mode)"
+  if [ "$_mq" != off ]; then
+    _land_log "merge queue: $_mq ($(_land_mq_cfg Workflow) on $(_land_mq_slug))"
+    _land_mq_sweep
+  fi
   # A --priority holder lands alone again (mixpeek-override, 2026-10-02: the
   # granted one-line Fast Checks fix batched six lanes, 23 min into the gate,
   # and any one of them could refuse it). AMUX_LAND_PRIORITY_BATCH=1 restores
@@ -11292,6 +11500,7 @@ $f"
       _land_log "refused at its turn by a land guard (freeze or reused message, lines above); nothing pushed"
       return 4
     fi
+    _mq_own="$stack_tip"
     [ "$solo" = 1 ] || _land_stack "$stack_tip"
     lanes="$(printf '%s' "$stack_in" | awk 'NF {printf "%s%s", sep, $2; sep=", "}')"
     [ -z "$lanes" ] || _land_log "batching ${lanes} behind this push (one gate run)"
@@ -11395,6 +11604,62 @@ $f"
       [ "$_pc_rc" = 0 ] && _land_log "composed batch passed the land precheck in $(( $(date +%s) - _pc_t0 ))s (rc $_pc_raw$([ "$_pc_raw" = 0 ] || echo ', judged by its verdict line')). Output: $full"
       [ "$_pc_rc" = 2 ] && _land_log "composed batch precheck unmeasured after $(( $(date +%s) - _pc_t0 ))s ($(printf '%s\n' "$_pc_out" | grep -E '^land-precheck:' | tail -1 | cut -c1-120)); pushing the batch to the gate"
     fi
+    # MERGE QUEUE (see _land_mq_mode). Shadow sends the stack as a candidate and
+    # lands it below as before; enforce lands it only once its candidate is green.
+    if [ "$_mq" != off ]; then
+      _mq_base="$(git rev-parse "$remote/$branch")"
+      _mq_id="$(date +%s)-$$-a$i"
+      if [ "$_mq" = shadow ]; then
+        if _land_mq_push_ref "$stack_tip" "$_mq_id" && _land_mq_dispatch "$_mq_id" "$_mq_base" 2>/dev/null; then
+          _land_mq_ledger phase=shadow batch="$_mq_id" base="$_mq_base" candidate="$stack_tip" lanes="$me${lanes:+, $lanes}"
+          _land_log "merge queue (shadow): candidate $(git rev-parse --short "$stack_tip") dispatched on mq/$_mq_id; landing directly as before"
+        else
+          _land_log "WARN verdict=mq_shadow_not_dispatched: candidate mq/$_mq_id was not pushed or dispatched; landing directly as before"
+        fi
+      else
+        _mq_v="$(_land_mq_judge "$_mq_id" "$_mq_base" "$stack_tip" "${lanes:+with $lanes}")"
+        _mq_url="$(printf '%s' "$_mq_v" | cut -d' ' -f3)"
+        case "${_mq_v%% *}" in
+          green)
+            git fetch -q "$remote" "$branch" 2>/dev/null || true
+            if ! git merge-base --is-ancestor "$remote/$branch" "$stack_tip"; then
+              _land_log "merge queue: $branch moved under the green candidate ($_mq_url); re-composing on the new tip (attempt $i)"
+              continue
+            fi
+            _land_log "merge queue: candidate green ($_mq_url); fast-forwarding $branch" ;;
+          red)
+            if [ -z "$lanes" ]; then
+              _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="$_mq_url"
+              _land_log "merge queue: candidate red ($_mq_url); this lane's change is refused and nothing was pushed. Fix it and land again"
+              return 6
+            fi
+            _land_log "merge queue: batch with ${lanes} red ($_mq_url); bisecting"
+            _mq_b="$(_land_mq_bisect "$_mq_base" "$_mq_id" "$_mq_own" "$_mq_url")"
+            case "${_mq_b%% *}" in
+              0)
+                _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="${_mq_b#* }"
+                _land_log "merge queue: bisected to this lane's own change (${_mq_b#* }); refused, nothing pushed. The waiters keep their places"
+                return 6 ;;
+              [1-9]*)
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $1}')"
+                batch_skip="$batch_skip$_mq_tk "
+                echo "excluded: the merge queue refused the batch on your commit (bisected; run ${_mq_b#* }); fix it and run amux land again" > "$rdir/$_mq_tk"
+                rm -f -- "${q:?}/${_mq_tk:?}"
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $2}')"
+                _land_mq_ledger phase=ejected batch="$_mq_id" lane="$_mq_tk" run="${_mq_b#* }"
+                _land_log "merge queue: bisected to ${_mq_tk}'s commit (${_mq_b#* }); ejected it, re-composing the rest (attempt $i)"
+                continue ;;
+              *)
+                _land_log "merge queue: bisect did not finish (${_mq_b}); landing this lane alone next, the waiters keep their places"
+                solo=1; continue ;;
+            esac ;;
+          *)
+            _land_mq_ledger phase=unmeasured batch="$_mq_id" lane="$me" why="${_mq_v}"
+            _land_log "merge queue: candidate not measured (${_mq_v}); nothing pushed. The waiters keep their places; AMUX_LAND_MERGE_QUEUE=off lands directly"
+            return 6 ;;
+        esac
+      fi
+    fi
     # `|| rc=$?`, not `; rc=$?`: this CLI runs under set -e, and a rejected
     # push in a bare assignment would exit the script before the retry.
     # AMUX_LAND_HOLDER_PID marks this push as the lock holder's, so a pre-push
@@ -11456,6 +11721,7 @@ $f"
     find "${full%/*}" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     printf '%s\n' "$out" > "$full"
     if [ $rc -eq 0 ]; then
+      [ "$_mq" = off ] || _land_mq_ledger phase=landed mode="$_mq" batch="$_mq_id" base="$_mq_base" sha="$stack_tip" lanes="$me${lanes:+, $lanes}"
       if [ -n "$lanes" ]; then
         _land_tell "landed $(git rev-parse --short "$stack_tip") on $branch, batched by $me"
         _land_log "landed $(git rev-parse --short "$stack_tip") on $branch (attempt $i), with ${lanes}. Hook output: $full"
