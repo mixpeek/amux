@@ -108,7 +108,7 @@ def main():
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
         subprocess.run(["git", "init", "-q", "-b", "main", work], check=True)
         git(work, "remote", "add", "origin", origin)
-        write(work, "README.md", "fine\n")
+        write(work, "README.md", "red\n")
         write(work, ".github/workflows/checks.yml", CHECKS)
         write(work, "scripts/widget.sh", WIDGET)
         write(work, "scripts/test-widget.sh", TEST_WIDGET)
@@ -118,6 +118,13 @@ def main():
         commit(work, "fixture", ".")
         shutil.copy(HOOK, os.path.join(work, ".git", "hooks", "pre-push"))
         os.chmod(os.path.join(work, ".git", "hooks", "pre-push"), 0o755)
+        # A first push has no tip to compare with, so a red cannot be shown to
+        # be new (AF-1128: this refused every fixture repo's seed push).
+        r = git(work, "push", "origin", "main")
+        check("a first push with a red test is allowed", r.returncode, 0)
+        check("and says it could not compare", "verdict=script_tests_unmeasured" in r.stderr, True)
+        write(work, "README.md", "fine\n")
+        commit(work, "greens the fixture", "README.md")
         check("seed push is allowed", git(work, "push", "-q", "origin", "main").returncode, 0)
 
         # THE CONTROL: touches no script and turns test-other.sh red.

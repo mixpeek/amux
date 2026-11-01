@@ -483,9 +483,16 @@ def _script_tests_gate(refs):
                 ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
                 text=True, timeout=10).stdout.strip()
             was = _script_test_failures(base, [t for t, _ in failing]) if base else None
-            if was is not None:
-                was_names = {t for t, _ in was}
-                inherited = [t for t, _ in failing if t in was_names]
+            if was is None:
+                # Nothing to compare with (a first push): this leg blocks only
+                # what it can show is new, so CI decides (AF-1128).
+                sys.stderr.write("amux pre-push: script tests on %s: %d failing with no remote tip to "
+                                 "compare; CI's checks still runs them verdict=script_tests_unmeasured\n"
+                                 % (short, len(failing)))
+                _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
+                continue
+            was_names = {t for t, _ in was}
+            inherited = [t for t, _ in failing if t in was_names]
         mine = [(t, why) for t, why in failing if t not in inherited]
         secs = (datetime.datetime.now() - t0).total_seconds()
         verdict = "script_tests_fail" if mine else "script_tests_pass"
