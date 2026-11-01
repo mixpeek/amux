@@ -4469,6 +4469,61 @@ fn next_miss_wait(previous: Option<std::time::Duration>) -> std::time::Duration 
     previous.map_or(FIRST, |wait| (wait * 2).min(MOST))
 }
 
+/// conv id -> (epoch seconds of the last walk, seconds to wait). On disk because
+/// the server restarts on every deploy, 58 times on 2026-11-01, and each restart
+/// otherwise walks once more for every dead conversation (AF-1146).
+type ConversationMisses = std::collections::HashMap<String, (i64, u64)>;
+
+fn conversation_misses() -> &'static std::sync::Mutex<ConversationMisses> {
+    static MISSES: std::sync::OnceLock<std::sync::Mutex<ConversationMisses>> =
+        std::sync::OnceLock::new();
+    MISSES.get_or_init(|| {
+        let path = crate::api::settings::amux_home().join("transcript-misses.json");
+        let saved = std::fs::read(path).ok();
+        std::sync::Mutex::new(
+            saved
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+fn conversation_miss_is_cached(conv_id: &str) -> bool {
+    conversation_misses().lock().is_ok_and(|misses| {
+        misses
+            .get(conv_id)
+            .is_some_and(|(at, wait)| now_i64().saturating_sub(*at) < *wait as i64)
+    })
+}
+
+/// Records a miss and saves the map. True the first time this id is missed.
+fn remember_conversation_miss(conv_id: &str) -> bool {
+    let Ok(mut misses) = conversation_misses().lock() else {
+        return false;
+    };
+    let previous = misses
+        .get(conv_id)
+        .map(|(_, wait)| std::time::Duration::from_secs(*wait));
+    let wait = next_miss_wait(previous).as_secs();
+    let first = misses
+        .insert(conv_id.to_string(), (now_i64(), wait))
+        .is_none();
+    let (path, tmp) = (
+        crate::api::settings::amux_home().join("transcript-misses.json"),
+        crate::api::settings::amux_home().join("transcript-misses.json.tmp"),
+    );
+    let saved = serde_json::to_vec(&*misses)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(&tmp, bytes))
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(error) = saved {
+        tracing::warn!(%error, measured = true, n_considered = 1,
+            verdict = "transcript_misses_not_saved",
+            "the conversation miss map could not be saved; the next restart walks again");
+    }
+    first
+}
+
 pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let cfg = parse_env(name);
     let mut wd = cfg.get_or("CC_DIR", "").trim().to_string();
@@ -4517,24 +4572,12 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
         // minutes, dead conversations came due together and cost 463 scans and
         // 1,431 s in 10 hours, up to 29 in a minute, inside the fleet build
         // whose overrun answers /api/sessions with 503 (AF-1146).
-        static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, std::time::Duration)>>> =
-            std::sync::OnceLock::new();
-        let misses = MISSES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        let cached_miss = misses
-            .lock()
-            .map(|m| m.get(&conv_id).is_some_and(|(at, wait)| at.elapsed() < *wait))
-            .unwrap_or(false);
-        if !cached_miss {
-            if let Some(p) = find_conversation_jsonl(&claude_home().join("projects"), &conv_id) {
+        let projects_dir = claude_home().join("projects");
+        if !conversation_miss_is_cached(&conv_id) {
+            if let Some(p) = find_conversation_jsonl(&projects_dir, &conv_id) {
                 return Some(p);
             }
-            let first = misses
-                .lock()
-                .map(|mut m| {
-                    let wait = next_miss_wait(m.get(&conv_id).map(|(_, wait)| *wait));
-                    m.insert(conv_id.clone(), (std::time::Instant::now(), wait)).is_none()
-                })
-                .unwrap_or(false);
+            let first = remember_conversation_miss(&conv_id);
             if first {
                 tracing::warn!(session = %name, conv_id = %conv_id, measured = true, n_considered = 1,
                     verdict = "transcript_conversation_not_found",
@@ -52423,6 +52466,22 @@ mod steer_freeze_tests {
         assert_eq!(c(SteerDelivery::Hold, 86_400.0, false, "claude", 1800.0), SteerDelivery::Hold,
             "a hold with no background work is not this hold");
         assert_eq!(c(SteerDelivery::AtBoundary, 0.0, true, "claude", 1800.0), SteerDelivery::AtBoundary);
+    }
+
+    #[test]
+    fn a_conversation_miss_survives_in_the_file_a_restart_reads() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let id = format!("gone-{}", ulid::Ulid::new());
+        assert!(!conversation_miss_is_cached(&id));
+        assert!(remember_conversation_miss(&id), "the first miss logs");
+        assert!(conversation_miss_is_cached(&id));
+        assert!(!remember_conversation_miss(&id), "a repeat stays quiet");
+        let saved: ConversationMisses = serde_json::from_slice(
+            &std::fs::read(home.path().join("transcript-misses.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved[&id].1, 1200, "the file holds the doubled wait");
     }
 
     #[test]
