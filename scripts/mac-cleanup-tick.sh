@@ -3580,6 +3580,10 @@ echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} k
 
 # ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
 reap_orphan_sqlite_backups "$DRY"
+# Caps BEFORE the health probes (Mac hog RCA 20261101-004551): the hog check
+# reads each container's cap, so a cap applied after it escalated a VM this same
+# tick had just brought within its caps.
+[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
 system_health "$DRY"
 
 # ── report: the consumers this script must not touch ─────────────────────────
@@ -3617,7 +3621,6 @@ VMS_PRUNED=0
 # superseded 9.84 GB builds a tick removed stayed allocated on the host until
 # the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && tick_arm "vm images" && prune_vm_images "$DRY"
-[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
 if tick_arm "vm trim"; then
   if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 fi
