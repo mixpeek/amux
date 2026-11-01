@@ -10091,6 +10091,15 @@ async fn steer_enqueue_precond_with_id(
     })
 }
 
+/// A reservation with no receipt is `pending` only while a request can still
+/// finish it. One made before this process booted died with the old process, so
+/// no receipt can ever come (AF-1147: a restart at 13:13:26 left one, and a
+/// sender retried "still pending" 34 times until the 120 s line).
+fn acceptance_is_uncertain(now: i64, reserved_at: i64, boot_at: Option<f64>) -> bool {
+    now.saturating_sub(reserved_at) > 120
+        || boot_at.is_some_and(|boot| (reserved_at as f64) < boot.floor())
+}
+
 /// Reserve one transport identity before acting, then acknowledge it only once
 /// the terminal accepted it or the server queue durably stored it. A concurrent
 /// retry must never turn the first request's reservation into "already sent".
@@ -10126,7 +10135,11 @@ async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<R
                     "message":"duplicate retry ignored (previous acceptance confirmed)"})))
                 }
                 Ok((None, ts)) => {
-                    let uncertain = now_i64().saturating_sub(ts) > 120;
+                    let uncertain = acceptance_is_uncertain(
+                        now_i64(),
+                        ts,
+                        crate::runtime_jobs::heartbeat::boot_at(),
+                    );
                     tracing::warn!(target:"amux::message_acceptance",session=name,uncertain,
                         measured=true,n_considered=1,"duplicate message has no acceptance receipt");
                     return Some(jresp(
@@ -40298,6 +40311,16 @@ mod tests {
             },
             dir,
         )
+    }
+
+    #[test]
+    fn a_reservation_from_before_this_boot_is_uncertain_at_once() {
+        let boot = Some(1_000.5);
+        assert!(acceptance_is_uncertain(1_001, 999, boot), "its request died with the old process");
+        assert!(!acceptance_is_uncertain(1_001, 1_000, boot), "made this boot, still in flight");
+        assert!(!acceptance_is_uncertain(1_100, 1_000, boot));
+        assert!(acceptance_is_uncertain(1_121, 1_000, boot), "the 120 s line still holds");
+        assert!(!acceptance_is_uncertain(1_001, 999, None), "no boot time, no claim");
     }
 
     #[tokio::test]
