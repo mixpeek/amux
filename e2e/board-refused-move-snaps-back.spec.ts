@@ -20,6 +20,7 @@ test('a refused board move snaps back, and a newer move or an accepted one does 
     : route.continue());
   // No board read may repair the card: only the rollback can put it back.
   await page.route(/\/api\/board(\?|$)/, route => refuse && route.request().method() === 'GET' ? route.abort() : route.continue());
+  await page.evaluate(() => fetch('/api/board').catch(() => null));
   await page.evaluate(i => (window as any).moveBoardItem(i, 'done'), id);
   await expect.poll(status).toBe('todo');
   await expect(page.locator('#toast, .toast').first()).toContainText('gate');

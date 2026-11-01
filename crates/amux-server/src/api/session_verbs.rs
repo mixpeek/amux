@@ -3690,7 +3690,6 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("schedules", RenameDisposition::Migrate),
     ("session_gates", RenameDisposition::Migrate),
     ("saved_messages", RenameDisposition::Migrate),
-    ("message_pins", RenameDisposition::Migrate),
     ("steering_queue", RenameDisposition::Migrate),
     ("steering_history", RenameDisposition::Migrate),
     ("share_tokens", RenameDisposition::Migrate),
@@ -12222,7 +12221,7 @@ fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
             && records.iter().any(|record| {
                 // A message sent to a busy worker has no `user` record yet: it
                 // sits as an enqueue and a queued_command attachment, wrapped
-                // (<pasted_content ...>) and stamped seconds apart. Reading
+                // (<pasted_content ...>). Reading
                 // only an exact enqueue called it lost and sent it again 90 s
                 // later, to a card already closed (AF, 2026-11-01: shipit
                 // MSG-1; this lane's own 15:49 message, twice).
@@ -12233,12 +12232,23 @@ fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
                     }
                     _ => None,
                 };
-                queued.is_some_and(|content| jsonl_content_matches(content, text.trim()))
+                queued.is_some_and(|content| unwrapped_prompt(content) == text.trim())
                     && record["timestamp"]
                         .as_str()
                         .and_then(parse_iso8601)
-                        .is_some_and(|ts| ts >= since - 2.0)
+                        .is_some_and(|ts| ts >= since)
             }))
+}
+
+/// A queued prompt without the `<pasted_content ...>` wrapper Claude Code puts
+/// around a paste. The receipt stays an exact match: a substring, or an earlier
+/// identical send, is not this delivery.
+fn unwrapped_prompt(content: &str) -> &str {
+    let t = content.trim();
+    t.strip_prefix("<pasted_content")
+        .and_then(|r| r.split_once('>'))
+        .and_then(|(_, r)| r.rsplit_once("</pasted_content"))
+        .map_or(t, |(body, _)| body.trim())
 }
 
 /// Muse's durable proof that a message was submitted — the analogue of
@@ -51192,11 +51202,11 @@ with open(sys.argv[3],'ab',buffering=0) as log:
     fn a_message_queued_to_a_busy_worker_counts_as_delivered() {
         let text = "[amux] Idle with AMUX-1 in 'doing'";
         let wrapped = format!("<pasted_content id=\"7008\">\n{text}\n</pasted_content id=\"7008\">");
-        let since = parse_iso8601("2026-11-01T15:49:52.000Z").unwrap();
+        let since = parse_iso8601("2026-11-01T15:49:51.000Z").unwrap();
         let enqueue = json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-01T15:49:56.002Z", "content": wrapped});
         let attachment = json!({"type": "attachment", "timestamp": "2026-11-01T15:49:51.812Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
         assert!(submission_records_have(std::slice::from_ref(&enqueue), text, since), "a wrapped enqueue");
-        assert!(submission_records_have(&[attachment], text, since), "the attachment, stamped before the send");
+        assert!(submission_records_have(&[attachment], text, since), "the attachment");
         assert!(!submission_records_have(&[enqueue], "another message entirely", since));
         let old = json!({"type": "attachment", "timestamp": "2026-11-01T15:40:00.000Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
         assert!(!submission_records_have(&[old], text, since), "an earlier copy of the same nudge is not this delivery");

@@ -3756,14 +3756,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/history/ask",
         methods: &["POST"],
     },
-    RouteEntry {
-        path: "/api/history/pins",
-        methods: &["GET"],
-    },
-    RouteEntry {
-        path: "/api/history/{id}/pin",
-        methods: &["POST"],
-    },
     // Nested sub-router routes that were missing from the table (AMUX-3083): they
     // answer for real (POST /api/orchestrate/plan -> 400 transcript-required, GET
     // /api/history/{id} -> the row) while /api/debug/routes and the
