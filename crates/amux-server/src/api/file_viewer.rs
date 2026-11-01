@@ -1672,6 +1672,12 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
             // predicate as prep_decision, re-checked transactionally so two
             // concurrent polls spawn one job (python's _media_prep_lock).
             let claimed = Arc::new(AtomicBool::new(false));
+            // The claim's created_at is its generation: the job's progress,
+            // done and error writes require it, so a job whose row a newer
+            // claim took over (stale after JOB_STALE_S) cannot overwrite that
+            // run (implicit state machines inventory 2026-10-31, tier 5).
+            let generation = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let g2 = generation.clone();
             let (c2, k2) = (claimed.clone(), key.clone());
             let (src_s, out_s) = (pystr(&p), pystr(&out));
             state
@@ -1698,6 +1704,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
                             rusqlite::params![k2, src_s, out_s, now],
                         )?;
                         c2.store(true, Ordering::SeqCst);
+                        g2.store(now, Ordering::SeqCst);
                     }
                     Ok(WriteOutcome { applied: false, events: vec![] })
                 })
@@ -1707,7 +1714,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
                 // Someone else claimed between our read and write.
                 return j(200, json!({"ready": false, "progress": 0.0}));
             }
-            tokio::spawn(run_prepare(state.clone(), ffmpeg, p, out, key));
+            tokio::spawn(run_prepare(state.clone(), ffmpeg, p, out, key, generation.load(Ordering::SeqCst)));
             j(
                 200,
                 json!({"ready": false, "progress": 0.0, "started": true}),
@@ -1720,7 +1727,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
 /// codecs are iOS-playable (HEVC needs the hvc1 tag or AVPlayer rejects it),
 /// else transcode via the videotoolbox hardware encoder — python pins the
 /// same macOS-specific encoder; parity kept deliberately.
-async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBuf, key: String) {
+async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBuf, key: String, generation: i64) {
     let src_name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1735,7 +1742,7 @@ async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBu
             .unwrap_or_default(),
         std::process::id()
     ));
-    match do_prepare(&state, &ffmpeg, &src, &out, &tmp, &key).await {
+    match do_prepare(&state, &ffmpeg, &src, &out, &tmp, &key, generation).await {
         Ok(()) => {
             let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             tracing::info!(
@@ -1752,8 +1759,8 @@ async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBu
             job_write(&state, move |conn| {
                 conn.execute(
                     "UPDATE _amux_media_jobs SET status='error', error=?2, updated_at=?3 \
-                     WHERE key = ?1",
-                    rusqlite::params![k, msg, chrono::Utc::now().timestamp()],
+                     WHERE key = ?1 AND created_at = ?4",
+                    rusqlite::params![k, msg, chrono::Utc::now().timestamp(), generation],
                 )?;
                 Ok(())
             })
@@ -1770,6 +1777,7 @@ async fn do_prepare(
     out: &Path,
     tmp: &Path,
     key: &str,
+    generation: i64,
 ) -> Result<(), String> {
     let cache = out.parent().ok_or("cache dir has no parent")?;
     std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
@@ -1860,13 +1868,13 @@ async fn do_prepare(
             job_write(state, move |conn| {
                 if progress >= 0.0 {
                     conn.execute(
-                        "UPDATE _amux_media_jobs SET progress=?2, updated_at=?3 WHERE key = ?1",
-                        rusqlite::params![k, progress, chrono::Utc::now().timestamp()],
+                        "UPDATE _amux_media_jobs SET progress=?2, updated_at=?3 WHERE key = ?1 AND created_at = ?4",
+                        rusqlite::params![k, progress, chrono::Utc::now().timestamp(), generation],
                     )?;
                 } else {
                     conn.execute(
-                        "UPDATE _amux_media_jobs SET updated_at=?2 WHERE key = ?1",
-                        rusqlite::params![k, chrono::Utc::now().timestamp()],
+                        "UPDATE _amux_media_jobs SET updated_at=?2 WHERE key = ?1 AND created_at = ?3",
+                        rusqlite::params![k, chrono::Utc::now().timestamp(), generation],
                     )?;
                 }
                 Ok(())
@@ -1891,8 +1899,8 @@ async fn do_prepare(
     job_write(state, move |conn| {
         conn.execute(
             "UPDATE _amux_media_jobs SET status='done', progress=100, updated_at=?2 \
-             WHERE key = ?1",
-            rusqlite::params![k, chrono::Utc::now().timestamp()],
+             WHERE key = ?1 AND created_at = ?3",
+            rusqlite::params![k, chrono::Utc::now().timestamp(), generation],
         )?;
         Ok(())
     })

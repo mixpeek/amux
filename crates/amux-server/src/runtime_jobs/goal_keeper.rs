@@ -511,7 +511,8 @@ pub fn foreign_input_since(records: &[Value], since: f64) -> bool {
     })
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Keep {
     condition: String,
     last_sent: f64,
@@ -527,9 +528,40 @@ struct Keep {
     listed_until: i64,
 }
 
+/// Kept on disk, so a server restart does not hand every stuck goal a fresh
+/// no-progress budget or forget that it already gave up (implicit state
+/// machines inventory 2026-10-31, #20). Loaded on first use, saved after each
+/// tick.
+fn state_path() -> std::path::PathBuf {
+    crate::api::session_verbs::home().join("state").join("goal-keeper.json")
+}
+
 fn state() -> &'static Mutex<HashMap<String, Keep>> {
     static S: std::sync::OnceLock<Mutex<HashMap<String, Keep>>> = std::sync::OnceLock::new();
-    S.get_or_init(|| Mutex::new(HashMap::new()))
+    S.get_or_init(|| Mutex::new(load_state(&state_path())))
+}
+
+fn load_state(path: &std::path::Path) -> HashMap<String, Keep> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+            tracing::warn!(path = %path.display(), error = %e, verdict = "goal_keeper_state_unreadable", measured = false,
+                "the goal keeper's saved state could not be read; starting fresh");
+            HashMap::new()
+        }),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_state(path: &std::path::Path, map: &HashMap<String, Keep>) {
+    let Ok(body) = serde_json::to_string(map) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    if std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, path)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(path = %path.display(), verdict = "goal_keeper_state_unsaved", "the goal keeper could not save its state");
+    }
 }
 
 /// What to do for one worker, given its transcript, footer and keeper state.
@@ -893,6 +925,9 @@ async fn tick(app: crate::api::AppState) {
             }
         }
     }
+    if let Ok(map) = state().lock() {
+        save_state(&state_path(), &map);
+    }
     tracing::debug!(target: "amux::goal_keeper", measured = true, n_considered = considered, "goal keeper tick");
 }
 
@@ -928,6 +963,22 @@ mod tests {
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "active", "activity": "subagents"})), "subagents still working");
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "waiting", "activity": "waiting_for_input"})));
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "rate_limited", "activity": "rate_limited"})));
+    }
+
+    /// #20: the keeper's record survives a restart (save, then a fresh load).
+    #[test]
+    fn the_keeper_record_survives_a_restart() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("goal-keeper.json");
+        let mut map = HashMap::new();
+        map.insert("w".to_string(), Keep { condition: "ship it".into(), no_progress: 3, exhausted_logged: true, ..Default::default() });
+        save_state(&path, &map);
+        let back = load_state(&path);
+        let k = back.get("w").expect("saved");
+        assert_eq!((k.condition.as_str(), k.no_progress, k.exhausted_logged), ("ship it", 3, true));
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_state(&path).is_empty(), "a corrupt file starts fresh instead of failing");
     }
 
     #[test]

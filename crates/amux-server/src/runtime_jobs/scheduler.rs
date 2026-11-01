@@ -491,8 +491,12 @@ pub fn fires_per_day(expr: &ScheduleExpr) -> Option<f64> {
         // cron, and the `cron` crate already owns that: walk the next 24 hours
         // and count. Bounded, because `* * * * *` yields 1440 and a malformed
         // schedule could in principle yield more.
+        // Counted in UTC: a rate does not change with daylight saving, and a
+        // local walk across the fall-back night counted 87 fires for
+        // `*/15 * * * *` instead of 96 (2026-10-31 evening, the eve of the
+        // Nov 1 change).
         ScheduleExpr::Cron(sched) => {
-            let now = chrono::Local::now();
+            let now = chrono::Utc::now();
             let until = now + ChronoDuration::days(1);
             let n = sched
                 .after(&now)
@@ -2888,6 +2892,11 @@ struct Claim {
     /// The claim disabled the row because this was its last fire (a one-shot,
     /// or a bound reached). A reserve refusal re-arms exactly these.
     ended_by_claim: bool,
+    /// The `disabled_reason` that claim wrote. A re-arm re-enables only a row
+    /// still disabled for this reason and not locked by the owner: a row
+    /// something else disabled in between (the owner, a failure streak, a
+    /// retired worker) stays off (implicit state machines inventory #13).
+    claim_reason: String,
 }
 
 /// Fire one due schedule: CLAIM the occurrence, DELIVER outside the write
@@ -3039,11 +3048,13 @@ async fn fire_one(
                 rusqlite::params![occurrences.len() as i64, sched.id()],
             )?;
             let mut ended_by_claim = false;
+            let mut claim_reason = String::new();
 
             if sched.str_field("sched_type") == "once" {
+                claim_reason = format!("one-shot: fired at {now_str}");
                 conn.execute(
                     "UPDATE schedules SET enabled=0, last_run=?1, updated=?1, disabled_reason=?3 WHERE id=?2",
-                    rusqlite::params![now_ts, sched.id(), format!("one-shot: fired at {now_str}")],
+                    rusqlite::params![now_ts, sched.id(), claim_reason],
                 )?;
                 // run-once disable is audited exactly like Python's
                 // ("run-once" source; ours is suffixed for the dual period).
@@ -3077,6 +3088,9 @@ async fn fire_one(
                 };
                 if let Some(reason) = after.end_reason(Some(&next)) {
                     ended_by_claim = super::schedule_lifecycle::end_schedule(conn, sched.id(), &reason)?;
+                    if ended_by_claim {
+                        claim_reason = reason;
+                    }
                 }
             }
 
@@ -3148,6 +3162,7 @@ async fn fire_one(
                 notes,
                 run_ids,
                 ended_by_claim,
+                claim_reason,
             });
             Ok(WriteOutcome {
                 applied: true,
@@ -3201,6 +3216,7 @@ async fn fire_one(
     let reserve_refused_all = !outcomes.is_empty()
         && outcomes.iter().all(|o| matches!(o, RunOutcome::Refused { reason } if reason.starts_with("schedule PAUSED: the plan window")));
     let ended_by_claim = claim.ended_by_claim;
+    let claim_reason = claim.claim_reason.clone();
     let fixed_date = claim
         .sched
         .schedule_expr()
@@ -3284,8 +3300,9 @@ async fn fire_one(
                         .unwrap_or_default();
                     if bounds_before.end_reason(Some(&next)).is_none() {
                         let changed = conn.execute(
-                            "UPDATE schedules SET enabled=1, disabled_reason=NULL WHERE id=?1 AND enabled=0 AND deleted IS NULL AND version=?2 AND command=?3 AND session=?4",
-                            rusqlite::params![sid, expected_version, expected_command, expected_session])?;
+                            "UPDATE schedules SET enabled=1, disabled_reason=NULL WHERE id=?1 AND enabled=0 AND deleted IS NULL AND version=?2 AND command=?3 AND session=?4 \
+                             AND COALESCE(disabled_reason,'') = ?5 AND COALESCE(locked_by,'') = ''",
+                            rusqlite::params![sid, expected_version, expected_command, expected_session, claim_reason])?;
                         if changed > 0 {
                             insert_audit(conn, &sid, "enabled", "0", "1", "wake-condition-rs", "")?;
                         }
@@ -3308,8 +3325,9 @@ async fn fire_one(
             if retry_once {
                 let changed = if ended_by_claim {
                     conn.execute(
-                        "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
-                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?
+                        "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5 \
+                         AND COALESCE(disabled_reason,'') = ?6 AND COALESCE(locked_by,'') = ''",
+                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session, claim_reason])?
                 } else {
                     // A fixed-date cron is still enabled; only its next fire moves.
                     conn.execute(

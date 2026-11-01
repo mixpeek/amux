@@ -314,38 +314,14 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
             let id = card.id.clone();
             let age = card.age_days;
             let note = format!("Auto-discarded: {age} days in needsyou with no resolution");
-            let hhmm = chrono::Utc::now().format("%H:%M").to_string();
             let _ = state
                 .store
                 .write_async(move |conn| {
-                    let old_desc: String = conn
-                        .query_row(
-                            "SELECT COALESCE(\"desc\", '') FROM issues WHERE id = ?1",
-                            rusqlite::params![&id],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or_default();
-                    let new_desc = if old_desc.trim().is_empty() {
-                        note.clone()
-                    } else {
-                        format!("{}\n{note}", old_desc.trim_end())
-                    };
-                    let old_log: Option<String> = conn
-                        .query_row(
-                            "SELECT log FROM issues WHERE id = ?1",
-                            rusqlite::params![&id],
-                            |r| r.get(0),
-                        )
-                        .ok();
-                    let new_log = bs::append_log(old_log.as_deref(), &hhmm, &note);
-                    conn.execute(
-                        "UPDATE issues SET status = 'discarded', \"desc\" = ?1, log = ?2, \
-                         updated = ?3 WHERE id = ?4",
-                        rusqlite::params![new_desc, new_log, now_secs, &id],
-                    )?;
+                    let out = crate::db::advance::harness_close(conn, &id, "discarded", "harness:board-hygiene",
+                        Some(&format!("\n{note}")), &note)?;
                     Ok(crate::db::WriteOutcome {
-                        applied: true,
-                        events: vec![],
+                        applied: out.is_some(),
+                        events: out.map(|o| o.events).unwrap_or_default(),
                     })
                 })
                 .await;
@@ -431,25 +407,13 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
         let id = card.id.clone();
         let age = card.age_hours;
         let note = format!("Auto-discarded: autofix todo card stale for {age}h");
-        let hhmm = chrono::Utc::now().format("%H:%M").to_string();
         let _ = state
             .store
             .write_async(move |conn| {
-                let old_log: Option<String> = conn
-                    .query_row(
-                        "SELECT log FROM issues WHERE id = ?1",
-                        rusqlite::params![&id],
-                        |r| r.get(0),
-                    )
-                    .ok();
-                let new_log = bs::append_log(old_log.as_deref(), &hhmm, &note);
-                conn.execute(
-                    "UPDATE issues SET status = 'discarded', log = ?1, updated = ?2 WHERE id = ?3",
-                    rusqlite::params![new_log, now_secs, &id],
-                )?;
+                let out = crate::db::advance::harness_close(conn, &id, "discarded", "harness:board-hygiene", None, &note)?;
                 Ok(crate::db::WriteOutcome {
-                    applied: true,
-                    events: vec![],
+                    applied: out.is_some(),
+                    events: out.map(|o| o.events).unwrap_or_default(),
                 })
             })
             .await;

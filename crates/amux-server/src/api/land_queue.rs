@@ -130,6 +130,21 @@ static LIVE_LOCKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSe
     std::sync::LazyLock::new(Default::default);
 static LIVE_ROWS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
     std::sync::LazyLock::new(Default::default);
+/// The `started_at` each live row was claimed with: the claim's generation.
+/// A finish writes only while the row still carries it, so a batch whose row
+/// was reclaimed and re-run cannot overwrite the newer run's state (implicit
+/// state machines inventory 2026-10-31, #16).
+static CLAIMED_AT: std::sync::LazyLock<std::sync::Mutex<HashMap<i64, f64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn claim_of(id: i64) -> f64 {
+    CLAIMED_AT.lock().ok().and_then(|m| m.get(&id).copied()).unwrap_or(f64::NAN)
+}
+
+fn log_lost_claim(id: i64, to: &str) {
+    tracing::warn!(id, to, measured = true, n_considered = 1, verdict = "land_finish_lost_claim",
+        "a land batch finished after its row was reclaimed; the row keeps the newer run's state");
+}
 
 fn lock_is_live_here(path: &Path) -> bool {
     LIVE_LOCKS.lock().map(|s| s.contains(path)).unwrap_or(true)
@@ -498,11 +513,16 @@ async fn record(state: &AppState, results: &[(i64, Outcome)], lanes: &HashMap<i6
             Outcome::Merged(m) => ("merged", Some(m.clone()), None),
             Outcome::Refused(why) => ("refused", None, Some(why.clone())),
         };
-        let (id2, m2, o2) = (*id, merged.clone(), output.clone());
+        let (id2, m2, o2, claim) = (*id, merged.clone(), output.clone(), claim_of(*id));
         let _ = state.store.write_async(move |conn| {
-            conn.execute("UPDATE land_queue SET state = ?2, merged_sha = ?3, output = ?4, done_at = ?5 WHERE id = ?1",
-                rusqlite::params![id2, st, m2, o2, now])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            let n = conn.execute(
+                "UPDATE land_queue SET state = ?2, merged_sha = ?3, output = ?4, done_at = ?5 \
+                 WHERE id = ?1 AND state = 'running' AND started_at = ?6",
+                rusqlite::params![id2, st, m2, o2, now, claim])?;
+            if n == 0 {
+                log_lost_claim(id2, st);
+            }
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
         }).await;
         let (lane, sha) = lanes.get(id).cloned().unwrap_or_default();
         let text = match o {
@@ -575,6 +595,11 @@ pub async fn tick(state: &AppState) -> usize {
                 n += conn.execute("UPDATE land_queue SET state = 'running', started_at = ?2 WHERE id = ?1 AND state = 'queued'",
                     rusqlite::params![id, now])?;
             }
+            if let Ok(mut m) = CLAIMED_AT.lock() {
+                for id in &ids2 {
+                    m.insert(*id, now);
+                }
+            }
             Ok(crate::db::WriteOutcome { applied: n == ids2.len(), events: vec![] })
         }).await;
         if !matches!(claimed, Ok(ref o) if o.applied) {
@@ -590,6 +615,11 @@ pub async fn tick(state: &AppState) -> usize {
             if let Ok(mut s) = LIVE_ROWS.lock() {
                 for id in &ids {
                     s.remove(id);
+                }
+            }
+            if let Ok(mut m) = CLAIMED_AT.lock() {
+                for id in &ids {
+                    m.remove(id);
                 }
             }
         });
@@ -656,10 +686,16 @@ async fn run_batch(state: &AppState, entries: Vec<Entry>) {
 
 /// Put a batch back in the queue without a verdict on any commit.
 async fn requeue(state: &AppState, entries: &[Entry], why: String) {
-    let ids: Vec<i64> = entries.iter().map(|e| e.id).collect();
+    let ids: Vec<(i64, f64)> = entries.iter().map(|e| (e.id, claim_of(e.id))).collect();
     let _ = state.store.write_async(move |conn| {
-        for id in &ids {
-            conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL, output = ?2 WHERE id = ?1", rusqlite::params![id, why])?;
+        for (id, claim) in &ids {
+            let n = conn.execute(
+                "UPDATE land_queue SET state = 'queued', started_at = NULL, output = ?2 \
+                 WHERE id = ?1 AND state = 'running' AND started_at = ?3",
+                rusqlite::params![id, why, claim])?;
+            if n == 0 {
+                log_lost_claim(*id, "queued");
+            }
         }
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     }).await;
@@ -1051,6 +1087,31 @@ mod tests {
         let st = r.status();
         let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         (st, serde_json::from_slice(&b).unwrap_or(Value::Null))
+    }
+
+    /// A batch whose row was reclaimed and claimed again finishes into
+    /// nothing: the newer run keeps the row (implicit state machines #16).
+    #[tokio::test]
+    async fn a_finish_after_the_row_was_reclaimed_does_not_overwrite_the_newer_run() {
+        let state = app();
+        state.store.write(|conn| {
+            conn.execute("INSERT INTO land_queue (id, repo, lane, sha, priority, queued_at, state, started_at) VALUES (51, 'r', 'lane-r', 'a', 0, 1, 'running', 200.0)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let row = |s: &AppState| -> (String, Option<f64>) {
+            s.store.read().unwrap().query_row("SELECT state, started_at FROM land_queue WHERE id = 51", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        // The old batch claimed it at 100; the row was reclaimed and re-claimed at 200.
+        CLAIMED_AT.lock().unwrap().insert(51, 100.0);
+        record(&state, &[(51, Outcome::Merged("m-old".into()))], &HashMap::new()).await;
+        assert_eq!(row(&state), ("running".into(), Some(200.0)), "the stale finisher changed nothing");
+        requeue(&state, &[Entry { id: 51, repo: "r".into(), lane: "lane-r".into(), sha: "a".into(), ov: Default::default() }], "x".into()).await;
+        assert_eq!(row(&state).0, "running", "nor did its requeue");
+        // The live claim finishes it.
+        CLAIMED_AT.lock().unwrap().insert(51, 200.0);
+        record(&state, &[(51, Outcome::Merged("m-new".into()))], &HashMap::new()).await;
+        assert_eq!(row(&state).0, "merged");
+        CLAIMED_AT.lock().unwrap().remove(&51);
     }
 
     /// One queued entry is withdrawn by its own lane; another lane, a running

@@ -694,7 +694,11 @@ fn apply(
         bs::save_patched(conn, &mut row)?;
         events.push(event(&row, created));
         if task.action == "verify" && bs::is_terminal_status(&row.status) {
+            // Reopening a terminal card for a new verify request is a
+            // deliberate exit from a terminal status: an attributed force
+            // (implicit state machines inventory #6).
             let opts = crate::db::advance::AdvanceOpts {
+                force: true,
                 expected_from: Some(row.status.clone()),
                 reason: Some("new request requires current-output verification".into()),
                 skip_continuation: true,

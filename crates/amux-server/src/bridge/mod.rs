@@ -363,6 +363,36 @@ async fn record(state: &AppState, p: &Pending, st: &str, err: Option<String>, pm
     }).await;
 }
 
+/// Take a post for sending: `sending` is written only from no row, `approved`
+/// or `failed`, so two passes (an old and a new server image overlapping
+/// during a deploy) cannot both send it into an outside chat (implicit state
+/// machines inventory 2026-10-31, #18). A row left `sending` by a crash is
+/// never resent automatically; `stuck_sending` reports it.
+async fn claim_send(state: &AppState, p: &Pending) -> bool {
+    let q = p.clone();
+    state.store.write_async(move |conn| {
+        let applied = claim_row(conn, &q)?;
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await.map(|o| o.applied).unwrap_or(false)
+}
+
+fn claim_row(conn: &rusqlite::Connection, q: &Pending) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "INSERT INTO bridge_outbound (id, post_id, platform, conversation, state, attempts, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'sending', ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET state='sending' WHERE bridge_outbound.state IN ('approved', 'failed')",
+        params![q.id, q.post_id, q.platform, q.conversation, q.attempts, now_ms()],
+    )?;
+    Ok(n > 0)
+}
+
+/// Posts left `sending` for over ten minutes: a send that never recorded its
+/// outcome, so it may or may not have reached the chat.
+fn stuck_sending(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM bridge_outbound WHERE state='sending' AND created_at < ?1",
+        params![now_ms() - 600_000], |r| r.get(0)).unwrap_or(0)
+}
+
 /// What the chat shows: the author's name first, unless the chat is a
 /// worker's own thread and the worker is speaking.
 fn render(p: &Pending) -> String {
@@ -380,6 +410,13 @@ pub async fn outbound_once(state: &AppState) -> usize {
         Err(_) => return 0,
     };
     let n = work.len();
+    if let Ok(c) = state.store.read() {
+        let stuck = stuck_sending(&c);
+        if stuck > 0 {
+            tracing::warn!(n = stuck, measured = true, n_considered = stuck, verdict = "bridge_outbound_stuck_sending",
+                "bridge: posts were left mid-send; they are not resent automatically because they may already be in the chat");
+        }
+    }
     for p in work {
         let worker_post = p.author_key.starts_with("worker:");
         let is_shared = state.store.read().map(|c| shared(&c, &p.platform, &p.conversation)).unwrap_or(true);
@@ -388,6 +425,11 @@ pub async fn outbound_once(state: &AppState) -> usize {
             record(state, &p, "held", None, None, card).await;
             tracing::info!(id = %p.id, platform = %p.platform, measured = true, n_considered = 1, verdict = "bridge_outbound_held",
                 "bridge: a worker's post into a chat with someone other than the owner waits for the owner's approval");
+            continue;
+        }
+        if !claim_send(state, &p).await {
+            tracing::info!(id = %p.id, platform = %p.platform, verdict = "bridge_outbound_claimed_elsewhere",
+                "bridge: another pass already took this post; not sent twice");
             continue;
         }
         match adapters::send(&p.platform, &p.conversation, p.is_group, &render(&p)).await {
@@ -487,6 +529,27 @@ pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #18: a post is taken for sending once; a failed or approved one can be
+    /// taken again, a sending or sent one cannot.
+    #[test]
+    fn a_post_is_claimed_for_sending_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("b.db")).unwrap();
+        let p = Pending { id: "7|telegram|42".into(), post_id: 7, author_key: "owner".into(), author_name: "E".into(),
+            body: "hi".into(), conv: "c".into(), platform: "telegram".into(), conversation: "42".into(),
+            is_group: false, attempts: 0, state: None };
+        let claim = |p: &Pending| { let p = p.clone(); store.write(move |c| { let a = claim_row(c, &p)?; Ok(crate::db::WriteOutcome { applied: a, events: vec![] }) }).unwrap().applied };
+        let set = |st: &str| { let st = st.to_string(); store.write(move |c| { c.execute("UPDATE bridge_outbound SET state=?1", [st])?; Ok(crate::db::WriteOutcome { applied: true, events: vec![] }) }).unwrap(); };
+        assert!(claim(&p), "a new post is taken");
+        assert!(!claim(&p), "a second pass does not take a post already sending");
+        set("failed");
+        assert!(claim(&p), "a failed post is retried");
+        set("sent");
+        assert!(!claim(&p), "a sent post is never sent again");
+        set("approved");
+        assert!(claim(&p), "an approved held post is sent");
+    }
 
     #[test]
     fn only_listed_identities_are_the_owner() {

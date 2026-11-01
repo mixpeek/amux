@@ -8292,8 +8292,11 @@ async fn update_overlap_callback(
         .store
         .write_async(move |conn| {
             conn.execute(
+                // Forward only: `queued` is final, so a late retry result
+                // cannot pull a delivered callback back (implicit state
+                // machines inventory 2026-10-31, #19).
                 "UPDATE board_overlap_callbacks SET state=?1, error=?2, updated_at=?3 \
-                 WHERE coordination_id=?4 AND target_session=?5",
+                 WHERE coordination_id=?4 AND target_session=?5 AND state IN ('pending', 'retryable')",
                 rusqlite::params![
                     next_state,
                     error,

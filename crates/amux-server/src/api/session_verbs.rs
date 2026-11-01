@@ -18848,6 +18848,26 @@ pub(crate) async fn dispose_verified_worker_terminal(name: &str) {
 
 /// py:25055 archive_session — scrollback→log, stop, kill tmux, CC_ARCHIVED=1,
 /// card cascade.
+/// A lane with a `_amux_workers` row keeps its `lifecycle` in step with the
+/// env file's CC_ARCHIVED, so the two records of "archived" cannot disagree
+/// (implicit state machines inventory 2026-10-31, #4). Guarded on the prior
+/// lifecycle: a paused or deleted row is left as it is.
+async fn sync_worker_row_archived(state: &AppState, name: &str, archived: bool) {
+    let n = name.to_string();
+    let (from, to) = if archived { ("active", "archived") } else { ("archived", "active") };
+    let r = state.store.write_async(move |conn| {
+        let k = conn.execute("UPDATE _amux_workers SET lifecycle = ?2 WHERE display_name = ?1 AND lifecycle = ?3",
+            rusqlite::params![n, to, from])?;
+        Ok(crate::db::WriteOutcome { applied: k > 0, events: vec![] })
+    }).await;
+    if let Ok(o) = r {
+        if o.applied {
+            tracing::info!(session = name, to, verdict = "worker_row_lifecycle_synced", measured = true, n_considered = 1,
+                "the worker row's lifecycle followed the lane's archive flag");
+        }
+    }
+}
+
 async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     let f = env_path(name);
     if !f.exists() {
@@ -18907,6 +18927,7 @@ async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     if cfg.write(&f).is_err() {
         return (false, "could not write session env".into());
     }
+    sync_worker_row_archived(state, name, true).await;
     archive_session_issues(state, name, 1).await;
     let paused = pause_retired_worker_schedules(state, name, "archived").await;
     (true, format!("archived; {}", crate::runtime_jobs::schedule_lifecycle::retired_sentence(&paused)))
@@ -19312,6 +19333,7 @@ async fn wake_session(state: &AppState, name: &str) -> (bool, String) {
     if cfg.write(&f).is_err() {
         return (false, "could not write session env".into());
     }
+    sync_worker_row_archived(state, name, false).await;
     archive_session_issues(state, name, 0).await;
     // WAKE BRINGS A WORKER BACK, INCLUDING FROM A PAUSE. Archiving usually
     // happens to a paused worker, so CC_PAUSED rides along into the archive,
@@ -25163,7 +25185,7 @@ fn settle_interrupted_receipts(conn: &rusqlite::Connection) -> rusqlite::Result<
                 conn.execute(
                     "UPDATE cmd_history SET delivery='queued', submit_verdict='confirmed', \
                      delivered_at=CAST((SELECT delivered_at FROM steering_history WHERE id=?1) * 1000 AS INTEGER) \
-                     WHERE queue_id=?1",
+                     WHERE queue_id=?1 AND delivery='uncertain'",
                     [&id],
                 )?;
                 tracing::info!(steer_id = %id, session = %session, verdict = "interrupted_receipt_confirmed",

@@ -648,21 +648,20 @@ async fn resolve_owner_card(store: &SharedStore, id: &str, now: i64) -> anyhow::
             let Some(card) = open else {
                 return Ok(WriteOutcome { applied: false, events: vec![] });
             };
-            conn.execute(
-                "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
-                 rev = COALESCE(rev,0) + 1 WHERE id=?3",
-                rusqlite::params![note, now, card],
-            )?;
+            let Some(out) = crate::db::advance::harness_close(conn, &card, "done", "harness:schedule-failure", Some(&note),
+                "closed by the harness: the schedule recovered")?
+            else {
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            };
             *slot_w.lock().expect("card slot") = Some(card.clone());
-            Ok(WriteOutcome {
-                applied: true,
-                events: vec![PendingEvent {
-                    entity_type: amux_core::revision::EntityType::Task,
-                    entity_id: card.clone(),
-                    mutation: amux_core::revision::MutationKind::Updated,
-                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
-                }],
-            })
+            let mut events = out.events;
+            events.push(PendingEvent {
+                entity_type: amux_core::revision::EntityType::Task,
+                entity_id: card.clone(),
+                mutation: amux_core::revision::MutationKind::Updated,
+                payload: Some(json!({"id": card, "source": "schedule_failure"})),
+            });
+            Ok(WriteOutcome { applied: true, events })
         })
         .await?;
     let card = slot.lock().expect("card slot").take();
@@ -721,17 +720,19 @@ async fn pause_orphan(
             if let Some(card) = open {
                 // The card asked "fix it, move it, or disable it?"; the harness
                 // disabled it, so the question is answered.
-                conn.execute(
-                    "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
-                     rev = COALESCE(rev,0) + 1 WHERE id=?3",
-                    rusqlite::params![note, now, card],
-                )?;
-                events.push(PendingEvent {
-                    entity_type: amux_core::revision::EntityType::Task,
-                    entity_id: card.clone(),
-                    mutation: amux_core::revision::MutationKind::Updated,
-                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
-                });
+                // An Updated event only for a card the harness really closed
+                // (land review F1: a refused close emitted a false update).
+                if let Some(out) = crate::db::advance::harness_close(conn, &card, "done", "harness:schedule-failure", Some(&note),
+                    "closed by the harness: it disabled the schedule")?
+                {
+                    events.extend(out.events);
+                    events.push(PendingEvent {
+                        entity_type: amux_core::revision::EntityType::Task,
+                        entity_id: card.clone(),
+                        mutation: amux_core::revision::MutationKind::Updated,
+                        payload: Some(json!({"id": card, "source": "schedule_failure"})),
+                    });
+                }
                 *slot_w.lock().expect("card slot") = card;
             }
             Ok(WriteOutcome { applied: true, events })

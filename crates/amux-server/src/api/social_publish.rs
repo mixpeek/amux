@@ -363,6 +363,9 @@ struct Claimed {
     session: String,
 }
 
+/// A publish still running after this long is reported uncertain.
+const PUBLISH_HUNG_S: i64 = 1800;
+
 /// One pass of the `social-publish` job: mark rows a dead process left mid-post
 /// as uncertain, then publish every due row. Returns a summary for the log.
 pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
@@ -379,6 +382,21 @@ pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
                      WHERE status = 'publishing' AND COALESCE(claimed_by, '') != ?1",
                     rusqlite::params![me, at],
                 )?;
+                // A publish this process started and never finished (a hung
+                // browser drive) stayed `publishing` forever: the sweep above
+                // only takes other processes' claims (implicit state machines
+                // inventory 2026-10-31, #17).
+                let hung = conn.execute(
+                    "UPDATE social_queue SET status = 'uncertain', updated_at = ?2,
+                       error = 'publishing did not finish within 30 minutes, so it may be live; check the platform, then cancel it or reschedule it with force'
+                     WHERE status = 'publishing' AND COALESCE(claimed_by, '') = ?1 AND COALESCE(claimed_at, 0) < ?2 - ?3",
+                    rusqlite::params![me, at, PUBLISH_HUNG_S],
+                )?;
+                if hung > 0 {
+                    tracing::warn!(job = "social-publish", verdict = "social_queue_uncertain", reason = "hung_publish", n = hung,
+                        "a post this server started publishing never finished; marked uncertain, not re-sent");
+                }
+                let n = n + hung;
                 Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
             }
         })
@@ -432,13 +450,21 @@ pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
                 }
                 let verdict = match status { "queued" => "social_queue_retry", "uncertain" => "social_queue_uncertain", _ => "social_queue_failed" };
                 tracing::warn!(job = "social-publish", id = c.id, platform = %c.draft.platform, attempts, verdict, error = %f.error, "queued social post not published");
-                let (id, err) = (c.id, f.error.clone());
+                let (id, err, me) = (c.id, f.error.clone(), me.clone());
                 let _ = state.store.write_async(move |conn| {
-                    conn.execute(
-                        "UPDATE social_queue SET status = ?2, attempts = ?3, next_attempt_at = ?4, error = ?5, updated_at = ?6 WHERE id = ?1",
-                        rusqlite::params![id, status, attempts, next, err, social::now()],
+                    // Only while this pass still holds the claim: a row the
+                    // sweep already called uncertain must not go back to
+                    // queued, which would resend a post that may be live.
+                    let n = conn.execute(
+                        "UPDATE social_queue SET status = ?2, attempts = ?3, next_attempt_at = ?4, error = ?5, updated_at = ?6
+                         WHERE id = ?1 AND status = 'publishing' AND COALESCE(claimed_by, '') = ?7",
+                        rusqlite::params![id, status, attempts, next, err, social::now(), me],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    if n == 0 {
+                        tracing::warn!(job = "social-publish", id, verdict = "social_queue_finish_lost_claim", to = status,
+                            "a publish attempt finished after its claim was taken; the row keeps the newer state");
+                    }
+                    Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
                 }).await;
             }
         }
@@ -507,7 +533,10 @@ async fn record_posted(state: &AppState, c: &Claimed, p: Published) {
     let notes = (!notes.is_empty()).then_some(notes);
     let _ = state.store.write_async(move |conn| {
         conn.execute(
-            "UPDATE social_queue SET status = 'posted', post_row = ?2, post_id = ?3, url = ?4, error = ?5, notes = ?6, attempts = attempts + 1, updated_at = ?7 WHERE id = ?1",
+            // Posted is the truth, so it also settles a row the sweep marked
+            // uncertain; it never revives a cancelled or already-posted one.
+            "UPDATE social_queue SET status = 'posted', post_row = ?2, post_id = ?3, url = ?4, error = ?5, notes = ?6, attempts = attempts + 1, updated_at = ?7
+             WHERE id = ?1 AND status IN ('publishing', 'uncertain')",
             rusqlite::params![id, post_row, post_id, url, ledger_err, notes, social::now()],
         )?;
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
