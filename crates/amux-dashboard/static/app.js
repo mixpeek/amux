@@ -50922,6 +50922,7 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   _boardMoveSeq.set(id, seq);
   // Optimistic: update in-memory + cache immediately; Sortable already moved the DOM
   const idx = boardItems.findIndex(i => i.id === id);
+  const before = idx >= 0 ? boardItems[idx] : null;
   if (idx >= 0) {
     const patch = { status: newStatus, updated: Math.floor(Date.now() / 1000) };
     if (typeof newPos === 'number' && isFinite(newPos)) patch.pos = newPos;
@@ -50935,7 +50936,18 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   if (gateAck) { body.gate_ack = true; if (Array.isArray(gateAck)) body.gate_checked = gateAck; }
   apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    // The server said no: the card goes back where it was. Queued and offline
+    // moves also answer null, and those stay where the owner put them.
+    _onRefused: async status => {
+      if (!before || _boardMoveSeq.get(id) !== seq) return;
+      await _fenceBoardMutationReads();
+      const i = boardItems.findIndex(b => b.id === id);
+      if (i >= 0) boardItems[i] = before;
+      saveBoardCache();
+      renderBoard();
+      amuxTrack('board_move_rolled_back', { measured: true, n_considered: 1, status });
+    }
   }).then(async r => {
     if (!r) return;
     const updated = await r.json().catch(() => null);
