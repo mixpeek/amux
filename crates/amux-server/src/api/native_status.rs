@@ -458,6 +458,7 @@ fn apply(
         tracing::info!(session=name, verdict="steering_cleared_on_clear", dropped, "owner /clear dropped queued needs-input auto-approvals");
     }
     super::sessions_legacy::invalidate_sessions_runtime_cache();
+    super::sessions_legacy::note_status_report(name, event["state"].as_str().unwrap_or(""), now);
     tracing::debug!(session=name, verdict="native_status_applied", event=?event["event"], sequence=?event["sequence"], "applied provider lifecycle observation");
     let (mutation, payload) = session_event(
         prev["state"].as_str().unwrap_or(""),
@@ -868,6 +869,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 4);
+        assert_eq!(crate::api::sessions_legacy::pending_status_report("native-hermetic-test").as_deref(), Some("idle"), "a native report reaches the live overlay");
         let reports: String = conn
             .query_row(
                 "SELECT value FROM prefs WHERE key='session_reports'",

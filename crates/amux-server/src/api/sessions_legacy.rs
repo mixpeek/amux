@@ -5510,6 +5510,11 @@ pub fn note_status_report(name: &str, state: &str, ts: f64) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn pending_status_report(name: &str) -> Option<String> {
+    status_reports().lock().ok()?.get(name).map(|(_, state)| state.clone())
+}
+
 fn apply_status_reports(json: String) -> String {
     let built_at = build_array_cache().lock().map(|c| c.stamp).unwrap_or(0.0);
     let pending: Vec<(String, (f64, String))> = {
