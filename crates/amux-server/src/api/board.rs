@@ -4551,6 +4551,25 @@ pub async fn export_board(
         .into_response()
 }
 
+fn count_response(p: &ListParams, total: usize) -> Response {
+    Json(json!({
+        "count": total,
+        "filter": {
+            "status": p.status.clone(),
+            "session": p.session.clone(),
+            "archived": p.archived.clone(),
+            "done_limit": p.done_limit,
+            "quota": p.quota.clone(),
+        },
+        "note": "count of what THIS filter would return, computed from the same \
+                 filter+cap the list runs. Terminal statuses are capped unless you pass \
+                 done_limit=0 or all=1, so a count taken with different params will \
+                 differ from one taken with these — pass the SAME params you will \
+                 fetch with.",
+    }))
+    .into_response()
+}
+
 pub async fn list_board(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4730,6 +4749,22 @@ pub async fn list_board(
     });
     let ids_asked = ids.as_ref().map(|v| v.len());
     let store = state.store.clone();
+    // A plain count needs no card bodies: hydrating them to take a length cost
+    // the dashboard's archive badge 3.4 s on average (AF-1151). Quota and ids
+    // have their own selections, so they stay on the path below.
+    if qp_truthy(p.count.as_deref()) && !quota && ids.is_none() {
+        return match store
+            .read_async(move |conn| {
+                Ok(bs::count_issues_capped(
+                    conn, &status_f, &session_f, archived, done_limit,
+                )?)
+            })
+            .await
+        {
+            Ok(total) => count_response(&p, total),
+            Err(e) => internal(e),
+        };
+    }
     let list_started = std::time::Instant::now();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         // Phase marks for `board_list_slow` (AMUX-5374): a slow read has to say
@@ -4813,22 +4848,7 @@ pub async fn list_board(
     // error rather than a plausible-looking one-element array, and a client
     // reading `.length` on `{"count": 662}` gets undefined rather than 1.
     if qp_truthy(p.count.as_deref()) {
-        return Json(json!({
-            "count": total,
-            "filter": {
-                "status": p.status.clone(),
-                "session": p.session.clone(),
-                "archived": p.archived.clone(),
-                "done_limit": p.done_limit,
-                "quota": p.quota.clone(),
-            },
-            "note": "count of what THIS filter would return, computed from the same \
-                     filter+cap the list runs. Terminal statuses are capped unless you pass \
-                     done_limit=0 or all=1, so a count taken with different params will \
-                     differ from one taken with these — pass the SAME params you will \
-                     fetch with.",
-        }))
-        .into_response();
+        return count_response(&p, total);
     }
 
     // TWO-FIXES (AMUX-3154): the terminal cap already reports itself in

@@ -3192,6 +3192,20 @@ pub fn list_issues_capped(
     ))
 }
 
+/// How many rows [`list_issues_capped`] would return, from the same selection
+/// and cap, without hydrating any of them.
+pub fn count_issues_capped(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    done_limit: i64,
+) -> rusqlite::Result<usize> {
+    let light = light_rows(conn, status_filter, session_filter, archived)?;
+    let (kept, _, _) = cap_terminal_by(light, done_limit, |r| &r.status, |r| r.updated);
+    Ok(kept.len())
+}
+
 /// [`list_issues_capped`]'s sibling with [`sse_terminal_quota`] semantics
 /// instead of the lumped cap (AMUX-3503): verified keeps its own 300-floor
 /// quota so a bulk-verify stays visible, done/discarded share `done_limit`.
@@ -4962,6 +4976,52 @@ pub fn dependency_path(
 
 #[cfg(test)]
 mod tests {
+    /// AF-1151: a count is the length of the list it stands in for.
+    #[test]
+    fn a_count_equals_the_length_of_the_list_under_every_filter() {
+        use super::{
+            count_issues_capped, list_issues_capped, ArchivedFilter, Connection, Prose,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let _store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        let conn = Connection::open(home.path().join("db")).unwrap();
+        for (i, (status, session, archived, deleted)) in [
+            ("todo", "a", 0, None),
+            ("done", "a", 0, None),
+            ("done", "b", 0, None),
+            ("done", "b", 1, None),
+            ("verified", "a", 1, None),
+            ("todo", "b", 0, Some(1)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO issues (id,title,status,session,archived,deleted,created,updated) \
+                 VALUES (?1,'t',?2,?3,?4,?5,?6,?6)",
+                rusqlite::params![format!("T-{i}"), status, session, archived, deleted, i as i64],
+            )
+            .unwrap();
+        }
+        let none: &[String] = &[];
+        let done = ["done".to_string()];
+        let lane = ["b".to_string()];
+        for (st, se) in [(none, none), (&done[..], none), (none, &lane[..])] {
+            for archived in [
+                ArchivedFilter::All,
+                ArchivedFilter::ActiveOnly,
+                ArchivedFilter::ArchivedOnly,
+            ] {
+                for limit in [0, 1, 100] {
+                    let list =
+                        list_issues_capped(&conn, st, se, archived, limit, Prose::Full).unwrap();
+                    let count = count_issues_capped(&conn, st, se, archived, limit).unwrap();
+                    assert_eq!(count, list.0.len(), "{st:?} {se:?} {archived:?} {limit}");
+                }
+            }
+        }
+    }
+
     /// AF-1144: the unfiltered selection must come from the covering index. On
     /// the table it walks every card's desc to reach `status`.
     #[test]
