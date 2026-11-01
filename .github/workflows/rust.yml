@@ -693,9 +693,20 @@ jobs:
       - name: Install compiler and private server runtime
         # The browser image contains browser libraries, not Rust's C compiler
         # or the private HTTPS/tmux fixture tools. Install this smaller set.
+        # AF-1123: run 41254145128 lost two shards to an unreachable
+        # azure.archive.ubuntu.com (exit 100) while security.ubuntu.com
+        # answered. Retry, then fall back to archive.ubuntu.com and say so.
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps rsync
+          pkgs="python3 tmux openssl lsof procps rsync"
+          apt_install() {
+            apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends $pkgs
+          }
+          if ! apt_install; then
+            echo "::warning title=apt mirror::azure.archive.ubuntu.com unreachable; retrying via archive.ubuntu.com"
+            sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            apt_install
+          fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Install locked packages and verify preinstalled browsers
