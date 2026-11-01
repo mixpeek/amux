@@ -145,6 +145,7 @@ pub mod ids {
     pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
+    pub const DECISION_DIGEST: &str = "decision-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
@@ -211,6 +212,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::MODEL_CATALOG_REFRESH,
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
+    ids::DECISION_DIGEST,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
@@ -1014,6 +1016,46 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: None,
+    },
+    Doc {
+        id: ids::DECISION_DIGEST,
+        name: "Decision digest",
+        purpose: "Once a local day, sends the owner every needsyou card with its recommendation \
+                  and the date it takes effect unless vetoed. Classification fails closed: \
+                  only a typed decision whose worker declared it internal and reversible can \
+                  apply, and money, outside sends and customer data never do. Default on; \
+                  AMUX_DECISION_DIGEST_APPLY=0 is the off switch. Z15.",
+        env: &[
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST",
+                effect: "0 stops the digest and every application (re-read every tick)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_APPLY",
+                effect: "default on; 0 at worker, group or global scope, or in server.env for the \
+                         fleet, stops applying and leaves a dry run (owner-only key)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_HOUR",
+                effect: "local hour the digest becomes due (default 9, capped at 15); defaults apply \
+                         8 hours after it is sent",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_WAIT_DAYS",
+                effect: "days from first publication to the effect date (default 2, floored at 2)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/decision-digest"),
     },
     Doc {
         id: ids::EMAIL_APPROVAL_DIGEST,

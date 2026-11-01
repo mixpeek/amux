@@ -985,6 +985,19 @@ pub struct RealActions;
 /// board gate applies, then read back: a 2xx is not proof the board stored
 /// what was asked for.
 pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &str) -> Result<String, String> {
+    card_via_board_as(state, card, note, marker, APPROVER, POLICY_ACTOR).await
+}
+
+/// [`card_via_board`] under a named automation, so a board log never credits
+/// one policy with another's write.
+pub async fn card_via_board_as(
+    state: &AppState,
+    card: &str,
+    note: &str,
+    marker: &str,
+    approver: &str,
+    actor: &'static str,
+) -> Result<String, String> {
     use crate::db::board_store as bs;
     let read = |id: &str| {
         state
@@ -1007,7 +1020,7 @@ pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &s
     }
     if moving {
         patch.insert("status".into(), json!("todo"));
-        patch.insert("authorized_by".into(), json!(APPROVER));
+        patch.insert("authorized_by".into(), json!(approver));
     }
     if patch.is_empty() {
         return Ok(format!("{card} already recorded"));
@@ -1016,7 +1029,7 @@ pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &s
         let resp = crate::api::board::patch_item(
             State(state.clone()),
             axum::extract::Path(card.to_string()),
-            crate::api::org::policy_headers(POLICY_ACTOR),
+            crate::api::org::policy_headers(actor),
             Json(Value::Object(patch)),
         )
         .await;

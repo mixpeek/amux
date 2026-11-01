@@ -1214,6 +1214,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
+    // 0152: api/decision_digest.rs writes now_f64() epoch seconds.
+    ("decision_digest_recommendations", "set_at", false),
+    ("decision_digest_ledger", "updated_at", false),
     // Messages (0137): api/conversations.rs writes epoch milliseconds.
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),

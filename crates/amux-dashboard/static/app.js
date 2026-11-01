@@ -20535,6 +20535,8 @@ function _classifyPromptKind(promptText) {
   // and delivers through the steering queue, which writes no ledger row. It
   // is the harness acting on standing policy, so Harness, never Human.
   if (clean.includes("(Approved automatically under the owner's needs-input policy.)")) return 'amux';
+  // A published digest default (decision_digest.rs) is harness text too.
+  if (clean.includes('(Applied by digest default, not by the owner.)')) return 'amux';
   // Its send-back (needs_input_auto.rs send_back_text) is harness text too.
   if (clean.includes("This is yours to do; Ethan's needs-input policy returns")) return 'amux';
   // The Messages tab is a fetched snapshot; cmdHistoryAdd is the immediate
@@ -57359,6 +57361,21 @@ async function _handleDeeplink(hash) {
       const b = await a.json().catch(() => ({}));
       showToast(a.ok ? 'Approved. It is being sent.' : ('Not sent: ' + (b.error || a.status)));
     } catch (e) { showToast('Could not reach the reply: ' + e.message); }
+    return;
+  }
+  // #digest-veto=<card> - the owner stops a card's digest default, from the
+  // link in the daily decision digest. Final; the POST carries the owner bearer.
+  if (hash && hash.startsWith('#digest-veto=')) {
+    const card = decodeURIComponent(hash.slice('#digest-veto='.length)).trim();
+    try { history.replaceState({}, '', location.pathname + location.search); } catch(e) { console.warn('digest-veto: could not clear the link hash', e); }
+    try {
+      if (!(await showConfirm('Veto ' + card + '? Its recommendation will not take effect, and the card stays with you.'))) return;
+      const a = await fetch(API + '/api/decision-digest/veto', { method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+        body: JSON.stringify({ card }) });
+      const b = await a.json().catch(() => ({}));
+      showToast(a.ok ? ('Vetoed ' + card) : ('Not vetoed: ' + (b.error || a.status)));
+    } catch (e) { showToast('Could not reach the veto: ' + e.message); }
     return;
   }
   if (hash && hash.startsWith('#land-approve=')) {

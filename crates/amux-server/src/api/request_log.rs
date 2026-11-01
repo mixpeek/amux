@@ -3300,6 +3300,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/needs-input/auto/sweep",
         methods: &["POST"],
     },
+    // Z15 daily decision digest.
+    RouteEntry {
+        path: "/api/decision-digest",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/veto",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/recommendation",
+        methods: &["PUT"],
+    },
     RouteEntry {
         path: "/api/connectors",
         methods: &["GET", "POST"],

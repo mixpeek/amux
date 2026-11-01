@@ -98,6 +98,7 @@ pub mod map_store;
 pub mod mcp;
 pub mod mdai;
 pub mod measured;
+pub mod decision_digest;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
@@ -412,6 +413,7 @@ pub fn router_with_connector_transport(
         // AMUX-5286: the owner's one-at-a-time triage queue.
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
+        .merge(decision_digest::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
         .merge(bridge::routes())
