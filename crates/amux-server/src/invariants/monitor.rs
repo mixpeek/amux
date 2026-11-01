@@ -733,6 +733,26 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             wt.as_deref(),
             runtime,
         ));
+
+        // -- the repo's pre-push hook, same rule (AF-1129). No repo, or a linked
+        // worktree whose .git is a file, reads as unreadable: Unknown, not a pass.
+        const BAKED_PRE_PUSH: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/git-hooks/pre-push"
+        ));
+        let runtime = repo
+            .as_ref()
+            .ok_or_else(|| "no repo".to_string())
+            .and_then(|d| std::fs::read_to_string(d.join(checks::PRE_PUSH_HOOK.runtime_path)).map_err(|e| e.to_string()));
+        let head = read_head(checks::PRE_PUSH_HOOK.committed_path);
+        let wt = read_worktree(checks::PRE_PUSH_HOOK.committed_path);
+        out.extend(checks::installed_script_matches_committed(
+            &checks::PRE_PUSH_HOOK,
+            BAKED_PRE_PUSH,
+            head.as_deref(),
+            wt.as_deref(),
+            runtime,
+        ));
     }
 
     tm.mark(&out, "6. shared-checkout git guard");

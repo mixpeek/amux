@@ -3056,6 +3056,16 @@ pub const BOUNDARY_GUARD: InstalledScript = InstalledScript {
     noun: "boundary guard",
 };
 
+/// The push gate every land goes through (AF-1129). A landed change to it
+/// reached no real push until a manual install, so the script-tests leg ran only
+/// in fixtures. The builder syncs it now; this says when that stops working.
+pub const PRE_PUSH_HOOK: InstalledScript = InstalledScript {
+    id: "hooks.pre_push_matches_committed",
+    runtime_path: ".git/hooks/pre-push",
+    committed_path: "scripts/git-hooks/pre-push",
+    noun: "pre-push hook",
+};
+
 /// `git.shared_config_is_not_bare` (AF-1116): the shared checkout's own
 /// .git/config carries no `core.bare=true` and no `core.worktree`. Either one
 /// makes every lane's git in the main checkout read the wrong tree. On
@@ -8745,6 +8755,16 @@ mod negative_controls {
         );
         assert_eq!(boundary[0].invariant_id, "hooks.boundary_guard_matches_committed");
         assert_ne!(boundary[0].status, Status::Pass, "an older installed boundary guard is not a pass");
+        // AF-1129: an installed push hook that missed a landed change.
+        let push = installed_script_matches_committed(
+            &PRE_PUSH_HOOK,
+            committed,
+            Some(committed),
+            Some(committed),
+            Ok("# an older hook\n".into()),
+        );
+        assert_eq!(push[0].invariant_id, "hooks.pre_push_matches_committed");
+        assert_ne!(push[0].status, Status::Pass, "an older installed pre-push hook is not a pass");
         // ...and the prose must follow the spec, not stay hardcoded to the guard.
         let rep_drift = installed_script_matches_committed(
             &REPORT_HOOK,

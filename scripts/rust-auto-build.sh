@@ -170,6 +170,42 @@ sync_observed_edits_hooks() {
   done
 }
 
+# The repo's own git hooks follow the activated commit too (AF-1129). A landed
+# change to scripts/git-hooks/ reached nothing until someone reran
+# install-hooks.sh: .git/hooks/pre-push sat at its Oct 29 bytes while main moved
+# on, so the pre-push script-tests leg ran only in fixtures. Only hooks already
+# installed are replaced, and a tracked core.hooksPath dir is the repo owner's.
+# ~/.amux/hooks stays with install-hooks.sh.
+sync_repo_git_hooks() {
+  local sha="$1" common dir name dest tmp
+  [ -z "$(git -C "$REPO" config core.hooksPath 2>/dev/null || true)" ] || return 0
+  common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  dir="$common/hooks"
+  for name in pre-commit pre-push post-commit prepare-commit-msg amux-staged-guard append-only-push-guard; do
+    dest="$dir/$name"
+    [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$dir" ] || continue
+    tmp="$(mktemp "$dir/.repo-hook.XXXXXX")" || continue
+    if ! git -C "$REPO" show "${sha}:scripts/git-hooks/${name}" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; continue
+    fi
+    if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; continue; fi
+    if head -1 "$tmp" | grep -q python; then
+      python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null
+    else
+      bash -n "$tmp" 2>/dev/null
+    fi || {
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_source_invalid" >> "$LOG"
+      rm -f "$tmp"; continue
+    }
+    if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+      echo "== REPO HOOK SYNCED sha=$sha hook=$name verdict=repo_hook_synced" >> "$LOG"
+    else
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_sync_failed" >> "$LOG"
+      rm -f "$tmp"
+    fi
+  done
+}
+
 # The sha that will actually be BUILT — the worktree below is created from
 # `rev-parse HEAD`. `$head` is a different thing: the last commit that touched
 # the build inputs, used as the rebuild stamp key. They differ routinely on a
@@ -333,6 +369,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
   sync_bash_cli "$built_sha"
   sync_authority_launcher "$built_sha"
   sync_observed_edits_hooks "$built_sha"
+  sync_repo_git_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of
   # "Worker updates unavailable" on every client). With 28 lanes committing

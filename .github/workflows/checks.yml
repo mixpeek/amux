@@ -928,6 +928,7 @@ jobs:
           # A young build lock whose pid is not written yet is held, not broken
           # (implicit state machines #22); an old one is still broken.
           ./scripts/test-build-lock-young.sh
+          ./scripts/test-build-repo-hooks-sync.sh
           # AF-1012: a link failure on unresolved symbols clears the stale
           # amux_server incremental trees and retries once; a compile error does not.
           ./scripts/test-build-link-retry.sh
