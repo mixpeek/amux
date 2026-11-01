@@ -1212,6 +1212,8 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // api/history.rs (pin_message) writes epoch milliseconds.
+    ("message_pins", "pinned_at", true),
     // Messages (0137): api/conversations.rs writes epoch milliseconds.
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),

@@ -783,18 +783,18 @@ async fn report_goal_prompt(app: &crate::api::AppState, name: &str, line: &str, 
     if now - since < env_f64("AMUX_GOAL_PROMPT_REPORT_S", 120.0) {
         return;
     }
-    {
-        let Ok(mut map) = state().lock() else { return };
-        let k = map.entry(name.to_string()).or_default();
-        if k.prompt_reported == since {
-            return;
-        }
-        k.prompt_reported = since;
+    if state().lock().map_or(true, |map| map.get(name).is_some_and(|k| k.prompt_reported == since)) {
+        return;
     }
     let n = name.to_string();
     let goal = tokio::task::spawn_blocking(move || goal_payload(&n)).await.unwrap_or_default();
     if !matches!(goal["state"].as_str(), Some("unmet" | "unknown")) {
         return;
+    }
+    // Marked only once there is something to report: a goal set while the
+    // prompt is up still gets its report.
+    if let Ok(mut map) = state().lock() {
+        map.entry(name.to_string()).or_default().prompt_reported = since;
     }
     tracing::warn!(target: "amux::goal_keeper", session = %name, prompt = %line, age_s = (now - since) as i64,
         verdict = "goal_blocked_on_permission_prompt", measured = true, n_considered = 1,

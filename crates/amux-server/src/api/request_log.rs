@@ -3762,8 +3762,16 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // route.callers_have_routes census read the TABLE and reported them unrouted.
     // Caught by tests/route_table.rs's completeness scan (both were named).
     RouteEntry {
+        path: "/api/history/pins",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/history/{id}",
         methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/history/{id}/pin",
+        methods: &["POST"],
     },
     RouteEntry {
         path: "/api/history/{id}/card",

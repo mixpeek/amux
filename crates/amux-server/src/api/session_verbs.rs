@@ -3679,6 +3679,7 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("schedules", RenameDisposition::Migrate),
     ("session_gates", RenameDisposition::Migrate),
     ("saved_messages", RenameDisposition::Migrate),
+    ("message_pins", RenameDisposition::Migrate),
     ("steering_queue", RenameDisposition::Migrate),
     ("steering_history", RenameDisposition::Migrate),
     ("share_tokens", RenameDisposition::Migrate),

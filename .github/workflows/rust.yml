@@ -298,6 +298,13 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
+      # Writing the archive needs the room unpacking it does: on 4e127b986 this
+      # job hit "No space left on device" with 128 binaries, red for every shard.
+      - name: Free runner disk for the test archive
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          echo "free after cleanup: $(df -BG --output=avail / | tail -1 | tr -d ' ')"
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust-input key (scripts/ci-rust-key.mjs)
         id: key
