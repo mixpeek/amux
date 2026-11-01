@@ -4460,6 +4460,13 @@ fn find_conversation_jsonl_in(
     (found, true)
 }
 
+/// How long a conversation with no transcript waits before the next walk.
+fn next_miss_wait(previous: Option<std::time::Duration>) -> std::time::Duration {
+    const FIRST: std::time::Duration = std::time::Duration::from_secs(600);
+    const MOST: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+    previous.map_or(FIRST, |wait| (wait * 2).min(MOST))
+}
+
 pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let cfg = parse_env(name);
     let mut wd = cfg.get_or("CC_DIR", "").trim().to_string();
@@ -4501,16 +4508,19 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
         // mid-delivery could not tell whether a signal wake had landed: it was
         // filed "interrupted" and never shown. The id is a UUID, so any
         // project holding <id>.jsonl is this conversation.
-        // A miss is remembered for 10 minutes and logged once per
-        // conversation. Uncached, every status sweep re-scanned every project
-        // dir for each stopped lane whose transcript is gone and logged it:
-        // 4,061 WARN lines in 45 minutes from 26 lanes (2026-10-01).
-        static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+        // A miss is remembered, and logged once per conversation. Uncached,
+        // every status sweep re-scanned every project dir for each stopped lane
+        // whose transcript is gone and logged it: 4,061 WARN lines in 45 minutes
+        // from 26 lanes (2026-10-01). The wait doubles per miss: at a flat 10
+        // minutes, dead conversations came due together and cost 463 scans and
+        // 1,431 s in 10 hours, up to 29 in a minute, inside the fleet build
+        // whose overrun answers /api/sessions with 503 (AF-1146).
+        static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, std::time::Duration)>>> =
             std::sync::OnceLock::new();
         let misses = MISSES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
         let cached_miss = misses
             .lock()
-            .map(|m| m.get(&conv_id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)))
+            .map(|m| m.get(&conv_id).is_some_and(|(at, wait)| at.elapsed() < *wait))
             .unwrap_or(false);
         if !cached_miss {
             if let Some(p) = find_conversation_jsonl(&claude_home().join("projects"), &conv_id) {
@@ -4518,7 +4528,10 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
             }
             let first = misses
                 .lock()
-                .map(|mut m| m.insert(conv_id.clone(), std::time::Instant::now()).is_none())
+                .map(|mut m| {
+                    let wait = next_miss_wait(m.get(&conv_id).map(|(_, wait)| *wait));
+                    m.insert(conv_id.clone(), (std::time::Instant::now(), wait)).is_none()
+                })
                 .unwrap_or(false);
             if first {
                 tracing::warn!(session = %name, conv_id = %conv_id, measured = true, n_considered = 1,
@@ -52380,6 +52393,15 @@ mod steer_freeze_tests {
         assert_eq!(c(SteerDelivery::Hold, 86_400.0, false, "claude", 1800.0), SteerDelivery::Hold,
             "a hold with no background work is not this hold");
         assert_eq!(c(SteerDelivery::AtBoundary, 0.0, true, "claude", 1800.0), SteerDelivery::AtBoundary);
+    }
+
+    #[test]
+    fn a_missing_conversation_waits_longer_each_time_up_to_six_hours() {
+        let minutes = |m: u64| std::time::Duration::from_secs(m * 60);
+        assert_eq!(next_miss_wait(None), minutes(10));
+        assert_eq!(next_miss_wait(Some(minutes(10))), minutes(20));
+        assert_eq!(next_miss_wait(Some(minutes(200))), minutes(360));
+        assert_eq!(next_miss_wait(Some(minutes(360))), minutes(360));
     }
 
     #[test]
